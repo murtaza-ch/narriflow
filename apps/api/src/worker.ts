@@ -9,8 +9,10 @@ interface WorkerApiApp {
   fetch(request: Request, bindings: ApiWorkerBindings, context: ExecutionContext): Response | Promise<Response>;
 }
 
+export type WorkerInvocation = <T>(operation: () => Promise<T>) => Promise<T>;
+
 export interface ApiWorkerDependencies {
-  createApp(environment: ServiceEnvironment): WorkerApiApp;
+  createApp(environment: ServiceEnvironment, runInvocation: WorkerInvocation): WorkerApiApp;
   createScope?(connectionString: string): DatabaseScope;
 }
 
@@ -21,10 +23,12 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
         return healthResponse(bindings.CF_VERSION_METADATA?.id ?? "dev");
       }
       const environment = workerServiceEnvironment(bindings);
-      return withWorkerServices(bindings, environment, () => withDatabaseScope(
-        (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString),
-        () => dependencies.createApp(environment).fetch(request, bindings, context),
+      // MCP callbacks can continue after fetch returns an SSE Response. Capture
+      // settings and a factory, never a Prisma client or an open socket.
+      const runInvocation: WorkerInvocation = (operation) => withWorkerServices(bindings, environment, () => withDatabaseScope(
+        (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString), operation,
       ));
+      return runInvocation(async () => dependencies.createApp(environment, runInvocation).fetch(request, bindings, context));
     },
   };
 }

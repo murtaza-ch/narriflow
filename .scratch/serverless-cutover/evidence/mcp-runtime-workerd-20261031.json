@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-31",
+  "runtime": "local workerd with actual isolated Neon gate PostgreSQL",
+  "databaseCredentialSource": "isolated gate settings file; credentials excluded",
+  "sdk": "@modelcontextprotocol/server2.4.0",
+  "checks": [
+    "mcp_headers_before_sql",
+    "mcp_streamed_tool_real_sql_disposed",
+    "mcp_resource_real_sql_disposed",
+    "mcp_task_real_sql_disposed",
+    "mcp_idle_subscription_zero_sql"
+  ],
+  "passed": 5,
+  "observations": {
+    "beforeStreamToolQuery": {
+      "created": 0,
+      "disposed": 0,
+      "queries": 0
+    },
+    "afterTool": {
+      "created": 1,
+      "disposed": 1,
+      "queries": 1
+    },
+    "afterResource": {
+      "created": 2,
+      "disposed": 2,
+      "queries": 2
+    },
+    "afterTaskAndIdleListen": {
+      "created": 3,
+      "disposed": 3,
+      "queries": 3
+    }
+  },
+  "limitations": [
+    "Local workerd/direct PostgreSQL. Protected deployed Hyperdrive confirmation still required.",
+    "This isolates actual SDK callback lifecycle and Prisma SQL. Full production service import graph still has native blockers."
+  ],
+  "sha256": {
+    "apps/api/src/worker.ts": "b6be63b00d8d48f5545e90cb2d90e888f4cc2313fce7935c5fa99d682a980c9e",
+    "packages/mcp-core/src/mcp-server.ts": "90547602c9f7479dae615419e1ef8f883ab2a7154ccaf71f7afc187c5201093c",
+    "apps/api/scripts/gates/mcp-runtime-probe.ts": "446ece34a17870e193f0114c9794ed0b89c26c98769c8008d9ff33c3da6a0e87",
+    "apps/api/scripts/run-mcp-runtime-gates.ts": "7466c238069889a497a35a1a6952d932b82def2beb2a0605a5bd385cf2c2678a",
+    "packages/mcp-core/node_modules/@modelcontextprotocol/server/dist/mcp-oHn3ureC.mjs": "c542c2e9e84767827ca9ac561946ec25a7f10b9aa48e84acca12f48bf1123ea2"
+  }
+}

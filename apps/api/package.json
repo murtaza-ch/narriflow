@@ -24,7 +24,8 @@
     "migrations:generate": "bun scripts/generate-database-migrations.ts",
     "migrations:check": "bun scripts/generate-database-migrations.ts --check",
     "test:runtime:workerd": "node --experimental-strip-types scripts/run-worker-runtime-gates.ts",
-    "audit:worker": "bun scripts/audit-worker-bundle.ts"
+    "audit:worker": "bun scripts/audit-worker-bundle.ts",
+    "test:mcp:workerd": "node --experimental-strip-types scripts/run-mcp-runtime-gates.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",

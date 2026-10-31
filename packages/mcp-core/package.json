@@ -25,6 +25,10 @@
     "./tasks": {
       "types": "./src/mcp-tasks.ts",
       "default": "./src/mcp-tasks.ts"
+    },
+    "./server": {
+      "types": "./src/mcp-server.ts",
+      "default": "./src/mcp-server.ts"
     }
   },
   "scripts": {

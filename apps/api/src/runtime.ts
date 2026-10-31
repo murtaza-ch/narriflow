@@ -1,3 +1,4 @@
+import type { WorkerInvocation } from "./worker";
 import { readServiceEnvironment, type ServiceEnvironment } from "@narriflow/services/runtime-environment";
 import {
   createBearerAuthenticator,
@@ -112,6 +113,7 @@ export function createDomainRoutes(config: ApiConfig): ApiDomainRoutes {
 export function createExternalRoutes(
   config: ApiConfig,
   clerkClient?: ReturnType<typeof createServerClerkClient>,
+  runInRequestScope?: WorkerInvocation,
 ): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp"> {
   return {
     webhooks: {
@@ -121,12 +123,12 @@ export function createExternalRoutes(
       projects: createProjectsWebhookRoutes(createProjectsWebhookDeps()),
     },
     rest: createRestRoutes(createRestRouteDeps(config)),
-    mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient)),
+    mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient, runInRequestScope)),
   };
 }
 
 /** Wires every production dependency and returns the composed app. Throws on missing core settings. */
-export function createProductionApp(config: ApiConfig, environment: ServiceEnvironment): Hono<ApiEnv> {
+export function createProductionApp(config: ApiConfig, environment: ServiceEnvironment, runInRequestScope: WorkerInvocation): Hono<ApiEnv> {
   requireSetting("ELEVENLABS_WEBHOOK_SECRET");
   billingService.validateConfiguration({ surface: "web" });
 
@@ -152,7 +154,7 @@ export function createProductionApp(config: ApiConfig, environment: ServiceEnvir
       clerkClient,
     }),
     domains: createDomainRoutes(config),
-    ...createExternalRoutes(config, clerkClient),
+    ...createExternalRoutes(config, clerkClient, runInRequestScope),
     admin: {
       rateLimit: ({ key, limit, windowSeconds }) => checkRateLimit(key, limit, windowSeconds),
     },

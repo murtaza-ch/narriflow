@@ -74,7 +74,7 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
   const exchange = async (c: Context<ApiEnv>, token: string, input: unknown) => {
     const sessionToken = await service.authenticate(token, input, deps.clientIp(c), deps.sessionSecret());
     // Expiry is the signed claim, not a second wall-clock estimate.
-    const { verifyReviewSession } = await import("@narriflow/services");
+    const { verifyReviewSession } = await import("@narriflow/services/review.service");
     return { sessionToken, expiresAt: new Date(verifyReviewSession(sessionToken, deps.sessionSecret()).exp * 1000).toISOString() };
   };
   return createRouteApp(access)
