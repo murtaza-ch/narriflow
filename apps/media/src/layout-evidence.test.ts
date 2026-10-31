@@ -4,7 +4,7 @@ import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, editorDocumentSc
 import { LayoutEvidence, type LayoutEvidenceDependencies, type LayoutEvidenceInput, type LayoutEvidenceWrite } from "./layout-evidence";
 import { parseRenderConfig } from "./render-config";
 import { createLayoutEvidenceDetectors } from "./layout-evidence-runtime";
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import { deriveRenderCompositionEvidence } from "./tasks/clip-render-attempt";
 import { WorkerProcessFailure, resolveDisplayGeometry, type WorkerProcessModule } from "./worker-process";
 
