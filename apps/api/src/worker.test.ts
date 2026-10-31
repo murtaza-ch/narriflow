@@ -4,6 +4,7 @@ import { getPrismaClient, createDatabaseScope } from "@narriflow/db/client";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { createApiWorker } from "./worker";
 import type { ApiWorkerBindings } from "./worker-bindings";
+import { createExecutionRoutes } from "./domains/execution/routes";
 
 const bindings = (key: string) => ({ HYPERDRIVE: { connectionString: key }, OPENAI_API_KEY: key }) as unknown as ApiWorkerBindings;
 const context = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -22,6 +23,27 @@ test("closed cutover admission refuses requests before runtime or database const
   expect(response.status).toBe(503);
   expect(response.headers.get("Retry-After")).toBe("5");
   expect((await worker.fetch(new Request("https://api.test/api/health"), closed, context)).status).toBe(200);
+});
+
+test("paused intake keeps accepted signed control and provider callbacks reachable without changing their bytes", async () => {
+  const worker = createApiWorker({ createApp: () => new Hono().post("*", async c => c.text(await c.req.text())) });
+  const closed = { ...bindings("postgresql://unused.test/db"), ADMISSION_STATE: "closed" } as ApiWorkerBindings;
+  for (const path of ["/api/execution/command", "/api/execution/transfer", "/api/webhooks/elevenlabs", "/api/webhooks/stripe", "/api/dev-device/execution/command"]) {
+    const raw = '{ "signed" : true }\n';
+    const response = await worker.fetch(new Request(`https://api.test${path}`, { method: "POST", body: raw }), closed, context);
+    expect(response.status).toBe(200); expect(await response.text()).toBe(raw);
+  }
+  expect((await worker.fetch(new Request("https://api.test/api/execution/arbitrary", { method: "POST" }), closed,context)).status).toBe(503);
+  expect(getPrismaClient()).toBeNull();
+});
+
+test("the paused continuation exception still rejects unsigned execution before constructing database work", async () => {
+  const unreachable = async (): Promise<never> => { throw Error("Unsigned work must not execute"); };
+  const worker = createApiWorker({ createApp: () => new Hono().route("/api",createExecutionRoutes({ keyRing: () => new Map(), nowSeconds: () => 0, execute: unreachable, transfer: unreachable })),
+    createScope: () => createDatabaseScope({ createClient: () => { throw Error("Unsigned work must not construct a client"); } }) });
+  const response = await worker.fetch(new Request("https://api.test/api/execution/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }),
+    { ...bindings("unused"), ADMISSION_STATE: "closed" } as ApiWorkerBindings, context);
+  expect(response.status).toBe(401); expect((await response.json()).error).toBe("execution_signature_invalid");
 });
 
 test("a DO-only invocation with no committed notification keeps the database resource lazy", async () => {

@@ -6,6 +6,7 @@ import { healthResponse } from "./domains/platform/health";
 import type { ApiWorkerBindings } from "./worker-bindings";
 import { withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import { failureResponse } from "./http/errors";
+import { continuesAcceptedWork } from "./http/drain";
 
 interface WorkerApiApp {
   fetch(request: Request, bindings: ApiWorkerBindings, context: ExecutionContext): Response | Promise<Response>;
@@ -25,7 +26,7 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
       if (request.method === "GET" && path === "/api/health") {
         return healthResponse(bindings.CF_VERSION_METADATA?.id ?? "dev");
       }
-      if (bindings.ADMISSION_STATE === "closed" && path !== "/api/ready") return failureResponse({ code: "server_draining", category: "unavailable", status: 503,
+      if (bindings.ADMISSION_STATE === "closed" && !continuesAcceptedWork(request.method,path)) return failureResponse({ code: "server_draining", category: "unavailable", status: 503,
         message: "The service is restarting. Try again shortly.", requestId: crypto.randomUUID(), retryAfterSeconds: 5 });
       const environment = workerServiceEnvironment(bindings);
       // MCP callbacks can continue after fetch returns an SSE Response. Capture
