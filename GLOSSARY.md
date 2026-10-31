@@ -85,6 +85,10 @@ _Avoid_: Workflow Attempt, Clip Render Attempt, transport retry
 The authority generation shared by one database and its execution environment. Advancing it after restore revokes every earlier external execution and development-device authority.
 _Avoid_: Deployment version, application revision
 
+**Quiesced Execution Snapshot**:
+A captured database whose execution epoch was fenced before capture, with all consumers stopped or deferred and issued storage mutations drained. Its operator proof binds snapshot bytes, migration checksums, the closed fence and verified stop/drain evidence. It cannot stand in for an older snapshot followed by unknown execution history.
+_Avoid_: PITR safety flag, epoch-only restore, backup permission
+
 **Source Audio**:
 Immutable whole-source audio evidence bound to a Project's source revision, upstream media identity and selected audio track, with verified object identity and exact measured duration. It can become ready before the original video without making that video ready.
 _Avoid_: Audio excerpt, transcription fallback, provider duration

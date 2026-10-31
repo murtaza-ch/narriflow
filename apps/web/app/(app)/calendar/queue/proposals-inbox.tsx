@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Braces, CalendarClock, Check, Info, Inbox, type LucideIcon, Play, Sparkles, UserRound, X } from "lucide-react";
-import type { SocialPostProposalSource } from "@narriflow/validators";
+import {ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT,type SocialPostProposalSource} from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
 import { Switch } from "@narriflow/ui/components/switch";
@@ -42,7 +42,6 @@ export type AcceptAllBatch = {
 	accepted: unknown[];
 	skippedTikTok: number;
 	failed: Array<{ message: string }>;
-	nextCursor: string | null;
 };
 
 /** The queue's commands, bound to the selected Workspace by the screen; `onChanged` refreshes what they touch. */
@@ -50,8 +49,8 @@ export interface ProposalsApi {
 	tiktokOptions(accountId: string): Promise<TikTokOptions>;
 	updateCaption(proposalId: string, caption: string): Promise<unknown>;
 	reject(proposalId: string): Promise<unknown>;
-	accept(proposalId: string, choices: { tiktok?: TikTokChoices }): Promise<unknown>;
-	acceptAll(after: string | null): Promise<AcceptAllBatch>;
+	accept(proposalId: string, choices: { expectedScheduleRevision:number;tiktok?: TikTokChoices }): Promise<unknown>;
+	acceptAll(proposals:Array<{proposalId:string;expectedScheduleRevision:number}>): Promise<AcceptAllBatch>;
 	onChanged(): void;
 }
 
@@ -290,7 +289,7 @@ function ProposalCard({
 							<Button
 								size="sm"
 								disabled={pending || blocked || (!isTikTok && !proposal.nextSlot)}
-								onClick={() => (isTikTok ? setChoosing(true) : void run(() => api.accept(proposal.proposalId, {}), "The proposal could not be accepted.", "Added to the queue."))}
+								onClick={() => (isTikTok ? setChoosing(true) : void run(() => api.accept(proposal.proposalId, {expectedScheduleRevision:proposal.scheduleRevision}), "The proposal could not be accepted.", "Added to the queue."))}
 							>
 								<Check size={14} />
 								Accept
@@ -305,7 +304,7 @@ function ProposalCard({
 					api={api}
 					pending={pending}
 					onCancel={() => setChoosing(false)}
-					onAccept={(choices) => void run(() => api.accept(proposal.proposalId, { tiktok: choices }), "The proposal could not be accepted.", "Added to the queue.")}
+					onAccept={(choices) => void run(() => api.accept(proposal.proposalId, { expectedScheduleRevision:proposal.scheduleRevision,tiktok: choices }), "The proposal could not be accepted.", "Added to the queue.")}
 				/>
 			) : null}
 		</Stack>
@@ -334,21 +333,18 @@ export function ProposalsInbox({
 	async function acceptAll() {
 		setNotice(null);
 		setPending(true);
-		// One call takes a batch, so a long inbox never outlasts a request: keep going from where it stopped.
-		let after: string | null = null;
+  // Freeze the entire observed inbox for this click. A retry or a later
+  // chunk cannot approve a row returned under different grant terms.
+  const observed=proposals.map(proposal=>({proposalId:proposal.proposalId,expectedScheduleRevision:proposal.scheduleRevision}));
 		let accepted = 0;
 		let skippedTikTok = 0;
 		const problems: string[] = [];
 		let stopped: string | null = null;
 		try {
-			for (;;) {
-				const batch: AcceptAllBatch = await api.acceptAll(after);
-				accepted += batch.accepted.length;
-				skippedTikTok = batch.skippedTikTok;
-				problems.push(...batch.failed.map((entry) => entry.message));
-				if (!batch.nextCursor) break;
-				after = batch.nextCursor;
-			}
+   for(let offset=0;offset<observed.length;offset+=ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT){
+    const batch:AcceptAllBatch=await api.acceptAll(observed.slice(offset,offset+ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT));
+    accepted+=batch.accepted.length;skippedTikTok+=batch.skippedTikTok;problems.push(...batch.failed.map(entry=>entry.message));
+   }
 		} catch (error) {
 			stopped = apiFailureMessage(error, "The proposals could not be accepted.");
 		}

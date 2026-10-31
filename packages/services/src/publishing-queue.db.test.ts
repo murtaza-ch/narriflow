@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
-import { claimDueSocialPublicationAttempts, synchronizePreparedSocialPosts } from "./social-publication-attempt";
 import { assertFinishingQueue, assertQueueAccounts, publishingQueue, PublishingQueueError } from "./publishing-queue.service";
 import { nextFreeSlots } from "./posting-schedule";
 import { socialPublicationRecovery } from "./social-publication-recovery";
@@ -20,13 +19,7 @@ const dbDescribe = enabled ? describe : describe.skip;
 
 setDefaultTimeout(180_000);
 
-const claimConfig = {
-	batchSize: 20,
-	leaseMs: 60_000,
-	processingDeadlineMs: 3_600_000,
-	reconciliationDeadlineMs: 7_200_000,
-	providerCallBudget: 12,
-};
+
 
 /** Every day at 09:00 and 17:00, so a free slot is always near. */
 const EVERY_DAY = {
@@ -139,12 +132,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	test("proposals never reach the scheduler or recovery", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
-		// A scheduler running long after any slot would have passed still never opens an attempt for it.
-		const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
-		const claimed = await claimDueSocialPublicationAttempts({ claimantId: "queue-test", now: farFuture, config: claimConfig });
-		const attempts = await prisma.socialPublicationAttempt.findMany({ where: { id: { in: claimed.map((claim) => claim.attemptId) } }, select: { socialPostId: true } });
-		expect(attempts.map((attempt) => attempt.socialPostId)).not.toContain(proposal.proposalId);
-		await synchronizePreparedSocialPosts(farFuture);
+  expect(await prisma.executionDispatch.count({where:{subjectKind:"social_publication",subjectId:proposal.proposalId}})).toBe(0);
 		expect(await prisma.socialPublicationAttempt.count({ where: { socialPostId: proposal.proposalId } })).toBe(0);
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
 
@@ -164,7 +152,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	test("two concurrent accepts for one account take two different slots", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const [first, second] = await Promise.all([propose(f), propose(f)]);
-		const accepted = await Promise.all([first, second].map((proposal) => publishingQueue.accept(scope(f), proposal.proposalId)));
+		const accepted = await Promise.all([first, second].map((proposal) => publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})));
 		const slots = accepted.map((post) => post.scheduledFor);
 		expect(new Set(slots).size).toBe(2);
 		for (const post of accepted) expect(post.status).toBe("scheduled");
@@ -194,7 +182,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 			},
 		});
 		const proposals = await Promise.all(Array.from({ length: 5 }, () => propose(f)));
-		const accepted = await Promise.all(proposals.map((proposal) => publishingQueue.accept(scope(f), proposal.proposalId)));
+		const accepted = await Promise.all(proposals.map((proposal) => publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})));
 		const slots = accepted.map((post) => post.scheduledFor);
 		expect(new Set(slots).size).toBe(5);
 		expect(slots).not.toContain(firstSlot!.toISOString());
@@ -205,10 +193,10 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	test("accepting one proposal twice, even at once, makes one post", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
-		const results = await Promise.all([publishingQueue.accept(scope(f), proposal.proposalId), publishingQueue.accept(scope(f), proposal.proposalId)]);
+		const results = await Promise.all([publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision}), publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})]);
 		expect(results[1].socialPostId).toBe(results[0].socialPostId);
 		expect(results[1].scheduledFor).toBe(results[0].scheduledFor);
-		const retry = await publishingQueue.accept(scope(f), proposal.proposalId);
+		const retry = await publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision});
 		expect(retry).toMatchObject({ replayed: true, socialPostId: results[0].socialPostId });
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
 	})));
@@ -216,7 +204,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	test("an account without slots refuses acceptance and keeps the proposal", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ schedule: null });
 		const proposal = await propose(f);
-		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "posting_schedule_missing" });
+		await expect(publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})).rejects.toMatchObject({ code: "posting_schedule_missing" });
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
 	})));
 
@@ -235,7 +223,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		});
 		// Proposing is not approving, so it succeeds; accepting is where the rule applies.
 		const proposal = await propose(f);
-		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "review_approval_required" });
+		await expect(publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})).rejects.toMatchObject({ code: "review_approval_required" });
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id, status: "scheduled" } })).toBe(0);
 	})));
@@ -243,15 +231,15 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	test("TikTok needs the creator's choices at acceptance, and accept-all skips it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ platform: "tiktok" });
 		const tiktok = await propose(f);
-		await expect(publishingQueue.accept(scope(f), tiktok.proposalId)).rejects.toMatchObject({ code: "social_proposal_tiktok_options_required" });
-		await expect(publishingQueue.accept(scope(f), tiktok.proposalId, { tiktok: { deliveryMode: "direct", disableComment: false, disableDuet: false, disableStitch: false, isAigc: false } }))
+		await expect(publishingQueue.accept(scope(f), tiktok.proposalId,{expectedScheduleRevision:tiktok.scheduleRevision})).rejects.toMatchObject({ code: "social_proposal_tiktok_options_required" });
+		await expect(publishingQueue.accept(scope(f), tiktok.proposalId, { expectedScheduleRevision:tiktok.scheduleRevision,tiktok: { deliveryMode: "direct", disableComment: false, disableDuet: false, disableStitch: false, isAigc: false } }))
 			.rejects.toMatchObject({ code: "social_proposal_tiktok_options_required" });
 
 		const youtube = await prisma.socialAccount.create({
 			data: { userId: f.user.id, workspaceId: f.workspace.id, platform: "youtube_shorts", providerAccountId: `queue-yt:${randomUUID()}`, displayName: "YouTube", accessTokenEncrypted: "encrypted-test-token", postingSchedule: EVERY_DAY },
 		});
 		const other = await propose(f, { accountId: youtube.id });
-		const result = await publishingQueue.acceptAll(scope(f));
+		const result = await publishingQueue.acceptAll(scope(f),{proposals:(await publishingQueue.listProposals(scope(f))).map(row=>({proposalId:row.proposalId,expectedScheduleRevision:row.scheduleRevision}))});
 		expect(result.skippedTikTok).toBe(1);
 		expect(result.failed).toEqual([]);
 		expect(result.accepted.map((post) => post.platform)).toEqual(["youtube_shorts"]);
@@ -259,7 +247,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: other.proposalId } })).status).toBe("scheduled");
 
 		// Inbox delivery needs no publication settings, so a person can accept it with just that choice.
-		const accepted = await publishingQueue.accept(scope(f), tiktok.proposalId, { tiktok: { deliveryMode: "tiktok_inbox", disableComment: false, disableDuet: false, disableStitch: false, isAigc: false } }).catch((error) => error);
+		const accepted = await publishingQueue.accept(scope(f), tiktok.proposalId, { expectedScheduleRevision:tiktok.scheduleRevision,tiktok: { deliveryMode: "tiktok_inbox", disableComment: false, disableDuet: false, disableStitch: false, isAigc: false } }).catch((error) => error);
 		// The fixture has no TikTok creator API, so the creator-info read refuses before any post exists.
 		expect(accepted instanceof Error || "socialPostId" in accepted).toBe(true);
 	})));
@@ -271,7 +259,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).caption).toBe("Edited caption");
 		await publishingQueue.reject(scope(f), proposal.proposalId);
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("cancelled");
-		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "social_proposal_not_found" });
+		await expect(publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})).rejects.toMatchObject({ code: "social_proposal_not_found" });
 		await expect(publishingQueue.reject(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "social_proposal_not_found" });
 		await expect(publishingQueue.updateProposalCaption(scope(f), proposal.proposalId, "Too late")).rejects.toMatchObject({ code: "social_proposal_not_found" });
 		// The project's own cancel action rejects a draft the same way.
@@ -288,7 +276,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect(inbox[0]!.nextSlot).not.toBeNull();
 		expect(new Date(inbox[1]!.nextSlot!).getTime()).toBeGreaterThan(new Date(inbox[0]!.nextSlot!).getTime());
 		expect(await publishingQueue.countProposals(scope(f))).toBe(2);
-		const accepted = await publishingQueue.accept(scope(f), first.proposalId);
+		const accepted = await publishingQueue.accept(scope(f), first.proposalId,{expectedScheduleRevision:first.scheduleRevision});
 		expect(accepted.scheduledFor).toBe(inbox[0]!.nextSlot!);
 		expect((await publishingQueue.listProposals(scope(f))).map((item) => item.proposalId)).toEqual([second.proposalId]);
 	})));
@@ -349,7 +337,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const viewer = await prisma.user.create({ data: { clerkId: `queue-viewer:${randomUUID()}`, primaryEmail: `viewer-${randomUUID()}@example.test` } });
 		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: viewer.id, role: "viewer" } });
 		await expect(publishingQueue.setPostingSchedule({ actorUserId: viewer.id, workspaceId: f.workspace.id }, f.account.id, EVERY_DAY)).rejects.toBeDefined();
-		await expect(publishingQueue.accept({ actorUserId: viewer.id, workspaceId: f.workspace.id }, randomUUID())).rejects.toBeDefined();
+		await expect(publishingQueue.accept({ actorUserId: viewer.id, workspaceId: f.workspace.id }, randomUUID(),{expectedScheduleRevision:1})).rejects.toBeDefined();
 	})));
 
 	test("one account's posting slots can be read by any member, but only for a connected account of this Workspace", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -371,9 +359,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const proposal = await propose(f);
 		const draft = await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } });
 		// The key the acceptance will use is reserved from the start, and is not a UUID anyone could send.
-		expect(draft.clientIdempotencyKey).toBe(`proposal-accept:${proposal.proposalId}`);
+		expect(draft.clientIdempotencyKey).toBe(`proposal-accept:${proposal.proposalId}:${proposal.scheduleRevision}`);
 
-		const accepted = await publishingQueue.accept(scope(f), proposal.proposalId);
+		const accepted = await publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision});
 		expect(accepted.socialPostId).toBe(proposal.proposalId);
 		const post = await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId }, include: { frozenState: true, proposal: true } });
 		expect(post).toMatchObject({ status: "scheduled", clientIdempotencyKey: draft.clientIdempotencyKey, createdByUserId: f.user.id });
@@ -389,7 +377,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		// It is no longer a proposal: not in the inbox, not rejectable, not acceptable again.
 		expect(await publishingQueue.listProposals(scope(f))).toEqual([]);
 		await expect(publishingQueue.reject(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "social_proposal_not_found" });
-		expect(await publishingQueue.accept(scope(f), proposal.proposalId)).toMatchObject({ replayed: true, socialPostId: proposal.proposalId });
+		expect(await publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})).toMatchObject({ replayed: true, socialPostId: proposal.proposalId });
 	})));
 
 	test("nobody can take a proposal's acceptance key, and a stale caption is never accepted", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -401,16 +389,17 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 			aspectRatio: "9:16" as const, resolution: "1080p" as const, scheduledFor: new Date(Date.now() + 3_600_000), providerSettings: {},
 		};
 		// Scheduling some other post under the proposal's key is refused, and the draft is untouched.
-		await expect(socialPublicationScheduling.schedule({ ...input, clientIdempotencyKey: `proposal-accept:${proposal.proposalId}`, caption: "Someone else's post" }))
+		await expect(socialPublicationScheduling.schedule({ ...input, clientIdempotencyKey: `proposal-accept:${proposal.proposalId}:${proposal.scheduleRevision}`, caption: "Someone else's post" }))
 			.rejects.toMatchObject({ code: "publication_intent_conflict" });
 		// So is accepting it with a caption that is no longer the draft's: a person's edit is never lost.
 		const slotQueue = { accountId: f.account.id, pick: (_occupied: ReadonlySet<number>, after: Date) => new Date(after.getTime() + 86_400_000) };
-		await expect(socialPublicationScheduling.schedule({ ...input, clientIdempotencyKey: `proposal-accept:${proposal.proposalId}`, caption: "Stale caption", proposalId: proposal.proposalId, slotQueue }))
+		await expect(socialPublicationScheduling.schedule({ ...input, clientIdempotencyKey: `proposal-accept:${proposal.proposalId}:${proposal.scheduleRevision}`, caption: "Stale caption", proposalId: proposal.proposalId,expectedProposalRevision:proposal.scheduleRevision, slotQueue }))
 			.rejects.toMatchObject({ code: "social_proposal_changed" });
 		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).toMatchObject({ status: "draft", caption: "Draft caption", scheduledFor: null });
 		expect(await prisma.frozenPublicationState.count({ where: { socialPostId: proposal.proposalId } })).toBe(0);
 		await publishingQueue.updateProposalCaption(scope(f), proposal.proposalId, "Edited in the meantime");
-		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).resolves.toMatchObject({ status: "scheduled" });
+  const refreshed=(await publishingQueue.listProposals(scope(f))).find(row=>row.proposalId===proposal.proposalId)!;
+		await expect(publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:refreshed.scheduleRevision})).resolves.toMatchObject({ status: "scheduled" });
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).caption).toBe("Edited in the meantime");
 	})));
 
@@ -428,7 +417,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 			},
 		});
 		const proposal = await propose(f);
-		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "review_approval_required" });
+		await expect(publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})).rejects.toMatchObject({ code: "review_approval_required" });
 
 		const round = await prisma.reviewRound.create({
 			data: {
@@ -438,28 +427,18 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 			include: { items: true },
 		});
 		// Submitted but not decided: still blocked.
-		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "review_approval_required" });
+		await expect(publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision})).rejects.toMatchObject({ code: "review_approval_required" });
 		await prisma.reviewRoundItem.update({ where: { id: round.items[0]!.id }, data: { currentDecision: "approved" } });
-		const accepted = await publishingQueue.accept(scope(f), proposal.proposalId);
+		const accepted = await publishingQueue.accept(scope(f), proposal.proposalId,{expectedScheduleRevision:proposal.scheduleRevision});
 		expect(accepted).toMatchObject({ socialPostId: proposal.proposalId, status: "scheduled" });
 	})));
 
-	test("accept all works through the inbox in batches and tells the caller where to continue", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		const f = await fixture();
-		const proposals = [];
-		for (let index = 0; index < 5; index += 1) proposals.push(await propose(f));
-		const first = await publishingQueue.acceptAll(scope(f), { limit: 2 });
-		expect(first.accepted).toHaveLength(2);
-		expect(first).toMatchObject({ remaining: 3, nextCursor: proposals[1]!.proposalId, skippedTikTok: 0, failed: [] });
-		const second = await publishingQueue.acceptAll(scope(f), { limit: 2, after: first.nextCursor });
-		expect(second.accepted.map((post) => post.socialPostId)).toEqual([proposals[2]!.proposalId, proposals[3]!.proposalId]);
-		expect(second).toMatchObject({ remaining: 1, nextCursor: proposals[3]!.proposalId });
-		const third = await publishingQueue.acceptAll(scope(f), { limit: 2, after: second.nextCursor });
-		expect(third).toMatchObject({ remaining: 0, nextCursor: null });
-		expect(third.accepted.map((post) => post.socialPostId)).toEqual([proposals[4]!.proposalId]);
-		const slots = [...first.accepted, ...second.accepted, ...third.accepted].map((post) => post.scheduledFor);
-		expect(new Set(slots).size).toBe(5);
-	})));
+ test("accept all handles explicitly observed batches without rereading new approvals",bindServiceTestEnvironment(prismaGlobal.bind(async()=>{
+  const f=await fixture(),proposals=[];for(let n=0;n<5;n++)proposals.push(await propose(f));const observations=proposals.map(row=>({proposalId:row.proposalId,expectedScheduleRevision:row.scheduleRevision}));
+  const first=await publishingQueue.acceptAll(scope(f),{proposals:observations.slice(0,2)}),second=await publishingQueue.acceptAll(scope(f),{proposals:observations.slice(2,4)}),third=await publishingQueue.acceptAll(scope(f),{proposals:observations.slice(4)});
+  expect(first.accepted).toHaveLength(2);expect(second.accepted.map(row=>row.socialPostId)).toEqual(proposals.slice(2,4).map(row=>row.proposalId));expect(third.accepted.map(row=>row.socialPostId)).toEqual([proposals[4]!.proposalId]);expect(new Set([...first.accepted,...second.accepted,...third.accepted].map(row=>row.scheduledFor)).size).toBe(5);
+ })));
+
 
 	test("a proposal that cannot be accepted does not starve the ones behind it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
@@ -468,12 +447,11 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		});
 		const stuck = await propose(f, { accountId: noSlots.id });
 		const fine = [await propose(f), await propose(f)];
-		const first = await publishingQueue.acceptAll(scope(f), { limit: 1 });
+		const first = await publishingQueue.acceptAll(scope(f), { proposals:[{proposalId:stuck.proposalId,expectedScheduleRevision:stuck.scheduleRevision}] });
 		expect(first.failed.map((entry) => entry.proposalId)).toEqual([stuck.proposalId]);
-		const second = await publishingQueue.acceptAll(scope(f), { limit: 1, after: first.nextCursor });
-		const third = await publishingQueue.acceptAll(scope(f), { limit: 1, after: second.nextCursor });
+		const second = await publishingQueue.acceptAll(scope(f), { proposals:[{proposalId:fine[0]!.proposalId,expectedScheduleRevision:fine[0]!.scheduleRevision}] });
+		const third = await publishingQueue.acceptAll(scope(f), { proposals:[{proposalId:fine[1]!.proposalId,expectedScheduleRevision:fine[1]!.scheduleRevision}] });
 		expect([...second.accepted, ...third.accepted].map((post) => post.socialPostId)).toEqual(fine.map((proposal) => proposal.proposalId));
-		expect(third.remaining).toBe(0);
 	})));
 
 	test("the Workspace's active accounts come back in a stable order", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

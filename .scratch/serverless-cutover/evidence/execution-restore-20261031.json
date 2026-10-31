@@ -1,0 +1,66 @@
+{
+  "status": "local_checkpoint_platform_and_domain_adapters_pending",
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "sharedActionsPerformed": false,
+  "protocol": {
+    "snapshot": "quiesced_fenced_v1",
+    "restoreSubjectPrefix": "rs2",
+    "higherLiveEpoch": "typed_refusal",
+    "epochOnlyBegin": "refused",
+    "reopenAdmission": false,
+    "proofArtifact": "exclusive_create_mode_0600"
+  },
+  "verification": {
+    "freshDisposablePostgres": {
+      "tests": 266,
+      "assertions": 1761,
+      "passed": true
+    },
+    "deterministicProofFilesAndWranglerProtocol": {
+      "tests": 9,
+      "assertions": 52,
+      "passed": true
+    },
+    "servicesTypecheckIncludingOperator": true,
+    "apiTypecheck": true,
+    "focusedBiome": {
+      "files": 18,
+      "passed": true
+    },
+    "operatorHelp": true
+  },
+  "coveredFailures": [
+    "missing_proof_changes_no_authority",
+    "post_fence_permission_refuses_attestation",
+    "higher_live_epoch_refused",
+    "changed_snapshot_migration_version_or_quiescence_refused",
+    "begin_insert_failure_rolls_back_epoch",
+    "lost_begin_registration_reuses_exact_proof_obligation",
+    "lost_page_registration_replays_committed_cursor_ids",
+    "epoch_fence_after_cleanup_timer_causes_zero_delete_http",
+    "unrelated_workflow_id_cannot_acknowledge",
+    "completed_instance_requires_exact_page_receipt",
+    "fresh_authority_refusal_prevents_restart",
+    "snapshot_symlinks_and_oversized_json_refused",
+    "proof_file_cannot_overwrite_prior_artifact"
+  ],
+  "remaining": [
+    "complete_maintenance_domain_phase_factory",
+    "complete_restore_domain_transform_and_redispatch_factory",
+    "validated_successful_selection_and_preparation_restore_rebind",
+    "scheduled_hookup_with_fenced_noop",
+    "deployed_quiesced_snapshot_restore_and_old_executor_fencing",
+    "deployed_maintenance_empty_and_continuation_acceptance",
+    "deployed_actual_exact_key_r2_delete_ack"
+  ],
+  "integrationVerification": {
+    "branchTip": "126ee690",
+    "freshDisposablePostgres": {
+      "tests": 276,
+      "assertions": 1810,
+      "passed": true
+    },
+    "servicesTypecheckIncludingOperator": true,
+    "apiTypecheck": true
+  }
+}

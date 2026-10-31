@@ -2,7 +2,7 @@
   "status": "integration checkpoint; ticket17 remains open for deletion and deployed provider failure matrix",
   "runtime": "Cloudflare Maintenance commands with exact ledger and current epoch; provider HTTP outside SQL transactions",
   "protocols": ["po1.y receipt due", "po1.yw receipt lease deadline", "po1.c capture due", "po1.cw capture lease deadline", "po1.t five-capture registration page", "po1.g exact Workspace nightly guidance", "po1.r bounded Post observation restore cursor"],
-  "authority": ["fresh account and live DB lease after OAuth, before provider GET", "expired owner cannot settle", "fixed known provider origins with redirect:error", "response body limited to64KiB", "watchdog registration before any provider request", "same durable rows and budgets; no replacement job table"],
+  "authority": ["fresh account and live DB lease after OAuth, before provider GET", "expired owner cannot settle", "fixed known provider origins with manual redirects and explicit3xx refusal", "response body limited to64KiB", "watchdog registration before any provider request", "same durable rows and budgets; no replacement job table"],
   "gates": {
     "freshPostgres17": {"tests":70,"assertions":393,"log":"/tmp/narriflow-publication-observations-restore-db.log"},
     "pureProviderAndGuidance": {"tests":56,"assertions":2265,"log":"/tmp/narriflow-publication-observations-pure.log"},

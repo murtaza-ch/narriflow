@@ -30,7 +30,10 @@ export const tiktokAcceptanceSchema = z.strictObject({
 });
 export type TikTokAcceptanceInput = z.infer<typeof tiktokAcceptanceSchema>;
 
+export const proposalScheduleRevisionSchema=z.number().int().min(1).max(2147483646);
+export const ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT=25;
 export const acceptSocialPostProposalSchema = z.strictObject({
+  expectedScheduleRevision:proposalScheduleRevisionSchema,
   tiktok: tiktokAcceptanceSchema.optional().describe("Required for a TikTok proposal"),
 });
 export type AcceptSocialPostProposalInput = z.infer<typeof acceptSocialPostProposalSchema>;
@@ -41,6 +44,7 @@ export const updateSocialPostProposalSchema = z.strictObject({
 
 export const socialPostProposalSchema = z.strictObject({
   proposalId: id,
+  scheduleRevision:proposalScheduleRevisionSchema,
   projectId: id,
   clipId: id,
   socialAccountId: id,

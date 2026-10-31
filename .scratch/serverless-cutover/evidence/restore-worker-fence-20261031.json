@@ -1,12 +1,12 @@
 {
   "status": "passed_targeted_tests_deployed_health_only",
   "date": "2026-10-31",
-  "tests": 37,
-  "assertions": 146,
+  "tests": 38,
+  "assertions": 152,
   "contract": {
     "health": "GET /api/health is static, no-store, and exposes the deployed version and open/closed/fenced admission state without configuration or SQL work.",
     "closed": "Previously accepted signed continuations and provider callbacks retain their ordinary authentication.",
-    "fenced": "All HTTP except GET /api/health returns 503 before runtime/SQL construction; native Modal and local-fetch deliveries stay pending. Metadata Workflows remain available for restore."
+    "fenced": "All HTTP except GET /api/health returns503 before runtime/SQL construction. Only rs2 restore metadata pages may register or run; native and TS provider consumers remain stopped. Product dispatch stays pending until the verified authority rebind is complete and the Worker is explicitly changed to closed admission."
   },
   "deployedObservation": {
     "workerVersion": "5317e3c6-2bd8-4bea-bf5b-09dd610b2f36",

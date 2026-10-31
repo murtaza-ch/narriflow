@@ -476,7 +476,7 @@ describe("narriflow_propose_social_post", () => {
   const ID = "00000000-0000-4000-8000-000000000004";
   const actor: WorkspaceActorContext = { actorUserId: "00000000-0000-4000-8000-000000000001", workspaceId: WORKSPACE, workspaceName: "Team",
     workspaceOwnerUserId: "another-user", role: "editor", status: "active", pricingTier: "business", isPersonalWorkspace: false };
-  const proposal = { proposalId: ID, projectId: ID, clipId: ID, socialAccountId: ID, platform: "x", caption: "Draft", source: "integration",
+  const proposal = { proposalId: ID,scheduleRevision:1, projectId: ID, clipId: ID, socialAccountId: ID, platform: "x", caption: "Draft", source: "integration",
     exportId: ID, exportVariantId: ID, aspectRatio: "9:16", createdAt: "2026-10-24T12:00:00.000Z" };
   const oauth: NarriflowMcpPrincipal = { kind: "oauth", userId: actor.actorUserId, clientId: "client", scopes: ["publishing:write"] };
 

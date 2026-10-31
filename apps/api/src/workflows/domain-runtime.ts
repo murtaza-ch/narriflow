@@ -12,6 +12,10 @@ import { getClipPreparationService } from "@narriflow/services/clip-preparation-
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
 import { getMediaCleanupControl, getMediaCleanupDrain } from "@narriflow/services/media-cleanup-runtime";
 import { getPublicationExecution } from "@narriflow/services/publication-execution-runtime";
+import { getPublicationObservations } from "@narriflow/services/publication-observations-runtime";
+import { isPublicationObservationReference } from "@narriflow/services/publication-observations";
+import { expireExportBundle, exportBundleExpiryInputHash } from "@narriflow/services/export-bundle-expiry";
+import { readExecutionAdmission } from "@narriflow/services/execution-admission";
 import { createPublicationProducers, isPublicationProducerReference } from "@narriflow/services/publication-producers";
 import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
@@ -24,7 +28,7 @@ import { continueScribeCapacityRelease } from "@narriflow/services/transcription
 import { executionDeadlineSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { ApiWorkerBindings } from "../worker-bindings";
-import { createWorkerExecutor, getWorkerRenderGroupService } from "../domains/execution/runtime";
+import { createWorkerExecutor, getWorkerRenderGroupService, getWorkerExportBundleService } from "../domains/execution/runtime";
 import { createWorkerExecutionScheduler } from "./scheduler";
 import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol";
 import { createNativeOperationDriver } from "./native-operation-driver";
@@ -39,6 +43,7 @@ async function nativeDomain(reference: ExecutionDispatchReference, bindings: Api
   if (reference.subject.kind === "generated_media") return getGeneratedMediaExecution();
   if (reference.subject.kind === "clip_preparation") return getClipPreparationService();
   if (reference.subject.kind === "render_group") return getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
+  if (reference.subject.kind === "workflow_run") return getWorkerExportBundleService(bindings.MEDIA_BUCKET);
   throw new NonRetryableError("unsupported_native_subject");
 }
 
@@ -53,6 +58,15 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (record.observedDeadlineAt.getTime() > Date.now()) return { kind: "sleep", dueAt: record.observedDeadlineAt };
     let attemptToken: string | undefined;
     let unownedExpiry: ExecutorExpiryResult | undefined;
+    if (record.reference.subject.kind === "workflow_run" && record.deadlineKind === "operation") {
+      const expiry = await getWorkerExportBundleService(bindings.MEDIA_BUCKET).expirePreparationDeadline(record.reference,{ kind: "operation", observedDeadlineAt: record.observedDeadlineAt });
+      if (expiry.kind === "native") attemptToken = expiry.attemptToken;
+      else {
+        if (expiry.kind === "sleep") return expiry;
+        unownedExpiry = expiry;
+        if ("dispatchIds" in expiry) await deliverExecutionDispatches(expiry.dispatchIds ?? []);
+      }
+    }
     if (record.reference.subject.kind === "render_group" && record.deadlineKind === "operation") {
       const service = await getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
       const expiry = await service.domain.expirePreparationDeadline(record.reference, { kind: "operation", observedDeadlineAt: record.observedDeadlineAt });
@@ -136,6 +150,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (record.deadlineKind && record.observedDeadlineAt && record.observedDeadlineAt.getTime() > Date.now()) return { type: "sleep", until: record.observedDeadlineAt.toISOString() };
     const run = await database.workflowRun.findUnique({ where: { id: reference.subject.id } });
     if (!run || run.deploymentEpoch !== reference.deploymentEpoch || run.generation !== reference.generation) return { type: "complete", disposition: "superseded" };
+    if (run.stage === "export_bundle") return native({ reference, wake: { type: "start" } });
     // Completed selection replays also repair the committed render/progress wakes.
     if (run.stage === "moment_detection") {
       const result = await getClipSelectionControl().runParent(reference);
@@ -206,15 +221,39 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
   });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (isPublicationObservationReference(reference)) {
+      const result = await getPublicationObservations().dispatch(reference);
+      if (result.kind === "sleep") {
+        if (!result.dueAt) throw Error("publication_observation_due_missing");
+        return { type: "sleep", until: result.dueAt.toISOString() };
+      }
+      return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+    }
     if (isPublicationProducerReference(reference)) {
       const database=getPrismaClient();
       if (!database) throw Error("Publication producer requires a database scope");
       const result=await createPublicationProducers({database,register:deliverExecutionDispatches}).dispatch(reference);
+      if (result.kind === "sleep") {
+        if (!result.dueAt) throw Error("publication_producer_due_missing");
+        return {type:"sleep",until:result.dueAt.toISOString()};
+      }
       return {type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
     }
     if (!reference.subject.id.startsWith("mc1.")) throw new NonRetryableError("unsupported_maintenance_subject");
     const result = await getMediaCleanupDrain().run(reference);
     return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
+  const bundleExpiry: WorkflowCommandHandler = async ({ reference }) => {
+    const database = getPrismaClient();
+    if (!database) throw Error("Bundle expiry requires a database scope");
+    const result = await database.$transaction(async tx => {
+      const { epoch } = await readExecutionAdmission(tx), record = await readExecutionDispatch(tx,reference.dispatchId);
+      if (epoch !== reference.deploymentEpoch || !record || JSON.stringify(record.reference) !== JSON.stringify(reference) || reference.generation !== 1 || record.deadlineKind !== "operation" || !record.observedDeadlineAt) return { kind: "superseded" as const };
+      const bundle = await tx.exportBundle.findUnique({ where: { id: reference.subject.id } });
+      if (!bundle || await exportBundleExpiryInputHash(bundle) !== reference.inputHash) return { kind: "superseded" as const };
+      return expireExportBundle(tx,bundle.id,record.observedDeadlineAt);
+    });
+    return result.kind === "sleep" ? { type: "sleep", until: result.dueAt.toISOString() } : { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
   };
   const progress: WorkflowCommandHandler = async ({ reference }) => {
     const outcome = await getExecutionDispatch(createWorkerExecutionScheduler(bindings)).deliver(reference.dispatchId);
@@ -223,7 +262,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (outcome.status === "pending") return { type: "sleep" as const, until: outcome.retryAt.toISOString() };
     throw new Error(`Progress continuation ${outcome.status}`);
   };
-  return { maintenance: { maintenance }, project_progress: { maintenance: progress, workflow_event: progress },
+  return { maintenance: { maintenance, export_bundle: bundleExpiry }, project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
       workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, media_cleanup: cleanup, social_publication: publication, completion_callback: notification, webhook_subscription: notification,

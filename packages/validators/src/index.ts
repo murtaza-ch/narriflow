@@ -76,3 +76,5 @@ export * from "./zoom";
 export * from "./native-validation";
 
 export * from "./outbound-probe";
+
+export * from "./autopilot-finishing-authority";

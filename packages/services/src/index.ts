@@ -730,6 +730,8 @@ export * from "./media-cleanup-storage";
 export * from "./media-cleanup-drain";
 export * from "./media-cleanup-holds";
 export * from "./execution-restore-pages";
+
+export * from "./execution-snapshot";
 export * from "./export-bundle-execution";
 export * from "./export-bundle-runtime";
 export * from "./export-bundle-input";
@@ -737,5 +739,5 @@ export * from "./export-bundle-input";
 export * from "./export-bundle-expiry";
 
 export * from "./dubbing-policy";
-
 export * from "./export-bundle-recovery";
+export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";

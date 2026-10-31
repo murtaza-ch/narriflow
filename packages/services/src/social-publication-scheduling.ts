@@ -83,6 +83,7 @@ export type SchedulePublicationInput = {
 	slotQueue?: PublicationSlotQueue;
 	/** The proposal this admission accepts. Its draft Social Post is converted in place, in the transaction that writes the frozen state. */
 	proposalId?: string;
+ expectedProposalRevision?:number;
 	beforeAccept?: () => Promise<void>;
 };
 
@@ -155,6 +156,7 @@ export interface PublicationSchedulingStore {
 		immutableRequestHash: string;
 		slotQueue?: PublicationSlotQueue;
 		proposalId?: string;
+ expectedProposalRevision?:number;
 		create(): Promise<PublicationIntent>;
 	}): Promise<PublicationIntent>;
 	readByKey(
@@ -454,6 +456,7 @@ export function createSocialPublicationScheduling(dependencies: {
 				immutableRequestHash,
 				slotQueue: input.slotQueue,
 				proposalId: input.proposalId,
+    expectedProposalRevision:input.expectedProposalRevision,
 				create: async () => {
 					if (!input.immediate && !input.slotQueue && input.scheduledFor <= dependencies.now()) {
 						throw new PublicationIntentStateError(

@@ -1,3 +1,5 @@
+import {publishingQueue} from "./publishing-queue.service";
+import {acceptProposalUnderGrant} from "./standing-grant-runtime";
 import {appendYouTubeReceiptEnrichment,appendPerformanceCapture,trackPublishedVideo,appendPerformanceGuidance,createPublicationObservations} from "./publication-observations";
 import {appendPublicationExportWake,appendPublicationGrantWake,appendPublicationGrantExpiry,createPublicationProducers,restorePublication} from "./publication-producers";
 import {withExecutionDispatches} from "./execution-dispatch-runtime";
@@ -166,6 +168,7 @@ suite("Revision-bound publication execution", () => {
 				scheduledFor: due,
 				frozenState: {
 					create: {
+      confirmedScheduleRevision:1,
 						clipExportId: exp.id,
 						clipExportVariantId: variant.id,
 						socialAccountId: account.id,
@@ -1046,6 +1049,45 @@ suite("Revision-bound publication execution", () => {
   const id=await db.$transaction(tx=>appendPerformanceGuidance(tx,f.post.workspaceId!,new Date(Date.now()-1000)));let lose=true;const deliveries:string[][]=[];
   const observer=createPublicationObservations({database:db,accounts:{getPublishAccount:async()=>{throw Error("Guidance has no provider IO");}},fetch:(async()=>{throw Error("Guidance has no provider IO");}) as typeof fetch,register:async ids=>{deliveries.push([...ids]);if(lose)throw Error("lost_guidance_ack");await acknowledge(ids);}});
   const ref=(await readExecutionDispatch(db,id))!.reference;await expect(observer.dispatch(ref)).rejects.toThrow("lost_guidance_ack");const original=await db.performanceGuidance.findUniqueOrThrow({where:{workspaceId:f.post.workspaceId!}});lose=false;await observer.dispatch(ref);expect(deliveries[1]).toEqual(deliveries[0]!);expect(deliveries[0]).toHaveLength(1);expect((await db.performanceGuidance.findUniqueOrThrow({where:{workspaceId:f.post.workspaceId!}})).computedAt).toEqual(original.computedAt);
+ });
+
+ const everyDay={slots:(["mon","tue","wed","thu","fri","sat","sun"] as const).map(weekday=>({weekday,time:"00:00"}))};
+ async function queueScope<T>(fn:()=>Promise<T>){const context=createDatabaseTestContext();context.client=db;return withServiceEnvironment({},context.bind(()=>withExecutionDispatches(fn,{database:db,deliver:acknowledge})));}
+ async function renewal(grant:{id:string}){return db.$transaction(async tx=>{await tx.standingGrant.update({where:{id:grant.id},data:{revision:{increment:1}}});await tx.standingGrantEvent.create({data:{grantId:grant.id,kind:"renewed",revision:2}});return (await appendPublicationGrantWake(tx,grant.id))!;});}
+ test("renewal retires a startup with no provider permission; only a fresh observed approval starts a new linked attempt",async()=>{
+  const f=await active(),grant=await publicationGrant(f);await db.socialAccount.update({where:{id:f.post.socialAccountId!},data:{postingSchedule:everyDay}});
+  await db.socialPostProposal.create({data:{socialPostId:f.post.id,source:"person",clipExportVariantId:f.variant.id}});
+  const currentId=await db.$transaction(tx=>appendPublicationDispatch(tx,f.post.id));const current={...f,reference:(await readExecutionDispatch(db,currentId))!.reference},p=await claimed(current);await f.call({action:"process-start",fence:p.fence});
+  const before=await db.socialPublicationAttempt.findFirstOrThrow({where:{socialPostId:f.post.id}}),originalFrozen=f.post.frozenState!.id;
+  await expect(db.$transaction(async tx=>{await tx.socialPost.update({where:{id:f.post.id},data:{status:"draft"}});await tx.frozenPublicationState.update({where:{id:originalFrozen},data:{socialPostId:null,retiredForPostId:f.post.id}});})).rejects.toBeDefined();
+  const change=await renewal(grant);await createPublicationProducers({database:db,register:acknowledge}).dispatch((await readExecutionDispatch(db,change))!.reference);
+  const draft=await db.socialPost.findUniqueOrThrow({where:{id:f.post.id},include:{frozenState:true,retiredPublicationStates:true}});expect(draft.status).toBe("draft");expect(draft.frozenState).toBeNull();expect(draft.retiredPublicationStates.map(row=>row.id)).toContain(originalFrozen);expect(draft.retiredPublicationStates[0]!.confirmedScheduleRevision).toBe(1);
+  expect(await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:before.id}})).toMatchObject({phase:"failed",currentClaimId:null,nativeStartCount:1,providerCallCount:0,idempotencyKey:before.idempotencyKey,processingDeadline:before.processingDeadline,reconciliationDeadline:before.reconciliationDeadline});
+  expect((await db.executionAttempt.findUniqueOrThrow({where:{attemptToken:p.fence.attemptToken}})).status).toBe("cancelled");
+  const scope={actorUserId:f.post.createdByUserId!,workspaceId:f.post.workspaceId!};
+  await expect(queueScope(()=>publishingQueue.accept(scope,f.post.id,{expectedScheduleRevision:1}))).rejects.toMatchObject({code:"social_proposal_changed"});expect(await db.socialPublicationAttempt.count({where:{socialPostId:f.post.id}})).toBe(1);
+  await queueScope(()=>publishingQueue.accept(scope,f.post.id,{expectedScheduleRevision:draft.scheduleRevision}));
+  const accepted=await db.socialPost.findUniqueOrThrow({where:{id:f.post.id},include:{frozenState:true}});expect(accepted.frozenState!.id).not.toBe(originalFrozen);expect(accepted.frozenState!.confirmedScheduleRevision).toBe(draft.scheduleRevision);
+  const due=await db.$transaction(async tx=>{await tx.socialPost.update({where:{id:f.post.id},data:{scheduledFor:new Date(Date.now()-1000)}});return appendPublicationDispatch(tx,f.post.id);});expect((await f.domain.prepareExecution((await readExecutionDispatch(db,due))!.reference)).kind).toBe("waiting");
+  const next=await db.socialPublicationAttempt.findFirstOrThrow({where:{socialPostId:f.post.id},orderBy:{attemptNumber:"desc"}});expect(next.attemptNumber).toBe(2);expect(next.priorAttemptId).toBe(before.id);expect(next.nativeStartCount).toBe(0);expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:before.id}})).nativeStartCount).toBe(1);
+  await expect(Promise.resolve(db.frozenPublicationState.update({where:{id:originalFrozen},data:{socialPostId:f.post.id,retiredForPostId:null}}))).rejects.toBeDefined();
+  await expect(Promise.resolve(db.frozenPublicationState.update({where:{id:originalFrozen},data:{caption:"tampered history"}}))).rejects.toBeDefined();
+  await db.socialPost.delete({where:{id:f.post.id}});expect(await db.frozenPublicationState.count({where:{id:{in:[originalFrozen,accepted.frozenState!.id]}}})).toBe(0);
+
+ });
+ test("a recorded initialize permission prevents grant renewal from retiring its provider lineage",async()=>{
+  const f=await active(),grant=await publicationGrant(f),id=await db.$transaction(tx=>appendPublicationDispatch(tx,f.post.id));const current={...f,reference:(await readExecutionDispatch(db,id))!.reference},p=await claimed(current);await f.call({action:"process-start",fence:p.fence});await p.command({kind:"provider_call",operation:"initialize"});
+  const before=await db.socialPublicationAttempt.findFirstOrThrow({where:{socialPostId:f.post.id}}),change=await renewal(grant);await createPublicationProducers({database:db,register:acknowledge}).dispatch((await readExecutionDispatch(db,change))!.reference);
+  expect((await db.socialPost.findUniqueOrThrow({where:{id:f.post.id},include:{frozenState:true}})).frozenState!.id).toBe(f.post.frozenState!.id);
+  const wake=await db.executionDispatch.findFirstOrThrow({where:{subjectId:f.post.id,wakeKind:{startsWith:"pub_"}},orderBy:{createdAt:"desc"}});await f.domain.prepareExecution((await readExecutionDispatch(db,wake.id))!.reference);
+  const after=await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:before.id}});expect(after.phase).toBe("needs_attention");expect(after.providerCallCount).toBe(1);expect(after.nativeStartCount).toBe(1);expect(after.idempotencyKey).toBe(before.idempotencyKey);expect(after.processingDeadline).toEqual(before.processingDeadline);expect(await db.frozenPublicationState.count({where:{retiredForPostId:f.post.id}})).toBe(0);
+  await expect(db.$transaction(async tx=>{await tx.socialPost.update({where:{id:f.post.id},data:{status:"draft"}});await tx.frozenPublicationState.update({where:{id:f.post.frozenState!.id},data:{socialPostId:null,retiredForPostId:f.post.id}});})).rejects.toBeDefined();
+ });
+ test("propose replay returns its original observed revision and a stale bulk observation cannot approve an edited draft",async()=>{
+  const f=await fixture();await db.socialAccount.update({where:{id:f.post.socialAccountId!},data:{postingSchedule:everyDay}});const scope={workspaceId:f.post.workspaceId!,actorUserId:f.post.createdByUserId!},key=crypto.randomUUID(),input={clipId:f.post.clipId!,exportId:f.post.frozenState!.clipExportId,socialAccountId:f.post.socialAccountId!,caption:"Original proposal"};
+  const first=await queueScope(()=>publishingQueue.propose(scope,input,{source:"finishing",mutation:{clientIdempotencyKey:key}}));await queueScope(()=>publishingQueue.updateProposalCaption(scope,first.proposal.proposalId,"Reviewed edit"));const replay=await queueScope(()=>publishingQueue.propose(scope,input,{source:"finishing",mutation:{clientIdempotencyKey:key}}));expect(replay.proposal.scheduleRevision).toBe(first.proposal.scheduleRevision);
+  const bulk=await queueScope(()=>publishingQueue.acceptAll(scope,{proposals:[{proposalId:first.proposal.proposalId,expectedScheduleRevision:first.proposal.scheduleRevision}]}));expect(bulk.accepted).toHaveLength(0);expect(bulk.failed[0]!.code).toBe("social_proposal_changed");expect((await db.socialPost.findUniqueOrThrow({where:{id:first.proposal.proposalId}})).status).toBe("draft");
+  expect(await queueScope(()=>acceptProposalUnderGrant({workspaceId:scope.workspaceId,projectId:f.post.projectId,finishingId:crypto.randomUUID(),proposalId:first.proposal.proposalId,expectedScheduleRevision:first.proposal.scheduleRevision,expectedGrant:null}))).toBe("social_proposal_changed");
  });
 
 	test("registration is eligible now while the Workflow sleeps until the frozen due time", async () => {
