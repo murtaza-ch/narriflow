@@ -439,15 +439,16 @@ export class WorkflowRunLifecycle {
       try {
         // Workspace Events queued by the operation are written last, after every
         // lock the operation takes, and are dropped with a retried attempt.
-        const committed = await this.prisma.$transaction(async (tx) => {
+        let progressDispatchIds: string[] = [];
+        const result = await this.prisma.$transaction(async (tx) => {
           const result = await operation(tx);
           await flushWorkspaceEvents(tx);
-          return { result, progressDispatchIds: await flushProjectProgressDrains(tx) };
+          progressDispatchIds = await flushProjectProgressDrains(tx);
+          return result;
         });
-        const result = committed.result;
-        if (progressDeliveryPort()) await deliverExecutionDispatches(committed.progressDispatchIds);
+        if (progressDeliveryPort()) await deliverExecutionDispatches(progressDispatchIds);
         if (result !== null && typeof result === "object" && "dispatchIds" in result && Array.isArray(result.dispatchIds)) {
-          return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...committed.progressDispatchIds])] };
+          return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...progressDispatchIds])] };
         }
         return result;
       } catch (error) {
