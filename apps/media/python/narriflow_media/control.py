@@ -169,8 +169,9 @@ class ExecutionControlClient:
                     disposition = _disposition(json.loads(response.body))
                     server_time = next(value for name, value in response.headers.items() if name.lower() == 'x-execution-server-time')
                     # The current TLS response header is fresh even if the body
-                    # is an old inbox receipt. Add the whole RTT conservatively.
-                    server_upper = _instant(server_time) + received - began
+                    # is an old inbox receipt. Add the whole RTT and the API's
+                    # one-second timestamp quantization conservatively.
+                    server_upper = _instant(server_time) + 1 + received - began
                     return CommandResult(disposition, server_upper, received)
                 except (ValueError, UnicodeError, StopIteration):
                     raise ExecutionControlError('execution_response_invalid') from None

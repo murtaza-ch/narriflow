@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-31",
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "bucket": "narriflow-dev",
+  "unsupportedPlan": {
+    "operation": "UploadPart",
+    "httpStatus": 501,
+    "code": "NotImplemented",
+    "unsupportedHeader": "x-amz-checksum-sha256",
+    "sdkChecksumAlgorithmQueryPresent": false
+  },
+  "currentPlan": {
+    "checksumHeader": "Content-MD5",
+    "signedHeaders": [
+      "content-length",
+      "content-md5",
+      "host"
+    ],
+    "measuredSha256": "retained separately in executor evidence; not independently verified by R2 HEAD"
+  },
+  "directProviderGate": {
+    "runtime": "real-r2",
+    "plan": "signed-content-md5-parts-with-separate-measured-sha256",
+    "checks": [
+      "created MPU without unsupported checksum options",
+      "R2 rejected altered bytes with BadDigest",
+      "uploaded 16MiB plus1MiB using signed Content-MD5 and length",
+      "ListParts ETags match exact measured part MD5 and sizes",
+      "complete and target HEAD preserve length and immutable metadata",
+      "UploadPart grant cannot overwrite after API-owned completion"
+    ],
+    "status": "passed",
+    "cleanup": "deleted_owned_gate_object"
+  },
+  "repositoryModuleGate": {
+    "status": "passed",
+    "checks": [
+      "created fixed Content-MD5 multipart upload",
+      "uploaded16MiB plus1MiB parts through scoped checksum/length grants",
+      "ListParts ETag verifies each measured MD5 part checksum",
+      "completed multipart and HEAD verified immutable binding metadata",
+      "old UploadPart grant cannot overwrite completed object"
+    ],
+    "cleanup": "deleted_only_gate_object",
+    "startedAt": "2026-10-31T02:28:23.389Z",
+    "finishedAt": "2026-10-31T02:28:37.031Z"
+  },
+  "byteLength": 17825792,
+  "partLengths": [
+    16777216,
+    1048576
+  ],
+  "scope": "New gate-owned objects/uploads only. Existing resources and configuration unchanged.",
+  "references": [
+    "https://developers.cloudflare.com/r2/api/s3/api/",
+    "https://developers.cloudflare.com/r2/objects/upload-objects/"
+  ],
+  "openGates": [
+    "fenced API grant routes and durable replay integration",
+    "real 10 GiB transfer and greater-than-5-GiB conditional pin",
+    "Modal execution"
+  ]
+}

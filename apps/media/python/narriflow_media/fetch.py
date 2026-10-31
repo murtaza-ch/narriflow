@@ -85,6 +85,7 @@ class SourceRuntime(Protocol):
     async def download_audio(self, selected: ResolvedSource, session: BoundProxySession | None, work: Path) -> DownloadedSource: ...
     async def download_video(self, selected: ResolvedSource, session: BoundProxySession | None, work: Path) -> DownloadedSource: ...
     async def probe(self, path: Path) -> Mapping[str, Any]: ...
+    async def end_session(self, work: Path) -> None: ...
 
 
 class SourceSink(Protocol):
@@ -195,6 +196,7 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                         task.cancel()
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
+                await runtime.end_session(directory)
                 if retry:
                     # Resolved URLs from this exit are never reused on a new
                     # session. A committed audio file is kept and never uploaded

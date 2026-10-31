@@ -129,6 +129,19 @@ class SignedControlTests(unittest.TestCase):
             client.command({'action': 'process-start'})
         self.assertEqual(str(invalid.exception), 'execution_response_invalid')
 
+    def test_second_quantized_server_time_cannot_hide_an_expiring_lease(self):
+        def transport(origin, target, body, headers, timeout):
+            command = json.loads(body)
+            response = {'disposition': 'acquired',
+                        'fence': {'reference': command['reference'], 'attemptToken': command['attemptToken'], 'owner': command['owner']},
+                        'serverTime': '2033-05-18T03:33:20.000Z', 'leaseExpiresAt': '2033-05-18T03:33:25.500Z',
+                        'operationDeadlineAt': '2033-05-18T04:18:20.000Z'}
+            return ControlResponse(200, {'X-Execution-Server-Time': '2033-05-18T03:33:20.000Z'}, json.dumps(response).encode())
+        client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32, transport=transport)
+        with self.assertRaises(ExecutionControlError) as refused:
+            ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture')
+        self.assertEqual(refused.exception.code, 'execution_authority_lost')
+
 
 if __name__ == '__main__':
     unittest.main()

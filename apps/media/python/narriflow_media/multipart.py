@@ -50,6 +50,7 @@ class CompletedPart:
     part_number: int
     etag: str
     checksum_sha256: str
+    checksum_md5: str
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ class TransferResponse:
 
 
 class MultipartControl(Protocol):
-    async def authorize_part(self, part_number: int, byte_length: int, checksum_sha256: str) -> SignedGrant: ...
+    async def authorize_part(self, part_number: int, byte_length: int, checksum_sha256: str, checksum_md5: str) -> SignedGrant: ...
     async def complete(self, parts: tuple[CompletedPart, ...], sha256: str) -> CompletedObject: ...
     async def abort(self, reason: str) -> None: ...
 
@@ -221,16 +222,21 @@ async def _transfer(destination: MultipartDestination, *, read: Callable[[int, i
                     if len(body) != end - start:
                         raise MultipartTransferError('multipart_short_read')
                 checksum = base64.b64encode(hashlib.sha256(body).digest()).decode('ascii')
-                grant = await control.authorize_part(number, len(body), checksum)
+                md5 = hashlib.md5(body, usedforsecurity=False).digest()
+                checksum_md5 = base64.b64encode(md5).decode("ascii")
+                grant = await control.authorize_part(number, len(body), checksum, checksum_md5)
                 live()
                 response = await transport.request(grant, 'PUT', body,
-                    {'Content-Length': str(len(body)), 'x-amz-checksum-sha256': checksum}, 65536,
+                    {'Content-Length': str(len(body)), 'Content-MD5': checksum_md5}, 65536,
                     lambda: failed.is_set() or cancel_event.is_set())
                 if response.status in {403, 408, 429, 500, 502, 503, 504}:
                     raise MultipartTransferError('multipart_transport_failed')
                 if response.status != 200:
                     raise MultipartTransferError('multipart_part_refused')
-                return CompletedPart(number, _etag(_header(response.headers, 'etag')), checksum), body
+                etag = _etag(_header(response.headers, 'etag'))
+                if etag not in {md5.hex(), f'"{md5.hex()}"'}:
+                    raise MultipartTransferError('multipart_part_checksum_mismatch')
+                return CompletedPart(number, etag, checksum, checksum_md5), body
             except MultipartTransferError as error:
                 if error.code != 'multipart_transport_failed' or attempt == 2:
                     raise

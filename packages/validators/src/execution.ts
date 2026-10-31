@@ -217,3 +217,28 @@ export const sourceVideoBindingSchema = z.strictObject({
   toolchainFingerprint: sha256,
 });
 export type SourceVideoBinding = z.infer<typeof sourceVideoBindingSchema>;
+
+/** Modal receives references only. It resolves neither project data nor SQL. */
+export const executionInvocationSchema = z.strictObject({
+  reference: executionDispatchReferenceSchema.refine(value => value.kind === "modal_execution", "Modal requires its admitted dispatch"),
+  attemptToken: z.string().uuid(),
+});
+export const executionMediaFunctionSchema = z.enum([
+  "fetch_source", "pin_source", "prepare_clip", "render_group", "probe_extract", "thumbnail",
+  "export_bundle", "dub_mix", "outbound_delivery", "validate_font", "validate_asset",
+]);
+const bridgeInvocation = executionInvocationSchema.shape;
+export const modalBridgeCommandSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("spawn"), ...bridgeInvocation, function: executionMediaFunctionSchema }),
+  z.strictObject({ action: z.literal("status"), ...bridgeInvocation, spawnDeliveryId: z.string().uuid() }),
+  z.strictObject({ action: z.literal("cancel"), ...bridgeInvocation, spawnDeliveryId: z.string().uuid() }),
+]);
+const modalCallId = z.string().regex(/^fc-[A-Za-z0-9_-]{1,160}$/);
+export const modalBridgeDispositionSchema = z.discriminatedUnion("disposition", [
+  z.strictObject({ disposition: z.literal("spawned"), callId: modalCallId }),
+  z.strictObject({ disposition: z.literal("observed"), callId: modalCallId, state: z.enum(["pending", "succeeded", "failed", "cancelled", "unknown"]) }),
+  z.strictObject({ disposition: z.literal("cancel_requested"), callId: modalCallId }),
+]);
+export type ExecutionInvocation = z.infer<typeof executionInvocationSchema>;
+export type ModalBridgeCommand = z.infer<typeof modalBridgeCommandSchema>;
+export type ModalBridgeDisposition = z.infer<typeof modalBridgeDispositionSchema>;

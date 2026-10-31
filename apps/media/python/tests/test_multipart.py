@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tracemalloc
 from pathlib import Path
@@ -15,8 +16,8 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
     async def test_even_a_small_file_uses_only_an_upload_part_grant(self):
         calls, uploads = [], []
         class Control:
-            async def authorize_part(self, part_number, byte_length, checksum_sha256):
-                calls.append(('part', part_number, byte_length, checksum_sha256))
+            async def authorize_part(self, part_number, byte_length, checksum_sha256, checksum_md5):
+                calls.append(('part', part_number, byte_length, checksum_sha256, checksum_md5))
                 return SignedGrant('https://storage.invalid/assigned?partNumber=1')
             async def complete(self, parts, sha256):
                 calls.append(('complete', [part.part_number for part in parts], sha256))
@@ -24,9 +25,9 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
             async def abort(self, reason):
                 calls.append(('abort', reason))
         class Transport:
-            async def request(self, grant, method, body, headers, max_response_bytes, cancelled):
+            async def request(self, grant, method, body, headers, max_response_bytes, is_cancelled):
                 uploads.append((method, body, headers))
-                return TransferResponse(200, {'ETag': 'part-etag'}, b'')
+                return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'audio.m4a'
             path.write_bytes(b'abc')
@@ -36,7 +37,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call[0] for call in calls], ['part', 'complete'])
         self.assertEqual(uploads[0][0:2], ('PUT', b'abc'))
         self.assertEqual(uploads[0][2]['Content-Length'], '3')
-        self.assertEqual(uploads[0][2]['x-amz-checksum-sha256'], 'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=')
+        self.assertEqual(uploads[0][2]['Content-MD5'], 'kAFQmDzST7DWlj99KOF/cg==')
 
     async def test_pin_uses_real_conditional_ranges_and_only_multipart_puts(self):
         received = []
@@ -52,9 +53,9 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                 self.end_headers()
                 self.wfile.write(b'abc')
             def do_PUT(self):
-                received.append(('PUT', self.rfile.read(int(self.headers['Content-Length'])), self.headers.get('x-amz-checksum-sha256')))
+                received.append(('PUT', self.rfile.read(int(self.headers['Content-Length'])), self.headers.get('Content-MD5')))
                 self.send_response(200)
-                self.send_header('ETag', 'part-etag')
+                self.send_header('ETag', '900150983cd24fb0d6963f7d28e17f72')
                 self.send_header('Content-Length', '0')
                 self.end_headers()
         server = ThreadingHTTPServer(('127.0.0.1', 0), Storage)
@@ -99,7 +100,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
             async def abort(self, reason):
                 events.append(('abort', reason))
         class Transport:
-            async def request(self, grant, method, body, headers, max_response_bytes, cancelled):
+            async def request(self, grant, method, body, headers, max_response_bytes, is_cancelled):
                 if headers['Range'] == f'bytes=0-{part_size - 1}':
                     await asyncio.Event().wait()
                 return TransferResponse(412, {}, b'')
@@ -122,8 +123,8 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
             async def abort(self, reason):
                 calls.append('abort')
         class Transport:
-            async def request(self, *args):
-                return TransferResponse(200, {'ETag': 'part-etag'}, b'')
+            async def request(self, grant, method, body, headers, max_response_bytes, is_cancelled):
+                return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'audio.m4a'
             path.write_bytes(b'abc')
@@ -139,7 +140,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                 if etag != '"original"':
                     raise AssertionError('pin lost its source condition')
                 return SignedGrant('https://storage.invalid/' + str(start))
-            async def authorize_part(self, number, byte_length, checksum):
+            async def authorize_part(self, number, byte_length, checksum, checksum_md5):
                 return SignedGrant('https://storage.invalid/part/' + str(number))
             async def complete(self, parts, sha256):
                 completed.extend(parts)
@@ -147,7 +148,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
             async def abort(self, reason):
                 raise AssertionError('bounded pin aborted')
         class Transport:
-            async def request(self, grant, method, body, headers, max_response_bytes, cancelled):
+            async def request(self, grant, method, body, headers, max_response_bytes, is_cancelled):
                 nonlocal active, maximum
                 if method == 'GET':
                     active += 1
@@ -157,7 +158,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                     return TransferResponse(206, {'ETag': '"original"', 'Content-Range': f'bytes {start}-{start + part_size - 1}/{size}',
                                                   'Content-Length': str(part_size)}, b'x' * part_size)
                 active -= 1
-                return TransferResponse(200, {'ETag': 'part-etag'}, b'')
+                return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
         tracemalloc.start()
         try:
             result = await pin_source(MultipartDestination('assigned', 'upload', size), source_etag='"original"',
@@ -183,9 +184,9 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
             async def abort(self, reason):
                 calls.append(('abort',))
         class Transport:
-            async def request(self, *args):
+            async def request(self, grant, method, body, headers, max_response_bytes, is_cancelled):
                 cancelled.set()
-                return TransferResponse(200, {'ETag': 'part-etag'}, b'')
+                return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'source.mp4'
             with path.open('wb') as output:
@@ -212,9 +213,9 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                 async def abort(self, reason):
                     calls.append('abort')
             class Transport:
-                async def request(self, *args):
+                async def request(self, grant, method, body, headers, max_response_bytes, is_cancelled):
                     path.write_bytes(b'changed')
-                    return TransferResponse(200, {'ETag': 'part-etag'}, b'')
+                    return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
             with self.assertRaises(MultipartTransferError) as changed:
                 await upload_file(path, MultipartDestination('assigned', 'upload', 3), control=Control(), transport=Transport(),
                                   assert_owned=lambda: None, cancel_event=threading.Event())
@@ -225,6 +226,28 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                 await upload_file(path, MultipartDestination('assigned', 'upload', 10 * 1024 ** 3 + 1), control=Control(),
                                   transport=Transport(), assert_owned=lambda: None, cancel_event=threading.Event())
             self.assertEqual(calls, [])
+
+    async def test_mismatched_part_md5_etag_aborts_before_completion(self):
+        calls = []
+        class Control:
+            async def authorize_part(self, *args):
+                return SignedGrant('https://storage.invalid/part')
+            async def complete(self, *args):
+                calls.append('complete')
+                raise AssertionError('corrupt part completed')
+            async def abort(self, reason):
+                calls.append('abort')
+        class Transport:
+            async def request(self, *args):
+                return TransferResponse(200, {'ETag': '00000000000000000000000000000000'}, b'')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.m4a'
+            path.write_bytes(b'abc')
+            with self.assertRaises(MultipartTransferError) as corrupt:
+                await upload_file(path, MultipartDestination('assigned', 'upload', 3), control=Control(), transport=Transport(),
+                                  assert_owned=lambda: None, cancel_event=threading.Event())
+            self.assertEqual(corrupt.exception.code, 'multipart_part_checksum_mismatch')
+        self.assertEqual(calls, ['abort'])
 
 
 if __name__ == '__main__':

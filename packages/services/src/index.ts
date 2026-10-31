@@ -658,3 +658,5 @@ export * from "./executor-domain-control";
 export * from "./execution-dispatch";
 
 export * from "./execution-storage";
+
+export * from "./modal-bridge";
