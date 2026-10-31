@@ -19,11 +19,12 @@
     "openapi:check": "bun scripts/generate-openapi.ts --check",
     "clean": "rm -rf dist",
     "smoke:native": "bun scripts/native-smoke.ts",
-    "build:worker": "bun run migrations:generate && wrangler deploy --dry-run --outdir dist/worker --metafile",
+    "build:worker": "bun run migrations:generate && wrangler deploy --dry-run --outdir dist/worker --metafile && bun run audit:worker",
     "deploy": "wrangler deploy",
     "migrations:generate": "bun scripts/generate-database-migrations.ts",
     "migrations:check": "bun scripts/generate-database-migrations.ts --check",
-    "test:runtime:workerd": "node --experimental-strip-types scripts/run-worker-runtime-gates.ts"
+    "test:runtime:workerd": "node --experimental-strip-types scripts/run-worker-runtime-gates.ts",
+    "audit:worker": "bun scripts/audit-worker-bundle.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",
