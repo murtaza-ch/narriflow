@@ -285,3 +285,8 @@ production-composition suite and includes Zoom execution/refresh and Autopilot
 maintenance. Their deliberate epoch proof writes roll back within the test.
 These checks do not replace deployed exact cleanup, maintenance and quiesced
 restore acceptance. Ticket20 remains claimed until those platform gates pass.
+
+The expanded default execution database runner also passes in full: 420 tests,
+2,939 assertions and zero failures across fresh disposable schemas. Both empty
+factory gates run separately; ordinary domain suites share the ordinary test
+schema and committed epoch-fencing suites run last in separate Bun processes.
