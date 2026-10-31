@@ -18,7 +18,7 @@ export interface ExecutorLiveAuthority {
   functionName: string;
   leaseExpiresAt: Date;
   operationDeadlineAt: Date;
-  input: { storageKey: string; etag: string; byteLength: bigint } | null;
+  input: { storageKey: string; etag: string; byteLength: bigint; sha256: string } | null;
 }
 
 export interface ExecutorArtifactHead {
@@ -247,8 +247,8 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         !attempt.leaseExpiresAt || attempt.leaseExpiresAt <= now || attempt.operationDeadlineAt <= now ||
         (requireStarted && (!attempt.processStartedAt || attempt.status !== "running"))) throw new ExecutorControlError("authority_lost");
       return operation(tx, { fence, functionName: attempt.functionName, leaseExpiresAt: attempt.leaseExpiresAt, operationDeadlineAt: attempt.operationDeadlineAt,
-        input: attempt.inputStorageKey && attempt.inputEtag && attempt.inputByteLength !== null
-          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength } : null });
+        input: attempt.inputStorageKey && attempt.inputEtag && attempt.inputByteLength !== null && attempt.inputChecksumSha256
+          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength, sha256: attempt.inputChecksumSha256 } : null });
     });
   }
 

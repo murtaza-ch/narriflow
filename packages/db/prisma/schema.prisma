@@ -3384,6 +3384,7 @@ model ExecutionAttempt {
   inputStorageKey     String?   @db.VarChar(1024)
   inputEtag           String?   @db.VarChar(160)
   inputByteLength     BigInt?
+  inputChecksumSha256 String?   @db.Char(64)
   owner               String?   @db.Uuid
   leaseExpiresAt      DateTime?
   operationDeadlineAt DateTime

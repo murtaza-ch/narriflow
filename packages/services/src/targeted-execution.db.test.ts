@@ -40,7 +40,7 @@ dbDescribe("Targeted serverless domain execution", () => {
   }, 60_000);
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture() {
+  async function fixture(executionDeadline?: Date) {
     const user = await db.user.create({ data: { clerkId: `targeted-execution:${crypto.randomUUID()}` } });
     users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted execution gate", ownerUserId: user.id } });
@@ -55,8 +55,9 @@ dbDescribe("Targeted serverless domain execution", () => {
     dispatches.push(record.reference.dispatchId);
     const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID();
     const [clock] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-    const deadline = new Date(clock!.now.getTime() + 10 * 60_000);
-    await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline } });
+    const deadline = executionDeadline ?? new Date(clock!.now.getTime() + 10 * 60_000);
+    await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline,
+      createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
     const lifecycle = new RenderGroupLifecycle({ prisma: db, releaseGraceMs: 0 });
     return { lifecycle, reference: record.reference, attemptToken, owner, deadline, group, variant, run };
   }
@@ -214,9 +215,8 @@ dbDescribe("Targeted serverless domain execution", () => {
   }, 90_000);
 
   test("an unacquired operation deadline settles failed without a fabricated render execution or charge", async () => {
-    const value = await fixture();
     const expired = new Date(0);
-    await db.executionAttempt.update({ where: { attemptToken: value.attemptToken }, data: { createdAt: new Date(-60_000), operationDeadlineAt: expired } });
+    const value = await fixture(expired);
     const result = await mutate(value, (tx) => value.lifecycle.expireExecution(tx, value.reference, value.attemptToken, { kind: "operation", observedDeadlineAt: expired }));
     expect(result.kind).toBe("expired");
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "failed", chargedAttemptCount: 0 });

@@ -70,6 +70,28 @@ dbDescribe("Serverless execution ledger database contract", () => {
       [randomUUID(), id, "a".repeat(64), randomUUID()])).rejects.toMatchObject({ code: "23514" });
   }));
 
+  test("a frozen object input has a separate immutable byte digest", () => isolated(async client => {
+    const id = await dispatch(client), token = randomUUID();
+    await client.query(`INSERT INTO "ExecutionAttempt"
+      ("attemptToken","dispatchId","deploymentEpoch","generation","inputHash","functionName","operationDeadlineAt","updatedAt",
+       "inputStorageKey","inputEtag","inputByteLength","inputChecksumSha256")
+      VALUES ($1,$2,1,1,$3,'prepare_clip',now()+interval '45 minutes',now(),'execution-input/test','"object"',1024,$4)`,
+      [token, id, "a".repeat(64), "b".repeat(64)]);
+    await expect(client.query('UPDATE "ExecutionAttempt" SET "inputChecksumSha256"=$1 WHERE "attemptToken"=$2', ["c".repeat(64), token]))
+      .rejects.toMatchObject({ code: "23514" });
+  }));
+
+  test("an object input cannot omit the byte digest or exceed its bounded JSON limit", async () => {
+    for (const [size, digest] of [[1024, null], [16777217, "b".repeat(64)]] as const) await isolated(async client => {
+      const id = await dispatch(client);
+      await expect(client.query(`INSERT INTO "ExecutionAttempt"
+        ("attemptToken","dispatchId","deploymentEpoch","generation","inputHash","functionName","operationDeadlineAt","updatedAt",
+         "inputStorageKey","inputEtag","inputByteLength","inputChecksumSha256")
+        VALUES ($1,$2,1,1,$3,'prepare_clip',now()+interval '45 minutes',now(),'execution-input/test','"object"',$4,$5)`,
+        [randomUUID(), id, "a".repeat(64), size, digest])).rejects.toMatchObject({ code: "23514" });
+    });
+  });
+
   test("a receipt identity cannot silently replace its recorded disposition", () => isolated(async (client) => {
     const id = randomUUID();
     await client.query(`INSERT INTO "ExecutionInboxReceipt"

@@ -349,11 +349,29 @@ ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_schedule_revision_check" CHE
 UPDATE "ReviewRound" SET "revokedAt" = COALESCE("revokedAt", now()), "passcodeHash" = NULL
   WHERE "passcodeHash" IS NOT NULL;
 
-ALTER TABLE "ExecutionAttempt" ADD COLUMN "inputStorageKey" VARCHAR(1024), ADD COLUMN "inputEtag" VARCHAR(160), ADD COLUMN "inputByteLength" BIGINT;
+ALTER TABLE "ExecutionAttempt" ADD COLUMN "inputStorageKey" VARCHAR(1024), ADD COLUMN "inputEtag" VARCHAR(160), ADD COLUMN "inputByteLength" BIGINT, ADD COLUMN "inputChecksumSha256" CHAR(64);
 ALTER TABLE "ExecutionAttempt" ADD CONSTRAINT "ExecutionAttempt_input_binding_check" CHECK (
-  ("inputStorageKey" IS NULL AND "inputEtag" IS NULL AND "inputByteLength" IS NULL)
-  OR ("inputStorageKey" IS NOT NULL AND "inputEtag" IS NOT NULL AND "inputByteLength" IS NOT NULL AND "inputByteLength" > 0 AND "inputByteLength" <= 16777216)
+  ("inputStorageKey" IS NULL AND "inputEtag" IS NULL AND "inputByteLength" IS NULL AND "inputChecksumSha256" IS NULL)
+  OR ("inputStorageKey" IS NOT NULL AND "inputEtag" IS NOT NULL AND "inputByteLength" IS NOT NULL AND "inputByteLength" > 0 AND "inputByteLength" <= 16777216
+    AND "inputChecksumSha256" IS NOT NULL AND "inputChecksumSha256" ~ '^[a-f0-9]{64}$')
 );
+CREATE FUNCTION execution_attempt_identity_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW."attemptToken",NEW."dispatchId",NEW."deploymentEpoch",NEW."generation",NEW."inputHash",NEW."functionName",NEW."operationDeadlineAt",NEW."createdAt")
+     IS DISTINCT FROM
+     (OLD."attemptToken",OLD."dispatchId",OLD."deploymentEpoch",OLD."generation",OLD."inputHash",OLD."functionName",OLD."operationDeadlineAt",OLD."createdAt") THEN
+    RAISE EXCEPTION 'execution attempt identity is immutable' USING ERRCODE='23514';
+  END IF;
+  IF (NEW."inputStorageKey",NEW."inputEtag",NEW."inputByteLength",NEW."inputChecksumSha256") IS DISTINCT FROM
+     (OLD."inputStorageKey",OLD."inputEtag",OLD."inputByteLength",OLD."inputChecksumSha256") AND
+     (OLD."inputStorageKey" IS NOT NULL OR OLD."owner" IS NOT NULL OR OLD."processStartedAt" IS NOT NULL OR OLD."status" <> 'admitted') THEN
+    RAISE EXCEPTION 'execution input bytes are immutable before acquisition' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "ExecutionAttempt_identity_immutable" BEFORE UPDATE ON "ExecutionAttempt"
+FOR EACH ROW EXECUTE FUNCTION execution_attempt_identity_immutable();
 ALTER TABLE "ExecutionInboxReceipt" ADD COLUMN "wakeDispatchIds" UUID[] NOT NULL DEFAULT ARRAY[]::UUID[];
 ALTER TABLE "ExecutionInboxReceipt" ADD CONSTRAINT "ExecutionInboxReceipt_wake_bound_check" CHECK (cardinality("wakeDispatchIds") <= 128);
 CREATE OR REPLACE FUNCTION render_group_identity_immutable() RETURNS trigger LANGUAGE plpgsql AS $$

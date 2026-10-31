@@ -43,7 +43,7 @@ dbDescribe("Targeted Ingest execution", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture() {
+  async function fixture(executionDeadline?: Date) {
     const user = await db.user.create({ data: { clerkId: `targeted-ingest:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted ingest", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted ingest", sourceType: "youtube", sourceMediaUrl: "https://youtube.com/watch?v=dQw4w9WgXcQ", ingestStatus: "queued" } });
@@ -55,7 +55,8 @@ dbDescribe("Targeted Ingest execution", () => {
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
     const dispatch = await db.$transaction((tx) => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "ingest_job", id: job.id }, generation: 1, inputHash: "a".repeat(64), dueAt: new Date("2026-10-31T00:00:00.000Z") }));
     const token = crypto.randomUUID(), owner = crypto.randomUUID();
-    await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: dispatch.reference.inputHash, functionName: "fetch_source", operationDeadlineAt: new Date(Date.now() + 45 * 60_000) } });
+    await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: dispatch.reference.inputHash, functionName: "fetch_source", operationDeadlineAt: executionDeadline ?? new Date(Date.now() + 45 * 60_000),
+      createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
     const control = createExecutorControl({ database: db, subjectKind: "ingest_job", domain: lifecycle, deliverWakes: async () => {},
       artifacts: { head: async (assignment) => ({ etag: '"audio-etag"', contentType: assignment.contentType, byteLength: 1024n, sha256: "c".repeat(64) }),
         prepare: async (_assignment, artifact, reported) => {
@@ -226,9 +227,8 @@ dbDescribe("Targeted Ingest execution", () => {
   }, 90_000);
 
   test("unacquired absolute expiry releases reserved usage and completes the intake once", async () => {
-    const f = await fixture();
     const expired = new Date(0);
-    await db.executionAttempt.update({ where: { attemptToken: f.token }, data: { createdAt: new Date(-60_000), operationDeadlineAt: expired } });
+    const f = await fixture(expired);
     const run = () => withServiceEnvironment({}, () => db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
       await f.lifecycle.lockExecution(tx, f.reference, f.token);
