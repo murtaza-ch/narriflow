@@ -1,13 +1,12 @@
-import { BrandFontIntegrityError, BrandFontReferenceError, assertSceneBrandFontReferences, parseBrandFont, } from "./brand-font-parser";
-export { BrandFontIntegrityError, BrandFontReferenceError, assertSceneBrandFontReferences, parseBrandFont, parseBrandFontHeader, brandFontRenderer, type ParsedBrandFont } from "./brand-font-parser";
-import { createHash, randomUUID } from "node:crypto";
-import type { BrandFont, BrandFontFormat } from "@prisma/client";
+import { BrandFontIntegrityError, BrandFontReferenceError, assertSceneBrandFontReferences, } from "./brand-font-contract";
+export { BrandFontIntegrityError, BrandFontReferenceError, assertSceneBrandFontReferences, type ParsedBrandFont } from "./brand-font-contract";
+import { randomUUID } from "node:crypto";
+import type { BrandFont } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandFontFinalizeSchema,
   brandFontUploadSchema,
   reusableAssetSoftDeleteSchema,
-  resolvePricingTier,
   type BrandFontFinalizeInput,
   type BrandFontUploadInput,
   type ReusableAssetSoftDeleteInput,
@@ -19,7 +18,6 @@ import {
   assertBrandMutationAllowedWithAnalytics,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
-  resolveBrandOwner,
   type BrandActorScope,
 } from "./brand-ownership";
 import {
@@ -27,9 +25,9 @@ import {
   isR2Configured,
   presignDownloadUrl,
   presignSingleUploadUrl,
-  readObjectBytes,
 } from "./r2-storage";
-import { analyticsService } from "./analytics.service";
+import { validatedFontFaceSchema } from "@narriflow/validators/native-validation";
+import { getNativeValidationService } from "./native-validation-runtime";
 import { withSerializableTransaction } from "./serializable-transaction";
 
 function formatForContentType(contentType: string): "ttf" | "otf" | "woff2" {
@@ -62,14 +60,14 @@ function toRow(font: BrandFont, accessUrl: string | null, replayed = false, face
 
 export class BrandFontService {
   private requirePrisma = requirePrisma;
-  constructor(private readonly storage = { headObject, readObjectBytes, presignDownloadUrl, presignSingleUploadUrl, isR2Configured }) {}
+  constructor(private readonly storage = { headObject, presignDownloadUrl, presignSingleUploadUrl, isR2Configured }) {}
 
   private async row(font: BrandFont, replayed = false) {
     try {
-      const bytes = await this.storage.readObjectBytes(font.storageKey, 20 * 1024 * 1024);
-      if (createHash("sha256").update(bytes).digest("hex") !== font.fingerprint) return toRow(font, null, replayed);
-      const parsed = parseBrandFont(bytes);
-      return toRow(font, await this.storage.presignDownloadUrl({ key: font.storageKey }), replayed, parsed.face);
+      const face = validatedFontFaceSchema.safeParse(font.face);
+      if (!face.success) return toRow(font, null, replayed);
+      await this.storage.headObject(font.storageKey);
+      return toRow(font, await this.storage.presignDownloadUrl({ key: font.storageKey }), replayed, face.data);
     } catch {
       return toRow(font, null, replayed);
     }
@@ -81,7 +79,7 @@ export class BrandFontService {
     const rows = await this.requirePrisma().brandFont.findMany({ where: {
       ...brandOwnerWhere(scope), id: { in: [...new Set(references.map((ref) => ref.id))] },
     } });
-    return Promise.all(rows.filter((font) => references.some((ref) => ref.id === font.id && ref.fingerprint === font.fingerprint)).map((font) => this.row(font)));
+    return Promise.all(rows.filter(font => validatedFontFaceSchema.safeParse(font.face).success).filter((font) => references.some((ref) => ref.id === font.id && ref.fingerprint === font.fingerprint)).map((font) => this.row(font)));
   }
 
   async assertSelection(scope: BrandActorScope, reference: { id: string; fingerprint: string } | null | undefined) {
@@ -89,8 +87,8 @@ export class BrandFontService {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const font = await this.requirePrisma().brandFont.findFirst({ where: {
       ...brandOwnerWhere(scope), id: reference.id, fingerprint: reference.fingerprint, deletedAt: null,
-    }, select: { id: true } });
-    if (!font) throw new BrandFontIntegrityError("brand_font_not_found");
+    }, select: { id: true, face: true } });
+    if (!font || !validatedFontFaceSchema.safeParse(font.face).success) throw new BrandFontIntegrityError("brand_font_not_found");
   }
 
   async presignUpload(scope: BrandActorScope, input: BrandFontUploadInput) {
@@ -105,89 +103,16 @@ export class BrandFontService {
   }
 
   async finalizeUpload(scope: BrandActorScope, input: BrandFontFinalizeInput) {
-    try {
-      const result = await this.finalizeVerifiedUpload(scope, input);
-      await analyticsService.recordBrandProgramEventBestEffort({
-          type: "brand_font_upload_succeeded",
-          workspaceId: scope.workspaceId,
-          actorUserId: scope.actorUserId,
-          metadata: {
-            fontId: result.id,
-            assetKind: "font",
-            planTier: resolvePricingTier(scope.pricingTier),
-            outcome: "succeeded",
-          },
-        });
-      return result;
-    } catch (error) {
-      await analyticsService.recordBrandProgramEventBestEffort({
-          type: "brand_font_upload_failed",
-          workspaceId: scope.workspaceId,
-          actorUserId: scope.actorUserId,
-          metadata: {
-            assetKind: "font",
-            planTier: resolvePricingTier(scope.pricingTier),
-            outcome: "failed",
-          },
-        });
-      throw error;
-    }
-  }
-
-  private async finalizeVerifiedUpload(scope: BrandActorScope, input: BrandFontFinalizeInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = brandFontFinalizeSchema.parse(input);
     if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "brand-fonts"))) throw new BrandFontIntegrityError("brand_font_key_forbidden");
-    const prisma = this.requirePrisma();
-    const ownerWhere = brandOwnerWhere(scope);
-    const existing = await prisma.brandFont.findFirst({ where: { ...ownerWhere, fingerprint: parsed.fingerprint } });
-    if (existing && !existing.deletedAt) return this.row(existing, true);
-    let object;
-    try {
-      object = await this.storage.headObject(parsed.key);
-    } catch {
-      throw new BrandFontIntegrityError("brand_font_object_missing");
-    }
-    if (object.contentType !== parsed.contentType) throw new BrandFontIntegrityError("brand_font_mime_mismatch");
-    if (object.sizeBytes !== parsed.sizeBytes) throw new BrandFontIntegrityError("brand_font_size_mismatch");
-    const bytes = await this.storage.readObjectBytes(parsed.key, 20 * 1024 * 1024);
-    const fingerprint = createHash("sha256").update(bytes).digest("hex");
-    const parsedFont = parseBrandFont(bytes);
-    if (parsedFont.format !== formatForContentType(parsed.contentType)) throw new BrandFontIntegrityError("brand_font_format_mismatch");
-    if (fingerprint !== parsed.fingerprint) throw new BrandFontIntegrityError("brand_font_fingerprint_mismatch");
-    const owner = resolveBrandOwner(scope);
-    try {
-      const data = {
-        ...owner,
-        licenseConfirmedByUserId: scope.actorUserId,
-        family: parsedFont.family,
-        style: parsedFont.style,
-        weight: parsedFont.weight,
-        format: parsedFont.format as BrandFontFormat,
-        storageKey: parsed.key,
-        sizeBytes: BigInt(parsed.sizeBytes),
-        fingerprint,
-        licenseConfirmedAt: new Date(),
-        deletedAt: null,
-      };
-      // The fingerprint is unique for an owner even after soft deletion.
-      // Re-uploading the same bytes restores that asset and its saved references.
-      const created = existing
-        ? await prisma.brandFont.update({ where: { id: existing.id }, data })
-        : await prisma.brandFont.create({ data });
-      return toRow(created, await this.storage.presignDownloadUrl({ key: created.storageKey }), false, parsedFont.face);
-    } catch (error) {
-      if ((error as { code?: string }).code !== "P2002") throw error;
-      const replay = await prisma.brandFont.findFirst({ where: { ...ownerWhere, fingerprint, deletedAt: null } });
-      if (!replay) throw error;
-      return this.row(replay, true);
-    }
+    return getNativeValidationService().admit(scope, { kind: "font", ...parsed });
   }
 
   async list(scope: BrandActorScope) {
     const prisma = this.requirePrisma();
     const rows = await prisma.brandFont.findMany({ where: { ...brandOwnerWhere(scope), deletedAt: null }, orderBy: { createdAt: "desc" } });
-    return Promise.all(rows.map((row) => this.row(row)));
+    return Promise.all(rows.filter(row => validatedFontFaceSchema.safeParse(row.face).success).map((row) => this.row(row)));
   }
 
 	async resolveSceneReferences(scope: BrandActorScope, scenes: readonly SceneBlock[]) {
@@ -203,6 +128,7 @@ export class BrandFontService {
 		return Promise.all(rows.map(async (font) => {
 			let accessUrl: string | null = null;
 			try {
+				if (!validatedFontFaceSchema.safeParse(font.face).success) throw new BrandFontIntegrityError("brand_font_not_found");
 				await headObject(font.storageKey);
 				accessUrl = await presignDownloadUrl({ key: font.storageKey });
 			} catch {
@@ -240,9 +166,9 @@ export class BrandFontService {
 				...(options.allowDeleted ? {} : { deletedAt: null }),
 				...(project?.brandProfileId ? { profiles: { some: { profileId: project.brandProfileId } } } : {}),
 			},
-			select: { id: true, family: true, fingerprint: true },
+			select: { id: true, family: true, fingerprint: true, face: true },
 		});
-		assertSceneBrandFontReferences(scenes, fonts);
+		assertSceneBrandFontReferences(scenes, fonts.filter(font => validatedFontFaceSchema.safeParse(font.face).success));
 	}
 
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
@@ -274,9 +200,9 @@ export class BrandFontService {
       if (captionStyleReference) throw new BrandFontReferenceError();
       if (font.profiles.length > 0 && !parsed.replacementId) throw new BrandFontReferenceError();
       const replacement = parsed.replacementId
-        ? await tx.brandFont.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } })
+        ? await tx.brandFont.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true, face: true } })
         : null;
-      if (parsed.replacementId && !replacement) throw new BrandFontIntegrityError("brand_font_replacement_invalid");
+      if (parsed.replacementId && (!replacement || !validatedFontFaceSchema.safeParse(replacement.face).success)) throw new BrandFontIntegrityError("brand_font_replacement_invalid");
       if (replacement) {
         await tx.brandProfileFont.updateMany({ where: { fontId: id }, data: { fontId: replacement.id } });
         await tx.brandProfile.updateMany({ where: { fonts: { some: { fontId: replacement.id } } }, data: { revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });

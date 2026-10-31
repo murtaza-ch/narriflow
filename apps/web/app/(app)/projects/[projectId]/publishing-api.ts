@@ -74,6 +74,8 @@ export function createProjectPublishingApi(transport: ApiTransport, scope: Works
 			(await brand["visual-assets"]["presign-upload"].$post({ json: input as Json<typeof brand["visual-assets"]["presign-upload"]["$post"]> })).json(),
 		createCoverAsset: async (input: Json<typeof brand["visual-assets"]["$post"]>) =>
 			(await brand["visual-assets"].$post({ json: input })).json(),
+		coverValidation: async (jobId: string) =>
+			(await brand["asset-validations"][":id"].$get({ param: { id: jobId } })).json(),
 		requestThumbnailFrame: async (projectId: string, input: Json<typeof clips.projects[":id"]["thumbnail-frames"]["$post"]>) =>
 			(await clips.projects[":id"]["thumbnail-frames"].$post({ param: { id: projectId }, json: input })).json(),
 		thumbnailFrame: async (projectId: string, operationId: string) =>

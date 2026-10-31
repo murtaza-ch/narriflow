@@ -1,0 +1,102 @@
+{
+  "recordedAt": "2026-10-31T03:24:25.657445+00:00",
+  "scope": "Ticket16 font/visual validation foundation and R2 control split; thumbnail domain/Modal runtime wiring, arbitrary outbound port and deployed gates remain pending",
+  "verification": {
+    "nativeCli": {
+      "tests": 4,
+      "assertions": 35,
+      "result": "pass",
+      "fixtures": [
+        "Anton real TTF with independent known face metrics",
+        "full-decoded32x24PNG",
+        "malformed/collection/truncated fonts",
+        "real generated1sMP4 and measuredJPEGframe"
+      ],
+      "backendEnvironment": "Database andRedis values deliberately poisoned in spawned child"
+    },
+    "isolatedPostgres": {
+      "tests": 3,
+      "assertions": 24,
+      "result": "pass",
+      "elapsedSeconds": 104.42,
+      "host": "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",
+      "checks": [
+        "Pending admission confirms scheduler and sameinput replay reads source HEAD once",
+        "Atomic owner race and process-start charged once acrossdistinct deliveries",
+        "Binary-only commit remains pending with zero usablefonts",
+        "Probe evidence plus sealedbinary commits one font withface andassignedkey",
+        "Exact inbox replay creates no duplicate",
+        "Lease expiry before process-start incrementsgeneration andrevokes stale token withzero charge/publish"
+      ],
+      "cleanup": "Tagged rows removed; no epoch changes"
+    },
+    "servicesFast": {
+      "passed": 1582,
+      "skipped": 1005,
+      "failed": 0
+    },
+    "brandHttp": {
+      "passed": 36,
+      "assertions": 82,
+      "checks": [
+        "202pending response",
+        "workspace-scoped no-store statusread",
+        "invalidUUID400",
+        "foreignworkspacehint409"
+      ]
+    },
+    "types": [
+      "services",
+      "api",
+      "media",
+      "worker",
+      "web",
+      "api-client"
+    ],
+    "biome": "pass",
+    "routeInventory": {
+      "routes": 286,
+      "problems": 0
+    },
+    "openapi": "All31RESToperations match"
+  },
+  "nextRuntime": {
+    "version": "16.4.3 Turbopack",
+    "browser": "agent-browser0.33.1 Chrome, react-devtools enabled",
+    "origin": "http://localhost:3001/font-validation-gate, temporary fixture removed",
+    "apiFixtureOrigin": "http://localhost:4003, stopped",
+    "checks": [
+      "Actual font chooser/FontFace preview/license confirmation/direct upload",
+      "Pending validation notice anddisablednewupload withheld ready response",
+      "React validation job state persisted whilepending, uploading false",
+      "Ready response clears pending job state andinvalidates library",
+      "Runtime loop found andfixed Chakra toast flushSync insideuseEffect byusing queuedmicrotask"
+    ],
+    "finalCompilationIssues": [],
+    "finalRuntimeErrors": []
+  },
+  "bundleAudit": {
+    "fontkit": "absent",
+    "ffprobeInstaller": "absent",
+    "r2Filesystem": "absent",
+    "remaining": [
+      "Sharp",
+      "thumbnail-frame-preparation-runtime child_process",
+      "url-guard DNS/http/https/net"
+    ],
+    "accepted": false
+  },
+  "sources": [
+    "https://github.com/foliojs/fontkit/blob/master/README.md",
+    "https://github.com/lovell/sharp/blob/main/docs/src/content/docs/api-constructor.md",
+    "https://github.com/FFmpeg/FFmpeg/blob/master/doc/protocols.texi",
+    "https://ffmpeg.org/ffprobe.html"
+  ],
+  "sha256": {
+    "packages/services/src/native-validation.ts": "6768d782b75b334dea1bb4784e1ffdee537dabc011e01d489d68895cd05d3b0a",
+    "packages/services/src/native-validation-work.ts": "4c5829318f8eef21d9d8b966ed157ae434448e0193e92bb1525c94d8b8334824",
+    "apps/media/src/asset-validation.ts": "d93b87bcb2118b48652bbd73017ddfa52f197d330a6ba5e1ccf715cda4bde45f",
+    "apps/media/src/asset-validation-cli.ts": "9da35d8e1a921e2ed12bb9a5178b47d7b341662024bd66bd8266dfdb6d7d9754",
+    "apps/web/app/(app)/brand-kit/_components/font-manager.tsx": "f9c99876750dd77253889ba93554d55aa338a80bd851f8c63065841dfb455298"
+  }
+}

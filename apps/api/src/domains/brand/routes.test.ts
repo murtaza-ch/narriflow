@@ -134,6 +134,7 @@ interface HarnessOptions {
   role?: WorkspaceActorContext["role"];
   tier?: string;
   rateLimit?: () => RateLimitCheck;
+  validationStatus?: BrandRouteDeps["validationStatus"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -162,7 +163,7 @@ function harness(options: HarnessOptions = {}) {
   firstParty.use("*", requireJsonContentType());
   firstParty.use("*", installRequestPolicy(runtime));
   firstParty.use("*", requireAdmissionDeclaration());
-  firstParty.route("/", createBrandRoutes(services as unknown as BrandRouteDeps));
+  firstParty.route("/", createBrandRoutes({ ...services, validationStatus: options.validationStatus } as unknown as BrandRouteDeps));
   const app = new Hono<ApiEnv>();
   app.use("*", apiRequestId());
   app.onError(apiErrorHandler);
@@ -216,6 +217,20 @@ describe("brand route registration", () => {
       rate: { prefix: "generated-image-create", limit: 10 },
     });
   });
+});
+
+test("font and visual uploads return pending acceptance and status reads remain workspace scoped", async () => {
+  const validationStatus = mock(async () => ({ jobId: JOB_ID, kind: "font" as const, status: "pending" as const, result: null, errorCode: null, replayed: false }));
+  const { services, request } = harness({ validationStatus });
+  const pending = { jobId: JOB_ID, kind: "font", status: "pending", result: null, errorCode: null, replayed: false };
+  services.fonts!.finalizeUpload!.mockResolvedValue(pending);
+  const accepted = await request("/brand-fonts", { method: "POST", json: { key: "brand-fonts/owner/input.ttf", contentType: "font/ttf", sizeBytes: 100, fingerprint: "a".repeat(64), licenseConfirmed: true } });
+  expect(accepted.status).toBe(202); expect(await accepted.json()).toMatchObject({ status: "pending", jobId: JOB_ID });
+  const read = await request(`/asset-validations/${JOB_ID}`);
+  expect(read.status).toBe(200); expect(read.headers.get("Cache-Control")).toBe("no-store");
+  expect(validationStatus).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID, actorUserId: "actor-user" }), JOB_ID);
+  expect((await request("/asset-validations/invalid")).status).toBe(400);
+  expect((await request(`/asset-validations/${JOB_ID}`, { headers: { "x-workspace-id": "foreign" } })).status).toBe(409);
 });
 
 describe("admission", () => {

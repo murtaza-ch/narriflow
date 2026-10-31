@@ -1,3 +1,4 @@
+import { downloadObjectToFile } from "../../../apps/worker/src/r2-file-transfer";
 import { readServiceEnvironment } from "./runtime-environment";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,7 +25,6 @@ import {
 	type PublicationWebhookMedia,
 } from "./social-publication-webhook";
 import {
-	downloadObjectToFile,
 	headObject,
 	presignDownloadUrl,
 } from "./r2-storage";

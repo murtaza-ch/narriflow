@@ -139,7 +139,7 @@ export function PublishingCover({
 	onChoose,
 	onClose,
 }: {
-	api: Pick<ProjectPublishingApi, "visualAssets" | "requestThumbnailFrame" | "thumbnailFrame" | "presignCoverUpload" | "createCoverAsset">;
+	api: Pick<ProjectPublishingApi, "visualAssets" | "requestThumbnailFrame" | "thumbnailFrame" | "presignCoverUpload" | "createCoverAsset" | "coverValidation">;
 	projectId: string;
 	clipId: string;
 	platform: SocialPlatform;
@@ -154,6 +154,7 @@ export function PublishingCover({
 	const [seconds, setSeconds] = useState("0");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
+	const [validationNotice, setValidationNotice] = useState("");
 	const video = useRef<HTMLVideoElement>(null);
 	const frameCanvases = useRef<Array<HTMLCanvasElement | null>>([]);
 	const mounted = useRef(true);
@@ -197,6 +198,7 @@ export function PublishingCover({
 	async function frame() {
 		setBusy(true);
 		setError("");
+		setValidationNotice("");
 		try {
 			const ms = Math.round(Number(seconds) * 1000);
 			let op: { id: string; status: string; asset?: { id: string; fingerprint: string } | null } = await api.requestThumbnailFrame(projectId, {
@@ -232,6 +234,7 @@ export function PublishingCover({
 	}
 	async function upload(file: File | undefined) {
 		if (!file) return;
+		setValidationNotice("");
 		setBusy(true);
 		setError("");
 		try {
@@ -264,7 +267,7 @@ export function PublishingCover({
 				body: file,
 			});
 			if (!result.ok) throw new Error("The image could not be uploaded.");
-			const asset = (await api.createCoverAsset({
+			let validation = await api.createCoverAsset({
 				key: prepared.key,
 				// Checked against the accepted types above.
 				contentType: file.type as "image/jpeg" | "image/png" | "image/webp",
@@ -272,8 +275,25 @@ export function PublishingCover({
 				fingerprint,
 				title: file.name.slice(0, 120),
 				provenance: "uploaded",
-			})) as Asset;
-			if (mounted.current) choose(asset);
+			});
+			if (!mounted.current) return;
+			if (validation.status === "pending") setValidationNotice("Your image is uploaded and validating. It becomes selectable after validation.");
+			for (let i = 0; i < 30 && validation.status === "pending" && mounted.current; i++) {
+				await new Promise(resolve => setTimeout(resolve, 1000));
+				if (!mounted.current) return;
+				validation = await api.coverValidation(validation.jobId);
+			}
+			if (!mounted.current) return;
+			if (validation.status === "failed") throw new Error("This image could not be validated. Choose another image.");
+			if (validation.status === "pending") {
+				setValidationNotice("Your image is still validating. Close and reopen the library shortly to choose it when ready.");
+				return;
+			}
+			const refreshed = await api.visualAssets();
+			const assetId = validation.result && typeof validation.result === "object" && !Array.isArray(validation.result) ? validation.result.assetId : null;
+			const asset = refreshed.assets.find(item => item.id === assetId);
+			if (!asset) throw new Error("The validated image is unavailable. Refresh the library.");
+			if (mounted.current) { setAssets(refreshed.assets as Asset[]); setValidationNotice(""); choose(asset as Asset); }
 		} catch (e) {
 			if (mounted.current)
 				setError(e instanceof Error ? e.message : "Could not upload cover.");
@@ -621,6 +641,7 @@ export function PublishingCover({
 									</Stack>
 								)}
 
+								{validationNotice && <Text role="status" fontSize="13px" color="fg.muted">{validationNotice}</Text>}
 								{error && (
 									<Text
 										role="alert"

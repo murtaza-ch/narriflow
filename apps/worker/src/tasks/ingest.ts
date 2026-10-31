@@ -1,3 +1,4 @@
+import { putFileFromPath } from "../r2-file-transfer";
 import { stat } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { basename, extname, join } from "node:path";
@@ -31,7 +32,6 @@ import {
   headObject,
   InvalidObjectMetadataError,
   presignDownloadUrl,
-  putFileFromPath,
 } from "@narriflow/services/r2-storage";
 import {
   detectLinkProvider,

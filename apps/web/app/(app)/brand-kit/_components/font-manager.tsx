@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Box, Flex, Grid, Stack, Text, chakra } from "@chakra-ui/react";
 import { FileType2, Trash2, Type, Upload } from "lucide-react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
@@ -130,7 +131,23 @@ type Draft = { file: File; bytes: ArrayBuffer; family: string } | { file: File; 
 
 /** "Upload font": pick a file, see it set in the face, confirm the license, upload. */
 export function FontUploadButton() {
-  const { mutations, invalidate } = useBrandApi();
+  const { mutations, queries, invalidate } = useBrandApi();
+  const [validationId, setValidationId] = useState<string | null>(null);
+  const validation = useQuery({ ...queries.validationJob(validationId ?? ""), enabled: validationId !== null });
+  useEffect(() => {
+    if (!validationId || !validation.data || validation.data.status === "pending") return;
+    let cancelled = false;
+    const status = validation.data.status;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (status === "ready") {
+        toaster.create({ type: "success", title: "Font is ready to use" });
+        void invalidate();
+      } else toaster.create({ type: "error", title: "Font validation failed", description: "Choose a valid TTF, OTF or WOFF2 file and upload it again." });
+      setValidationId(null);
+    });
+    return () => { cancelled = true; };
+  }, [validationId, validation.data, invalidate]);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [licenseConfirmed, setLicenseConfirmed] = useState(false);
@@ -199,13 +216,15 @@ export function FontUploadButton() {
       });
       if (!uploaded.ok) throw new Error("Upload failed. Please try again.");
       const result = await mutations.finalizeFontUpload({ ...metadata, key: presigned.key, fingerprint });
+      if (result.status === "failed") throw new Error("Font validation failed. Choose a valid file and upload it again.");
+      if (result.status === "pending") setValidationId(result.jobId);
       toaster.create({
-        type: "success",
-        title: result.replayed ? "Font already uploaded" : "Font uploaded",
+        type: result.status === "pending" ? "info" : "success",
+        title: result.status === "pending" ? "Font uploaded, validation pending" : "Font is ready to use",
       });
       setUploading(false);
       close();
-      await invalidate();
+      if (result.status === "ready") await invalidate();
     } catch (error) {
       setUploading(false);
       toaster.create({
@@ -219,9 +238,12 @@ export function FontUploadButton() {
   const ready = draft !== null && !("error" in draft);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
+      <Button onClick={() => setOpen(true)} disabled={validationId !== null}>
         <Upload size={14} /> Upload font
       </Button>
+      {validationId && <Text role="status" fontSize="sm" color="fg.muted">{validation.isError ? "Could not check font validation. " : "Validating your font. It will appear when ready."}
+        {validation.isError && <Button size="sm" variant="subtle" onClick={() => void validation.refetch()}>Check again</Button>}
+      </Text>}
       <Dialog.Root open={open} onOpenChange={(details) => (details.open ? setOpen(true) : close())} placement="center">
         <Portal>
           <Dialog.Backdrop />

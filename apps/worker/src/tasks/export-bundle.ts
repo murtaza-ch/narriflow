@@ -1,3 +1,4 @@
+import { downloadObjectToFile, putFileFromPath } from "../r2-file-transfer";
 import { createExportBundleArchive, exportBundleStorageKeys, hashFile } from "../../../media/src/tasks/export-bundle";
 export { createExportBundleArchive, exportBundleStorageKeys } from "../../../media/src/tasks/export-bundle";
 import { stat } from "node:fs/promises";
@@ -7,9 +8,7 @@ import {
   copyObject,
   type ClaimedWorkflowAttempt,
   deleteObject,
-  downloadObjectToFile,
   getWorkflowRunLifecycle,
-  putFileFromPath,
   rethrowWorkflowAttemptLost,
   type WorkflowAttemptContext,
   workflowFailureFromUnknown,

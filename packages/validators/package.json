@@ -25,6 +25,10 @@
     "./review-selection": {
       "types": "./src/review-selection.ts",
       "default": "./src/review-selection.ts"
+    },
+    "./native-validation": {
+      "types": "./src/native-validation.ts",
+      "default": "./src/native-validation.ts"
     }
   },
   "scripts": {

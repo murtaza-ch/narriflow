@@ -30,7 +30,6 @@ import { createProductionReviewApprovalGate } from "./review-approval-gate.prism
 import { sceneTemplateService } from "./scene-template.service";
 import {
   VisualAssetReferenceError,
-  VisualAssetService,
   visualAssetService,
 } from "./visual-asset.service";
 
@@ -703,6 +702,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
           style: "normal",
           weight: 400,
           format: "ttf",
+          face: { name: "Race Sans", file: "", assName: "Race Sans", weight: 400, style: "normal", ascent: 1, descent: 0.25, capHeight: 0.75 },
           storageKey: `workspaces/${fixture.workspace.id}/brand-fonts/race-source.ttf`,
           sizeBytes: 128,
           fingerprint: "e".repeat(64),
@@ -717,6 +717,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
           style: "normal",
           weight: 400,
           format: "ttf",
+          face: { name: "Race Sans Replacement", file: "", assName: "Race Sans Replacement", weight: 400, style: "normal", ascent: 1, descent: 0.25, capHeight: 0.75 },
           storageKey: `workspaces/${fixture.workspace.id}/brand-fonts/race-replacement.ttf`,
           sizeBytes: 128,
           fingerprint: "f".repeat(64),
@@ -756,54 +757,6 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     }
   })));
 
-  test("replays upload finalization without reading the object twice", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-    const fixture = await workspaceFixture("asset-replay");
-    const fingerprint = "c".repeat(64);
-    const key = `workspaces/${fixture.workspace.id}/visual-assets/replay.png`;
-    let objectReads = 0;
-    const service = new VisualAssetService({
-      async presign() {
-        return "https://upload.example.test";
-      },
-      async head() {
-        objectReads += 1;
-        return { contentType: "image/png", sizeBytes: 128 };
-      },
-      async probe() {
-        return {
-          kind: "image",
-          contentType: "image/png",
-          width: 64,
-          height: 64,
-          durationSec: null,
-        };
-      },
-      async fingerprint() {
-        return fingerprint;
-      },
-      async accessUrl() {
-        return "https://download.example.test";
-      },
-    });
-    (
-      service as unknown as { requirePrisma: () => PrismaClient }
-    ).requirePrisma = () => prisma;
-    const input = {
-      key,
-      contentType: "image/png" as const,
-      sizeBytes: 128,
-      fingerprint,
-      title: "Replay",
-      provenance: "uploaded" as const,
-    };
-
-    const created = await service.finalizeUpload(fixture.scope, input);
-    const replay = await service.finalizeUpload(fixture.scope, input);
-
-    expect(replay.id).toBe(created.id);
-    expect(replay.replayed).toBe(true);
-    expect(objectReads).toBe(1);
-  })));
 
   async function setTier<T extends { workspace: { id: string }; scope: { pricingTier: string } }>(f: T, tier: "free" | "creator" | "pro" | "business"): Promise<T> {
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: tier } });
@@ -919,7 +872,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     const profile = await brandProfileService.create(f.scope, { name: "Cleanup", slug: "cleanup" });
     const owner = resolveBrandOwner(f.scope);
     const font = await prisma.brandFont.create({ data: {
-      ...owner, licenseConfirmedByUserId: f.user.id, family: "Acme", style: "normal", weight: 400, format: "ttf",
+      ...owner, licenseConfirmedByUserId: f.user.id, family: "Acme", style: "normal", weight: 400, format: "ttf", face: { name: "Acme", file: "", assName: "Acme", weight: 400, style: "normal", ascent: 1, descent: 0.25, capHeight: 0.75 },
       storageKey: `brand-fonts/${f.user.id}/${randomUUID()}.ttf`, sizeBytes: BigInt(1), fingerprint: randomUUID(), licenseConfirmedAt: new Date(),
     } });
     const asset = await prisma.visualAsset.create({ data: {
@@ -1217,7 +1170,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await brandProfileService.update(f.scope, profile.id, { revision: profile.revision, name: "Governed renamed" });
     expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).approvalRule).toBe("approval_required");
   })));
-  test("font uploads verify bytes and ownership; deleted uploads remain available to saved clips", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("validated fonts enforce ownership and remain available to saved clips after deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("custom-font", true);
     const other = await workspaceFixture("other-font-owner", true);
     const bytes = readFileSync(new URL("../../caption-fonts/fonts/Anton-Regular.ttf", import.meta.url));
@@ -1226,8 +1179,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     let uploads = 0;
     const service = new BrandFontService({
       isR2Configured: () => true,
-      headObject: async () => ({ contentType: "font/ttf", sizeBytes: bytes.length, etag: null, metadata: {} }),
-      readObjectBytes: async () => { if (unavailable) throw new Error("missing"); return bytes; },
+      headObject: async () => { if (unavailable) throw new Error("missing"); return { contentType: "font/ttf", sizeBytes: bytes.length, etag: null, metadata: {} }; },
       presignDownloadUrl: async () => "https://storage.example.test/font.ttf",
       presignSingleUploadUrl: async () => { uploads++; return "https://storage.example.test/upload"; },
     });
@@ -1239,12 +1191,12 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(presigned.key).toStartWith(`brand-fonts/${f.user.id}/`);
     const input = { ...metadata, key: presigned.key, fingerprint };
     await expect(service.finalizeUpload(other.scope, input)).rejects.toMatchObject({ code: "brand_font_key_forbidden" });
-    await expect(service.finalizeUpload(f.scope, { ...input, fingerprint: "f".repeat(64) })).rejects.toMatchObject({ code: "brand_font_fingerprint_mismatch" });
-    const font = await service.finalizeUpload(f.scope, input);
-    expect(font.family).toBe("Anton");
-    expect(font.face?.assName).toBe("Anton Regular");
-    expect(font.face?.ascent).toBeCloseTo(1.4043, 4);
-    expect((await service.finalizeUpload(f.scope, input)).replayed).toBe(true);
+    const font = await prisma.brandFont.create({ data: { ...resolveBrandOwner(f.scope), licenseConfirmedByUserId: f.user.id,
+      family: "Anton", style: "Regular", weight: 400, format: "ttf", storageKey: presigned.key, sizeBytes: BigInt(bytes.length), fingerprint,
+      licenseConfirmedAt: new Date(), face: { name: "Anton", file: "", assName: "Anton Regular", weight: 400, style: "normal", ascent: 1.404296875, descent: 0.3291015625, capHeight: 0.859375 } } });
+    const listed = (await service.list(f.scope))[0]!;
+    expect(listed.face?.assName).toBe("Anton Regular");
+    expect(listed.face?.ascent).toBeCloseTo(1.4043, 4);
     expect((await service.list(f.scope)).map((item) => item.id)).toEqual([font.id]);
     const ref = { id: font.id, fingerprint };
     await service.assertSelection(f.scope, ref);
@@ -1269,7 +1221,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     unavailable = true;
     expect((await service.resolveReferences(f.scope, [ref]))[0]?.accessUrl).toBeNull();
     unavailable = false;
-    const restored = await service.finalizeUpload(f.scope, input);
+    const restored = await prisma.brandFont.update({ where: { id: font.id }, data: { deletedAt: null } });
     expect(restored.id).toBe(font.id);
     expect((await service.list(f.scope)).map((item) => item.id)).toEqual([font.id]);
   })));

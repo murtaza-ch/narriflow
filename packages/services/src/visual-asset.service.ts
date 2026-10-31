@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import type { Prisma, VisualAsset, VisualAssetKind } from "@prisma/client";
+import type { Prisma, VisualAsset } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   reusableAssetSoftDeleteSchema,
@@ -23,17 +21,16 @@ import {
   BrandAccessError,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
-  resolveBrandOwner,
   type BrandActorScope,
 } from "./brand-ownership";
 import {
-  hashObjectSha256,
   headObject,
   isR2Configured,
   presignDownloadUrl,
   presignSingleUploadUrl,
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
+import { getNativeValidationService } from "./native-validation-runtime";
 import { accessibleProjectWhere } from "./project-access";
 import { withSerializableTransaction } from "./serializable-transaction";
 import {
@@ -42,7 +39,6 @@ import {
   type ExpectedDomainFailureDetails,
 } from "./expected-domain-failure";
 
-const execFileAsync = promisify(execFile);
 
 export interface VisualMediaProbe {
   kind: "image" | "video";
@@ -60,8 +56,6 @@ export interface VisualMediaProbe {
 export interface VisualAssetStorage {
   presign(input: { key: string; contentType: string }): Promise<string>;
   head(key: string): Promise<{ contentType: string | null; sizeBytes: number | null } | null>;
-  probe(key: string, contentType: string): Promise<VisualMediaProbe | null>;
-  fingerprint(key: string): Promise<string>;
   accessUrl(key: string): Promise<string>;
 }
 
@@ -224,50 +218,6 @@ function extensionForVisual(contentType: string) {
   } as Record<string, string>)[contentType] ?? "bin";
 }
 
-async function productionProbe(key: string): Promise<VisualMediaProbe | null> {
-  try {
-    const url = await presignDownloadUrl({ key, expiresIn: 300 });
-    const { default: ffprobe } = await import("@ffprobe-installer/ffprobe");
-    const { stdout } = await execFileAsync(ffprobe.path, [
-      "-v", "error", "-select_streams", "v:0",
-      "-show_entries", "stream=codec_name,width,height,duration:format=format_name:format_tags=major_brand", "-of", "json", url,
-    ], { timeout: 20_000, maxBuffer: 1024 * 1024 });
-    const parsed = JSON.parse(stdout) as {
-      streams?: Array<{
-        codec_name?: string;
-        width?: number;
-        height?: number;
-        duration?: string;
-      }>;
-      format?: { format_name?: string; tags?: { major_brand?: string } };
-    };
-    const stream = parsed.streams?.[0];
-    if (!stream?.width || !stream.height) return null;
-    const contentType = stream.codec_name === "png"
-      ? "image/png"
-      : stream.codec_name === "mjpeg"
-        ? "image/jpeg"
-        : stream.codec_name === "webp"
-          ? "image/webp"
-          : parsed.format?.format_name?.split(",").some((name) => name === "mov" || name === "mp4")
-            ? parsed.format.tags?.major_brand?.trim().toLowerCase() === "qt"
-              ? "video/quicktime"
-              : "video/mp4"
-            : null;
-    if (!contentType) return null;
-    const duration = Number(stream.duration);
-    return {
-      kind: visualAssetKindForContentType(contentType),
-      contentType,
-      width: stream.width,
-      height: stream.height,
-      durationSec: Number.isFinite(duration) && duration >= 0 ? duration : null,
-    };
-  } catch {
-    return null;
-  }
-}
-
 const productionStorage: VisualAssetStorage = {
   async presign({ key, contentType }) {
     return presignSingleUploadUrl({ key, contentType });
@@ -279,8 +229,6 @@ const productionStorage: VisualAssetStorage = {
       return null;
     }
   },
-  probe: productionProbe,
-  fingerprint: hashObjectSha256,
   async accessUrl(key) {
     return presignDownloadUrl({ key });
   },
@@ -325,78 +273,10 @@ export class VisualAssetService {
   }
 
   async finalizeUpload(scope: BrandActorScope, input: VisualAssetFinalizeInput) {
-    try {
-      const result = await this.finalizeVerifiedUpload(scope, input);
-      await analyticsService.recordBrandProgramEventBestEffort({
-          type: "visual_asset_upload_succeeded",
-          workspaceId: scope.workspaceId,
-          actorUserId: scope.actorUserId,
-          metadata: {
-            assetId: result.id,
-            assetKind: result.kind,
-            planTier: resolvePricingTier(scope.pricingTier),
-            outcome: "succeeded",
-          },
-        });
-      return result;
-    } catch (error) {
-      await analyticsService.recordBrandProgramEventBestEffort({
-          type: "visual_asset_upload_failed",
-          workspaceId: scope.workspaceId,
-          actorUserId: scope.actorUserId,
-          metadata: {
-            assetKind: visualAssetKindForContentType(input.contentType),
-            planTier: resolvePricingTier(scope.pricingTier),
-            outcome: "failed",
-          },
-        });
-      throw error;
-    }
-  }
-
-  private async finalizeVerifiedUpload(scope: BrandActorScope, input: VisualAssetFinalizeInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = visualAssetFinalizeSchema.parse(input);
-    if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "visual-assets"))) {
-      throw new VisualAssetIntegrityError("visual_asset_key_forbidden");
-    }
-    const prisma = this.requirePrisma();
-    const ownerWhere = brandOwnerWhere(scope);
-    const existing = await prisma.visualAsset.findFirst({ where: { ...ownerWhere, fingerprint: parsed.fingerprint, deletedAt: null } });
-    if (existing) return toRow(existing, await this.storage.accessUrl(existing.storageKey), true);
-
-    const [object, probe, fingerprint] = await Promise.all([
-      this.storage.head(parsed.key),
-      this.storage.probe(parsed.key, parsed.contentType),
-      this.storage.fingerprint(parsed.key),
-    ]);
-    assertFinalizedVisualObject(parsed, object, probe);
-    if (fingerprint !== parsed.fingerprint) throw new VisualAssetIntegrityError("visual_asset_fingerprint_mismatch");
-    const owner = resolveBrandOwner(scope);
-    try {
-      const created = await prisma.visualAsset.create({
-        data: {
-          ...owner,
-          createdByUserId: scope.actorUserId,
-          title: parsed.title,
-          kind: probe.kind as VisualAssetKind,
-          storageKey: parsed.key,
-          contentType: parsed.contentType,
-          sizeBytes: BigInt(parsed.sizeBytes),
-          width: probe.width,
-          height: probe.height,
-          durationSec: probe.durationSec,
-          fingerprint,
-          provenance: parsed.provenance,
-        },
-      });
-      return toRow(created, await this.storage.accessUrl(created.storageKey));
-    } catch (error) {
-      if ((error as { code?: string }).code !== "P2002") throw error;
-      const replay = await prisma.visualAsset.findFirst({ where: { ...ownerWhere, fingerprint, deletedAt: null } });
-      if (!replay) throw error;
-      return toRow(replay, await this.storage.accessUrl(replay.storageKey), true);
-    }
+    if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "visual-assets"))) throw new VisualAssetIntegrityError("visual_asset_key_forbidden");
+    return getNativeValidationService().admit(scope, { kind: "visual", ...parsed });
   }
 
   async list(scope: BrandActorScope) {
