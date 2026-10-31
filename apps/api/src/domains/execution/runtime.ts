@@ -1,25 +1,45 @@
+import { executionKeyRing } from "../../execution-keys";
 import type { ExecutionRouteDependencies } from "./routes";
 import { ExecutorControlError } from "@narriflow/services/executor-control";
+import { getPrismaClient } from "@narriflow/db/client";
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
+import { createExecutionStorage } from "@narriflow/services/execution-storage";
+import { createNativeValidationExecution } from "@narriflow/services/native-validation-execution";
+import { getNativeValidationService } from "@narriflow/services/native-validation-runtime";
+import { getThumbnailFrameExecution } from "@narriflow/services/thumbnail-frame-preparation-runtime";
+import { deliverExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
+import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
+import type { ApiWorkerBindings } from "../../worker-bindings";
+import { createAssignedArtifactStorage } from "./artifact-storage";
 
 /** Parse the executor-to-Worker ring at the verification boundary, never at module import. */
 export function executorControlKeyRing(environment: Readonly<Record<string, string | undefined>>): ReadonlyMap<string, Uint8Array> {
-  const raw = environment.EXECUTOR_CONTROL_KEYS_JSON;
-  if (!raw || raw.length > 8192) throw new ExecutorControlError("keys_unavailable");
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new ExecutorControlError("keys_unavailable"); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ExecutorControlError("keys_unavailable");
-  const entries = Object.entries(value);
-  if (!entries.length || entries.length > 8) throw new ExecutorControlError("keys_unavailable");
-  const ring = new Map<string, Uint8Array>();
-  for (const [keyId, encoded] of entries) {
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(keyId) || typeof encoded !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new ExecutorControlError("keys_unavailable");
-    const bytes = Buffer.from(encoded, "base64");
-    if (bytes.length < 32 || bytes.length > 64 || bytes.toString("base64") !== encoded) throw new ExecutorControlError("keys_unavailable");
-    ring.set(keyId, bytes);
-  }
-  return ring;
+  return executionKeyRing(environment.EXECUTOR_CONTROL_KEYS_JSON);
 }
 
 export function createExecutionDependencies(environment: Readonly<Record<string, string | undefined>>, execute: ExecutionRouteDependencies["execute"], transfer: ExecutionRouteDependencies["transfer"]): ExecutionRouteDependencies {
   return { keyRing: () => executorControlKeyRing(environment), nowSeconds: () => Math.floor(Date.now() / 1000), execute, transfer };
+}
+
+/** Called only after raw-byte signature verification, inside the request or
+ * command step's fresh database scope. No clients survive this invocation. */
+export function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
+  if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
+  if (!["native_validation", "thumbnail_frame"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  const database = getPrismaClient();
+  if (!database) throw new ExecutorControlError("epoch_unavailable");
+  const environment = readServiceEnvironment();
+  const required = (name: string) => { const value = environment[name]; if (!value) throw new ExecutorControlError("storage_unavailable"); return value; };
+  const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
+    accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
+  const domain = reference.subject.kind === "thumbnail_frame" ? { subjectKind: "thumbnail_frame" as const, domain: getThumbnailFrameExecution() }
+    : { subjectKind: "native_validation" as const, domain: getNativeValidationService() };
+  return createNativeValidationExecution({ ...domain, database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches });
+}
+
+export function createWorkerExecutionDependencies(): ExecutionRouteDependencies {
+  return { keyRing: () => executorControlKeyRing(readServiceEnvironment()), nowSeconds: () => Math.floor(Date.now() / 1000),
+    execute: (command, verifiedRequest, bindings) => createWorkerExecutor(command.action === "acquire" ? command.reference : command.fence.reference, bindings).control.execute({ command, verifiedRequest }),
+    transfer: (command, verifiedRequest, bindings) => createWorkerExecutor(command.fence.reference, bindings).transfer.execute({ command, verifiedRequest }),
+  };
 }

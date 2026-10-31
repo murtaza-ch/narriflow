@@ -50,6 +50,14 @@
         "url-guard DNS/http/https/net"
       ],
       "accepted": false
+    },
+    "freshSchemaPostgres": {
+      "runtime": "PG17.11+vector0.8.7, dedicated local gates database",
+      "migrations": 134,
+      "tests": 5,
+      "assertions": 41,
+      "elapsedMs": 879,
+      "result": "pass; NativeValidation+Thumbnail, disposable schema removed"
     }
   },
   "contract": {

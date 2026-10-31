@@ -135,7 +135,7 @@ export type IngestFailureDecision =
 type Tx = Prisma.TransactionClient;
 export interface IngestJobLifecycleDependencies {
   prisma: PrismaClient;
-  workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff" | "dispatchRunWithinTransaction">;
+  workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff" | "dispatchRunWithinTransaction" | "cancelSourceExecutionsWithinTransaction">;
   usage: Pick<ProcessingUsage, "reserve" | "settle" | "release">;
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
   progressRequired?: boolean;
@@ -427,9 +427,12 @@ export class IngestJobLifecycle {
     const decision = await this.deps.validateVideo(tx, { ref, artifact, sourceAudio: audio });
     if (decision.kind === "waiting_for_audio") return this.executionWakes(tx, ref, context.reference.inputHash, "video_evidence_ready");
     if (decision.kind === "rejected") {
+      const cancelled = await this.deps.workflow.cancelSourceExecutionsWithinTransaction(tx, { projectId: ref.projectId,
+        deploymentEpoch: ref.deploymentEpoch, errorCode: decision.failureCode, now });
       const result = await this.settleFailure(tx, job, this.owned(claim, now), decision.failureCode, decision.failureCode, `${claim.claimId}:source_mismatch`, now, "permanent");
       if (!result) throw new IngestJobClaimLost(ref.id);
-      return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
+      const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
+      return { dispatchIds: [...cancelled.dispatchIds, ...wakes.dispatchIds] };
     }
     await this.completeWithinTransaction(tx, claim, { sourceStorageKey: artifact.storageKey, sourceMimeType: artifact.contentType,
       sourceSizeBytes: Number(artifact.byteLength), sourceDurationSeconds: Math.ceil(artifact.binding.probe.durationSec), sourceProbe: artifact.binding.probe });
@@ -1020,6 +1023,7 @@ export class IngestJobLifecycle {
     const now = await this.now(tx);
     const job = await tx.ingestJob.findUniqueOrThrow({ where: { id } });
     const project = await tx.project.findFirst({ where: { id: job.projectId, ...accessibleProjectWhere(now) } });
+    if (project?.ingestStatus === "failed") return { kind: "not_ready" };
     if (!project || job.deploymentEpoch !== epoch.epoch || job.sourceRevision !== project.sourceRevision ||
       (reference && job.generation !== reference.generation)) return { kind: "superseded" };
     const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: project.id, sourceRevision: project.sourceRevision } } });

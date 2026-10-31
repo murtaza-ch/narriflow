@@ -12,6 +12,7 @@ import { createExecutorControl } from "./executor-control";
 import type { SourceAudioBinding, SourceVideoBinding } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
+import { createTranscriptionAdmission } from "./transcription-admission";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -37,6 +38,7 @@ dbDescribe("Targeted Ingest execution", () => {
     await db.executionArtifact.deleteMany({ where: { attempt: { dispatchId: { in: ids } } } });
     await db.executionAttempt.deleteMany({ where: { dispatchId: { in: ids } } });
     await db.executionDispatch.deleteMany({ where: { id: { in: ids } } });
+    await db.sourceRefundNeed.deleteMany({ where: { projectId: { in: (await db.project.findMany({ where: { workspace: { ownerUserId: { in: users } } }, select: { id: true } })).map(project => project.id) } } });
     await db.processingUsageReservation.deleteMany({ where: { workspace: { ownerUserId: { in: users } } } });
     await db.workspace.deleteMany({ where: { ownerUserId: { in: users } } });
     await db.user.deleteMany({ where: { id: { in: users } } });
@@ -292,6 +294,43 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "released", settledSeconds: null });
     expect(await db.workflowRun.count({ where: { projectId: f.project.id, stage: "stt" } })).toBe(0);
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
+  }, 120_000);
+
+  test("late video mismatch cancels admitted provider work without erasing charged usage", async () => {
+    const f = await fixture();
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+      clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const audioKey = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`;
+    const bindings = measuredBindings(f, audioKey);
+    bindings.audio.durationSeconds = 60.01;
+    bindings.video.probe.durationSec = bindings.video.probe.facts.format.durationSec = 60;
+    for (const stream of [...bindings.video.probe.facts.videos, ...bindings.video.probe.facts.audios]) stream.durationSec = stream.endTimeSec = 60;
+    const audio = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_audio", bindingHash: "b".repeat(64), storageKey: audioKey,
+      contentType: "audio/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    const video = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_video", bindingHash: "e".repeat(64), storageKey: `${audioKey}.mp4`,
+      contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: audio.id, role: "source_audio",
+      contentType: audio.contentType, byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: audio.bindingHash, sourceAudio: bindings.audio } }, verifiedRequest: f.verified() }));
+    const run = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
+    const reference = (await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id))).reference;
+    const begun = await withServiceEnvironment({}, () => createTranscriptionAdmission({ database: db, workflow: f.workflow, maxUnits: 12 }).admit(reference, { owner: crypto.randomUUID() }));
+    if (begun.kind !== "begun") throw new Error("Provider work must be admitted before the late mismatch");
+    const command = { action: "commit-artifact" as const, fence, artifact: { artifactId: video.id, role: "source_video" as const, contentType: video.contentType,
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: bindings.video } };
+    const receipt = f.verified();
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe("committed");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "cancelled", attemptCount: 1, leaseOwner: null, nextPollAt: null });
+    expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "source_audio_video_mismatch" });
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 120 });
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
+    expect(await db.executionDispatch.count({ where: { subjectId: run.id, wakeKind: "source_cancelled" } })).toBe(1);
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe("committed");
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
+    expect(await f.workflow.recordProviderAcceptance(begun.intent.reference, { requestId: "late-mismatch", transcriptionId: "late-mismatch", nextPollAt: new Date() })).toMatchObject({ kind: "stale", reason: "source_superseded" });
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "failed", errorCode: "source_audio_video_mismatch", providerResultDeadlineAt: null });
   }, 120_000);
 
   for (const first of ["source_audio", "source_video"] as const) test(`${first} can commit first and the second callback atomically publishes verified video`, async () => {
