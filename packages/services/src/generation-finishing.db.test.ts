@@ -168,14 +168,12 @@ describeDb("Finishing runner on PostgreSQL", () => {
   async function settleExport(exportId: string, outcome: "completed" | "failed") {
     const exported = await prisma.clipExport.findUniqueOrThrow({ where: { id: exportId }, include: { variants: { include: { render: true } } } });
     let fixture = renderFixtures.get(exported.projectId);
-    if (fixture && (await prisma.workflowRun.findUniqueOrThrow({ where: { id: fixture.attempt.workflowRunId } })).status !== "running") fixture = undefined;
+    if (fixture && ["completed", "partial", "failed", "cancelled"].includes((await prisma.workflowRun.findUniqueOrThrow({ where: { id: fixture.attempt.workflowRunId } })).status)) fixture = undefined;
     if (!fixture) {
-      const attemptId = randomUUID();
-      const leaseOwner = randomUUID();
-      const queued = await prisma.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: "queued" } });
-      const data = { status: "running", attemptId, attemptCount: 1, leaseOwner, leaseExpiresAt: new Date(Date.now() + 120_000) };
-      const run = queued ? await prisma.workflowRun.update({ where: { id: queued.id }, data }) : await prisma.workflowRun.create({ data: { projectId: exported.projectId, stage: "clip_rendering", idempotencyKey: randomUUID(), ...data } });
-      fixture = { lifecycle: new RenderFixtureLifecycle({ prisma, leaseOwner }), attempt: { workflowRunId: run.id, projectId: exported.projectId, stage: "clip_rendering", attemptId, attemptCount: 1 } };
+      const lifecycle = new RenderFixtureLifecycle({ prisma });
+      const queued = await prisma.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: { in: ["queued", "waiting"] } } });
+      const admitted = queued ?? await lifecycle.admit({ projectId: exported.projectId, stage: "clip_rendering", idempotencyKey: `finishing-render-fixture:${exportId}` });
+      fixture = { lifecycle, attempt: await lifecycle.renderParent(admitted.id) };
       renderFixtures.set(exported.projectId, fixture);
       await fixture.lifecycle.beginRenderWorkSet(fixture.attempt);
     }

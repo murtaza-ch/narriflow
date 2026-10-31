@@ -82,7 +82,7 @@ suite("Production retention pages", () => {
     expect(await db.mediaCleanupObligation.count({where:{objectKey:key}})).toBe(0);
   });
 
-  test("source retirement keeps active pipelines and exact source audio while planning only the completed retired video key",async()=>{
+  async function sourceFixture() {
     const {workspace,project}=await fixture(),epoch=(await page()).deploymentEpoch;
     const completed=new Date("2026-01-01T00:00:00.000Z"),videoKey=`execution/${epoch}/${crypto.randomUUID()}/source_video`,audioKey=`execution/${epoch}/${crypto.randomUUID()}/source_audio`;
     const job=await db.ingestJob.create({data:{projectId:project.id,jobType:"link_import",payload:{},status:"completed",completedAt:completed,generationHandoffAt:completed,deploymentEpoch:epoch}}),reference=(await db.$transaction(tx=>appendExecutionDispatch(tx,{kind:"modal_execution",subject:{kind:"ingest_job",id:job.id},generation:1,deploymentEpoch:epoch,inputHash:"a".repeat(64),dueAt:completed}))).reference,token=crypto.randomUUID(),owner=crypto.randomUUID();
@@ -92,11 +92,52 @@ suite("Production retention pages", () => {
     const run=await db.workflowRun.create({data:{projectId:project.id,stage:"stt",status:"queued",idempotencyKey:crypto.randomUUID(),deploymentEpoch:epoch}});
     const clip=await db.clip.create({data:{projectId:project.id,workflowRunId:run.id,transcriptSlice:[],index:0,title:"Retained clip",startSec:0,endSec:10,hookText:"fixture",reasoning:"fixture",category:"hook",viralityScore:50,hookStrengthScore:50,emotionalIntensityScore:50,pacingScore:50,durationOptimalityScore:50,tiktokScore:50,youtubeScore:50,instagramScore:50,llmProvider:"fixture",llmModel:"fixture",previewStorageKey:`projects/${project.id}/preview.mp4`}});
     await db.clipRender.create({data:{clipId:clip.id,aspectRatio:"ratio_9_16",status:"completed",storageKey:`projects/${project.id}/render.mp4`}});
+    const audio = await db.sourceAudio.create({data:{projectId:project.id,sourceRevision:project.sourceRevision,mediaProvider:"upload",mediaId:project.id,
+      audioTrack:{id:"0",codec:"aac",sampleRate:48000,channels:2},bindingHash:"d".repeat(64),storageKey:audioKey,etag:'"audio"',byteLength:100n,
+      checksumSha256:"c".repeat(64),durationSeconds:60,audioStartTimeSec:0,probeVersion:"normalized-probe-v1",toolchainFingerprint:"e".repeat(64)}});
+    return {workspace,project,run,clip,videoKey,audioKey,audio,completed};
+  }
+  test("source retirement keeps active pipelines and exact source audio while planning only the completed retired video key",async()=>{
+    const {workspace,project,run,videoKey,audioKey,audio}=await sourceFixture();
     expect((await db.$transaction(async tx=>retireSourceMediaPage(tx,await page()))).processed).toBe(0);expect((await db.project.findUniqueOrThrow({where:{id:project.id}})).sourceStorageKey).toBe(videoKey);
     await db.workflowRun.update({where:{id:run.id},data:{status:"completed"}});
     const retired=await db.$transaction(async tx=>retireSourceMediaPage(tx,await page()));expect(retired).toMatchObject({processed:1});expect((await db.project.findUniqueOrThrow({where:{id:project.id}})).sourceStorageKey).toBeNull();
-    const intent=await db.mediaCleanupObligation.findFirstOrThrow({where:{objectKey:videoKey}});expect(intent.cleanupClass).toBe("assigned_artifact");expect(await db.mediaCleanupObligation.count({where:{objectKey:audioKey}})).toBe(0);
+    const intent=await db.mediaCleanupObligation.findFirstOrThrow({where:{objectKey:videoKey}});expect(intent.cleanupClass).toBe("assigned_artifact");expect(await db.mediaCleanupObligation.count({where:{objectKey:audioKey}})).toBe(0);expect(await db.sourceAudio.findUnique({where:{id:audio.id}})).not.toBeNull();
     await db.workspace.delete({where:{id:workspace.id}});
+  });
+
+  test("current source retirement preserves every live hold and the exclusive ninety-day boundary", async()=>{
+    const cutoffAt=new Date(cutoff.getTime()-90*86400000);
+    for(const condition of ["missing_key","not_ready","workflow","ingest","no_render","preview","missing_time","recent","boundary","purging"] as const){
+      const f=await sourceFixture();
+      try{
+        await db.workflowRun.update({where:{id:f.run.id},data:{status:"completed"}});
+        switch(condition){
+          case "missing_key":await db.project.update({where:{id:f.project.id},data:{sourceStorageKey:null}});break;
+          case "not_ready":await db.project.update({where:{id:f.project.id},data:{ingestStatus:"normalizing"}});break;
+          case "workflow":await db.workflowRun.update({where:{id:f.run.id},data:{status:"waiting"}});break;
+          case "ingest":await db.ingestJob.create({data:{projectId:f.project.id,jobType:"link_import",payload:{},status:"queued"}});break;
+          case "no_render":await db.clipRender.updateMany({where:{clipId:f.clip.id},data:{status:"pending",storageKey:null}});break;
+          case "preview":await db.clip.update({where:{id:f.clip.id},data:{previewStorageKey:null}});break;
+          case "missing_time":await db.project.update({where:{id:f.project.id},data:{ingestCompletedAt:null}});break;
+          case "recent":await db.project.update({where:{id:f.project.id},data:{ingestCompletedAt:new Date(cutoffAt.getTime()+1)}});break;
+          case "boundary":await db.project.update({where:{id:f.project.id},data:{ingestCompletedAt:cutoffAt}});break;
+          case "purging":await db.project.update({where:{id:f.project.id},data:{purgeStartedAt:new Date()}});break;
+        }
+        const result=await db.$transaction(async tx=>retireSourceMediaPage(tx,await page()));
+        expect(result.processed).toBe(0);expect(result.dispatchIds).toEqual([]);
+        expect(await db.mediaCleanupObligation.count({where:{objectKey:f.videoKey}})).toBe(0);
+        expect(await db.sourceAudio.findUnique({where:{id:f.audio.id}})).not.toBeNull();
+      }finally{await db.workspace.delete({where:{id:f.workspace.id}});}
+    }
+    const f=await sourceFixture();
+    try{
+      await db.workflowRun.update({where:{id:f.run.id},data:{status:"completed"}});
+      await db.project.update({where:{id:f.project.id},data:{ingestCompletedAt:new Date(cutoffAt.getTime()-1)}});
+      expect((await db.$transaction(async tx=>retireSourceMediaPage(tx,await page()))).processed).toBe(1);
+      expect(await db.project.findUniqueOrThrow({where:{id:f.project.id}})).toMatchObject({sourceStorageKey:null});
+      expect(await db.mediaCleanupObligation.count({where:{objectKey:f.videoKey}})).toBe(1);
+    }finally{await db.workspace.delete({where:{id:f.workspace.id}});}
   });
 
 });

@@ -1,5 +1,5 @@
 import { createScheduledMediaCleanupAdmissionStore } from "./media-cleanup-admission";
-import { buildDetectedClipRows, prepareDetectedClipSeed, seedBrandMusic, runDefaultCaptionPreset, type DetectedClip, type LlmMeta } from "./clip-detection-persistence";
+import { seedBrandMusic, runDefaultCaptionPreset } from "./clip-detection-persistence";
 export { seedBrandMusic, resolveClipCaptionPresetForContentPack } from "./clip-detection-persistence";
 import { readServiceEnvironment } from "./runtime-environment";
 import { requireExecutionAdmissionOpen } from "./execution-admission";
@@ -99,7 +99,6 @@ import {
 } from "./expected-domain-failure";
 import {
   getWorkflowRunLifecycle,
-  type WorkflowAttemptRef,
 } from "./workflow-run-lifecycle";
 import {
   clipEditorDocumentPersistence,
@@ -946,26 +945,6 @@ export class ClipService {
     return toClipSnapshot(clip);
   }
 
-  async persistDetectedClips(
-    attempt: WorkflowAttemptRef,
-    clips: DetectedClip[],
-    llmMeta: LlmMeta,
-    contentPack?: ContentPack | null,
-  ) {
-    const prisma = requirePrisma();
-    const { projectId, workflowRunId } = attempt;
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { brandSnapshot: true, brandProfileSnapshot: true, sourceDurationSeconds: true, sourceProbe: true },
-    });
-
-    const detectedClipRows = buildDetectedClipRows({ projectId, workflowRunId, clips, llmMeta, seed: prepareDetectedClipSeed(project, contentPack) });
-    await getWorkflowRunLifecycle().replaceDetectedClips(
-      attempt,
-      detectedClipRows,
-    );
-  }
-
   async listClips(scope: ActorScope, projectId: string): Promise<ClipSnapshot[]> {
     await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
@@ -1531,12 +1510,8 @@ export class ClipService {
    * copies render/proxy assets for the OLD window and then deletes them once
    * the boundaries move to the selection's window, which can orphan copied
    * objects if the process dies between the two steps (plan constraint #7).
-   * This never copies renders or the preview proxy at all — the new clip
-   * gets neither, and the worker's preview-backfill poll
-   * (`getClipsNeedingPreview` / `processPendingClipPreviews` in
-   * apps/worker/src/tasks/clip-preview.ts) picks it up for a proxy on its
-   * own the same way every other proxy-less clip does; there is no separate
-   * trigger to fire from here.
+   * The new clip queues a preparation obligation for its own frozen window
+   * in the admission transaction. Rendering and Studio consume that evidence.
    *
    * `captionPreset`/`studioEdits`/`brollUrl`/`platformFit` ARE copied from the
    * source clip (Vizard: the new clip inherits the source's "look"), EXCEPT
@@ -2648,63 +2623,6 @@ export class ClipService {
     });
     if (!clip) throw new ClipActionError("clip_not_found");
     return parseClipLayoutAnalysisOutcome(clip.layoutAnalysis);
-  }
-
-  async autoQueueDefaultRenders(
-    attempt: WorkflowAttemptRef,
-    aspectRatio: ClipAspectRatio = "9:16",
-  ): Promise<void> {
-    const prisma = requirePrisma();
-    const { projectId, workflowRunId: detectionWorkflowRunId } = attempt;
-
-    const clips = await prisma.clip.findMany({
-      where: { projectId },
-      select: { id: true },
-    });
-
-    if (clips.length === 0) {
-      return;
-    }
-
-    // Same entitlement clamp as triggerClipRendering — this is the
-    // post-detection auto-render, so a free-tier project's first render must
-    // land at "720p" on the row, not the "1080p" column default, or the
-    // worker's per-row resolution scale never kicks in for it.
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { workspaceId: true },
-    });
-    const resolvedResolution = project
-      ? await resolveRequestedResolution("1080p", project.workspaceId)
-      : "1080p";
-
-    const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
-    const clipIds = clips.map((c) => c.id);
-
-    const existingRenders = await prisma.clipRender.findMany({
-      where: {
-        clipId: { in: clipIds },
-        aspectRatio: aspectRatioDb,
-        exportVariantId: null,
-        status: { in: ["pending", "rendering"] },
-      },
-      select: { clipId: true },
-    });
-
-    const alreadyQueued = new Set(existingRenders.map((r) => r.clipId));
-    const toCreate = clipIds.filter((id) => !alreadyQueued.has(id));
-
-    const renderRows = toCreate.map((clipId) => ({
-      clipId,
-      aspectRatio: aspectRatioDb,
-      status: "pending" as const,
-      resolution: resolvedResolution,
-    })) satisfies Prisma.ClipRenderCreateManyInput[];
-
-    await getWorkflowRunLifecycle().admitAutoRenderWork(attempt, {
-      idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
-      renders: renderRows,
-    });
   }
 }
 

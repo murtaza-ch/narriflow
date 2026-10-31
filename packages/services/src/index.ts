@@ -173,30 +173,16 @@ export {
 	adoptDurableMediaCopies,
 	admitMediaCleanupObligations,
 	admitRetiredClipMediaCleanup,
-	mediaCleanupWorker,
 	planRetiredClipMediaCleanup,
 	runDurableMediaCopies,
-	createMediaCleanupWorker,
-	createInMemoryMediaCleanupStore,
-	defaultMediaCleanupConfig,
-	mediaCleanupConfigFromEnv,
-	validateMediaCleanupConfig,
-	prismaMediaCleanupStore,
-	MediaCleanupClaimLost,
 	DurableMediaCopyClaimLost,
-	type ClaimedMediaCleanup,
 	type DurableMediaCopyAdoptionStore,
 	type DurableMediaCopyPlan,
 	type MediaCleanupAdmissionStore,
 	type MediaCleanupAdmissionOptions,
 	type MediaCleanupClass,
-	type MediaCleanupConfig,
-	type MediaCleanupDiagnostics,
-	type MediaCleanupHeartbeatScheduler,
 	type MediaCleanupObligationInput,
 	type MediaCleanupOrigin,
-	type MediaCleanupStorageOutcome,
-	type MediaCleanupStore,
 	type RetiredClipMedia,
 	type RetiredClipMediaCleanupStore,
 } from "./media-cleanup";
@@ -220,12 +206,7 @@ export {
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
 	ProjectServiceError,
-	purgeExpiredProjectSources,
-	purgeOldWorkflowEvents,
-	isProjectSourcePurgeEligible,
-	retentionCutoffDate,
 	type ProjectFailureCode,
-	type ProjectSourcePurgeCandidate,
 } from "./project.service";
 export {
 	createUploadSessionModule,
@@ -309,12 +290,7 @@ export {
 	AnalyticsServiceError,
 	type AnalyticsFailureCode,
 } from "./analytics.service";
-export {
-	CAPTURE_OFFSETS_MINUTES,
-	createPerformanceSync,
-	type PerformanceSkipReason,
-} from "./performance-sync";
-export { getPerformanceSync } from "./performance-sync-runtime";
+export {CAPTURE_OFFSETS_MINUTES} from "./performance-capture-contract";
 export { performanceService, PerformanceService } from "./performance.service";
 export {
 	computePerformanceGuidance,
@@ -489,14 +465,11 @@ export {
 	workflowHttpFailureDisposition,
 	rethrowWorkflowAttemptLost,
 	WORKFLOW_LEASE_DURATION_MS,
-	WORKFLOW_HEARTBEAT_INTERVAL_MS,
+	type WorkflowAttemptContext,
 	WORKFLOW_MAX_ATTEMPTS,
 	WORKFLOW_RETRIES_EXHAUSTED_CODE,
 	type WorkflowAttemptRef,
 	type WorkflowExecutionReference,
-	type ClaimedWorkflowAttempt,
-	type WorkflowAttemptContext,
-	type WaitingWorkflowAttempt,
 	type ProviderAttemptReference,
 	type ProviderSubmissionIntent,
 	type ProviderIds,
@@ -511,7 +484,6 @@ export {
 	type WorkflowFailureDisposition,
 	type CompleteTranscriptInput,
 	type AdmitWorkflowRunInput,
-	workerShutdownDrainMs,
 } from "./workflow-run-lifecycle";
 export { finalizeScribeTranscript } from "./scribe-transcript-runtime";
 export { scribeRawStorageKey, type FinalizeScribeTranscriptInput } from "./scribe-transcript";
@@ -547,7 +519,6 @@ export {
 	acceptTikTokPublicationWebhook,
 	TikTokPublicationWebhookError,
 } from "./social-publication-tiktok-webhook";
-export * from "./optional-redis";
 export {
 	notificationService,
 	NotificationService,
@@ -602,10 +573,9 @@ export {
 } from "./processing-usage";
 export { getProcessingUsage } from "./processing-usage-runtime";
 export { createDriveTokenCipher, createGoogleDriveFileReader, driveDownloadRefusal, driveFileMediaUrl, DriveSourceError, googleDriveFileReader, readDriveFileMetadata, verifyDriveAccessToken, type DriveFileMetadata, type DriveFileReader, type DriveTokenCipher } from "./drive-source";
-export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
+export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, type IngestClaimRef, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 
-export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
-export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
+export type { DurableLayoutEvidence, DurableLayoutEvidenceReader, ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
 export type { ActorScope } from "./actor-scope";
 
 export { createOperationReceiptExecutor, operationFingerprint, OperationIdempotencyConflictError, RECEIPT_COMMANDS, type ReceiptCommand, type IntegrationMutation, type OperationReceiptIdentity } from "./operation-receipt";
@@ -626,7 +596,7 @@ export { callbackSigningSecrets } from "./completion-callback-runtime";
 export { createWebhookDisabledNotifier, requireWebhookTypeScopes, webhookView, type WebhookCredential, type WebhookDisabledNotice, type WebhookNoticeResult } from "./webhook-subscription";
 export { webhookSubscriptions, notifyDisabledWebhook } from "./webhook-subscription-runtime";
 export { StandingGrantError, normalizeReviewerEmails } from "./standing-grant";
-export { acceptProposalUnderGrant, getStandingGrantMaintenance, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
+export { acceptProposalUnderGrant, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
 
 export { chunkUtterances, PASSAGE_MAX_MS, PASSAGE_MIN_MS, type TranscriptPassageDraft } from "./library-passages";
 export { LibrarySearch, LibrarySearchError, lexicalQueryText, type LibrarySearchDependencies, type LibrarySearchInput } from "./library-search";
@@ -658,7 +628,7 @@ export { reviewsCommands } from "./reviews-commands-runtime";
 export { syncClipExportAggregate, syncClipExportAggregates } from "./clip-export-aggregates";
 
 export * from "./render-group-contract";
-export { RenderGroupLifecycle, RenderGroupAttemptLost, getRenderGroupLifecycle, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
+export { RenderGroupLifecycle, RenderGroupAttemptLost, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
 
 export { createPendingBusinessWorkspaceService, type PendingBusinessWorkspaceDependencies } from "./pending-business-workspace.service";
 
@@ -756,7 +726,7 @@ export * from "./execution-source-recovery-pages";
 export * from "./execution-selection-restore";
 export * from "./execution-preparation-restore";
 export * from "./execution-recovery-locks";
-export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";
+export { planPublicationRecoveryPage, planStandingGrantAuthorityPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";
 export { DubbingExecution, createDubbingExecution, type DubbingArtifactCommit } from "./dubbing-execution";
 export { getDubbingExecution } from "./dubbing-execution-runtime";
 export { dubbingInputBinding, encodeDubbingInput, decodeDubbingInput } from "./dubbing-input";

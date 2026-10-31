@@ -126,7 +126,7 @@ export function buildEditedTimeMap(
 // fall entirely between frame boundaries below 20fps). 0.1s guarantees at
 // least 2 frames at 20fps (1 frame at 10fps) — a safe floor across realistic
 // source frame rates. Shared by the worker's render-time cut plan
-// (apps/worker/src/tasks/cut-plan.ts) and the studio's live-preview timeline
+// (packages/composition-plan/src/clip-composition-plan.ts) and the studio's live-preview timeline
 // so preview and export can never disagree about what counts as "nothing
 // kept."
 export const MIN_KEPT_SEGMENT_SEC = 0.1;

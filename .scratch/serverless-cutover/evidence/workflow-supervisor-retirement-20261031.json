@@ -1,0 +1,306 @@
+{
+  "date": "2026-10-31",
+  "ticket": "23",
+  "scope": "WorkflowRunLifecycle production poller and supervisor retirement",
+  "status": "workflow_group_layout_quota_retirement_checkpoint_passed",
+  "removed_production_paths": [
+    "global claim(stage)",
+    "global render rescue scan",
+    "process heartbeat/runAttempt/supervisor map and shutdown timers",
+    "provider wait scan and unconfirmed-provider scanner wrapper",
+    "global expired-attempt reaper",
+    "WorkflowEvent channel scanner/lease/backoff delivery",
+    "unused worker-only child command wrappers",
+    "clip.service persistDetectedClips/autoQueueDefaultRenders worker-only wrappers"
+  ],
+  "retained_authority": [
+    "exact immutable dispatch lookup + current epoch",
+    "Core acquire/start/renew/progress/release/fail/targeted expiry",
+    "same-Tx typed native finalizers and provider correlation methods",
+    "unleased selection/render prepare/finalize/settle",
+    "HTTP/MCP admission/cancellation"
+  ],
+  "removed_obsolete_test_titles": [
+    "export-bundle commands own their fenced child transactions",
+    "claim returns the one explicit attempt protocol",
+    "progress and dubbing artifacts are fenced by the explicit attempt",
+    "one of twenty racing workers owns a queued run",
+    "an expired owner cannot settle after another attempt reclaims the run",
+    "a stale attempt cannot write a child artifact inside a fenced transaction",
+    "a stale render attempt cannot publish media analysis",
+    "media analysis writes are limited to the frozen Render Work Set",
+    "automatic-layout evidence is create-only and never upgrades unknown engines",
+    "a stage-specific child command rejects an attempt from another stage",
+    "a child command rejects an attempt ref with the wrong project",
+    "graceful shutdown %s releases Workflow Attempts without spending retries",
+    "dubbing retains earlier completed outputs after %s and %s",
+    "terminal dubbing failure settles unclaimed queued siblings and releases their usage",
+    "shutdown release cannot refund an expired claim or change its replacement",
+    "coordinator release preserves healthy groups and their completed and permanent outcomes",
+    "unstarted group resource release consumes no media budget",
+    "shutdown releases a claim before an unresponsive handler returns",
+    "a peer cannot claim a released attempt until its grace period passes",
+    "a heartbeat blocked behind the handler's committed render settlement does not lose ownership",
+    "true lease loss before render settlement commits still aborts the handler",
+    "heartbeat renews ownership and a live attempt is not reaped",
+    "Workflow Attempt deadlines do not shift with the database session timezone",
+    "a lease renewed after reaper discovery wins the expiry compare-and-set",
+    "Workflow Event delivery starts each lease when its work begins",
+    "Workflow Event claiming rechecks backoff after discovery",
+    "Workflow Event delivery reloads completed channel checkpoints after claiming",
+    "a stale Workflow Event execution cannot clear a newer claim by the same worker",
+    "an unavailable Redis publisher is not acknowledged as delivered",
+    "aggregate completion persists an explicit partial outcome",
+    "a detection attempt atomically admits unowned auto-render work",
+    "a captioned video's export is admitted by the transaction that completes detection, once, and only for the attempt that owns the clip"
+  ],
+  "replacement_seams": [
+    {
+      "subjects": [
+        "owner races",
+        "stale tuples/owners",
+        "start once",
+        "failed transaction rollback",
+        "renewal vs watchdog",
+        "deadline and replay"
+      ],
+      "files": [
+        "packages/services/src/executor-control.db.test.ts",
+        "packages/services/src/targeted-workflow-execution.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "actual child process start ACK",
+        "renewal loss stops child",
+        "expired acquire replay refused",
+        "SIGKILL cancellation"
+      ],
+      "files": [
+        "apps/media/python/tests/test_control.py",
+        "apps/media/python/tests/test_process.py"
+      ]
+    },
+    {
+      "subjects": [
+        "progress transaction rollback",
+        "bounded paging",
+        "lost acknowledgement repair",
+        "revocation",
+        "retention gaps"
+      ],
+      "files": [
+        "packages/services/src/progress-outbox.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "immutable preparation/source/editor/engine bindings",
+        "late source revocation",
+        "exact artifact roles",
+        "projection rollback",
+        "native lease expiry"
+      ],
+      "files": [
+        "packages/services/src/clip-preparation.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "one accepted Dub per immutable WorkflowRun",
+        "paid unknown retains reservation",
+        "same-Project accepted-run isolation",
+        "known failure/release/expiry",
+        "sealed result reuse"
+      ],
+      "files": [
+        "packages/services/src/dubbing-execution.db.test.ts"
+      ],
+      "obsolete_contract": "A pre014 run held several unbound queued Dubs. Current accepted ClipDub.workflowRunId is immutable unique; no project/null-FK fallback remains."
+    },
+    {
+      "subjects": [
+        "caption-only export once",
+        "whole-source boundaries",
+        "plan output clamp",
+        "no model permission",
+        "frozen replay"
+      ],
+      "files": [
+        "packages/services/src/clip-selection-preparation.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "export bundle typed child transaction ownership",
+        "sealed output completion",
+        "deadline and restore preservation"
+      ],
+      "files": [
+        "packages/services/src/export-bundle-execution.db.test.ts"
+      ]
+    }
+  ],
+  "ported_here": [
+    "unleased render parent admission/frozen membership/replay",
+    "real SourceCore\u2192PreparationCore\u2192RenderCore fixture",
+    "real start charges through three native retry generations",
+    "successful and permanent sibling preservation",
+    "terminal lineage+notification facts+export callbacks",
+    "selection cleanup deletion and rollback via actual window results/global finalizer",
+    "Brand Profile persistence and unowned auto-render handoff",
+    "monotonic project event sequences",
+    "actual durable progress outbox delivery",
+    "supplied/declined/no-audio caption plan admission"
+  ],
+  "verification": {
+    "workflow_lifecycle_pg": {
+      "tests": 75,
+      "assertions": 504,
+      "failures": 0
+    },
+    "current_core_workflow_selection_preparation_progress_pg": {
+      "tests": 56,
+      "assertions": 410,
+      "failures": 0
+    },
+    "dubbing_pg": {
+      "tests": 8,
+      "assertions": 215,
+      "failures": 0
+    },
+    "native_control_python": {
+      "tests": 11,
+      "failures": 0
+    },
+    "fast_workflow_failure": {
+      "tests": 3,
+      "assertions": 7,
+      "failures": 0
+    },
+    "workflow_render_manual_retry_pg": {
+      "tests": 88,
+      "assertions": 570,
+      "failures": 0
+    },
+    "current_preparation_finishing_quota_core_pg": {
+      "tests": 85,
+      "assertions": 586,
+      "failures": 0
+    },
+    "generation_usage_pg": {
+      "tests": 17,
+      "assertions": 90,
+      "failures": 0
+    },
+    "finishing_pg": {
+      "tests": 37,
+      "assertions": 223,
+      "failures": 0
+    },
+    "editor_persistence_pg": {
+      "tests": 36,
+      "assertions": 171,
+      "failures": 0
+    },
+    "native_layout_camera_fast": {
+      "tests": 38,
+      "assertions": 283,
+      "failures": 0
+    }
+  },
+  "remaining": [
+    "full current Workflow runner including actor-scoped read/admission semantics",
+    "parent-owned full repository and deployed retirement acceptance",
+    "media-owned unused standalone native diagnostic wrapper test ports"
+  ],
+  "render_retirement": {
+    "production": [
+      "RenderGroup global claim/reaper/heartbeat and process-facing wrapper commands",
+      "unused background RenderGroup evidence writer",
+      "unreferenced native render-group-executor.ts process supervisor"
+    ],
+    "removed_tests": {
+      "packages/services/src/render-group-lifecycle.db.test.ts": [
+        "atomic partition admission is idempotent and validates frozen identities",
+        "a committed render keeps the caption characters it left out, and nothing when none",
+        "generic parent completion cannot bypass live group settlement",
+        "ten-group progress polling bounds database round trips while a child renders",
+        "SIGKILL of a real lease-owning process preserves completion and charges only its interrupted group",
+        "two simultaneous replicas claim distinct groups and duplicate claim has one winner",
+        "coordinator death and reclaim beyond three claims preserves live group token and variant state",
+        "stale child lease, parent generation and invalidated membership reject every child writer",
+        "poison group exhausts only its charged starts while healthy siblings finish",
+        "pre-start expiry/rejection and graceful shutdown refund once with drain deferral",
+        "mixed siblings retain success/permanent outcomes and retry only transient member",
+        "duplicate completion reconciles committed bytes after token expiry and parent terminal settlement",
+        "a lost commit acknowledgement retains a queryable durable completion",
+        "late variants enter exactly one follow-up under duplicate terminal settlement",
+        "background layout defers live rendering and resumes after its lease ends",
+        "cancelling queued coordination closes group leases and invalidates current membership",
+        "DB time after a parent lock wait rejects an expired heartbeat",
+        "deleted automatic members become superseded without stranding healthy membership"
+      ],
+      "packages/services/src/workflow-render-rescue.db.test.ts": [
+        "rescues usable work and atomically links only pending exports with its queued event",
+        "competing rescuers admit one run and event",
+        "an ordinary admission winning the Project lock prevents rescue and export relinking",
+        "expired or purging Projects and pending work already bound to terminal runs are not rescued",
+        "rescues no work after the discovered candidate settles before its transaction",
+        "rechecks Project availability after candidate discovery",
+        "an export linkage failure rolls back admission, event and sequence allocation"
+      ]
+    },
+    "current_seams": [
+      "packages/services/src/render-group-replicas.db.test.ts",
+      "packages/services/src/clip-preparation.db.test.ts",
+      "packages/services/src/executor-control.db.test.ts",
+      "packages/services/src/targeted-workflow-execution.db.test.ts",
+      "packages/services/src/workflow-run-lifecycle.db.test.ts",
+      "packages/services/src/execution-maintenance.db.test.ts",
+      "apps/media/python/tests/test_control.py",
+      "apps/media/python/tests/test_process.py"
+    ],
+    "contract_changes": [
+      "parent has no executor owner or lease",
+      "only registered exact IDs may start; hourly repair never invents an orphan render admission",
+      "Core charges native process start, and an unstarted release remains uncharged",
+      "native commits replay the same inbox delivery after lost wake acknowledgement",
+      "successful and permanent members survive a retry; new output assignments include only unsettled members",
+      "source observations belong to the immutable preparation producer, not background render writers"
+    ],
+    "current_additional_checks": [
+      "four actual concurrent groups/eight committed outputs",
+      "twenty busy duplicate native invocations cannot acquire an owner",
+      "exact lease watchdog and successor",
+      "pre-start release and once-only successor start",
+      "idempotent partition and changed dispatch hash refusal",
+      "omitted caption glyph diagnostics and clean sibling",
+      "lost native output acknowledgement survives parent terminal settlement",
+      "manual retry races/rollback/frozen snapshot preservation through real old and new native executions"
+    ],
+    "old_process_timing_assertions": "Controlled host sleeps, parent-heartbeat timers, and global queue discovery are retired. Physical SIGKILL/renewal-loss behavior is covered by actual native subprocess gates; deployed HD timing/resource acceptance remains separate parent evidence."
+  },
+  "layout_retirement": {
+    "removed_production": [
+      "LayoutEvidenceLifecycle background preview scan, compare-and-set proxy publication, Automatic claim/lease/timer supervisor, completion/defer and transient legacy envelope reset",
+      "unused DB singleton runtime getter"
+    ],
+    "remaining_contract": "A pure DurableLayoutEvidenceReader supplies the immutable preparation observations to the renderer. Native validates frozen source/window/editor/engine fingerprints; no DB/background ownership exists in this interface.",
+    "temporary_native_type": "ClipPendingAutoLayoutAnalysis remains pure input typing for the standalone native diagnostic wrapper. Media agent is porting its two test consumers and removing that unused wrapper. It confers no execution or publication authority.",
+    "removed_old_mock_contract_tests": [
+      "renews throughout work longer than the original lease",
+      "renewal loss cancels active IO and cannot release a replacement owner",
+      "shutdown releases immediately when a handler ignores cancellation",
+      "targeted transient evidence reset is bounded and touches only failed infrastructure envelopes",
+      "a late evidence read is bound to the frozen editor revision and preview and returns stored evidence verbatim",
+      "background completion keeps the provenance that tells a render whose crops these are"
+    ],
+    "replacement_seams": [
+      "packages/services/src/clip-preparation.db.test.ts: real Generic lease/retry, exact source/editor/engine manifest, changed source revocation, late frozen export completion preserves current live Clip, publication rollback and ACK replay",
+      "packages/services/src/clip-editor-document-persistence.db.test.ts: public unknown-evidence read fails closed and never upgrades stored facts, canonical editor mutation/retirement transaction",
+      "apps/media/src/layout-evidence.test.ts and camera-cut-timing.test.ts: actual shared detector owner, source identity/window compatibility, typed unavailable center-crop behavior",
+      "apps/media/python/tests/test_control.py and test_process.py: actual child renewal loss, cancellation and SIGKILL ownership fences"
+    ]
+  }
+}

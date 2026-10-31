@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -19,6 +20,7 @@ const root = resolve(import.meta.dir, "../../..");
 const databaseUrl = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? envValue(resolve(root, "packages/db/.env"), "DIRECT_URL") ?? envValue(resolve(root, "packages/db/.env"), "DATABASE_URL");
 if (!databaseUrl) throw new Error("DIRECT_URL or DATABASE_URL is required");
 const schema = `vizard_expansion_test_${randomUUID().replaceAll("-", "")}`;
+assertIsolatedDatabaseGateTarget(databaseUrl);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 try {

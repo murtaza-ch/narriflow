@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "../../../packages/services/scripts/db-gate-target";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -38,6 +39,7 @@ const schema =
 if (!/^authenticated_request_policy_test_[a-z0-9_]+$/.test(schema)) {
   throw new Error("Unsafe Authenticated Request Policy test schema name");
 }
+assertIsolatedDatabaseGateTarget(databaseUrl);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 async function run(command: string[], env: Record<string, string>) {

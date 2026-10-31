@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-31",
+  "workspace": "murtazach275",
+  "environment": "main",
+  "app": "narriflow-media-gates",
+  "sourceCommit": "be3e5ebf7b9f26eece09588c353d322b00b9492a",
+  "immutableTrackedArchive": true,
+  "deploySeconds": 186.327,
+  "render": {
+    "wallSeconds": 186.995,
+    "profile": "render",
+    "toolchainFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "success": {
+      "outcome": {
+        "status": "completed",
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "superseded": 0
+      },
+      "bytesTransferred": 494958,
+      "upstreamRequests": 3,
+      "detectorExecutions": 0,
+      "starts": 1,
+      "artifacts": [
+        {
+          "role": "render_variant",
+          "byteLength": 693374,
+          "sha256": "3f29e9418776db4a182188e716e1ca24af3e57cdf934a7b48fd008bc8033a6d4"
+        }
+      ]
+    },
+    "permanentFailure": {
+      "outcome": {
+        "status": "failed",
+        "requested": 1,
+        "succeeded": 0,
+        "failed": 1,
+        "superseded": 0
+      },
+      "bytesTransferred": 164986,
+      "upstreamRequests": 1,
+      "detectorExecutions": 0,
+      "starts": 1,
+      "artifacts": [
+        {
+          "role": "render_outcome",
+          "byteLength": 225,
+          "sha256": "dbf0f8ff115a81af93a1027a7aafd65a26c1d640883f6bde2ffdbdc9fc283631"
+        }
+      ]
+    },
+    "lostAcknowledgementRetained": true,
+    "providerRequests": 0,
+    "databaseRequests": 0
+  },
+  "lean": {
+    "toolchainFingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+    "dubbingCases": 5,
+    "bundleCases": 2,
+    "externalProviderRequests": 0,
+    "databaseRequests": 0
+  },
+  "scope": "Actual deployed Functions using loopback provider/control/storage fixtures; no live Worker/PostgreSQL/R2/provider end-to-end acceptance is claimed.",
+  "rawHashes": {
+    "native-function-render-result.json": "f178621ab668ad9c1eea752c04bdf07b97b05da6797ccf5ef0ba73528f75a046",
+    "modal-dubbing-bundle-verifier.json": "ee8504a589dd7d2c2e609c14c4523a1711559068604f0adf85bdad14c0789ab5",
+    "modal-latest-process-policy-deploy.log": "4480c37e65c9a8a9d91e8bc16bc57320832e58cf5342e09fed00d1aa83a08c3c"
+  }
+}

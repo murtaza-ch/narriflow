@@ -18,7 +18,7 @@ const enabled = process.env.ALLOW_INTEGRATION_DB_TESTS === "1" && Boolean(databa
 const describeDb = enabled ? describe : describe.skip;
 setDefaultTimeout(180_000);
 
-const URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+const URL = "https://www.dropbox.com/s/recipe-source/video.mp4";
 const CREDENTIAL = { scopes: ["projects:read", "processing:write"] };
 const FINISHING = { topClips: 2, minScore: 40, aspectRatios: ["9:16"], resolution: "1080p", copyPlatforms: [], delivery: "ready_to_review", queueAccountIds: [] } as const satisfies FinishingSettingsInput;
 
@@ -269,7 +269,7 @@ describeDb("Recipes on PostgreSQL", () => {
     test("a generation freezes the Recipe's finishing, and a retry after an edit replays that run", bindServiceTestEnvironment(globalPrisma.bind(async () => {
       const owner = await workspace();
       const recipe = await recipeService.create(owner.scope, input("Generate", 6, FINISHING));
-      const project = await prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title: "Ready", sourceMediaUrl: "https://example.test/ready.mp4", sourceDurationSeconds: 60, ingestStatus: "ready" } });
+      const project = await prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title: "Ready", sourceMediaUrl: "https://example.test/ready.mp4", sourceDurationSeconds: 60, sourceProbe: { durationSec: 60, video: null, audio: null }, ingestStatus: "ready" } });
       // Every accepted intake holds a credit reservation until speech-to-text settles it.
       await prisma.processingUsageReservation.create({ data: { projectId: project.id, workspaceId: owner.workspaceId, actorUserId: owner.user.id, intakeKind: "upload",
         periodStart: processingPeriodStart(new Date()), reservedSeconds: creditDebitSeconds(60) } });

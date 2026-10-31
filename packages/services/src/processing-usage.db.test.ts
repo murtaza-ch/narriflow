@@ -19,8 +19,9 @@ import {
   lowestTier,
   planLimits,
 } from "@narriflow/validators";
-import { processIngestJob } from "../../../apps/worker/src/tasks/ingest";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../apps/media/src/worker-process";
+import { startIngestTestExecution } from "./ingest-execution-test-support";
+import { ingestExecutionInputHash } from "./ingest-source-execution";
+import { createSourceVideoValidator } from "./source-readiness";
 import { createDriveTokenCipher, createGoogleDriveFileReader, DriveSourceError } from "./drive-source";
 import { projectRetentionService } from "./project-retention.service";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
@@ -187,33 +188,17 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
   }
 
   async function ingestMeasuredSource(module: ProcessingUsage, projectId: string, durationSec: number) {
-    const failures: string[] = [];
-    await processIngestJob({
-      id: randomUUID(), projectId, jobType: "link_import", claimId: randomUUID(), attemptCount: 1,
-      payload: { url: "https://www.dropbox.com/s/test/source.mp4?dl=0" },
-    }, {
-      usage: module,
-      workerProcess: {
-        execute: async () => { throw new Error("No subprocess expected"); },
-        inspectMedia: async () => ({ durationSec, sourceProbe: { durationSec, video: null, audio: null } }) as Awaited<ReturnType<WorkerProcessModule["inspectMedia"]>>,
-        withScratchDirectory: (prefix, work) => productionWorkerProcessModule.withScratchDirectory(prefix, work),
-      },
-      fetchSource: async () => new Response("source bytes", { headers: { "content-type": "video/mp4" } }),
-      putSource: async () => {},
-      lifecycle: {
-        progress: async () => {}, pinSource: async () => {},
-        complete: async (_job, source) => {
-          await prisma.project.update({ where: { id: projectId }, data: {
-            sourceDurationSeconds: source.sourceDurationSeconds, sourceProbe: source.sourceProbe ?? undefined, ingestStatus: "ready",
-          } });
-        },
-        fail: async (_job, code) => {
-          failures.push(code);
-          return { outcome: "permanent", terminalErrorCode: code };
-        },
-      },
-    });
-    return failures;
+    const workflow = new WorkflowRunLifecycle({ prisma });
+    const domain = new IngestJobLifecycle({ prisma, workflow, usage: module, requireRetryActor: async () => {},
+      validateVideo: createSourceVideoValidator(module), sourceBucket: "ingest-test", executionInputHash: job => ingestExecutionInputHash(job, "f".repeat(64)) });
+    const job = await prisma.$transaction(tx => domain.enqueue(tx, { projectId, jobType: "link_import",
+      payload: { provider: "dropbox", url: "https://www.dropbox.com/s/test/source.mp4" }, acquisition: { audioPolicy: "none" } }));
+    const execution = await startIngestTestExecution(prisma, domain, workflow, job.id);
+    expect(await execution.complete(durationSec)).toMatchObject({ disposition: "committed" });
+    await prisma.contentPack.create({ data: { projectId, ...STORED_PACK } });
+    const reference = await prisma.$transaction(tx => domain.queueExecutionWithinTransaction(tx, job.id));
+    if (!reference) throw Error("Missing source handoff");
+    return domain.handoffGeneration(reference);
   }
 
   test("runtime capacity summary and admission use the catalog despite environment overrides", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -246,27 +231,26 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     }
   })));
 
-  test("worker ingest charges 60.01 measured seconds as two credits through settlement", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("native source handoff charges 60.01 measured seconds as two credits exactly once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
     const project = await measuredProject(ws.id, 60, { ingestStatus: "queued" });
     await reserve(module, ws.id, { projectId: project.id, declaredSeconds: 60 });
-    expect(await ingestMeasuredSource(module, project.id, 60.01)).toEqual([]);
-    expect(await module.summarize(ws.id)).toMatchObject({ reservedCredits: 2 });
-    expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 120 });
+    expect(await ingestMeasuredSource(module, project.id, 60.01)).toMatchObject({ kind: "admitted" });
+    expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: false, settledSeconds: 120 });
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 2, reservedCredits: 0 });
   })));
 
-  test("worker ingest refuses a source a fraction above its plan's duration cap", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("native source handoff refuses a source a fraction above its plan duration cap", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
     const cap = planLimits("creator").maxSourceSeconds;
     const project = await measuredProject(ws.id, cap, { ingestStatus: "queued" });
     await reserve(module, ws.id, { projectId: project.id, declaredSeconds: cap });
-    expect(await ingestMeasuredSource(module, project.id, cap + 0.01)).toEqual(["upload_too_long"]);
-    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ ingestStatus: "queued", sourceDurationSeconds: null });
+    expect(await ingestMeasuredSource(module, project.id, cap + 0.01)).toMatchObject({ kind: "refused" });
+    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "upload_too_long" });
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 0 });
   })));
 

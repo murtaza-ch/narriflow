@@ -1,298 +1,64 @@
 # Narriflow monorepo
 
-Narriflow turns long videos into captioned short clips, with content repurposing, voiceover dubbing, and social publishing. It is a pre-production Bun monorepo.
+Narriflow turns long videos into captioned short clips, with content repurposing, dubbing and social publishing. It is a pre-production Bun monorepo. Use Bun1.3.6, pinned in `package.json` and the native images.
 
-Start with [local environment files](#local-environment-files), [database setup](#database-setup), and the [local pipeline](#local-pipeline). Use Bun 1.3.6, the version pinned in `package.json` and the worker image.
-
-Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [architecture decisions](docs/adr/README.md).
+Current domain vocabulary lives in [GLOSSARY.md](GLOSSARY.md). [ADR0019](docs/adr/0019-serverless-execution.md) and the [execution inventory](docs/serverless-execution-inventory.md) describe the serverless architecture. The integrated candidate remains admission-closed until the [cutover gates](docs/runbooks/serverless-cutover.md) pass.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
-| `apps/web` | Next.js App Router UI, docs, and Clerk sign-in. A client of the API: no database, storage, billing or provider credentials |
-| `apps/api` | Hono-on-Bun API: first-party `/api/*`, public REST `/api/v1/*`, remote `/mcp`, provider webhooks and the progress stream |
-| `apps/worker` | Media processing, workflow attempts, publishing, and maintenance loops |
-| `apps/mcp` | Optional workspace API-key stdio MCP server |
-| `packages/services` | Shared domain services and runtime wiring |
-| `packages/db` | Prisma schema, migrations, and database client |
-| `packages/validators` | Zod schemas, caption constants, and provider capabilities |
+| `apps/web` | Next.js16 UI, public docs and Clerk sign-in on Vercel. Calls the API directly |
+| `apps/api` | Hono on Cloudflare Workers. First-party routes, public REST, remote MCP, webhooks, Workflows and Durable Objects |
+| `apps/media` | One-shot Modal Functions and outbound laptop fetch agent. Pinned Python/Bun images own native media and arbitrary-URL egress |
+| `apps/mcp` | Authenticated stdio bridge to the remote MCP endpoint |
+| `packages/services` | Domain transitions, usage, fenced execution, dispatch and recovery |
+| `packages/db` | Prisma schema, migrations and invocation-scoped adapter-pg clients |
+| `packages/validators` | Shared schemas, pricing, captions and provider capabilities |
 | `packages/composition-plan` | Shared Studio preview and export composition policy |
-| `packages/api-client` | Typed browser client for the API: transport, cache scope, queries, mutations, progress stream, public OpenAPI document |
-| `packages/mcp-core` | Shared MCP tools, authentication, and transport support |
-| `packages/ui` | Chakra UI v3 components and Blueline theme |
-| `packages/auth`, `packages/email`, `packages/config` | Shared authentication, email, and configuration |
-| `integrations/zapier` | Separate npm project: the Zapier app over the public REST API |
-| `integrations/make` | Make custom app definition (JSON for Make's Apps SDK) over the public REST API |
+| `packages/api-client` | Browser transport, queries/mutations, progress sockets and generated public OpenAPI |
+| `packages/mcp-core` | Remote MCP tools, resources, Apps, Tasks and authentication |
+| `packages/ui`, `packages/auth`, `packages/email`, `packages/config` | Shared UI, authentication, email and configuration |
+| `integrations/zapier`, `integrations/make` | External integration definitions and their independent tests |
 
-## Stack
+## Execution model
 
-- Package manager + task runner: Bun
-- Monorepo orchestrator: Turborepo
-- Web app: Next.js 16 (Vercel), React Query for remote UI state
-- API: Hono on Bun (Railway) at its own origin; the browser calls it directly with a Clerk session Bearer token
-- Database: Prisma + PostgreSQL
-- Background processing: custom Bun worker with independent workflow, publishing, and maintenance loops
-- Media storage: Cloudflare R2
-- Live workflow events: Upstash Redis pub/sub
-- Auth: Clerk
-- Speech-to-text: ElevenLabs Scribe v2 (`scribe_v2`), async with a signed webhook
-- Clip detection: OpenAI Responses API, default `gpt-5.4-mini`
-- Voiceover dubbing: OpenAI audio speech + FFmpeg audio replacement
-- Rendering: FFmpeg/ffprobe
-- Social delivery: durable scheduling queue + native OAuth publishing clients and a supported webhook receiver channel
-- MCP: stateless `2026-07-28` Streamable HTTP endpoint at the API's `/mcp`, plus a scoped API-key stdio fallback in `apps/mcp`
+PostgreSQL owns admission, usage, attempts, artifacts and terminal outcomes. A domain transition commits its dispatch obligation in the same transaction. Cloudflare Workflows schedules exact references, waits durably and rereads the ledger before each action. Hourly safety recovery and daily retention use bounded indexed pages.
 
-## Homepage
+Modal and the laptop hold no database credential. Each invocation acquires an executor owner through the signed API, records its real process start and publishes only assigned artifacts under the live fence. Cancellation revokes database authority before best-effort external cancellation. Attempt-unique R2 keys protect committed objects from stale executors.
 
-The homepage at `/` lives in `apps/web/app/(home)` with its own nav and footer; the other marketing pages keep the shared header in `(marketing)/layout.tsx`. It is a marketing re-theme that sits outside the Blueline app tokens: a light paper hero and dark product sections, Newsreader headlines over Geist, and flat colour only (blue for actions, caption yellow for tags). The hero's link field docks at the bottom of the screen while a pinned, scroll-driven product scene plays above it. Motion uses GSAP ScrollTrigger on Lenis smooth scrolling; visitors with `prefers-reduced-motion` get static layouts. Plan cards, caption styles and limits read from `@narriflow/validators`, so the copy cannot drift from billing or the caption catalog. The footer signup opens account creation with the email filled in (`/?auth=sign-up&email=…`); there is no separate newsletter list. The imagery in `apps/web/public/landing/` is generated and illustrative: the people shown are not customers.
+Source acquisition preserves a whole original video and an independently verified audio binding. Audio can start Scribe while video finishes. Supplied or declined captions preserve their own path. Selection uses bounded concurrent transcript windows followed by one global finalizer. Deduplicated preparation supplies render groups, Studio preview, audio peaks and layout evidence. A RenderRun parent remains unleased while its children work and settles the frozen batch once.
 
-## Before testing
-
-You need these accounts and credentials before the ingest, transcription, clip detection, and rendering flow can be tested end to end:
-
-| Service | Required now | Why |
-| --- | --- | --- |
-| PostgreSQL / Neon / Supabase Postgres | Yes | Stores projects, ingest jobs, workflow runs, and transcripts |
-| Clerk | Yes | Required for sign-in and project ownership |
-| Cloudflare R2 | Yes | Stores uploaded files, normalized source media, raw transcription payloads, and rendered clips |
-| ElevenLabs | Yes | Scribe v2 speech-to-text; the worker needs an API key and a dashboard webhook id, the API needs the webhook secret |
-| Upstash Redis | Recommended for real testing | Required for live workflow updates between the separate API and worker processes |
-| Resend | Optional for this workflow | Only needed for email/webhook flows |
-| Stripe | Optional for Free-plan local testing | Required for paid checkout, entitlements, and billing reconciliation |
-| OpenAI | Yes for AI generation | Required for clip detection, content-suite generation, translation, and voiceover dubbing |
-| Pexels | Optional | Enables stock B-roll search and automatic B-roll cutaways |
-| Native social developer apps | Optional for publishing | Required to connect TikTok, YouTube, Instagram, LinkedIn, and X accounts for native scheduled posting |
-| Social publisher webhook | Optional publishing channel | Delivers posts scheduled without a connected account to a configured receiver |
-
-## End-to-end clips workflow
-
-Narriflow turns a source media input into rendered short clips through the background stages below:
-
-1. Ingest: accepts an uploaded file, YouTube URL, direct media link, or RSS episode and stores the normalized source media in Cloudflare R2.
-2. Transcription: extracts audio with FFmpeg and submits it to ElevenLabs Scribe v2 as an async job with `webhook=true`. When no language was chosen and the source is at least 60 s, the worker first probes three 20 s windows (one synchronous Scribe call) and pins the language only on a confident, mapped result. The run then waits: the API's signed `POST /api/webhooks/elevenlabs` makes it due when the transcript is ready, and a worker loop fetches the result by `transcription_id` as a recovery path (`ELEVENLABS_RESULT_POLL_INTERVAL_MS`). Completed transcripts preserve speaker labels, word timings with provider spacing, and the detected language and its confidence. The language catalog comes from the shared validators (`packages/validators/src/language.ts`); see [ADR 0018](docs/adr/0018-elevenlabs-scribe-transcription.md).
-3. Moment detection: sends the completed transcript to OpenAI through the Responses API. The default model is `gpt-5.4-mini`, and the worker requests strict JSON output for clip candidates.
-4. Clip rendering: creates subtitle files, crops/scales video for the requested aspect ratios, burns captions with FFmpeg, uploads MP4 renders to R2, and exposes downloads through presigned URLs.
-5. Optional voiceover dubbing: translates the clip transcript when needed, synthesizes narration with OpenAI audio speech, swaps the rendered clip audio track with FFmpeg, and uploads MP3/MP4 dub assets to R2.
-6. Optional publishing automation: RSS autopilot rules queue new episode imports, and due social posts publish through the selected native OAuth account. Posts without a connected account can still fall back to `SOCIAL_PUBLISH_WEBHOOK_URL`.
-
-The worker runs independent loops for ingest, STT submission and results, moment detection, rendering, dubbing, export bundles, previews, layout analysis, generated media, thumbnail frames, RSS autopilot, and social publishing. Separate maintenance loops handle Upload Sessions, workflow leases and events, billing reconciliation, notifications, retention, and media cleanup. Slow RSS requests do not block due social posts.
-
-```mermaid
-flowchart TD
-  A["User input source"] --> B{"Source type"}
-  B --> C["File upload"]
-  B --> D["YouTube URL"]
-  B --> E["RSS episode"]
-  B --> LL["Direct media link"]
-  LL --> LI["IngestJob: link_import"]
-  LI --> LM["Worker downloads media"]
-  LM --> N
-
-  C --> F["API: create Upload Session and authorize parts"]
-  F --> G["Browser uploads directly to Cloudflare R2"]
-  G --> H["Complete and verify Upload Session; create Project"]
-  H --> I["IngestJob: upload_finalize"]
-
-  D --> J["IngestJob: link_import"]
-  J --> K["Worker downloads with yt-dlp"]
-  E --> L["IngestJob: rss_import"]
-  L --> M["Worker downloads enclosure"]
-
-  I --> N["Project source stored in R2"]
-  K --> N
-  M --> N
-
-  N --> O["User starts generation"]
-  O --> P["WorkflowRun: stt"]
-  P --> Q["Worker downloads media from R2"]
-  Q --> R["FFmpeg extracts mono 16 kHz audio"]
-  R --> S["ElevenLabs Scribe v2 transcription"]
-  S --> T["Transcript saved in Postgres; raw payload saved in R2"]
-
-  T --> U["Auto-queue WorkflowRun: moment_detection"]
-  U --> V["Worker formats transcript chunks"]
-  V --> W["OpenAI gpt-5.4-mini finds clip-worthy moments"]
-  W --> X["Validate JSON; normalize timing; compute scores"]
-  X --> Y["Clip rows saved in Postgres"]
-  Y --> Z["Render selected clips, or auto-render if enabled"]
-  Z --> AA["WorkflowRun: clip_rendering"]
-  AA --> AB["ffprobe inspects source media"]
-  AB --> AC["Generate SRT or ASS captions"]
-  AC --> AD["FFmpeg crops, scales, burns captions, encodes MP4"]
-  AD --> AE["Rendered clips uploaded to R2"]
-  AE --> AF["User downloads via presigned R2 URL"]
-
-  P -.progress.-> GG["WorkflowEvent table + Upstash Redis pub/sub"]
-  U -.progress.-> GG
-  AA -.progress.-> GG
-  GG --> HH["SSE stream updates project page"]
-```
-
-## Service responsibilities
-
-| Service or model | Role in the workflow |
-| --- | --- |
-| Clerk | Authenticates users and gates project access. |
-| Cloudflare R2 | Stores source media, raw transcription JSON, and rendered MP4 clips. |
-| PostgreSQL + Prisma | Stores projects, ingest jobs, workflow runs, transcripts, clips, render variants, and workflow events. |
-| Upstash Redis | Broadcasts workflow events to the API's progress stream for live updates. Events are also persisted in Postgres. |
-| ElevenLabs Scribe v2 | Converts extracted audio into transcript text, speaker-separated utterances, and word timings; completes asynchronously through a signed webhook. |
-| OpenAI `gpt-5.4-mini` | Analyzes transcripts and returns structured clip candidates with timestamps, hook text, category, reasoning, and scores. |
-| OpenAI audio speech | Generates voiceover audio for dubbed clips. |
-| FFmpeg | Extracts audio for transcription and renders final MP4 clips with cropped video and burned captions. |
-| ffprobe | Reads source media stream metadata such as width, height, audio presence, and video presence. |
-| yt-dlp | Downloads YouTube sources before they are stored in R2. |
-| Pexels | Optional stock video source for B-roll cutaways. |
-| Publisher webhook | Optional integration point that receives due social posts and returns posted URLs/metrics. |
-
-## Technical terms
-
-- Ingest: preparing an input source so the rest of the pipeline can process it.
-- Workflow run: a queued background stage such as `stt`, `moment_detection`, or `clip_rendering`.
-- Ingest job: a queued background task for source preparation, such as YouTube or RSS import.
-- STT: speech-to-text.
-- Utterance: a timed block of speech, usually a speaker turn or sentence-like segment.
-- Diarization: separating speakers in a transcript.
-- Word timing: timestamps for individual words, used for accurate captions.
-- Content pack: generation preferences such as target clip count, target duration, tone constraints, and caption preset.
-- Clip generation mode: the moment detection strategy. The current default is `best`, which keeps a selective ranked set instead of surfacing every possible clip.
-- Idempotency key: a request key that helps avoid duplicate queued work.
-- SRT: a simple subtitle format with numbered timestamp cues.
-- ASS: a richer subtitle format that supports positioning and per-word styling.
-- Presigned URL: a temporary URL for uploading or downloading R2 objects without exposing storage credentials.
-- SSE: Server-Sent Events, a browser stream used for one-way live updates from the server.
-- Pub/sub: publish/subscribe messaging; here, Redis broadcasts workflow events to connected clients.
-- Autopilot rule: a saved RSS feed watcher that imports unseen episodes with a Recipe, whose Brand Profile and generation settings are frozen onto each import before ingest finishes.
-- Recipe: a named, revisioned set of Workspace settings (Brand Profile, language, Content Pack, finishing) that rules and REST/MCP requests reference.
-- MCP server: the stateless Model Context Protocol endpoint at `/mcp`, with OAuth or workspace API-key authentication and a local stdio fallback.
+ProjectProgress uses authorized hibernating WebSockets. RateLimiter is a separate Durable Object and new mutations fail closed when it is unavailable. Hyperdrive query caching is off; Prisma connections belong to one request or Workflow step. Liveness and DO keepalives do not open Postgres.
 
 ## Local environment files
 
-Use app-local env files instead of inventing a root `.env`.
+Copy these examples into their app-local destinations and fill the required settings:
 
-### Use the shared development resources
+| Example | Local destination |
+| --- | --- |
+| [`apps/api/.dev.vars.example`](apps/api/.dev.vars.example) | `apps/api/.dev.vars` |
+| [`apps/web/.env.example`](apps/web/.env.example) | `apps/web/.env.local` |
+| [`packages/db/.env.example`](packages/db/.env.example) | `packages/db/.env` |
+| [`apps/mcp/.env.example`](apps/mcp/.env.example), optional | `apps/mcp/.env` |
 
-Local apps, Vercel, and Railway share the Neon `narriflow-dev` project's
-`production` branch and `neondb` database, the `narriflow-dev` R2 bucket,
-and Upstash `narriflow-dev-live`. PostgreSQL carries the durable ingest and
-workflow queues. A local worker can process jobs created on Vercel, and the
-Railway worker can process jobs created on localhost. Redis broadcasts their
-live events to the API, which streams them to every web app.
+Never create a root dotenv file. Keep secrets out of Git, images and logs. The web holds public settings and the Clerk secret its proxy needs. The API owns backend provider and storage control credentials; Modal receives only its narrowly selected secret stores and short-lived grants.
 
-Copy shared database, storage, and Redis settings from the Railway `dev`
-worker into the app-local env files. Keep localhost URLs, development mode,
-and native media-tool paths local. Provider accounts and data encryption keys
-must agree so either worker can resume a job. A local Redis service is not
-needed. The shared bucket must allow localhost and the deployed web origin in
-its CORS rules.
+Use the same Clerk instance in web and API. `NEXT_PUBLIC_API_URL` must match `API_ORIGIN`; `NEXT_PUBLIC_APP_URL` must match `WEB_ORIGIN`. The browser calls the API with a Clerk Bearer token and a Workspace hint. Human links use the web origin. There is no API rewrite through Vercel.
 
-Run the network-free identity check before starting localhost:
+Run `bun run env:check` before startup. It checks the three local files, database identities, origins, Clerk and Wrangler R2 selection without printing credentials. Verify deployed secrets and bindings separately. [The environment runbook](docs/runbooks/environments.md) records resource IDs and the candidate's isolation boundary.
 
-```bash
-bun run env:check
-```
+## Cloud services
 
-Processing Capacity comes only from the plan catalog: Free/Creator/Pro/Business
-allow 2/5/10/20 videos in flight. API and worker use the same limit, with no
-environment overrides. Worker concurrency settings control execution separately.
+Cloudflare requires Workers Paid, Workflows, Durable Objects, uncached Hyperdrive and a private R2 bucket. Use account `5359f28d385b8632c3abee12d1f5b011`, owned by `murtazach275@gmail.com`. Native execution uses Modal workspace `murtazach275`, environment `main`.
 
-It reads `apps/api/.env`, `apps/web/.env.local`, `apps/worker/.env`, and
-`packages/db/.env`, then compares their database host/port/database/schema, R2
-account/bucket, Redis endpoint, the API and web origins (the browser's
-`NEXT_PUBLIC_API_URL` must be `API_ORIGIN`, `NEXT_PUBLIC_APP_URL` must be
-`WEB_ORIGIN`, and the worker's `WORKER_APP_BASE_URL` must be the web origin), the
-shared Clerk instance, and shared secrets, without printing credentials. Redis
-may be absent from both the API and worker files. It warns, by name only, about
-backend settings still left in the web file. This validates local file consistency only; it does not inspect or
-compare Vercel, Railway, or Upstash runtime settings. The Prisma CLI uses
-`DIRECT_URL` from
-`packages/db/.env` in preference to `DATABASE_URL`, so keep both values on the
-shared branch. Apply migrations once to the shared database before starting
-new code locally or deploying it.
+Keep bindings in `apps/api/wrangler.jsonc`. Cloudflare's dashboard can edit a deployed Worker's bindings, but record the configuration in Git before deploying. The development launcher generates a local `remote: true` Service binding to the selected deployed Worker's `DevelopmentBindings` entrypoint. That Worker owns the real Workflows and progress/mailbox Durable Objects. Both ends must use the same database, epoch, signing keys and storage selection.
 
-See the [environment runbook](docs/runbooks/environments.md) for the current
-resource assignments and deployment steps.
+R2 CORS must allow each web origin, direct uploads and the `ETag` response header. Keep a verified seven-day incomplete-multipart abort rule. Application cleanup acts on exact admitted keys and rechecks current references and grant holds.
 
-### API
+Scribe requires `ELEVENLABS_API_KEY`, `ELEVENLABS_WEBHOOK_ID` and the API's signing secret. Configure the signed completed-transcription webhook at `${API_ORIGIN}/api/webhooks/elevenlabs`. Durable correlated recovery shares its finalizer. Language selection, whole-source audio and provider-request uncertainty remain explicit. See [ADR0018](docs/adr/0018-elevenlabs-scribe-transcription.md).
 
-Copy [`apps/api/.env.example`](apps/api/.env.example) to `apps/api/.env`. The API owns every backend credential: database, Clerk secret, R2, Redis, Stripe, AI and social providers, review and MCP secrets.
-
-Minimum values for the current clips workflow:
-
-- `API_ORIGIN=http://localhost:4000` and `WEB_ORIGIN=http://localhost:3000`. Provider callbacks, machine clients and MCP use the API origin; people are sent to the web origin. They are never derived from the request's `Host`.
-- `CORS_ALLOWED_ORIGINS` and `CLERK_AUTHORIZED_PARTIES`: the exact web origin (no wildcards, never the API origin).
-- `DATABASE_URL` (pooled; `DIRECT_URL` belongs to the migration job)
-- `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `CLERK_WEBHOOK_SECRET`
-- `ELEVENLABS_WEBHOOK_SECRET`: signs the speech-to-text results ElevenLabs posts to `${API_ORIGIN}/api/webhooks/elevenlabs`; the API refuses to start without it.
-- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`
-
-Notes:
-
-- Upstash is optional. Set `UPSTASH_REDIS_URL` (the URL carries the credential) in both the API and worker for live cross-process workflow events.
-- Set `CLERK_OAUTH_ISSUER` for remote MCP OAuth; it is not required for ordinary browser sign-in. The MCP resource is `${API_ORIGIN}/mcp`.
-- `RESEND_API_KEY` and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook, invite and review email path locally.
-- Project notification emails are sent by the worker; they use `RESEND_API_KEY` and the verified sending domain in `NARRIFLOW_EMAIL_FROM`. Completion emails follow each Project's notification preference.
-- Generated stills require `OPENAI_API_KEY`, `OPENAI_IMAGE_MODEL=gpt-image-2`, and the same `GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION`, `GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY`, `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, and `GENERATED_MEDIA_PROMPT_FINGERPRINT_KEY` in the API and worker. Generate the encryption and fingerprint keys independently with `openssl rand -base64 32`. Keep retired encryption keys in the JSON keyring until every prompt encrypted by them passes its 30-day retention deadline. Without valid settings Studio shows image generation as temporarily unavailable; `bun run env:check` confirms the API and worker carry the same values.
-- Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${API_ORIGIN}/api/social/oauth/callback` as the redirect URI in each provider app.
-- Google Drive imports need `NEXT_PUBLIC_GOOGLE_CLIENT_ID` in the API too (it verifies the picker token) and `SOCIAL_TOKEN_ENCRYPTION_KEY` in both the API and worker (it seals the Drive access token on the Ingest Job).
-- Free-project retention needs no settings: new Free Projects get the 72-hour deadline and paid-to-Free Workspaces get the 28-day download grace from the plan catalog (`packages/validators/src/pricing.ts`).
-- Implemented features are enabled without release flags. Plan entitlements, Workspace access, and provider configuration control availability.
-- `EXPORT_BUNDLE_RETENTION_DAYS=7` controls completed ZIP availability and is frozen into each bundle at admission. Accepted values are whole days from 1 through 30.
-
-Run it alone with `bun --cwd apps/api run dev` (port 4000). `GET /api/health` reports liveness, `GET /api/ready` readiness.
-
-### Web
-
-Copy [`apps/web/.env.example`](apps/web/.env.example) to `apps/web/.env.local`. The web app is a client of the API and holds no backend credentials.
-
-Minimum values:
-
-- `NEXT_PUBLIC_API_URL`: the API origin the browser calls. It is read at build time too (the Content Security Policy `connect-src` and the docs examples), so set it wherever the app is built.
-- `NEXT_PUBLIC_APP_URL`
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` (the proxy only redirects unsigned page navigations)
-
-The upload page offers **Google Drive** and **Dropbox** pickers only when configured. Drive needs `NEXT_PUBLIC_GOOGLE_API_KEY`, `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, and `NEXT_PUBLIC_GOOGLE_APP_ID` together. Dropbox needs `NEXT_PUBLIC_DROPBOX_APP_KEY`. Create the apps with [the cloud file picker runbook](docs/runbooks/cloud-file-pickers.md).
-
-`bun run check:web-split` fails if web imports a backend package, defines a Server Action or a backend route handler, or (after a build) ships backend module or secret-variable names in its client bundle. Biome enforces the same import ban while editing.
-
-### Worker
-
-Copy [`apps/worker/.env.example`](apps/worker/.env.example) to `apps/worker/.env`.
-
-Minimum values for the current clips workflow:
-
-- `DATABASE_URL`
-- `R2_ACCOUNT_ID`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET`
-- `ELEVENLABS_API_KEY`
-- `ELEVENLABS_WEBHOOK_ID`, the id of the dashboard speech-to-text webhook (a missing id fails transcription visibly; there is no synchronous fallback). The API needs the matching `ELEVENLABS_WEBHOOK_SECRET`.
-- `OPENAI_API_KEY`
-- `SOCIAL_PUBLICATION_CHECKPOINT_KEY`, at least 32 characters, for the worker's publication loop. Generate with `openssl rand -base64 32`. Provider credentials are only needed when publishing.
-
-Useful runtime settings:
-
-- `PORT=4001`
-- `INGEST_POLL_INTERVAL_MS=2500`
-- `ELEVENLABS_RESULT_POLL_INTERVAL_MS=30000` for the GET recovery of waiting transcriptions, and `ELEVENLABS_RESULT_TIMEOUT_MS=7200000` as the wait ceiling.
-- `OPENAI_CLIP_MODEL=gpt-5.4-mini`
-- `OPENAI_IMAGE_MODEL=gpt-image-2` and `OPENAI_IMAGE_QUALITY=medium` for Studio still generation.
-- The four `GENERATED_MEDIA_PROMPT_*` values must match the API values. Rotate encryption by moving the old version and key into `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, assigning a new active version, and generating a new encryption key. Do not rotate the fingerprint key unless prompt idempotency records have been cleared intentionally.
-- Unknown generated-image outcomes are inspected and explicitly settled with `bun run --cwd packages/services generated-media:operator -- --workspace <uuid> --job <uuid>`; reconciliation additionally requires `--decision`, `--actor`, and `--reason`.
-- `OPENAI_CLIP_REASONING_EFFORT=medium`
-- Library search embeds finished transcripts with `text-embedding-3-small` using `OPENAI_API_KEY` in both the worker (indexing) and the API (queries). The database needs the `vector` extension; see [the environment runbook](docs/runbooks/environments.md). `LIBRARY_INDEX_POLL_INTERVAL_MS=10000` and `LIBRARY_INDEX_BATCH_SIZE=5` tune the indexing loop.
-- Finishing (exporting the best clips and writing copy once a generation completes) runs in the worker's `finishing` loop. It uses `OPENAI_API_KEY` for assisted copy; `FINISHING_POLL_INTERVAL_MS=15000` and `FINISHING_BATCH_SIZE=3` tune it. Apply the `generation_finishing` migration before deploying.
-- `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
-- `WORKER_REAP_INTERVAL_MS=300000` to recover Ingest Jobs whose fenced claim lease expired. Graceful shutdown releases claims without consuming automatic retries.
-- `WORKFLOW_LEASE_REAP_INTERVAL_MS=30000` and `WORKFLOW_EVENT_DISPATCH_INTERVAL_MS=1000` for protocol-v2 Workflow Attempt recovery and durable event delivery.
-- `PEXELS_API_KEY=...` to enable stock B-roll search and automatic B-roll cutaways.
-- `SOCIAL_TOKEN_ENCRYPTION_KEY` and the social provider client IDs/secrets to refresh tokens and publish scheduled posts natively. Also configure `SOCIAL_PUBLICATION_CHECKPOINT_KEY` with at least 32 characters to protect durable provider checkpoints. See [Social Publication operations](docs/runbooks/social-publication.md).
-- Social Publication fixes Meta Graph at `v24.0` and LinkedIn at `202608` as shared API/worker capability contracts. If `META_GRAPH_VERSION` or `LINKEDIN_API_VERSION` is set, it must match that contract; upgrade the shared contract and adapter fixtures together.
-- `SOCIAL_PUBLISH_WEBHOOK_URL` and `SOCIAL_PUBLISH_WEBHOOK_SECRET` configure the supported receiver channel for posts scheduled without a connected social account. The worker signs the JSON body as `X-Narriflow-Signature: sha256=...`.
-- `AUTOPILOT_BATCH_SIZE=3` to control how many due RSS rules are checked per worker poll.
-- Retention batch sizes for warnings, purges, and receipt cleanup (`PROJECT_RETENTION_WARNING_BATCH_SIZE`, `PROJECT_RETENTION_PURGE_BATCH_SIZE`, `PROJECT_RETENTION_RECEIPT_CLEANUP_BATCH_SIZE`) default to `100`, `10`, and `100`. The retention periods themselves come from the plan catalog.
+OpenAI supplies clip selection, generated media, translation and speech. Provider/model settings live in the API example and the selected Modal secret stores. Pexels, Stripe, social developer apps and the existing email adapter are required only for their respective product flows.
 
 ### Native social publishing
 
@@ -355,195 +121,52 @@ Clip detection settings are stored in the latest content pack for each project:
 - Default platform targets: TikTok, YouTube Shorts, and Instagram Reels.
 - Clips render automatically after detection in the selected aspect ratio.
 
-The worker asks OpenAI for a larger candidate pool than the final clip count, repairs timings against word-level transcript data, deduplicates overlaps, then selects a diverse set across the source timeline. Ranking combines hook strength, emotional intensity, story completeness, pacing, duration fit, and platform scores.
-
-## Third-party setup
-
-### Clerk
-
-1. Create a Clerk application.
-2. Enable the sign-in and sign-up methods you want to use locally.
-3. Copy the publishable key into the web and API env files, and the secret key into both (the web proxy and the API verify sessions with the same instance).
-4. Add the webhook secret to the API if you plan to exercise the Clerk webhook route locally; point the webhook endpoint at `${API_ORIGIN}/api/webhooks/clerk`.
-
-### Cloudflare R2
-
-1. Create an R2 bucket.
-2. Create an API token with object read/write access for that bucket.
-3. Copy `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET` into both the API and worker env files.
-4. Configure bucket CORS for each deployed web origin (the browser uploads directly): allow `PUT`, allow the `Content-Type` request header, and expose the `ETag` response header. Multipart finalization cannot safely continue if browser JavaScript cannot read each part ETag.
-5. Add an R2 lifecycle rule that aborts incomplete multipart uploads after seven days. Set `R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS=7` in the worker after verifying the deployed bucket rule. Production workers refuse to start without this confirmation; Narriflow's six-day hard session lifetime and autonomous compensation remain the primary cleanup path.
-
-### ElevenLabs Scribe
-
-1. Create an ElevenLabs account and generate an API key with speech-to-text access. Set it as `ELEVENLABS_API_KEY` in the worker env.
-2. In the ElevenLabs dashboard create a workspace webhook for the "Transcription completed" event: URL `{API_ORIGIN}/api/webhooks/elevenlabs`, HMAC auth, retries on. Copy the webhook id to `ELEVENLABS_WEBHOOK_ID` (worker) and the signing secret to `ELEVENLABS_WEBHOOK_SECRET` (API). The development webhook is described in [the environment runbook](docs/runbooks/environments.md#elevenlabs-scribe-webhook).
-3. The worker sends `model_id=scribe_v2`, `diarize=true`, `timestamps_granularity=word`, `webhook=true` and `webhook_id`. A chosen language is sent as the provider's ISO 639-3 code; on Auto the language probe pins it when confident (see [ADR 0018](docs/adr/0018-elevenlabs-scribe-transcription.md)).
-4. The webhook endpoint accepts bodies up to 128 MiB because Scribe posts the whole transcript. It verifies `elevenlabs-signature` (HMAC-SHA256 over `<t>.<raw body>`, 30-minute window) before it reads anything.
-
-Current multilingual limits are explicit: language-detection confidence is preserved and shown, but no eval-backed threshold blocks downstream work yet; there is no reusable project glossary/language profile and dubbing does not yet perform segment-level duration alignment. Captions are script-aware (CJK/Thai joining, HarfBuzz word geometry, RTL direction, locale fonts); the worker image carries broad Noto core, extra, CJK, and emoji glyph coverage. Roman-script captions (Roman Urdu, Hinglish) and re-transcribing in another language are not supported.
-
-### OpenAI
-
-1. Create an OpenAI API key.
-2. Set `OPENAI_API_KEY` in the worker env.
-3. Optionally override clip/content/dub models with `OPENAI_CLIP_MODEL`, `OPENAI_CONTENT_MODEL`, `OPENAI_DUB_TRANSLATION_MODEL`, and `OPENAI_TTS_MODEL`.
-
-### Upstash Redis
-
-1. Create a Redis database.
-2. Copy the connection URL into both the API and worker env files.
-
-Why this matters:
-
-- The worker publishes workflow events.
-- The API subscribes to workflow events and serves them as the SSE progress stream.
-- Without Upstash, the page can still recover state from the database on reload, but live progress updates between processes will be missing.
-
-## Local machine dependencies
-
-Install these on the machine that runs the worker:
-
-- `ffmpeg` and `ffprobe`, including caption fonts and libass support
-- `yt-dlp`
-
-Why:
-
-- `ffmpeg` is required to extract transcription-ready audio before uploading it to ElevenLabs.
-- YouTube imports require `yt-dlp[default]==2026.8.19`, Deno 2.9.5, and the
-  bgutil PO-token plugin/server 2.0.0. The worker starts the private token server
-  before claiming jobs. Use the worker image locally for matching dependencies;
-  native setup and full-download verification are in
-  [the YouTube import runbook](docs/runbooks/youtube-import.md).
-
-Face-tracked Automatic, Split, and Screen framing requires Python with `opencv-python-headless` and `numpy`, plus the YuNet model. Set `REFRAME_PYTHON` to the interpreter and `REFRAME_MODEL_PATH` to the model file. The worker image includes these dependencies.
-
-If you use the worker container, [`apps/worker/Dockerfile`](apps/worker/Dockerfile) installs the media tools, caption fonts, OpenCV, and the YuNet model.
+Selection asks OpenAI for a larger candidate pool than the final clip count, repairs timings against word-level transcript data, deduplicates overlaps, then selects a diverse set across the source timeline. Ranking combines hook strength, emotional intensity, story completeness, pacing, duration fit, and platform scores.
 
 ## Database setup
 
-Copy [the database env example](packages/db/.env.example) to `packages/db/.env` and configure `DATABASE_URL`. For Neon, use a pooled application connection and set `DIRECT_URL` to the direct connection for migrations. Keep the web and worker pointed at the same database.
-
-Run from the repository root:
+`packages/db/prisma.config.ts` reads `packages/db/.env` and prefers `DIRECT_URL` over `DATABASE_URL`. Verify both target the intended database before applying migrations. Apply the committed chain once before deploying dependent code; never let an executor migrate.
 
 ```bash
 bun install --frozen-lockfile
-bun --cwd packages/db run prisma:migrate:deploy
-bun --cwd packages/db run prisma:generate
+bun run --cwd packages/db prisma:migrate:deploy
+bun run --cwd packages/db prisma:generate
 ```
 
-`bun install` also generates the Prisma client through its postinstall script. Regenerate it after schema changes. Apply the complete migration chain before starting web or worker.
-
-Run `bun --cwd packages/db run prisma:migrate:dev` only when authoring a new migration against a development database. Use `prisma:migrate:deploy` to apply committed migrations in local, shared, staging, and production environments.
-
-The package commands load `packages/db/prisma.config.ts`, which prefers `DIRECT_URL` over `DATABASE_URL`. They read `packages/db/.env`; the app env files are not loaded by these commands.
+Regenerate Prisma after schema changes. PostgreSQL needs pgvector for library search. The extension belongs in `public`; disposable-schema tests never drop it.
 
 ## Local pipeline
 
-Run the apps in separate terminals:
+Start the selected cloud Worker, bindings and Modal deployment before local development. `bun run dev` starts the local web and API. The launcher uses local Hyperdrive connection settings and the remote scheduler binding, so verify their database identity agrees first.
 
 ```bash
-bun --cwd apps/api run dev
-```
-
-```bash
-bun --cwd apps/web run dev
-```
-
-```bash
-bun --cwd apps/worker run dev
-```
-
-Or run all three through Turbo (the optional stdio MCP server is excluded):
-
-```bash
+bun run env:check
 bun run dev
 ```
 
-Runtime ports:
+Web uses `http://localhost:3000`; API uses `http://localhost:4000`. Static `/api/health` does not query the database. `/api/ready` verifies the required migration names and execution admission state.
 
-- Web: `http://localhost:3000`
-- API: `http://localhost:4000` (`/api/health`, `/api/ready`)
-- Worker health: `http://localhost:4001/health`
+YouTube development uses the Mac's network through an allowlisted outbound device session. Build the pinned lean image as `narriflow-media:local-fetch`, obtain the session through the API's local-fetch route and keep its JSON file mode0600. Then run:
 
-## Test flow
+```bash
+bun run fetch:local --session /absolute/private/device-session.json
+```
 
-1. Start the API, web app and worker.
-2. Sign in through Clerk.
-3. Create a project by upload, YouTube URL, or RSS import.
-4. Wait until ingest reaches `ready`.
-5. Start transcription from the project page.
-6. Confirm the worker claims an `stt` workflow run.
-7. Confirm the transcript appears in the project page.
-8. Confirm the worker auto-queues and completes `moment_detection`.
-9. Confirm detected clips appear in the project page.
-10. Confirm the worker automatically queues renders after clip detection.
-11. Download completed rendered clips from the project page.
-12. Export transcript `TXT`, `SRT`, and `VTT` if needed.
+The agent opens outbound connections only, runs at most two native jobs and has no DB credential. Its native startup check must match the configured fingerprint. At launch, the configured sticky HTTP proxy uses the same shared acquisition library. Proxy purchase remains deferred.
 
-## Transcription validation
-
-For a local transcription test, configure the worker env with `ELEVENLABS_API_KEY` and `ELEVENLABS_WEBHOOK_ID` and the API env with `ELEVENLABS_WEBHOOK_SECRET`, start the API, web app and worker, ingest a source, and start transcription from the project page. A local API is not reachable by ElevenLabs, so the webhook cannot arrive; the worker's GET recovery loop completes the run after `ELEVENLABS_RESULT_POLL_INTERVAL_MS`. To exercise the webhook itself, use the deployed dev API. The completed transcript row should show provider `elevenlabs` and model `scribe_v2`, the raw Scribe JSON should be stored under `projects/{projectId}/transcripts/` in R2, and clip detection should auto-queue without provider-specific changes.
-
-For a quality bakeoff against other outputs, run the same source media through the pipeline and compare:
-
-- full transcript quality
-- speaker consistency
-- utterance boundaries
-- word timestamp alignment
-- burned caption sync after FFmpeg rendering
-- GPT-5.4-mini clip candidate quality
-- total STT cost per hour
-
-## Pre-test checklist
-
-- `DATABASE_URL` points to a live Postgres database.
-- All committed Prisma migrations have been applied.
-- The API, web and worker env files all exist and `bun run env:check` passes.
-- R2 credentials work from the API and the worker.
-- `ELEVENLABS_API_KEY` and `ELEVENLABS_WEBHOOK_ID` are present in the worker, and `ELEVENLABS_WEBHOOK_SECRET` in the API.
-- `OPENAI_API_KEY` is present in the worker for clip detection.
-- Upstash is configured in the API and the worker if you want live progress updates.
-- `ffmpeg` and `yt-dlp` are installed on the worker host, or you are using the worker container.
-
-## Verification commands
-
-The default commands cover repository lint, type safety, and fast deterministic tests. The API, API client and web packages have active tests. Database suites stay out of the fast aggregate and print as skipped unless you run their disposable-schema command with PostgreSQL configured.
+## Verification
 
 ```bash
 bun run lint
 bun run typecheck
 bun run test
-bun run --cwd apps/api test:inventory   # mounted routes match their admission declarations
-bun run --cwd apps/api openapi:check     # the committed public OpenAPI document matches the REST routes
+bun run --cwd apps/api test:inventory
+bun run --cwd apps/api openapi:check
+bun run --cwd apps/api build:worker
+bun run check:web-split
+bun run env:check
 ```
 
-Run each critical PostgreSQL module against its own disposable schema before handoff:
+Build web with `NEXT_PUBLIC_API_URL` and run `bun run check:web-split -- --bundle` after the build. Fast tests skip database suites. Run every root `test:*:db` command separately with explicit isolated database variables. The guard accepts local `narriflow_serverless_gates_*` databases or the isolated serverless pipeline database, and rejects shared development before connecting. CI supplies PostgreSQL17 with pgvector independently to every matrix job.
 
-```bash
-bun run test:workflow:db
-bun run test:upload-session:db
-bun run test:workspace-billing:db
-bun run test:social-publication:db
-bun run test:clip-editor-persistence:db
-bun run test:authenticated-request-policy:db
-bun run test:brand-profiles:db
-bun run test:vizard-expansion:db
-bun run test:integration-api:db
-bun run test:library-search:db   # needs pgvector
-bun run test:processing-usage:db
-```
-
-Each database runner applies the migration chain, verifies that its connection selected the generated schema, runs only that module's database suite, and removes the schema on success or failure. A skipped suite in `bun run test` is not database verification.
-
-Remote MCP also has `bun run test:mcp:e2e`; see [MCP integration](docs/integrations/mcp.md) for authentication and deployment setup.
-
-Finish a release-quality handoff with the production dependency and build gates:
-
-```bash
-bun run audit:production
-NEXT_PUBLIC_API_URL=http://localhost:4000 bun run build
-bun run check:web-split -- --bundle   # scans the built client bundle
-```
-
-Changes to Clip deletion or Studio document behavior also require an authenticated Chrome check. Verify successful deletion, the bounded retry message for `clip_storage_delete_incomplete`, semantic no-op edits, one real dirty edit through cloud acknowledgement, Reset eligibility, Device Draft removal, and a clean console and network log.
+[Native Linux CI](apps/media/scripts/gates/native-ci.md) builds the pinned image from tracked files, then runs native and fault tests with no external network or host credentials. Exact golden parity, real cloud fences, storage, restore, quota, latency and idle checks are separate [release gates](.scratch/serverless-cutover/spec.md#7-verification-gates). Record their raw evidence before calling the cutover complete.

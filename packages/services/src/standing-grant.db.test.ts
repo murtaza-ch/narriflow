@@ -5,17 +5,29 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
-import { buildGenerationContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack,standingGrantPauseMessage } from "@narriflow/validators";
 import { autopilotService } from "./autopilot.service";
 import { recipeService } from "./recipe.service";
 import { publishingQueue } from "./publishing-queue.service";
 import { ReviewNotificationService, createReviewNotificationStore, type ReviewNotificationMailInput } from "./review-notification.service";
-import { claimDueSocialPublicationAttempts, prismaSocialPublicationAttemptStore } from "./social-publication-attempt";
+import { claimDueSocialPublicationAttempts } from "./social-publication-attempt";
+import { PublicationExecution } from "./publication-execution";
+import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
+import { appendPublicationDispatch } from "./publication-dispatch";
+import { createExecutorControl } from "./executor-control";
+import { readExecutionDispatch } from "./execution-dispatch";
+import { createPublicationProducers,appendPublicationGrantExpiry } from "./publication-producers";
+import {createNotificationExecution,appendNotificationDelivery} from "./notification-execution";
+import {prepareNotificationDelivery} from "./notification-execution-runtime";
+import {withServiceEnvironment} from "./runtime-environment";
+import {readGrantNotificationContext} from "./grant-notification-context";
+import {planStandingGrantAuthorityPage} from "./publication-maintenance";
+import {decryptReviewValue} from "./review.service";
 import { socialPublicationRecovery } from "./social-publication-recovery";
 import { emitSocialPostFinished } from "./social-post-finished";
 import { socialOAuthService } from "./social-oauth.service";
 import { createStandingGrants, ruleFingerprint } from "./standing-grant";
-import { acceptProposalUnderGrant, getStandingGrantMaintenance, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
+import { acceptProposalUnderGrant, reviewerOptOut, sendReviewRoundUnderGrant as sendBoundReviewRound, standingGrants } from "./standing-grant-runtime";
 import { workspaceMembershipService } from "./workspace-membership.service";
 import { workspaceService } from "./workspace.service";
 import { listWorkspaceEvents } from "./workspace-event";
@@ -159,9 +171,17 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 	const scope = (f: Fixture, user: "owner" | "editor" | "admin" = "owner") => ({ actorUserId: f[user].id, workspaceId: f.workspace.id });
 	const publishTerms = (f: Fixture, terms: { dailyCap?: number; weeklyCap?: number } = {}) =>
 		({ kind: "publish", autopilotRuleId: f.rule.id, socialAccountId: f.account.id, dailyCap: terms.dailyCap ?? 3, weeklyCap: terms.weeklyCap ?? 10, expiresInDays: 30 }) as const;
-	const publishGrant = (f: Fixture, terms: { dailyCap?: number; weeklyCap?: number } = {}) => standingGrants.create(scope(f), publishTerms(f, terms));
-	const reviewGrant = (f: Fixture, terms: { dailyCap?: number; weeklyCap?: number; reviewers?: string[] } = {}) =>
-		standingGrants.create(scope(f), { kind: "review_send", autopilotRuleId: f.rule.id, reviewerEmails: terms.reviewers ?? ["Client@Example.test", "editor@example.test"], dailyCap: terms.dailyCap ?? 3, weeklyCap: terms.weeklyCap ?? 10, expiresInDays: 30 });
+  type FrozenGrant={id:string;revision:number;ruleFingerprint:string};
+  const intendedPublish=new Map<string,FrozenGrant>(),intendedReview=new Map<string,FrozenGrant>();
+  const proposalIntents=new Map<string,{expectedScheduleRevision:number;expectedGrant:FrozenGrant|null}>();
+  const reviewIntents=new Map<string,FrozenGrant|null>();
+  const rememberGrant=async(f:Fixture,kind:"publish"|"review_send",id:string)=>{
+    const row=await prisma.standingGrant.findUniqueOrThrow({where:{id}}),tuple={id:row.id,revision:row.revision,ruleFingerprint:row.ruleFingerprint};
+    (kind==="publish"?intendedPublish:intendedReview).set(f.workspace.id,tuple);return tuple;
+  };
+  const publishGrant=async(f:Fixture,terms:{dailyCap?:number;weeklyCap?:number}={})=>{const grant=await standingGrants.create(scope(f),publishTerms(f,terms));await rememberGrant(f,"publish",grant.id);return grant;};
+	const reviewGrant = async (f: Fixture, terms: { dailyCap?: number; weeklyCap?: number; reviewers?: string[] } = {}) =>
+		{const grant=await standingGrants.create(scope(f), { kind: "review_send", autopilotRuleId: f.rule.id, reviewerEmails: terms.reviewers ?? ["Client@Example.test", "editor@example.test"], dailyCap: terms.dailyCap ?? 3, weeklyCap: terms.weeklyCap ?? 10, expiresInDays: 30 });await rememberGrant(f,"review_send",grant.id);return grant;};
 	const renewTerms = { dailyCap: 3, weeklyCap: 10, expiresInDays: 30 };
 	const grantRow = (id: string) => prisma.standingGrant.findUniqueOrThrow({ where: { id } });
 	const grantEvents = async (workspaceId: string, type: "grant.paused" | "grant.expired") => (await listWorkspaceEvents(prisma, { workspaceId }, { types: [type] })).data;
@@ -172,15 +192,58 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 			{ clipId: f.clip.id, exportId: f.clipExport.id, socialAccountId: accountId, caption: "Draft caption" },
 			{ source: "finishing", mutation: { clientIdempotencyKey: randomUUID() } },
 		);
-		return result.proposal.proposalId;
+		proposalIntents.set(result.proposal.proposalId,{expectedScheduleRevision:result.proposal.scheduleRevision,expectedGrant:intendedPublish.get(f.workspace.id)??null});
+    return result.proposal.proposalId;
 	}
 	const accept = (f: Fixture, proposalId: string, finishingId = f.finishing.id) =>
-		acceptProposalUnderGrant({ finishingId, workspaceId: f.workspace.id, projectId: f.project.id, proposalId });
+		acceptProposalUnderGrant({ finishingId, workspaceId: f.workspace.id, projectId: f.project.id, proposalId,...proposalIntents.get(proposalId)! });
+  // Each fixture constructs one explicit intent; repeats keep that tuple even
+  // when the grant is renewed. New source acceptance gets a fresh fixture ID.
+  async function sendReviewRoundUnderGrant(input:Omit<Parameters<typeof sendBoundReviewRound>[0],"expectedGrant">){
+    if(!reviewIntents.has(input.finishingId))reviewIntents.set(input.finishingId,intendedReview.get(input.workspaceId)??null);
+    return sendBoundReviewRound({...input,expectedGrant:reviewIntents.get(input.finishingId)!});
+  }
+  async function renewFixtureGrant(f:Fixture,input:Parameters<typeof standingGrants.renew>[1]){
+    await standingGrants.renew(scope(f),input);const row=await prisma.standingGrant.findUniqueOrThrow({where:{id:input.grantId}});await rememberGrant(f,row.kind,input.grantId);
+  }
+  const acceptByPerson=async(f:Fixture,id:string)=>publishingQueue.accept(scope(f),id,{expectedScheduleRevision:(await prisma.socialPost.findUniqueOrThrow({where:{id}})).scheduleRevision});
 	const post = (id: string) => prisma.socialPost.findUniqueOrThrow({ where: { id }, include: { proposal: true, frozenState: true } });
+  async function grantWakes(grantId:string){
+    const producer=createPublicationProducers({database:prisma,register:async()=>{}});
+    const rows=await prisma.executionDispatch.findMany({where:{kind:"maintenance",subjectId:{startsWith:`pub1.g.${grantId}.`}},orderBy:{createdAt:"asc"},take:64});
+    for(const row of rows)await producer.dispatch((await readExecutionDispatch(prisma,row.id))!.reference);
+  }
+  async function prepareKnownPublication(postId:string){
+    const objects=new Map<string,{etag:string;sha256:string;byteLength:number}>();
+    const id=await prisma.$transaction(async tx=>{await tx.socialPost.update({where:{id:postId},data:{scheduledFor:new Date(Date.now()-1000),generation:{increment:1}}});return appendPublicationDispatch(tx,postId);});
+    const domain=new PublicationExecution(prisma,{config:{operationDeadlineMs:600_000,providerCallBudget:12,processingDeadlineMs:3_600_000,reconciliationDeadlineMs:7_200_000,retry:{maxAttempts:4,maxElapsedMs:3_600_000,baseDelayMs:1000,maxDelayMs:60_000,jitterRatio:0}},checkpointCipher:createPublicationCheckpointCipher(Buffer.alloc(32,2).toString("base64")),planRefusal:async()=>null,buildInput:async snapshot=>({bytes:new TextEncoder().encode(JSON.stringify({postId:snapshot.post.id,attemptId:snapshot.attempt.id,claimId:snapshot.claim.id,nonce:(snapshot.claim.workState as {nonce:string}).nonce})),sources:[]}),inputStorage:{put:async plan=>{objects.set(plan.storageKey,{etag:'"fixture"',sha256:plan.sha256,byteLength:plan.byteLength});},head:async plan=>objects.get(plan.storageKey)??null},register:async()=>{}});
+    const prepared=await domain.prepareExecution((await readExecutionDispatch(prisma,id))!.reference);
+    if(prepared.kind!=="waiting")return {prepared,command:undefined};
+    const fence={reference:prepared.deadline.reference,attemptToken:prepared.deadline.attemptToken,owner:randomUUID()};
+    const control=createExecutorControl({database:prisma,domain,subjectKind:"social_publication",deliverWakes:async()=>{}});
+    const call=(command:unknown)=>control.execute({command,verifiedRequest:{requestHash:randomUUID().replaceAll("-","").repeat(2),metadata:{version:1,keyId:"grant-fixture",audience:"executor-control",method:"POST",canonicalTarget:"/api/execution/command",bodySha256:"0".repeat(64),timestamp:Math.floor(Date.now()/1000),deliveryId:randomUUID(),signature:"0".repeat(64)}}});
+    await call({action:"acquire",...fence,leaseSeconds:120});await call({action:"process-start",fence});
+    return {prepared,command:(command:unknown)=>call({action:"publication-command",fence,command})};
+  }
 	/** Far enough ahead that every slot has come due, and still inside a 30-day grant. */
 	const later = () => new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
-	/** Other tests leave pause notices pending in the shared schema; a pass would stop at the first it can't send. */
-	const clearOtherNotices = (except: string[]) => prisma.standingGrant.updateMany({ where: { id: { notIn: except }, pauseNoticePending: true }, data: { pauseNoticePending: false } });
+  const grantNoticeRow=(grantId:string)=>prisma.grantPauseNotificationLedger.findFirstOrThrow({where:{grantId},orderBy:{grantRevision:'desc'}});
+  type GrantNotice={to:string;grantId:string;ruleName:string;destination:string;reason:string;idempotencyKey:string};
+  async function deliverGrantNotice(grantId:string,send:(notice:GrantNotice)=>Promise<{sent:true}|{sent:false;reason:string}>){
+    const row=await grantNoticeRow(grantId),target={kind:'grant' as const,id:row.id},reference=await prisma.$transaction(tx=>appendNotificationDelivery(tx,target));
+    return withServiceEnvironment({REVIEW_ACCESS_SECRET:process.env.REVIEW_ACCESS_SECRET,RESEND_API_KEY:'fixture-never-sent',WEB_ORIGIN:'https://app.narriflow.test'},()=>createNotificationExecution({database:prisma,register:async()=>{},prepare:prepareNotificationDelivery,send:async(_target,sealed,key)=>{
+      const envelope=JSON.parse(decryptReviewValue(sealed.encrypted,reviewDeliverySecret())),context=await prisma.$transaction(tx=>readGrantNotificationContext(tx,target.id,new Date()));if(!context)throw Error('Fixture context disappeared');
+      return send({to:envelope.request.to,grantId,ruleName:context.ruleName,destination:context.destination,reason:standingGrantPauseMessage(context.reason)??'The grant paused.',idempotencyKey:key});
+    }}).run(reference));
+  }
+  async function advanceGrantNotice(grantId:string){const row=await grantNoticeRow(grantId);await prisma.grantPauseNotificationLedger.update({where:{id:row.id},data:{nextAttemptAt:new Date(Date.now()-1),generation:{increment:1}}});}
+  async function expireGrant(grantId:string){
+    const before=await grantRow(grantId),id=await prisma.$transaction(tx=>appendPublicationGrantExpiry(tx,before));
+    await createPublicationProducers({database:prisma,register:async()=>{}}).dispatch((await readExecutionDispatch(prisma,id))!.reference);await grantWakes(grantId);
+    return ['active','paused'].includes(before.status)&&(await grantRow(grantId)).status==='expired'?1:0;
+  }
+  async function reconcileGrantAuthority(f:Fixture){const row=await grantRow((await prisma.standingGrant.findFirstOrThrow({where:{workspaceId:f.workspace.id}})).id),epoch=await prisma.executionEpoch.findUniqueOrThrow({where:{id:1}});return prisma.$transaction(tx=>planStandingGrantAuthorityPage(tx,{deploymentEpoch:epoch.epoch,cutoff:row.createdAt,after:{at:row.createdAt,id:'00000000-0000-0000-0000-000000000000'},limit:32}));}
+
 
 	async function settle(postId: string, status: "failed" | "needs_attention") {
 		await prisma.socialPost.update({ where: { id: postId }, data: { status } });
@@ -218,18 +281,18 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(seen.find((grant) => grant.id === id)).toMatchObject({ status: "active", usedDay: 0, usedWeek: 0, ruleName: "Weekly show", history: [{ kind: "created", actorName: expect.any(String) }] });
 	})));
 
-	test("the maintenance sweep pauses grants the plan no longer covers, and an upgrade leaves them paused", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("the bounded authority page pauses grants the plan no longer covers, and an upgrade leaves them paused", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ tier: "pro" });
 		const { id } = await publishGrant(f);
-		await getStandingGrantMaintenance(() => null).expireDue();
+		await reconcileGrantAuthority(f);
 		expect(await grantRow(id)).toMatchObject({ status: "active" });
 		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
-		await getStandingGrantMaintenance(() => null).expireDue();
+		await reconcileGrantAuthority(f);
 		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
 		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "pro" } });
-		await getStandingGrantMaintenance(() => null).expireDue();
+		await reconcileGrantAuthority(f);
 		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
-		await expect(standingGrants.renew(scope(f), { grantId: id, ...renewTerms })).resolves.toBeUndefined();
+		await expect(renewFixtureGrant(f, { grantId: id, ...renewTerms })).resolves.toBeUndefined();
 		expect(await grantRow(id)).toMatchObject({ status: "active" });
 	})));
 
@@ -280,7 +343,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect((await standingGrants.list(scope(f))).find((grant) => grant.id === id)).toMatchObject({ usedDay: 2, usedWeek: 2 });
 
 		// The refused proposal is still there for a person, who is not held to the cap.
-		const byPerson = await publishingQueue.accept(scope(f), proposals[2]!);
+		const byPerson = await acceptByPerson(f,proposals[2]!);
 		expect(byPerson.status).toBe("scheduled");
 		expect(await post(proposals[2]!)).toMatchObject({ standingGrantId: null });
 
@@ -343,11 +406,12 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const { id } = await publishGrant(f);
 		await standingGrants.pause(scope(f), id);
 		expect(await accept(f, proposalId)).toBe("no_grant");
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		await prisma.standingGrant.update({ where: { id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
 		expect(await accept(f, proposalId)).toBe("no_grant");
 		await prisma.standingGrant.update({ where: { id }, data: { expiresAt: new Date(Date.now() + 60_000) } });
-		expect(await accept(f, proposalId)).toBe("accepted");
+		expect(await accept(f, proposalId)).toBe("no_grant");
+    expect(await accept(f,await propose(f))).toBe("accepted");
 
 		// A TikTok proposal always waits for the creator's choices, even if a grant row existed.
 		await prisma.standingGrant.create({
@@ -389,14 +453,15 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 
 		// An Editor can edit a rule, but not widen what a grant allows.
 		await autopilotService.updateRule(scope(f, "editor"), f.rule.id, { titlePrefix: "Now: " });
-		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "rule_changed", pauseNoticePending: true });
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "rule_changed" });
 		expect((await grantEvents(f.workspace.id, "grant.paused")).map((event) => event.subject)).toEqual([{ grantId: id, kind: "publish", autopilotRuleId: f.rule.id, reason: "rule_changed" }]);
 		const proposalId = await propose(f);
 		expect(await accept(f, proposalId)).toBe("no_grant");
 
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		expect((await grantRow(id)).ruleFingerprint).not.toBe(bound);
-		expect(await accept(f, proposalId)).toBe("accepted");
+    expect(await accept(f,proposalId)).toBe("no_grant");
+    expect(await accept(f,await propose(f))).toBe("accepted");
 	})));
 
 	test("a Recipe content edit pauses the grants of the rules that use it; a rename does not", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -420,7 +485,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		await recipeService.update(scope(f, "editor"), f.recipe.id, { expectedRevision: 2, contentPack: buildGenerationContentPack({ clipCountTarget: 12 }) });
 		expect(await read()).toMatchObject({ revision: 3, contentRevision: 2 });
 		for (const granted of [id, review.id]) {
-			expect(await grantRow(granted)).toMatchObject({ status: "paused", pausedReason: "rule_changed", pauseNoticePending: true });
+			expect(await grantRow(granted)).toMatchObject({ status: "paused", pausedReason: "rule_changed" });
 		}
 		const paused = (await grantEvents(f.workspace.id, "grant.paused")).map((event) => event.subject);
 		expect(paused).toHaveLength(2);
@@ -431,7 +496,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(await accept(f, await propose(f))).toBe("no_grant");
 
 		// Renewing approves the Recipe as it is now.
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		expect((await grantRow(id)).ruleFingerprint).not.toBe(bound);
 	})));
 
@@ -459,9 +524,11 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(await post(proposalId)).toMatchObject({ status: "draft", standingGrantId: null });
 
 		// So does pointing the rule at no profile at all, and the review path reads the same fingerprint.
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
+    const currentProposal=await propose(f);
 		await prisma.recipe.update({ where: { id: f.recipe.id }, data: { brandProfileId: null } });
-		expect(await accept(f, proposalId)).toBe("standing_grant_rule_changed");
+    expect(await accept(f,proposalId)).toBe("no_grant");
+		expect(await accept(f, currentProposal)).toBe("standing_grant_rule_changed");
 		const review = await reviewGrant(f);
 		// A Recipe revision bump the service didn't make (so no eager pause) is caught at delivery.
 		await prisma.recipe.update({ where: { id: f.recipe.id }, data: { contentRevision: { increment: 1 } } });
@@ -474,7 +541,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 	test("a failed or needs-attention post a grant accepted pauses that grant, once, and tells its granter", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const { id } = await publishGrant(f);
-		const byPerson = await publishingQueue.accept(scope(f), await propose(f));
+		const byPerson = await acceptByPerson(f,await propose(f));
 		const proposalId = await propose(f);
 		expect(await accept(f, proposalId)).toBe("accepted");
 
@@ -483,7 +550,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect((await grantRow(id)).status).toBe("active");
 
 		await settle(proposalId, "failed");
-		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "post_failed", pauseNoticePending: true });
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "post_failed" });
 		expect((await prisma.standingGrantEvent.findMany({ where: { grantId: id, kind: "paused" } }))).toMatchObject([{ revision: 1, reason: "post_failed", actorUserId: null }]);
 		// The grant's event and the post's are written together, and a replay adds neither.
 		await prisma.$transaction((tx) => emitSocialPostFinished(tx, { socialPostId: proposalId }));
@@ -493,37 +560,23 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(finished.filter((event) => (event.subject as { socialPostId: string }).socialPostId === proposalId)).toHaveLength(1);
 
 		// A paused grant accepts nothing more: the next proposal waits for a person.
-		const next = await propose(f);
+		let next = await propose(f);
 		expect(await accept(f, next)).toBe("no_grant");
 
-		// The granter hears once. A send that is skipped is tried again.
-		const sent: Array<{ to: string; grantId: string; reason: string; idempotencyKey: string }> = [];
-		let clock = new Date();
-		let answer: { sent: true } | { sent: false; reason: string } = { sent: false, reason: "emails_disabled" };
-		const notifier = createStandingGrants({
-			prisma,
-			requireActor: (userId, workspaceId, capability) => workspaceService.requireActor(userId, workspaceId, capability),
-			now: () => clock,
-			notifyPaused: async (notice) => {
-				sent.push(notice);
-				return answer;
-			},
-		});
-		await clearOtherNotices([id]);
-		await notifier.notifyPaused(100);
-		expect((await grantRow(id)).pauseNoticePending).toBe(true);
-		clock = new Date(Date.now() + 10 * 60_000);
-		answer = { sent: true };
-		await notifier.notifyPaused(100);
-		await notifier.notifyPaused(100);
-		const mine = sent.filter((notice) => notice.grantId === id);
-		expect(mine).toHaveLength(2);
-		expect(mine[1]).toMatchObject({ to: f.owner.primaryEmail, ruleName: "Weekly show", destination: "Grant YouTube", idempotencyKey: `standing-grant-paused:${id}:1` });
-		expect(await grantRow(id)).toMatchObject({ pauseNoticePending: false, pauseNoticeLeaseUntil: null });
+    // The same accepted notice retries with the original body and provider key.
+    const sent:GrantNotice[]=[];let answer:{sent:true}|{sent:false;reason:string}={sent:false,reason:'emails_disabled'};
+    const notify=async(notice:GrantNotice)=>{sent.push(notice);return answer;};
+    await deliverGrantNotice(id,notify);expect(await grantNoticeRow(id)).toMatchObject({status:'pending',attemptCount:1});
+    await advanceGrantNotice(id);answer={sent:true};await deliverGrantNotice(id,notify);await deliverGrantNotice(id,notify);
+    const mine=sent.filter(notice=>notice.grantId===id);expect(mine).toHaveLength(2);
+    expect(mine[1]).toMatchObject({to:f.owner.primaryEmail,ruleName:'Weekly show',destination:'Grant YouTube',idempotencyKey:`standing-grant-paused:${id}:1`});
+    expect(await grantNoticeRow(id)).toMatchObject({status:'sent',attemptCount:2,claimToken:null,leaseExpiresAt:null});
 
 		// Renewing resumes it under a new revision.
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		expect(await grantRow(id)).toMatchObject({ status: "active", revision: 2, pausedReason: null });
+    expect(await accept(f,next)).toBe("no_grant");
+    next=await propose(f);
 		expect(await accept(f, next)).toBe("accepted");
 		expect(await post(next)).toMatchObject({ standingGrantRevision: 2 });
 		// A late outcome of a post accepted under the earlier revision doesn't pause the renewed grant.
@@ -541,47 +594,19 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const sweeper = createStandingGrants({ prisma, requireActor: (userId, workspaceId, capability) => workspaceService.requireActor(userId, workspaceId, capability) });
 		await sweeper.pauseBySystem(failing.id, "post_failed");
 		await sweeper.pauseBySystem(renewed.id, "post_failed");
-		await clearOtherNotices([failing.id, renewed.id]);
 
-		const sent: string[] = [];
-		let clock = new Date();
-		let throwOnce = true;
-		const notifier = createStandingGrants({
-			prisma,
-			requireActor: (userId, workspaceId, capability) => workspaceService.requireActor(userId, workspaceId, capability),
-			now: () => clock,
-			log: () => {},
-			notifyPaused: async (notice) => {
-				if (notice.grantId === failing.id && throwOnce) {
-					throwOnce = false;
-					throw new Error("provider down");
-				}
-				sent.push(notice.grantId);
-				return { sent: true };
-			},
-		});
-		// One is renewed and one expires before any worker gets to them: neither is announced as paused.
-		await standingGrants.renew(scope(f), { grantId: renewed.id, ...renewTerms });
-		await notifier.notifyPaused(100);
-		// The send that threw is still pending, held under its lease, and goes out once the lease has run out.
-		expect(await grantRow(failing.id)).toMatchObject({ pauseNoticePending: true });
-		expect(sent).not.toContain(failing.id);
-		expect(sent).not.toContain(renewed.id);
-		clock = new Date(Date.now() + 10 * 60_000);
-		await notifier.notifyPaused(100);
-		expect(sent.filter((id) => id === failing.id)).toHaveLength(1);
-		expect(await grantRow(failing.id)).toMatchObject({ pauseNoticePending: false });
+    const sent:string[]=[];let throwOnce=true;
+    const notify=async(notice:GrantNotice)=>{if(notice.grantId===failing.id&&throwOnce){throwOnce=false;throw Error('provider down');}sent.push(notice.grantId);return{sent:true as const};};
+    // A renewal revokes the old notice without notifying its former recipient.
+    await renewFixtureGrant(f,{grantId:renewed.id,...renewTerms});
+    await deliverGrantNotice(failing.id,notify);
+    await deliverGrantNotice(renewed.id,notify);
+    expect(await grantNoticeRow(failing.id)).toMatchObject({status:'pending',attemptCount:1});expect(sent).not.toContain(failing.id);expect(sent).not.toContain(renewed.id);
+    await advanceGrantNotice(failing.id);await deliverGrantNotice(failing.id,notify);expect(sent.filter(id=>id===failing.id)).toHaveLength(1);expect((await grantNoticeRow(failing.id)).status).toBe('sent');
+    const expiring=await fixture(),lapsing=await publishGrant(expiring);await sweeper.pauseBySystem(lapsing.id,'post_failed');
+    await prisma.standingGrant.update({where:{id:lapsing.id},data:{expiresAt:new Date(Date.now()-1000)}});await expireGrant(lapsing.id);await deliverGrantNotice(lapsing.id,notify);
+    expect(sent).not.toContain(lapsing.id);expect((await grantNoticeRow(lapsing.id)).status).toBe('skipped');
 
-		// A paused grant that has since expired gets no "paused" email either.
-		const expiring = await fixture();
-		const lapsing = await publishGrant(expiring);
-		await sweeper.pauseBySystem(lapsing.id, "post_failed");
-		await prisma.standingGrant.update({ where: { id: lapsing.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
-		await sweeper.expireDue();
-		await clearOtherNotices([lapsing.id]);
-		await notifier.notifyPaused(100);
-		expect(sent).not.toContain(lapsing.id);
-		expect((await grantRow(lapsing.id)).pauseNoticePending).toBe(false);
 	})));
 
 	test("the real publisher's failure and uncertainty settle through the grant hook, and recovery doesn't resume the grant", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -590,13 +615,11 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const uncertain = await propose(f);
 		expect(await accept(f, uncertain)).toBe("accepted");
 
-		// The publisher claims the post and can't tell whether it was published.
-		const claims = await claimDueSocialPublicationAttempts({ claimantId: "grant-worker", now: later(), config: claimConfig });
-		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId: uncertain } });
-		const owned = claims.find((claim) => claim.attemptId === attempt.id);
-		if (!owned) throw new Error("expected the post to be claimed");
-		await prismaSocialPublicationAttemptStore.settleUnknown({ owned, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now: later() });
-		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "post_needs_attention", pauseNoticePending: true });
+    const execution=await prepareKnownPublication(uncertain);
+    if(!execution.command)throw Error("Expected one known publication owner");
+    await execution.command({kind:"provider_call",operation:"initialize"});
+    await execution.command({kind:"unknown",code:"publication_outcome_unknown",operation:null});
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "post_needs_attention" });
 		// The grant's pause is written with the post's own event, which follows it.
 		const feed = (await listWorkspaceEvents(prisma, { workspaceId: f.workspace.id }, { types: ["grant.paused", "social_post.finished"] })).data;
 		expect(feed.map((event) => event.type)).toEqual(["grant.paused", "social_post.finished"]);
@@ -609,12 +632,11 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect((await grantRow(id)).status).toBe("paused");
 
 		// Renewed, the next post fails in the claim itself, because its account was disconnected.
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		const failing = await propose(f);
 		expect(await accept(f, failing)).toBe("accepted");
 		await prisma.socialAccount.update({ where: { id: f.account.id }, data: { status: "revoked" } });
-		await claimDueSocialPublicationAttempts({ claimantId: "grant-worker-2", now: later(), config: claimConfig });
-		await claimDueSocialPublicationAttempts({ claimantId: "grant-worker-3", now: later(), config: claimConfig });
+		expect((await prepareKnownPublication(failing)).prepared.kind).toBe("terminal");
 		expect(await post(failing)).toMatchObject({ status: "failed" });
 		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "post_failed", revision: 2 });
 		expect(await grantEvents(f.workspace.id, "grant.paused")).toHaveLength(2);
@@ -633,7 +655,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		// Held, not failed: it is still the scheduled post it was.
 		expect(await post(proposalId)).toMatchObject({ status: "scheduled", standingGrantId: id });
 
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		await claimDueSocialPublicationAttempts({ claimantId: "released", now: later(), config: claimConfig });
 		expect(await attempts()).toBe(1);
 	})));
@@ -644,21 +666,20 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const [waiting, started] = [await propose(f), await propose(f)];
 		expect(await accept(f, waiting)).toBe("accepted");
 		expect(await accept(f, started)).toBe("accepted");
-		// The publisher is already working on one of them.
-		const claims = await claimDueSocialPublicationAttempts({ claimantId: "grant-started", now: later(), config: claimConfig });
-		expect(claims.length).toBeGreaterThan(0);
-		await prisma.socialPublicationAttempt.deleteMany({ where: { socialPostId: waiting } });
-		await prisma.socialPost.update({ where: { id: waiting }, data: { status: "scheduled" } });
+    const execution=await prepareKnownPublication(started);
+    if(!execution.command)throw Error("Expected one known publication owner");
+    await execution.command({kind:"provider_call",operation:"initialize"});
 
 		await standingGrants.revoke(scope(f), id);
+    await grantWakes(id);
 		expect(await post(waiting)).toMatchObject({ status: "draft", scheduledFor: null, standingGrantId: null, standingGrantRevision: null, frozenState: null, proposal: { acceptedAt: null, acceptedByUserId: null } });
 		// An attempt that has begun can't be taken back; it finishes.
 		expect(await post(started)).toMatchObject({ standingGrantId: id });
-		expect(await prisma.standingGrantEvent.findMany({ where: { grantId: id, kind: "returned" } })).toMatchObject([{ reason: expect.stringContaining("1 scheduled post returned") }]);
+		expect(await prisma.standingGrantEvent.findMany({ where: { grantId: id, kind: "returned" } })).toMatchObject([{ reason: expect.stringContaining("returned for fresh approval") }]);
 		await claimDueSocialPublicationAttempts({ claimantId: "after-revoke", now: later(), config: claimConfig });
 		expect(await prisma.socialPublicationAttempt.count({ where: { socialPostId: waiting } })).toBe(0);
 		expect((await publishingQueue.listProposals(scope(f))).map((proposal) => proposal.proposalId)).toContain(waiting);
-		const again = await publishingQueue.accept(scope(f), waiting);
+		const again = await acceptByPerson(f,waiting);
 		expect(again).toMatchObject({ status: "scheduled", replayed: false });
 		expect(await post(waiting)).toMatchObject({ standingGrantId: null });
 
@@ -671,7 +692,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		await claimDueSocialPublicationAttempts({ claimantId: "expired-held", now: later(), config: claimConfig });
 		expect(await prisma.socialPublicationAttempt.count({ where: { socialPostId: inFlight } })).toBe(0);
 		expect(await post(inFlight)).toMatchObject({ status: "scheduled" });
-		await createStandingGrants({ prisma, requireActor: (userId, workspaceId, capability) => workspaceService.requireActor(userId, workspaceId, capability) }).expireDue();
+		await expireGrant(expiring.id);
 		expect(await post(inFlight)).toMatchObject({ status: "draft", standingGrantId: null, scheduledFor: null });
 	})));
 
@@ -681,15 +702,15 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		await standingGrants.pause(scope(f), id);
 		await expect(standingGrants.pause(scope(f), id)).rejects.toMatchObject({ code: "standing_grant_not_active" });
 		await expect(standingGrants.pause(scope(f, "editor"), id)).rejects.toMatchObject({ code: "workspace_access_denied" });
-		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "manual", pauseNoticePending: false });
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "manual" });
 		expect((await grantEvents(f.workspace.id, "grant.paused")).map((event) => event.subject)).toMatchObject([{ grantId: id, reason: "manual" }]);
 
-		await standingGrants.renew(scope(f), { grantId: id, dailyCap: 4, weeklyCap: 12, expiresInDays: 60 });
+		await renewFixtureGrant(f, { grantId: id, dailyCap: 4, weeklyCap: 12, expiresInDays: 60 });
 		expect(await grantRow(id)).toMatchObject({ status: "active", revision: 2, dailyCap: 4, weeklyCap: 12 });
 		await standingGrants.revoke(scope(f), id);
 		await standingGrants.revoke(scope(f), id);
 		expect(await grantRow(id)).toMatchObject({ status: "revoked" });
-		await expect(standingGrants.renew(scope(f), { grantId: id, dailyCap: 1, weeklyCap: 1, expiresInDays: 7 })).rejects.toMatchObject({ code: "standing_grant_closed" });
+		await expect(renewFixtureGrant(f, { grantId: id, dailyCap: 1, weeklyCap: 1, expiresInDays: 7 })).rejects.toMatchObject({ code: "standing_grant_closed" });
 		expect((await prisma.standingGrantEvent.findMany({ where: { grantId: id }, orderBy: { createdAt: "asc" } })).map((event) => event.kind)).toEqual(["created", "paused", "renewed", "revoked"]);
 		// A revoked destination can be granted again.
 		await publishGrant(f);
@@ -699,18 +720,17 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const f = await fixture();
 		const first = await publishGrant(f);
 		await prisma.standingGrant.update({ where: { id: first.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
-		const sweeper = createStandingGrants({ prisma, requireActor: (userId, workspaceId, capability) => workspaceService.requireActor(userId, workspaceId, capability) });
-		await sweeper.expireDue();
+		await expireGrant(first.id);
 		expect((await grantRow(first.id)).status).toBe("expired");
 
 		// The lapsed destination is granted again; the old grant can't come back beside it.
 		const second = await publishGrant(f);
-		await expect(standingGrants.renew(scope(f), { grantId: first.id, ...renewTerms })).rejects.toMatchObject({ code: "standing_grant_duplicate" });
+		await expect(renewFixtureGrant(f, { grantId: first.id, ...renewTerms })).rejects.toMatchObject({ code: "standing_grant_duplicate" });
 		expect((await grantRow(first.id)).status).toBe("expired");
 		// Renewing the live one is fine, and a pause doesn't free the destination either.
 		await standingGrants.pause(scope(f), second.id);
-		await expect(standingGrants.renew(scope(f), { grantId: first.id, ...renewTerms })).rejects.toMatchObject({ code: "standing_grant_duplicate" });
-		await standingGrants.renew(scope(f), { grantId: second.id, ...renewTerms });
+		await expect(renewFixtureGrant(f, { grantId: first.id, ...renewTerms })).rejects.toMatchObject({ code: "standing_grant_duplicate" });
+		await renewFixtureGrant(f, { grantId: second.id, ...renewTerms });
 		expect(await prisma.standingGrant.count({ where: { autopilotRuleId: f.rule.id, status: { in: ["active", "paused"] } } })).toBe(1);
 
 		// Two renewals at once of grants for one destination can't both succeed either.
@@ -721,12 +741,12 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		await prisma.standingGrant.update({ where: { id: a.id }, data: { status: "expired", expiresAt: new Date(Date.now() - 1_000) } });
 		const b = await publishGrant(g);
 		await prisma.standingGrant.update({ where: { id: b.id }, data: { status: "expired", expiresAt: new Date(Date.now() - 1_000) } });
-		const outcomes = await Promise.allSettled([a, b].map(({ id }) => standingGrants.renew(scope(g), { grantId: id, ...renewTerms })));
+		const outcomes = await Promise.allSettled([a, b].map(({ id }) => renewFixtureGrant(g, { grantId: id, ...renewTerms })));
 		expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
 		expect(await prisma.standingGrant.count({ where: { autopilotRuleId: g.rule.id, status: "active" } })).toBe(1);
 	})));
 
-	test("the maintenance sweep expires grants once, and renewing brings one back", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("exact grant timers expire grants once, and renewing brings one back", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const { id } = await publishGrant(f);
 		const { id: pausedId } = await reviewGrant(f);
@@ -734,9 +754,8 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const past = { expiresAt: new Date(Date.now() - 60_000) };
 		await prisma.standingGrant.updateMany({ where: { id: { in: [id, pausedId] } }, data: past });
 
-		const sweeper = createStandingGrants({ prisma, requireActor: (userId, workspaceId, capability) => workspaceService.requireActor(userId, workspaceId, capability) });
-		expect(await sweeper.expireDue()).toBeGreaterThanOrEqual(2);
-		expect(await sweeper.expireDue()).toBe(0);
+		expect((await expireGrant(id))+(await expireGrant(pausedId))).toBe(2);
+    expect((await expireGrant(id))+(await expireGrant(pausedId))).toBe(0);
 		expect((await grantRow(id)).status).toBe("expired");
 		expect((await grantRow(pausedId)).status).toBe("expired");
 		const events = await grantEvents(f.workspace.id, "grant.expired");
@@ -744,7 +763,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 			.toEqual([{ grantId: id, kind: "publish", autopilotRuleId: f.rule.id }, { grantId: pausedId, kind: "review_send", autopilotRuleId: f.rule.id }]
 				.sort((a, b) => a.grantId.localeCompare(b.grantId)));
 
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		expect(await grantRow(id)).toMatchObject({ status: "active", revision: 2 });
 		expect(await accept(f, await propose(f))).toBe("accepted");
 	})));
@@ -755,7 +774,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: f.owner.id } }, data: { role: "editor" } });
 		const proposalId = await propose(f);
 		expect(await accept(f, proposalId)).toBe("granter_unavailable");
-		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "granter_unavailable", pauseNoticePending: true });
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "granter_unavailable" });
 		expect(await post(proposalId)).toMatchObject({ status: "draft" });
 	})));
 
@@ -772,7 +791,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 
 		await workspaceMembershipService.changeRole(f.owner.id, f.workspace.id, member.id, "editor");
 		for (const grant of [byAdmin, byAdminReview]) {
-			expect(await grantRow(grant.id)).toMatchObject({ status: "paused", pausedReason: "granter_unavailable", pauseNoticePending: true });
+			expect(await grantRow(grant.id)).toMatchObject({ status: "paused", pausedReason: "granter_unavailable" });
 		}
 		const paused = await grantEvents(f.workspace.id, "grant.paused");
 		expect(paused.map((event) => (event.subject as { grantId: string }).grantId).sort()).toEqual([byAdmin.id, byAdminReview.id].sort());
@@ -797,6 +816,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(await accept(f, proposalId)).toBe("accepted");
 
 		await autopilotService.deleteRule(scope(f, "editor"), f.rule.id);
+    await Promise.all([published.id,review.id].map(grantWakes));
 		expect(await prisma.autopilotRule.count({ where: { id: f.rule.id } })).toBe(0);
 		for (const grant of [published, review]) {
 			expect(await grantRow(grant.id)).toMatchObject({ status: "revoked", autopilotRuleId: null, workspaceId: f.workspace.id });
@@ -879,13 +899,13 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const downgraded = await finishingFor(f);
 		expect(await sendReviewRoundUnderGrant({ ...base, finishingId: downgraded.id })).toEqual({ sent: false, reason: "review_not_sent_plan" });
 		expect(await prisma.reviewRound.count({ where: { finishingId: downgraded.id } })).toBe(0);
-		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost", pauseNoticePending: true });
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
 
 		// Upgrading again doesn't resume automatic client sends; the Owner renews it.
 		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "business" } });
 		expect(await sendReviewRoundUnderGrant({ ...base, finishingId: (await finishingFor(f)).id })).toEqual({ sent: false, reason: "review_not_sent_no_grant" });
 		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
-		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
 		expect(await grantRow(id)).toMatchObject({ status: "active", pausedReason: null });
 
 		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: f.owner.id } }, data: { role: "editor" } });

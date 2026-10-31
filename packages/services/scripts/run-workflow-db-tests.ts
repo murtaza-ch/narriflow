@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -47,6 +48,7 @@ if (!/^workflow_lifecycle_test_[a-z0-9_]+$/.test(schema)) {
   throw new Error("Unsafe workflow test schema name");
 }
 
+assertIsolatedDatabaseGateTarget(databaseUrl);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 async function run(command: string[], env: Record<string, string>) {
@@ -99,18 +101,20 @@ try {
     });
   }
   await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
+  const requestedSuites = process.argv.slice(2);
+  if (requestedSuites.some(suite => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(suite))) throw Error("Invalid Workflow database suite");
   const testCommand = [
     "bun",
     "test",
-    "packages/services/src/render-group-lifecycle.db.test.ts",
+    ...(requestedSuites.length ? requestedSuites : [
     "packages/services/src/render-group-replicas.db.test.ts",
-    "packages/services/src/workflow-render-rescue.db.test.ts",
     "packages/services/src/clip-export-retry.db.test.ts",
     "packages/services/src/workflow-run-lifecycle.db.test.ts",
     "packages/services/src/ingest-job-lifecycle.db.test.ts",
     "packages/services/src/project-actor-scope.db.test.ts",
     "packages/services/src/workspace-event-emission.db.test.ts",
     "packages/services/src/generation-finishing-transition.db.test.ts",
+    ]),
   ];
   if (process.env.WORKFLOW_TEST_NAME) {
     testCommand.push("--test-name-pattern", process.env.WORKFLOW_TEST_NAME);

@@ -14,8 +14,6 @@ import {
   grantAdmission,
   planCoversGrant,
   StandingGrantError,
-  type GrantNoticeResult,
-  type GrantPausedNotice,
   type StandingGrants,
 } from "./standing-grant";
 import { workspaceService } from "./workspace.service";
@@ -47,32 +45,6 @@ export const reviewerOptOut = {
   preview: (token: string) => reviewerOptOutService().preview(token),
   confirm: (token: string) => reviewerOptOutService().confirm(token),
 };
-
-/** Emails the person who should hear that a grant paused itself. Uses the configured email provider. */
-async function emailPausedNotice(appBaseUrl: string | null, notice: GrantPausedNotice): Promise<GrantNoticeResult> {
-  if (!appBaseUrl) return { sent: false, reason: "app_base_url_missing" };
-  const email = await import("@narriflow/email/worker");
-  const template = email.standingGrantPaused({
-    ruleName: notice.ruleName,
-    destination: notice.destination,
-    reason: notice.reason,
-    settingsLink: new URL("/settings/automation-grants", appBaseUrl).toString(),
-  });
-  const result = await email.sendEmail({ to: notice.to, ...template, idempotencyKey: notice.idempotencyKey });
-  if (result.sent) return { sent: true };
-  if (result.error) throw new Error("Email provider refused the grant notice");
-  return { sent: false, reason: result.reason ?? "email_not_sent" };
-}
-
-
-/** The worker's side: the expiry sweep, and the emails for grants that paused themselves. */
-export function getStandingGrantMaintenance(appBaseUrl: () => string | null) {
-  return createStandingGrants({
-    prisma: requiredPrisma(),
-    requireActor,
-    notifyPaused: (notice) => emailPausedNotice(appBaseUrl(), notice),
-  });
-}
 
 /** What happened to a proposal a publish grant was asked to accept. `accepted`
  * is the only outcome that takes a slot; any other leaves it a proposal for a

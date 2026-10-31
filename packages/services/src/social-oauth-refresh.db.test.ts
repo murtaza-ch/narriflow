@@ -126,14 +126,15 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			socialOAuthService.getPublishAccount(id),
 			socialOAuthService.getPublishAccount(id),
 		]);
-		expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+		expect(results.some(result=>result.status==="fulfilled")).toBe(true);
+    for(const result of results)if(result.status==="rejected")expect(result.reason).toMatchObject({code:"social_account_refresh_in_progress",status:503});
 		for (const result of results) if (result.status === "fulfilled") expect(result.value.accessToken).toBe("access-1");
 		expect(calls).toBe(1);
 		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe("access-1");
 		expect(calls).toBe(1);
 	})));
 
-	test("a rejected refresh surfaces with its HTTP status and leaves the stored tokens alone", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("a failed started refresh keeps the old tokens unusable and requires reconnect instead of another POST", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const id = await expiringAccount();
 		const before = await stored(id);
 		globalThis.fetch = (async () =>
@@ -141,8 +142,9 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 
 		const failure = await socialOAuthService.getPublishAccount(id).catch((error) => error);
 		expect(failure).toBeInstanceOf(SocialOAuthError);
-		expect(failure).toMatchObject({ code: "social_oauth_http_failed", status: 400 });
-		expect(await stored(id)).toEqual(before);
+		expect(failure).toMatchObject({code:"social_account_refresh_unconfirmed",status:409});
+    expect(await stored(id)).toEqual({...before,status:"expired"});
+    await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject({code:"social_account_refresh_in_progress"});
 	})));
 
 	test.each([{}, { access_token: "" }])("a response with no access token never overwrites a good token: %j", bindServiceTestEnvironment(prismaGlobal.bind(async (token) => {
@@ -152,9 +154,9 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			new Response(JSON.stringify({ ...token, expires_in: 3_600 }), { status: 200 })) as typeof fetch;
 
 		await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject({
-			code: "social_oauth_refresh_invalid",
+			code: "social_account_refresh_unconfirmed",
 		});
-		expect(await stored(id)).toEqual(before);
+		expect(await stored(id)).toEqual({...before,status:"expired"});
 	})));
 });
 

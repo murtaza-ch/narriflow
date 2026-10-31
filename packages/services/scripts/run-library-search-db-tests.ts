@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -15,6 +16,7 @@ if (!databaseUrl) throw new Error("LIBRARY_SEARCH_TEST_DATABASE_URL, DIRECT_URL,
 const root = resolve(import.meta.dir, "../../..");
 const schema = `library_search_test_${randomUUID().replaceAll("-", "")}`;
 assertExecutionDatabaseTestTarget(databaseUrl, schema);
+assertIsolatedDatabaseGateTarget(databaseUrl);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 try {

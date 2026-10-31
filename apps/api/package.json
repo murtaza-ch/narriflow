@@ -18,7 +18,6 @@
     "openapi:generate": "bun scripts/generate-openapi.ts",
     "openapi:check": "bun scripts/generate-openapi.ts --check",
     "clean": "rm -rf dist",
-    "smoke:native": "bun scripts/native-smoke.ts",
     "build:worker": "bun run migrations:generate && wrangler deploy --dry-run --outdir dist/worker --metafile && bun run audit:worker",
     "deploy": "wrangler deploy",
     "migrations:generate": "bun scripts/generate-database-migrations.ts",
@@ -35,7 +34,6 @@
     "test:social-provider:workerd": "node --experimental-strip-types scripts/run-social-provider-http-gate.ts"
   },
   "dependencies": {
-    "@ffprobe-installer/ffprobe": "2.1.2",
     "@hono/zod-openapi": "^1.2.2",
     "@hono/zod-validator": "^0.7.6",
     "@modelcontextprotocol/server": "2.4.0",
@@ -46,14 +44,10 @@
     "@narriflow/mcp-core": "workspace:*",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*",
-    "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "7.7.0",
-    "fontkit": "2.0.4",
     "hono": "^4.13.11",
-    "ioredis": "^5.9.3",
-    "sharp": "^0.35.5",
     "svix": "^1.86.0",
-    "zod": "^4.3.6",
+    "zod": "^4.6.7",
     "@aws-sdk/xml-builder": "3.972.17"
   },
   "devDependencies": {

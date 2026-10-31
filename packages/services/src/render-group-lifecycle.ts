@@ -9,7 +9,6 @@ import { syncClipExportAggregates } from "./clip-export-aggregates";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { appendWorkflowEvent } from "./workflow-event-append";
 import {
-  type ClaimedRenderGroupAttempt,
   type FinishRenderGroupExecution,
   type ReleaseRenderGroupExecution,
   type RenderGroupAttemptRef,
@@ -383,9 +382,6 @@ export async function cancelRenderGroupsWithinTransaction(
 
 export interface RenderGroupLifecycleDependencies {
   prisma?: PrismaClient;
-  leaseOwner?: string;
-  leaseDurationMs?: number;
-  releaseGraceMs?: number;
 }
 function retryableGroupTransaction(error: unknown): boolean {
   let current = error;
@@ -409,23 +405,11 @@ function retryableGroupTransaction(error: unknown): boolean {
 
 export class RenderGroupLifecycle {
   private readonly prisma: PrismaClient;
-  readonly leaseOwner: string;
-  readonly leaseDurationMs: number;
-  readonly releaseGraceMs: number;
+  private readonly releaseGraceMs = 30_000;
   constructor(deps: RenderGroupLifecycleDependencies = {}) {
     const prisma = deps.prisma ?? getPrismaClient();
     if (!prisma) throw new Error("Database client unavailable");
     this.prisma = prisma;
-    this.leaseOwner = deps.leaseOwner ?? randomUUID();
-    this.leaseDurationMs = deps.leaseDurationMs ?? 120_000;
-    this.releaseGraceMs = deps.releaseGraceMs ?? 30_000;
-    if (
-      !Number.isFinite(this.leaseDurationMs) ||
-      this.leaseDurationMs <= 0 ||
-      !Number.isFinite(this.releaseGraceMs) ||
-      this.releaseGraceMs < 0
-    )
-      throw new Error("Invalid render group lease configuration");
   }
   private async transaction<T>(operation: (tx: Tx) => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
@@ -808,116 +792,6 @@ export class RenderGroupLifecycle {
     const decision = await this.finishWithinTransaction(tx, { ...attempt, result: "interrupted", errorCode: expiredOperation ? "operation_deadline_exceeded" : "worker_stalled", failureDisposition: expiredOperation ? "permanent" : "retryable" }, true);
     return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, decision.status === "queued") };
   }
-
-  async claim(
-    filter: { workflowRunId?: string; groupId?: string } = {},
-  ): Promise<ClaimedRenderGroupAttempt | null> {
-    return this.transaction(async (tx) => {
-      // Lock the parent before groups everywhere and recheck each candidate
-      // after waiting so simultaneous claimers can choose distinct groups.
-      const candidates = await tx.renderGroup.findMany({
-        where: {
-          id: filter.groupId,
-          workflowRunId: filter.workflowRunId,
-          status: "queued",
-          OR: [
-            { nextAttemptAt: null },
-            { nextAttemptAt: { lte: await renderGroupDatabaseNow(tx) } },
-          ],
-          workflowRun: { stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } },
-        },
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        take: 32,
-      });
-      for (const candidate of candidates) {
-        const ref = {
-          workflowRunId: candidate.workflowRunId,
-          workSetGeneration: candidate.workSetGeneration,
-          groupId: candidate.id,
-        };
-        const parent = await this.lockParent(tx, ref);
-        if (
-          !parent ||
-          !(await tx.project.findFirst({
-            where: {
-              id: parent.projectId,
-              ...accessibleProjectWhere(await renderGroupDatabaseNow(tx)),
-              workspace: { status: "active" },
-            },
-            select: { id: true },
-          }))
-        )
-          continue;
-        await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${candidate.id}::uuid FOR UPDATE`;
-        const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: candidate.id } });
-        const now = await renderGroupDatabaseNow(tx);
-        if (group.status !== "queued" || (group.nextAttemptAt && group.nextAttemptAt > now))
-          continue;
-        const members = await memberSnapshot(tx, ref);
-        const decision = deriveRenderGroupSettlement({
-          members,
-          chargedAttemptCount: group.chargedAttemptCount,
-          databaseNow: now,
-        });
-        if (decision.status !== "queued") {
-          await tx.renderGroup.update({
-            where: { id: group.id },
-            data: { status: decision.status, settledAt: now, nextAttemptAt: null },
-          });
-          continue;
-        }
-        const token = randomUUID();
-        const leaseExpiresAt = new Date(now.getTime() + this.leaseDurationMs);
-        await tx.renderGroupExecution.create({
-          data: { token, groupId: group.id, owner: this.leaseOwner, claimedAt: now },
-        });
-        await tx.renderGroup.update({
-          where: { id: group.id },
-          data: {
-            status: "running",
-            attemptToken: token,
-            leaseOwner: this.leaseOwner,
-            leaseExpiresAt,
-            heartbeatAt: now,
-            nextAttemptAt: null,
-          },
-        });
-        return {
-          ...ref,
-          token,
-          owner: this.leaseOwner,
-          projectId: parent.projectId,
-          clipId: group.clipId,
-          exportIdentity: group.exportIdentity,
-          chargedAttemptCount: group.chargedAttemptCount,
-          leaseExpiresAt,
-          memberIds: decision.retryVariantIds,
-        };
-      }
-      return null;
-    });
-  }
-  async assertOwnership(attempt: RenderGroupAttemptRef): Promise<void> {
-    await this.transaction(async (tx) => {
-      await this.owned(tx, attempt);
-    });
-  }
-  async heartbeat(attempt: RenderGroupAttemptRef): Promise<void> {
-    return this.transaction((tx) => this.heartbeatWithinTransaction(tx, attempt));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async heartbeatWithinTransaction(tx: Tx, attempt: RenderGroupAttemptRef): Promise<void> {
-
-
-    const { now } = await this.owned(tx, attempt);
-    await tx.renderGroup.update({
-      where: { id: attempt.groupId },
-      data: { heartbeatAt: now, leaseExpiresAt: new Date(now.getTime() + this.leaseDurationMs) },
-    });
-  }
-  async start(input: StartRenderGroupExecution): Promise<void> {
-    return this.transaction((tx) => this.startWithinTransaction(tx, input));
-  }
   /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
   async startWithinTransaction(tx: Tx, input: StartRenderGroupExecution): Promise<void> {
     if (!input.sourceFingerprint || !input.toolchainFingerprint)
@@ -971,12 +845,6 @@ export class RenderGroupLifecycle {
     await tx.clipExportVariant.updateMany({ where: { id: exportVariantId }, data });
     await syncClipExportAggregates(tx, [exportVariantId]);
   }
-  async markClipRenderVariantRendering(
-    attempt: RenderGroupAttemptRef,
-    id: string,
-  ): Promise<boolean> {
-    return this.transaction((tx) => this.markClipRenderVariantRenderingWithinTransaction(tx, attempt, id));
-  }
   /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
   async markClipRenderVariantRenderingWithinTransaction(tx: Tx, 
     attempt: RenderGroupAttemptRef,
@@ -1007,20 +875,6 @@ export class RenderGroupLifecycle {
       errorCode: null, transition: `variant_started:${id}`,
     }, { progressRequired: false, analyticsEnabled: false });
     return true;
-  }
-  async completeClipRenderVariant(
-    attempt: RenderGroupAttemptRef,
-    id: string,
-    input: {
-      storageKey: string;
-      sizeBytes: number;
-      durationSec: number;
-      /** Caption characters the render left out; absent or empty clears it. */
-      captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
-      brollCredits?: Prisma.InputJsonValue | null;
-    },
-  ): Promise<boolean> {
-    return this.transaction((tx) => this.completeClipRenderVariantWithinTransaction(tx, attempt, id, input));
   }
   /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
   async completeClipRenderVariantWithinTransaction(tx: Tx, 
@@ -1098,26 +952,6 @@ export class RenderGroupLifecycle {
       generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
     }, { progressRequired: true, analyticsEnabled: false });
     return true;
-  }
-  /** Available after lease loss, for safe reconciliation of ambiguous commits.
-   * Absence is not proof an object is unreferenced; callers retain uncertainty. */
-  async readVariantOutcome(attempt: RenderGroupAttemptRef, id: string) {
-    return this.prisma.renderGroupVariantOutcome.findFirst({
-      where: {
-        token: attempt.token,
-        groupId: attempt.groupId,
-        clipRenderId: id,
-        execution: { owner: attempt.owner },
-      },
-    });
-  }
-  async failClipRenderVariant(
-    attempt: RenderGroupAttemptRef,
-    id: string,
-    errorCode: string,
-    disposition: "retryable" | "permanent",
-  ): Promise<boolean> {
-    return this.transaction((tx) => this.failClipRenderVariantWithinTransaction(tx, attempt, id, errorCode, disposition));
   }
   /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
   async failClipRenderVariantWithinTransaction(tx: Tx, 
@@ -1345,36 +1179,6 @@ export class RenderGroupLifecycle {
     );
     return decision;
   }
-  async readExecution(attempt: RenderGroupAttemptRef) {
-    return this.prisma.renderGroupExecution.findFirst({
-      where: {
-        token: attempt.token,
-        groupId: attempt.groupId,
-        owner: attempt.owner,
-        group: {
-          workflowRunId: attempt.workflowRunId,
-          workSetGeneration: attempt.workSetGeneration,
-        },
-      },
-    });
-  }
-  async finish(input: FinishRenderGroupExecution) {
-    return this.transaction((tx) => this.finishCommandWithinTransaction(tx, input));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async finishCommandWithinTransaction(tx: Tx, input: FinishRenderGroupExecution) {
-
-
-    await this.lockParent(tx, input);
-    const prior = await tx.renderGroupExecution.findFirst({
-      where: { token: input.token, groupId: input.groupId, owner: input.owner },
-    });
-    if (prior?.finishedAt) return null;
-    return this.finishWithinTransaction(tx, input, false);
-  }
-  async release(input: ReleaseRenderGroupExecution): Promise<boolean> {
-    return this.transaction((tx) => this.releaseWithinTransaction(tx, input));
-  }
   /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
   async releaseWithinTransaction(tx: Tx, input: ReleaseRenderGroupExecution): Promise<boolean> {
 
@@ -1397,106 +1201,4 @@ export class RenderGroupLifecycle {
     );
     return true;
   }
-  async reapExpired(): Promise<number> {
-    const groups = await this.prisma.renderGroup.findMany({
-      where: {
-        status: "running",
-        leaseExpiresAt: { lte: await this.prisma.$transaction(renderGroupDatabaseNow) },
-      },
-      take: 100,
-    });
-    let reaped = 0;
-    for (const group of groups) {
-      if (!group.attemptToken || !group.leaseOwner) continue;
-      try {
-        await this.transaction((tx) =>
-          this.finishWithinTransaction(
-            tx,
-            {
-              workflowRunId: group.workflowRunId,
-              workSetGeneration: group.workSetGeneration,
-              groupId: group.id,
-              token: group.attemptToken!,
-              owner: group.leaseOwner!,
-              result: "interrupted",
-              errorCode: "worker_stalled",
-              failureDisposition: "retryable",
-            },
-            true,
-          ),
-        );
-        reaped++;
-      } catch (error) {
-        if (!(error instanceof RenderGroupAttemptLost)) throw error;
-      }
-    }
-    return reaped;
-  }
-  /** Invalidates only the selected historical members. Editor persistence uses
-   * the transaction helper above to commit invalidation with its document write. */
-  async invalidateMembers(ref: RenderGroupRef, variantIds: readonly string[]): Promise<number> {
-    return this.transaction((tx) =>
-      invalidateRenderGroupMembersWithinTransaction(tx, ref, variantIds),
-    );
-  }
-
-  /** Render evidence writes share the same parent, token and membership fence. */
-  async writeLayoutEvidence(
-    attempt: RenderGroupAttemptRef,
-    input: {
-      clipId: string;
-      editorRevision: number;
-      previewStorageKey: string;
-      field: "automatic" | "screen" | "split";
-      evidence: Prisma.InputJsonValue;
-    },
-  ): Promise<boolean> {
-    return this.transaction((tx) => this.writeLayoutEvidenceWithinTransaction(tx, attempt, input));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async writeLayoutEvidenceWithinTransaction(tx: Tx, 
-    attempt: RenderGroupAttemptRef,
-    input: {
-      clipId: string;
-      editorRevision: number;
-      previewStorageKey: string;
-      field: "automatic" | "screen" | "split";
-      evidence: Prisma.InputJsonValue;
-    },
-  ): Promise<boolean> {
-
-
-    const { group } = await this.owned(tx, attempt);
-    const members = await memberSnapshot(tx, attempt);
-    if (
-      group.clipId !== input.clipId ||
-      !members.some((m) => m.variant && ["pending", "rendering"].includes(m.status))
-    )
-      throw new RenderGroupAttemptLost(attempt);
-    if (group.leaseExpiresAt! <= (await renderGroupDatabaseNow(tx)))
-      throw new RenderGroupAttemptLost(attempt);
-    const written = await tx.clip.updateMany({
-      where: {
-        id: input.clipId,
-        editorRevision: input.editorRevision,
-        previewStorageKey: input.previewStorageKey,
-        ...(input.field === "automatic" ? { autoLayoutAnalysis: { equals: Prisma.DbNull } } : {}),
-      },
-      data:
-        input.field === "automatic"
-          ? {
-              autoLayoutAnalysis: input.evidence,
-              autoLayoutStatus: "completed",
-              autoLayoutClaimToken: null,
-              autoLayoutLeaseExpiresAt: null,
-            }
-          : input.field === "screen"
-            ? { layoutAnalysis: input.evidence }
-            : { splitLayoutAnalysis: input.evidence },
-    });
-    return written.count === 1;
-  }
-}
-export function getRenderGroupLifecycle(): RenderGroupLifecycle {
-  return new RenderGroupLifecycle();
 }

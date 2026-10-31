@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -41,6 +42,7 @@ if (!/^integration_test_[a-z0-9_]+$/.test(schema)) {
 	throw new Error("Unsafe integration test schema name");
 }
 
+assertIsolatedDatabaseGateTarget(databaseUrl);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 async function run(command: string[], env: Record<string, string>) {
@@ -80,8 +82,6 @@ try {
 		"packages/services/src/mcp-task.db.test.ts",
 		"packages/services/src/operation-status.db.test.ts",
 		"packages/services/src/workspace-event.db.test.ts",
-		"packages/services/src/webhook-subscription.db.test.ts",
-		"packages/services/src/generation-finishing.db.test.ts",
 		"packages/services/src/recipe.db.test.ts",
 		"packages/services/src/recipe-migration.db.test.ts",
 		"packages/services/src/scribe-language-migration.db.test.ts",
@@ -89,12 +89,20 @@ try {
 	]) {
 		await run(["bun", "test", suite], {
 			ALLOW_INTEGRATION_DB_TESTS: "1",
+			MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
 			DATABASE_URL: testUrl.toString(),
 			DIRECT_URL: testUrl.toString(),
 			INTEGRATION_TEST_DATABASE_URL: testUrl.toString(),
 			INTEGRATION_TEST_DATABASE_SCHEMA: schema,
 		});
 	}
+  // Targeted execution suites enforce a separate disposable schema contract.
+  // Run them through their owning harness rather than silently skipping them.
+  await run(["bun", "packages/services/scripts/run-execution-db-tests.ts",
+    "packages/services/src/webhook-subscription.db.test.ts",
+    "packages/services/src/generation-finishing.db.test.ts"], {
+      SERVERLESS_TEST_DATABASE_URL: databaseUrl,
+    });
 } finally {
 	if (process.env.INTEGRATION_TEST_KEEP_SCHEMA !== "1") {
 		await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

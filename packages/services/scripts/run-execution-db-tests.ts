@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { assertExecutionDatabaseTestTarget } from "../src/execution-db-test-support";
@@ -11,6 +12,7 @@ if (target.hostname.includes("ep-rough-hill-b57kvyah")) {
 if (target.hostname.includes("-pooler.")) throw new Error("Serverless gates require a direct TLS connection");
 const schema = `serverless_execution_test_${randomUUID().replaceAll("-", "")}`;
 assertExecutionDatabaseTestTarget(configuredUrl, schema);
+assertIsolatedDatabaseGateTarget(configuredUrl);
 const pool = new Pool({ connectionString: configuredUrl, max: 1 });
 const migrationUrl = new URL(configuredUrl);
 migrationUrl.searchParams.delete("options");
@@ -22,7 +24,7 @@ const requestedTests = Bun.argv.slice(2);
 let tests = requestedTests.length ? requestedTests : [
   "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "project-retention-execution", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh", "export-bundle-execution", "dubbing-execution", "autopilot-finishing-authority", "autopilot-execution", "zoom-execution", "zoom-refresh", "autopilot-maintenance",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "grant-notification", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh", "export-bundle-execution", "dubbing-execution", "autopilot-finishing-authority", "autopilot-execution", "zoom-execution", "zoom-refresh", "autopilot-maintenance",
 ].map(name => `packages/services/src/${name}.db.test.ts`).concat("apps/api/src/workflows/maintenance-runtime.db.test.ts");
 const apiFactory="apps/api/src/workflows/maintenance-runtime.db.test.ts";
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path)&&path!==apiFactory)) throw new Error("Only named execution database test files are allowed");
@@ -64,11 +66,17 @@ try {
       SOCIAL_PUBLICATION_TEST_DATABASE_URL: testUrl.toString(),
       SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA: schema,
     } : {}),
-    ...(tests.some(path => ["generation-usage", "review-access"].some(name => path === `packages/services/src/${name}.db.test.ts`)) ? {
+    ...(tests.some(path => ["generation-usage", "review-access", "autopilot", "zoom", "vizard-expansion"].some(name => path === `packages/services/src/${name}.db.test.ts`)) ? {
       ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
       REVIEW_ACCESS_SECRET: "serverless-review-delivery-isolated-fixture-secret",
       VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),
       VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
+      SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
+      ZOOM_CLIENT_ID: "zoom-test-client",
+      ZOOM_CLIENT_SECRET: "zoom-test-secret",
+      ZOOM_WEBHOOK_SECRET_TOKEN: "zoom-test-webhook",
+      META_CLIENT_ID: "vizard-meta-client",
+      META_CLIENT_SECRET: "vizard-meta-secret",
     } : {}),
     ...(tests.includes("packages/services/src/workspace-billing.db.test.ts") ? {
       ALLOW_WORKSPACE_BILLING_DB_TESTS: "1",

@@ -1,7 +1,7 @@
 /**
  * The browser's glyph fallback chain behind every caption face, in the order
  * the worker's glyph planner tries them (packages/caption-fonts
- * fallback-fonts.ts, apps/worker/src/caption-glyphs.ts):
+ * fallback-fonts.ts, apps/media/src/caption-glyphs.ts):
  *
  *   requested face -> the face for the cue's language -> script faces
  *   -> Noto Sans Symbols 2 -> Noto Emoji
@@ -107,7 +107,7 @@ export function captionLetterSpacingRuns(text: string): { text: string; spaced: 
 
 /**
  * Room left below fallback-face ink that hangs under the baseline. The same
- * number as CAPTION_INK_MARGIN_EM in apps/worker/src/caption-ass.ts, which
+ * number as CAPTION_INK_MARGIN_EM in apps/media/src/caption-ass.ts, which
  * caption-script-fonts.test.ts holds this to.
  */
 export const CAPTION_INK_MARGIN_EM = 0.06;
@@ -122,7 +122,7 @@ export const NO_CAPTION_INK: CaptionInkEm = { topEm: 0, bottomEm: 0 };
 
 /**
  * Vertical extent of a pill or plate around the baseline, as the burn-in
- * draws it (decorationSpan in apps/worker/src/caption-ass.ts): padding above
+ * draws it (decorationSpan in apps/media/src/caption-ass.ts): padding above
  * the cap height and below the baseline, grown to the ink of fallback-face
  * glyphs that stand taller or hang lower. A pill takes its word's ink, a plate
  * the whole line's. Without fallback ink this is the catalog metrics exactly.

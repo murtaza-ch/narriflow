@@ -160,6 +160,9 @@ export const ENVIRONMENT_FILES = {
 
 export function runEnvironmentCheck(root = process.cwd()): { issues: EnvironmentCheckIssue[]; warnings: string[] } {
   const issues: EnvironmentCheckIssue[] = [];
+  for (const name of [".env", ".env.local", ".env.development", ".env.development.local", ".env.test", ".env.test.local", ".env.production", ".env.production.local"]) {
+    if (existsSync(resolve(root, name))) issues.push({ message: `root ${name} is not supported; use app-specific env files` });
+  }
   for (const [label, path] of Object.entries(ENVIRONMENT_FILES)) {
     if (!existsSync(resolve(root, path))) issues.push({ message: `${label} env file is missing (${path})` });
   }

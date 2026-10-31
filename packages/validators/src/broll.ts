@@ -4,7 +4,7 @@ import type { ClipCategory } from "./clip";
 
 /**
  * Shared, dependency-free B-roll logic used by BOTH the worker's render
- * pipeline (`apps/worker/src/tasks/broll.ts`) and the studio B-roll panel
+ * pipeline (`packages/services/src/broll-plan.ts`) and the studio B-roll panel
  * (`apps/web/.../tool-panels/broll-panel.tsx`), so the "what will actually
  * happen at render time" preview shown to the user in the studio is computed
  * by the exact same code that runs at render time — never a re-implementation
