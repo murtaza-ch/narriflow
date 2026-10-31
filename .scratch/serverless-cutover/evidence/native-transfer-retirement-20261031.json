@@ -1,0 +1,50 @@
+{
+  "scope": "native transfer/artifact tests preserving retired filesystem transfer behavior",
+  "commit": "faedf7b8",
+  "nativeTests": 22,
+  "seconds": 43.519,
+  "imageId": "im-SLp7lHRnWYYTmYFvwKtCL6",
+  "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+  "cpu": 4,
+  "memoryMiB": 8192,
+  "externalNetworkBlocked": true,
+  "secrets": [],
+  "virtualSourceBytes": 10737418240,
+  "parts": 640,
+  "maxPartBuffers": 4,
+  "partSizeBytes": 16777216,
+  "peakTrackedBytes": 67361293,
+  "allocationCeilingBytes": 83886080,
+  "measurementOnlyDebugChange": "Disable asyncio slow-task repr during tracemalloc only; restore afterward. Completed task repr can allocate an extra 16MiB diagnostic string. Transfer buffers and ceiling are unchanged.",
+  "realR2Proof": "r2-native-10gib-20261031.json",
+  "rawDirectory": "/tmp/narriflow-serverless-gates/final-media-21/pipeline-12",
+  "logHashes": {
+    "runtime.log": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+    "transfer-tests.log": "05a6fe11b295220a9a690b437845ce63100ba6b004004ac59242d339f205b86a",
+    "status.json": "44f5fd1132b7b7196d96ee1975993bed11188f3cab33e4926d74b44fa0c0f74b"
+  },
+  "provenance": {
+    "candidateCommit": "deployed-image+recorded-test-gate-overlay",
+    "sandboxId": "sb-01M69MXXZ7HC3AB4ZN3JWHDHQA",
+    "imageId": "im-SLp7lHRnWYYTmYFvwKtCL6",
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "networkBlocked": true,
+    "secrets": [],
+    "files": {
+      "/tmp/candidate.tar.gz": "c352b7086aff3636b61d17e1546b738ecf77dcb387c0749194abf8fd449db1a2",
+      "/tmp/run.py": "3ce2118e01ab93283937b5d8cdfbafbbf853c0856a04703834ae86c4805be4a4"
+    }
+  },
+  "overlay": {
+    "base": "immutable deployed render image source",
+    "overlayFiles": {
+      "apps/media/python/tests/test_artifacts.py": "4e507b6b327b70bfd2a78faef9f07b998e8003d3427bc9f21ee4f14592128199",
+      "apps/media/python/tests/test_multipart.py": "96d27a63ce8592eb202a5f954cb3cfd1276864834607985ab9f281518dff3934",
+      "apps/media/python/tests/test_clip_preparation_runtime.py": "641d32f30030e7e3c017ac17cdde3df53c7ae8184097603544f4a1b17b3a839e",
+      "apps/media/python/tests/test_render_runtime.py": "a42ab067ba80c14f7dbacb8ae8099a0f15911621a9cb16f0d06a256a4a2a9f56",
+      "apps/media/python/gates/pipeline_resource.py": "bf49a91f5ef043955a638d936409742ab3a6fb5ccf6574a6f8d8456a46f299a5"
+    },
+    "overlayArchiveSha256": "c352b7086aff3636b61d17e1546b738ecf77dcb387c0749194abf8fd449db1a2"
+  }
+}
