@@ -28,7 +28,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
   const request = async (command: Record<string, unknown>) => { options.signal.throwIfAborted(); try { return await options.ports.request(command); } catch { return lost(); } };
   const originalUrl = options.ports.sourceUrl("original");
   const assets = [...input.assets.visuals, ...input.assets.fonts, ...input.assets.audio, ...(input.assets.logo ? [input.assets.logo] : [])];
-  const sources = new Map([[source.storageKey, { name: "original", object: source }], ...assets.map(asset => [asset.object.storageKey, asset] as const)]);
+  const sources = new Map<string, { name: string; object: { storageKey: string; etag: string; byteLength: number; sha256?: string } }>([[source.storageKey, { name: "original", object: source }], ...assets.map(asset => [asset.object.storageKey, asset] as const)]);
   const urlSources = new Map([...sources.values()].map(value => [options.ports.sourceUrl(value.name), value]));
   const logicalKeys = new Map(input.variants.map(variant => {
     const aspect = clipAspectRatioFromDb[variant.aspectRatio], slug = clipAspectRatioOptions.find(option => option.value === aspect)!.slug;
@@ -43,6 +43,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
     sceneBlocks: doc.sceneBlocks, censorSegments: doc.censorSegments, mediaMotions: doc.mediaMotions,
     autoLayoutAnalysis: input.prepared.result.layout.automatic, layoutAnalysis: input.prepared.result.layout.screen, splitLayoutAnalysis: input.prepared.result.layout.split };
   const frozen = { sourceStorageKey: source.storageKey, sourceSizeBytes: source.byteLength, sourceDurationSeconds: input.preparation.sourceProbe.durationSec,
+    frozenWatermark: input.watermark,
     workspaceOwnerUserId: input.workspace.ownerUserId, workspaceId: input.workspace.id, captionLanguage: input.captionLanguage,
     pricingTier: input.workspace.pricingTier, brandSnapshot: { status: "available" as const, value: input.brandSnapshot },
     pendingRenders: input.variants.filter(variant => options.ports.renderIds.includes(variant.renderId)).map(variant => ({ id: variant.renderId,
@@ -79,7 +80,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
     storage: { deleteObject: async () => { throw new Error("render_cleanup_owned_by_api"); },
       sourceSizeBytes: async key => { const found = sources.get(key); if (!found) return lost(); return found.object.byteLength; },
       presignDownloadUrl: async ({ key }) => { const found = sources.get(key); if (!found) return lost(); return options.ports.sourceUrl(found.name); },
-      downloadObjectToFile: async ({ key, filePath }) => { const found = sources.get(key); if (!found) return lost(); await request({ operation: "download", sourceName: found.name, path: filePath, maxBytes: found.object.byteLength }); return { key, contentType: null }; },
+      downloadObjectToFile: async ({ key, filePath }) => { const found = sources.get(key); if (!found) throw new WorkflowFailure("render_asset_unavailable", "permanent", "Optional frozen asset is unavailable"); await request({ operation: "download", sourceName: found.name, path: filePath, maxBytes: found.object.byteLength }); return { key, contentType: null }; },
       putFileFromPath: async ({ key, filePath, contentType, metadata }) => {
         const renderId = logicalKeys.get(key); if (!renderId || !options.ports.renderIds.includes(renderId) || contentType !== "video/mp4") return lost();
         const credits: unknown = metadata?.broll_credits ? JSON.parse(metadata.broll_credits) : [];

@@ -116,7 +116,7 @@ class RenderControlServer:
                 while cursor<source['byteLength']:
                     chunk=self.sources._read(source,cursor,min(source['byteLength']-1,cursor+CHUNK_BYTES-1))
                     output.write(chunk);digest.update(chunk);cursor+=len(chunk)
-            if source.get('sha256')!=digest.hexdigest():raise NativeOperationFailure('native_source_changed')
+            if 'sha256' in source and source['sha256']!=digest.hexdigest():raise NativeOperationFailure('native_source_changed')
             path.chmod(0o400);return {}
         render_id=command['renderId']
         if render_id not in self.render_ids or render_id in self.settled:raise ExecutionControlError('execution_artifact_already_claimed')
