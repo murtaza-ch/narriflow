@@ -75,6 +75,16 @@ def verify_lean_runtime() -> dict:
     return _verify("lean")
 
 
+@app.function(image=lean_image, max_containers=1, timeout=300, **LEAN_RESOURCES)
+def verify_generated_image_resources() -> dict:
+    """Synthetic loopback resource gate; no provider or domain credentials."""
+    from narriflow_media.process import MediaProcessError, run_owned_process
+    result = run_owned_process(["bun", "/app/apps/media/scripts/gates/generated-image-memory-gate.ts"], timeout_seconds=280)
+    if result.returncode:
+        raise MediaProcessError("generated_image_resource_gate_failed", result.returncode)
+    return json.loads(result.stdout)
+
+
 @app.function(image=lean_image, secrets=[executor_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def asset_validation(invocation: dict) -> dict:
