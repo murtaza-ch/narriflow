@@ -5,7 +5,7 @@ export type ExecutorDomainTransaction = Prisma.TransactionClient;
 
 export type ExecutorDomainLock<TRef> =
   | { kind: "current"; ref: TRef }
-  | { kind: "terminal"; disposition: ExecutionDisposition };
+  | { kind: "terminal"; disposition: ExecutionDisposition; dispatchIds?: readonly string[] };
 
 /** Constructed from locked authority and validated server-owned work inputs. */
 export interface ExecutorMutationContext {
