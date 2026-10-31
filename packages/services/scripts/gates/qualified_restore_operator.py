@@ -104,10 +104,10 @@ def execute(request):
     if modal.__version__!='1.6.3':
         refused()
     app=modal.App.lookup(APP,environment_name='main',create_if_missing=False)
-    if app.object_id!=journal['appId']:
+    if app.app_id!=journal['appId']:
         refused()
     sandbox=None
-    for count, candidate in enumerate(modal.Sandbox.list(app_id=app.object_id,tags={'purpose':'qualified-restore','runId':request['runId']})):
+    for count, candidate in enumerate(modal.Sandbox.list(app_id=app.app_id,tags={'purpose':'qualified-restore','runId':request['runId']})):
         if count>=32:
             refused()
         if candidate.object_id==request['sandboxId']:

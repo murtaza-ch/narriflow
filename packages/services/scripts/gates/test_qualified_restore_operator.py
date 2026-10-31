@@ -57,7 +57,7 @@ class QualifiedOperatorGuards(unittest.TestCase):
             self.assertEqual(args,('python','-c',REMOTE));self.assertEqual(kwargs['env'],{'PGSSLROOTCERT':'system','SSL_CERT_FILE':'/tmp/operator-system-ca.pem'});return process
         sandbox=SimpleNamespace(object_id=request['sandboxId'],get_tags=lambda:tags,exec=execute,filesystem=SimpleNamespace(write_bytes=lambda data,path:writes.update({path:data}),read_bytes=lambda path:archive))
         def lookup(name,**kwargs):
-            self.assertEqual((name,kwargs),(APP,{'environment_name':'main','create_if_missing':False}));return SimpleNamespace(object_id=journal['appId'])
+            self.assertEqual((name,kwargs),(APP,{'environment_name':'main','create_if_missing':False}));return SimpleNamespace(app_id=journal['appId'])
         def sandboxes(**kwargs):
             self.assertEqual(kwargs,{'app_id':journal['appId'],'tags':{'purpose':'qualified-restore','runId':request['runId']}});return iter([sandbox])
         modal=SimpleNamespace(__version__='1.6.3',App=SimpleNamespace(lookup=lookup),Sandbox=SimpleNamespace(list=sandboxes))
