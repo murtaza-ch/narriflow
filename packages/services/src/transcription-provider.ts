@@ -1,6 +1,7 @@
 import { SCRIBE_MODEL_ID } from "@narriflow/validators";
 import { scribeErrorDetail, scribeHttpFailure } from "./scribe-errors";
 import { WorkflowFailure } from "./workflow-attempt-contract";
+import { decideProbePin, LANGUAGE_PROBE_MAX_BYTES, type LanguageProbeResult } from "./language-probe-contract";
 
 /** Every provider callback carries the immutable source lineage submitted to Scribe. */
 export type { ProviderAttemptReference as ScribeSubmissionReference } from "@narriflow/validators/execution";
@@ -24,6 +25,26 @@ export function createScribeProvider(config: { apiKey: string; webhookId: string
   const endpoint = "https://api.elevenlabs.io/v1/speech-to-text";
   const headers = { "xi-api-key": config.apiKey };
   return {
+    /** Bounded native WAV only. Probe failure preserves the Auto degradation. */
+    async probe(input: { wav: Uint8Array; signal?: AbortSignal }): Promise<LanguageProbeResult> {
+      const unavailable = (reason: string): LanguageProbeResult => ({ pinned: null, detected: null, probability: null, wordCount: 0, reason });
+      input.signal?.throwIfAborted();
+      if (input.wav.byteLength < 44 || input.wav.byteLength > LANGUAGE_PROBE_MAX_BYTES || new TextDecoder().decode(input.wav.subarray(0, 4)) !== "RIFF" ||
+        new TextDecoder().decode(input.wav.subarray(8, 12)) !== "WAVE") return unavailable("probe_invalid");
+      try {
+        const body = new FormData();
+        body.set("model_id", SCRIBE_MODEL_ID); body.set("tag_audio_events", "false"); body.set("timestamps_granularity", "word");
+        body.set("file", new Blob([new Uint8Array(input.wav)], { type: "audio/wav" }), "probe.wav");
+        const response = await fetchImpl(endpoint, { method: "POST", headers, body,
+          signal: AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(60_000)]) });
+        if (!response.ok) return unavailable(`provider_http_${response.status}`);
+        const payload = await response.json() as { language_code?: unknown; language_probability?: unknown; words?: unknown };
+        const detected = typeof payload.language_code === "string" ? payload.language_code : null;
+        const probability = typeof payload.language_probability === "number" && Number.isFinite(payload.language_probability) ? payload.language_probability : null;
+        const wordCount = Array.isArray(payload.words) ? payload.words.filter(token => (token as { type?: unknown } | null)?.type === "word").length : 0;
+        return { ...decideProbePin({ languageCode: detected, probability, wordCount }), detected, probability, wordCount };
+      } catch { input.signal?.throwIfAborted(); return unavailable("probe_failed"); }
+    },
     async submit(input: { reference: ScribeSubmissionReference; sourceAudioUrl: string; languageCode: string | null; signal?: AbortSignal }): Promise<ScribeAcceptance> {
       if (!input.reference.sourceAudioId) throw new WorkflowFailure("source_audio_pending", "retryable", "Immutable Source Audio is not ready");
       const source = new URL(input.sourceAudioUrl);

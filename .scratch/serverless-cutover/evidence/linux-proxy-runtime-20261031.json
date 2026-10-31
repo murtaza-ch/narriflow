@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-31",
+  "imageId": "sha256:07ea1aae7d730d5231b6552c2ef35e3dc8918cd3d2d318a7de85a62c7f6fe518",
+  "network": "none",
+  "cpus": 4,
+  "memoryBytes": 8589934592,
+  "source": {
+    "pythonCommit": "6a9e57eee4465e494daf4cd32a1167b7300d4d65",
+    "runtimeLockSha256": "ed10a2a61cf38be84da119a2925e9f51fc29bcee2b21f5546fa37312641abaed",
+    "tokenHelperCliSha256": "f86095dfb308956c79bc65fa4684456595b2019e7e1a39d6b1989013ae14b94a",
+    "tokenHelperOwnerSha256": "8efa96d3712b7c986c8ec4d7f9683523b83ef4a8dd13b6b10b31a3789f1a2754"
+  },
+  "checks": [
+    {
+      "suite": "test_token_helper.py",
+      "passed": 2,
+      "elapsedSeconds": 65.305,
+      "observed": [
+        "Pinned image token server2.0.0 ready marker and owner-private readiness file",
+        "Actual HTTPS CONNECT carries the exact same synthetic sticky proxy credentials",
+        "Controlled proxy rejects CONNECT and reaches no public upstream",
+        "Owned daemon stops and readiness file disappears after close"
+      ]
+    },
+    {
+      "suite": "test_fetch_runtime.py",
+      "passed": 1,
+      "elapsedSeconds": 17.343,
+      "observed": [
+        "Actual pinned yt-dlp download through bound HTTP proxy from frozen source info",
+        "Sole TypeScript normalized probe reports expected duration and stream facts",
+        "Result file is read-only",
+        "Actual process-start callbacks fire for native download and probe"
+      ]
+    },
+    {
+      "suite": "test_proxy_transport.py",
+      "passed": 1,
+      "elapsedSeconds": 14.522,
+      "sourceCommit": "3b65cfa4ca6d741083284608b34b654c7398b2b0",
+      "perCommandDeadlineSeconds": 15,
+      "procedure": "Reran the unchanged test after renderer/model jobs finished. All yt-dlp,FFmpeg,Deno requests carry the same synthetic authenticated sticky session; no command deadline was widened."
+    }
+  ],
+  "logSha256": {
+    "linux-token-helper.log": "73f96e868212b72ae2738ef995a794f2fd5a49ee2ff6b4126b83f4002c0558a2",
+    "linux-frozen-fetch.log": "b052a6fbf2325d8e5cab71c3e4af64f1240d29519cd135ef96fe31dd8bc1663f",
+    "linux-proxy-transport.log": "f8eaff131da59744867057ac1c4bf59ad5a55a8f8c8f5bec36c5a9df47fc0ad4",
+    "linux-proxy-transport-isolated.log": "832295155ffe621a969c54c10f11331e673fa5f91428c72137b588801a0f2a72"
+  },
+  "open": [
+    "Real YouTube acquisition and complete frozen local/proxy manifest parity",
+    "Successful upstream TLS/token generation beyond the controlled rejecting proxy",
+    "Final candidate rebuild and deployed Modal execution"
+  ],
+  "initialFailures": [
+    {
+      "suite": "test_proxy_transport.py",
+      "reason": "First native Python/yt-dlp command reached the fixture15second startup deadline under QEMU; the test was not widened and is not claimed passing."
+    }
+  ]
+}

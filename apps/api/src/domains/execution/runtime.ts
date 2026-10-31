@@ -8,6 +8,8 @@ import { createNativeValidationExecution } from "@narriflow/services/native-vali
 import { getNativeValidationService } from "@narriflow/services/native-validation-runtime";
 import { getThumbnailFrameExecution } from "@narriflow/services/thumbnail-frame-preparation-runtime";
 import { deliverExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
+import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runtime";
+import { createOutboundProbeExecution } from "@narriflow/services/outbound-probe-execution";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../../worker-bindings";
 import { createAssignedArtifactStorage } from "./artifact-storage";
@@ -25,16 +27,18 @@ export function createExecutionDependencies(environment: Readonly<Record<string,
  * command step's fresh database scope. No clients survive this invocation. */
 export function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
   if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
-  if (!["native_validation", "thumbnail_frame"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  if (!["native_validation", "thumbnail_frame", "outbound_probe"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
   const database = getPrismaClient();
   if (!database) throw new ExecutorControlError("epoch_unavailable");
   const environment = readServiceEnvironment();
   const required = (name: string) => { const value = environment[name]; if (!value) throw new ExecutorControlError("storage_unavailable"); return value; };
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
+  const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
+  if (reference.subject.kind === "outbound_probe") return createOutboundProbeExecution({ ...common, domain: getOutboundProbeService() });
   const domain = reference.subject.kind === "thumbnail_frame" ? { subjectKind: "thumbnail_frame" as const, domain: getThumbnailFrameExecution() }
     : { subjectKind: "native_validation" as const, domain: getNativeValidationService() };
-  return createNativeValidationExecution({ ...domain, database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches });
+  return createNativeValidationExecution({ ...domain, ...common });
 }
 
 export function createWorkerExecutionDependencies(): ExecutionRouteDependencies {

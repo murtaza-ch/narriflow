@@ -14,7 +14,6 @@ import re
 import time
 from urllib.parse import urlsplit
 from uuid import UUID
-from typing import Any
 
 from .control import ExecutionControlError, ExecutorSession, _instant
 from .multipart import (CompletedObject, MultipartDestination, MultipartTransferError,
@@ -249,9 +248,30 @@ def check_transfer_response(command, result):
 class WorkPackage:
     function_name: str
     input_hash: str
-    command: Any = field(repr=False)
-    sources: tuple[dict, ...] = field(repr=False)
-    outputs: tuple[dict, ...]
+    _command_wire: bytes = field(repr=False)
+    _sources_wire: bytes = field(repr=False)
+    _outputs_wire: bytes = field(repr=False)
+    _fence_wire: bytes = field(repr=False)
+
+    @property
+    def command(self):
+        return json.loads(self._command_wire)
+
+    @property
+    def sources(self):
+        return tuple(json.loads(self._sources_wire))
+
+    @property
+    def outputs(self):
+        return tuple(json.loads(self._outputs_wire))
+
+    def assert_session(self, session: ExecutorSession):
+        if self._fence_wire != _wire(session.fence):
+            raise ExecutionControlError('execution_work_package_mismatch')
+
+
+def _wire(value):
+    return json.dumps(value, separators=(',', ':'), sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
 
 
 async def load_work_package(session: ExecutorSession, *, transport=None) -> WorkPackage:
@@ -292,13 +312,15 @@ async def load_work_package(session: ExecutorSession, *, transport=None) -> Work
                 command = json.loads(bytes(response.body), parse_constant=invalid_constant)
             except (ValueError, UnicodeError):
                 raise ExecutionControlError('execution_input_invalid') from None
-        return WorkPackage(value['functionName'], value['inputHash'], command, tuple(value['sources']), tuple(value['outputs']))
+        return WorkPackage(value['functionName'], value['inputHash'], _wire(command), _wire(value['sources']),
+                           _wire(value['outputs']), _wire(session.fence))
     raise ExecutionControlError('execution_input_unavailable')
 
 
 class ScopedMultipartControl:
-    def __init__(self, session, destination, *, source_etag=None):
+    def __init__(self, session, destination, *, content_type, source_etag=None):
         self._session, self.destination, self._source_etag = session, destination, source_etag
+        self._content_type = content_type
 
     @classmethod
     async def initialize(cls, session: ExecutorSession, *, artifact_id: str, byte_length: int, content_type: str,
@@ -306,7 +328,8 @@ class ScopedMultipartControl:
         result = await asyncio.to_thread(session.transfer, 'upload-initialize', artifactId=artifact_id,
                                          byteLength=byte_length, contentType=content_type)
         value = result.disposition
-        return cls(session, MultipartDestination(artifact_id, value['uploadId'], byte_length, value['partSizeBytes']), source_etag=source_etag)
+        return cls(session, MultipartDestination(artifact_id, value['uploadId'], byte_length, value['partSizeBytes']),
+                   content_type=content_type, source_etag=source_etag)
 
     async def _call(self, action, **fields):
         try:
@@ -339,6 +362,8 @@ class ScopedMultipartControl:
         # serialize the local receipts, even when the object contains640parts.
         value = await self._call('upload-complete', byteLength=self.destination.byte_length, sha256=sha256)
         obj = value['object']
+        if obj['contentType'] != self._content_type:
+            raise MultipartTransferError('multipart_completion_unconfirmed')
         return CompletedObject(obj['key'], obj['etag'], obj['byteLength'], obj['sha256'])
 
     async def abort(self, reason):

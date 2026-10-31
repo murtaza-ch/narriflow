@@ -13,6 +13,7 @@ import type { SourceAudioBinding, SourceVideoBinding } from "@narriflow/validato
 import { sourceAudioBindingHash } from "./source-audio-binding";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { createTranscriptionAdmission } from "./transcription-admission";
+import { createTranscriptionProbe } from "./transcription-probe";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -64,6 +65,7 @@ dbDescribe("Targeted Ingest execution", () => {
         prepare: async (_assignment, artifact, reported) => {
           if (reported.role === "source_audio" && reported.sourceAudio) return { ...artifact, role: "source_audio" as const, binding: reported.sourceAudio };
           if (reported.role === "source_video" && reported.sourceVideo) return { ...artifact, role: "source_video" as const, binding: reported.sourceVideo };
+          if (reported.role === "probe") return { ...artifact, role: "probe" as const };
           throw new Error("Unexpected fixture role");
         } },
     });
@@ -128,8 +130,11 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(dispatches).toHaveLength(1);
     expect(dispatches[0]!.inputHash).toBe(await workflowRunExecutionInputHash({ id: run.id, projectId: f.project.id, stage: "stt", contentPackId: audio.pack.id,
       generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: audio.sourceAudio.id, sourceRevision: 1 }));
-    expect(results[0]!.dispatchIds).toEqual([dispatches[0]!.id]);
-    expect(results[1]!.dispatchIds).toEqual([dispatches[0]!.id]);
+    expect(results[0]!.dispatchIds).toEqual(results[1]!.dispatchIds);
+    expect(results[0]!.dispatchIds).toContain(dispatches[0]!.id);
+    expect(results[0]!.dispatchIds).toHaveLength(2);
+    const progress = await db.executionDispatch.findUniqueOrThrow({ where: { id: results[0]!.dispatchIds.find(id => id !== dispatches[0]!.id)! } });
+    expect(progress).toMatchObject({ kind: "project_progress", subjectKind: "maintenance" });
   }, 120_000);
 
   test("audio handoff validates the ledger tuple and waits for a committed pack before charging", async () => {
@@ -264,6 +269,58 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.executionDispatch.count({ where: { subjectId: run.id, kind: "operation_driver", wakeKind: null, deadlineKind: null } })).toBe(1);
     expect((await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).ingestStatus).not.toBe("ready");
   }, 120_000);
+
+  test("optional native probe waits unowned before provider intent and its same-owner commit wakes the exact STT run", async () => {
+    const f = await fixture();
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
+      clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    const probe = createTranscriptionProbe({ database: db, workflow: f.workflow });
+    expect(await probe.descriptorForIngest(fence)).toBeNull();
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const key = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`, binding = measuredBindings(f, key).audio;
+    const artifact = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_audio", bindingHash: "b".repeat(64), storageKey: key,
+      contentType: "audio/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role: "source_audio", contentType: "audio/mp4",
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: artifact.bindingHash, sourceAudio: binding } }, verifiedRequest: f.verified() }));
+    const run = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
+    const registration = await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id));
+    expect(await probe.prepare({ ...registration.reference, inputHash: "f".repeat(64) })).toMatchObject({ kind: "unavailable", reason: "superseded" });
+    await db.project.update({ where: { id: f.project.id }, data: { languageCode: "en" } });
+    expect(await probe.prepare(registration.reference)).toMatchObject({ kind: "skip", reason: "explicit_language" });
+    expect(await probe.descriptorForIngest(fence)).toBeNull();
+    await db.project.update({ where: { id: f.project.id }, data: { languageCode: null } });
+    const waiting = await withServiceEnvironment({}, () => probe.prepare(registration.reference));
+    expect(waiting.kind).toBe("wait");
+    if (waiting.kind === "wait") expect(waiting.dueAt).toEqual(new Date((await db.sourceAudio.findUniqueOrThrow({ where: { id: binding.sourceAudioId } })).createdAt.getTime() + 90_000));
+    expect((await db.workflowRun.findUniqueOrThrow({ where: { id: run.id } }))).toMatchObject({ status: "queued", attemptId: null, attemptCount: 0 });
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: run.id } } })).toBe(0);
+    const descriptor = await probe.descriptorForIngest(fence);
+    if (!descriptor) throw new Error("Expected admitted same-owner probe");
+    expect(await probe.descriptorForIngest({ ...fence, owner: crypto.randomUUID() })).toBeNull();
+    expect(descriptor.input).toMatchObject({ sourceAudioId: binding.sourceAudioId, workflowRunId: run.id, generation: 1,
+      windows: [{ startSec: 14.05, durationSec: 20 }, { startSec: 50.125, durationSec: 20 }, { startSec: 86.2, durationSec: 20 }], toolchainFingerprint: binding.toolchainFingerprint });
+    const output = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "probe", bindingHash: descriptor.output.bindingHash,
+      storageKey: `execution/${f.epoch}/${f.token}/${f.owner}/probe.wav`, contentType: "audio/wav", maxBytes: 2_000_000n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    const committed = await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: output.id, role: "probe",
+      contentType: "audio/wav", byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: output.bindingHash } }, verifiedRequest: f.verified() }));
+    expect(committed.disposition).toBe("committed");
+    expect(await db.executionDispatch.count({ where: { subjectId: run.id, wakeKind: "probe_ready", generation: 1 } })).toBe(1);
+    expect(await probe.prepare(registration.reference)).toMatchObject({ kind: "ready", artifactId: output.id });
+    expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } }))).toMatchObject({ status: "running", executorOwner: f.owner });
+    const admitted = await withServiceEnvironment({}, () => createTranscriptionAdmission({ database: db, workflow: f.workflow, maxUnits: 12 }).admit(registration.reference, { owner: crypto.randomUUID() }));
+    if (admitted.kind !== "begun") throw new Error("Expected provider intent after ready probe");
+    expect((await probe.readForProvider(admitted.intent.reference))?.artifact.id).toBe(output.id);
+    const videoBinding = measuredBindings(f, key).video;
+    const video = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_video", bindingHash: "e".repeat(64), storageKey: `${key}.mp4`,
+      contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: video.id, role: "source_video", contentType: "video/mp4",
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: videoBinding } }, verifiedRequest: f.verified() }));
+    expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).status).toBe("completed");
+    expect((await probe.readForProvider(admitted.intent.reference))?.artifact.id).toBe(output.id);
+    expect(await probe.descriptorForIngest(fence)).toBeNull();
+  }, 60_000);
 
   test("already sealed mismatching video refuses audio admission before a debit or STT run exists", async () => {
     const f = await fixture();

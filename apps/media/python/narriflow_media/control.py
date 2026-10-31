@@ -40,7 +40,7 @@ class ControlResponse:
 
 @dataclass(frozen=True)
 class CommandResult:
-    disposition: Mapping[str, Any]
+    disposition: Mapping[str, Any] = field(repr=False)
     server_time_upper: float
     received_monotonic: float
     received_wall: float
@@ -67,10 +67,12 @@ def _https(origin: str, target: str, body: bytes, headers: Mapping[str, str], ti
     parsed = urlsplit(origin)
     connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443,
                                               timeout=timeout, context=ssl.create_default_context())
+    active_socket = None
     def interrupt():
-        if connection.sock is not None:
+        sock = connection.sock or active_socket
+        if sock is not None:
             try:
-                connection.sock.shutdown(socket.SHUT_RDWR)
+                sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
         connection.close()
@@ -85,6 +87,7 @@ def _https(origin: str, target: str, body: bytes, headers: Mapping[str, str], ti
     watcher.start()
     try:
         connection.request('POST', target, body=body, headers=dict(headers))
+        active_socket = connection.sock
         response = connection.getresponse()
         chunks, size = [], 0
         while chunk := response.read1(min(8192, MAX_RESPONSE_BYTES + 1 - size)):
@@ -292,11 +295,19 @@ class ExecutorSession:
             raise ExecutionControlError('execution_transfer_invalid')
         command = {'action': action, 'fence': self.fence, **fields}
         validate_transfer_command(command)
-        result = self._client._post(TRANSFER_TARGET, command, parse_transfer_disposition,
-                                   deadline_monotonic=min(self._deadline, self._lease))
-        self.assert_live()
-        check_transfer_response(command, result)
-        return result
+        try:
+            result = self._client._post(TRANSFER_TARGET, command, parse_transfer_disposition,
+                                       deadline_monotonic=min(self._deadline, self._lease))
+            self.assert_live()
+            check_transfer_response(command, result)
+            return result
+        except ExecutionControlError as error:
+            # An old inbox grant can be refreshed while this owner is still
+            # live. Refused authority or an unconfirmed control exchange stops
+            # all native siblings through the same permission event.
+            if error.code != 'execution_grant_expired':
+                self.cancel_event.set()
+            raise
 
     def on_process_start(self, pid: int):
         """Pass directly to the process owner's callback, never call before Popen."""

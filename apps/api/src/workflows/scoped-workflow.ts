@@ -6,7 +6,7 @@ import { executionDispatchReferenceSchema, type ExecutionDispatchReference } fro
 import { withWorkerServices, workerServiceEnvironment } from "../worker-services";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { workflowDomainRegistry } from "./domain-runtime";
-import { assertMetadataBound, workflowDirectiveSchema, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT, type WorkflowHandlerRegistry, type WorkflowKind, type WorkflowWake } from "./protocol";
+import { assertMetadataBound, dispatchContinuationInstanceId, workflowDirectiveSchema, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT, type WorkflowHandlerRegistry, type WorkflowKind, type WorkflowWake } from "./protocol";
 
 const MAX_COMMAND_STEPS = 512;
 /** Only one command is inside a scope. Workflows, not JavaScript timers, owns
@@ -20,8 +20,9 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
     let reference: ExecutionDispatchReference;
     try { assertMetadataBound(event.payload); reference = executionDispatchReferenceSchema.parse(event.payload); }
     catch { throw new NonRetryableError("invalid_workflow_reference"); }
-    if (reference.kind !== this.workflowKind && !(this.workflowKind === "maintenance" && reference.kind === "project_progress")) throw new NonRetryableError("wrong_workflow_entrypoint");
-    if (event.instanceId !== (await executionDispatchIdentity(reference)).instanceId) throw new NonRetryableError("wrong_workflow_instance");
+    const continuation = this.workflowKind === "maintenance" && event.instanceId === dispatchContinuationInstanceId(reference);
+    if (!continuation && reference.kind !== this.workflowKind && !(this.workflowKind === "maintenance" && reference.kind === "project_progress")) throw new NonRetryableError("wrong_workflow_entrypoint");
+    if (!continuation && event.instanceId !== (await executionDispatchIdentity(reference)).instanceId) throw new NonRetryableError("wrong_workflow_instance");
     let wake: WorkflowWake = { type: "start" };
     for (let index = 0; index < MAX_COMMAND_STEPS; index++) {
       const input = { reference, wake };
@@ -59,7 +60,7 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
       try {
         assertMetadataBound(received.payload);
         const delivery = workflowDispatchEventSchema.parse(received.payload);
-        if (delivery.reference.deploymentEpoch !== reference.deploymentEpoch || delivery.reference.generation !== reference.generation || delivery.reference.subject.kind !== reference.subject.kind || delivery.reference.subject.id !== reference.subject.id || delivery.reference.kind !== reference.kind) throw new Error("scope mismatch");
+        if (delivery.reference.deploymentEpoch !== reference.deploymentEpoch || delivery.reference.generation !== reference.generation || delivery.reference.subject.kind !== reference.subject.kind || delivery.reference.subject.id !== reference.subject.id || delivery.reference.kind !== reference.kind || delivery.reference.inputHash !== reference.inputHash) throw new Error("scope mismatch");
         wake = { type: "dispatch", delivery };
       } catch { throw new NonRetryableError("invalid_workflow_wake"); }
     }

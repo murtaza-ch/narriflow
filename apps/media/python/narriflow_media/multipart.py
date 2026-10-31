@@ -147,12 +147,17 @@ class SignedHttpTransport:
                                                   context=ssl.create_default_context()))
         finished = Event()
         deadline = time.monotonic() + self._timeout
+        wall_deadline = time.time() + self._timeout
+        active_socket = None
         def monitor():
             while not finished.wait(0.05):
-                if cancelled() or time.monotonic() >= deadline:
-                    if connection.sock is not None:
+                if cancelled() or time.monotonic() >= deadline or time.time() >= wall_deadline:
+                    # HTTPResponse owns the socket after Connection:close.
+                    # connection.close() alone cannot interrupt that read.
+                    sock = connection.sock or active_socket
+                    if sock is not None:
                         try:
-                            connection.sock.shutdown(socket.SHUT_RDWR)
+                            sock.shutdown(socket.SHUT_RDWR)
                         except OSError:
                             pass
                     connection.close()
@@ -166,13 +171,14 @@ class SignedHttpTransport:
             if parsed.query:
                 target += '?' + parsed.query
             connection.request(method, target, body=body, headers=combined)
+            active_socket = connection.sock
             response = connection.getresponse()
             buffer, size = bytearray(max_response_bytes + 1), 0
             while received := response.readinto(memoryview(buffer)[size:]):
                 size += received
                 if size > max_response_bytes:
                     raise MultipartTransferError('multipart_response_too_large')
-            if cancelled() or time.monotonic() >= deadline:
+            if cancelled() or time.monotonic() >= deadline or time.time() >= wall_deadline:
                 raise MultipartTransferError('multipart_cancelled')
             return TransferResponse(response.status, dict(response.getheaders()), memoryview(buffer)[:size])
         except (OSError, http.client.HTTPException):

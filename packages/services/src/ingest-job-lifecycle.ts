@@ -1,4 +1,4 @@
-import { appendProgressEventDispatch } from "./progress-outbox";
+import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
@@ -38,6 +38,7 @@ import { flushWorkspaceEvents } from "./workspace-event";
 
 import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
+import { commitSourceLanguageProbeWithinTransaction } from "./transcription-probe";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
@@ -50,7 +51,7 @@ export interface IngestExecutionReference {
   attemptToken: string;
 }
 export type IngestArtifactCommit = ExecutorArtifactCommit & (
-  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding }
+  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding } | { role: "probe" }
 );
 export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
   ref: IngestExecutionReference;
@@ -382,6 +383,7 @@ export class IngestJobLifecycle {
 
   async commitArtifactExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, artifact: IngestArtifactCommit): Promise<ExecutorMutationResult> {
     await this.ownedExecution(tx, ref, context);
+    if (artifact.role === "probe") return commitSourceLanguageProbeWithinTransaction(tx, { reference: context.reference, attemptToken: context.attemptToken, owner: context.owner }, artifact);
     if (artifact.role === "source_audio") {
       const binding = sourceAudioBindingSchema.parse(artifact.binding);
       if (binding.projectId !== ref.projectId || binding.sourceRevision !== ref.sourceRevision || binding.object.key !== artifact.storageKey ||
@@ -1048,6 +1050,7 @@ export class IngestJobLifecycle {
         const state = await this.lockHandoff(tx, id, reference);
         if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
         const { job, project, audio, now, epoch } = state;
+        queueProjectProgressCatchup(tx, project.id);
         if (job.generationHandoffAt && job.generationRunId) return { kind: "acknowledged", workflowRunId: job.generationRunId,
           dispatchIds: await this.appendGenerationDispatch(tx, job.generationRunId, epoch) };
         if (job.generationHandoffAt) return { kind: "refused", dispatchIds: [] };
@@ -1098,7 +1101,7 @@ export class IngestJobLifecycle {
       return await this.deps.prisma.$transaction(async tx => {
         const result = await this.handoffForJobWithinTransaction(tx, id, reference);
         await flushWorkspaceEvents(tx);
-        return result;
+        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx)])] };
       }, PROCESSING_USAGE_TRANSACTION);
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return { kind: "superseded", dispatchIds: [] };
@@ -1109,7 +1112,7 @@ export class IngestJobLifecycle {
         if (error instanceof ExpectedDomainFailureError && (!isAutoRetryableFailureCode(code) || ["invalid", "unprocessable", "missing", "forbidden", "payment_required"].includes(error.kind))) {
           await this.failHandoff(tx, state.job, code, error.message);
           await flushWorkspaceEvents(tx);
-          return { kind: "refused", dispatchIds: [] };
+          return { kind: "refused", dispatchIds: await flushProjectProgressDrains(tx) };
         }
         console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: id, projectId: state.project.id, errorCode: code }));
         const retryAt = new Date(state.now.getTime() + 60_000);

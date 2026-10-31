@@ -26,9 +26,33 @@
  * A probe failure never fails the run: every problem returns `pinned: null`
  * and the caller transcribes in Auto. Only cancellation propagates.
  */
+import { normalizeProviderLanguageCode, type SourceLanguageCodeValue } from "@narriflow/validators";
+
 export const PROBE_MIN_DURATION_SEC = 60;
 export const PROBE_WINDOW_SEC = 20;
 export const PROBE_WINDOW_CENTERS = [0.2, 0.5, 0.8] as const;
+export const PROBE_MIN_LANGUAGE_PROBABILITY = 0.8;
+export const PROBE_MIN_WORDS = 15;
+export const LANGUAGE_PROBE_MAX_BYTES = 2_000_000;
+
+export interface LanguageProbeResult {
+  pinned: SourceLanguageCodeValue | null;
+  detected: string | null;
+  probability: number | null;
+  wordCount: number;
+  reason: string;
+}
+
+/** The existing product pin policy, shared by control and native adapters. */
+export function decideProbePin(response: { languageCode: string | null; probability: number | null; wordCount: number }): { pinned: SourceLanguageCodeValue | null; reason: string } {
+  const { languageCode, probability, wordCount } = response;
+  if (!languageCode) return { pinned: null, reason: "no_language_detected" };
+  if (probability === null || probability < PROBE_MIN_LANGUAGE_PROBABILITY) return { pinned: null, reason: "low_language_probability" };
+  if (wordCount < PROBE_MIN_WORDS) return { pinned: null, reason: "too_few_words" };
+  const canonical = normalizeProviderLanguageCode(languageCode);
+  if (!canonical) return { pinned: null, reason: "language_not_in_catalog" };
+  return { pinned: canonical, reason: "pinned" };
+}
 
 export interface LanguageProbeWindow {
   startSec: number;

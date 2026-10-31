@@ -1,24 +1,42 @@
 import { expect, test } from "bun:test";
-import type { ExecutionDispatchDelivery } from "@narriflow/services/execution-dispatch";
+import { executionDispatchIdentity } from "@narriflow/services/execution-dispatch";
+import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../worker-bindings";
+import { dispatchContinuationInstanceId } from "./protocol";
 import { createWorkerExecutionScheduler } from "./scheduler";
 
-const reference = { dispatchId: "50000000-0000-4000-8000-000000000001", deploymentEpoch: 1, kind: "import_pipeline" as const, subject: { kind: "ingest_job" as const, id: "60000000-0000-4000-8000-000000000001" }, generation: 1, inputHash: "a".repeat(64) };
-const delivery = (over: Partial<ExecutionDispatchDelivery> = {}): ExecutionDispatchDelivery => ({ reference, deliveryKey: "fixture", instanceId: "nf_fixture", dueAt: new Date(), mode: "registration", wakeKind: null, deadlineKind: null, observedDeadlineAt: null, ...over });
-test("creation is acknowledged only after actual creation or an independently confirmed existing instance", async () => {
+const reference: ExecutionDispatchReference = { dispatchId: crypto.randomUUID(), kind: "operation_driver", subject: { kind: "native_validation", id: crypto.randomUUID() }, deploymentEpoch: 1, generation: 1, inputHash: "a".repeat(64) };
+async function delivery() { return { reference, ...await executionDispatchIdentity(reference), dueAt: new Date(), mode: "wake" as const, wakeKind: "native.completed", deadlineKind: null, observedDeadlineAt: null }; }
+
+test("registration requires creation or an independently confirmed existing instance", async () => {
   let exists = false;
-  const bindings = { IMPORT_PIPELINE: { create: async ({ id }: { id: string }) => { if (exists) throw new Error("existing"); exists = true; return { id }; }, get: async (id: string) => ({ id, status: async () => ({ status: exists ? "running" : "unknown" }) }) } } as unknown as ApiWorkerBindings;
+  const bindings = { OPERATION_DRIVER: { create: async ({ id }: { id: string }) => { if (exists) throw new Error("Existing"); exists = true; return { id }; }, get: async (id: string) => ({ id, status: async () => ({ status: exists ? "running" : "unknown" }) }) } } as unknown as ApiWorkerBindings;
   const scheduler = createWorkerExecutionScheduler(bindings);
-  expect(await scheduler.deliver(delivery())).toEqual({ status: "confirmed_created", destinationId: "nf_fixture" });
-  expect(await scheduler.deliver(delivery())).toEqual({ status: "confirmed_existing", destinationId: "nf_fixture" });
-  exists = false; (bindings.IMPORT_PIPELINE as unknown as { create: () => Promise<never> }).create = async () => { throw new Error("network failure"); };
-  await expect(scheduler.deliver(delivery())).rejects.toThrow();
+  const input = { ...await delivery(), mode: "registration" as const, wakeKind: null };
+  expect((await scheduler.deliver(input)).status).toBe("confirmed_created");
+  expect((await scheduler.deliver(input)).status).toBe("confirmed_existing");
+  exists = false;
+  bindings.OPERATION_DRIVER = { create: async () => { throw new Error("Transport failed"); }, get: bindings.OPERATION_DRIVER.get } as Workflow;
+  await expect(scheduler.deliver(input)).rejects.toThrow("Transport failed");
 });
-test("wake delivery awaits sendEvent and uses the one buffered dispatch event type", async () => {
-  let resume!: () => void; const delivered = new Promise<void>((resolve) => { resume = resolve; }); let event: unknown;
-  const bindings = { IMPORT_PIPELINE: { get: async (id: string) => ({ id, sendEvent: async (input: unknown) => { event = input; await delivered; } }) } } as unknown as ApiWorkerBindings;
-  let acknowledged = false;
-  const result = createWorkerExecutionScheduler(bindings).deliver(delivery({ mode: "wake", wakeKind: "audio.ready" })).then((value) => { acknowledged = true; return value; });
-  await Bun.sleep(1); expect(acknowledged).toBe(false); expect(event).toMatchObject({ type: "dispatch", payload: { reference, wakeKind: "audio.ready" } });
-  resume(); expect(await result).toEqual({ status: "confirmed_notified", destinationId: "nf_fixture" });
+
+test("an accepted event still requires a separately confirmed durable command", async () => {
+  let events = 0, commands = 0;
+  const bindings = { OPERATION_DRIVER: { get: async () => ({ sendEvent: async () => { events++; } }) }, MAINTENANCE: { create: async (input: { id: string; params: unknown }) => { commands++; expect(input.params).toEqual(reference); return { id: input.id }; } } } as unknown as ApiWorkerBindings;
+  const result = await createWorkerExecutionScheduler(bindings).deliver(await delivery());
+  expect(result).toEqual({ status: "confirmed_notified", destinationId: dispatchContinuationInstanceId(reference) });
+  expect([events, commands]).toEqual([1, 1]);
+});
+
+test("lost continuation creation acknowledgement confirms the same dispatch identity independently", async () => {
+  const identities: string[] = [];
+  const bindings = { OPERATION_DRIVER: { get: async () => { throw new Error("Closed"); } }, MAINTENANCE: { create: async (input: { id: string }) => { identities.push(input.id); throw new Error("Lost ACK"); }, get: async (id: string) => ({ id, status: async () => ({ status: "complete" }) }) } } as unknown as ApiWorkerBindings;
+  const result = await createWorkerExecutionScheduler(bindings).deliver(await delivery());
+  expect(result.destinationId).toBe(dispatchContinuationInstanceId(reference));
+  expect(identities).toEqual([dispatchContinuationInstanceId(reference)]);
+});
+
+test("an event acknowledgement cannot hide unconfirmed continuation registration", async () => {
+  const bindings = { OPERATION_DRIVER: { get: async () => ({ sendEvent: async () => {} }) }, MAINTENANCE: { create: async () => { throw new Error("Unavailable"); }, get: async () => { throw new Error("Absent"); } } } as unknown as ApiWorkerBindings;
+  await expect(createWorkerExecutionScheduler(bindings).deliver(await delivery())).rejects.toThrow("Unavailable");
 });
