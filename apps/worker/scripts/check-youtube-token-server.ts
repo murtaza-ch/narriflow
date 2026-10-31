@@ -4,7 +4,7 @@
  * cannot work here fails the build instead of disabling YouTube intake at runtime.
  */
 import { startYoutubeTokenServer } from "../src/youtube-import";
-import { WorkerProcessFailure } from "../src/worker-process";
+import { WorkerProcessFailure } from "../../media/src/worker-process";
 
 const home = process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens";
 try {

@@ -2,10 +2,10 @@ import { join } from "node:path";
 import { compositionAssetRef } from "@narriflow/composition-plan";
 import { getLayoutEvidenceLifecycle, LayoutEvidenceClaimLost, WorkflowFailure, downloadObjectToFile, presignDownloadUrl, type LayoutEvidenceLifecycle, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
 import { CLIP_AUTO_LAYOUT_ENGINE, type ClipAutoLayoutAnalysis } from "@narriflow/validators";
-import { LayoutEvidence, type LayoutEvidenceDependencies } from "../layout-evidence";
-import { createLayoutEvidenceDetectors } from "../layout-evidence-runtime";
-import { parseWorkerRenderConfig, type RenderConfig } from "../render-config";
-import { productionWorkerProcessModule, resolveDisplayGeometry, WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
+import { LayoutEvidence, type LayoutEvidenceDependencies } from "../../../media/src/layout-evidence";
+import { createLayoutEvidenceDetectors } from "../../../media/src/layout-evidence-runtime";
+import { parseWorkerRenderConfig, type RenderConfig } from "../../../media/src/render-config";
+import { productionWorkerProcessModule, resolveDisplayGeometry, WorkerProcessFailure, type WorkerProcessModule } from "../../../media/src/worker-process";
 
 function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>): void {
   console.warn(JSON.stringify({ level, message, ...context }));

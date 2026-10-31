@@ -17,6 +17,30 @@
     "./workflow": {
       "types": "./src/workflow.service.ts",
       "default": "./src/workflow.service.ts"
+    },
+    "./workflow-attempt-contract": {
+      "types": "./src/workflow-attempt-contract.ts",
+      "default": "./src/workflow-attempt-contract.ts"
+    },
+    "./brand-font-parser": {
+      "types": "./src/brand-font-parser.ts",
+      "default": "./src/brand-font-parser.ts"
+    },
+    "./clip-editor-document-codec": {
+      "types": "./src/clip-editor-document-codec.ts",
+      "default": "./src/clip-editor-document-codec.ts"
+    },
+    "./motion-render-analytics": {
+      "types": "./src/motion-render-analytics.ts",
+      "default": "./src/motion-render-analytics.ts"
+    },
+    "./render-group-contract": {
+      "types": "./src/render-group-contract.ts",
+      "default": "./src/render-group-contract.ts"
+    },
+    "./url-guard": {
+      "types": "./src/url-guard.ts",
+      "default": "./src/url-guard.ts"
     }
   },
   "scripts": {

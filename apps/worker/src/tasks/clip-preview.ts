@@ -1,4 +1,4 @@
-import { executorProcessFailure } from "../worker-process";
+import { executorProcessFailure } from "../../../media/src/worker-process";
 /**
  * Generates lightweight preview proxies for clips so the studio and the
  * project-page clip cards never have to stream the full (multi-hundred-MB
@@ -31,7 +31,7 @@ import { executorProcessFailure } from "../worker-process";
  * never fails the batch).
  */
 
-import { passthroughColor, validateRenderOutput, type RenderOutputExpectation } from "../render-output-validation";
+import { passthroughColor, validateRenderOutput, type RenderOutputExpectation } from "../../../media/src/render-output-validation";
 import { standardFrameRate } from "@narriflow/validators";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -46,7 +46,7 @@ import {
 import type { ClipPreviewPeaks } from "@narriflow/services";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import type { CaptionPreset } from "@narriflow/validators";
-import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerProcessModule } from "../../../media/src/worker-process";
 
 import type { ClipPendingPreview } from "@narriflow/services";
 

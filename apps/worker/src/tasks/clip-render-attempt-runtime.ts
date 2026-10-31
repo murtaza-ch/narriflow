@@ -30,25 +30,25 @@ import {
 	type RenderGroupLifecycle,
 } from "@narriflow/services";
 import { asAttemptLost } from "../render-group-executor";
-import type { RenderConfig } from "../render-config";
+import type { RenderConfig } from "../../../media/src/render-config";
 import {
 	productionWorkerProcessModule,
 	WorkerProcessFailure,
 	executorProcessFailure,
 	type WorkerProcessDiagnostic,
-} from "../worker-process";
-import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
+} from "../../../media/src/worker-process";
+import { productionRenderDiagnosticAdapter } from "../../../media/src/render-diagnostic-adapter";
 import {
 	productionRenderClockAdapter,
 	productionRenderWorkspaceAdapter,
-} from "../render-runtime-adapters";
-import { createLayoutEvidenceDetectors } from "../layout-evidence-runtime";
-import { processRenderFactCache, validateMediaOnce } from "../render-fact-cache";
+} from "../../../media/src/render-runtime-adapters";
+import { createLayoutEvidenceDetectors } from "../../../media/src/layout-evidence-runtime";
+import { processRenderFactCache, validateMediaOnce } from "../../../media/src/render-fact-cache";
 import {
 	compileClipCompositionCommand,
 	compileLayoutEvidenceSegmentCommand,
 	compileOptionalMediaValidationCommand,
-} from "../composition-ffmpeg-adapter";
+} from "../../../media/src/composition-ffmpeg-adapter";
 import {
 	getCachedBrollAssetPath,
 	saveBrollAssetToCache,

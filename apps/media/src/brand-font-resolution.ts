@@ -1,11 +1,9 @@
+import { brandFontRenderer } from "@narriflow/services/brand-font-parser";
 import { createHash } from "node:crypto";
 import { readFile, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CAPTION_FALLBACK_FONTS, CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
-import {
-  brandFontRenderer,
-  rethrowWorkflowAttemptLost,
-} from "@narriflow/services";
+import { rethrowWorkflowAttemptLost } from "@narriflow/services/workflow-attempt-contract";
 import {
   CAPTION_FONT_FACES,
   type CaptionPreset,

@@ -12,7 +12,7 @@
  */
 import { rm, statfs as nodeStatfs } from "node:fs/promises";
 import { dirname } from "node:path";
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import type { RenderConfig } from "./render-config";
 
 const MIB = 1024 * 1024;

@@ -21,7 +21,7 @@ import {
   transcriptUtteranceSchema,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../media/src/worker-process";
 
 const DUBBING_FFMPEG_TIMEOUT_MS = 10 * 60 * 1000;
 const DUBBING_PROBE_TIMEOUT_MS = 30_000;

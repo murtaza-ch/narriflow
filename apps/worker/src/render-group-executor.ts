@@ -20,9 +20,9 @@ import {
 	type clipService,
 	type getWorkflowRunLifecycle,
 } from "@narriflow/services";
-import { productionRenderDiagnosticAdapter } from "./render-diagnostic-adapter";
-import { RenderResourceDeferral } from "./render-resource-budget";
-import { executorProcessFailure, type WorkerProcessFailure } from "./worker-process";
+import { productionRenderDiagnosticAdapter } from "../../media/src/render-diagnostic-adapter";
+import { RenderResourceDeferral } from "../../media/src/render-resource-budget";
+import { executorProcessFailure, type WorkerProcessFailure } from "../../media/src/worker-process";
 import type {
 	ClipRenderAttemptLifecycle,
 	ClipRenderingWorkflowAttempt,

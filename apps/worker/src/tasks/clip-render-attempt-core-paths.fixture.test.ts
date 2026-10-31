@@ -1,10 +1,10 @@
 import type { RenderGroupOutcome } from "./clip-render-attempt";
-import { RenderFactCache } from "../render-fact-cache";
+import { RenderFactCache } from "../../../media/src/render-fact-cache";
 import {
 	createClipRenderAttempt,
 	type ClipRenderAttemptRuntimeOptions,
 } from "./clip-render-attempt-runtime";
-import { compositionOutputExpectation, type RenderOutputExpectation } from "../render-output-validation";
+import { compositionOutputExpectation, type RenderOutputExpectation } from "../../../media/src/render-output-validation";
 import { expect } from "bun:test";
 import {
 	copyFile,
@@ -21,11 +21,11 @@ import {
 	WorkflowFailure,
 } from "@narriflow/services";
 import type { TranscriptUtterance } from "@narriflow/validators";
-import { parseRenderConfig } from "../render-config";
-import { productionWorkerProcessModule, WorkerProcessFailure } from "../worker-process";
+import { parseRenderConfig } from "../../../media/src/render-config";
+import { productionWorkerProcessModule, WorkerProcessFailure } from "../../../media/src/worker-process";
 import {
 	compileClipCompositionCommand,
-} from "../composition-ffmpeg-adapter";
+} from "../../../media/src/composition-ffmpeg-adapter";
 import { type ClipRenderingWorkflowAttempt } from "./clip-render-attempt";
 
 export type PendingClipRender = Awaited<

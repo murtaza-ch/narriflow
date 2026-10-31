@@ -3,9 +3,9 @@ import { compositionAssetRef, planClipComposition, splitLayoutInputFingerprint, 
 import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, editorDocumentSchema, captionPresetSchema } from "@narriflow/validators";
 import { LayoutEvidence, type LayoutEvidenceDependencies, type LayoutEvidenceInput, type LayoutEvidenceWrite } from "./layout-evidence";
 import { parseRenderConfig } from "./render-config";
-import { analyzeClipAutoLayout } from "./tasks/auto-layout-analysis";
+import { analyzeClipAutoLayout } from "../../worker/src/tasks/auto-layout-analysis";
 import { WorkflowFailure } from "@narriflow/services";
-import { deriveRenderCompositionEvidence } from "./tasks/clip-render-attempt";
+import { deriveRenderCompositionEvidence } from "../../worker/src/tasks/clip-render-attempt";
 import { WorkerProcessFailure, type WorkerProcessModule } from "./worker-process";
 
 const requests: CompositionEvidenceRequest[] = [

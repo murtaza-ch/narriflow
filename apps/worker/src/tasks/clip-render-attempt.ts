@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { RenderAttemptTelemetry, renderReplicaResources } from "../render-diagnostic-adapter";
+import { RenderAttemptTelemetry, renderReplicaResources } from "../../../media/src/render-diagnostic-adapter";
 import { mediaWorkScheduler } from "../media-work-scheduler";
-import { executorProcessFailure } from "../worker-process";
+import { executorProcessFailure } from "../../../media/src/worker-process";
 import { statfs } from "node:fs/promises";
-import { transportRenderCommand } from "../render-command-transport";
-import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
-import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
+import { transportRenderCommand } from "../../../media/src/render-command-transport";
+import { RenderFactCache, sourceProbeIdentity } from "../../../media/src/render-fact-cache";
+import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../../../media/src/brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { basename, extname, join } from "node:path";
 import {
@@ -62,12 +62,12 @@ import type {
 	EditorDocument,
 	StudioEdits,
 } from "@narriflow/validators";
-import { buildClipCutPlan } from "./cut-plan";
+import { buildClipCutPlan } from "../../../media/src/tasks/cut-plan";
 import {
 	LayoutEvidence,
 	type LayoutEvidenceDetectors,
 	type LayoutEvidenceAvailability,
-} from "../layout-evidence";
+} from "../../../media/src/layout-evidence";
 import {
 	brollQueryForClip,
 	dominantPexelsOrientation,
@@ -78,7 +78,7 @@ import {
 	saveBrollAssetToCache,
 	type BrollCueInput,
 } from "./broll";
-import { type RenderConfig } from "../render-config";
+import { type RenderConfig } from "../../../media/src/render-config";
 import {
 	RenderResourceDeferral,
 	ScratchFileRefs,
@@ -90,12 +90,12 @@ import {
 	type BudgetEnvironment,
 	type RenderReservation,
 	type ReservationRequest,
-} from "../render-resource-budget";
+} from "../../../media/src/render-resource-budget";
 import {
 	clipExportAttemptStorageKey,
 	clipRenderAttemptStorageKey,
 	isAttemptUniqueProjectRenderObjectKey,
-} from "../render-object-key";
+} from "../../../media/src/render-object-key";
 import {
 	resolveDisplayGeometry,
 	WorkerProcessFailure,
@@ -103,7 +103,7 @@ import {
 	type WorkerMediaInspection,
 	type WorkerProcessDiagnostic,
 	type WorkerProcessModule,
-} from "../worker-process";
+} from "../../../media/src/worker-process";
 import {
 	compileClipCompositionCommand,
 	compileCompositionPlanCaptions,
@@ -112,8 +112,8 @@ import {
 	hdrColorOf,
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
-} from "../composition-ffmpeg-adapter";
-import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../caption-ass";
+} from "../../../media/src/composition-ffmpeg-adapter";
+import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../../../media/src/caption-ass";
 import {
 	CAPTION_RENDER_DIAGNOSTIC_PATTERN,
 	type CaptionGlyphUnavailableError,
@@ -121,14 +121,14 @@ import {
 	type SkippedEmoji,
 	captionRenderDiagnosticsFailure,
 	classifyCaptionRenderDiagnostics,
-} from "../caption-glyphs";
-import { classifyRenderObjectKey } from "../render-object-key";
-import { compositionOutputExpectation, validateRenderOutput, type ValidatedRenderResult } from "../render-output-validation";
-import { guardMixPeak, mixPeakMeasureDeadlineMs, type MixPeakResult } from "../render-mix-peak";
+} from "../../../media/src/caption-glyphs";
+import { classifyRenderObjectKey } from "../../../media/src/render-object-key";
+import { compositionOutputExpectation, validateRenderOutput, type ValidatedRenderResult } from "../../../media/src/render-output-validation";
+import { guardMixPeak, mixPeakMeasureDeadlineMs, type MixPeakResult } from "../../../media/src/render-mix-peak";
 import {
 	type RenderClockAdapter,
 	type RenderWorkspaceAdapter,
-} from "../render-runtime-adapters";
+} from "../../../media/src/render-runtime-adapters";
 
 interface BrollCutaway {
 	ref: string;

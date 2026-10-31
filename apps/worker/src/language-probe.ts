@@ -5,7 +5,7 @@ import {
   SCRIBE_MODEL_ID,
   type SourceLanguageCodeValue,
 } from "@narriflow/validators";
-import { HTTP_SOURCE_RW_TIMEOUT_US, type WorkerProcessModule } from "./worker-process";
+import { HTTP_SOURCE_RW_TIMEOUT_US, type WorkerProcessModule } from "../../media/src/worker-process";
 
 /**
  * Bounded source-language probe (spec D6): when the owner left the language on

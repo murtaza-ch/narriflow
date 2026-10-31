@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import type { LayoutDetectionInput, LayoutEvidenceDetectors, PipDetectionResult } from "./layout-evidence";
 import type { RenderConfig } from "./render-config";
 import { WorkerProcessFailure, type WorkerProcessModule } from "./worker-process";
@@ -46,7 +46,7 @@ export function createLayoutEvidenceDetectors(input: {
   const number = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
   const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
   const run = async (name: string, params: LayoutDetectionInput, multi = false) => {
-    const script = fileURLToPath(new URL(`../scripts/${name}`, import.meta.url));
+    const script = fileURLToPath(new URL(`../python/detectors/${name}`, import.meta.url));
     return parse(await execute(config.reframePython, [script, params.sourcePath, String(params.startSec), String(params.durationSec), ...(name === "reframe_detect.py" ? [String(config.reframeSampleFps), config.reframeModelPath, ...(multi ? ["--multi"] : [])] : [])], true));
   };
   const detectFacePath = async (params: LayoutDetectionInput): Promise<{ samples: FaceSample[] }> => {

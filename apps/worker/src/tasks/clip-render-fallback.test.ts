@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { WorkflowFailure } from "@narriflow/services";
-import { WorkerProcessFailure } from "../worker-process";
+import { WorkerProcessFailure } from "../../../media/src/worker-process";
 import {
 	isRecoverableRangedSourceFailure,
 	normalizeRenderProcessFailure,

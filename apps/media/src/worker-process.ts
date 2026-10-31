@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { WORKFLOW_LEASE_DURATION_MS, WorkflowFailure } from "@narriflow/services";
+import { WORKFLOW_LEASE_DURATION_MS, WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import { SOURCE_TIMECODE_PATTERN, standardFrameRate, type FrameRate, type SourceProbe, type MediaFacts } from "@narriflow/validators";
 
 const DEFAULT_KILL_GRACE_MS = 5_000;

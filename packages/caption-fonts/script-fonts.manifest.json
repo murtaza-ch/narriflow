@@ -1,5 +1,5 @@
 {
-  "note": "Pinned Noto script faces added for the Scribe v2 language catalog (spec D11). Every file is SHA-256 pinned here and in apps/worker/runtime-lock.json; src/script-fonts.test.ts checks both. License text: licenses/noto-fallbacks-OFL.txt. `languages` marks a language-aware face (ticket 10); the rest are the single face for their script.",
+  "note": "Pinned Noto script faces added for the Scribe v2 language catalog (spec D11). Every file is SHA-256 pinned here and in apps/media/runtime-lock.json; src/script-fonts.test.ts checks both. License text: licenses/noto-fallbacks-OFL.txt. `languages` marks a language-aware face (ticket 10); the rest are the single face for their script.",
   "fonts": [
     {
       "file": "NotoSansArmenian-Regular.ttf",

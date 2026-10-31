@@ -8,8 +8,8 @@ import {
 	coordinateRenderWorkSet,
 	executeNextRenderGroup,
 } from "./render-group-executor";
-import { RenderResourceDeferral } from "./render-resource-budget";
-import { WorkerProcessFailure } from "./worker-process";
+import { RenderResourceDeferral } from "../../media/src/render-resource-budget";
+import { WorkerProcessFailure } from "../../media/src/worker-process";
 
 const group: ClaimedRenderGroupAttempt = {
 	workflowRunId: "run",

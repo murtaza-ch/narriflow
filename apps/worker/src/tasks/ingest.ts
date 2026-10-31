@@ -49,7 +49,7 @@ import {
   productionWorkerProcessModule,
   WorkerProcessFailure,
   type WorkerProcessModule,
-} from "../worker-process";
+} from "../../../media/src/worker-process";
 
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const METADATA_PROBE_TIMEOUT_MS = 120 * 1000;

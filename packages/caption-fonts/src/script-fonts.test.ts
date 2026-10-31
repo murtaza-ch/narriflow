@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { create } from "fontkit";
 import { SCRIBE_LANGUAGES } from "@narriflow/validators";
-import { SCRIPT_SPECIMENS } from "../../../apps/worker/scripts/check-render-environment";
+import { SCRIPT_SPECIMENS } from "../../../apps/media/scripts/check-render-environment";
 import { CAPTION_FALLBACK_FONTS, captionFallbackFontPath, fontFileCovers } from "./fallback-fonts";
 import { shapeCaptionRun } from "./shaping";
 
@@ -21,7 +21,7 @@ interface ManifestFont {
 }
 
 const manifest = JSON.parse(readFileSync(new URL("../script-fonts.manifest.json", import.meta.url), "utf8")) as { fonts: ManifestFont[] };
-const lock = JSON.parse(readFileSync(new URL("../../../apps/worker/runtime-lock.json", import.meta.url), "utf8")) as {
+const lock = JSON.parse(readFileSync(new URL("../../../apps/media/runtime-lock.json", import.meta.url), "utf8")) as {
   fallbackFonts: { sha256: Record<string, string> };
 };
 const faceByAssName = new Map(CAPTION_FALLBACK_FONTS.map((font) => [font.assName, font]));

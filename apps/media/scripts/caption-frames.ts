@@ -3,7 +3,7 @@
  * and burns them with the real ffmpeg/libass over a flat background, so the
  * pills, plates and word order of every script can be looked at.
  *
- *   bun apps/worker/scripts/caption-frames.ts <outputDirectory> [caseId...]
+ *   bun apps/media/scripts/caption-frames.ts <outputDirectory> [caseId...]
  *
  * Each case writes `<id>.png` (one frame, cropped around the caption) and
  * `<id>.ass`. The frame is taken while the second word is active.

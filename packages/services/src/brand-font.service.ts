@@ -12,6 +12,7 @@ import {
   type BrandFontUploadInput,
   type ReusableAssetSoftDeleteInput,
   type CaptionFontFace,
+  type SceneBlock,
 } from "@narriflow/validators";
 import {
   assertBrandManageAllowed,

@@ -1,6 +1,6 @@
 
 import { RenderObjectReconciler } from "../render-object-reconciler";
-import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
+import { createRenderOutputFixture } from "../../../media/src/render-output-validation.test-fixture";
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
 import { expect, mock, spyOn, test } from "bun:test";
 import * as database from "@narriflow/db/client";
@@ -12,11 +12,11 @@ import {
 	analyticsService,
 	WorkflowAttemptLost,
 } from "@narriflow/services";
-import { parseRenderConfig } from "../render-config";
+import { parseRenderConfig } from "../../../media/src/render-config";
 import {
 	productionWorkerProcessModule,
  WorkerProcessFailure,
-} from "../worker-process";
+} from "../../../media/src/worker-process";
 import {
 	ClipRenderAttempt,
 	captionDiagnosticsOf,
@@ -27,7 +27,7 @@ import {
 import {
 	productionRenderClockAdapter,
 	productionRenderWorkspaceAdapter,
-} from "../render-runtime-adapters";
+} from "../../../media/src/render-runtime-adapters";
 
 import { attemptContext, frozenRenderingState, createOrdinaryTracer, PendingClipRender, } from "./clip-render-attempt.fixture.test";
 

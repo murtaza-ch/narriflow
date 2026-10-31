@@ -9,10 +9,10 @@ import { transportRenderCommand } from "../src/render-command-transport";
  * hashes, ffprobe facts, loudness, a full decode and review snapshots. Verify
  * renders the same suite again and compares exactly.
  *
- *   bun apps/worker/scripts/render-golden.ts stage [--pin] [--rebuild]
- *   bun apps/worker/scripts/render-golden.ts capture --suite all --out DIR
- *   bun apps/worker/scripts/render-golden.ts verify --baseline DIR --suite all --out DIR
- *   bun apps/worker/scripts/render-golden.ts describe
+ *   bun apps/media/scripts/render-golden.ts stage [--pin] [--rebuild]
+ *   bun apps/media/scripts/render-golden.ts capture --suite all --out DIR
+ *   bun apps/media/scripts/render-golden.ts verify --baseline DIR --suite all --out DIR
+ *   bun apps/media/scripts/render-golden.ts describe
  *
  * Captures are only comparable when taken with the same runtime fingerprint
  * (FFmpeg/libass/fontconfig builds, resolved fallback fonts, model hash; see
@@ -63,7 +63,7 @@ import {
 } from "../src/composition-ffmpeg-adapter";
 import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
-import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../src/tasks/clip-render-attempt";
+import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../../worker/src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection, withAudioTimestampGaps } from "../src/worker-process";
 import {
   collectRuntimeFingerprint,
@@ -404,7 +404,7 @@ export async function stageFixtures(options: {
       throw new Error(`fixture ${id} (${path}) has SHA-256 ${actual} but the manifest pins ${expected} for toolchain ${options.toolchainId}; the cached file was changed or the toolchain is not deterministic. Delete it (stage --rebuild) only if the change is understood.`);
     }
     if (!expected) {
-      if (!options.pin) throw new Error(`fixture ${id} has no pinned SHA-256 for toolchain ${options.toolchainId}; run: bun apps/worker/scripts/render-golden.ts stage --pin`);
+      if (!options.pin) throw new Error(`fixture ${id} has no pinned SHA-256 for toolchain ${options.toolchainId}; run: bun apps/media/scripts/render-golden.ts stage --pin`);
       pinned[id] = actual;
     }
     files[id] = { path, sha256: actual };
@@ -1463,7 +1463,7 @@ export function twinMismatches(inputs: Inputs, cases: Record<string, CaseRecord>
 
 async function gitState(repoRoot: string) {
   const head = await runProcess("git", ["rev-parse", "HEAD"], { cwd: repoRoot, timeoutMs: 10_000 });
-  const status = await runProcess("git", ["status", "--porcelain", "--", "apps/worker", "packages/composition-plan", "packages/validators", "packages/services", "packages/caption-fonts"], { cwd: repoRoot, timeoutMs: 20_000 });
+  const status = await runProcess("git", ["status", "--porcelain", "--", "apps/media", "packages/composition-plan", "packages/validators", "packages/services", "packages/caption-fonts"], { cwd: repoRoot, timeoutMs: 20_000 });
   return { commit: head.stdout.toString("utf8").trim(), dirtyPaths: status.stdout.toString("utf8").split("\n").filter(Boolean).map((line) => line.trim()) };
 }
 

@@ -142,7 +142,7 @@ test("a schema-valid 64-scene composition executes a production graph above Linu
 		bindCompositionPlanAudioInputs,
 		compileCompositionPlanAudioSchedule,
 	} = await import("./composition-ffmpeg-adapter");
-	const { compositionSourceFor } = await import("./tasks/clip-render-attempt");
+	const { compositionSourceFor } = await import("../../worker/src/tasks/clip-render-attempt");
 	const directory = await mkdtemp(join(tmpdir(), "render-valid-graph-14-"));
 	const signal = new AbortController().signal;
 	const execute = (args: string[]) =>

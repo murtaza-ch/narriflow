@@ -38,7 +38,7 @@ import type {
   PexelsOrientation,
   PlannedBrollCutaway,
 } from "@narriflow/validators";
-import type { ClipCutPlan } from "./cut-plan";
+import type { ClipCutPlan } from "../../../media/src/tasks/cut-plan";
 
 // Re-exported so existing imports (`from "./broll"`) keep resolving — the
 // actual implementations live in @narriflow/validators (pure placement/query

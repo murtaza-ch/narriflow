@@ -3,7 +3,7 @@ import type {
   WorkerMediaInspectionRequest,
   WorkerProcessModule,
   WorkerProcessRequest,
-} from "../worker-process";
+} from "../../../media/src/worker-process";
 import { muxDubbedVideo, probeDubbedMediaDuration } from "./dubbing";
 
 describe("dubbing process contract", () => {

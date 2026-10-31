@@ -292,7 +292,7 @@ describe("capture, verify and the gate", () => {
   test("a baseline taken with another face model is refused before rendering", async () => {
     const model = join(work, "tampered-model.onnx");
     const original = process.env.REFRAME_MODEL_PATH;
-    await writeFile(model, Buffer.concat([await readFile(join(REPO_ROOT, "apps/worker/models/face_yunet.onnx")), Buffer.from([1])]));
+    await writeFile(model, Buffer.concat([await readFile(join(REPO_ROOT, "apps/media/models/face_yunet.onnx")), Buffer.from([1])]));
     process.env.REFRAME_MODEL_PATH = model;
     try {
       const out = join(work, "verify-model");

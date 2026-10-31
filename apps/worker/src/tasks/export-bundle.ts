@@ -17,7 +17,7 @@ import {
   workflowFailureFromUnknown,
 } from "@narriflow/services";
 import { exportBundleManifestSchema, type ExportBundleManifest } from "@narriflow/validators";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../media/src/worker-process";
 
 export async function createExportBundleArchive(input: {
   outputPath: string;

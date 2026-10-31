@@ -21,7 +21,7 @@ import {
   compileClipCompositionCommand,
   compileCompositionPlanAudioSchedule,
   compileCompositionPlanCaptions,
-} from "../composition-ffmpeg-adapter";
+} from "../../../media/src/composition-ffmpeg-adapter";
 
 /** Captioned videos through the production render command and real FFmpeg:
  * silent, speech, and supplied-caption sources at each requested format. */
