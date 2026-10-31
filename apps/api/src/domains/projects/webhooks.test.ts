@@ -20,6 +20,7 @@ function harness(overrides: Partial<ProjectsWebhookDeps> = {}) {
   const deps: ProjectsWebhookDeps = {
     webhookSecret: () => SECRET,
     now: () => NOW_S * 1000,
+    deliverWakes: async () => {},
     finalizeScribeTranscript: async (input) => {
       finalized.push(input);
       return { kind: "applied" };
@@ -168,6 +169,17 @@ describe("ElevenLabs success envelope", () => {
     const response = await t.post(success());
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "elevenlabs_webhook_failed" });
+  });
+
+  test("wake delivery must be confirmed before a callback is acknowledged and duplicate replay redelivers the same obligations", async () => {
+    const ids = ["4d3347a6-072c-40fc-beb0-38df1547bea2"];
+    let settlements = 0;
+    const deliveries: string[][] = [];
+    const t = harness({ finalizeScribeTranscript: async () => ({ kind: settlements++ === 0 ? "applied" : "duplicate", dispatchIds: ids }),
+      deliverWakes: async value => { deliveries.push([...value]); if (deliveries.length === 1) throw new Error("unconfirmed"); } });
+    expect((await t.post(success())).status).toBe(500);
+    expect((await t.post(success())).status).toBe(200);
+    expect(deliveries).toEqual([ids, ids]);
   });
 });
 

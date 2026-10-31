@@ -37,13 +37,14 @@ dbDescribe("Exact Workflow execution commands", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(stage = "moment_detection", admitted = true, executionDeadline?: Date) {
+  async function fixture(stage = "moment_detection", admitted = true, hasAudio = true, executionDeadline?: Date) {
     const user = await db.user.create({ data: { clerkId: `exact-workflow-gate:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Exact workflow gate" } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Exact workflow gate", sourceMediaUrl: "r2://gate/video.mp4", sourceStorageKey: "gate/video.mp4", ingestStatus: "ready" } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
     const run = await db.workflowRun.create({ data: { projectId: project.id, deploymentEpoch: epoch, stage, status: "queued", idempotencyKey: crypto.randomUUID() } }); subjects.push(run.id);
     if (stage === "stt") {
+      if (hasAudio) {
       const ingest = await db.ingestJob.create({ data: { projectId: project.id, jobType: "upload_finalize", payload: {}, status: "completed" } }); subjects.push(ingest.id);
       const audioToken = crypto.randomUUID(), audioOwner = crypto.randomUUID(), audioKey = `execution/${epoch}/${audioToken}/${audioOwner}/audio.m4a`;
       const sourceDispatch = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "ingest_job", id: ingest.id }, generation: 1,
@@ -57,6 +58,11 @@ dbDescribe("Exact Workflow execution commands", () => {
         audioTrack: { id: "0", language: "en", codec: "aac", sampleRate: 48000, channels: 2 }, bindingHash: "d".repeat(64), storageKey: audioKey,
         etag: '"audio"', byteLength: 1000n, checksumSha256: "e".repeat(64), durationSeconds: 60.01, audioStartTimeSec: 0, probeVersion: "normalized-probe-1", toolchainFingerprint: "f".repeat(64) } });
       await db.transcript.create({ data: { projectId: project.id, sourceRevision: 1, sourceAudioId: audio.id } });
+      } else {
+        await db.project.update({ where: { id: project.id }, data: { sourceProbe: { durationSec: 60.01, audio: null,
+          video: { width: 640, height: 360, frameRate: { numerator: 30, denominator: 1 }, startTimecode: null } } } });
+        await db.transcript.create({ data: { projectId: project.id, sourceRevision: 1 } });
+      }
       await db.processingUsageReservation.create({ data: { projectId: project.id, workspaceId: workspace.id, intakeKind: "upload", periodStart: new Date("2026-10-01T00:00:00Z"),
         reservedSeconds: 120, settledSeconds: 120, state: "settled" } });
     }
@@ -77,6 +83,18 @@ dbDescribe("Exact Workflow execution commands", () => {
     return { run, reference, token, owner, fence, control, verified, acquire, lifecycle };
   }
 
+  test("a verified no-audio source completes the transcript plan without provider capacity or an executor charge", async () => {
+    const f = await fixture("stt", false, false);
+    const admission = createTranscriptionAdmission({ database: db, workflow: f.lifecycle, maxUnits: 1 });
+    const result = await withServiceEnvironment({}, () => admission.admit(f.reference, { owner: f.owner }));
+    expect(result.kind).toBe("completed");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "completed", attemptCount: 0, leaseOwner: null });
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.run.projectId } })).toMatchObject({ status: "completed", provider: "none", text: "", sourceAudioId: null });
+    const child = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.run.projectId, stage: "moment_detection" } }); subjects.push(child.id);
+    expect(result.dispatchIds).toContain((await db.executionDispatch.findFirstOrThrow({ where: { subjectId: child.id, wakeKind: null } })).id);
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: f.run.id } } })).toBe(0);
+  }, 60_000);
+
   test("concurrent weighted admission admits one provider and parks an uncharged waiter without a generic attempt", async () => {
     const fixtures = await Promise.all([fixture("stt", false), fixture("stt", false)]);
     const admission = createTranscriptionAdmission({ database: db, workflow: fixtures[0]!.lifecycle, maxUnits: 1 });
@@ -93,6 +111,14 @@ dbDescribe("Exact Workflow execution commands", () => {
     const replay = await withServiceEnvironment({}, () => admission.admit(fixtures[winner]!.reference, { owner: crypto.randomUUID() }));
     expect(replay.kind).toBe("already_waiting");
     expect(await db.executionAttempt.count({ where: { dispatch: { subjectKind: "workflow_run", subjectId: fixtures[winner]!.run.id } } })).toBe(1);
+    const released = await withServiceEnvironment({}, () => fixtures[winner]!.lifecycle.failProviderAttempt(granted.intent.reference,
+      new WorkflowFailure("elevenlabs_result_timeout", "retryable", "Test release")));
+    expect(released.kind).toBe("applied");
+    const capacityWake = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: fixtures[loser]!.run.id, wakeKind: `cap_${granted.intent.reference.attemptId.replaceAll("-", "")}` } });
+    expect(released.dispatchIds).toContain(capacityWake.id);
+    const resumed = await withServiceEnvironment({}, () => admission.admit(fixtures[loser]!.reference, { owner: fixtures[loser]!.owner }));
+    expect(resumed.kind).toBe("begun");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: fixtures[loser]!.run.id } })).toMatchObject({ status: "waiting", attemptCount: 1, errorCode: null, nextAttemptAt: null });
   }, 180_000);
 
   test("provider intent closes generic ownership and retries read the same intent without permission to POST again", async () => {
@@ -148,6 +174,25 @@ dbDescribe("Exact Workflow execution commands", () => {
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, operationDeadlineAt: null, attemptCount: 1, attemptId: null });
     expect(await db.executionDispatch.count({ where: { subjectId: f.run.id, generation: 2, kind: "operation_driver", wakeKind: null } })).toBe(1);
   }, 180_000);
+
+  test("provider watchdog sleeps on the exact explicit deadline and expiry retries without reviving a generic lease", async () => {
+    const f = await fixture("stt", false);
+    const admission = createTranscriptionAdmission({ database: db, workflow: f.lifecycle, maxUnits: 4 });
+    const begun = await withServiceEnvironment({}, () => admission.admit(f.reference, { owner: f.owner }));
+    if (begun.kind !== "begun") throw new Error("Expected intent");
+    expect(await f.lifecycle.expireProviderDeadline(begun.intent.reference, { kind: "submission", observedDeadlineAt: begun.intent.submissionDeadlineAt! })).toEqual({ kind: "sleep", dueAt: begun.intent.submissionDeadlineAt! });
+    await f.lifecycle.recordProviderAcceptance(begun.intent.reference, { requestId: "watch-request", transcriptionId: "watch-transcript", nextPollAt: new Date() });
+    expect(await f.lifecycle.expireProviderDeadline(begun.intent.reference, { kind: "submission", observedDeadlineAt: begun.intent.submissionDeadlineAt! })).toEqual({ kind: "stale", reason: "submission_confirmed" });
+    const past = new Date(0);
+    await db.transcript.update({ where: { projectId: f.run.projectId }, data: { providerResultDeadlineAt: past } });
+    expect(await f.lifecycle.lookupProviderAttempt(begun.intent.reference)).toMatchObject({ kind: "stale", reason: "provider_deadline_expired" });
+    const expired = await f.lifecycle.expireProviderDeadline(begun.intent.reference, { kind: "result", observedDeadlineAt: past });
+    expect(expired.kind).toBe("applied");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptCount: 1, leaseExpiresAt: null, attemptId: null });
+    const replay = await f.lifecycle.readProviderControl(begun.intent.reference);
+    expect(replay).toMatchObject({ kind: "stale", reason: "attempt_superseded" });
+    expect(replay.dispatchIds?.slice().sort()).toEqual(expired.dispatchIds?.slice().sort());
+  }, 60_000);
 
   test("source cancellation revokes running TS ownership and provider lineage atomically without changing historical charges", async () => {
     const f = await fixture("stt", false);
@@ -223,7 +268,7 @@ dbDescribe("Exact Workflow execution commands", () => {
 
   test("unacquired operation deadline fails without inventing a charged Workflow attempt", async () => {
     const expired = new Date(0);
-    const f = await fixture("moment_detection", true, expired);
+    const f = await fixture("moment_detection", true, true, expired);
     const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
     expect((await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline: { reference: f.reference, attemptToken: f.token, kind: "operation", observedDeadlineAt: expired.toISOString() }, deliveryId }))).kind).toBe("expired");
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "failed", attemptCount: 0, attemptId: null, leaseOwner: null });
