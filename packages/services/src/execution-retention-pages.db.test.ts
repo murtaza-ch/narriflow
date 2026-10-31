@@ -1,3 +1,4 @@
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -73,6 +74,12 @@ suite("Production retention pages", () => {
     expect(observation.processed).toBe(1);expect(observation.dispatchIds).toHaveLength(1);
     expect(await db.workflowRun.findUniqueOrThrow({where:{id:run.id}})).toMatchObject({status:"waiting",attemptId:run.attemptId,attemptCount:2,operationDeadlineAt:run.operationDeadlineAt,leaseOwner:null,leaseExpiresAt:null});
     await db.workspace.delete({where:{id:workspace.id}});
+  });
+
+  test("restore object planning refuses open admission before creating a deferred cleanup intent",async()=>{
+    const key=`projects/${crypto.randomUUID()}/preparations/${crypto.randomUUID()}/${crypto.randomUUID()}.json`;
+    await expect(db.$transaction(tx=>admitMediaCleanupObligations(tx,[{origin:"clip_preparation_input",cleanupClass:"execution_input",objectKey:key}],{deferDispatch:true}))).rejects.toThrow("cleanup_restore_requires_closed_admission");
+    expect(await db.mediaCleanupObligation.count({where:{objectKey:key}})).toBe(0);
   });
 
 });

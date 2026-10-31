@@ -60,6 +60,8 @@ export interface MediaCleanupAdmissionStore {
 }
 
 export interface MediaCleanupAdmissionOptions {
+  /** Proved restore metadata is planned while all normal dispatch is fenced. */
+  deferDispatch?: true;
   heldClaim?: {
     claimId: string;
     claimExpiresAt: Date;

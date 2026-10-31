@@ -752,3 +752,8 @@ export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicati
 export * from "./notification-execution";
 export * from "./notification-maintenance";
 export { getNotificationExecution } from "./notification-execution-runtime";
+
+export * from "./execution-source-recovery-pages";
+export * from "./execution-selection-restore";
+export * from "./execution-preparation-restore";
+export * from "./execution-recovery-locks";

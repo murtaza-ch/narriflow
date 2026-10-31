@@ -1,16 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { assertExecutionRestorePage } from "./execution-restore-pages";
-import { lockWorkspaceUsage } from "./processing-usage";
+import { lockExecutionRecoveryParents as lockParents } from "./execution-recovery-locks";
 import { recoverBillingReconciliation } from "./billing-reconciliation";
 import { queueLibraryIndex, recoverLibraryIndex } from "./library-index";
 import type { MaintenancePhaseHandler, MaintenancePosition } from "./execution-maintenance";
 import type { ExecutionRestorePhaseHandler } from "./execution-restore";
 
-type Tx = Prisma.TransactionClient;
-async function lockParents(tx: Tx, rows: Array<{ workspaceId: string; projectId?: string }>) {
-  for (const id of [...new Set(rows.map(row => row.workspaceId))].sort()) await lockWorkspaceUsage(tx, id);
-  for (const id of [...new Set(rows.flatMap(row => row.projectId ? [row.projectId] : []))].sort()) await tx.$queryRaw`SELECT id FROM "Project" WHERE id=${id}::uuid FOR UPDATE`;
-}
 const after = (point: MaintenancePosition | null, field: Prisma.Sql, id = Prisma.sql`id`) => point ? Prisma.sql`AND (${field},${id}) > ((${point.at}::timestamptz AT TIME ZONE 'UTC'),${point.id}::uuid)` : Prisma.empty;
 export const recoverBillingPage: MaintenancePhaseHandler = async (tx, page) => {
   const rows = await tx.$queryRaw<Array<{ id: string; at: Date; workspaceId: string }>>`SELECT id,"nextReconcileAt" AS at,"workspaceId" FROM "WorkspaceBillingAccount"
