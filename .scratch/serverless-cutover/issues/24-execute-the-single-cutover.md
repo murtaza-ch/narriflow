@@ -14,3 +14,5 @@
 ## Evidence
 
 Pending implementation and verification.
+
+Remaining admission gate: `ExecutionEpoch.admissionOpen` exists but is not yet enforced by request-path admissions. Cutover must wire the authoritative close/open check across admission paths before relying on this switch, verify old consumers cannot admit while closed, and reopen once only after migration and runtime gates pass. The lifecycle preparation does not introduce a test-only bypass for this flag.

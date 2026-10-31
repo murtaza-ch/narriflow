@@ -5,12 +5,24 @@ import {
   deriveRenderParentSettlement,
   renderGroupChargeTransition,
   renderGroupExportIdentity,
+  renderGroupExecutionInputHash,
   renderGroupOwnsMember,
   type RenderGroupMemberOutcome,
   type SettlingRenderGroup,
 } from "./render-group-contract";
 
 const now = new Date("2026-10-29T12:00:00.000Z");
+test("render dispatch binds canonical frozen configuration and membership regardless of list order", async () => {
+  const configuration = { clipId: "clip", exportId: null, editorRevision: 3, resolution: "1080p", watermark: true };
+  const input = { parentInputHash: "a".repeat(64), workflowRunId: "run", groupId: "group", workSetGeneration: "work-set",
+    exportIdentity: renderGroupExportIdentity(configuration), memberIds: ["b", "a"], configuration };
+  const hash = await renderGroupExecutionInputHash(input);
+  // Independently calculated from compact JSON with Python hashlib.sha256.
+  expect(hash).toBe("03954e376ccdd312fe27be4afe1b938027e4fba5f275fb625c04c8d6f0cff851");
+  expect(await renderGroupExecutionInputHash({ ...input, memberIds: ["a", "b"] })).toBe(hash);
+  expect(await renderGroupExecutionInputHash({ ...input, configuration: { ...configuration, watermark: false } })).not.toBe(hash);
+  expect(await renderGroupExecutionInputHash({ ...input, memberIds: ["a"] })).not.toBe(hash);
+});
 const unstarted = { startedAt: null, finishedAt: null, charged: false };
 const started = { startedAt: now, finishedAt: null, charged: true };
 const member = (id: string, status: RenderGroupMemberOutcome["status"],
@@ -39,6 +51,11 @@ function parent(groups: SettlingRenderGroup[], requestedCount = groups.reduce((n
 }
 
 describe("Render Group identity and fencing", () => {
+  test("a durable waiting parent remains unleased while a live child owns its members", () => {
+    const input = ownership();
+    input.parent.status = "waiting";
+    expect(renderGroupOwnsMember(input)).toBe(true);
+  });
   test("aspects share configuration identity, while frozen revisions and exports stay separate", () => {
     const config = { clipId: "clip", exportId: "export-a", editorRevision: 7, resolution: "1080p", watermark: false };
     const identity = renderGroupExportIdentity(config);

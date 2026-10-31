@@ -1,13 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, type Prisma } from "@prisma/client";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import type { ExecutorMutationContext } from "./executor-domain-control";
 import { createExecutorControl } from "./executor-control";
 import type { ExecutionCommand } from "@narriflow/validators/execution";
 import { RenderGroupLifecycle, type RenderGroupExecutionReference } from "./render-group-lifecycle";
 import { renderGroupExportIdentity } from "./render-group-contract";
 import { withServiceEnvironment } from "./runtime-environment";
+import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -26,6 +27,8 @@ dbDescribe("Targeted serverless domain execution", () => {
     epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
   }, 60_000);
   afterEach(async () => {
+    subjects.push(...(await db.workflowEvent.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } })).map(row => row.id));
+    subjects.push(...(await db.workspaceEvent.findMany({ where: { workspace: { ownerUserId: { in: users } } }, select: { id: true } })).map(row => row.id));
     await db.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
     await db.executionArtifact.deleteMany({ where: { attempt: { dispatchId: { in: dispatches } } } });
     await db.executionAttempt.deleteMany({ where: { dispatchId: { in: dispatches } } });
@@ -88,6 +91,55 @@ dbDescribe("Targeted serverless domain execution", () => {
     return { action: "acquire", reference: value.reference, attemptToken: value.attemptToken, owner, leaseSeconds: 120 };
   }
   function fence(value: Awaited<ReturnType<typeof fixture>>) { return { reference: value.reference, attemptToken: value.attemptToken, owner: value.owner }; }
+
+  test("a render parent freezes and settles without ever acquiring a coordinator lease", async () => {
+    const value = await fixture();
+    await db.renderGroup.delete({ where: { id: value.group.id } });
+    await db.workflowRun.update({ where: { id: value.run.id }, data: { renderWorkSetGeneration: null, renderWorkSetFrozenAt: null, requestedCount: null } });
+    await db.clipRender.update({ where: { id: value.variant.id }, data: { workflowRunId: null } });
+    const lifecycle = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
+    const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, value.run.id))).reference;
+    const groups = [{ configuration: { clipId: value.group.clipId, exportId: null, editorRevision: 1, resolution: "1080p", watermark: true }, variantIds: [value.variant.id] }];
+    expect((await withServiceEnvironment({}, () => lifecycle.prepareRenderRun({ ...reference, generation: reference.generation + 1 }, groups))).kind).toBe("superseded");
+    const prepared = await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference, groups));
+    expect(prepared.kind).toBe("prepared");
+    if (prepared.kind !== "prepared") throw new Error("Expected a prepared Render Work Set");
+    subjects.push(...prepared.groups.map(group => group.groupId));
+    const parent = await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } });
+    expect(parent).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, leaseExpiresAt: null, attemptCount: 0, requestedCount: 1 });
+    expect(parent.renderWorkSetGeneration).not.toBeNull();
+    expect((await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference, groups))).dispatchIds).toEqual(prepared.dispatchIds);
+    await expect(withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference, [{ ...groups[0]!, configuration: { ...groups[0]!.configuration, watermark: false } }]))).rejects.toThrow("immutable");
+    const pending = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
+    expect(pending.kind === "settled" ? pending.outcome.status : pending.kind).toBe("pending");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ status: "waiting", leaseOwner: null, attemptId: null, attemptCount: 0 });
+    const group = await db.renderGroup.findUniqueOrThrow({ where: { id: prepared.groups[0]!.groupId } });
+    const driver = (await readExecutionDispatch(db, prepared.dispatchIds[0]!))!;
+    const modal = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "render_group", id: group.id },
+      generation: group.generation, inputHash: driver.reference.inputHash, dueAt: driver.dueAt }));
+    dispatches.push(modal.reference.dispatchId);
+    const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID(), deadline = new Date(Date.now() + 10 * 60_000);
+    await db.executionAttempt.create({ data: { attemptToken, dispatchId: modal.reference.dispatchId, deploymentEpoch: epoch, generation: group.generation,
+      inputHash: modal.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline } });
+    const child = { ...value, group, reference: modal.reference, attemptToken, owner, deadline };
+    const server = control(child);
+    expect((await server.send(acquire(child))).disposition).toBe("acquired");
+    await server.send({ action: "process-start", fence: fence(child) });
+    const live = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
+    expect(live.kind === "settled" ? live.outcome.status : live.kind).toBe("pending");
+    const artifact = await db.executionArtifact.create({ data: { attemptToken, owner, role: "render_variant", bindingHash: "b".repeat(64),
+      storageKey: `execution/${epoch}/${attemptToken}/${owner}/variant.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    await server.send({ action: "commit-artifact", fence: fence(child), artifact: { artifactId: artifact.id, role: "render_variant", contentType: "video/mp4",
+      byteLength: 1024, etag: '"gate-etag"', sha256: "a".repeat(64), bindingHash: artifact.bindingHash } });
+    const wake = await db.executionDispatch.findFirstOrThrow({ where: { subjectKind: "render_group", subjectId: group.id, kind: "render_run", wakeKind: "group_outcome" } });
+    const wakeReference = (await readExecutionDispatch(db, wake.id))!.reference;
+    const completed = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(wakeReference));
+    expect(completed.kind === "settled" ? completed.outcome : completed).toMatchObject({ status: "completed", requested: 1, succeeded: 1, failed: 0 });
+    const replay = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
+    expect(replay).toEqual(completed);
+    expect(await db.workflowEvent.count({ where: { workflowRunId: value.run.id, notificationRequired: true } })).toBe(1);
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ attemptId: null, attemptCount: 0, leaseOwner: null });
+  }, 180_000);
 
   test("audio readiness cannot acquire rendering before verified video is ready", async () => {
     const value = await fixture();

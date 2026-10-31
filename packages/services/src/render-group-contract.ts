@@ -68,6 +68,23 @@ export function renderGroupExportIdentity(config: RenderGroupConfiguration): str
   ]);
 }
 
+/** Semantic provenance is stable across invocation retries; the dispatch fences generation. */
+export async function renderGroupExecutionInputHash(input: RenderGroupRef & {
+  parentInputHash: string;
+  exportIdentity: string;
+  memberIds: readonly string[];
+  configuration: RenderGroupConfiguration;
+}): Promise<string> {
+  const config = input.configuration;
+  const bytes = new TextEncoder().encode(JSON.stringify({ parentInputHash: input.parentInputHash,
+    workflowRunId: input.workflowRunId, groupId: input.groupId, workSetGeneration: input.workSetGeneration,
+    exportIdentity: input.exportIdentity, memberIds: [...input.memberIds].sort(), configuration: {
+      clipId: config.clipId, exportId: config.exportId, editorRevision: config.editorRevision, resolution: config.resolution, watermark: config.watermark,
+    } }));
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export interface RenderGroupMemberOutcome {
   readonly clipRenderId: string;
   readonly status: "pending" | "rendering" | "completed" | "failed" | "superseded";
@@ -194,7 +211,7 @@ export function renderGroupOwnsMember(input: {
 }): boolean {
   const { attempt, parent, group, member, databaseNow } = input;
   return parent.stage === "clip_rendering" &&
-    (parent.status === "queued" || parent.status === "running") &&
+    (parent.status === "queued" || parent.status === "running" || parent.status === "waiting") &&
     parent.workflowRunId === attempt.workflowRunId &&
     parent.workSetGeneration === attempt.workSetGeneration &&
     group.workflowRunId === attempt.workflowRunId &&
