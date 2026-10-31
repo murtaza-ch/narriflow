@@ -276,7 +276,7 @@
     }
   },
   "longSourceAfterPolicy": {
-    "scope": "actual native Bun/FFmpeg with controlled signed-control and conditional file-backed storage ports",
+    "scope": "One10s render_group window over a3h source, using preconstructed completed preparation with unavailable layout. No actual prepare_clip runs in this resource fixture.",
     "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
     "seconds": 15.554,
     "operation": {
@@ -371,9 +371,10 @@
     },
     "readFraction": 0.15063068732257234,
     "maximumReadFraction": 0.2,
-    "accepted": true,
     "outputSha256MatchesUncappedRun": true,
-    "accounting": "Execution scoped reads exclude initial fixture construction/hash and initial acquisition. Memory is a25ms sampled sum over the test process tree, including fixture generation and shared-page double counting; it is not a cgroup peak."
+    "accounting": "Execution scoped reads exclude initial fixture construction/hash and initial acquisition. Memory is a25ms sampled sum over the test process tree, including fixture generation and shared-page double counting; it is not a cgroup peak.",
+    "singleWindowBelow20Percent": true,
+    "aggregateTwelveClipPrepareAndRenderMeasured": false
   },
   "autoloadIsolation": {
     "commit": "71dafcde",
@@ -449,7 +450,21 @@
   },
   "open": [
     "Root-owned final candidate image rebuild/deployment and actual Function verifiers must include71dafcde and thread policybb8fe370. No deployment is claimed by these source-overlay Sandbox gates.",
-    "Live domain fault combinations, paid provider/proxy egress and performance cohorts remain ticket22 work."
+    "Live domain fault combinations, paid provider/proxy egress and performance cohorts remain ticket22 work.",
+    "Spec7.6 aggregate original-source reads across12 actual prepare_clip\u2192render_group jobs and latency cohorts are NOT established by the single-window diagnostic; Root22 owns that gate."
   ],
-  "portableCiCommands": "apps/media/scripts/gates/native-ci.md"
+  "portableCiCommands": "apps/media/scripts/gates/native-ci.md",
+  "combinedDatabaseVerification": {
+    "commit": "38bc1ca5",
+    "includesIngestRollbackFix": "afd28d8f",
+    "passed": 423,
+    "failed": 0,
+    "assertions": 2966,
+    "ordinaryTests": 371,
+    "ordinaryFiles": 39,
+    "ordinarySeconds": 66.12,
+    "actualSigkillSiblingPassed": true,
+    "log": "/tmp/narriflow-serverless-gates/final-media-21/combined-execution-db-root-merged.log",
+    "logSha256": "cd691b207d0908cd6a6d21c5aeaf0fef8d68b6ae9b681237941f274879964ad1"
+  }
 }

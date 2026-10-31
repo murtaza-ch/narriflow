@@ -162,11 +162,12 @@
     },
     "readFraction": 0.15063068732257234,
     "acceptance": {
+      "scope": "single prepared render window diagnostic only",
       "sourceHours": 3,
-      "maximumReadFraction": 0.2,
-      "passed": true
+      "singleWindowReadFractionBelow0_2": true,
+      "aggregateTwelveClipPrepareAndRenderMeasured": false
     },
-    "accounting": "Execution source-read bytes only, including native probes, scans and encode. Excludes initial fixture creation, local fixture hash and acquisition. File-backed upstream fixture reads each requested conditional range; it does not load the whole source in memory.",
+    "accounting": "Execution source-read bytes only, including native probes, scans and encode. Excludes initial fixture creation, local fixture hash and acquisition. File-backed upstream fixture reads each requested conditional range; it does not load the whole source in memory. The completed preparation is a fixture with typed unavailable layout. Native prepare_clip preview/peaks/layout/detector original reads and the12-clip aggregate are NOT included; this does not close spec7.6.",
     "rssAccounting": "25ms sampled sum across the native invocation process tree. Shared pages may be counted per process. This is not a platform cgroup peak; Modal memory limit was8192MiB. Per-command values are per-process maxima.",
     "fixture": "A four-second synthetic audiovisual fixture repeated by stream-copy to exactly3h. The frozen golden matrix separately covers moov/GOP/VFR/orientation/HDR/A-V offsets and multilingual caption cases."
   },
