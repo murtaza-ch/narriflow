@@ -170,6 +170,15 @@ async def publication(invocation: dict) -> dict:
                                operation=run_publication, max_operation_seconds=900)
 
 
+@app.function(image=lean_image, secrets=[executor_secret], timeout=2700,
+              max_containers=8, restrict_modal_access=True, **LEAN_RESOURCES)
+async def export_bundle(invocation: dict) -> dict:
+    from narriflow_media.entrypoint import invoke_native, native_client
+    from narriflow_media.export_bundle_runtime import run_export_bundle
+    return await invoke_native(invocation, "export_bundle", client=native_client(os.environ),
+                               operation=run_export_bundle, max_operation_seconds=2700)
+
+
 @app.function(image=lean_image, secrets=[executor_secret, image_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def generated_image(invocation: dict) -> dict:
@@ -188,6 +197,6 @@ def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge
     from narriflow_media.bridge_runtime import ModalBackend, ModalDictStore, parse_bridge_keys
     bridge = ModalBridge(store=ModalDictStore(dispatch_receipts),
-        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "prepare_clip": prepare_clip, "render_group": render_group, "publication": publication, "generated_image": generated_image}),
+        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "prepare_clip": prepare_clip, "render_group": render_group, "publication": publication, "export_bundle": export_bundle, "generated_image": generated_image}),
         key_ring=parse_bridge_keys(os.environ["MODAL_BRIDGE_KEYS_JSON"]))
     return BridgeAsgiApp(bridge, time.time)
