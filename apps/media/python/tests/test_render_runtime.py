@@ -32,6 +32,9 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_hundred_frozen_assets_use_only_the_original_initial_grant_and_read_the_selected_asset_on_demand(self):
         await self.actual_operation(many_assets=True)
 
+    async def test_three_hour_source_renders_a_ten_second_middle_window_without_reading_the_whole_source(self):
+        await self.actual_operation(long_source=True)
+
     async def test_interruption_logs_only_bounded_numeric_phase_and_control_facts(self):
         identity,group_id=str(uuid4()),str(uuid4());input_hash='d'*64
         source={'storageKey':'execution/frozen/original','etag':'"source"','byteLength':5,'sha256':'a'*64}
@@ -57,12 +60,17 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured['sourceBytesTransferred'],0)
         self.assertNotIn('private',logs.getvalue())
 
-    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False):
+    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);source=base/'original.mp4';work=base/'work';work.mkdir()
             subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=s=320x180:r=30:d=4','-f','lavfi','-i','sine=f=330:sample_rate=48000:d=4','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart','-shortest',str(source)],check=True,timeout=10)
-            payload=source.read_bytes()
+            if long_source:
+                piece=base/'piece.mp4';source.rename(piece)
+                subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-stream_loop','2699','-i',str(piece),'-t','10800','-c','copy','-movflags','+faststart',str(source)],check=True,timeout=60)
+            source_size=source.stat().st_size
+            with source.open('rb') as stream:source_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+            payload=None if long_source else source.read_bytes()
             library_payload=None;audio=[]
             if many_assets:
                 library=base/'library.wav'
@@ -70,21 +78,23 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 library_payload=library.read_bytes()
                 audio=[{'name':f'audio_{index}','id':str(uuid4()),'title':'Fixture library','durationSec':1,'object':{'storageKey':f'audio/frozen/{index}',
                     'etag':'"library"','byteLength':len(library_payload),'sha256':hashlib.sha256(library_payload).hexdigest()}} for index in range(200)]
-            script="""import {readFileSync} from 'node:fs';import {productionWorkerProcessModule as worker} from './apps/media/src/worker-process.ts';import {clipPreparationBinding} from './packages/services/src/clip-preparation-input.ts';import {clipPreparationEngineHash} from './packages/services/src/clip-preparation-policy.ts';import {clipPreparationInputSchema} from './packages/validators/src/clip-preparation.ts';const raw=JSON.parse(readFileSync(0,'utf8'));raw.sourceProbe=(await worker.inspectMedia({sourcePath:raw.sourcePath,signal:new AbortController().signal,deadlineMs:10000})).sourceProbe;delete raw.sourcePath;raw.engineHash=await clipPreparationEngineHash(raw.toolchainFingerprint);raw.document=JSON.parse(readFileSync('./apps/media/src/__fixtures__/render-golden/documents.json','utf8')).cases['solo-auto-vertical'].document;const value=clipPreparationInputSchema.omit({bindingHash:true}).parse(raw);console.log(JSON.stringify({...value,bindingHash:await clipPreparationBinding(value)}));"""
+            script="""import {readFileSync} from 'node:fs';import {productionWorkerProcessModule as worker} from './apps/media/src/worker-process.ts';import {clipPreparationBinding} from './packages/services/src/clip-preparation-input.ts';import {clipPreparationEngineHash,clipPreparationPreviewWindow} from './packages/services/src/clip-preparation-policy.ts';import {clipPreparationInputSchema} from './packages/validators/src/clip-preparation.ts';const raw=JSON.parse(readFileSync(0,'utf8'));raw.sourceProbe=(await worker.inspectMedia({sourcePath:raw.sourcePath,signal:new AbortController().signal,deadlineMs:10000})).sourceProbe;delete raw.sourcePath;raw.engineHash=await clipPreparationEngineHash(raw.toolchainFingerprint);raw.document=JSON.parse(readFileSync('./apps/media/src/__fixtures__/render-golden/documents.json','utf8')).cases['solo-auto-vertical'].document;const value=clipPreparationInputSchema.omit({bindingHash:true}).parse(raw);const preparation={...value,bindingHash:await clipPreparationBinding(value)};console.log(JSON.stringify({preparation,previewWindow:clipPreparationPreviewWindow(preparation)}));"""
             if source_mismatch:
                 script=script.replace('delete raw.sourcePath;', 'delete raw.sourcePath;raw.sourceProbe.video.width++;raw.sourceProbe.facts.videos[0].width++;')
             if many_assets:
                 script=script.replace('const value=clipPreparationInputSchema',f'raw.document.studioEdits.music={{assetId:{json.dumps(audio[-1]["id"])}}};const value=clipPreparationInputSchema')
+            if long_source:
+                script=script.replace('const value=clipPreparationInputSchema',"raw.document.clipStartSec+=5400;raw.document.clipEndSec+=5406;for(const utterance of raw.document.transcriptSlice){utterance.startSec+=5400;utterance.endSec+=5400;for(const word of utterance.words??[]){word.startSec+=5400;word.endSec+=5400;}}const value=clipPreparationInputSchema")
             raw={'version':1,'kind':'prepare_clip','preparationId':str(uuid4()),'projectId':str(uuid4()),'clipId':str(uuid4()),'sourceRevision':1,'editorRevision':0,
-                'toolchainFingerprint':fingerprint,'engineHash':'b'*64,'wholeSource':True,'llmModel':'fixture','sourcePath':str(source),
-                'source':{'storageKey':'execution/frozen/original','etag':'"source"','byteLength':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}
+                'toolchainFingerprint':fingerprint,'engineHash':'b'*64,'wholeSource':not long_source,'llmModel':'caption-only' if long_source else 'fixture','sourcePath':str(source),
+                'source':{'storageKey':'execution/frozen/original','etag':'"source"','byteLength':source_size,'sha256':source_sha}}
             prepared=subprocess.run(['bun','-e',script],input=json.dumps(raw).encode(),capture_output=True,cwd=root,timeout=20,check=True)
-            preparation=json.loads(prepared.stdout);render_id=str(uuid4());group_id=str(uuid4());hash='d'*64
+            generated=json.loads(prepared.stdout);preparation=generated['preparation'];preview_window=generated['previewWindow'];render_id=str(uuid4());group_id=str(uuid4());hash='d'*64
             command={'version':1,'kind':'render_group','watermark':True,'groupId':group_id,'workflowRunId':str(uuid4()),'workSetGeneration':str(uuid4()),'preparation':preparation,
                 'prepared':{'preview':dict(preparation['source'],storageKey='execution/prepared/preview.mp4'),'result':{'version':1,'preparationId':preparation['preparationId'],'bindingHash':preparation['bindingHash'],
-                    'preview':{'artifactId':str(uuid4()),'startSec':0,'durationSec':4},'peaks':{'state':'unavailable','reason':'peaks_unavailable'},
+                    'preview':{'artifactId':str(uuid4()),'startSec':preview_window['startSec'],'durationSec':preview_window['durationSec']},'peaks':{'state':'unavailable','reason':'peaks_unavailable'},
                     'layout':{'automatic':{'state':'failed','reason':'analysis_unavailable'},'screen':None,'split':None}}},
-                'workspace':{'id':str(uuid4()),'ownerUserId':str(uuid4()),'pricingTier':'free'},'captionLanguage':None,'brandSnapshot':None,
+                'workspace':{'id':str(uuid4()),'ownerUserId':str(uuid4()),'pricingTier':'business' if long_source else 'free'},'captionLanguage':None,'brandSnapshot':None,
                 'clip':{'index':0,'title':None,'hookText':'fixture','category':'hook','brollCues':None},
                 'variants':[{'renderId':render_id,'aspectRatio':'ratio_1_1','resolution':'720p','exportVariantId':None,'export':None}],
                 'assets':{'visuals':[],'fonts':[],'audio':audio,'logo':None},'autoBroll':{'configured':False,'request':None,'resolved':[]}}
@@ -131,11 +141,16 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         return TransferResponse(200,{'etag':'"capsule"','content-length':str(self_size)},capsule)
                     assert starts
                     if method=='GET':
-                        data=payload if grant.url.endswith('/original') else library_payload
-                        assert data is not None
-                        etag='"source"' if grant.url.endswith('/original') else '"library"'
+                        original=grant.url.endswith('/original');data=payload if original else library_payload
+                        etag='"source"' if original else '"library"'
                         assert headers['if-match']==etag;start,end=map(int,headers['range'][6:].split('-'))
-                        return TransferResponse(206,{'etag':etag,'content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{len(data)}'},data[start:end+1])
+                        if original and long_source:
+                            with source.open('rb') as stream:stream.seek(start);body=stream.read(end-start+1)
+                            size=source_size
+                        else:
+                            assert data is not None
+                            body=data[start:end+1];size=len(data)
+                        return TransferResponse(206,{'etag':etag,'content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{size}'},body)
                     uploads[grant.url.rsplit('/',1)[-1]]=bytes(body)
                     return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
             async def verified_runtime(*_,**__):return fingerprint
@@ -159,10 +174,17 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     'bindingHash':outputs[1]['bindingHash'],'errorCode':'source_identity_mismatch','disposition':'permanent'})
                 self.assertEqual(measured['outcome'],{'status':'failed','requested':1,'succeeded':0,'failed':1,'superseded':0})
                 return measured
-            self.assertEqual([item['role'] for item in commits],['render_variant'])
+            self.assertEqual([item['role'] for item in commits],['render_variant'],uploads.get(outputs[1]['artifactId']))
             self.assertEqual(hashlib.sha256(uploads[outputs[0]['artifactId']]).hexdigest(),commits[0]['sha256'])
             self.assertEqual(commits[0]['renderVariant']['usedStockIds'],[])
             self.assertEqual(measured['outcome'],{'status':'completed','requested':1,'succeeded':1,'failed':0,'superseded':0})
+            if long_source:
+                self.assertGreaterEqual(preparation['sourceProbe']['durationSec'],10800)
+                self.assertEqual(preparation['document']['clipStartSec'],5400)
+                self.assertEqual(preparation['document']['clipEndSec'],5410)
+                self.assertLess(measured['bytesTransferred'],source_size)
+                measured.update(sourceByteLength=source_size,sourceDurationSec=preparation['sourceProbe']['durationSec'],
+                    requestedWindow={'startSec':5400,'endSec':5410},previewWindow=preview_window)
             if many_assets:
                 names=sorted({fields['sourceId'] for action,fields in calls if action=='source-read'})
                 self.assertEqual(names,['audio_199','original'])

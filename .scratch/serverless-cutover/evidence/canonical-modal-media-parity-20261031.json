@@ -1,0 +1,252 @@
+{
+  "date": "2026-10-31",
+  "scope": "Current canonical Modal render image, frozen pre-cutover media/plan/argv/frame/PCM/probe/validation comparisons. No production compiler or golden refresh.",
+  "image": {
+    "id": "sb-01M69F8AC014D6QMJD3HNGCZ2H",
+    "imageId": "im-j5MoQbsu3wN6vhLRebZmYY",
+    "terminated": true,
+    "networkBlocked": true,
+    "secrets": [],
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "modalSdk": "1.6.3",
+    "runtimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee",
+    "functionSandboxRuntimeDelta": {},
+    "cpuFacts": {
+      "cpuCount": 4,
+      "affinityCount": 4,
+      "cpuMax": null,
+      "threadEnvironment": {
+        "OMP_NUM_THREADS": "4",
+        "OPENBLAS_NUM_THREADS": "4",
+        "MKL_NUM_THREADS": "4",
+        "OPENCV_FOR_THREADS_NUM": "4",
+        "OPENCV_FFMPEG_THREADS": "4"
+      }
+    }
+  },
+  "provenance": {
+    "candidateCommit": "0d386799b13e26565513b0d19e9a57d3bee64620",
+    "candidateArchiveSha256": "a164f9dc3df8c4953efbf23fc4765c332752e745c9a071604697b3fbba21652c",
+    "referenceCommit": "623aadca7e5790cf456100f7b7966fbaf74e8bf7",
+    "referenceArchiveSha256": "459be5ff31af8fcc1bb3f2397cb4bede83b5c80a6bd11f32923cd450cafdb71b",
+    "frozenPriorCaptureSha256": "e4d746a86d13eb7b5d0f2c7af88502edd05d5f8c87bcfbc342c87da8f71c1c1f",
+    "fixtureManifestSha256": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f"
+  },
+  "referenceMeasurementOverlay": {
+    "referenceOriginalId": "e6b5b5e56a392b94ee5beb5ef556ac4e21067d8023eff3ec8b13c224b8c06e11",
+    "canonicalId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "factsIdenticalModuloDictionaryOrder": true,
+    "changedFiles": [
+      "apps/worker/scripts/check-render-environment.ts"
+    ],
+    "originalCheckerSha256": "6f8ad11caece6623f7c7b1081b4617e15b01ed80eb32b1633b0cabe54fae341c",
+    "canonicalCheckerSha256": "3849ef2cc88f9fa7ad5bacf36e44a5185b4ba47ce5e51ab21f1ab2398112a5c2",
+    "exactDiff": "canonical-reference-measurement-overlay.patch",
+    "exactDiffSha256": "edf0121ece2df10967f4bff2249a9e45d1d3b21f81a34ddc0f544868a6331626",
+    "scope": "One reference scratch checker file only. Original runtime facts compare equal modulo dictionary ordering before overlay. Frozen compiler/process/runtime-lock/fixture bytes are unchanged."
+  },
+  "frozenReferenceRecapture": {
+    "ok": true,
+    "mediaFactsUnchanged": true,
+    "diagnosticOnlyAslr": {
+      "path": "cases/seek-past-source-end/targets/0/output/fullDecode/stderr",
+      "priorRaw": "[out#0/null @ 0x55d20ff9db80] Output file does not contain any stream\nError opening output file -.\nError opening output files: Invalid argument",
+      "recapturedRaw": "[out#0/null @ 0x555ea8837b80] Output file does not contain any stream\nError opening output file -.\nError opening output files: Invalid argument",
+      "occurrences": 1,
+      "normalized": "[out#0/null @ 0xASLR] Output file does not contain any stream\nError opening output file -.\nError opening output files: Invalid argument"
+    },
+    "changedPaths": [],
+    "priorCaptureSha256": "e4d746a86d13eb7b5d0f2c7af88502edd05d5f8c87bcfbc342c87da8f71c1c1f",
+    "recapturedSha256": "d114c6f0030b0fad75d487f34cdae0e83dc25dbf536954aac40e274f1981883f"
+  },
+  "comparison": {
+    "ok": true,
+    "summary": {
+      "normal": {
+        "total": 18,
+        "pass": 18,
+        "fail": 0
+      },
+      "knownDefects": {
+        "total": 18,
+        "xfail": 2,
+        "xpass": 0,
+        "changed": 0,
+        "activatedPass": 16,
+        "activatedFail": 0
+      }
+    },
+    "caseVerdicts": [
+      {
+        "id": "solo-auto-vertical",
+        "verdict": "pass"
+      },
+      {
+        "id": "two-up-speaker-vertical",
+        "verdict": "pass"
+      },
+      {
+        "id": "screen-pip-portrait",
+        "verdict": "pass"
+      },
+      {
+        "id": "explicit-split-portrait",
+        "verdict": "pass"
+      },
+      {
+        "id": "rtl-arabic-captions",
+        "verdict": "pass"
+      },
+      {
+        "id": "cjk-dense-captions",
+        "verdict": "pass"
+      },
+      {
+        "id": "logo-broll-music-sfx-censor",
+        "verdict": "pass"
+      },
+      {
+        "id": "cut-and-inserted-scenes",
+        "verdict": "pass"
+      },
+      {
+        "id": "exact-source-end",
+        "verdict": "pass"
+      },
+      {
+        "id": "treatments-720p-watermark-1080p",
+        "verdict": "pass"
+      },
+      {
+        "id": "image-background-fit",
+        "verdict": "pass"
+      },
+      {
+        "id": "audio-only-audiogram",
+        "verdict": "pass"
+      },
+      {
+        "id": "mono-44k",
+        "verdict": "pass"
+      },
+      {
+        "id": "silent-video",
+        "verdict": "pass"
+      },
+      {
+        "id": "ntsc-24000-1001",
+        "verdict": "pass"
+      },
+      {
+        "id": "ntsc-30000-1001",
+        "verdict": "pass"
+      },
+      {
+        "id": "text-layers-transition",
+        "verdict": "pass"
+      },
+      {
+        "id": "speed-playback-rate-ui-only",
+        "verdict": "pass"
+      },
+      {
+        "id": "rot90",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "rot180",
+        "verdict": "guard-pass"
+      },
+      {
+        "id": "rot270",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "mirror-h",
+        "verdict": "guard-pass"
+      },
+      {
+        "id": "rot90-mirror",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "sar-2x1",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "odd-321x181",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "audio-late-start",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "audio-short",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "audio-late-cut-scene-music",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "vfr-irregular",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "hdr-pq",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "hdr-hlg",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "hot-mix",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "emoji-sequences",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "missing-glyph",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "seek-past-source-end",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "http-interrupted-read",
+        "verdict": "activated-pass"
+      }
+    ]
+  },
+  "cameraClock": {
+    "exitCode": 0,
+    "tests": 7,
+    "assertions": 41,
+    "seconds": 7.682
+  },
+  "rawEvidence": {
+    "directory": "/tmp/narriflow-serverless-gates/final-media-21/attempt-02",
+    "files": {
+      "run-parity.py": "5f52548b880d3633515684a2432eed420aed9778dffc39d0e6576858f15cd4c6",
+      "reference-capture-capture.json": "d114c6f0030b0fad75d487f34cdae0e83dc25dbf536954aac40e274f1981883f",
+      "candidate-capture-capture.json": "9b0f504ca315fc2f84e6ec94ee47855f8062184a7aeafc05fff39737141595dd",
+      "candidate-capture-report.json": "e20a77380e5dc9281bd8e7a621f753d14711017a863e2c476434af09f2cab457",
+      "candidate-capture-report.md": "475025b12b98680f2e02491dc86aaa2ed67f538e65d8f4a7686f30418e7080f2",
+      "camera-clock.log": "3168f0c3c9941baa374e1883c8813dea86efade7b7da56bbebfe4027d44a47ed",
+      "runtime.json": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "runtime-delta.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "reference-unchanged.json": "d9d7c038a397fa28436c8a7206b238c2a92514deffcf361b49fba643ad517a98"
+    }
+  },
+  "open": [
+    "Explicit full-render FFmpeg thread caps remain a separate unresolved09 requirement. No argv/recipe/tolerance flags were changed for this pass.",
+    "Full live crash/fault-domain combinations and performance cohorts remain separate22 gates."
+  ]
+}

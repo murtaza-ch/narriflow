@@ -1,0 +1,302 @@
+{
+  "date": "2026-10-31",
+  "scope": "Current pinned x86_64 Modal image with exact source overlays. Actual native processes, loopback control/storage/TLS and real local PostgreSQL domain gates are distinguished below. No external provider or native DB credentials.",
+  "image": {
+    "sandboxId": "sb-01M69G4N8F031SJDEW01KDHCEX",
+    "imageId": "im-j5MoQbsu3wN6vhLRebZmYY",
+    "createToFirstExecReadySeconds": 2.523,
+    "freshContainerCachedImagePossible": true,
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "network": "blocked",
+    "secrets": [],
+    "platform": {
+      "python": "3.13.5",
+      "platform": "x86_64"
+    },
+    "files": {
+      "/tmp/candidate.tar.gz": "a164f9dc3df8c4953efbf23fc4765c332752e745c9a071604697b3fbba21652c",
+      "/tmp/reference.tar.gz": "459be5ff31af8fcc1bb3f2397cb4bede83b5c80a6bd11f32923cd450cafdb71b",
+      "/tmp/frozen-manifest.json": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+      "/tmp/test_render_runtime.py": "7ff68254e56214f9d8b153fc730ccfae9a5ec9d4b695ace3d3dcc53b13eea486",
+      "/tmp/render_resource.py": "82a7ea57f61e41b80050b1c694d0499f09789055d46ce1624b941afa829751c5",
+      "/tmp/process.py": "8fb7e5375e3208feaf60c71f919bb37570c54ebe85d1f257c3de63b4cf72a346",
+      "/tmp/test_process.py": "5780bb98aca63179b92f1aeaefdb54013ea573608151f69a9ff3f05a4fd34ed9",
+      "/tmp/detectors.py": "e776961da6fa8bbce73467d29436e9133f8bda638bd2a01c17b41902b3bba27d"
+    },
+    "terminated": true,
+    "runtimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee"
+  },
+  "nativeFaultSuite": {
+    "passed": 66,
+    "failed": 0,
+    "seconds": 78.491,
+    "suites": [
+      "process",
+      "control",
+      "transfer_control",
+      "multipart",
+      "artifacts",
+      "source_server",
+      "entrypoint",
+      "render_runtime"
+    ],
+    "checks": [
+      "Actual PID before start callback; command withheld until confirmed process-start; no start on spawn rejection",
+      "Unconfirmed start ACK kills native descendants without releasing the command",
+      "SIGKILL wrapper reaps detached native descendants; cancellation and real30-second renewal loss stop active children",
+      "Bounded output and exact file-size limit; conditional source mismatch cancels active sibling transfer",
+      "Actual stalled HTTP Connection-close response is interrupted; no part completion after condition failure",
+      "Lost completion/commit ACK preserves the completed object without abort/delete or a second failure mutation",
+      "Replayed old permission and wall/monotonic suspend gap refuse another heavy start",
+      "Actual Bun render, typed source mismatch,200 frozen assets with on-demand source grants, lost publication ACK and zero detector reruns"
+    ]
+  },
+  "fixedRegression": {
+    "commit": "299aff2e",
+    "cause": "A fast child can finish while the actual-start callback is pending. A closed owner-ACK pipe was replacing its bounded exit result with start_unconfirmed even after the callback succeeded. Only BrokenPipe after the successful callback is now allowed to drain the finished supervisor result. Callback failures still kill/reap and remain unconfirmed.",
+    "redCommand": "PYTHONPATH=apps/media/python python3 -m unittest apps/media/python/tests/test_process.py -k confirmed_start_retains",
+    "redSeconds": 2.616,
+    "redError": "media_process_start_unconfirmed",
+    "greenHostTests": 13,
+    "linuxRegressionIncludedIn66": true
+  },
+  "longSource": {
+    "scope": "actual native Bun/FFmpeg with controlled signed-control and conditional file-backed storage ports",
+    "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "seconds": 13.493,
+    "operation": {
+      "outcome": {
+        "status": "completed",
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "superseded": 0
+      },
+      "bytesTransferred": 66060288,
+      "upstreamRequests": 63,
+      "detectorExecutions": 0,
+      "starts": 1,
+      "artifacts": [
+        {
+          "role": "render_variant",
+          "byteLength": 1624941,
+          "sha256": "7f3771d5ce5fbc6c2e02d3360ac8053ad69848a2def8a3b51f2a86a705464c33"
+        }
+      ],
+      "sourceByteLength": 438557967,
+      "sourceDurationSec": 10800.069271,
+      "requestedWindow": {
+        "startSec": 5400,
+        "endSec": 5410
+      },
+      "previewWindow": {
+        "startSec": 5396,
+        "endSec": 5414,
+        "durationSec": 18
+      }
+    },
+    "resources": {
+      "samples": 519,
+      "sampleIntervalMs": 25,
+      "sampledPeakTreeRssBytes": 954265600,
+      "byCommand": {
+        "python": {
+          "rssBytes": 51191808,
+          "threads": 6
+        },
+        "ffmpeg": {
+          "rssBytes": 518111232,
+          "threads": 34
+        },
+        "bun": {
+          "rssBytes": 369070080,
+          "threads": 17
+        },
+        "ffprobe": {
+          "rssBytes": 234524672,
+          "threads": 1
+        },
+        "sh": {
+          "rssBytes": 3452928,
+          "threads": 1
+        },
+        "ldd": {
+          "rssBytes": 5480448,
+          "threads": 1
+        },
+        "ld-linux-x86-64": {
+          "rssBytes": 46055424,
+          "threads": 1
+        },
+        "readlink": {
+          "rssBytes": 3735552,
+          "threads": 1
+        },
+        "basename": {
+          "rssBytes": 1875968,
+          "threads": 1
+        },
+        "dirname": {
+          "rssBytes": 1810432,
+          "threads": 1
+        },
+        "fc-match": {
+          "rssBytes": 7311360,
+          "threads": 1
+        },
+        "dpkg-query": {
+          "rssBytes": 10670080,
+          "threads": 1
+        },
+        "dpkg": {
+          "rssBytes": 8523776,
+          "threads": 1
+        },
+        "python3": {
+          "rssBytes": 25534464,
+          "threads": 1
+        }
+      }
+    },
+    "readFraction": 0.15063068732257234,
+    "acceptance": {
+      "sourceHours": 3,
+      "maximumReadFraction": 0.2,
+      "passed": true
+    },
+    "accounting": "Execution source-read bytes only, including native probes, scans and encode. Excludes initial fixture creation, local fixture hash and acquisition. File-backed upstream fixture reads each requested conditional range; it does not load the whole source in memory.",
+    "rssAccounting": "25ms sampled sum across the native invocation process tree. Shared pages may be counted per process. This is not a platform cgroup peak; Modal memory limit was8192MiB. Per-command values are per-process maxima.",
+    "fixture": "A four-second synthetic audiovisual fixture repeated by stream-copy to exactly3h. The frozen golden matrix separately covers moov/GOP/VFR/orientation/HDR/A-V offsets and multilingual caption cases."
+  },
+  "detectors": {
+    "runtime": "CPython3.13.5 pinned render image",
+    "scope": "Actual OpenCV model inference and byte-exact frozen/relocated detector CLI comparison on synthetic frozen input only",
+    "opencv": "5.0.0",
+    "numpy": "2.5.4",
+    "opencvThreads": 4,
+    "model": {
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "bytes": 232589,
+      "importSeconds": 0.145,
+      "loadSeconds": 0.005,
+      "firstInferenceSeconds": 0.004,
+      "readySeconds": 0.154,
+      "actualInputSize": [
+        320,
+        180
+      ],
+      "successful": true
+    },
+    "comparisons": [
+      {
+        "script": "reframe_detect.py",
+        "identical": true,
+        "stdoutSha256": "723ee0b2c72d788d2f0b325f9c334835bbf3ed0e030c00c82b6fae3e03414c02",
+        "referenceSeconds": 0.183,
+        "candidateSeconds": 0.172
+      },
+      {
+        "script": "pip_detect.py",
+        "identical": true,
+        "stdoutSha256": "c1a840cfd4a1f41d6b6ed0d216c3ae7778c6a96529943d3ea220d58059203ad8",
+        "referenceSeconds": 0.227,
+        "candidateSeconds": 0.224
+      }
+    ]
+  },
+  "startup": {
+    "freshContainerFirstExecReadySeconds": 2.523,
+    "cachedImagePossible": true,
+    "enforcedRuntimeCheckSeconds": 27.495,
+    "scope": "Separate observations, not a measured fully uncached image-build latency."
+  },
+  "sourceAudioPinRegression": {
+    "image": {
+      "sandboxId": "sb-01M69GNJ9BAKNG3NPW005F7V9E",
+      "imageId": "im-j5MoQbsu3wN6vhLRebZmYY",
+      "cpu": 4,
+      "memoryMiB": 8192,
+      "networkBlocked": true,
+      "secrets": [],
+      "files": {
+        "/tmp/candidate.tar.gz": "a164f9dc3df8c4953efbf23fc4765c332752e745c9a071604697b3fbba21652c",
+        "/tmp/process.py": "8fb7e5375e3208feaf60c71f919bb37570c54ebe85d1f257c3de63b4cf72a346",
+        "/tmp/test_file_source_runtime.py": "fac559e6d88ded4408721052b9c7189c69820a3d5c2d9d90768a0fd2f6aea63c",
+        "/tmp/frozen-manifest.json": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+        "/tmp/frozen-capture.json": "9c1957a0c4d894f34b8a5f21e7ce670340e7e44daa46b6f30e43f4d69c202254",
+        "/tmp/run.py": "a18d4fad5087da4aeaf445e6ee247cb780606b8ec50afd518071f73c8c73b6c0"
+      }
+    },
+    "terminated": true,
+    "pythonTestsPassed": 20,
+    "seconds": 5.32,
+    "languageProbeTestsPassed": 2,
+    "languageProbeAssertions": 10,
+    "languageProbeSeconds": 0.824,
+    "checks": [
+      "Actual native audio-only probe/AAC extraction validates whole SourceAudio and SourceVideo bindings",
+      "Known no-speech and actual silent-video paths omit fabricated SourceAudio",
+      "Owned curl first conditional prefix preserves source identity before remaining pin ranges",
+      "Controlled sticky HTTP proxy downloads frozen yt-dlp info and normalized probe; no direct external fallback",
+      "SourceSink audio/probe/video handoff and seeded audio remain ordered; source identity mismatch refuses publication",
+      "Three planned language windows produce exactly1920000 PCM bytes in bounded WAV, If-Match on every source read"
+    ]
+  },
+  "kernelEnospc": {
+    "result": {
+      "scope": "actual Linux kernel ENOSPC through the current native supervisor, no domain/storage fixture",
+      "nativeStarts": 1,
+      "returncode": 228,
+      "code": "ENOSPC",
+      "tmpfsCapacityBytes": 8388608,
+      "fileBytes": 8388608
+    },
+    "scope": "Real Linux kernel8MiB tmpfs through the current supervisor in the existing emulated Docker image; no end-to-end domain/R2 claim. Current process.py and gate script overlay exact hashes below.",
+    "archiveSha256": "5321ea6e63a4b49ee1abd6bc584fe188e09871d514d816c6aaec5d3c123f54a7"
+  },
+  "domainSiblingSigkill": {
+    "commit": "d1847b9d",
+    "tests": 22,
+    "assertions": 216,
+    "seconds": 37.3,
+    "nativeChild": "actual host Bun child with finite nonce loopback commit-only callback; parent owns PostgreSQL/control authority",
+    "storage": "Controlled artifact HEAD facts; no R2 media validation claim",
+    "observed": [
+      "First sibling completed object key/completedAt retained after actual SIGKILL",
+      "ChargedAttemptCount1 retained, generation2 successor receives only unsettled member",
+      "Second actual child starts after current process-start ACK, final group acknowledgement completed2/2",
+      "Workflow parent remains unleased and attemptCount0"
+    ]
+  },
+  "rawEvidence": {
+    "/tmp/narriflow-serverless-gates/final-media-21/native-02": {
+      "run-native.py": "61822993f7d91bf02d11b672b770f46f456dec8f70aa7bb09fe18fdcf3272907",
+      "provenance.json": "e44f6ce7d780063a686216484fc17bc0e1cb20c2416045ce06d52f3bfaffe7ca",
+      "runtime.log": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "native-tests.log": "dc2526a15c2f03deb96fedcf3366bc262cb9176c294b8d84966e22e34c94cdad",
+      "long-source-resources.log": "fde7157f09b3b6c9e67f2a4575d38ef4389fd0f5f9a6dceb398c62f83f421e50",
+      "detectors.log": "dc62cbc6e0e7611f0c0dae811c0327044d33d2d318a8db37ecfeecd920f80752",
+      "status.json": "4857e74f4f00d68fc5a35f5e27a0b05648c73c5e3691e1108eb5fe6e22ed8a1b"
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/source-threads-02": {
+      "remote.py": "a18d4fad5087da4aeaf445e6ee247cb780606b8ec50afd518071f73c8c73b6c0",
+      "run.py": "db45da84fa5c49584901ad1351558c28c14ab2fd658c511be02275a96780a0a6",
+      "provenance.json": "ed2ade768b6de1a71b95cfe825a2049b22472b8a03cbd7a363ee116b8f4f70aa",
+      "source-tests.log": "efcf0a7056708b1662b6bfc95bcc90e49fba4c85ea3f7260871040ad4dc8b2f1",
+      "language-probe.log": "1b9c6f324b8554eef7aace2a0b34dfa2344a0f51976ffbd2be26cfc581161d03"
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21": {
+      "control-sibling-sigkill-final.log": "18fd0ced1ede266ea2db72a0038eaaf367f83c2d6d9ace8da6f2782fa672ad1e",
+      "start-ack-race-red.log": "c2166e3a22409fc4a12b36613f800bdaf745a5e84c78bdfcc4cde691553312e0",
+      "start-ack-race-green.log": "c34845184235b1223f96901b61df80203190b78ce33d2212a63489074977470d",
+      "full-disk.log": "654e1f700d7426bb8cf396a02e6c4e5ea166747b3bd4115dcc09c36643f1e1a3",
+      "run-full-disk.py": "a1e46e4f8e0ad0dd03629b2f41412dd537199a791f48c0a79da3fe89571aa975"
+    }
+  },
+  "open": [
+    "Full-render FFmpeg has automatic codec/filter thread selection: measured34OS threads under the hard4CPU allocation. Explicit4-thread diagnostic is being compared with an unchanged frozen control; no compiler/golden/tolerance change is accepted here.",
+    "Live Worker-domain fault combinations, paid provider/proxy egress and performance cohorts remain separate22 work."
+  ]
+}

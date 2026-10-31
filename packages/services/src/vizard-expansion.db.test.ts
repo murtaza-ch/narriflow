@@ -1,6 +1,6 @@
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	afterAll,
 	beforeAll,
@@ -40,6 +40,11 @@ import { prismaAssistedCopyStore } from "./assisted-social-copy-runtime";
 import { createAssistedSocialCopy } from "./assisted-social-copy";
 import { AutopilotService } from "./autopilot.service";
 import { dubbingService } from "./dubbing.service";
+import { DubbingExecution, createDubbingExecution } from "./dubbing-execution";
+import { dubbingArtifactBindingHash, dubTranslationRequestBody, dubSpeechRequestBody } from "./dubbing-policy";
+import { frozenDubbingRequestSchema } from "@narriflow/validators/dubbing-execution";
+import { readExecutionDispatch } from "./execution-dispatch";
+import { createExecutionStorage } from "./execution-storage";
 import { workspaceLibraryService } from "./workspace-library.service";
 import { prismaPublicationSchedulingStore } from "./social-publication-scheduling-runtime";
 import { bulkSocialSchedulingService, prismaBulkScheduleStore } from "./bulk-social-scheduling-runtime";
@@ -245,6 +250,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				aspectRatio: "ratio_9_16",
 				status: "completed",
 				storageKey: "fixtures/dubbing/base.mp4",
+				sizeBytes: 8192n,
+				durationSec: 10,
+				completedAt: new Date(),
 			},
 		});
 		const first = await request("same-request");
@@ -260,10 +268,54 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				where: { projectId: current.project.id, stage: "dubbing" },
 			}),
 		).toBe(1);
-		await prisma.clipDub.update({
-			where: { id: first.dub.id },
-			data: { status: "completed", completedAt: new Date() },
-		});
+		const accepted = await prisma.clipDub.findUniqueOrThrow({ where: { id: first.dub.id } });
+		const frozen = frozenDubbingRequestSchema.parse(accepted.frozenRequest);
+		expect(frozen).toMatchObject({ workflowRunId: first.workflowRunId, clipId: current.clip.id,
+			editorRevision: 3, script: "A strong hook", baseRender: { byteLength: 8192, durationSec: 10 } });
+		expect(accepted.operationDeadlineAt!.getTime() - accepted.createdAt.getTime()).toBe(45 * 60_000);
+		expect(await prisma.generatedMediaUsageReservation.count({ where: { jobId: accepted.id, status: "reserved" } })).toBe(1);
+		const driver = await prisma.executionDispatch.findFirstOrThrow({ where: { subjectId: first.workflowRunId!, kind: "operation_driver", deadlineKind: null, wakeKind: null } });
+		const reference = (await readExecutionDispatch(prisma, driver.id))!.reference;
+		const objects = new Map<string, Uint8Array>(), evidence = new Map<string, object>();
+		const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+		const domain = new DubbingExecution(prisma, { toolchainFingerprint: "a".repeat(64), register: async () => {},
+			head: async storageKey => ({ storageKey, etag: '"base"', byteLength: 8192, sha256: "b".repeat(64) }),
+			inputStorage: { read: async object => objects.get(object.storageKey)!, write: async (key, bytes) => {
+				objects.set(key, bytes.slice()); return { etag: '"capsule"', byteLength: bytes.length, sha256: hash(bytes) };
+			} } });
+		const prepared = await domain.prepareExecution(reference);
+		if (prepared.kind !== "waiting") throw new Error("Expected native Dub admission");
+		const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: randomUUID() };
+		const execution = createDubbingExecution({ database: prisma, domain, deliverWakes: async () => {},
+			storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "dub-fixture", accessKeyId: "fixture", secretAccessKey: "fixture" }),
+			artifacts: { head: async assignment => assignment.role === "dub_mix"
+				? { etag: assignment.contentType === "video/mp4" ? '"video"' : '"audio"', contentType: assignment.contentType, byteLength: assignment.contentType === "video/mp4" ? 8192n : 4096n }
+				: { etag: '"proof"', contentType: assignment.contentType, byteLength: BigInt(JSON.stringify(evidence.get(assignment.id)).length) },
+				readJson: async artifact => evidence.get(artifact.artifactId) } });
+		const verified = (target = "/api/execution/command") => ({ requestHash: randomUUID().replaceAll("-", "").repeat(2), metadata: {
+			version: 1 as const, keyId: "fixture", audience: "executor-control" as const, method: "POST" as const, canonicalTarget: target,
+			bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: randomUUID(), signature: "0".repeat(64) } });
+		const send = (command: unknown) => execution.control.execute({ command, verifiedRequest: verified() });
+		await send({ action: "acquire", ...fence, leaseSeconds: 120 }); await send({ action: "process-start", fence });
+		const work = await execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: verified("/api/execution/transfer") });
+		if (work.disposition !== "work_package") throw new Error("Expected native Dub work package");
+		const publish = async (stage: "translation_intent" | "translation_result" | "speech_intent" | "audio" | "video" | "final_result", value?: object) => {
+			const bindingHash = await dubbingArtifactBindingHash(accepted.requestHash!, stage);
+			const output = work.outputs.find(output => output.bindingHash === bindingHash)!;
+			const raw = value ? JSON.stringify({ version: 1, kind: "dubbing_checkpoint", stage, dubId: accepted.id, requestHash: accepted.requestHash, ...value }) : null;
+			if (raw) evidence.set(output.artifactId, JSON.parse(raw));
+			return send({ action: "commit-artifact", fence, artifact: { artifactId: output.artifactId, role: output.role, bindingHash, contentType: output.contentType,
+				byteLength: raw?.length ?? (stage === "audio" ? 4096 : 8192), etag: raw ? '"proof"' : stage === "audio" ? '"audio"' : '"video"',
+				sha256: raw ? hash(raw) : (stage === "audio" ? "c" : "d").repeat(64) } });
+		};
+		const translated = "Una apertura fuerte";
+		await publish("translation_intent", { bodySha256: hash(JSON.stringify(dubTranslationRequestBody(frozen))) });
+		await publish("translation_result", { text: translated, providerRequestId: "resp_fixture" });
+		await publish("speech_intent", { bodySha256: hash(JSON.stringify(dubSpeechRequestBody(frozen, translated))) });
+		await publish("audio"); await publish("video");
+		await publish("final_result", { outcome: "completed", audio: { byteLength: 4096, sha256: "c".repeat(64) },
+			video: { byteLength: 8192, sha256: "d".repeat(64) }, probe: { state: "ready", durationSec: 10 } });
+		expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: accepted.id } })).toMatchObject({ status: "finalized", actualUnits: 1 });
 		const completed = await request("completed-replay");
 		expect(completed.dub.id).toBe(first.dub.id);
 		expect(completed.workflowRunId).toBeNull();
