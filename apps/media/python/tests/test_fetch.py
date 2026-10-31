@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from narriflow_media.fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure, fetch_source
+from narriflow_media.fetch import DownloadedSource, ExistingSourceAudio, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure, fetch_source
 
 
 def probe(video=False):
@@ -144,6 +144,59 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(commits, ["audio"])
             self.assertEqual(len(closed), 1)
             self.assertEqual(audio_file.read_bytes(), b"a")
+
+    async def test_a_sealed_existing_audio_binding_is_reused_without_a_second_download_or_commit(self):
+        binding = {
+            "sourceAudioId": "00000000-0000-4000-8000-000000000001", "projectId": "00000000-0000-4000-8000-000000000002",
+            "sourceRevision": 2, "mediaIdentity": {"provider": "youtube", "mediaId": "_123456789-"},
+            "audioTrack": {"id": "140", "language": "en", "codec": "aac", "sampleRate": 48000, "channels": 2},
+            "object": {"key": "execution/sealed/audio.m4a", "etag": "sealed-etag", "byteLength": 1, "sha256": "a" * 64},
+            "durationSeconds": 10.0, "wholeSource": True, "audioStartTimeSec": 0.0,
+            "probeVersion": "probe-fixture-v1", "toolchainFingerprint": "b" * 64,
+        }
+        seed, calls = ExistingSourceAudio(binding), []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video_file = root / "video.mp4"
+            video_file.write_bytes(b"v")
+            class Runtime:
+                async def resolve(self, source, session, work):
+                    calls.append("resolve")
+                    return ResolvedSource(source.media_id, "140", "137", "en", work / "metadata.json")
+                async def download_audio(self, *args):
+                    raise AssertionError("sealed audio was downloaded twice")
+                async def download_video(self, selected, session, work):
+                    calls.append("video")
+                    return DownloadedSource(video_file, selected.media_id, selected.audio_format_id)
+                async def probe(self, path):
+                    return probe(True)
+                async def end_session(self, work):
+                    calls.append("closed")
+            class Sink:
+                async def audio_ready(self, artifact):
+                    raise AssertionError("sealed audio was committed twice")
+                async def video_ready(self, artifact, audio):
+                    if audio is not seed:
+                        raise AssertionError("video lost its sealed audio binding")
+                    calls.append("video_commit")
+            result = await fetch_source("_123456789-", source_revision=2, project_id=binding["projectId"],
+                                        existing_audio=seed, mode="local", development=True, work_directory=root,
+                                        runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
+            self.assertIs(result.audio, seed)
+            self.assertEqual(calls, ["resolve", "video", "video_commit", "closed"])
+            view = seed.binding
+            view["audioTrack"]["id"] = "different"
+            self.assertEqual(seed.binding["audioTrack"]["id"], "140")
+            for project_id, revision in [("00000000-0000-4000-8000-000000000003", 2), (binding["projectId"], 3)]:
+                with self.assertRaises(SourceFetchFailure) as changed:
+                    await fetch_source("_123456789-", source_revision=revision, project_id=project_id,
+                                       existing_audio=seed, mode="local", development=True, work_directory=root,
+                                       runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
+                self.assertEqual(changed.exception.code, "source_audio_video_mismatch")
+            self.assertEqual(calls, ["resolve", "video", "video_commit", "closed"])
+            binding["wholeSource"] = False
+            with self.assertRaisesRegex(ValueError, "source_audio_seed_invalid"):
+                ExistingSourceAudio(binding)
 
 
 if __name__ == "__main__":
