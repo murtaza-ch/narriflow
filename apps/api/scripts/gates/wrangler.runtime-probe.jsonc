@@ -4,6 +4,8 @@
   "main": "runtime-probe.ts",
   "compatibility_date": "2026-10-30",
   "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
+  "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }],
   "workers_dev": false,
   "preview_urls": false,
   "routes": []

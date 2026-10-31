@@ -25,6 +25,7 @@ const worker = await unstable_dev(fileURLToPath(new URL("./gates/runtime-probe.t
     HYPERDRIVE: { connectionString: "postgresql://unused.test/no_database_calls" },
     CLERK_JWT_KEY: publicPem,
     ELEVENLABS_WEBHOOK_SECRET: webhookSecret,
+    PEXELS_API_KEY: "local-stock-fixture",
     FIXTURE_ID: "isolated-local-runtime",
   },
   experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false },
@@ -54,6 +55,23 @@ try {
   checks.push("scribe_exact_signed_bytes");
   assert.equal((await worker.fetch("/api/webhooks/elevenlabs", { method: "POST", headers, body: JSON.stringify(JSON.parse(body)) })).status, 401);
   checks.push("scribe_rejects_reserialized_bytes");
+  const counts = await Promise.all(Array.from({ length: 8 }, async () => await (await worker.fetch("/rate/concurrent?limit=2")).json() as { allowed: boolean }));
+  assert.equal(counts.filter((result) => result.allowed).length, 2);
+  checks.push("durable_rate_concurrency");
+  const peek = await (await worker.fetch("/rate/concurrent?limit=2&peek=1")).json() as { allowed: boolean; remaining: number };
+  assert.equal(peek.allowed, false);
+  assert.equal(peek.remaining, 0);
+  checks.push("durable_rate_peek");
+  const firstWindow = await (await worker.fetch("/rate/expiry?limit=1&window=1")).json() as { allowed: boolean };
+  assert.equal(firstWindow.allowed, true);
+  assert.equal((await (await worker.fetch("/rate/expiry?limit=1&window=1&peek=1")).json() as { allowed: boolean }).allowed, false);
+  await new Promise((resolve) => setTimeout(resolve, 1_250));
+  assert.equal((await (await worker.fetch("/rate/expiry?limit=1&window=1&peek=1")).json() as { allowed: boolean }).allowed, true);
+  checks.push("durable_rate_window_expiry");
+  const stockPath = `/stock-cache?q=runtime-gate-${Date.now()}`;
+  assert.deepEqual(await (await worker.fetch(stockPath)).json(), { videos: 1, providerCalls: 1 });
+  assert.deepEqual(await (await worker.fetch(stockPath)).json(), { videos: 1, providerCalls: 1 });
+  checks.push("pexels_cache_api");
   process.stdout.write(`${JSON.stringify({ runtime: "workerd", checks, passed: checks.length })}\n`);
 } finally {
   await worker.stop();

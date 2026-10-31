@@ -7,3 +7,5 @@ export default createApiWorker({
     return createProductionApp(loadApiConfig(environment), environment);
   },
 });
+
+export { RateLimiter } from "./durable-objects/rate-limiter";

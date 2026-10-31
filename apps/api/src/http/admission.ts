@@ -423,6 +423,7 @@ export function admit(
     const common = {
       adapter: "hono",
       operationName: `${c.req.method} ${routePath(c)}`,
+      mutation: !["GET", "HEAD", "OPTIONS"].includes(c.req.method),
       admission: admissionOf(declaration, c),
       rateLimit: rateRules(declaration, c),
       deferRateRefusal: declaration.deferRateRefusal ?? false,

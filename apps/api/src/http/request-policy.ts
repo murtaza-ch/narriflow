@@ -158,6 +158,8 @@ interface AuthenticatedRequestCommon<
 > {
   adapter: AuthenticatedRequestAdapter;
   operationName: string;
+  /** HTTP adapters mark writes; receipt-backed commands defer until replay lookup. */
+  mutation?: boolean;
   admission: AuthenticatedRequestAdmission;
   /** Every rule is checked in order; the first exhausted window refuses the request. */
   rateLimit?: RateLimitRule<TActor> | readonly RateLimitRule<TActor>[];
@@ -409,6 +411,10 @@ export function createAuthenticatedRequestPolicy(
             rule.windowSeconds,
             dependencies.now(),
           );
+          if (check.availability === "unavailable" && request.mutation && !request.deferRateRefusal) {
+            return failed({ code: "mutations_unavailable", category: "unavailable", status: 503,
+              message: "New mutations are paused while the request limiter is unavailable", retryAfterSeconds: 5 });
+          }
           if (!check.allowed) {
             if (request.deferRateRefusal) break;
             return failed({
