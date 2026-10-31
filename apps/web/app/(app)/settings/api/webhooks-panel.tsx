@@ -3,8 +3,8 @@
 import { useMemo, useState } from "react";
 import { IconButton, Table, Text } from "@chakra-ui/react";
 import type { WorkspaceScope } from "@narriflow/api-client";
-import { deleteWebhookMutation, enableWebhookMutation, testWebhookMutation } from "@narriflow/api-client/developer";
-import { useMutation } from "@tanstack/react-query";
+import { deleteWebhookMutation, enableWebhookMutation, testWebhookMutation, webhookTestQuery } from "@narriflow/api-client/developer";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { MoreHorizontal, Play, RotateCcw, Trash2, Webhook } from "lucide-react";
 import type { WebhookDisabledReason, WebhookView } from "@narriflow/validators";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
@@ -22,6 +22,7 @@ const DISABLED_TEXT: Record<WebhookDisabledReason, string> = {
   consecutive_failures: "Paused after 20 failed deliveries",
   cursor_expired: "Paused: delivery fell more than 30 days behind",
   endpoint_gone: "Paused: the endpoint answered 410 Gone",
+  delivery_attempts_exhausted: "Paused: the delivery attempt budget was used",
 };
 
 function Status({ webhook }: { webhook: WebhookView }) {
@@ -55,15 +56,22 @@ function delivery(webhook: WebhookView) {
 export function WebhooksPanel({ scope, webhooks }: { scope: WorkspaceScope; webhooks: WebhookView[] }) {
   const runtime = useApiRuntime();
   const { confirm, dialog } = useConfirm();
-  const [message, setMessage] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+  const scopeKey=`${scope.userId}:${scope.workspaceId}`;
+  const [message, setMessage] = useState<{ text: string; tone: "info" | "error"; scopeKey: string } | null>(null);
+  const [test,setTest]=useState<{deliveryId:string;webhookId:string;host:string;scopeKey:string}|null>(null);
+  const currentTest=test?.scopeKey===scopeKey?test:null;
+  const testStatus=useQuery(webhookTestQuery(runtime.transport,scope,currentTest?.webhookId??null,currentTest?.deliveryId??null));
+  const waitingForTest=Boolean(currentTest&&(!testStatus.data||testStatus.data.state==="pending"));
+  const testText=currentTest?(testStatus.data?.status?`${currentTest.host} answered ${testStatus.data.status}.`:testStatus.data?.state==="unconfirmed"?"Delivery could not be confirmed.":testStatus.isError?"Delivery status is unavailable. Checking again.":"Test event queued. Waiting for delivery."):null;
+  const visibleMessage=testText?{text:testText,tone:"info" as const}:message?.scopeKey===scopeKey?message:null;
   const deleteWebhook = useMutation(useMemo(() => deleteWebhookMutation(runtime, scope), [runtime, scope]));
   const enableWebhook = useMutation(useMemo(() => enableWebhookMutation(runtime, scope), [runtime, scope]));
   const testWebhook = useMutation(useMemo(() => testWebhookMutation(runtime, scope), [runtime, scope]));
-  const pending = deleteWebhook.isPending || enableWebhook.isPending || testWebhook.isPending;
+  const pending = [deleteWebhook,enableWebhook,testWebhook].some(mutation=>mutation.isPending&&webhooks.some(webhook=>webhook.webhookId===mutation.variables)) || waitingForTest;
 
   const fail = (fallback: string) => (error: unknown) => {
     const text = developerFailureMessage(error, fallback);
-    if (text) setMessage({ text, tone: "error" });
+    if (text) setMessage({ text, tone: "error",scopeKey });
   };
 
   async function remove(webhook: WebhookView) {
@@ -75,22 +83,21 @@ export function WebhooksPanel({ scope, webhooks }: { scope: WorkspaceScope; webh
     });
     if (!confirmed) return;
     setMessage(null);
+    setTest(null);
     deleteWebhook.mutate(webhook.webhookId, { onError: fail("The webhook could not be deleted.") });
   }
 
   function enable(webhook: WebhookView) {
     setMessage(null);
+    setTest(null);
     enableWebhook.mutate(webhook.webhookId, { onError: fail("The webhook could not be re-enabled.") });
   }
 
   function sendTest(webhook: WebhookView) {
     setMessage(null);
+    setTest(null);
     testWebhook.mutate(webhook.webhookId, {
-      onSuccess: (result) =>
-        setMessage({
-          text: result.status ? `${webhook.urlHost} answered ${result.status}.` : `${webhook.urlHost} did not answer.`,
-          tone: "info",
-        }),
+      onSuccess:result=>setTest({deliveryId:result.deliveryId,webhookId:webhook.webhookId,host:webhook.urlHost,scopeKey}),
       onError: fail("The test event could not be sent."),
     });
   }
@@ -184,9 +191,9 @@ export function WebhooksPanel({ scope, webhooks }: { scope: WorkspaceScope; webh
           ))}
         </Table.Body>
       </Table.Root>
-      {message ? (
-        <Text fontSize="13px" color={message.tone === "error" ? "danger.fg" : "fg.muted"}>
-          {message.text}
+      {visibleMessage ? (
+        <Text fontSize="13px" color={visibleMessage.tone === "error" ? "danger.fg" : "fg.muted"}>
+          {visibleMessage.text}
         </Text>
       ) : null}
       {dialog}

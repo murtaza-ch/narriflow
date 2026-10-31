@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-31",
+  "status": "implementation tested; platform composition and maximum-body gates pending",
+  "subjectKind": "outbound_delivery",
+  "bodyMaximumBytes": 16777216,
+  "receiptMaximumBytes": 65536,
+  "logicalExpiryDays": 30,
+  "attemptDeadlineSeconds": 120,
+  "physicalStartBudgets": {
+    "completionCallback": 10,
+    "webhookEvent": 20,
+    "webhookTest": 1
+  },
+  "gates": {
+    "postgres": {
+      "freshMigrations": 134,
+      "tests": 14,
+      "assertions": 160,
+      "target": "guarded dedicated local PG17 disposable schema"
+    },
+    "workerBundle": {
+      "forbiddenPackages": [],
+      "nativeServiceModules": [],
+      "obsoleteWorkerModules": []
+    },
+    "actualWorkerd": {
+      "checks": 11,
+      "includes": [
+        "Clerk bearer",
+        "signed raw Scribe bytes",
+        "request scope",
+        "Durable Object rate admission",
+        "Cache API"
+      ]
+    },
+    "next": {
+      "version": "16.4.3 Turbopack",
+      "actualComponent": "WebhooksPanel",
+      "queued": "Test event queued. Waiting for delivery.",
+      "workspaceAStatusReads": 7,
+      "workspaceBStatusReads": 0,
+      "admissions": 1,
+      "confirmed": "receiver-a.example answered 204.",
+      "unconfirmed": "Delivery could not be confirmed.",
+      "reactInspection": true,
+      "compilationIssues": [],
+      "runtimeErrors": [],
+      "temporaryFixtureRemoved": true
+    },
+    "combinedPostIntegrationPostgres": {
+      "freshMigrations": 134,
+      "tests": 121,
+      "assertions": 775,
+      "files": 18,
+      "target": "guarded dedicated local PG17 disposable schema"
+    },
+    "broadServices": {
+      "passed": 1551,
+      "failed": 0,
+      "databaseSuitesSkipped": true
+    },
+    "broadApiAndClient": {
+      "passed": 1122,
+      "skippedDatabaseTests": 36,
+      "failed": 0
+    },
+    "inventory": {
+      "firstPartyRoutes": 290,
+      "protocolRoutes": 45,
+      "problems": 0
+    },
+    "openApi": {
+      "operations": 32,
+      "artifactMatchesRoutes": true
+    }
+  },
+  "preservedContracts": [
+    "same event/body on retries and explicit redelivery",
+    "Standard Webhooks overlap keys remain Worker-only",
+    "cursor adopts only a sealed 2xx receipt in same transaction",
+    "410 disables endpoint",
+    "20 consecutive failures distinct from physical-start exhaustion",
+    "inactive plan holds with durable timer and no renewable coordinator lease",
+    "missing signing secrets count as policy failures with zero native charges",
+    "REST test admits processing.consume and freezes API key ID; browser admits api.manage; key revocation withdraws native authority",
+    "guarded native DNS resolves/pins every attempt with no redirects or environment proxies",
+    "Sealed body replay survives feed-byte purge; retention disables authority before any native start. Both publishing event types recheck current API-key scopes."
+  ],
+  "remaining": [
+    "Root Workflow/HTTP executor composition and all terminal/event producer wakes",
+    "actual deployed maximum 16MiB signed body resource gate",
+    "slow receiver and real Modal native callback acceptance gates under final platform composition"
+  ],
+  "ticketsRemainClaimed": [
+    "03",
+    "16",
+    "18"
+  ]
+}

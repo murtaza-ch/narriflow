@@ -48,11 +48,11 @@ dbDescribe("Targeted Ingest execution", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(executionDeadline?: Date,audioPolicy:"none"|"pending_pack"="pending_pack") {
+  async function fixture(executionDeadline?: Date,audioPolicy:"none"|"pending_pack"="pending_pack",source?:{jobType:"upload_finalize";payload:Prisma.InputJsonObject}) {
     const user = await db.user.create({ data: { clerkId: `targeted-ingest:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted ingest", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted ingest", sourceType: "youtube", sourceMediaUrl: "https://youtube.com/watch?v=dQw4w9WgXcQ", ingestStatus: "queued" } });
-    const job = await db.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: { acquisition:{audioPolicy}, provider: "youtube", mediaId: "dQw4w9WgXcQ", url: project.sourceMediaUrl } } }); subjects.push(job.id);
+    const job = await db.ingestJob.create({ data: { projectId: project.id, jobType: source?.jobType??"link_import", payload: source?{...source.payload,acquisition:{audioPolicy}}:{ acquisition:{audioPolicy}, provider: "youtube", mediaId: "dQw4w9WgXcQ", url: project.sourceMediaUrl } } }); subjects.push(job.id);
     const usage = new ProcessingUsage({ prisma: db, log: () => {} });
     await db.$transaction((tx) => usage.reserve(tx, { workspaceId: workspace.id, projectId: project.id, actorUserId: user.id, intakeKind: "link", declaredSeconds: 120 }));
     const workflow = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
@@ -61,7 +61,7 @@ dbDescribe("Targeted Ingest execution", () => {
     const inputHash = await ingestExecutionInputHash(job, "d".repeat(64));
     const dispatch = await db.$transaction((tx) => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "ingest_job", id: job.id }, generation: 1, inputHash, dueAt: new Date("2026-10-31T00:00:00.000Z") }));
     const token = crypto.randomUUID(), owner = crypto.randomUUID();
-    await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: dispatch.reference.inputHash, functionName: "fetch_source", operationDeadlineAt: executionDeadline ?? new Date(Date.now() + 45 * 60_000),
+    await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: dispatch.reference.inputHash, functionName:job.jobType==="upload_finalize"?"pin_source":"fetch_source", operationDeadlineAt: executionDeadline ?? new Date(Date.now() + 45 * 60_000),
       createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
     const control = createExecutorControl({ database: db, subjectKind: "ingest_job", domain: lifecycle, deliverWakes: async () => {},
       artifacts: { head: async (assignment) => ({ etag: '"audio-etag"', contentType: assignment.contentType, byteLength: 1024n, sha256: "c".repeat(64) }),
@@ -184,6 +184,28 @@ dbDescribe("Targeted Ingest execution", () => {
     if(result.disposition!=="work_package" || result.input.kind!=="inline")throw new Error("No source package");
     expect(result.outputs.map(value=>value.role)).toEqual(["source_video"]);
     expect(result.input.command).toMatchObject({audioPolicy:"none"});
+  });
+
+  test("upload source preparation binds conditional pin outputs to the verified object tuple",async()=>{
+    const source={uploadSessionId:crypto.randomUUID(),storageKey:"uploads/verified/source.mp4",verifiedEtag:'"frozen"',verifiedSizeBytes:6*1024**3,verifiedContentType:"video/mp4"};
+    const f=await fixture(undefined,"pending_pack",{jobType:"upload_finalize",payload:source});
+    const factory=createIngestSourceExecution({database:db,domain:f.lifecycle,workflow:f.workflow,toolchainFingerprint:"d".repeat(64),
+      storage:createExecutionStorage({accountId:"a".repeat(32),bucket:"test",accessKeyId:"fixture",secretAccessKey:"fixture"}),
+      artifacts:{head:async assignment=>({etag:'"audio-etag"',contentType:assignment.contentType,byteLength:1024n,sha256:"c".repeat(64)})},deliverWakes:async()=>{}});
+    const fence={reference:f.reference,attemptToken:f.token,owner:f.owner};
+    await factory.control.execute({command:{action:"acquire",...fence,leaseSeconds:120},verifiedRequest:f.verified()});
+    const result=await factory.transfer.execute({command:{action:"work-package",fence},verifiedRequest:f.verified()});
+    if(result.disposition!=="work_package"||result.input.kind!=="inline")throw new Error("No source package");
+    expect(result.functionName).toBe("pin_source");expect(result.input.command).toMatchObject({kind:"upload_source",mediaIdentity:{provider:"upload",mediaId:source.uploadSessionId}});
+    expect(result.outputs.find(value=>value.role==="source_video")).toMatchObject({sourceEtag:'"frozen"',sourceByteLength:6*1024**3,maxBytes:6*1024**3});
+    expect(result.sources.map(value=>({name:value.name,storageKey:value.storageKey,etag:value.etag,byteLength:value.byteLength}))).toEqual([{name:"upload_source",storageKey:source.storageKey,etag:'"frozen"',byteLength:6*1024**3}]);
+    await factory.control.execute({command:{action:"process-start",fence},verifiedRequest:f.verified()});
+    const output=result.outputs.find(value=>value.role==="source_video")!;
+    const binding=measuredBindings(f,"execution/unused").video;
+    binding.mediaIdentity={provider:"upload",mediaId:source.uploadSessionId};binding.probeVersion="normalized-probe-v1";
+    binding.audioTrack=null;binding.audioStartTimeSec=null;binding.probe.audio=null;binding.probe.facts.audios=[];
+    await expect(factory.control.execute({command:{action:"commit-artifact",fence,artifact:{artifactId:output.artifactId,role:"source_video",bindingHash:output.bindingHash,
+      contentType:"video/mp4",byteLength:1024,sha256:"c".repeat(64),etag:'"audio-etag"',sourceVideo:binding}},verifiedRequest:f.verified()})).rejects.toThrow("artifact_invalid");
   });
 
   async function earlyAudio(f: Awaited<ReturnType<typeof fixture>>, draft = false) {
@@ -440,7 +462,7 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
   }, 120_000);
 
-  test("late video mismatch cancels admitted provider work without erasing charged usage", async () => {
+  test.each(["sealed_video", "source_audio_video_mismatch", "source_identity_mismatch"])("late mismatch %s cancels admitted provider work without erasing charged usage", async mode => {
     const f = await fixture();
     await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
       clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
@@ -462,16 +484,19 @@ dbDescribe("Targeted Ingest execution", () => {
     const reference = (await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id))).reference;
     const begun = await withServiceEnvironment({}, () => createTranscriptionAdmission({ database: db, workflow: f.workflow, maxUnits: 12 }).admit(reference, { owner: crypto.randomUUID() }));
     if (begun.kind !== "begun") throw new Error("Provider work must be admitted before the late mismatch");
-    const command = { action: "commit-artifact" as const, fence, artifact: { artifactId: video.id, role: "source_video" as const, contentType: video.contentType,
-      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: bindings.video } };
+    const command = mode === "sealed_video" ? { action: "commit-artifact" as const, fence, artifact: { artifactId: video.id, role: "source_video" as const, contentType: video.contentType,
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: bindings.video } }
+      : { action: "fail" as const, fence, failureCode: mode, retryable: false };
     const receipt = f.verified();
-    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe("committed");
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe(mode === "sealed_video" ? "committed" : "failed");
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "cancelled", attemptCount: 1, leaseOwner: null, nextPollAt: null });
     expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "source_audio_video_mismatch" });
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 120 });
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
+    const refund = await db.sourceRefundNeed.findUniqueOrThrow({ where: { projectId_sourceRevision: { projectId: f.project.id, sourceRevision: 1 } } });
+    expect(refund.videoBindingHash === null).toBe(mode !== "sealed_video");
     expect(await db.executionDispatch.count({ where: { subjectId: run.id, wakeKind: "source_cancelled" } })).toBe(1);
-    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe("committed");
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe(mode === "sealed_video" ? "committed" : "failed");
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
     expect(await f.workflow.recordProviderAcceptance(begun.intent.reference, { requestId: "late-mismatch", transcriptionId: "late-mismatch", nextPollAt: new Date() })).toMatchObject({ kind: "stale", reason: "source_superseded" });
     expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "failed", errorCode: "source_audio_video_mismatch", providerResultDeadlineAt: null });

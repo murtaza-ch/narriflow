@@ -25,7 +25,7 @@ describe("public OpenAPI document", () => {
     expect(document).toEqual(publicOpenApiDocument(origin));
     expect(normalize(document)).toEqual(normalize(publicV1Document));
     expect(publicV1Document.servers).toEqual([{ url: PUBLIC_API_ORIGIN }]);
-    expect(Object.values(document.paths).flatMap((path) => Object.keys(path as object))).toHaveLength(31);
+    expect(Object.values(document.paths).flatMap((path) => Object.keys(path as object))).toHaveLength(32);
   });
 
   test("docs load only the generated document, without backend runtime imports", async () => {

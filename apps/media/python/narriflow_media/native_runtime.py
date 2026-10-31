@@ -121,14 +121,21 @@ def _source_headers(data: bytes):
 
 
 async def download_assigned_source(session: ExecutorSession, package: WorkPackage, work: Path, *,
-                                   source_name: str, maximum_bytes: int, curl_executable: str='curl') -> Path:
+                                   source_name: str, maximum_bytes: int, curl_executable: str='curl',
+                                   range_end: int|None=None) -> Path:
     """Only a source in the verified work package can become a curl request."""
     package.assert_session(session)
     sources=[source for source in package.sources if source['name']==source_name]
-    if (len(sources)!=1 or not _integer(maximum_bytes,MAX_BYTES) or
-            not _integer(sources[0]['byteLength'],maximum_bytes) or not _digest(sources[0].get('sha256'))):
+    if len(sources)!=1 or not _integer(maximum_bytes,MAX_BYTES) or not _integer(sources[0]['byteLength'],MAX_BYTES):
         raise NativeOperationFailure('native_source_invalid')
     frozen=sources[0];source=dict(frozen);directory=_work(work)
+    if range_end is not None:
+        if not _integer(range_end,min(16*1024*1024,maximum_bytes,frozen['byteLength'])):
+            raise NativeOperationFailure('native_source_invalid')
+    elif frozen['byteLength']>maximum_bytes or not _digest(frozen.get('sha256')):
+        raise NativeOperationFailure('native_source_invalid')
+    expected_bytes=frozen['byteLength'] if range_end is None else range_end
+    expected_status=b'200' if range_end is None else b'206'
     destination=directory/'source.bin';header_path=directory/'source.headers'
     if destination.exists() or header_path.exists():
         raise NativeOperationFailure('native_scratch_invalid')
@@ -138,23 +145,29 @@ async def download_assigned_source(session: ExecutorSession, package: WorkPackag
         if headers.get('if-match',frozen['etag'])!=frozen['etag']:
             raise NativeOperationFailure('native_source_invalid')
         headers['if-match']=frozen['etag'];headers['accept-encoding']='identity'
+        if range_end is not None:
+            expected_range=f'bytes=0-{range_end-1}'
+            if headers.get('range',expected_range)!=expected_range:raise NativeOperationFailure('native_source_invalid')
+            headers['range']=expected_range
+        elif 'range' in headers:
+            raise NativeOperationFailure('native_source_invalid')
         remaining=session.remaining_seconds
         options={'url':source['url'],'request':'GET','output':str(destination),'dump-header':str(header_path),
             'proto':'=https','proto-redir':'=https','max-redirs':'0','connect-timeout':'10','max-time':f'{remaining:.3f}',
-            'speed-time':'30','speed-limit':'1','max-filesize':str(frozen['byteLength']),'write-out':'%{http_code}'}
+            'speed-time':'30','speed-limit':'1','max-filesize':str(expected_bytes),'write-out':'%{http_code}'}
         config='silent\nshow-error\nfail\ngloboff\n'+''.join(name+' = '+_curl_quote(value)+'\n' for name,value in options.items())
         config+=''.join('header = '+_curl_quote(name+': '+value)+'\n' for name,value in headers.items())
         # --disable is first, so neither ~/.curlrc nor environment proxies can
         # alter the frozen request. Work details remain off the process argv.
         result=await _execute(session,[curl_executable,'--disable','--config','-'],config.encode(),remaining,maximum_bytes)
         status=result.stdout.strip()
-        if result.returncode==0 and status==b'200':
+        if result.returncode==0 and status==expected_status:
             with header_path.open('rb') as header_file:
                 response=_source_headers(header_file.read(65537))
-            if response.get('etag')!=frozen['etag'] or response.get('content-length')!=str(frozen['byteLength']):
+            if response.get('etag')!=frozen['etag'] or response.get('content-length')!=str(expected_bytes) or range_end is not None and response.get('content-range')!=f'bytes 0-{range_end-1}/{frozen["byteLength"]}':
                 raise NativeOperationFailure('native_source_changed')
             size,sha=await asyncio.to_thread(_file_facts,destination,session,maximum_bytes)
-            if size!=frozen['byteLength'] or sha!=frozen['sha256']:
+            if size!=expected_bytes or (range_end is None or expected_bytes==frozen['byteLength']) and 'sha256' in frozen and sha!=frozen['sha256']:
                 raise NativeOperationFailure('native_source_changed')
             destination.chmod(0o400)
             return destination
@@ -164,7 +177,7 @@ async def download_assigned_source(session: ExecutorSession, package: WorkPackag
             raise NativeOperationFailure('native_source_unavailable',True)
         destination.unlink(missing_ok=True);header_path.unlink(missing_ok=True)
         fresh=(await asyncio.to_thread(session.transfer,'source-read',sourceId=source_name)).disposition
-        if fresh['object']!={name:frozen[name] for name in ('storageKey','etag','byteLength','sha256')}:
+        if fresh['object']!={name:frozen[name] for name in ('storageKey','etag','byteLength','sha256') if name in frozen}:
             raise NativeOperationFailure('native_source_changed')
         source={**frozen,**fresh['grant']}
     raise NativeOperationFailure('native_source_unavailable',True)

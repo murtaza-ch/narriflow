@@ -521,7 +521,7 @@ export { finalizeScribeTranscript } from "./scribe-transcript-runtime";
 export { scribeRawStorageKey, type FinalizeScribeTranscriptInput } from "./scribe-transcript";
 export { scribeCallbackFailure, scribeErrorDetail, scribeHttpFailure, type ScribeCallStage } from "./scribe-errors";
 export { purgeOldWebhookDeliveryLogs } from "./webhook-log.service";
-export * from "./url-guard";
+export * from "./url-policy";
 export * from "./rate-limit";
 export * from "./workspace.service";
 export * from "./workspace-library.service";
@@ -624,10 +624,10 @@ export { assertInlineFinishing, integrationKeyUuid, integrationUploadSessionKey,
 export { recipeService, RecipeService, RecipeError, type RecipeFailureCode, type RecipeUse, type ResolvedRecipe } from "./recipe.service";
 export { appendWorkspaceEvent, deleteExpiredWorkspaceEvents, listWorkspaceEvents, type WorkspaceEventQuery } from "./workspace-event";
 export { purgeExpiredWorkspaceEvents } from "./workspace-event-runtime";
-export { assertCompletionCallbackUrl, buildCallbackPayload, CALLBACK_RETRY_DELAYS_MS, callbackEventId, CallbackSecretRequiredError, createCompletionCallbackProcessor, generateCallbackSigningSecret, signCallback, type CallbackPayload, type CompletionCallbackProcessorDependencies } from "./completion-callback";
-export { callbackSigningSecrets, getCompletionCallbackProcessor } from "./completion-callback-runtime";
-export { requireWebhookTypeScopes, webhookView, type WebhookCredential, type WebhookDisabledNotice, type WebhookNoticeResult } from "./webhook-subscription";
-export { getWebhookDeliveryProcessor, webhookSubscriptions } from "./webhook-subscription-runtime";
+export { assertCompletionCallbackUrl, buildCallbackPayload, CALLBACK_RETRY_DELAYS_MS, callbackEventId, CallbackSecretRequiredError, generateCallbackSigningSecret, signCallback, type CallbackPayload } from "./completion-callback";
+export { callbackSigningSecrets } from "./completion-callback-runtime";
+export { createWebhookDisabledNotifier, requireWebhookTypeScopes, webhookView, type WebhookCredential, type WebhookDisabledNotice, type WebhookNoticeResult } from "./webhook-subscription";
+export { webhookSubscriptions, notifyDisabledWebhook } from "./webhook-subscription-runtime";
 export { StandingGrantError, normalizeReviewerEmails } from "./standing-grant";
 export { acceptProposalUnderGrant, getStandingGrantMaintenance, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
 
@@ -688,6 +688,10 @@ export * from "./outbound-probe-runtime";
 export * from "./outbound-probe-execution";
 
 export * from "./ingest-acquisition";
+
+export * from "./ingest-source-definition";
 export * from "./outbound-delivery";
 export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";
+
+export * from "./outbound-delivery-runtime";

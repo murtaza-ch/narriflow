@@ -168,8 +168,8 @@ export function enableWebhookMutation(api: ApiRuntime, scope: WorkspaceScope) {
 }
 
 /**
- * Sends one signed `webhook.test` event; the result says whether the endpoint answered 2xx.
- * A retry after a lost response (same webhook, same intent) replays the recorded answer; a
+ * Queues one signed `webhook.test` event; its durable ID is observed by webhookTestQuery.
+ * A retry after a lost response (same webhook, same intent) replays the recorded admission; a
  * new press is a new intent and meets the per-webhook throttle.
  */
 export function testWebhookMutation(api: ApiRuntime, scope: WorkspaceScope) {

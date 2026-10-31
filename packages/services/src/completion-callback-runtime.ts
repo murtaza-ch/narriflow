@@ -1,14 +1,11 @@
-import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   createCallbackSigningSecrets,
-  createCompletionCallbackProcessor,
   prepareCallbackRegistration,
   registerUploadCallback,
   type CallbackRegistration,
 } from "./completion-callback";
-import { operationStatusService } from "./operation-status-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 
 function requiredPrisma() {
@@ -37,16 +34,6 @@ export function prepareUploadCallback(mutation: Pick<IntegrationMutation, "callb
 /** Signing secrets: one current secret per Workspace. Rotation keeps the
  * previous one signing for the overlap window and retires any older one. */
 
-
-/** The worker's production processor, reading Operation Status through the
- * trusted service read. */
-export function getCompletionCallbackProcessor() {
-  return createCompletionCallbackProcessor({
-    prisma: requiredPrisma(),
-    readTrusted: (scope, operation) => operationStatusService.readTrusted(scope, operation),
-    leaseOwner: `callbacks:${randomUUID()}`,
-  });
-}
 
 /** Production signing-secret operations on the shared database. Rotation happens only inside the receipt-backed developer command (`issue`), never on its own. */
 export const callbackSigningSecrets = {

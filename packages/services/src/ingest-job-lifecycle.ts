@@ -454,6 +454,21 @@ export class IngestJobLifecycle {
 
   async failExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
     const { claim, job, now } = await this.ownedExecution(tx, ref, context);
+    if (["source_audio_video_mismatch", "source_identity_mismatch"].includes(failure.failureCode)) {
+      const code = "source_audio_video_mismatch";
+      const cancelled = await this.deps.workflow.cancelSourceExecutionsWithinTransaction(tx, { projectId: ref.projectId,
+        deploymentEpoch: ref.deploymentEpoch, errorCode: code, now });
+      const reservation = await tx.processingUsageReservation.findUnique({ where: { projectId: ref.projectId }, select: { state: true } });
+      const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
+      if (reservation?.state === "settled" && audio) await tx.sourceRefundNeed.upsert({
+        where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } },
+        create: { projectId: ref.projectId, sourceRevision: ref.sourceRevision, sourceAudioId: audio.id, sourceAudioBindingHash: audio.bindingHash, videoBindingHash: null }, update: {},
+      });
+      const decision = await this.settleFailure(tx, job, this.owned(claim, now), code, code, `${claim.claimId}:source_mismatch`, now, "permanent");
+      if (!decision) throw new IngestJobClaimLost(ref.id);
+      const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
+      return { dispatchIds: [...cancelled.dispatchIds, ...wakes.dispatchIds] };
+    }
     const decision = await this.settleFailure(tx, job, this.owned(claim, now), failure.failureCode, failure.failureCode,
       `${claim.claimId}:failed`, now, failure.retryable ? undefined : "permanent");
     if (!decision) throw new IngestJobClaimLost(ref.id);

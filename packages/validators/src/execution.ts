@@ -234,6 +234,7 @@ export const ingestDirectReadSchema=z.strictObject({
  authorization:z.string().min(1).max(4096).regex(/^Bearer [A-Za-z0-9._~+/-]+=*$/).nullable(),
 }).superRefine((value,context)=>{
  if((["drive","zoom"].includes(value.provider))!==(value.authorization!==null))context.addIssue({code:"custom",message:"Invalid provider read credential"});
+ if(value.provider==="zoom"&&new URL(value.url).protocol!=="https:")context.addIssue({code:"custom",message:"Invalid Zoom media endpoint"});
  if(value.provider==="drive"&&!/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/[A-Za-z0-9_-]{10,200}\?alt=media&supportsAllDrives=true$/.test(value.url))context.addIssue({code:"custom",message:"Invalid Drive media endpoint"});
 });
 export type IngestDirectRead=z.infer<typeof ingestDirectReadSchema>;
@@ -246,6 +247,20 @@ export const ingestFetchSourceCommandSchema = z.strictObject({
   existingSourceAudio: sourceAudioBindingSchema.nullable(), languageProbe: sourceLanguageProbeInputSchema.nullable(),
 });
 export type IngestFetchSourceCommand = z.infer<typeof ingestFetchSourceCommandSchema>;
+
+export const ingestUploadReadSchema=z.strictObject({
+ storageKey:executionObjectIdentitySchema.shape.key,etag:executionObjectIdentitySchema.shape.etag,byteLength:executionObjectIdentitySchema.shape.byteLength,
+ contentType:z.string().min(1).max(128).regex(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/),
+});
+export type IngestUploadRead=z.infer<typeof ingestUploadReadSchema>;
+const ingestFileSourceBase=ingestFetchSourceCommandSchema.omit({kind:true,mediaId:true}).extend({mediaIdentity:executionMediaIdentitySchema});
+export const ingestDirectSourceCommandSchema=ingestFileSourceBase.extend({kind:z.enum(["direct_source","extractor_source"]),source:ingestDirectReadSchema})
+ .refine(value=>value.mediaIdentity.provider===value.source.provider);
+export const ingestPinSourceCommandSchema=ingestFileSourceBase.extend({kind:z.literal("upload_source"),source:ingestUploadReadSchema})
+ .refine(value=>value.mediaIdentity.provider==="upload");
+export const ingestSourceRefusalCommandSchema=z.strictObject({kind:z.literal("source_refusal"),failureCode:z.enum(["drive_token_expired","drive_file_unavailable","zoom_recording_unavailable","zoom_connection_unavailable","worker_invalid_payload","source_download_failed","link_unsupported_source"]),retryable:z.boolean()});
+export const ingestNativeSourceCommandSchema=z.union([ingestFetchSourceCommandSchema,ingestDirectSourceCommandSchema,ingestPinSourceCommandSchema,ingestSourceRefusalCommandSchema]);
+export type IngestNativeSourceCommand=z.infer<typeof ingestNativeSourceCommandSchema>;
 
 /** Complete probe facts plus the extraction identity, before any full-video publication. */
 export const sourceVideoBindingSchema = z.strictObject({
@@ -269,7 +284,7 @@ export const executionInvocationSchema = z.strictObject({
 });
 export const executionMediaFunctionSchema = z.enum([
   "fetch_source", "pin_source", "prepare_clip", "render_group", "probe_extract", "thumbnail",
-  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation",
+  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation", "generated_image",
 ]);
 const bridgeInvocation = executionInvocationSchema.shape;
 export const modalBridgeCommandSchema = z.discriminatedUnion("action", [

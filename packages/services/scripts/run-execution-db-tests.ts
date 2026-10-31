@@ -22,7 +22,7 @@ const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
   "execution-ledger", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution",
-  "outbound-probe", "modal-dispatch", "progress-outbox",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "modal-dispatch", "progress-outbox",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
 

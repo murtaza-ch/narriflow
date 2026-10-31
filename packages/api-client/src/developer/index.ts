@@ -10,4 +10,4 @@ export {
   rotateCallbackSigningSecretMutation,
   testWebhookMutation,
 } from "./mutations";
-export { developerSettingsQuery, integrationsOverviewQuery, invalidateDeveloper } from "./queries";
+export { developerSettingsQuery, integrationsOverviewQuery, invalidateDeveloper, webhookTestQuery } from "./queries";

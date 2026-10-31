@@ -1,18 +1,12 @@
 import { readServiceEnvironment } from "./runtime-environment";
-import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
-import { encodeOperationId, type OperationKind, type OperationStatus, type OperationStatusReader, type TrustedOperationStatus } from "./operation-status";
+import { encodeOperationId, type OperationKind, type OperationStatus, type TrustedOperationStatus } from "./operation-status";
 import { OperationIdempotencyConflictError, type IntegrationMutation, type ReceiptCallback } from "./operation-receipt";
 import { uuidV5 } from "./uuid-v5";
-import {
-  assertPublicHttpUrl,
-  assertPublicHttpUrlResolved,
-  guardedFetch,
-  type HostResolver,
-  type PinnedTransport,
-} from "./url-guard";
+import { assertPublicHttpUrl } from "./url-policy";
 
 /**
  * Completion Callback: a signed, at-least-once notification delivered to a
@@ -44,8 +38,8 @@ function invalidUrl(reason: string): never {
   });
 }
 
-/** Acceptance check: HTTPS on the default port, public host, public DNS. */
-export async function assertCompletionCallbackUrl(raw: string, resolver?: HostResolver): Promise<URL> {
+/** Structural acceptance only. Each native execution resolves and pins DNS anew. */
+export async function assertCompletionCallbackUrl(raw: string): Promise<URL> {
   if (raw.length > MAX_CALLBACK_URL_LENGTH) invalidUrl("too_long");
   let url: URL;
   try {
@@ -55,11 +49,6 @@ export async function assertCompletionCallbackUrl(raw: string, resolver?: HostRe
   }
   if (url.protocol !== "https:") invalidUrl("not_https");
   if (url.port !== "") invalidUrl("not_port_443");
-  try {
-    await assertPublicHttpUrlResolved(url, resolver);
-  } catch {
-    invalidUrl("not_public");
-  }
   return url;
 }
 
@@ -184,44 +173,6 @@ export function classifyDelivery(status: number | null): DeliveryDisposition {
   if (status !== null && status >= 200 && status < 300) return "delivered";
   if (status === 410) return "cancelled";
   return "retry";
-}
-
-/** One signed POST through the pinned guard: 10 s, no redirects, and the
- * response body is never read. A fresh timestamp signs each attempt. */
-export async function deliverCallback(input: {
-  url: string;
-  /** Its `id` is the Standard Webhooks message ID. Webhook Subscriptions send
-   * their own event payloads through this same delivery. */
-  payload: { id: string };
-  secrets: readonly string[];
-  now: Date;
-  transport?: PinnedTransport;
-  resolver?: HostResolver;
-}): Promise<{ status: number | null; durationMs: number }> {
-  const started = performance.now();
-  const body = JSON.stringify(input.payload);
-  const timestamp = Math.floor(input.now.getTime() / 1000);
-  try {
-    const response = await guardedFetch(input.url, {
-      method: "POST",
-      body,
-      timeoutMs: CALLBACK_DELIVERY_TIMEOUT_MS,
-      maxRedirects: 0,
-      transport: input.transport,
-      resolver: input.resolver,
-      headers: {
-        "content-type": "application/json",
-        "user-agent": "Narriflow-Callbacks/1",
-        "webhook-id": input.payload.id,
-        "webhook-timestamp": String(timestamp),
-        "webhook-signature": signCallback({ eventId: input.payload.id, timestamp, body, secrets: input.secrets }),
-      },
-    });
-    await response.body?.cancel().catch(() => undefined);
-    return { status: response.status, durationMs: Math.round(performance.now() - started) };
-  } catch {
-    return { status: null, durationMs: Math.round(performance.now() - started) };
-  }
 }
 
 const CALLBACK_EVENT_NAMESPACE = "3b9c5e21-7d4f-5a86-b1c2-9e0f7a6d5c4b";
@@ -360,139 +311,6 @@ export function createCallbackSigningSecrets(dependencies: { prisma: PrismaClien
       return rows.map((row) => cipher().open(row.encryptedSecret));
     },
   };
-}
-
-export interface CompletionCallbackProcessorDependencies {
-  prisma: PrismaClient;
-  readTrusted: OperationStatusReader["readTrusted"];
-  leaseOwner: string;
-  now?: () => Date;
-  random?: () => number;
-  cipher?: CallbackCipher;
-  transport?: PinnedTransport;
-  resolver?: HostResolver;
-  log?: (entry: Record<string, unknown>) => void;
-}
-
-/** The worker side: observe waiting callbacks through the trusted Operation
- * Status read, freeze terminal events, and deliver pending ones. Every update
- * is fenced by the lease owner and state, so a worker that lost its lease
- * can't overwrite a newer outcome. */
-export function createCompletionCallbackProcessor(dependencies: CompletionCallbackProcessorDependencies) {
-  const { prisma, leaseOwner } = dependencies;
-  const now = dependencies.now ?? (() => new Date());
-  const random = dependencies.random ?? Math.random;
-  const cipher = dependencies.cipher ?? createCallbackCipher();
-  const secrets = createCallbackSigningSecrets({ prisma, cipher, now });
-  const log = dependencies.log ?? ((entry) => console.warn(JSON.stringify(entry)));
-
-  async function* claim(state: "waiting" | "pending", batchSize: number) {
-    const at = now();
-    const due = state === "waiting" ? { nextObservationAt: { lte: at } } : { nextAttemptAt: { lte: at } };
-    const free = { OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: at } }] };
-    const candidates = await prisma.completionCallback.findMany({
-      where: { state, ...due, ...free },
-      orderBy: state === "waiting" ? { nextObservationAt: "asc" } : { nextAttemptAt: "asc" },
-      take: batchSize,
-      select: { id: true },
-    });
-    for (const candidate of candidates) {
-      // The batch is only a candidate list. Start each lease immediately
-      // before work, with an identity unique to this execution.
-      const claimedAt = now();
-      const claimOwner = `${leaseOwner}:${randomUUID()}`;
-      const won = await prisma.completionCallback.updateMany({
-        where: { id: candidate.id, state,
-          ...(state === "waiting" ? { nextObservationAt: { lte: claimedAt } } : { nextAttemptAt: { lte: claimedAt } }),
-          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: claimedAt } }],
-        },
-        data: { leaseOwner: claimOwner, leaseExpiresAt: new Date(claimedAt.getTime() + CALLBACK_LEASE_MS) },
-      });
-      if (won.count === 1) {
-        const row = await prisma.completionCallback.findFirst({ where: { id: candidate.id, state, leaseOwner: claimOwner } });
-        if (row) yield row;
-      }
-    }
-  }
-
-  const fenced = (row: { id: string; leaseOwner: string | null }, state: "waiting" | "pending") => ({
-    id: row.id, state, leaseOwner: row.leaseOwner, leaseExpiresAt: { gt: now() },
-  });
-  const release = { leaseOwner: null, leaseExpiresAt: null };
-
-  async function observe(batchSize = 25) {
-    let frozen = 0;
-    for await (const row of claim("waiting", batchSize)) {
-      const status = await dependencies.readTrusted({ workspaceId: row.workspaceId }, { kind: row.operationKind as OperationKind, id: row.operationId });
-      const at = now();
-      const payload = buildCallbackPayload({ eventId: row.eventId, workspaceId: row.workspaceId, createdAt: at, status });
-      if (!payload) {
-        await prisma.completionCallback.updateMany({
-          where: fenced(row, "waiting"),
-          data: { ...release, observationCount: row.observationCount + 1, nextObservationAt: new Date(at.getTime() + nextObservationDelayMs(row.observationCount)) },
-        });
-        continue;
-      }
-      const updated = await prisma.completionCallback.updateMany({
-        where: fenced(row, "waiting"),
-        data: { ...release, state: "pending", payload: payload as unknown as Prisma.InputJsonValue, nextAttemptAt: at },
-      });
-      frozen += updated.count;
-    }
-    return frozen;
-  }
-
-  async function deliver(batchSize = 25) {
-    let settled = 0;
-    for await (const row of claim("pending", batchSize)) {
-      const payload = row.payload as unknown as CallbackPayload;
-      const signing = await secrets.signingSecrets(row.workspaceId);
-      const renewedAt = now();
-      const renewed = await prisma.completionCallback.updateMany({
-        where: fenced(row, "pending"),
-        data: { leaseExpiresAt: new Date(renewedAt.getTime() + CALLBACK_LEASE_MS) },
-      });
-      if (renewed.count === 0) continue;
-      const attempt = row.attempts + 1;
-      const result = signing.length
-        ? await deliverCallback({ url: cipher.open(row.encryptedUrl), payload, secrets: signing, now: now(), transport: dependencies.transport, resolver: dependencies.resolver })
-        : { status: null, durationMs: 0 };
-      const disposition = classifyDelivery(result.status);
-      const at = now();
-      const delay = disposition === "retry" ? nextAttemptDelayMs(attempt, random) : null;
-      const state = disposition === "delivered" ? "delivered" : disposition === "cancelled" ? "cancelled" : delay === null ? "failed" : "pending";
-      const updated = await prisma.completionCallback.updateMany({
-        where: fenced(row, "pending"),
-        data: {
-          ...release,
-          state,
-          attempts: attempt,
-          lastResponseStatus: result.status,
-          nextAttemptAt: state === "pending" ? new Date(at.getTime() + delay!) : null,
-          ...(state === "delivered" ? { deliveredAt: at } : {}),
-        },
-      });
-      log({
-        level: disposition === "delivered" ? "info" : "warn",
-        message: "completion_callback_attempt",
-        workspaceId: row.workspaceId,
-        operationKind: row.operationKind,
-        operationId: row.operationId,
-        eventId: row.eventId,
-        host: row.urlHost,
-        attempt,
-        status: result.status,
-        durationMs: result.durationMs,
-        disposition: state,
-        ...(signing.length ? {} : { reason: "signing_secret_missing" }),
-        ...(updated.count === 0 ? { leaseLost: true } : {}),
-      });
-      if (state !== "pending") settled += updated.count;
-    }
-    return settled;
-  }
-
-  return { observe, deliver };
 }
 
 /** Resets an operation's delivered or failed callbacks to pending with a fresh

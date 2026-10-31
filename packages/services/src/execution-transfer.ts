@@ -29,7 +29,7 @@ interface Options {
 
 const contentTypes: Readonly<Record<string, readonly string[]>> = {
   source_audio: ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg", "audio/aac"],
-  source_video: ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "audio/mpeg", "audio/mp4", "audio/wav", "audio/aac"],
+  source_video: ["application/octet-stream", "audio/ogg", "audio/flac", "audio/x-wav", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "audio/mpeg", "audio/mp4", "audio/wav", "audio/aac"],
   render_variant: ["video/mp4"], layout_evidence: ["application/json"], probe: ["application/json", "audio/wav"],
   thumbnail: ["image/png", "image/jpeg", "image/webp"], export_bundle: ["application/zip"], dub_mix: ["video/mp4", "audio/wav", "audio/mpeg", "audio/mp4"], selection_window: ["application/json"],
   validated_font: ["font/ttf", "font/otf", "font/woff2", "application/font-sfnt", "application/x-font-ttf", "application/x-font-opentype", "application/octet-stream"],

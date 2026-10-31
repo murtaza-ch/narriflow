@@ -34,7 +34,7 @@ export interface DeveloperRouteDeps {
   workspaceService: Pick<typeof workspaceService, "listApiKeys" | "revokeApiKey">;
   developerCommands: Pick<DeveloperCommands, "createApiKey" | "rotateCallbackSigningSecret" | "createWebhook" | "testWebhook">;
   callbackSigningSecrets: Pick<typeof callbackSigningSecrets, "status">;
-  webhookSubscriptions: Pick<typeof webhookSubscriptions, "list" | "delete" | "enable">;
+  webhookSubscriptions: Pick<typeof webhookSubscriptions, "list" | "delete" | "enable" | "testStatus">;
   socialOAuthService: Pick<typeof socialOAuthService, "listAccounts">;
 }
 
@@ -167,14 +167,17 @@ export function createDeveloperRoutes(deps: DeveloperRouteDeps) {
       return c.json(body, 200);
     })
 
-    // Sends one signed `webhook.test` event now. The endpoint's answer is recorded under the caller's key, so a
-    // retry after a lost response replays it; the service still allows one new test per webhook every few seconds.
+    // Confirmation of queue registration precedes acceptance. The receipt holds its durable ID.
     .post("/workspace/webhooks/:webhookId/test", requireIdempotencyKey(), uuidParams("webhookId"), async (c) => {
       requireApiPlan(c);
       const tested = await developerCommands.testWebhook(getActor(c), c.req.valid("param").webhookId, mutationFor(c));
       if (tested.replayed) c.header("Idempotent-Replayed", "true");
       const body: WebhookTestResult = tested.result;
-      return c.json(body, 200);
+      return c.json(body, 202);
+    })
+    .get("/workspace/webhooks/:webhookId/tests/:deliveryId", uuidParams("webhookId", "deliveryId"), async c => {
+      requireApiPlan(c);c.header("Cache-Control", "no-store");
+      const ids=c.req.valid("param");return c.json(await webhookSubscriptions.testStatus(getActor(c),ids.webhookId,ids.deliveryId),200);
     });
 }
 

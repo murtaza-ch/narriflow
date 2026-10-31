@@ -11,6 +11,8 @@ import { deliverExecutionDispatches } from "@narriflow/services/execution-dispat
 import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runtime";
 import { createOutboundProbeExecution } from "@narriflow/services/outbound-probe-execution";
 import { createIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
+import { createOutboundDeliveryExecution } from "@narriflow/services/outbound-delivery-execution";
+import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
@@ -30,7 +32,7 @@ export function createExecutionDependencies(environment: Readonly<Record<string,
  * command step's fresh database scope. No clients survive this invocation. */
 export function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
   if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
-  if (!["native_validation", "thumbnail_frame", "outbound_probe", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
   const database = getPrismaClient();
   if (!database) throw new ExecutorControlError("epoch_unavailable");
   const environment = readServiceEnvironment();
@@ -38,7 +40,8 @@ export function createWorkerExecutor(reference: ExecutionDispatchReference, bind
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
   const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
-  if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required("MEDIA_FETCH_TOOLCHAIN_FINGERPRINT") });
+  if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required(reference.kind === "local_fetch" ? "MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT" : "MEDIA_FETCH_TOOLCHAIN_FINGERPRINT") });
+  if (reference.subject.kind === "outbound_delivery") return createOutboundDeliveryExecution({ ...common, domain: getOutboundDeliveryService() });
   if (reference.subject.kind === "outbound_probe") return createOutboundProbeExecution({ ...common, domain: getOutboundProbeService() });
   const domain = reference.subject.kind === "thumbnail_frame" ? { subjectKind: "thumbnail_frame" as const, domain: getThumbnailFrameExecution() }
     : { subjectKind: "native_validation" as const, domain: getNativeValidationService() };

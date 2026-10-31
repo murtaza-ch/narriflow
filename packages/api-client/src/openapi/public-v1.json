@@ -3655,6 +3655,7 @@
               "consecutive_failures",
               "cursor_expired",
               "endpoint_gone",
+              "delivery_attempts_exhausted",
               null
             ]
           },
@@ -3790,25 +3791,38 @@
             "format": "uuid",
             "description": "The webhook-id of the webhook.test event"
           },
-          "delivered": {
-            "type": "boolean",
-            "description": "True when the endpoint answered 2xx"
+          "deliveryId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The durable test delivery ID"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "delivered",
+              "unconfirmed"
+            ]
           },
           "status": {
             "type": [
               "integer",
               "null"
             ],
-            "description": "The endpoint's HTTP status, or null when it didn't answer"
+            "description": "The confirmed endpoint HTTP status, or null when no answer was confirmed"
           },
           "durationMs": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           }
         },
         "required": [
           "eventId",
-          "delivered",
+          "deliveryId",
+          "state",
           "status",
           "durationMs"
         ],
@@ -7770,7 +7784,7 @@
         "tags": [
           "Webhooks"
         ],
-        "description": "Sends one signed webhook.test event to the endpoint now and reports its answer. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
+        "description": "Queues one signed webhook.test event and returns its durable delivery ID. Read GET /webhooks/{id}/tests/{deliveryId} for the confirmed result. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
         "parameters": [
           {
             "schema": {
@@ -7782,11 +7796,157 @@
             "description": "Resource ID",
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict."
+            },
+            "required": true,
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The queued test delivery",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Plan or billing refusal. `plan_feature_required` and `plan_limit_reached` name the feature or limit, the current tier, and the required tier in `details`; `credits_exhausted` reports the month's credits; `integration_access_unavailable` means the Workspace isn't active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope, role, or Workspace boundary refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, including an idempotency key reused with different input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited; see Retry-After",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable; see Retry-After",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/tests/{deliveryId}": {
+      "get": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a test delivery",
+        "tags": [
+          "Webhooks"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "deliveryId",
+            "in": "path"
           }
         ],
         "responses": {
           "200": {
-            "description": "The endpoint's answer",
+            "description": "The test delivery state",
             "content": {
               "application/json": {
                 "schema": {

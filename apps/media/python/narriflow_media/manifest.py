@@ -19,12 +19,28 @@ class SourceManifestError(ValueError):
 
 
 @dataclass(frozen=True)
+class MediaSource:
+    provider: str
+    media_id: str
+
+    def __post_init__(self):
+        if (not isinstance(self.provider,str) or self.provider not in {'youtube','upload','rss','direct','drive','zoom'}
+                or not isinstance(self.media_id,str) or not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9._:-]{0,159}',self.media_id)
+                or self.provider=='youtube' and not re.fullmatch(r'[A-Za-z0-9_-]{11}',self.media_id)):
+            raise SourceManifestError('source_url_unsupported')
+
+
+@dataclass(frozen=True)
 class YouTubeSource:
     media_id: str
 
     def __post_init__(self):
         if not isinstance(self.media_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", self.media_id):
             raise SourceManifestError("source_url_unsupported")
+
+    @property
+    def provider(self) -> str:
+        return "youtube"
 
     @property
     def url(self) -> str:
@@ -76,7 +92,7 @@ def toolchain_versions() -> dict[str, str]:
 
 
 def build_audio_manifest(
-    *, source: YouTubeSource, source_revision: int, audio_format_id: str,
+    *, source: YouTubeSource | MediaSource, source_revision: int, audio_format_id: str,
     language: str | None, probe: Mapping[str, Any], byte_length: int,
     sha256: str, toolchain_fingerprint: str,
 ) -> dict[str, Any]:
@@ -111,7 +127,7 @@ def build_audio_manifest(
             raise ValueError()
         return {
             "sourceRevision": source_revision,
-            "mediaIdentity": {"provider": "youtube", "mediaId": source.media_id},
+            "mediaIdentity": {"provider": source.provider, "mediaId": source.media_id},
             "audioTrack": {"id": audio_format_id, "language": language, "codec": codec, "sampleRate": rate, "channels": channels},
             "byteLength": byte_length, "sha256": sha256,
             "durationSeconds": duration, "wholeSource": True, "audioStartTimeSec": start,

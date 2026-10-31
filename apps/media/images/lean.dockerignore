@@ -3,6 +3,11 @@ apps/*/*
 !apps/media/*
 !apps/media/**
 .git
+.scratch
+.agents
+.codex
+.github
+docs
 **/node_modules
 **/.next
 **/.turbo

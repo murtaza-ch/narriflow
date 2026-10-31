@@ -36,6 +36,7 @@ export const REST_ENDPOINT_COMMANDS = {
   "POST /webhooks": "manage_webhooks",
   "DELETE /webhooks/{id}": "manage_webhooks",
   "POST /webhooks/{id}/enable": "manage_webhooks",
+  "GET /webhooks/{id}/tests/{deliveryId}": "manage_webhooks",
   "POST /webhooks/{id}/test": "manage_webhooks",
   "POST /operations/{id}/callback/redeliver": "redeliver_callback",
 } as const satisfies Record<string, IntegrationCommand>;
