@@ -641,7 +641,8 @@
     "./performance-capture-contract": "./src/performance-capture-contract.ts",
     "./social-provider-http": "./src/social-provider-http.ts",
     "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts",
-    "./publication-maintenance": "./src/publication-maintenance.ts"
+    "./publication-maintenance": "./src/publication-maintenance.ts",
+    "./generation-finishing-producers": "./src/generation-finishing-producers.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

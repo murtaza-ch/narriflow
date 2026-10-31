@@ -434,8 +434,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
         keys.push(input.idempotencyKey);
         if (failures < 2) {
           failures += 1;
-          // The provider being down and an abandoned earlier attempt are both worth another try.
-          throw new AssistedSocialCopyError(failures === 1 ? "assisted_copy_provider_unavailable" : "assisted_copy_generation_in_progress");
+          throw new AssistedSocialCopyError("assisted_copy_provider_unavailable");
         }
         return { id: randomUUID() };
       },

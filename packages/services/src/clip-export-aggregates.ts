@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { queueExportFinished } from "./operation-finished";
 import { appendPublicationExportWake } from "./publication-producers";
+import { appendFinishingExportWake } from "./generation-finishing-producers";
 
 /** The caller flushes Workspace Events last, in the same transaction. */
 export async function syncClipExportAggregate(tx: Prisma.TransactionClient, exportId: string): Promise<ReturnType<typeof deriveClipExportAggregate>> {
@@ -22,7 +23,10 @@ export async function syncClipExportAggregate(tx: Prisma.TransactionClient, expo
     },
   });
   for (const variant of variants) await appendPublicationExportWake(tx,variant.id);
-  if (aggregate.terminal) await queueExportFinished(tx, exportId);
+  if (aggregate.terminal) {
+    await appendFinishingExportWake(tx,exportId);
+    await queueExportFinished(tx, exportId);
+  }
   return aggregate;
 }
 

@@ -290,11 +290,11 @@ const EXPORT_USABLE = ["ready", "partial_ready"];
 /** An export that failed or lost a format can be requeued instead of reported. */
 const EXPORT_RETRYABLE = ["failed", "partial_ready"];
 
-/** A copy failure worth another attempt: the provider or store was unavailable,
- * or an earlier attempt never settled. Anything else stays final for its key. */
+/** Known provider/store failure may consume another bounded attempt. A child
+ * still in progress retains its original request key and cannot be reposted. */
 function transientCopyFailure(error: unknown) {
   if (!(error instanceof ExpectedDomainFailureError)) return true;
-  return error.kind === "unavailable" || error.kind === "rate_limited" || error.code === "assisted_copy_generation_in_progress";
+  return error.kind === "unavailable" || error.kind === "rate_limited";
 }
 
 function log(message: string, context: Record<string, unknown>) {
@@ -321,7 +321,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     await tx.$queryRaw`SELECT id FROM "GenerationFinishing" WHERE id=${initial.id}::uuid FOR UPDATE`;
     const clock = await finishingNow(tx);
     const row = await tx.generationFinishing.findUniqueOrThrow({ where: { id: initial.id } });
-    const project = await tx.project.findFirst({ where: { id: row.projectId, ...accessibleProjectWhere(clock), workspace: { status: "active" } }, select: { id: true } });
+    const project = await tx.project.findFirst({ where: { id: row.projectId, workspaceId: row.workspaceId, ...accessibleProjectWhere(clock), workspace: { status: "active" } }, select: { id: true } });
     if (!project || row.deploymentEpoch !== reference.deploymentEpoch || row.generation !== reference.generation || finishingInputHash(row) !== reference.inputHash) return null;
     if (claimToken && (row.state !== "running" || row.claimToken !== claimToken || !row.leaseExpiresAt || row.leaseExpiresAt <= clock || !row.operationDeadlineAt || row.operationDeadlineAt <= clock)) return null;
     return { row, clock, record };

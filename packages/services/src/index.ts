@@ -536,6 +536,7 @@ export * from "./assisted-social-copy";
 export * from "./assisted-social-copy-runtime";
 export { getGenerationFinishing, getProjectFinishing } from "./generation-finishing-runtime";
 export type { ProjectFinishingView } from "./generation-finishing";
+export { appendFinishingExportWake, createFinishingProducers, isFinishingProducerReference } from "./generation-finishing-producers";
 export * from "./bulk-social-scheduling";
 export * from "./bulk-social-scheduling-runtime";
 export * from "./openai-assisted-copy-provider";

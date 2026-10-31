@@ -10,14 +10,15 @@
     "A concurrent duplicate waits for the existing claim without touching an unrelated finishing.",
     "An unconfirmed watchdog starts no action and consumes no attempt.",
     "Each command admits at most one picked child action before advancing to another exact reference.",
-    "An old exact receipt repairs the committed next wake after ACK loss without admitting another export."
+    "An old exact receipt repairs the committed next wake after ACK loss without admitting another export.",
+    "Exact terminal export facts create bounded dependent wake pages; 65 dependents finish across three pages.",
+    "A lost export-page acknowledgement replays its stored wake list.",
+    "An existing in-progress copy request is never replaced with a fresh paid request key."
   ],
   "remaining": [
     "Fence each child admission/publication transaction with the current finishing owner.",
     "Freeze original Autopilot grant intent and carry exact proposal revisions.",
-    "Wake export dependents from exact terminal outcomes and retain bounded timer recovery.",
     "Durable notification intent and registry/runtime integration.",
-    "Remove the old processDue poller and port its product-semantic tests.",
     "Complete restore transformations and deployed fault acceptance."
   ],
   "deployment": "No shared database migration or candidate deployment includes this foundation yet.",
@@ -25,5 +26,10 @@
     "exportWaitHours": 6,
     "totalOperationHours": 7,
     "replayExtendsNeither": true
+  },
+  "integrationTests": {
+    "tests": 51,
+    "assertions": 305,
+    "scope": "targeted driver, legacy semantic port, accepted source authority"
   }
 }
