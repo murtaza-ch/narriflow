@@ -1,4 +1,4 @@
-import { clipPreparationInputSchema, type ClipPreparationInput, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
+import { clipPreparationResultSchema, type ClipPreparationResult, clipPreparationInputSchema, type ClipPreparationInput, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
 
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 function canonical(value: unknown): string {
@@ -26,4 +26,16 @@ export async function decodeClipPreparationInput(bytes: Uint8Array, reference: C
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_INPUT_BYTES || bytes.byteLength !== reference.byteLength || await sha256(bytes) !== reference.sha256) throw new Error("clip_preparation_input_invalid");
   try { return (await encodeClipPreparationInput(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)))).input; }
   catch { throw new Error("clip_preparation_input_invalid"); }
+}
+
+export async function encodeClipPreparationResult(raw: ClipPreparationResult) {
+  const result = clipPreparationResultSchema.parse(raw);
+  const bytes = new TextEncoder().encode(canonical(result));
+  if (bytes.byteLength === 0 || bytes.byteLength > 1024 * 1024) throw new Error("clip_preparation_result_invalid");
+  return { bytes, byteLength: bytes.byteLength, sha256: await sha256(bytes), result };
+}
+export async function decodeClipPreparationResult(bytes: Uint8Array, reference: ClipPreparationObject): Promise<ClipPreparationResult> {
+  if (bytes.byteLength === 0 || bytes.byteLength > 1024 * 1024 || bytes.byteLength !== reference.byteLength || await sha256(bytes) !== reference.sha256) throw new Error("clip_preparation_result_invalid");
+  try { return (await encodeClipPreparationResult(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)))).result; }
+  catch { throw new Error("clip_preparation_result_invalid"); }
 }
