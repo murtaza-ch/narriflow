@@ -2775,6 +2775,7 @@ model SocialPost {
   @@index([standingGrantId])
   @@index([deploymentEpoch,standingGrantId,id])
   @@index([deploymentEpoch,id])
+  @@index([createdAt,id], map: "SocialPost_restore_cursor_idx")
 }
 
 model FrozenPublicationState {
@@ -3000,6 +3001,7 @@ model TrackedVideo {
   @@unique([workspaceId, platform, platformPostId])
   @@index([workspaceId, publishedAt])
   @@index([socialPostId])
+  @@index([socialPostId,id])
 }
 
 /// Performance Capture: one scheduled read of a Tracked Video's public counts.

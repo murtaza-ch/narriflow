@@ -739,3 +739,5 @@ export * from "./export-bundle-input";
 export * from "./export-bundle-expiry";
 
 export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";
+
+export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage } from "./publication-maintenance";
