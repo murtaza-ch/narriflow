@@ -143,6 +143,26 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual(len(children), 1)
         self.assert_pid_stopped(children[0])
 
+    def test_async_external_lease_loss_stops_the_native_child(self):
+        children, cancelled = [], threading.Event()
+        async def exercise():
+            loop, ready = asyncio.get_running_loop(), asyncio.Event()
+            def started(pid):
+                children.append(pid)
+                loop.call_soon_threadsafe(ready.set)
+            task = asyncio.create_task(run_owned_process_async(
+                [sys.executable, "-c", "import time;time.sleep(60)"], timeout_seconds=60,
+                kill_grace_seconds=0.1, on_start=started, cancel_event=cancelled,
+            ))
+            await asyncio.wait_for(ready.wait(), 2)
+            cancelled.set()
+            with self.assertRaises(MediaProcessError) as failure:
+                await task
+            self.assertEqual(failure.exception.code, "media_execution_cancelled")
+        asyncio.run(exercise())
+        self.assertEqual(len(children), 1)
+        self.assert_pid_stopped(children[0])
+
     def assert_pid_stopped(self, pid: int):
         until = time.monotonic() + 3
         while time.monotonic() < until:

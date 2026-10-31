@@ -9,6 +9,7 @@ import re
 import sys
 import time
 from typing import Callable
+from threading import Event
 from urllib.parse import urlsplit
 
 from .fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure
@@ -21,7 +22,8 @@ FORMAT_PREFERENCE = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvid
 
 class YtDlpSourceRuntime:
     def __init__(self, *, token_provider_url: str, on_process_start: Callable[[int], None],
-                 deadline_seconds: float = 45 * 60, bun_executable: str = "bun"):
+                 deadline_seconds: float = 45 * 60, bun_executable: str = "bun",
+                 cancel_event: Event | None = None):
         try:
             parsed = urlsplit(token_provider_url)
             if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or
@@ -40,6 +42,7 @@ class YtDlpSourceRuntime:
             raise SourceFetchFailure("source_runtime_invalid") from None
         self._token_url = token_provider_url.rstrip("/")
         self._start = on_process_start
+        self._cancel = cancel_event
         self._deadline = time.monotonic() + deadline_seconds
         self._bun = bun_executable
         self._probe = Path(__file__).resolve().parents[2] / "src/probe-cli.ts"
@@ -56,7 +59,12 @@ class YtDlpSourceRuntime:
         return remaining
 
     def _environment(self, session: BoundProxySession | None):
-        environment = dict(os.environ)
+        # The downloader and its third-party plugins need tool/cache locations,
+        # never the caller's control key or unrelated provider credentials.
+        environment = {name: os.environ[name] for name in (
+            "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP",
+            "DENO_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        ) if name in os.environ}
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
             environment[name] = ""
         environment.update(NO_PROXY="127.0.0.1,localhost,::1", no_proxy="127.0.0.1,localhost,::1",
@@ -80,6 +88,7 @@ class YtDlpSourceRuntime:
         result = await run_owned_process_async(
             [sys.executable, "-I", "-m", "yt_dlp", *self._arguments(session), *args],
             timeout_seconds=self._remaining(), env=self._environment(session), on_start=self._start,
+            cancel_event=self._cancel,
         )
         if result.returncode:
             diagnostic = result.stderr.lower()
@@ -148,6 +157,7 @@ class YtDlpSourceRuntime:
         result = await run_owned_process_async(
             [self._bun, str(self._probe)], input_bytes=json.dumps({"sourcePath": str(path.resolve())}).encode(),
             timeout_seconds=self._remaining(60), env=self._environment(None), on_start=self._start,
+            cancel_event=self._cancel,
         )
         try:
             if result.returncode:

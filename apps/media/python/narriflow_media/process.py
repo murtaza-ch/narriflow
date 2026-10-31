@@ -140,9 +140,10 @@ def run_owned_process(
 
 async def run_owned_process_async(argv: Sequence[str], *, input_bytes: bytes = b"", timeout_seconds: float,
                                   kill_grace_seconds: float = 5, env: Mapping[str, str] | None = None,
-                                  on_start: Callable[[int], None] | None = None) -> ProcessResult:
+                                  on_start: Callable[[int], None] | None = None,
+                                  cancel_event: Event | None = None) -> ProcessResult:
     """Cancellation is not complete until the native process group is reaped."""
-    cancelled = Event()
+    cancelled = cancel_event if cancel_event is not None else Event()
     task = asyncio.create_task(asyncio.to_thread(
         run_owned_process, argv, input_bytes=input_bytes, timeout_seconds=timeout_seconds,
         kill_grace_seconds=kill_grace_seconds, env=env, on_start=on_start, cancel_event=cancelled,
