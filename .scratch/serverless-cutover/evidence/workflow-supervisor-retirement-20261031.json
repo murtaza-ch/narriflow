@@ -2,7 +2,7 @@
   "date": "2026-10-31",
   "ticket": "23",
   "scope": "WorkflowRunLifecycle production poller and supervisor retirement",
-  "status": "workflow_render_group_quota_checkpoint_passed_other_fixture_ports_pending",
+  "status": "workflow_group_layout_quota_retirement_checkpoint_passed",
   "removed_production_paths": [
     "global claim(stage)",
     "global render rescue scan",
@@ -197,13 +197,22 @@
       "tests": 37,
       "assertions": 223,
       "failures": 0
+    },
+    "editor_persistence_pg": {
+      "tests": 36,
+      "assertions": 171,
+      "failures": 0
+    },
+    "native_layout_camera_fast": {
+      "tests": 38,
+      "assertions": 283,
+      "failures": 0
     }
   },
   "remaining": [
-    "LayoutEvidenceLifecycle obsolete background scanner/supervisor retirement and semantic mapping",
-    "actor-scope remaining current fixture ports",
-    "parent-owned FinishingTransition and Workspace event ports",
-    "full repository gate and retirement acceptance owned by parent"
+    "full current Workflow runner including actor-scoped read/admission semantics",
+    "parent-owned full repository and deployed retirement acceptance",
+    "media-owned unused standalone native diagnostic wrapper test ports"
   ],
   "render_retirement": {
     "production": [
@@ -271,5 +280,27 @@
       "manual retry races/rollback/frozen snapshot preservation through real old and new native executions"
     ],
     "old_process_timing_assertions": "Controlled host sleeps, parent-heartbeat timers, and global queue discovery are retired. Physical SIGKILL/renewal-loss behavior is covered by actual native subprocess gates; deployed HD timing/resource acceptance remains separate parent evidence."
+  },
+  "layout_retirement": {
+    "removed_production": [
+      "LayoutEvidenceLifecycle background preview scan, compare-and-set proxy publication, Automatic claim/lease/timer supervisor, completion/defer and transient legacy envelope reset",
+      "unused DB singleton runtime getter"
+    ],
+    "remaining_contract": "A pure DurableLayoutEvidenceReader supplies the immutable preparation observations to the renderer. Native validates frozen source/window/editor/engine fingerprints; no DB/background ownership exists in this interface.",
+    "temporary_native_type": "ClipPendingAutoLayoutAnalysis remains pure input typing for the standalone native diagnostic wrapper. Media agent is porting its two test consumers and removing that unused wrapper. It confers no execution or publication authority.",
+    "removed_old_mock_contract_tests": [
+      "renews throughout work longer than the original lease",
+      "renewal loss cancels active IO and cannot release a replacement owner",
+      "shutdown releases immediately when a handler ignores cancellation",
+      "targeted transient evidence reset is bounded and touches only failed infrastructure envelopes",
+      "a late evidence read is bound to the frozen editor revision and preview and returns stored evidence verbatim",
+      "background completion keeps the provenance that tells a render whose crops these are"
+    ],
+    "replacement_seams": [
+      "packages/services/src/clip-preparation.db.test.ts: real Generic lease/retry, exact source/editor/engine manifest, changed source revocation, late frozen export completion preserves current live Clip, publication rollback and ACK replay",
+      "packages/services/src/clip-editor-document-persistence.db.test.ts: public unknown-evidence read fails closed and never upgrades stored facts, canonical editor mutation/retirement transaction",
+      "apps/media/src/layout-evidence.test.ts and camera-cut-timing.test.ts: actual shared detector owner, source identity/window compatibility, typed unavailable center-crop behavior",
+      "apps/media/python/tests/test_control.py and test_process.py: actual child renewal loss, cancellation and SIGKILL ownership fences"
+    ]
   }
 }
