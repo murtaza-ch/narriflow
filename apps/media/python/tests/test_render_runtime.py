@@ -97,7 +97,9 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 return
             measured=await run_render_group(session,package,work,transport=Storage(),source_transport=Storage(),**({} if enforce_runtime else {'verify_runtime':verified_runtime}))
             self.assertEqual(len(starts),1)
+            self.assertEqual(measured['detectorExecutions'],0)
             commits=[fields['artifact'] for action,fields in calls if action=='commit-artifact']
+            measured={**measured,'starts':len(starts),'artifacts':[{'role':item['role'],'byteLength':item['byteLength'],'sha256':item['sha256']} for item in commits]}
             if source_mismatch:
                 self.assertEqual([item['role'] for item in commits],['render_outcome'])
                 self.assertEqual(set(uploads),{outputs[1]['artifactId']})
