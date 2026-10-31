@@ -10,6 +10,11 @@ import { Pool } from "pg";
 import { clipExportService } from "./clip-export.service";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
+import { startIngestTestExecution } from "./ingest-execution-test-support";
+import { ingestExecutionInputHash } from "./ingest-source-execution";
+import { appendExecutionDispatch } from "./execution-dispatch";
+import { createSourceVideoValidator } from "./source-readiness";
+import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { queueExportsFinishedByRun, queueFinishedGenerations, queueProjectExpiryFinished } from "./operation-finished";
 import { createOperationStatusReader, encodeOperationId } from "./operation-status";
 import { WorkflowFailure } from "./workflow-run-lifecycle";
@@ -450,27 +455,35 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   })));
 
   describe("intake before generation", () => {
-    let clock = Date.now();
+    const clock = Date.now();
     function ingest() {
-      return new IngestJobLifecycle({ prisma, workflow: workflow(), requireRetryActor: async () => {}, now: () => new Date(clock),
+      return new IngestJobLifecycle({ prisma, workflow: new WorkflowRunLifecycle({ prisma }), requireRetryActor: async () => {}, now: () => new Date(Math.max(clock, Date.now())),
+        executionInputHash: job => ingestExecutionInputHash(job, "f".repeat(64)),
+        validateVideo: createSourceVideoValidator({ release: async () => false }),
         usage: { reserve: async () => undefined as never, release: async () => undefined as never, settle: async () => ({ outcome: "settled" }) as never } });
+    }
+    async function handoff(jobId: string) {
+      const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } });
+      const inputHash = await ingestExecutionInputHash(job, "f".repeat(64));
+      const wake = await prisma.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: job.deploymentEpoch, generation: job.generation,
+        kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash, dueAt: job.createdAt }));
+      return ingest().handoffGeneration(wake.reference);
     }
     async function queuedJob(f: Awaited<ReturnType<typeof fixture>>) {
       await prisma.project.update({ where: { id: f.project.id }, data: { ingestStatus: "queued" } });
-      return prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {} } });
+      return prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/event-source/video.mp4" } } });
     }
 
     test("a retried then permanently failed ingest finishes the intake failed exactly once", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const job = await queuedJob(f);
       const module = ingest();
-      const first = (await module.claim())!;
-      expect(await module.fail(first, "remote_fetch_timeout", "timeout")).toEqual({ outcome: "requeue" });
+      const first = await startIngestTestExecution(prisma, module, new WorkflowRunLifecycle({ prisma }), job.id);
+      expect(await first.command("fail", { failureCode: "remote_download_failed", retryable: true })).toMatchObject({ disposition: "failed" });
       expect(await feed(f.workspace.id)).toEqual([]);
-      clock += 30_001;
-      const second = (await module.claim())!;
-      expect(second.id).toBe(job.id);
-      expect(await module.fail(second, "remote_url_unsafe", "unsafe")).toMatchObject({ outcome: "permanent" });
+      await prisma.ingestJob.update({ where: { id: job.id }, data: { updatedAt: new Date(Date.now() - 60_000) } });
+      const second = await startIngestTestExecution(prisma, module, new WorkflowRunLifecycle({ prisma }), job.id);
+      expect(await second.command("fail", { failureCode: "remote_url_unsafe", retryable: false })).toMatchObject({ disposition: "failed" });
       expect(await subjects(f.workspace.id)).toEqual([finishedSubject("intake", job.id, f.project.id, "failed")]);
     })));
 
@@ -483,7 +496,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
 
     test("a refused generation handoff finishes the intake failed", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
-      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/event-source/video.mp4" }, status: "completed", completedAt: new Date() } });
       const module = ingest();
       const refuse = () => prisma.$transaction((tx) => module.refuseGeneration(tx, f.project.id,
         new ExpectedDomainFailureError({ code: "upload_too_long", kind: "unprocessable", message: "Too long" })));
@@ -500,8 +513,8 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await lifecycle.failAttempt(attempt!, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
       expect(await subjects(f.workspace.id)).toEqual([finishedSubject("generation", stt.id, f.project.id, "failed")]);
 
-      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
-      expect(await ingest().processGenerationHandoffs(10, job.id)).toBe(1);
+      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/event-source/video.mp4" }, status: "completed", completedAt: new Date() } });
+      expect(await handoff(job.id)).toMatchObject({ kind: "acknowledged" });
       expect(await subjects(f.workspace.id)).toEqual([
         finishedSubject("generation", stt.id, f.project.id, "failed"),
         finishedSubject("intake", job.id, f.project.id, "failed"),
@@ -531,7 +544,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       const stt = await admitStt(lifecycle, f.project.id);
       const attempt = await lifecycle.claim("stt");
       if (!attempt) throw new Error("stt claim missing");
-      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/event-source/video.mp4" }, status: "completed", completedAt: new Date() } });
 
       armed = true;
       const failing = lifecycle.failAttempt(attempt, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
@@ -539,12 +552,12 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       armed = false;
       // The failure has not committed, so the acknowledgement sees a running run and no intake yet.
       let acknowledged = false;
-      const acknowledging = ingest().processGenerationHandoffs(10, job.id).then((count) => { acknowledged = true; return count; });
+      const acknowledging = handoff(job.id).then((result) => { acknowledged = true; return result; });
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(acknowledged).toBe(false);
       release();
       await failing;
-      expect(await acknowledging).toBe(1);
+      expect(await acknowledging).toMatchObject({ kind: "acknowledged" });
       expect(await subjects(f.workspace.id)).toEqual([
         finishedSubject("generation", stt.id, f.project.id, "failed"),
         finishedSubject("intake", job.id, f.project.id, "failed"),

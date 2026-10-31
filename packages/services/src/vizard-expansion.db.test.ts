@@ -21,6 +21,7 @@ import {
 } from "./campaign-operation.service";
 import { clipEditorDocumentPersistence } from "./clip-editor-document-persistence";
 import { ReviewService, ReviewServiceError, reviewService } from "./review.service";
+import { withRateLimiter } from "./rate-limit";
 
 /** New guest commands need an available limiter (no Redis in a disposable gate) and a caller key each. */
 const guestReviews = new ReviewService(async (_key, limit) => ({ allowed: true, availability: "available", remaining: limit, limit }));
@@ -64,6 +65,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 	let pool: Pool;
 	let priorPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
+  const bindLimitedReview = (operation: () => Promise<void>) => bindServiceTestEnvironment(prismaGlobal.bind(() =>
+    withRateLimiter({ check: async (_key, limit) => ({ availability: "available", allowed: true, remaining: limit, limit }) }, operation)));
 
 	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
 		if (!databaseUrl)
@@ -1817,7 +1820,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(await newerWork()).toEqual({ projection: true, room: true });
 	})));
 
-	test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", bindLimitedReview(async () => {
 		const current = await fixture("review-security");
 		const foreign = await fixture("review-foreign");
 		const variant = current.clipExport.variants[0]!;
@@ -2324,7 +2327,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		await expect(
 			reviewService.readRound(secondSession, sessionSecret),
 		).rejects.toBeInstanceOf(ReviewServiceError);
-	})));
+	}));
 
 	test("allocates concurrent review revisions and freezes scene-template insertion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const current = await fixture("review-revisions-scenes");

@@ -1,7 +1,6 @@
 import {appendProjectNotificationIntent} from "./notification-execution";
 import { autopilotFinishingAuthoritySchema } from "@narriflow/validators/autopilot-finishing-authority";
 import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
-import { randomUUID } from "node:crypto";
 import { requireExecutionAdmissionOpen, readExecutionAdmission } from "./execution-admission";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
@@ -24,7 +23,6 @@ import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import {
   decideAutoRetry,
   autoRetryBackoffMs,
-  claimBackoffWhereClauses,
   INGEST_AUTO_RETRY_MAX_ATTEMPTS,
   INGEST_RETRIES_EXHAUSTED_CODE,
   isAutoRetryableFailureCode,
@@ -35,7 +33,6 @@ import {
   lockWorkspaceUsage,
   type ProcessingUsage,
 } from "./processing-usage";
-import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { collectExecutionDispatch, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
@@ -63,7 +60,6 @@ export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
   sourceAudio: SourceAudio | null;
 }) => Promise<{ kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" }>;
 
-// Placeholder until the Scribe worker adapter lands (ticket 06).
 const PENDING_STT_PROVIDER_MODEL = SCRIBE_MODEL_ID;
 
 function intakeKindFor(jobType: IngestJob["jobType"]) {
@@ -76,7 +72,7 @@ function intakeKindFor(jobType: IngestJob["jobType"]) {
 export class IngestJobClaimLost extends Error {
   readonly code = "ingest_job_claim_lost";
   constructor(public readonly jobId: string) {
-    super(`Ingest Job ${jobId} is no longer owned by this worker`);
+    super(`Ingest Job ${jobId} is no longer owned by this executor`);
     this.name = "IngestJobClaimLost";
   }
 }
@@ -124,16 +120,6 @@ export interface IngestClaimRef {
   projectId: string;
   claimId: string;
 }
-export interface ClaimedIngestJob extends IngestClaimRef {
-  jobType: IngestJob["jobType"];
-  payload: Prisma.JsonValue;
-  /** Sealed Drive access token; null for every other job type. */
-  sourceCredential: string | null;
-  attemptCount: number;
-}
-export interface IngestExecutionContext {
-  signal: AbortSignal;
-}
 export type IngestFailureDecision =
   | { outcome: "requeue" }
   | { outcome: "permanent"; terminalErrorCode: string };
@@ -150,33 +136,12 @@ export interface IngestJobLifecycleDependencies {
   /** Recomputes semantic identity after a retry advances the exact source generation. */
   executionInputHash?: (job: IngestJob) => Promise<string>;
   now?: () => Date;
-  leaseMs?: number;
-  heartbeatMs?: number;
-  scheduler?: {
-    schedule(callback: () => void, intervalMs: number): unknown;
-    cancel(handle: unknown): void;
-  };
+
 }
 
-/** Owns source intake claims and all dependent durable state. Producers enqueue
- * in their admission transaction; workers carry the returned claim throughout. */
+/** Source transitions run under the executor's fenced transaction. */
 export class IngestJobLifecycle {
-  private readonly leaseMs: number;
-  private readonly heartbeatMs: number;
-  private readonly scheduler: NonNullable<
-    IngestJobLifecycleDependencies["scheduler"]
-  >;
-  constructor(private readonly deps: IngestJobLifecycleDependencies) {
-    this.leaseMs = deps.leaseMs ?? 10 * 60_000;
-    this.heartbeatMs = deps.heartbeatMs ?? 2 * 60_000;
-    if (this.heartbeatMs * 2 >= this.leaseMs)
-      throw new Error("Ingest heartbeat must be less than half its lease");
-    this.scheduler = deps.scheduler ?? {
-      schedule: (callback, ms) => setInterval(callback, ms),
-      cancel: (handle) =>
-        clearInterval(handle as ReturnType<typeof setInterval>),
-    };
-  }
+  constructor(private readonly deps: IngestJobLifecycleDependencies) {}
   private async now(tx: Tx): Promise<Date> {
     if (this.deps.now) return this.deps.now();
     const rows = await tx.$queryRaw<
@@ -384,6 +349,7 @@ export class IngestJobLifecycle {
   }
 
   private async executionWakes(tx: Tx, ref: IngestExecutionReference, inputHash: string, wakeKind: string, retryAt?: Date): Promise<{ dispatchIds: string[] }> {
+    const outcomeInputHash = inputHash;
     const current = retryAt ? await tx.ingestJob.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } })
       : await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
     if (retryAt) {
@@ -392,7 +358,7 @@ export class IngestJobLifecycle {
     }
     const now = await this.now(tx);
     const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
-      generation: current.generation, inputHash, dueAt: now, wakeKind });
+      generation: ref.generation, inputHash: outcomeInputHash, dueAt: now, wakeKind });
     const ids = [parent.reference.dispatchId];
     if (wakeKind === "video_ready") {
       const renders = await tx.workflowRun.findMany({ where: { projectId: current.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } }, take: 2, select: { id: true } });
@@ -406,7 +372,7 @@ export class IngestJobLifecycle {
     }
     if (wakeKind !== "audio_ready" && wakeKind !== "video_evidence_ready") {
       const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
-        generation: ref.generation, inputHash, dueAt: now, wakeKind: "execution_finished" });
+        generation: ref.generation, inputHash: outcomeInputHash, dueAt: now, wakeKind: "execution_finished" });
       ids.push(finished.reference.dispatchId);
     }
     if (retryAt) {
@@ -532,98 +498,7 @@ export class IngestJobLifecycle {
     return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined) };
   }
 
-  async claim(
-    options: { youtubeAvailable?: boolean } = {},
-  ): Promise<ClaimedIngestJob | null> {
-    return this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const eligible: Prisma.IngestJobWhereInput = {
-        status: "queued",
-        project: {
-          ...accessibleProjectWhere(now),
-          workspace: { status: "active" },
-        },
-        AND: [
-          {
-            OR: claimBackoffWhereClauses(
-              INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-              now.getTime(),
-            ),
-          },
-          ...(options.youtubeAvailable === false
-            ? [
-                {
-                  OR: [
-                    { jobType: { in: ["upload_finalize", "rss_import", "drive_import", "zoom_import"] } },
-                    {
-                      jobType: "link_import",
-                      NOT: {
-                        payload: { path: ["provider"], equals: "youtube" },
-                      },
-                    },
-                  ],
-                } satisfies Prisma.IngestJobWhereInput,
-              ]
-            : []),
-        ],
-      };
-      for (let contention = 0; contention < 5; contention++) {
-        const candidate = await tx.ingestJob.findFirst({
-          where: eligible,
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        });
-        if (!candidate) return null;
-        const claimId = randomUUID();
-        const claimed = await tx.ingestJob.updateMany({
-          where: {
-            ...eligible,
-            id: candidate.id,
-            updatedAt: candidate.updatedAt,
-          },
-          data: {
-            status: "running",
-            claimId,
-            claimExpiresAt: new Date(now.getTime() + this.leaseMs),
-            startedAt: now,
-            attemptCount: { increment: 1 },
-          },
-        });
-        if (!claimed.count) continue;
-        return {
-          id: candidate.id,
-          projectId: candidate.projectId,
-          jobType: candidate.jobType,
-          payload: candidate.payload,
-          sourceCredential: candidate.sourceCredential,
-          attemptCount: candidate.attemptCount + 1,
-          claimId,
-        };
-      }
-      return null;
-    });
-  }
-  async renew(claim: IngestClaimRef): Promise<void> {
-    return this.deps.prisma.$transaction((tx) => this.renewWithinTransaction(tx, claim));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async renewWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
-
-
-    const now = await this.now(tx);
-    const updated = await tx.ingestJob.updateMany({
-      where: this.owned(claim, now),
-      data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
-    });
-    if (!updated.count) throw new IngestJobClaimLost(claim.id);
-  }
-  async progress(
-    claim: IngestClaimRef,
-    status: "downloading" | "normalizing",
-  ): Promise<void> {
-    return this.deps.prisma.$transaction((tx) => this.progressWithinTransaction(tx, claim, status));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async progressWithinTransaction(tx: Tx, 
+  private async progressWithinTransaction(tx: Tx, 
     claim: IngestClaimRef,
     status: "downloading" | "normalizing",
   ): Promise<void> {
@@ -657,22 +532,7 @@ export class IngestJobLifecycle {
       now,
     );
   }
-  async complete(
-    claim: IngestClaimRef,
-    source: {
-      sourceStorageKey: string;
-      sourceMediaUrl?: string;
-      sourceInput?: string | null;
-      sourceMimeType?: string | null;
-      sourceSizeBytes?: number | null;
-      sourceDurationSeconds?: number | null;
-      sourceProbe?: SourceProbe | null;
-    },
-  ): Promise<void> {
-    return this.deps.prisma.$transaction((tx) => this.completeWithinTransaction(tx, claim, source));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async completeWithinTransaction(tx: Tx, 
+  private async completeWithinTransaction(tx: Tx, 
     claim: IngestClaimRef,
     source: {
       sourceStorageKey: string;
@@ -730,51 +590,6 @@ export class IngestJobLifecycle {
       },
       now,
     );
-  }
-  /** Records an ingest-owned pinned copy of a verified upload as the Project
-   * source and schedules the grantable upload key for Media Cleanup after any
-   * still-valid upload grant has expired. */
-  async pinSource(
-    claim: IngestClaimRef,
-    input: {
-      sourceStorageKey: string;
-      releasedStorageKey: string;
-      releaseNotBefore: Date;
-    },
-  ): Promise<void> {
-    return this.deps.prisma.$transaction((tx) => this.pinSourceWithinTransaction(tx, claim, input));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async pinSourceWithinTransaction(tx: Tx, 
-    claim: IngestClaimRef,
-    input: {
-      sourceStorageKey: string;
-      releasedStorageKey: string;
-      releaseNotBefore: Date;
-    },
-  ): Promise<void> {
-
-
-    const now = await this.now(tx);
-    const owned = await tx.ingestJob.updateMany({
-      where: this.owned(claim, now),
-      data: { lastError: null },
-    });
-    if (!owned.count) throw new IngestJobClaimLost(claim.id);
-    await tx.project.update({
-      where: { id: claim.projectId },
-      data: { sourceStorageKey: input.sourceStorageKey },
-    });
-    if (input.releasedStorageKey !== input.sourceStorageKey)
-      await admitMediaCleanupObligations(tx, [
-        {
-          origin: "upload_source_pinning",
-          cleanupClass: "upload_source",
-          projectId: claim.projectId,
-          objectKey: input.releasedStorageKey,
-          notBefore: input.releaseNotBefore,
-        },
-      ]);
   }
   private async settleFailure(
     tx: Tx,
@@ -838,45 +653,7 @@ export class IngestJobLifecycle {
     if (terminal) await emitIntakeFinished(tx, job.id, "failed");
     return decision;
   }
-  async fail(
-    claim: IngestClaimRef,
-    code: string,
-    message: string,
-  ): Promise<IngestFailureDecision> {
-    return this.deps.prisma.$transaction((tx) => this.failWithinTransaction(tx, claim, code, message));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async failWithinTransaction(tx: Tx, 
-    claim: IngestClaimRef,
-    code: string,
-    message: string,
-  ): Promise<IngestFailureDecision> {
-
-
-    const now = await this.now(tx);
-    const job = await tx.ingestJob.findFirst({
-      where: this.owned(claim, now),
-    });
-    if (!job) throw new IngestJobClaimLost(claim.id);
-    const result = await this.settleFailure(
-      tx,
-      job,
-      this.owned(claim, now),
-      code,
-      message,
-      `${claim.claimId}:failed`,
-      now,
-    );
-    if (!result) throw new IngestJobClaimLost(claim.id);
-    return result;
-  }
-  /** Graceful process shutdown is not a failed source attempt. Release its
-   * claim immediately and refund the claim's automatic retry budget. */
-  async release(claim: IngestClaimRef): Promise<void> {
-    return this.deps.prisma.$transaction((tx) => this.releaseWithinTransaction(tx, claim));
-  }
-  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
-  async releaseWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
+  private async releaseWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
 
 
     const now = await this.now(tx);
@@ -910,36 +687,6 @@ export class IngestJobLifecycle {
       },
       now,
     );
-  }
-  async reapExpired(limit = 100): Promise<number> {
-    const now = await this.deps.prisma.$transaction((tx) => this.now(tx));
-    const expired = await this.deps.prisma.ingestJob.findMany({
-      where: { status: "running", claimExpiresAt: { lte: now } },
-      take: limit,
-      orderBy: { claimExpiresAt: "asc" },
-    });
-    let reaped = 0;
-    for (const job of expired) {
-      const result = await this.deps.prisma.$transaction(async (tx) => {
-        const clock = await this.now(tx);
-        return this.settleFailure(
-          tx,
-          job,
-          {
-            id: job.id,
-            status: "running",
-            claimId: job.claimId,
-            claimExpiresAt: { lte: clock },
-          },
-          "worker_stalled",
-          "Ingest claim expired",
-          `${job.claimId}:reaped`,
-          clock,
-        );
-      });
-      if (result) reaped++;
-    }
-    return reaped;
   }
   async cancelQueuedOperation(input: { actorUserId: string; workspaceId: string; projectId: string; ingestJobId: string }): Promise<boolean> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
@@ -1187,26 +934,6 @@ export class IngestJobLifecycle {
     }
   }
 
-  async processGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
-    const now = await this.deps.prisma.$transaction((tx) => this.now(tx));
-    const jobs = await this.deps.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT job.id FROM "IngestJob" job JOIN "Project" project ON project.id = job."projectId"
-      WHERE job."generationHandoffAt" IS NULL
-        AND ((job.status = 'completed' AND project."ingestStatus" = 'ready') OR (job.status = 'running' AND EXISTS (
-          SELECT 1 FROM "SourceAudio" audio WHERE audio."projectId" = project.id AND audio."sourceRevision" = project."sourceRevision")))
-        AND (project."expiresAt" IS NULL OR project."expiresAt" > ${now}) AND project."purgeStartedAt" IS NULL
-        AND (job."generationHandoffRetryAt" IS NULL OR job."generationHandoffRetryAt" <= ${now})
-        ${jobId ? Prisma.sql`AND job.id = ${jobId}::uuid` : Prisma.empty}
-      ORDER BY COALESCE(job."generationHandoffRetryAt", job."completedAt", job."createdAt"), job.id LIMIT ${limit}
-    `);
-    let settled = 0;
-    for (const job of jobs) {
-      const result = await this.handoffGenerationForJob(job.id);
-      if (result.kind === "admitted" || result.kind === "acknowledged") settled++;
-      if (result.kind === "waiting_for_pack") await this.deferHandoff(job.id, now);
-    }
-    return settled;
-  }
   /** Settles a permanently refused generation handoff: the Ingest Job and
    * Project fail with an actionable code, the unsettled reservation releases,
    * and a notification intent is recorded, all in the caller's transaction. */
@@ -1370,69 +1097,5 @@ export class IngestJobLifecycle {
     if (!frozen.created && !frozen.matches)
       console.warn(JSON.stringify({ level: "warn", message: "ingest_finishing_conflict_ignored", projectId: project.id, originRunId }));
     return frozen.created;
-  }
-  private async deferHandoff(id: string, now: Date) {
-    await this.deps.prisma.ingestJob.updateMany({
-      where: { id, status: { in: ["running", "completed"] }, generationHandoffAt: null },
-      data: { generationHandoffRetryAt: new Date(now.getTime() + 60_000) },
-    });
-  }
-  async runClaim<T>(
-    claim: IngestClaimRef,
-    handler: (context: IngestExecutionContext) => Promise<T>,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<T | undefined> {
-    const external = options.signal ?? new AbortController().signal;
-    if (external.aborted) {
-      await this.release(claim);
-      return undefined;
-    }
-    const ownership = new AbortController();
-    const signal = AbortSignal.any([external, ownership.signal]);
-    let pending: Promise<void> | null = null;
-    const handle = this.scheduler.schedule(() => {
-      if (signal.aborted || pending) return;
-      pending = this.renew(claim)
-        .catch((error) => {
-          ownership.abort(error);
-        })
-        .finally(() => {
-          pending = null;
-        });
-    }, this.heartbeatMs);
-    const stopHeartbeat = () => this.scheduler.cancel(handle);
-    let shutdownRelease: Promise<void> | undefined;
-    const releaseForShutdown = () => {
-      stopHeartbeat();
-      shutdownRelease ??= this.release(claim).catch((error) => {
-        console.warn(
-          JSON.stringify({
-            level: "error",
-            message: "ingest_shutdown_release_failed",
-            jobId: claim.id,
-            projectId: claim.projectId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      });
-    };
-    signal.addEventListener("abort", stopHeartbeat, { once: true });
-    external.addEventListener("abort", releaseForShutdown, { once: true });
-    try {
-      return await handler({ signal });
-    } catch (error) {
-      if (ownership.signal.aborted) throw ownership.signal.reason;
-      if (external.aborted) return undefined;
-      throw error;
-    } finally {
-      signal.removeEventListener("abort", stopHeartbeat);
-      external.removeEventListener("abort", releaseForShutdown);
-      this.scheduler.cancel(handle);
-      if (pending) await pending;
-      if (external.aborted) {
-        releaseForShutdown();
-        await shutdownRelease;
-      }
-    }
   }
 }
