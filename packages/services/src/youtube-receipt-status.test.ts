@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { interpretYouTubeProcessingStatus } from "./youtube-receipt-enrichment";
+import { interpretYouTubeProcessingStatus } from "./youtube-receipt-status";
 
 describe("YouTube receipt processing", () => {
   test("keeps accepted uploads pending until YouTube finishes processing", () => {
