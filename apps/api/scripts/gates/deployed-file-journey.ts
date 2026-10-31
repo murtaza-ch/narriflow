@@ -75,7 +75,7 @@ async function json(response: Response) {
 export async function runFileJourney(phase: "upload" | "generate" | "status", input: {
   apiOrigin: string;
   apiKey: string;
-  sessionToken: string;
+  sessionToken: string | (() => string | Promise<string>);
   journal: FileJourneyJournal;
   persist: (journal: FileJourneyJournal) => void;
 }, dependencies: { fetch?: typeof fetch; delay?: (ms: number) => Promise<void> } = {}) {
@@ -126,7 +126,9 @@ export async function runFileJourney(phase: "upload" | "generate" | "status", in
     return response;
   };
   const projects = createProjectsClient({ baseUrl: input.apiOrigin, fetch: async (target, options = {}) => {
-    const headers = new Headers(options.headers); headers.set("Authorization", `Bearer ${input.sessionToken}`); headers.set("X-Workspace-Id", journal.workspaceId);
+    const token = typeof input.sessionToken === "function" ? await input.sessionToken() : input.sessionToken;
+    fact(typeof token === "string" && /^[^\s,]{1,8192}$/.test(token), "clerk_session_invalid");
+    const headers = new Headers(options.headers); headers.set("Authorization", `Bearer ${token}`); headers.set("X-Workspace-Id", journal.workspaceId);
     const response = await fetcher(target, { ...options, headers }); fact(response.ok, "first_party_request_failed"); return response;
   } });
   async function project() {

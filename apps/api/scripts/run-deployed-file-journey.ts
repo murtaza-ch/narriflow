@@ -9,6 +9,28 @@ function privateJson(path: string) {
   const value: unknown = JSON.parse(readFileSync(path, "utf8")); fact(value && typeof value === "object" && !Array.isArray(value), "private_json_invalid");
   return value as Record<string, any>;
 }
+function sessionIdentity(token: unknown) {
+  fact(typeof token === "string" && token.length <= 8192 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token), "clerk_session_invalid");
+  let claims: Record<string, unknown>;
+  try { claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")); }
+  catch { throw new FileJourneyFailure("clerk_session_invalid"); }
+  fact(claims && [claims.iss, claims.sub, claims.sid].every(value => typeof value === "string" && value.length > 0), "clerk_session_invalid");
+  // This pins the owned session only. The API still verifies the JWT signature.
+  return JSON.stringify([claims.iss, claims.sub, claims.sid]);
+}
+export function fileJourneyCredentials(path: string, workspaceId: string) {
+  const initial = privateJson(path);
+  fact(initial.workspaceId === workspaceId, "credential_workspace_mismatch");
+  fact(typeof initial.apiKey === "string" && /^nf_[A-Za-z0-9_-]+$/.test(initial.apiKey), "api_key_invalid");
+  const identity = sessionIdentity(initial.sessionToken);
+  return { apiKey: initial.apiKey, sessionToken: () => {
+    const current = privateJson(path);
+    fact(current.workspaceId === workspaceId, "credential_workspace_mismatch");
+    fact(current.apiKey === initial.apiKey, "credential_api_key_changed");
+    fact(sessionIdentity(current.sessionToken) === identity, "credential_session_changed");
+    return current.sessionToken as string;
+  } };
+}
 export async function main(args: string[]) {
   const values = new Map<string, string>();
   const allowed = new Set(["phase", "api-origin", "workspace-id", "source-file", "credentials-file", "journal-file"]);
@@ -29,10 +51,8 @@ export async function main(args: string[]) {
   }
   fact(phase === "upload" || phase === "generate" || phase === "status", "phase_invalid");
   const journal = privateJson(journalPath) as FileJourneyJournal;
-  const credentials = privateJson(required("credentials-file"));
-  fact(credentials.workspaceId === journal.workspaceId && (!values.has("workspace-id") || values.get("workspace-id") === journal.workspaceId), "credential_workspace_mismatch");
-  fact(typeof credentials.apiKey === "string" && /^nf_[A-Za-z0-9_-]+$/.test(credentials.apiKey), "api_key_invalid");
-  fact(typeof credentials.sessionToken === "string" && /^[^\s,]{1,8192}$/.test(credentials.sessionToken), "clerk_session_invalid");
+  fact(!values.has("workspace-id") || values.get("workspace-id") === journal.workspaceId, "credential_workspace_mismatch");
+  const credentials = fileJourneyCredentials(required("credentials-file"), journal.workspaceId);
   const persist = (value: FileJourneyJournal) => {
     const temporary = `${journalPath}.next-${randomUUID()}`;
     writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });

@@ -4,13 +4,15 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileJourneyFailure, prepareFileJourney, runFileJourney, type FileJourneyJournal } from "./deployed-file-journey";
+import { fileJourneyCredentials } from "../run-deployed-file-journey";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "file-journey-")); directories.push(directory);
   const path = join(directory, "speech.webm"), bytes = Buffer.from("actual fixture bytes"); await writeFile(path, bytes);
-  const apiOrigin = "https://api.fixture.invalid", apiKey = "nf_private_fixture", sessionToken = "private_fixture_clerk";
+  const apiOrigin = "https://api.fixture.invalid", apiKey = "nf_private_fixture";
+  let sessionToken = "private_fixture_clerk";
   const journal = prepareFileJourney({ apiOrigin, workspaceId: randomUUID(), source: { path, byteLength: bytes.length,
     sha256: createHash("sha256").update(bytes).digest("hex"), durationSeconds: 146.147 } });
   const projectId = randomUUID(), sessionId = randomUUID(), queuedJobId = randomUUID(), taskId = randomUUID(), operationId = randomUUID();
@@ -76,10 +78,10 @@ async function fixture() {
     }
     return new Response(`data: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}\n\n`, { headers: { "Content-Type": "text/event-stream" } });
   }) as typeof fetch;
-  const run = (phase: "upload" | "generate" | "status") => runFileJourney(phase, { apiOrigin, apiKey, sessionToken, journal, persist }, { fetch: fetcher, delay: async () => {} });
-  return { journal, calls, saved, run, accepted, generationBodies, taskId,
+  const run = (phase: "upload" | "generate" | "status", options: { sessionToken?: () => string | Promise<string>; delay?: (ms: number) => Promise<void> } = {}) => runFileJourney(phase, { apiOrigin, apiKey, sessionToken: options.sessionToken ?? sessionToken, journal, persist }, { fetch: fetcher, delay: options.delay ?? (async () => {}) });
+  return { directory, journal, calls, saved, run, accepted, generationBodies, taskId,
     setFailNotify: (value: boolean) => { failNotify = value; }, setLostGeneration: () => { loseGenerationReply = true; }, setReady: (value: boolean) => { ready = value; },
-    setWrongTaskBinding: () => { wrongTaskBinding = true; } };
+    setWrongTaskBinding: () => { wrongTaskBinding = true; }, setSessionToken: (value: string) => { sessionToken = value; } };
 }
 
 test("fixture-only real uploader journals identities before PUT, disables notifications before MCP and reports actual selection", async () => {
@@ -122,4 +124,56 @@ test("a changed source refuses before networking and keeps its original upload k
 test("a Task bound to another Workspace cannot become a positive acceptance fixture", async () => {
   const f = await fixture(); await f.run("upload"); f.setWrongTaskBinding();
   await expect(f.run("generate")).rejects.toThrow("generation_task_binding_invalid"); expect(f.journal.taskId).toBeUndefined();
+});
+
+
+const token = (claims: Record<string, unknown> = {}) => [
+  Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url"),
+  Buffer.from(JSON.stringify({ iss: "https://clerk.fixture.invalid", sub: "user_fixture", sid: "sess_fixture", iat: 0, exp: 60, ...claims })).toString("base64url"),
+  "fixture-signature",
+].join(".");
+
+test("one readiness wait rereads the owned session file and sends the refreshed token on its next Project request", async () => {
+  const f = await fixture(); await f.run("upload"); f.setReady(false);
+  const path = join(f.directory, "credentials.json"), first = token(), refreshed = token({ iat: 70, exp: 130 });
+  const credentials = { workspaceId: f.journal.workspaceId, apiKey: "nf_private_fixture", sessionToken: first };
+  await writeFile(path, JSON.stringify(credentials), { mode: 0o600 });
+  const provider = fileJourneyCredentials(path, f.journal.workspaceId);
+  f.setSessionToken(first);
+  let elapsed = 0;
+  const supplied: string[] = [];
+  const report = await f.run("generate", {
+    sessionToken: async () => { const current = provider.sessionToken(); supplied.push(current); return current; },
+    delay: async ms => {
+      elapsed += ms;
+      if (elapsed === 70_000) {
+        await writeFile(path, JSON.stringify({ ...credentials, sessionToken: refreshed }), { mode: 0o600 });
+        f.setSessionToken(refreshed); f.setReady(true);
+      }
+    },
+  });
+  expect(report).toMatchObject({ status: "accepted", positiveTask: true, requests: 9 });
+  expect(elapsed).toBe(70_000);
+  expect(supplied).toEqual([...Array(7).fill(first), refreshed]);
+  expect(f.accepted.size).toBe(1);
+  for (const value of [first, refreshed]) expect(JSON.stringify(f.saved)).not.toContain(value);
+});
+
+test("credential refresh refuses a changed API key, Workspace or Clerk session identity before returning a token", async () => {
+  const f = await fixture(), path = join(f.directory, "credentials.json");
+  const initial = { apiKey: "nf_private_fixture", workspaceId: f.journal.workspaceId, sessionToken: token() };
+  await writeFile(path, JSON.stringify(initial), { mode: 0o600 });
+  const provider = fileJourneyCredentials(path, initial.workspaceId);
+  for (const [change, code] of [
+    [{ apiKey: "nf_another_key" }, "credential_api_key_changed"],
+    [{ workspaceId: randomUUID() }, "credential_workspace_mismatch"],
+    [{ sessionToken: token({ sid: "sess_another" }) }, "credential_session_changed"],
+    [{ sessionToken: token({ sub: "user_another" }) }, "credential_session_changed"],
+    [{ sessionToken: token({ iss: "https://another.clerk.invalid" }) }, "credential_session_changed"],
+    [{ sessionToken: "malformed" }, "clerk_session_invalid"],
+  ] as const) {
+    await writeFile(path, JSON.stringify({ ...initial, ...change }), { mode: 0o600 });
+    expect(() => provider.sessionToken()).toThrow(code);
+  }
+  expect(f.calls).toEqual([]);
 });
