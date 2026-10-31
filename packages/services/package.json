@@ -421,6 +421,10 @@
     "./progress-delivery": {
       "types": "./src/progress-delivery.ts",
       "default": "./src/progress-delivery.ts"
+    },
+    "./progress-outbox": {
+      "types": "./src/progress-outbox.ts",
+      "default": "./src/progress-outbox.ts"
     }
   },
   "scripts": {

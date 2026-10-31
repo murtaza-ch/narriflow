@@ -1,3 +1,5 @@
+import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
+import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import { type ZoomRecordingNotification } from "@narriflow/validators";
 
 /**
@@ -680,6 +682,7 @@ export class ProjectService {
 		await this.requireActor(scope, "content.edit");
 		const prisma = this.requirePrisma();
 
+		const revocations: ExecutionDispatchRecord[] = [];
 		const outcome = await runProjectDeletion({
 			getAccessAndRow: async () => {
 				const project = await prisma.project.findUnique({
@@ -780,6 +783,7 @@ export class ProjectService {
 							},
 						});
 						if (result.count === 0) throw notDeleted;
+						revocations.push(await appendProgressRevocation(tx, { workspaceId: scope.workspaceId, projectId, error: "project_inaccessible" }));
 						return { count: result.count };
 					});
 				} catch (error) {
@@ -789,6 +793,7 @@ export class ProjectService {
 			},
 		});
 
+		await deliverProgressAfterCommit(prisma, revocations);
 		switch (outcome.kind) {
 			case "not_found":
 				throw new ProjectNotFoundError();

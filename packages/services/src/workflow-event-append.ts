@@ -1,3 +1,4 @@
+import { appendProgressEventDispatch } from "./progress-outbox";
 import { Prisma } from "@prisma/client";
 import type {
   RenderTerminalNotificationPayload,
@@ -92,7 +93,7 @@ export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, del
     ...(input.notification ? { notification: input.notification } : {}),
   } satisfies WorkflowStageUpdatedEvent;
 
-  await tx.workflowEvent.create({
+  const created = await tx.workflowEvent.create({
     data: {
       projectId: input.projectId,
       workflowRunId: input.workflowRunId,
@@ -107,9 +108,10 @@ export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, del
       payload: payload as unknown as Prisma.InputJsonValue,
       availableAt: emittedAt,
       nextDeliveryAt: emittedAt,
-      progressRequired: delivery.progressRequired,
+      progressRequired: true,
       analyticsRequired: (input.analyticsRequired ?? false) && delivery.analyticsEnabled,
       notificationRequired: Boolean(input.notification),
     },
   });
+  await appendProgressEventDispatch(tx, created);
 }
