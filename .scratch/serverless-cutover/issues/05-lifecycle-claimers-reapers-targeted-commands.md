@@ -14,7 +14,7 @@
 
 ## Evidence
 
-Render Group and Ingest transaction-aware control are implemented; exact generation handoff, Workflow and other background domains remain in progress. This ticket is not complete.
+Render Group and Ingest transaction-aware control plus exact audio-ready generation handoff are implemented; Workflow and other background domains remain in progress. This ticket is not complete.
 
 - Shared `ExecutorDomainControl` ports and wake-result/observed-deadline contracts are available through a narrow services export.
 - Render Group exact-id lock/acquire/renew/start/artifact/fail/release/progress methods share the caller transaction. Existing charge, member and variant bodies were lifted rather than duplicated.
@@ -38,3 +38,10 @@ Additional verification, 2026-10-31:
 - Real PostgreSQL plus Executor Control/Ingest: startup rejection, exact process-start replay/progress lease preservation, Source Audio persistence and never-acquired absolute expiry passed in the main gate. Both callback orders reached publication; their final assertion originally used the wrong generic history field. Correcting only that assertion yielded two passing focused cases and 20 assertions. Raw logs: `/tmp/narriflow-serverless-gates/targeted-ingest-complete.log` and `targeted-ingest-either-order.log`.
 - Ingest claim lifetime, independent measured hash and real video comparison unit suites: 9 tests, 37 assertions passed. Services typecheck and scoped Biome pass.
 - The shared Workflow Run provenance hash helper has an independent Python-calculated literal vector and mutation/property-order checks: 1 test, 8 assertions passed. Handoff/admission wiring follows next.
+
+`handoffGeneration(reference)` now accepts one exact Import Pipeline ledger reference. It validates the full immutable database tuple and current epoch/generation, locks Workspace usage before Project/Ingest, re-reads the latest Content Pack and admits from immutable current Source Audio while native video remains running. Usage settlement, transcript source ID/revision, STT admission and its Operation Driver obligation commit together. Replays return the same dispatch for scheduler-confirmation retry. A draft pack authorizes no work. The old scanner only selects and delegates this single body until its deletion.
+
+An early refusal releases unsettled usage and atomically clears the native claim plus revokes matching active generic attempts. An outbox insertion failure rolls back the debit, transcript and run before persisting a durable retry instant.
+
+- Four real PostgreSQL handoff cases passed with 26 assertions: concurrent once-only audio-first admission; changed ledger hash/draft refusal before debit; restricted-workspace refusal/native revocation; injected scheduling failure rollback. Logs: `/tmp/narriflow-serverless-gates/targeted-ingest-handoff.log` and `targeted-ingest-handoff-failures.log`. The first red test failed because the exact command did not yet exist.
+- Rendering acquisition additionally requires true video-ready state and a committed source key. A real control/domain gate verifies audio-ready downloading cannot acquire or charge and ready video can: 1 case, 4 assertions (`targeted-render-video-ready.log`).

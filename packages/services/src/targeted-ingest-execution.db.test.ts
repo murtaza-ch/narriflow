@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { ProcessingUsage } from "./processing-usage";
@@ -9,6 +9,7 @@ import { withServiceEnvironment } from "./runtime-environment";
 import { createSourceVideoValidator } from "./source-readiness";
 import { createExecutorControl } from "./executor-control";
 import type { SourceAudioBinding, SourceVideoBinding } from "@narriflow/validators/execution";
+import { sourceAudioBindingHash } from "./source-audio-binding";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -25,6 +26,8 @@ dbDescribe("Targeted Ingest execution", () => {
     if (actual?.schema !== schema) throw new Error("Wrong execution schema");
   }, 60_000);
   afterAll(async () => {
+    const workflows = await db.workflowRun.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } });
+    subjects.push(...workflows.map((run) => run.id));
     const ids = (await db.executionDispatch.findMany({ where: { subjectId: { in: subjects } }, select: { id: true } })).map((row) => row.id);
     await db.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
     await db.executionArtifact.deleteMany({ where: { attempt: { dispatchId: { in: ids } } } });
@@ -62,7 +65,7 @@ dbDescribe("Targeted Ingest execution", () => {
       return { requestHash: crypto.randomUUID().replaceAll("-", "").repeat(2), metadata: { version: 1 as const, keyId: "ingest-gate", audience: "executor-control" as const, method: "POST" as const,
         canonicalTarget: "/api/execution/command", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId, signature: "0".repeat(64) } };
     }
-    return { job, project, owner, token, reference: dispatch.reference, control, verified, lifecycle, epoch };
+    return { job, project, owner, token, reference: dispatch.reference, control, verified, lifecycle, epoch, workflow, usage };
   }
 
   function measuredBindings(f: Awaited<ReturnType<typeof fixture>>, audioKey: string): { audio: SourceAudioBinding; video: SourceVideoBinding } {
@@ -86,6 +89,88 @@ dbDescribe("Targeted Ingest execution", () => {
       } };
     return { audio, video };
   }
+
+  async function earlyAudio(f: Awaited<ReturnType<typeof fixture>>, draft = false) {
+    await db.project.update({ where: { id: f.project.id }, data: { ingestStatus: "downloading", sourceDurationSeconds: null } });
+    await db.ingestJob.update({ where: { id: f.job.id }, data: { status: "running", claimId: f.token, executorOwner: f.owner, claimExpiresAt: new Date(Date.now() + 120_000) } });
+    const binding = { ...measuredBindings(f, `execution/${f.token}/source.m4a`).audio, durationSeconds: 60.01 };
+    const sourceAudio = await db.sourceAudio.create({ data: { id: binding.sourceAudioId, projectId: f.project.id, sourceRevision: 1,
+      mediaProvider: binding.mediaIdentity.provider, mediaId: binding.mediaIdentity.mediaId, audioTrack: binding.audioTrack,
+      bindingHash: await sourceAudioBindingHash(binding), storageKey: binding.object.key, etag: binding.object.etag, byteLength: BigInt(binding.object.byteLength),
+      checksumSha256: binding.object.sha256, durationSeconds: binding.durationSeconds, audioStartTimeSec: binding.audioStartTimeSec,
+      probeVersion: binding.probeVersion, toolchainFingerprint: binding.toolchainFingerprint } });
+    const pack = await db.contentPack.create({ data: { projectId: f.project.id, draft, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+      clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const record = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: f.epoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: f.job.id },
+      generation: 1, inputHash: f.reference.inputHash, dueAt: f.job.createdAt, wakeKind: "audio_ready" }));
+    return { sourceAudio, pack, reference: record.reference };
+  }
+
+  test("exact audio handoff admits STT once while native video stays owned and downloading", async () => {
+    const f = await fixture();
+    const audio = await earlyAudio(f);
+    const results = await Promise.all([1, 2].map(() => withServiceEnvironment({}, () => f.lifecycle.handoffGeneration(audio.reference))));
+    expect(results.map(result => result.kind).sort()).toEqual(["acknowledged", "admitted"]);
+    const run = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
+    expect(await db.workflowRun.count({ where: { projectId: f.project.id, stage: "stt" } })).toBe(1);
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "queued", sourceAudioId: audio.sourceAudio.id, sourceRevision: 1 });
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 120 });
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "running", claimId: f.token, executorOwner: f.owner, generationRunId: run.id });
+    expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "downloading", sourceStorageKey: null });
+    const dispatches = await db.executionDispatch.findMany({ where: { subjectKind: "workflow_run", subjectId: run.id, kind: "operation_driver" } });
+    expect(dispatches).toHaveLength(1);
+    expect(results[0]!.dispatchIds).toEqual([dispatches[0]!.id]);
+    expect(results[1]!.dispatchIds).toEqual([dispatches[0]!.id]);
+  }, 120_000);
+
+  test("audio handoff validates the ledger tuple and waits for a committed pack before charging", async () => {
+    const f = await fixture();
+    const audio = await earlyAudio(f, true);
+    expect((await withServiceEnvironment({}, () => f.lifecycle.handoffGeneration({ ...audio.reference, inputHash: "f".repeat(64) }))).kind).toBe("superseded");
+    expect((await withServiceEnvironment({}, () => f.lifecycle.handoffGeneration(audio.reference))).kind).toBe("waiting_for_pack");
+    expect(await db.workflowRun.count({ where: { projectId: f.project.id } })).toBe(0);
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "reserved", settledSeconds: null });
+  }, 90_000);
+
+  test("audio handoff refusal releases usage and revokes native ownership in the same commit", async () => {
+    const f = await fixture();
+    const audio = await earlyAudio(f);
+    await db.workspace.update({ where: { id: f.project.workspaceId }, data: { status: "restricted" } });
+    expect((await withServiceEnvironment({}, () => f.lifecycle.handoffGeneration(audio.reference))).kind).toBe("refused");
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "failed", claimId: null, executorOwner: null, claimExpiresAt: null, attemptCount: 0 });
+    const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } });
+    expect(attempt).toMatchObject({ status: "failed", failureCode: "project_access_denied" });
+    expect(attempt.revokedAt).not.toBeNull();
+    expect(attempt.finishedAt).not.toBeNull();
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "released", settledSeconds: null });
+    expect(await db.workflowRun.count({ where: { projectId: f.project.id } })).toBe(0);
+  }, 90_000);
+
+  test("scheduling failure rolls back audio debit, transcript and STT admission before a durable retry", async () => {
+    const f = await fixture();
+    const audio = await earlyAudio(f);
+    const failingDatabase = new Proxy(db, { get(target, field) {
+      if (field !== "$transaction") return Reflect.get(target, field);
+      return (work: (tx: Prisma.TransactionClient) => Promise<unknown>, options: object) => target.$transaction(tx => work(new Proxy(tx, { get(inner, method) {
+        if (method !== "$queryRaw") return Reflect.get(inner, method);
+        return (...args: unknown[]) => {
+          const query = args[0] as { strings?: readonly string[] };
+          const strings = Array.isArray(query) ? query : query.strings;
+          if (strings?.join("").includes('INSERT INTO "ExecutionDispatch"')) throw new Error("injected scheduling outage");
+          return Reflect.apply(inner.$queryRaw, inner, args);
+        };
+      } })), options);
+    } });
+    const failing = new IngestJobLifecycle({ prisma: failingDatabase, workflow: f.workflow, usage: f.usage,
+      requireRetryActor: async () => { throw new Error("Retry admission is outside this fixture"); } });
+    expect((await withServiceEnvironment({}, () => failing.handoffGeneration(audio.reference))).kind).toBe("deferred");
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "reserved", settledSeconds: null });
+    expect(await db.transcript.findUnique({ where: { projectId: f.project.id } })).toBeNull();
+    expect(await db.workflowRun.count({ where: { projectId: f.project.id } })).toBe(0);
+    const job = await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    expect(job).toMatchObject({ status: "running", generationHandoffAt: null, generationRunId: null, claimId: f.token });
+    expect(job.generationHandoffRetryAt).not.toBeNull();
+  }, 120_000);
 
   test("a pre-start rejection is uncharged, revokes the old generation and keeps reserved usage", async () => {
     const f = await fixture();
