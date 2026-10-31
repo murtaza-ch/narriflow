@@ -3,9 +3,10 @@ import { contentPackSchema } from "./content-pack";
 import { finishingSettingsSchema } from "./finishing";
 import { sourceLanguageCodeSchema } from "./language";
 
-// Uploaded sources are pinned with one conditional server-side copy before
-// ingest probes them. R2 caps a single copy at 5 GiB minus 5 MiB.
-export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
+// Larger sources use multipart transfer and conditional ranged-read pinning.
+export const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 ** 3;
+export const MAX_SINGLE_UPLOAD_SIZE_BYTES = 5 * 1024 ** 3;
+export const MAX_CONDITIONAL_COPY_SIZE_BYTES = 5 * 1024 ** 3 - 5 * 1024 ** 2;
 export const MAX_MEDIA_DURATION_SECONDS = 4 * 60 * 60;
 export const MAX_UPLOAD_GRANT_TTL_SECONDS = 60 * 60;
 /** Allow all outstanding PUT grants to expire before the final exact-key deletion. */
@@ -50,8 +51,8 @@ export const openUploadSessionSchema = z
     generationContext: uploadGenerationContextSchema.optional(),
     /** Integrations may name a Recipe instead; admission reads it once. */
     recipeId: z.string().uuid().optional(),
-    /** `single` asks for one signed PUT at any supported size, for machine
-     * callers that can't orchestrate multipart parts. Browsers keep `auto`. */
+    /** `single` asks for one signed PUT up to 5 GiB. Larger files require
+     * multipart. Browsers keep the server's `auto` transfer plan. */
     transfer: z.enum(["auto", "single"]).optional(),
     /** Browser media metadata. Reserved at admission, never trusted to settle. */
     declaredDurationSeconds: z

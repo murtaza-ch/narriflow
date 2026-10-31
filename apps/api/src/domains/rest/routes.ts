@@ -309,7 +309,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       return c.json({ recipe: recipeView(await recipeService.get(actor, c.req.valid("param").id)) }, 200);
     })
     .openapi(route({ method: "post", path: "/uploads", summary: "Open an Upload Session", tags: ["Uploads"],
-      description: "Returns signed transfer URLs. Use transfer \"single\" to upload any supported size with one PUT. Retrying with the same Idempotency-Key returns the same Upload Session.",
+      description: "Returns signed transfer URLs. Use transfer \"single\" for one PUT up to 5 GiB. Larger sources up to 10 GiB require the auto multipart plan and otherwise return multipart_required. Retrying with the same Idempotency-Key returns the same Upload Session.",
       request: { headers: schemas.restIdempotencyHeaders, ...body(schemas.openUploadRequestSchema) },
       responses: { 200: json(schemas.uploadResultSchema, "The Upload Session") } }), async (c) => {
       const input = c.req.valid("json");

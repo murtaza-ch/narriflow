@@ -135,15 +135,16 @@ describe("Upload Session", () => {
     });
     expect(planUploadTransfer(MAX_UPLOAD_SIZE_BYTES, config)).toMatchObject({
       kind: "multipart",
-      partCount: 320,
+      partCount: 640,
     });
   });
 
-  test("a single-transfer request plans one PUT at any supported size", () => {
+  test("a single-transfer request respects the provider limit and requires multipart above it", () => {
     const config = defaultUploadSessionConfig();
-    for (const size of [1, 200 * 1024 * 1024, MAX_UPLOAD_SIZE_BYTES]) {
+    for (const size of [1, 200 * 1024 * 1024, 5 * 1024 ** 3]) {
       expect(planUploadTransfer(size, config, "single")).toEqual({ kind: "single", partSizeBytes: null, partCount: 1 });
     }
+    expect(() => planUploadTransfer(5 * 1024 ** 3 + 1, config, "single")).toThrow(expect.objectContaining({ code: "multipart_required" }));
     expect(planUploadTransfer(MAX_UPLOAD_SIZE_BYTES, config, "auto")).toMatchObject({ kind: "multipart" });
     expect(() => planUploadTransfer(MAX_UPLOAD_SIZE_BYTES + 1, config, "single")).toThrow();
   });
@@ -184,14 +185,14 @@ describe("Upload Session", () => {
     expect(harness.facts.multipartPartListings).toBe(0);
   });
 
-  test("opens a near-limit single transfer as one signed PUT", async () => {
+  test("opens a 5 GiB single transfer as one signed PUT", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule({ ...harness.adapters, config: defaultUploadSessionConfig() });
     const opened = await module.open({
       ...ACTOR,
       clientIdempotencyKey: "40000000-0000-4000-8000-000000000044",
       title: "One request",
-      source: { fileName: "large.mp4", sizeBytes: MAX_UPLOAD_SIZE_BYTES, contentType: "video/mp4", browserFingerprint: "machine" },
+      source: { fileName: "large.mp4", sizeBytes: 5 * 1024 ** 3, contentType: "video/mp4", browserFingerprint: "machine" },
       brandTemplateId: null,
       brandProfileId: null,
       generation: { languageCode: "en", contentPack: CONTENT_PACK },

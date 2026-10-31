@@ -15,6 +15,7 @@ import {
   discardUploadSessionSchema,
   finalizeUploadSessionSchema,
   MAX_UPLOAD_SIZE_BYTES,
+  MAX_SINGLE_UPLOAD_SIZE_BYTES,
   MAX_UPLOAD_GRANT_TTL_SECONDS,
   UPLOAD_SOURCE_CLEANUP_DELAY_MS,
   grantUploadPartsSchema,
@@ -656,9 +657,18 @@ const uploadSessionFailureCatalog = {
   upload_session_not_found: "missing",
   upload_session_invalid_state: "conflict",
   upload_session_integrity_failed: "unprocessable",
+  multipart_required: "unprocessable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type UploadSessionFailureCode = keyof typeof uploadSessionFailureCatalog;
+
+export class MultipartRequiredError extends ExpectedDomainFailureError<"multipart_required"> {
+  constructor() {
+    super({ code: "multipart_required", kind: uploadSessionFailureCatalog.multipart_required,
+      message: "Files larger than 5 GiB require multipart upload. Use the auto transfer plan." });
+    this.name = "MultipartRequiredError";
+  }
+}
 
 export class UploadSessionIdempotencyConflictError extends ExpectedDomainFailureError<"upload_session_idempotency_conflict"> {
   constructor() {
@@ -805,8 +815,8 @@ export function planUploadTransfer(
   ) {
     throw new Error("Unsupported upload source size");
   }
-  // The product maximum stays within R2's 5 GiB single-PUT limit.
-  if (transfer === "single" || sizeBytes <= config.smallFileThresholdBytes) {
+  if (transfer === "single" && sizeBytes > MAX_SINGLE_UPLOAD_SIZE_BYTES) throw new MultipartRequiredError();
+  if (transfer === "single" || sizeBytes <= Math.min(config.smallFileThresholdBytes, MAX_SINGLE_UPLOAD_SIZE_BYTES)) {
     return { kind: "single", partSizeBytes: null, partCount: 1 };
   }
   const partSizeBytes = Math.max(

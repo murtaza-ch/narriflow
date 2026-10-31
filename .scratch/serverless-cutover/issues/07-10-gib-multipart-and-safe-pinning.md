@@ -4,7 +4,7 @@
 
 **Blocked by:** 06, 09
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -14,4 +14,4 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Upload policy now permits exactly 10 GiB and refuses single PUT above 5 GiB with typed multipart_required. Native uploader/pinning and scoped multipart control are owned by the media implementer. Integration verification remains open.

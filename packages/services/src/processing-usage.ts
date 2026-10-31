@@ -14,6 +14,7 @@ import {
   processingPeriodEnd,
   processingPeriodStart,
   resolvePricingTier,
+  sourceProbeSchema,
   type PricingTier,
 } from "@narriflow/validators";
 import {
@@ -181,7 +182,7 @@ function inactiveWorkspace() {
 
 function knownSeconds(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.ceil(value)
+    ? value
     : null;
 }
 
@@ -578,7 +579,7 @@ export class ProcessingUsage {
       tx.processingUsageReservation.findUnique({ where: { projectId } }),
       tx.project.findUniqueOrThrow({
         where: { id: projectId },
-        select: { ingestStatus: true, sourceDurationSeconds: true },
+        select: { ingestStatus: true, sourceProbe: true, sourceRevision: true },
       }),
       this.workspaceTier(tx, head.workspaceId),
     ]);
@@ -588,8 +589,15 @@ export class ProcessingUsage {
         charged: false,
         settledSeconds: row.settledSeconds ?? 0,
       };
-    const seconds = knownSeconds(project.sourceDurationSeconds);
-    if (project.ingestStatus !== "ready" || seconds === null)
+    const audio = await tx.sourceAudio.findUnique({ where: {
+      projectId_sourceRevision: { projectId, sourceRevision: project.sourceRevision },
+    }, select: { durationSeconds: true } });
+    const probe = sourceProbeSchema.safeParse(project.sourceProbe);
+    const seconds = knownSeconds(audio?.durationSeconds ?? (probe.success ? probe.data.durationSec : null));
+    // Audio readiness is independent of video readiness. Whole-source evidence
+    // is immutable and fenced to the current revision before it reaches here.
+    const audioReady = Boolean(audio) && !["failed", "pending", "uploading"].includes(project.ingestStatus);
+    if ((!audioReady && project.ingestStatus !== "ready") || seconds === null)
       return { outcome: "not_ready" };
 
     const { tier } = workspace;
