@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--phase',choices=['upload','pin'],required=True)
     parser.add_argument('--arguments',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--expected-function-id')
     args=parser.parse_args()
     if os.environ.get('MODAL_PROFILE','murtazach275')!='murtazach275':
         raise RuntimeError('gate_modal_profile_mismatch')
@@ -33,7 +34,14 @@ def main():
         if set(value)!={'invocation','source'}:raise RuntimeError('gate_arguments_invalid')
         invocation,source=value['invocation'],value['source']
     import modal
-    function=modal.Function.from_name(args.app,args.function)
+    function=modal.Function.from_name(args.app,args.function,environment_name='main')
+    if args.expected_function_id is not None:
+        import re
+        if not re.fullmatch(r'fu-[A-Za-z0-9]{10,40}',args.expected_function_id):
+            raise RuntimeError('gate_function_id_invalid')
+        function.hydrate()
+        if function.object_id!=args.expected_function_id:
+            raise RuntimeError('gate_function_id_changed')
     result=function.remote(invocation,phase=args.phase,source=source)
     if type(result) is not dict or result.get('version')!=1 or result.get('phase')!=args.phase:
         raise RuntimeError('gate_report_invalid')

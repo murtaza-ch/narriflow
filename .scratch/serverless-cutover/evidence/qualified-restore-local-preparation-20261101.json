@@ -1,29 +1,123 @@
 {
   "status": "local_preparation_only_cloud_acceptance_pending",
-  "target": {"host": "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech", "database": "serverless_pipeline_gates", "schema": "public"},
+  "target": {
+    "host": "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",
+    "database": "serverless_pipeline_gates",
+    "schema": "public"
+  },
   "cloudActionsPerformed": false,
   "sharedActionsPerformed": false,
   "localDatabase": "guarded disposable schemas on localhost PostgreSQL 17.11",
-  "cloudArchiveTooling": {"requiredUtilities": "libpq 18.6", "directory": "/opt/homebrew/opt/libpq/bin", "requiredObservedServerMajor": 18, "operatorPreflightServerVersion": "18.6", "localVersionCommands": "pg_dump and pg_restore both report PostgreSQL 18.6; no database connection performed"},
-  "archiveRuntime": {"maximumUtilityMs": 180000, "originalDeadlineReserveMs": 30000, "tlsMode": "verify-full", "tlsRootCertificate": "system", "recordsUtilityElapsedMs": true, "operatorReportedPreclockBackup": {"byteLength": 1196912, "approximatelySeconds": 83}, "sameBranchDisposableRestoreTiming": "operator preflight pending before native clock"},
+  "cloudArchiveTooling": {
+    "requiredUtilities": "libpq 18.6",
+    "directory": "/opt/homebrew/opt/libpq/bin",
+    "requiredObservedServerMajor": 18,
+    "operatorPreflightServerVersion": "18.6",
+    "localVersionCommands": "pg_dump and pg_restore both report PostgreSQL 18.6; no database connection performed"
+  },
+  "archiveRuntime": {
+    "maximumUtilityMs": 180000,
+    "originalDeadlineReserveMs": 30000,
+    "tlsMode": "verify-full",
+    "tlsRootCertificate": "system",
+    "recordsUtilityElapsedMs": true,
+    "operatorReportedPreclockBackup": {
+      "byteLength": 1196912,
+      "approximatelySeconds": 83
+    },
+    "sameBranchDisposableRestoreTiming": "operator reported regional disposable preflight26.670737seconds with PostgreSQL18.6; not qualified native acceptance"
+  },
   "fixes": [
     "Qualified NativeValidation restore clears unpublished old-owner result pointers; historical committed artifacts, starts, charged count and deadline remain unchanged.",
     "Fenced scheduler and Workflow entry admit only exact rs2 metadata phases; every redispatch phase waits for explicit closed-mode resume.",
     "Closed-mode CLI resume confirms the exact pending boundary registration without changing the preceding committed page receipt.",
     "The new source-admission restore regression selects its owned cursor range rather than consuming another suite's superseded source fixtures."
   ],
-  "postgresql": {"testsPassed": 38, "assertions": 326, "suites": ["targeted-ingest-execution", "execution-snapshot", "execution-native-restore", "execution-restore"], "freshMigrations": true, "includes030NativeRestoreGuard": true},
-  "fast": {"testsPassed": 20, "assertions": 194, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
-  "regionalOperatorLocalTests": {"pythonTestsPassed": 5, "cloudActionsPerformed": false, "pinsExactAppImageRunAndCA": true, "sdkChildReceivesDatabaseCredentials": false},
-  "nativeFixtureLocalTests": {"postgresqlTestsPassed": 4, "assertions": 36, "normalModalAcknowledgementFabricated": false, "actualCloudAdmissionPerformed": false},
+  "postgresql": {
+    "testsPassed": 38,
+    "assertions": 326,
+    "suites": [
+      "targeted-ingest-execution",
+      "execution-snapshot",
+      "execution-native-restore",
+      "execution-restore"
+    ],
+    "freshMigrations": true,
+    "includes030NativeRestoreGuard": true
+  },
+  "fast": {
+    "testsPassed": 20,
+    "assertions": 194,
+    "suites": [
+      "scheduler",
+      "execution-restore-operator",
+      "qualified-restore-candidate"
+    ]
+  },
+  "regionalOperatorLocalTests": {
+    "pythonTestsPassed": 5,
+    "cloudActionsPerformed": false,
+    "pinsExactAppImageRunAndCA": true,
+    "sdkChildReceivesDatabaseCredentials": false
+  },
+  "nativeFixtureLocalTests": {
+    "postgresqlTestsPassed": 4,
+    "assertions": 36,
+    "normalModalAcknowledgementFabricated": false,
+    "actualCloudAdmissionPerformed": false
+  },
   "servicesTypecheck": "passed",
   "apiTypecheck": "passed",
   "workerDryRunAndImportAudit": "passed",
   "focusedBiome": "passed",
   "operatorPlan": "qualified-restore-plan-20261101.md",
   "operatorHelper": "packages/services/scripts/gates/qualified-restore-candidate.ts",
-  "plannedEpochs": {"oldInvocation": 3, "snapshotFence": 4, "restored": 5},
-  "expectedCloudSequence": "old epoch3 actual start -> fenced source4 actual dump/attest/restore -> begin5 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
-  "requiredCloudAssertions": {"chargedStarts": 2, "staleCallbackAdditionalCharge": 0, "publishedCurrentAssets": 1, "originalOperationBudgetMinutes": 10, "deadlineExtensionAllowed": false},
-  "notEstablishedLocally": ["actual candidate dump/restore", "actual Cloudflare metadata and closed redispatch receipts", "actual Modal hold and stale signed refusal", "actual current native completion before original deadline", "exact owned cloud fixture cleanup"]
+  "plannedEpochs": {
+    "oldInvocation": 5,
+    "snapshotFence": 6,
+    "restored": 7
+  },
+  "expectedCloudSequence": "fresh old epoch5 actual start -> fenced source6 actual dump/attest/restore -> begin7 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
+  "requiredCloudAssertions": {
+    "chargedStarts": 2,
+    "staleCallbackAdditionalCharge": 0,
+    "publishedCurrentAssets": 1,
+    "originalOperationBudgetMinutes": 10,
+    "deadlineExtensionAllowed": false
+  },
+  "notEstablishedLocally": [
+    "fresh5/6/7 candidate dump/restore",
+    "fresh Cloudflare metadata and closed redispatch receipts",
+    "actual Modal hold and stale signed refusal",
+    "actual current native completion before original deadline",
+    "exact owned cloud fixture cleanup"
+  ],
+  "priorOperatorAttempt": {
+    "epochs": {
+      "oldInvocation": 3,
+      "snapshotFence": 4,
+      "restored": 5
+    },
+    "snapshotCapturedAttestedAndRestored": true,
+    "qualifiedGatePassed": false,
+    "failure": "closed redispatch registration starved by old fenced metadata replay consuming delivery backoff",
+    "twoStartCompletionEstablished": false,
+    "staleSignedRefusalEstablished": false,
+    "reusePermitted": false,
+    "evidenceSource": "parent operator report; existing private run directory unchanged"
+  },
+  "freshSequenceLocalChecks": {
+    "plannedEpochs": "5/6/7",
+    "qualifiedGuardTestsPassed": 6,
+    "qualifiedGuardAssertions": 45,
+    "combinedQualifiedAndPendingLargeGuardTestsPassed": 9,
+    "combinedAssertions": 71,
+    "servicesTypecheck": "passed",
+    "focusedBiome": "passed",
+    "databaseActionsPerformed": false,
+    "cloudActionsPerformed": false,
+    "privateFailedRunDirectoryModified": false,
+    "largeGateLaunchTemplateFilled": false,
+    "largeGateRequiresPassedFreshRestore": true
+  }
 }
