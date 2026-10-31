@@ -20,11 +20,17 @@ export function candidateRestoreUtilityTimeout(deadline:number,now:number){
  if(!Number.isFinite(deadline)||!Number.isFinite(now))throw invalid();
  const timeout=Math.min(180000,deadline-now-30000);if(!Number.isFinite(timeout)||timeout<1000)throw invalid();return timeout;
 }
-interface UtilityEvidence{tool:"pg_dump"|"pg_restore";utilityVersion:string;serverMajor:number;serverVersion:string;serverVersionNumber:number;timeoutMs:number;elapsedMs:number}
+interface UtilityEvidence{tool:"pg_dump"|"pg_restore";utilityVersion:string;serverMajor:number;serverVersion:string;serverVersionNumber:number;timeoutMs:number;elapsedMs:number;backend?:"regional";sandboxId?:string;caBundleSha256?:string;sha256?:string;byteLength?:number}
 class CandidateRestoreUtilityError extends Error{constructor(readonly proof:UtilityEvidence){super("qualified_restore_utility_failed");}}
 export function candidateRestorePostgresVersion(tool:"pg_dump"|"pg_restore",output:string,serverVersionNumber:number){
- if(!Number.isInteger(serverVersionNumber)||Math.floor(serverVersionNumber/10000)!==pgMajor||output.trim()!==`${tool} (PostgreSQL) ${pgVersion}`)throw invalid();
+ const version=new RegExp(`^${tool} \\(PostgreSQL\\) 18\\.6(?: \\(Debian [A-Za-z0-9.+~:-]+\\))?$`);
+ if(!Number.isInteger(serverVersionNumber)||Math.floor(serverVersionNumber/10000)!==pgMajor||!version.test(output.trim()))throw invalid();
  return {utilityVersion:pgVersion,serverMajor:pgMajor};
+}
+export function candidateRestoreOperatorSelection(sandboxId:string|undefined,journalPath:string|undefined){
+ if(sandboxId===undefined&&journalPath===undefined)return null;
+ if(!sandboxId||!/^sb-[A-Za-z0-9]{20,40}$/.test(sandboxId)||!journalPath||!isAbsolute(journalPath)||[...journalPath].some(c=>c.charCodeAt(0)<32||c.charCodeAt(0)===127))throw invalid();
+ return{sandboxId,journalPath};
 }
 const uuid=(value:unknown):value is string=>typeof value==="string"&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 export function candidateRestoreTarget(raw:string){
@@ -84,7 +90,26 @@ async function main(){
   return {state,worker};
  }
  const runFile=promisify(execFile);
- async function postgres(tool:"pg_dump"|"pg_restore",args:string[]){
+ async function postgres(tool:"pg_dump"|"pg_restore",snapshotPath:string){
+  const operator=candidateRestoreOperatorSelection(process.env.RESTORE_OPERATOR_SANDBOX_ID,process.env.RESTORE_OPERATOR_JOURNAL);
+  if(operator){
+   if(!serverVersion)throw invalid();
+   const timeout=candidateRestoreUtilityTimeout(deadline,Date.now()),began=performance.now();
+   const request={version:1,tool,...operator,runId:j.runId,localPath:snapshotPath,deadlineUnixMs:deadline,timeoutMs:timeout,expectedSha256:tool==="pg_restore"?await hashSnapshotFile(snapshotPath):null};
+   const script=fileURLToPath(new URL("./qualified_restore_operator.py",import.meta.url));
+   const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,TMPDIR:process.env.TMPDIR,MODAL_PROFILE:"murtazach275",MODAL_ENVIRONMENT:"main"};
+   let raw:unknown;
+   try{
+    const output=await new Promise<string>((resolve,reject)=>{const child=execFile("/Users/murtaza/.local/share/uv/tools/modal/bin/python",[script],{env,timeout,maxBuffer:8192,encoding:"utf8"},(error,stdout)=>{if(error)reject(invalid());else resolve(stdout);});child.stdin!.end(JSON.stringify(request));});
+    raw=JSON.parse(output);
+   }catch{throw new CandidateRestoreUtilityError({tool,utilityVersion:pgVersion,serverMajor:pgMajor,serverVersion:serverVersion.version,serverVersionNumber:serverVersion.number,timeoutMs:timeout,elapsedMs:Math.ceil(performance.now()-began),backend:"regional",sandboxId:operator.sandboxId});}
+   const value=raw as Record<string,unknown>;
+   if(!value||typeof value!=="object"||value.tool!==tool||typeof value.utilityBuild!=="string"||typeof value.serverVersionNumber!=="number"||typeof value.serverVersion!=="string"||value.serverVersion.length>160||typeof value.caBundleSha256!=="string"||!/^[a-f0-9]{64}$/.test(value.caBundleSha256)||typeof value.sha256!=="string"||!/^[a-f0-9]{64}$/.test(value.sha256)||typeof value.byteLength!=="number"||!Number.isSafeInteger(value.byteLength)||value.byteLength<1||value.byteLength>64*1024*1024||typeof value.elapsedMs!=="number"||!Number.isSafeInteger(value.elapsedMs)||value.elapsedMs<0||typeof value.timeoutMs!=="number"||!Number.isSafeInteger(value.timeoutMs)||value.timeoutMs<1000||value.timeoutMs>timeout)throw invalid();
+   const checked=candidateRestorePostgresVersion(tool,value.utilityBuild,value.serverVersionNumber);
+   if(await hashSnapshotFile(snapshotPath)!==value.sha256)throw invalid();
+   return{tool,...checked,serverVersion:value.serverVersion,serverVersionNumber:value.serverVersionNumber,timeoutMs:value.timeoutMs,elapsedMs:value.elapsedMs,backend:"regional" as const,sandboxId:operator.sandboxId,caBundleSha256:value.caBundleSha256,sha256:value.sha256,byteLength:value.byteLength};
+  }
+  const args=tool==="pg_dump"?["--format=custom","--compress=0","--no-owner","--no-privileges",`--file=${snapshotPath}`]:["--clean","--if-exists","--single-transaction","--exit-on-error","--no-owner","--no-privileges",`--dbname=${databaseName}`,snapshotPath];
   const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,PGHOST:host,PGPORT:"5432",PGDATABASE:databaseName,PGUSER:decodeURIComponent(target.username),PGPASSWORD:decodeURIComponent(target.password),PGSSLMODE:"verify-full",PGSSLROOTCERT:"system",PGCONNECT_TIMEOUT:"10",PGOPTIONS:"-c statement_timeout=60000 -c lock_timeout=5000"};
   if(!serverVersion)throw invalid();
   const binary=`${pgDirectory}/${tool}`,version=await runFile(binary,["--version"],{env,timeout:5000,maxBuffer:4096});
@@ -99,7 +124,7 @@ async function main(){
    await source();
    const temporary=`${j.snapshotPath}.${j.runId}.partial`,file=await open(temporary,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);await file.close();
    await db.$disconnect();
-   const postgresVersion=await postgres("pg_dump",["--format=custom","--compress=0","--no-owner","--no-privileges",`--file=${temporary}`]);
+   const postgresVersion=await postgres("pg_dump",temporary);
    await link(temporary,j.snapshotPath);await unlink(temporary);
    console.log(JSON.stringify({mode:"snapshot_captured",runId:j.runId,sourceEpoch:snapshotEpoch,postgres:postgresVersion,capturedAt:new Date().toISOString(),snapshotSha256:await hashSnapshotFile(j.snapshotPath)}));
   }else if(stage==="restore"){
@@ -108,7 +133,7 @@ async function main(){
    if(evidence.proof.sourceEpoch!==snapshotEpoch||evidence.proof.schema!=="public")throw invalid();
    const validate=()=>db.$transaction(async tx=>{const [current]=await tx.$queryRaw<Array<typeof state>>`SELECT epoch,"admissionOpen","changedAt" FROM "ExecutionEpoch" WHERE id=1 FOR UPDATE`;if(!current)throw invalid();await assertExecutionSnapshotDatabase(tx,evidence,{...current,expectedEpoch:snapshotEpoch,fenceAboveEpoch:snapshotEpoch});});
    await validate();await db.$disconnect();
-   const postgresVersion=await postgres("pg_restore",["--clean","--if-exists","--single-transaction","--exit-on-error","--no-owner","--no-privileges",`--dbname=${databaseName}`,j.snapshotPath]);
+   const postgresVersion=await postgres("pg_restore",j.snapshotPath);
    db=makeDatabase();await identity(snapshotEpoch);await validate();await original();
    console.log(JSON.stringify({mode:"attested_snapshot_restored",runId:j.runId,sourceEpoch:snapshotEpoch,postgres:postgresVersion,restoredAt:new Date().toISOString(),snapshotSha256:evidence.proof.snapshotSha256}));
   }else{

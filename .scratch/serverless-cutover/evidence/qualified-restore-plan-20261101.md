@@ -18,6 +18,20 @@ The expected sequence is an actual native start in epoch 3, a quiescence fence t
 
 The private fixture helper is `packages/services/scripts/gates/qualified-restore-native-fixture.ts prepare`. Run it only after all timing/image/deployment preflight is complete: its actual domain admission starts the original ten-minute clock. Set `RESTORE_FIXTURE_JOURNAL` to the private precreated `{version:1,runId,inputKey,inputBytes,inputSha256}` journal and `RESTORE_FIXTURE_INVOCATION` to a new absolute private file. The helper reads the existing fixed auth/settings files under `/tmp/narriflow-serverless-control-keys`, derives the actual SQL actor/brand scope, and uses an actual SDK R2 HEAD with a ten-second timeout. No SourceBlob is fabricated. The PNG key must be under the actual brand-owner `visual-assets` prefix and end in `/restore-<runId>/source.png`.
 
+### Optional regional archive utilities
+
+The operator's separate regional timing preflight restored the actual 161-migration archive into a new disposable database in 26.670737 seconds. This is not qualified native-gate acceptance. Its PostgreSQL 18.6 Debian image needed the actual trusted Homebrew public CA bundle, whose SHA must be recorded, for Neon's current chain. No TLS verification is disabled.
+
+Before admitting the native job, create one fifteen-minute Sandbox in the existing `narriflow-restore-operator-gates` app, image `im-eLOXuxnLewD81EngzOgXFy`, region `us-east`, without an explicit cloud-provider override. It receives only a temporary operator PG secret for the exact candidate and public CA file. Keep product media/fault functions restricted from Modal SDK access and database-free. Record the private mode-0600 journal with exactly `{version:1,runId,sandboxId,appName,appId,imageId,expectedHost,expectedDatabase,caBundleSha256,createdAt,expiresAt}`. The lifetime is at most 900 seconds and must cover the original accepted native deadline. Tags must contain `purpose:qualified-restore`, the same `runId`, exact `imageId`, and `caBundleSha256`.
+
+Set both `RESTORE_OPERATOR_SANDBOX_ID` and `RESTORE_OPERATOR_JOURNAL` in the private operator environment file. The existing `qualified-restore-candidate.ts dump` and `restore` commands then use `qualified_restore_operator.py` through the installed Modal 1.6.3 SDK Python. With neither variable, the Mac libpq backend remains selected; a partial or malformed selection is refused. All source/proof/epoch/deadline checks still run in the original helper.
+
+The adapter creates no Sandbox, app, secret or product dispatch. It looks up the existing exact app, selects only its run-tagged exact Sandbox, verifies tags/image/CA hash, and permits only literal `pg_dump` or transactional `pg_restore` arguments. It rechecks the regional host/database/version/TLS settings and verifies the public CA file bytes. Dumps use one fixed per-run private file. The actual downloaded bytes are written to the reserved local mode-0600 file and hashed for normal attestation. Restore uploads those exact attested local bytes and verifies their SHA before the fixed utility runs. The SDK child receives no DSN, R2 key or executor-control credential. Version, CA hash, byte hash and finite utility timing are safe output facts.
+
+The local caller and remote utility are both bounded by the unchanged original deadline with a thirty-second reserve. On timeout or ambiguous SDK failure keep all consumers fenced; confirm the exact regional process is stopped or terminate its Sandbox before retrying or changing reference state. Never infer rollback from a lost caller alone. Destroy the privileged Sandbox after success or failure; retaining its metadata journal is not permission to reuse it after expiry.
+
+The installed SDK and official [Sandbox filesystem](https://modal.com/docs/guide/sandbox-files) and [exec](https://modal.com/docs/guide/sandbox-spawn) interfaces were checked. Local guard and controlled SDK-port tests do not establish deployed backend or whole-gate latency acceptance.
+
 ```sh
 bun --no-env-file --env-file="$OPERATOR_ENV" packages/services/scripts/gates/qualified-restore-native-fixture.ts prepare
 ```

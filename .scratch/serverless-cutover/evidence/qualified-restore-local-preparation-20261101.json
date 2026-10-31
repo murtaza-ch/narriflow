@@ -13,7 +13,9 @@
     "The new source-admission restore regression selects its owned cursor range rather than consuming another suite's superseded source fixtures."
   ],
   "postgresql": {"testsPassed": 38, "assertions": 326, "suites": ["targeted-ingest-execution", "execution-snapshot", "execution-native-restore", "execution-restore"], "freshMigrations": true, "includes030NativeRestoreGuard": true},
-  "fast": {"testsPassed": 19, "assertions": 187, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
+  "fast": {"testsPassed": 20, "assertions": 194, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
+  "regionalOperatorLocalTests": {"pythonTestsPassed": 5, "cloudActionsPerformed": false, "pinsExactAppImageRunAndCA": true, "sdkChildReceivesDatabaseCredentials": false},
+  "nativeFixtureLocalTests": {"postgresqlTestsPassed": 4, "assertions": 36, "normalModalAcknowledgementFabricated": false, "actualCloudAdmissionPerformed": false},
   "servicesTypecheck": "passed",
   "apiTypecheck": "passed",
   "workerDryRunAndImportAudit": "passed",
