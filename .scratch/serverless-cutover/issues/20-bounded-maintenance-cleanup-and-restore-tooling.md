@@ -99,3 +99,20 @@ confirmation and DELETE with zero HTTP. Services/API typechecks pass; 34 changed
 TypeScript/JSON files pass Biome. Deterministic cleanup/storage cases pass 33/118.
 These results do not establish deployed R2 deletion or complete the still-open
 hourly/daily phase adapters and restore domain transformation.
+
+The next checkpoint adds real hourly pending-outbox and nearest-attempt-deadline
+pages, with fixed SQL round trips and indexed cursors. Every hourly observation
+has that hour's identity so a previously failed safety handler can be retried by
+a later pass. Expiry remains the shared exact domain transition. Daily inbox
+expiry now uses `(expiresAt, deliveryId, audience)` and preserves ties across
+all internal and signed namespaces.
+
+Restore now runs strict source-pair/cutoff/cursor pages under `restore-page`
+receipts. Its first production adapter revokes only old-epoch active generic
+permissions; historical owner/process-start/completed facts remain intact. Missing
+domain adapters still fail explicitly, and no path reopens admission. Full fresh
+PostgreSQL verification through migration 010 plus current integration migrations
+passes 261 tests and 1,741 assertions. Services/API typechecks and focused Biome pass.
+The injected empty adapters in controller tests are test fixtures, not production
+fallbacks. Remaining domain transforms, the complete phase factory, operator CLI
+and deployed maintenance acceptance are still required.

@@ -3472,7 +3472,7 @@ model ExecutionInboxReceipt {
   expiresAt     DateTime
 
   @@id([audience, deliveryId])
-  @@index([expiresAt])
+  @@index([expiresAt, deliveryId, audience])
 }
 
 /// Server-assigned, attempt- and invocation-unique destinations. HEAD precedes publication.
