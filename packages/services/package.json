@@ -24,6 +24,7 @@
     "./execution-maintenance-pages": "./src/execution-maintenance-pages.ts",
     "./execution-object-cleanup": "./src/execution-object-cleanup.ts",
     "./execution-restore": "./src/execution-restore.ts",
+    "./execution-restore-pages": "./src/execution-restore-pages.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",
       "default": "./src/ingest-source-execution.ts"

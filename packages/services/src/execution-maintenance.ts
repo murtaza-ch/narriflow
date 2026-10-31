@@ -8,7 +8,8 @@ export const HOURLY_MAINTENANCE_PHASES = ["dispatches", "deadlines", "provider_w
 export const DAILY_MAINTENANCE_PHASES = ["tasks", "receipts", "events", "grants", "retention", "sources", "pending_workspaces", "cleanup"] as const;
 export type MaintenancePhase = typeof HOURLY_MAINTENANCE_PHASES[number] | typeof DAILY_MAINTENANCE_PHASES[number];
 export type MaintenanceCadence = "hourly" | "daily";
-export interface MaintenancePosition { at: Date; id: string }
+export const MAINTENANCE_RECEIPT_AUDIENCES = ["modal-bridge", "executor-control", "dev-device", "watchdog", "maintenance-page", "restore-page"] as const;
+export interface MaintenancePosition { at: Date; id: string; tie?: typeof MAINTENANCE_RECEIPT_AUDIENCES[number] }
 export interface MaintenancePage { deploymentEpoch: number; cutoff: Date; after: MaintenancePosition | null; limit: number }
 export interface MaintenancePageResult { processed: number; next: MaintenancePosition | null; dispatchIds?: readonly string[] }
 export type MaintenancePhaseHandler = (tx: Prisma.TransactionClient, page: MaintenancePage) => Promise<MaintenancePageResult>;
@@ -20,20 +21,24 @@ const invalid = () => new ExecutionMaintenanceError("maintenance_reference_inval
 const phases = (cadence: MaintenanceCadence): readonly MaintenancePhase[] => cadence === "hourly" ? HOURLY_MAINTENANCE_PHASES : DAILY_MAINTENANCE_PHASES;
 function validDate(value: Date) { return value instanceof Date && Number.isSafeInteger(value.getTime()) && value.getTime() >= 0; }
 function position(value: MaintenancePosition) {
-  if (!validDate(value.at) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.id)) throw new ExecutionMaintenanceError("maintenance_page_invalid");
+  if (!validDate(value.at) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.id) || (value.tie !== undefined && !MAINTENANCE_RECEIPT_AUDIENCES.includes(value.tie))) throw new ExecutionMaintenanceError("maintenance_page_invalid");
 }
 function identity(cadence: MaintenanceCadence, cutoff: Date, phase: MaintenancePhase, after: MaintenancePosition | null) {
   if (!validDate(cutoff) || !phases(cadence).includes(phase)) throw invalid();
-  if (after) position(after);
-  return `mt1.${cadence === "hourly" ? "h" : "d"}.${cutoff.getTime()}.${phase}${after ? `.${after.at.getTime()}.${after.id.replaceAll("-", "")}` : ""}`;
+  if (after) {
+    position(after);
+    if ((phase === "receipts") !== (after.tie !== undefined)) throw invalid();
+  }
+  return `mt1.${cadence === "hourly" ? "h" : "d"}.${cutoff.getTime()}.${phase}${after ? `.${after.at.getTime()}.${after.id.replaceAll("-", "")}${after.tie ? `.${after.tie}` : ""}` : ""}`;
 }
 function parse(id: string) {
-  const match = /^mt1\.([hd])\.(0|[1-9][0-9]{0,12})\.([a-z_]+)(?:\.(0|[1-9][0-9]{0,12})\.([a-f0-9]{32}))?$/.exec(id);
+  const match = /^mt1\.([hd])\.(0|[1-9][0-9]{0,12})\.([a-z_]+)(?:\.(0|[1-9][0-9]{0,12})\.([a-f0-9]{32})(?:\.([a-z-]+))?)?$/.exec(id);
   if (!match) throw invalid();
   const cadence: MaintenanceCadence = match[1] === "h" ? "hourly" : "daily";
   const cutoff = new Date(Number(match[2])), phase = match[3] as MaintenancePhase;
   const compact = match[5];
-  const after = compact ? { at: new Date(Number(match[4])), id: `${compact.slice(0,8)}-${compact.slice(8,12)}-${compact.slice(12,16)}-${compact.slice(16,20)}-${compact.slice(20)}` } : null;
+  const after: MaintenancePosition | null = compact ? { at: new Date(Number(match[4])), id: `${compact.slice(0,8)}-${compact.slice(8,12)}-${compact.slice(12,16)}-${compact.slice(16,20)}-${compact.slice(20)}`,
+    ...(match[6] ? { tie: match[6] as MaintenancePosition["tie"] } : {}) } : null;
   if (identity(cadence, cutoff, phase, after) !== id) throw invalid();
   return { cadence, cutoff, phase, after };
 }
@@ -86,7 +91,7 @@ export class ExecutionMaintenanceService {
         if (ids.length > 127) throw new ExecutionMaintenanceError("maintenance_page_invalid");
         if (outcome.next) {
           position(outcome.next);
-          if (after && (outcome.next.at < after.at || (outcome.next.at.getTime() === after.at.getTime() && outcome.next.id <= after.id))) throw new ExecutionMaintenanceError("maintenance_page_invalid");
+          if (outcome.next.at > page.cutoff || (after && (outcome.next.at < after.at || (outcome.next.at.getTime() === after.at.getTime() && (outcome.next.id < after.id || (outcome.next.id === after.id && (outcome.next.tie ?? "") <= (after.tie ?? ""))))))) throw new ExecutionMaintenanceError("maintenance_page_invalid");
         }
         const nextPhase = outcome.next ? phase : sequence[index + 1];
         if (outcome.processed > 0) {
