@@ -13,7 +13,7 @@ The Python process supervisor bounds input and output, propagates cancellation, 
 ```sh
 bun run --cwd apps/media typecheck
 bun test apps/media/src apps/media/scripts
-PYTHONPATH=apps/media/python uv run --python 3.13.5 --no-project python -m unittest discover -s apps/media/python/tests -v
+PYTHONPATH=apps/media/python uv run --project apps/media --frozen python -m unittest discover -s apps/media/python/tests -v
 ```
 
 Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face_yunet.onnx`. Download only the immutable source recorded in `runtime-lock.json` and verify its SHA-256. Model bytes are ignored locally and are baked into the render image from that same pin. Golden fixture documents, evidence, expectations and source pins are unchanged by the move.
