@@ -18,7 +18,7 @@ from .process import FILE_SIZE_LIMIT_EXIT_CODE, run_owned_process_async
 from .proxy import BoundProxySession
 from .token_helper import OwnedTokenHelper
 
-FORMAT_PREFERENCE = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+FORMAT_PREFERENCE = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best/bestvideo[height<=1080]/bestvideo"
 
 
 class YtDlpSourceRuntime:
@@ -137,17 +137,17 @@ class YtDlpSourceRuntime:
             formats = facts.get("requested_formats")
             if not isinstance(formats, list):
                 formats = [facts]
-            audio = next(value for value in formats if value.get("acodec") not in {None, "none", "NA"})
+            audio = next((value for value in formats if value.get("acodec") not in {None, "none", "NA"}), None)
             video = next(value for value in formats if value.get("vcodec") not in {None, "none", "NA"})
-            for value in [audio, video]:
+            for value in [value for value in [audio, video] if value is not None]:
                 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", value["format_id"]):
                     raise ValueError()
-            language = audio.get("language")
+            language = audio.get("language") if audio is not None else None
             if language in {None, "NA", ""}:
                 language = None
             elif not re.fullmatch(r"[A-Za-z0-9-]{1,32}", language):
                 raise ValueError()
-            return ResolvedSource(source.media_id, audio["format_id"], video["format_id"], language, metadata)
+            return ResolvedSource(source.media_id, audio["format_id"] if audio is not None else None, video["format_id"], language, metadata)
         except (ValueError, TypeError, KeyError, StopIteration, OSError):
             raise SourceFetchFailure("source_metadata_invalid") from None
 
@@ -160,7 +160,9 @@ class YtDlpSourceRuntime:
 
     async def _download(self, selected: ResolvedSource, session: BoundProxySession | None, work: Path, audio: bool):
         work.mkdir(parents=True, exist_ok=True)
-        format_id = selected.audio_format_id if audio or selected.video_format_id == selected.audio_format_id else f"{selected.video_format_id}+{selected.audio_format_id}"
+        if audio and selected.audio_format_id is None:
+            raise SourceFetchFailure("source_audio_video_mismatch")
+        format_id = selected.audio_format_id if audio else selected.video_format_id if selected.audio_format_id is None or selected.video_format_id == selected.audio_format_id else f"{selected.video_format_id}+{selected.audio_format_id}"
         args = ["--load-info-json", str(selected.metadata_path), "--format", format_id,
                 "--output", str(work / ("audio.%(ext)s" if audio else "video.%(ext)s")), "--print", "after_move:filepath"]
         if audio:

@@ -101,7 +101,7 @@ class SourceAudioEvidence(Protocol):
 @dataclass(frozen=True)
 class ResolvedSource:
     media_id: str
-    audio_format_id: str
+    audio_format_id: str | None
     video_format_id: str
     language: str | None
     metadata_path: Path = field(repr=False)
@@ -111,7 +111,7 @@ class ResolvedSource:
 class DownloadedSource:
     path: Path = field(repr=False)
     media_id: str
-    audio_format_id: str
+    audio_format_id: str | None
 
 
 @dataclass(frozen=True)
@@ -143,7 +143,7 @@ class VerifiedSourceFile:
 
 @dataclass(frozen=True)
 class FetchSourceResult:
-    audio: VerifiedSourceFile | ExistingSourceAudio
+    audio: VerifiedSourceFile | ExistingSourceAudio | None
     video: VerifiedSourceFile
 
 
@@ -182,10 +182,20 @@ async def _verified(download: DownloadedSource, selected: ResolvedSource, source
     snapshot, digest = await asyncio.to_thread(_file_hash, download.path)
     if snapshot != before_probe:
         raise SourceManifestError("source_file_changed")
-    manifest = build_audio_manifest(source=source, source_revision=revision,
-                                    audio_format_id=selected.audio_format_id, language=selected.language,
-                                    probe=probe, byte_length=snapshot.size, sha256=digest,
-                                    toolchain_fingerprint=fingerprint)
+    if selected.audio_format_id is None:
+        duration=probe.get("durationSec");version=probe.get("probeVersion")
+        if (probe.get("hasAudio") is not False or probe.get("facts",{}).get("audios")!=[]
+                or type(duration) not in {int,float} or not math.isfinite(duration) or duration<=0
+                or not isinstance(version,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}",version)):
+            raise SourceFetchFailure("source_audio_video_mismatch")
+        manifest={"sourceRevision":revision,"mediaIdentity":{"provider":"youtube","mediaId":source.media_id},
+            "audioTrack":None,"byteLength":snapshot.size,"sha256":digest,"durationSeconds":duration,"wholeSource":True,
+            "audioStartTimeSec":None,"probeVersion":version,"toolchainFingerprint":fingerprint}
+    else:
+        manifest = build_audio_manifest(source=source, source_revision=revision,
+                                        audio_format_id=selected.audio_format_id, language=selected.language,
+                                        probe=probe, byte_length=snapshot.size, sha256=digest,
+                                        toolchain_fingerprint=fingerprint)
     artifact = VerifiedSourceFile(download.path, manifest, probe, snapshot)
     artifact.assert_unchanged()
     return artifact
@@ -209,12 +219,12 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                        work_directory: Path, runtime: SourceRuntime, sink: SourceSink,
                        toolchain_fingerprint: str, proxy_template: str | None = None,
                        deadline_seconds: float = 45 * 60, existing_audio: ExistingSourceAudio | None = None,
-                       project_id: str | None = None) -> FetchSourceResult:
+                       project_id: str | None = None, acquire_audio: bool = True) -> FetchSourceResult:
     if mode not in {"local", "proxy"} or (mode == "local" and not development):
         raise SourceFetchFailure("source_fetch_mode_forbidden")
     if type(source_revision) is not int or not 0 < source_revision <= 2 ** 53 - 1 or not re.fullmatch(r"[a-f0-9]{64}", toolchain_fingerprint):
         raise SourceManifestError()
-    if not 0 < deadline_seconds <= 45 * 60:
+    if type(acquire_audio) is not bool or not 0 < deadline_seconds <= 45 * 60:
         raise SourceFetchFailure("source_fetch_deadline_invalid")
     identity = normalize_youtube_source(source) if isinstance(source, str) else source
     if existing_audio is not None:
@@ -250,7 +260,7 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                     if verified.probe.get("hasVideo") is not True:
                         raise SourceFetchFailure("source_audio_video_mismatch")
                     return verified
-                audio_task = asyncio.create_task(prepare_audio()) if audio is None else None
+                audio_task = asyncio.create_task(prepare_audio()) if audio is None and acquire_audio and selected.audio_format_id is not None else None
                 video_task = asyncio.create_task(prepare_video())
                 tasks = [task for task in [audio_task, video_task] if task is not None]
                 if audio_task is not None:
@@ -259,8 +269,8 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                     await sink.audio_ready(candidate)
                     audio = candidate
                 video = await video_task
-                assert audio is not None
-                _same_audio_binding(audio, video)
+                if audio is not None:
+                    _same_audio_binding(audio, video)
                 video.assert_unchanged()
                 await sink.video_ready(video, audio)
                 return FetchSourceResult(audio, video)

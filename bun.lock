@@ -83,6 +83,7 @@
         "@types/archiver": "6.0.3",
         "@types/fontkit": "2.0.8",
         "@types/node": "26.2.0",
+        "standardwebhooks": "1.1.1",
       },
     },
     "apps/web": {

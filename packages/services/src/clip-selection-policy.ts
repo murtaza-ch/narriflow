@@ -227,7 +227,8 @@ Respond with a JSON object: { "clips": [...] }`;
 const MAX_TOKENS_PER_CHUNK = 80000;
 const CHARS_PER_TOKEN = 4;
 const MAX_CHARS_PER_CHUNK = MAX_TOKENS_PER_CHUNK * CHARS_PER_TOKEN;
-const OVERLAP_SECONDS = 120; // 2 minutes
+export const CLIP_SELECTION_WINDOW_SECONDS = 30 * 60;
+export const CLIP_SELECTION_OVERLAP_SECONDS = 120;
 
 export function chunkUtterances(
   utterances: TranscriptUtterance[],
@@ -242,14 +243,14 @@ export function chunkUtterances(
   // time over the utterance range so a processing window that starts deep into
   // the source (utterance times are absolute) is chunked correctly instead of
   // collapsing/dropping content past the first chunk.
-  const chunkDuration = 30 * 60;
+  const chunkDuration = CLIP_SELECTION_WINDOW_SECONDS;
   const chunks: TranscriptUtterance[][] = [];
   const firstStart = utterances[0]!.startSec;
   const lastEnd = utterances[utterances.length - 1]!.endSec;
   let chunkStart = firstStart;
 
   while (chunkStart < lastEnd) {
-    const chunkEnd = chunkStart + chunkDuration + OVERLAP_SECONDS;
+    const chunkEnd = chunkStart + chunkDuration + CLIP_SELECTION_OVERLAP_SECONDS;
     const chunk = utterances.filter(
       (u) => u.startSec >= chunkStart && u.startSec < chunkEnd,
     );

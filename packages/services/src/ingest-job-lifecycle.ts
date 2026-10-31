@@ -36,7 +36,7 @@ import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 
-import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
+import { ingestAcquisitionSchema, type IngestAcquisition, sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
 import { commitSourceLanguageProbeWithinTransaction } from "./transcription-probe";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
@@ -143,6 +143,8 @@ export interface IngestJobLifecycleDependencies {
   sourceBucket?: string;
   /** Required for video publication. Performs only typed validation/DB facts, never R2 I/O under locks. */
   validateVideo?: IngestVideoValidator;
+  /** Recomputes semantic identity after a retry advances the exact source generation. */
+  executionInputHash?: (job: IngestJob) => Promise<string>;
   now?: () => Date;
   leaseMs?: number;
   heartbeatMs?: number;
@@ -256,12 +258,16 @@ export class IngestJobLifecycle {
       projectId: string;
       jobType: IngestJob["jobType"];
       payload: Prisma.InputJsonValue;
+      acquisition: IngestAcquisition;
       sourceCredential?: string;
       uploadSessionId?: string;
     },
   ): Promise<{ id: string }> {
     const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
-    const job = await tx.ingestJob.create({ data: { ...input, sourceRevision: project.sourceRevision } });
+    const {acquisition,...data}=input;
+    if (!data.payload || typeof data.payload!=="object" || Array.isArray(data.payload)) throw new Error("ingest_source_payload_invalid");
+    const frozen={...data.payload,acquisition:ingestAcquisitionSchema.parse(acquisition)} as Prisma.InputJsonObject;
+    const job = await tx.ingestJob.create({ data: { ...data,payload:frozen, sourceRevision: project.sourceRevision } });
     await this.event(
       tx,
       {
@@ -355,6 +361,10 @@ export class IngestJobLifecycle {
   private async executionWakes(tx: Tx, ref: IngestExecutionReference, inputHash: string, wakeKind: string, retryAt?: Date): Promise<{ dispatchIds: string[] }> {
     const current = retryAt ? await tx.ingestJob.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } })
       : await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
+    if (retryAt) {
+      if (!this.deps.executionInputHash) throw new Error("ingest_execution_hash_unavailable");
+      inputHash = await this.deps.executionInputHash(current);
+    }
     const now = await this.now(tx);
     const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
       generation: current.generation, inputHash, dueAt: now, wakeKind });
@@ -990,6 +1000,7 @@ export class IngestJobLifecycle {
         projectId: input.projectId,
         jobType: last.jobType,
         payload: last.payload as Prisma.InputJsonValue,
+        acquisition: ingestAcquisitionSchema.parse(last.payload && typeof last.payload==="object" && !Array.isArray(last.payload)?last.payload.acquisition:null),
       });
       return {
         queuedJobId: job.id,

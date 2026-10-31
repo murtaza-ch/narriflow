@@ -1,6 +1,7 @@
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import type { ActorScope } from "./actor-scope";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
+import { freezeIngestAcquisition } from "./ingest-acquisition";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import {
   isProcessingUsageFailureCode,
@@ -12,6 +13,7 @@ import { Prisma, type UploadSession as PrismaUploadSession } from "@prisma/clien
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   contentPackSchema,
+  parseStoredContentPack,
   discardUploadSessionSchema,
   finalizeUploadSessionSchema,
   MAX_UPLOAD_SIZE_BYTES,
@@ -3710,7 +3712,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             },
           });
         }
-        await tx.contentPack.create({
+        const createdPack = await tx.contentPack.create({
           data: {
             projectId: current.preallocatedProjectId,
             ...contentPack,
@@ -3723,6 +3725,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             projectId: current.preallocatedProjectId,
             uploadSessionId: current.id,
             jobType: "upload_finalize",
+            acquisition: freezeIngestAcquisition({ id: createdPack.id, draft: createdPack.draft, captionedVideo: parseStoredContentPack(createdPack).captionedVideo ?? null }),
             payload: {
               storageKey: current.storageKey,
               verifiedSizeBytes,

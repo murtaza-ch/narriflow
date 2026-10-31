@@ -19,6 +19,7 @@ import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { receiptCallback } from "./completion-callback";
 import { operationFingerprint, type IntegrationMutation } from "./operation-receipt";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
+import { freezeIngestAcquisition } from "./ingest-acquisition";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import {
 	isProcessingUsageFailureCode,
@@ -1697,12 +1698,7 @@ export class ProjectService {
 			});
 			await recordIntakeBrandApplied(tx, actor, createdProject.id, brand);
 
-			const createdJob = await getIngestJobLifecycle().enqueue(tx, {
-				projectId: createdProject.id,
-				...source.job,
-			});
-
-			await tx.contentPack.create({
+			const createdPack = await tx.contentPack.create({
 				data: {
 					projectId: createdProject.id,
 					...parseStoredContentPack(pack),
@@ -1710,6 +1706,11 @@ export class ProjectService {
 					...finishingColumn(generationContext),
 					...recipeColumn(generationContext),
 				},
+			});
+			const createdJob = await getIngestJobLifecycle().enqueue(tx, {
+				projectId: createdProject.id,
+				...source.job,
+				acquisition: freezeIngestAcquisition({ id: createdPack.id, draft: createdPack.draft, captionedVideo: parseStoredContentPack(createdPack).captionedVideo ?? null }),
 			});
 
 			return { project: createdProject, jobId: createdJob.id };
@@ -2017,14 +2018,9 @@ export class ProjectService {
 					});
 					await recordIntakeBrandApplied(tx, actor, createdProject.id, brand);
 
-					const createdJob = await getIngestJobLifecycle().enqueue(tx, {
-						projectId: createdProject.id,
-						jobType: options.zoom ? "zoom_import" : "rss_import",
-						payload: options.zoom ? { connectionId: options.zoom.connectionId, meetingUuid: options.zoom.meetingUuid, recordingId: options.zoom.recordingId } : { rssUrl: input.sourceInput, episode },
-					});
-
+					let acquisition = freezeIngestAcquisition();
 					if (options.generationContext) {
-						await tx.contentPack.create({
+						const createdPack = await tx.contentPack.create({
 							data: {
 								projectId: createdProject.id,
 								...parseStoredContentPack(
@@ -2037,7 +2033,14 @@ export class ProjectService {
 								autopilotRuleId: options.autopilotRuleId ?? null,
 							},
 						});
+						acquisition = freezeIngestAcquisition({ id: createdPack.id, draft: createdPack.draft, captionedVideo: parseStoredContentPack(createdPack).captionedVideo ?? null });
 					}
+					const createdJob = await getIngestJobLifecycle().enqueue(tx, {
+						projectId: createdProject.id,
+						jobType: options.zoom ? "zoom_import" : "rss_import",
+						payload: options.zoom ? { connectionId: options.zoom.connectionId, meetingUuid: options.zoom.meetingUuid, recordingId: options.zoom.recordingId } : { rssUrl: input.sourceInput, episode },
+						acquisition,
+					});
 
 					if (options.autopilotRuleId) {
 						await tx.autopilotEpisode.update({

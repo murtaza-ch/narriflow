@@ -22,7 +22,7 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
         trace, state = [], {}
         session = SimpleNamespace(fence={"reference": {"inputHash": "a"*64}, "attemptToken": str(uuid4()), "owner": str(uuid4())},
             assert_live=lambda: None, cancel_event=Event(), remaining_seconds=120, on_process_start=lambda pid: trace.append("start"))
-        command = {"kind": "youtube_source", "projectId": str(uuid4()), "sourceRevision": 1, "mediaId": "dQw4w9WgXcQ",
+        command = {"kind": "youtube_source", "audioPolicy":"pending_pack", "projectId": str(uuid4()), "sourceRevision": 1, "mediaId": "dQw4w9WgXcQ",
             "sourceAudioId": session.fence["attemptToken"], "toolchainFingerprint": "d"*64, "probeVersion": "normalized-probe-v1",
             "existingSourceAudio": None, "languageProbe": None}
         manifest = {"sourceRevision": 1, "mediaIdentity": {"provider": "youtube", "mediaId": command["mediaId"]},

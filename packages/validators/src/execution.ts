@@ -222,9 +222,25 @@ export const sourceAudioBindingSchema = z.strictObject({
 export type ExecutionObjectIdentity = z.infer<typeof executionObjectIdentitySchema>;
 export type SourceAudioBinding = z.infer<typeof sourceAudioBindingSchema>;
 
+/** Frozen at source admission. Draft settings cannot authorize speech work. */
+export const ingestAcquisitionSchema = z.strictObject({
+  audioPolicy: z.enum(["required", "none", "pending_pack"]), contentPackId: z.string().uuid().optional(),
+});
+export type IngestAcquisition = z.infer<typeof ingestAcquisitionSchema>;
+
+/** One provider-resolved media read. Only Drive/Zoom may carry scoped read credentials. */
+export const ingestDirectReadSchema=z.strictObject({
+ provider:z.enum(["direct","rss","drive","zoom"]),url:z.url().max(8192).refine(value=>{const url=new URL(value);return ["http:","https:"].includes(url.protocol)&&!url.username&&!url.password&&!url.hash;}),
+ authorization:z.string().min(1).max(4096).regex(/^Bearer [A-Za-z0-9._~+/-]+=*$/).nullable(),
+}).superRefine((value,context)=>{
+ if((["drive","zoom"].includes(value.provider))!==(value.authorization!==null))context.addIssue({code:"custom",message:"Invalid provider read credential"});
+ if(value.provider==="drive"&&!/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/[A-Za-z0-9_-]{10,200}\?alt=media&supportsAllDrives=true$/.test(value.url))context.addIssue({code:"custom",message:"Invalid Drive media endpoint"});
+});
+export type IngestDirectRead=z.infer<typeof ingestDirectReadSchema>;
+
 /** Worker-produced source input. Scoped grants stay in the package descriptors. */
 export const ingestFetchSourceCommandSchema = z.strictObject({
-  kind: z.literal("youtube_source"), projectId: z.string().uuid(), sourceRevision: generation,
+  kind: z.literal("youtube_source"), audioPolicy: ingestAcquisitionSchema.shape.audioPolicy, projectId: z.string().uuid(), sourceRevision: generation,
   mediaId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), sourceAudioId: z.string().uuid(),
   toolchainFingerprint: sha256, probeVersion: z.literal("normalized-probe-v1"),
   existingSourceAudio: sourceAudioBindingSchema.nullable(), languageProbe: sourceLanguageProbeInputSchema.nullable(),
