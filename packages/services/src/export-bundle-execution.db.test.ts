@@ -9,7 +9,7 @@ import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { withServiceEnvironment } from "./runtime-environment";
 import { expireExportBundle } from "./export-bundle-expiry";
 import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
-import { restoreExportBundleWithinTransaction,restoreExportBundlesPage,expireExportBundlesPage } from "./export-bundle-recovery";
+import { restoreExportBundleWithinTransaction,restoreExportBundlesPage,expireExportBundlesPage,recoverExportBundleWakesPage } from "./export-bundle-recovery";
 
 const url=process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite=process.env.ALLOW_SERVERLESS_DB_TESTS==="1"&&url?describe:describe.skip;
@@ -58,6 +58,10 @@ suite("Targeted export bundle execution",()=>{
       expect(attempts).toHaveLength(1);expect(attempts[0]).toMatchObject({functionName:"export_bundle",owner:null,status:"admitted",inputStorageKey:row.inputStorageKey,operationDeadlineAt:row.operationDeadlineAt});
       expect(await db.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({attemptId:null,leaseOwner:null,attemptCount:0});
       const writes=f.objects.size;expect(await withServiceEnvironment({},()=>f.service.prepareExecution(f.reference))).toEqual(first);expect(f.objects.size).toBe(writes);
+      const repaired=await db.$transaction(tx=>recoverExportBundleWakesPage(tx,{deploymentEpoch:f.reference.deploymentEpoch,cutoff:new Date(),after:null,limit:1}));
+      expect(repaired).toMatchObject({processed:1,next:null});expect(repaired.dispatchIds).toHaveLength(2);
+      expect(await db.executionAttempt.count({where:{dispatch:{subjectId:f.run.id}}})).toBe(1);
+      expect(await db.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({attemptId:null,leaseOwner:null,attemptCount:0});
     }finally{await db.executionAttempt.deleteMany({where:{dispatch:{subjectId:f.run.id}}});await db.executionDispatch.deleteMany({where:{OR:[{subjectId:f.run.id},{subjectId:f.project.id}]}});await db.workspace.delete({where:{id:f.workspace.id}});await db.user.delete({where:{id:f.user.id}});}
   });
   test("an elapsed accepted deadline settles without a capsule, native token or invented process history",async()=>{
@@ -171,6 +175,19 @@ suite("Targeted export bundle execution",()=>{
         expect(await db.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).toMatchObject({status:'failed',errorCode:cause==='actor'?'export_bundle_access_revoked':'export_bundle_variant_missing'});
         expect(await db.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({status:'failed',attemptCount:0,attemptId:null});
       }finally{await db.executionDispatch.deleteMany({where:{subjectId:f.run.id}});await db.workspace.delete({where:{id:f.workspace.id}});await db.user.deleteMany({where:{id:{in:[f.user.id,...(replacement?[replacement]:[])]}}});}
+    }
+  });
+  test("a superseded current source settles its accepted bundle, while an old generation cannot fail current work",async()=>{
+    for(const staleGeneration of [false,true]){
+      const f=await fixture();
+      try{
+        if(staleGeneration)await db.workflowRun.update({where:{id:f.run.id},data:{generation:{increment:1}}});
+        else await db.project.update({where:{id:f.project.id},data:{sourceRevision:{increment:1}}});
+        expect(await withServiceEnvironment({},()=>f.service.prepareExecution(f.reference))).toEqual({kind:'superseded'});
+        expect(await db.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).toMatchObject({status:staleGeneration?'queued':'failed',errorCode:staleGeneration?null:'export_bundle_source_superseded'});
+        expect(await db.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({status:staleGeneration?'queued':'failed',attemptCount:0,attemptId:null});
+        expect(f.objects.size).toBe(0);
+      }finally{await db.executionDispatch.deleteMany({where:{subjectId:f.run.id}});await db.workspace.delete({where:{id:f.workspace.id}});await db.user.delete({where:{id:f.user.id}});}
     }
   });
   test("a stale operation observation cannot change bundle projection when its independent lease has expired",async()=>{

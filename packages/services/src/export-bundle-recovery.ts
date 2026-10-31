@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { appendWorkflowRunDispatch } from "./workflow-dispatch";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { collectExecutionDispatch, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import type { ExecutionRestorePage } from "./execution-restore";
 import type { MaintenancePage } from "./execution-maintenance";
@@ -53,16 +53,28 @@ function pageLimit(limit: number) {
   return limit;
 }
 
+type PageRow = { id: string; at: Date; workspaceId: string; projectId: string; workflowRunId: string };
+async function lockPageParents(tx: Tx, rows: readonly PageRow[]) {
+  const workspaces = [...new Set(rows.map(row => row.workspaceId))].sort();
+  for (const id of workspaces) await lockWorkspaceUsage(tx, id);
+  for (const id of workspaces) await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${id}::uuid FOR UPDATE`;
+  for (const id of [...new Set(rows.map(row => row.projectId))].sort()) {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id},0)) IS NULL AS locked`;
+    await tx.$queryRaw`SELECT id FROM "Project" WHERE id=${id}::uuid FOR UPDATE`;
+  }
+  for (const id of [...new Set(rows.map(row => row.workflowRunId))].sort()) await tx.$queryRaw`SELECT id FROM "WorkflowRun" WHERE id=${id}::uuid FOR UPDATE`;
+}
+
 /** Exact indexed pages feed the same targeted expiry transition. */
 export async function expireExportBundlesPage(tx: Tx, page: MaintenancePage) {
   const limit = pageLimit(page.limit);
   if ((await readExecutionAdmission(tx)).epoch !== page.deploymentEpoch || page.after?.tie) throw Error("bundle_recovery_page_invalid");
   const after = page.after ? Prisma.sql`AND (bundle."expiresAt",bundle.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
-  const rows = await tx.$queryRaw<Array<{ id: string; at: Date; workspaceId: string }>>`SELECT bundle.id,bundle."expiresAt" AS at,operation."workspaceId" FROM "ExportBundle" bundle
+  const rows = await tx.$queryRaw<PageRow[]>`SELECT bundle.id,bundle."expiresAt" AS at,bundle."workflowRunId",operation."workspaceId",operation."projectId" FROM "ExportBundle" bundle
     JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status='completed' AND bundle."expiresAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
     ORDER BY bundle."expiresAt",bundle.id LIMIT ${limit + 1}`;
   const selected = rows.slice(0, limit);
-  for (const id of [...new Set(selected.map(row => row.workspaceId))].sort()) await lockWorkspaceUsage(tx, id);
+  await lockPageParents(tx, selected);
   for (const row of selected) await expireExportBundle(tx, row.id, row.at);
   return { processed: selected.length, next: rows.length > limit ? { at: selected.at(-1)!.at, id: selected.at(-1)!.id } : null, dispatchIds: takeExecutionDispatchIds(tx) };
 }
@@ -71,11 +83,34 @@ export async function restoreExportBundlesPage(tx: Tx, page: ExecutionRestorePag
   const limit = pageLimit(page.limit);
   await requireRestoreProof(tx, page);
   const after = page.after ? Prisma.sql`AND (bundle."createdAt",bundle.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
-  const rows = await tx.$queryRaw<Array<{ id: string; at: Date; workspaceId: string }>>`SELECT bundle.id,bundle."createdAt" AS at,operation."workspaceId" FROM "ExportBundle" bundle
+  const rows = await tx.$queryRaw<PageRow[]>`SELECT bundle.id,bundle."createdAt" AS at,bundle."workflowRunId",operation."workspaceId",operation."projectId" FROM "ExportBundle" bundle
     JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status IN ('queued','building') AND bundle."deploymentEpoch"<${page.deploymentEpoch}
       AND bundle."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
   const selected = rows.slice(0, limit);
-  for (const id of [...new Set(selected.map(row => row.workspaceId))].sort()) await lockWorkspaceUsage(tx, id);
+  await lockPageParents(tx, selected);
   for (const row of selected) await restoreExportBundleWithinTransaction(tx, row.id, page);
+  return { processed: selected.length, next: rows.length > limit ? { at: selected.at(-1)!.at, id: selected.at(-1)!.id } : null, dispatchIds: takeExecutionDispatchIds(tx) };
+}
+
+/** Repairs known accepted obligations without admitting another native owner. */
+export async function recoverExportBundleWakesPage(tx: Tx, page: MaintenancePage) {
+  const limit = pageLimit(page.limit);
+  if ((await readExecutionAdmission(tx)).epoch !== page.deploymentEpoch || page.after?.tie) throw Error("bundle_recovery_page_invalid");
+  const after = page.after ? Prisma.sql`AND (bundle."createdAt",bundle.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  const rows = await tx.$queryRaw<PageRow[]>`SELECT bundle.id,bundle."createdAt" AS at,bundle."workflowRunId",operation."workspaceId",operation."projectId" FROM "ExportBundle" bundle
+    JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status IN ('queued','building') AND bundle."deploymentEpoch"=${page.deploymentEpoch}
+      AND bundle."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
+  const selected = rows.slice(0, limit);
+  await lockPageParents(tx, selected);
+  for (const row of selected) {
+    const bundle = await tx.exportBundle.findUniqueOrThrow({ where: { id: row.id } });
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: row.workflowRunId } });
+    if (bundle.deploymentEpoch !== page.deploymentEpoch || run.deploymentEpoch !== page.deploymentEpoch || run.stage !== "export_bundle" || !["queued", "building"].includes(bundle.status)) continue;
+    const prior = await tx.executionDispatch.findFirst({ where: { kind: "operation_driver", subjectKind: "workflow_run", subjectId: run.id, generation: run.generation,
+      deploymentEpoch: page.deploymentEpoch, wakeKind: null, deadlineKind: null }, select: { id: true } });
+    const driver = prior ? (await readExecutionDispatch(tx, prior.id))! : await appendWorkflowRunDispatch(tx, run.id);
+    const watch = await appendExecutionDispatch(tx, { ...driver.reference, dueAt: bundle.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: bundle.operationDeadlineAt });
+    collectExecutionDispatch(tx, driver.reference.dispatchId);collectExecutionDispatch(tx, watch.reference.dispatchId);
+  }
   return { processed: selected.length, next: rows.length > limit ? { at: selected.at(-1)!.at, id: selected.at(-1)!.id } : null, dispatchIds: takeExecutionDispatchIds(tx) };
 }
