@@ -1,3 +1,4 @@
+import { readExecutionAdmission } from "./execution-admission";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { MediaCleanupAdmissionStore, MediaCleanupObligationInput, MediaCleanupAdmissionOptions } from "./media-cleanup-contract";
 import { queueMediaCleanupRangeWithinTransaction } from "./media-cleanup-drain";
@@ -7,6 +8,7 @@ export async function admitMediaCleanupObligations(
   obligations: readonly MediaCleanupObligationInput[],
   options: MediaCleanupAdmissionOptions = {},
 ): Promise<number> {
+  if (options.deferDispatch && (!("mediaCleanupObligation" in store) || (await readExecutionAdmission(store)).admissionOpen)) throw new Error("cleanup_restore_requires_closed_admission");
   const unique = [
     ...new Map(
       obligations.map((obligation) => [
@@ -29,7 +31,7 @@ export async function admitMediaCleanupObligations(
     })),
     skipDuplicates: true,
   });
-  if ("mediaCleanupObligation" in store) {
+  if ("mediaCleanupObligation" in store && !options.deferDispatch) {
     const rows = await store.mediaCleanupObligation.findMany({ where: { OR: unique.map(row => ({ origin: row.origin, cleanupClass: row.cleanupClass, objectKey: row.objectKey })) }, select: { id: true } });
     await queueMediaCleanupRangeWithinTransaction(store, rows.map(row => row.id));
   }
