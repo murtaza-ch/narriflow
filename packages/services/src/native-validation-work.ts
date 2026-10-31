@@ -27,6 +27,6 @@ export async function prepareNativeValidationArtifact(artifact: ExecutorArtifact
     if (artifact.contentType !== "application/json" || artifact.byteLength > 65536n) throw new NativeValidationError("native_validation_object_invalid");
     return { ...artifact, evidence: nativeValidationEvidenceSchema.parse(await readJson(artifact.storageKey, 65536)) };
   }
-  if (artifact.role !== "validated_font" && artifact.role !== "validated_asset") throw new NativeValidationError("native_validation_object_invalid");
+  if (artifact.role !== "validated_font" && artifact.role !== "validated_asset" && artifact.role !== "thumbnail") throw new NativeValidationError("native_validation_object_invalid");
   return artifact;
 }

@@ -26,13 +26,13 @@
       "types": "./src/review-selection.ts",
       "default": "./src/review-selection.ts"
     },
-    "./execution-transfer": {
-      "types": "./src/execution-transfer.ts",
-      "default": "./src/execution-transfer.ts"
-    },
     "./native-validation": {
       "types": "./src/native-validation.ts",
       "default": "./src/native-validation.ts"
+    },
+    "./execution-transfer": {
+      "types": "./src/execution-transfer.ts",
+      "default": "./src/execution-transfer.ts"
     }
   },
   "scripts": {
