@@ -32,6 +32,8 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
                     'serverTime': instant(now), 'leaseExpiresAt': instant(now+120), 'operationDeadlineAt': instant(now+2700)}
             else:
                 result = reply(command, calls)
+            if isinstance(result,ControlResponse):
+                return result
             return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(result).encode())
         client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k'*32, transport=transport, retry_delay_seconds=0)
         return ExecutorSession.acquire(client, reference={'dispatchId':'fixture','inputHash':'0'*64}, attempt_token='fixture'), calls
@@ -111,6 +113,13 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ExecutionControlError) as expired:
                 session.transfer('source-read', sourceId='source')
             self.assertEqual(str(expired.exception),'execution_grant_expired')
+
+    async def test_refused_transfer_authority_cancels_native_work_immediately(self):
+        session,_=self.make_session(lambda *_: ControlResponse(409,{},b'{"error":"authority_lost"}'))
+        with session:
+            with self.assertRaises(ExecutionControlError):
+                session.transfer('source-read',sourceId='source')
+            self.assertTrue(session.cancel_event.is_set())
 
     async def test_lost_completion_acknowledgement_does_not_abort_or_delete_the_uploaded_object(self):
         artifact = str(uuid4())

@@ -295,11 +295,19 @@ class ExecutorSession:
             raise ExecutionControlError('execution_transfer_invalid')
         command = {'action': action, 'fence': self.fence, **fields}
         validate_transfer_command(command)
-        result = self._client._post(TRANSFER_TARGET, command, parse_transfer_disposition,
-                                   deadline_monotonic=min(self._deadline, self._lease))
-        self.assert_live()
-        check_transfer_response(command, result)
-        return result
+        try:
+            result = self._client._post(TRANSFER_TARGET, command, parse_transfer_disposition,
+                                       deadline_monotonic=min(self._deadline, self._lease))
+            self.assert_live()
+            check_transfer_response(command, result)
+            return result
+        except ExecutionControlError as error:
+            # An old inbox grant can be refreshed while this owner is still
+            # live. Refused authority or an unconfirmed control exchange stops
+            # all native siblings through the same permission event.
+            if error.code != 'execution_grant_expired':
+                self.cancel_event.set()
+            raise
 
     def on_process_start(self, pid: int):
         """Pass directly to the process owner's callback, never call before Popen."""
