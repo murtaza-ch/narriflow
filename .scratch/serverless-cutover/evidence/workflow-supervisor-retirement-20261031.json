@@ -1,0 +1,188 @@
+{
+  "date": "2026-10-31",
+  "ticket": "23",
+  "scope": "WorkflowRunLifecycle production poller and supervisor retirement",
+  "status": "workflow_lifecycle_checkpoint_passed_other_fixture_suites_pending",
+  "removed_production_paths": [
+    "global claim(stage)",
+    "global render rescue scan",
+    "process heartbeat/runAttempt/supervisor map and shutdown timers",
+    "provider wait scan and unconfirmed-provider scanner wrapper",
+    "global expired-attempt reaper",
+    "WorkflowEvent channel scanner/lease/backoff delivery",
+    "unused worker-only child command wrappers",
+    "clip.service persistDetectedClips/autoQueueDefaultRenders worker-only wrappers"
+  ],
+  "retained_authority": [
+    "exact immutable dispatch lookup + current epoch",
+    "Core acquire/start/renew/progress/release/fail/targeted expiry",
+    "same-Tx typed native finalizers and provider correlation methods",
+    "unleased selection/render prepare/finalize/settle",
+    "HTTP/MCP admission/cancellation"
+  ],
+  "removed_obsolete_test_titles": [
+    "export-bundle commands own their fenced child transactions",
+    "claim returns the one explicit attempt protocol",
+    "progress and dubbing artifacts are fenced by the explicit attempt",
+    "one of twenty racing workers owns a queued run",
+    "an expired owner cannot settle after another attempt reclaims the run",
+    "a stale attempt cannot write a child artifact inside a fenced transaction",
+    "a stale render attempt cannot publish media analysis",
+    "media analysis writes are limited to the frozen Render Work Set",
+    "automatic-layout evidence is create-only and never upgrades unknown engines",
+    "a stage-specific child command rejects an attempt from another stage",
+    "a child command rejects an attempt ref with the wrong project",
+    "graceful shutdown %s releases Workflow Attempts without spending retries",
+    "dubbing retains earlier completed outputs after %s and %s",
+    "terminal dubbing failure settles unclaimed queued siblings and releases their usage",
+    "shutdown release cannot refund an expired claim or change its replacement",
+    "coordinator release preserves healthy groups and their completed and permanent outcomes",
+    "unstarted group resource release consumes no media budget",
+    "shutdown releases a claim before an unresponsive handler returns",
+    "a peer cannot claim a released attempt until its grace period passes",
+    "a heartbeat blocked behind the handler's committed render settlement does not lose ownership",
+    "true lease loss before render settlement commits still aborts the handler",
+    "heartbeat renews ownership and a live attempt is not reaped",
+    "Workflow Attempt deadlines do not shift with the database session timezone",
+    "a lease renewed after reaper discovery wins the expiry compare-and-set",
+    "Workflow Event delivery starts each lease when its work begins",
+    "Workflow Event claiming rechecks backoff after discovery",
+    "Workflow Event delivery reloads completed channel checkpoints after claiming",
+    "a stale Workflow Event execution cannot clear a newer claim by the same worker",
+    "an unavailable Redis publisher is not acknowledged as delivered",
+    "aggregate completion persists an explicit partial outcome",
+    "a detection attempt atomically admits unowned auto-render work",
+    "a captioned video's export is admitted by the transaction that completes detection, once, and only for the attempt that owns the clip"
+  ],
+  "replacement_seams": [
+    {
+      "subjects": [
+        "owner races",
+        "stale tuples/owners",
+        "start once",
+        "failed transaction rollback",
+        "renewal vs watchdog",
+        "deadline and replay"
+      ],
+      "files": [
+        "packages/services/src/executor-control.db.test.ts",
+        "packages/services/src/targeted-workflow-execution.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "actual child process start ACK",
+        "renewal loss stops child",
+        "expired acquire replay refused",
+        "SIGKILL cancellation"
+      ],
+      "files": [
+        "apps/media/python/tests/test_control.py",
+        "apps/media/python/tests/test_process.py"
+      ]
+    },
+    {
+      "subjects": [
+        "progress transaction rollback",
+        "bounded paging",
+        "lost acknowledgement repair",
+        "revocation",
+        "retention gaps"
+      ],
+      "files": [
+        "packages/services/src/progress-outbox.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "immutable preparation/source/editor/engine bindings",
+        "late source revocation",
+        "exact artifact roles",
+        "projection rollback",
+        "native lease expiry"
+      ],
+      "files": [
+        "packages/services/src/clip-preparation.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "one accepted Dub per immutable WorkflowRun",
+        "paid unknown retains reservation",
+        "same-Project accepted-run isolation",
+        "known failure/release/expiry",
+        "sealed result reuse"
+      ],
+      "files": [
+        "packages/services/src/dubbing-execution.db.test.ts"
+      ],
+      "obsolete_contract": "A pre014 run held several unbound queued Dubs. Current accepted ClipDub.workflowRunId is immutable unique; no project/null-FK fallback remains."
+    },
+    {
+      "subjects": [
+        "caption-only export once",
+        "whole-source boundaries",
+        "plan output clamp",
+        "no model permission",
+        "frozen replay"
+      ],
+      "files": [
+        "packages/services/src/clip-selection-preparation.db.test.ts"
+      ]
+    },
+    {
+      "subjects": [
+        "export bundle typed child transaction ownership",
+        "sealed output completion",
+        "deadline and restore preservation"
+      ],
+      "files": [
+        "packages/services/src/export-bundle-execution.db.test.ts"
+      ]
+    }
+  ],
+  "ported_here": [
+    "unleased render parent admission/frozen membership/replay",
+    "real SourceCore\u2192PreparationCore\u2192RenderCore fixture",
+    "real start charges through three native retry generations",
+    "successful and permanent sibling preservation",
+    "terminal lineage+notification facts+export callbacks",
+    "selection cleanup deletion and rollback via actual window results/global finalizer",
+    "Brand Profile persistence and unowned auto-render handoff",
+    "monotonic project event sequences",
+    "actual durable progress outbox delivery",
+    "supplied/declined/no-audio caption plan admission"
+  ],
+  "verification": {
+    "workflow_lifecycle_pg": {
+      "tests": 75,
+      "assertions": 504,
+      "failures": 0
+    },
+    "current_core_workflow_selection_preparation_progress_pg": {
+      "tests": 56,
+      "assertions": 410,
+      "failures": 0
+    },
+    "dubbing_pg": {
+      "tests": 8,
+      "assertions": 215,
+      "failures": 0
+    },
+    "native_control_python": {
+      "tests": 11,
+      "failures": 0
+    },
+    "fast_workflow_failure": {
+      "tests": 3,
+      "assertions": 7,
+      "failures": 0
+    }
+  },
+  "remaining": [
+    "generation usage old Dub fixture ports",
+    "old replica loop fixture replacement",
+    "other Workflow/Render helper consumers",
+    "full repository gate and retirement acceptance owned by parent"
+  ]
+}
