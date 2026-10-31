@@ -340,6 +340,12 @@ async function scriptSpecimenFingerprint(ffmpegPath: string | null, fontsDirecto
   return result;
 }
 
+function orderedPythonFacts(facts: RuntimeFingerprint["python"]): RuntimeFingerprint["python"] {
+  // importlib.metadata follows filesystem enumeration order, which differs
+  // between Modal Functions and Sandboxes built from the exact same image.
+  return { ...facts, packages: Object.fromEntries(Object.entries(facts.packages).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) };
+}
+
 async function pythonFacts(): Promise<RuntimeFingerprint["python"]> {
   const python = process.env.REFRAME_PYTHON?.trim() || "python3";
   const version = await run(python, ["--version"]);
@@ -356,7 +362,7 @@ async function pythonFacts(): Promise<RuntimeFingerprint["python"]> {
     wheelProbeError = listing.stderr.split("\n").slice(-2).join(" ").slice(0, 200);
   }
   const versionText = (version.stdout || version.stderr).trim().replace(/^Python /, "");
-  return { version: version.code === 0 ? versionText : null, packages, wheelProbeError };
+  return orderedPythonFacts({ version: version.code === 0 ? versionText : null, packages, wheelProbeError });
 }
 
 export interface CollectOptions {
@@ -434,7 +440,7 @@ export function fingerprintIdentity(fingerprint: RuntimeFingerprint): unknown {
     // the golden baseline was captured, and lockFindings pins their hashes instead (a differing consumer fails
     // --enforce). scriptRender only has to be non-empty, which lockFindings checks.
     model: fingerprint.model.sha256,
-    python: fingerprint.python.packages,
+    python: orderedPythonFacts(fingerprint.python).packages,
   };
 }
 
@@ -534,6 +540,20 @@ export function pipRequirements(lock: RuntimeLock, profile: "render" | "lean" = 
   return lock.platforms["linux-x64"]!.python.wheels.filter((wheel) => profile === "render" || !["numpy", "opencv-python-headless"].includes(wheel.name)).map((wheel) => `${wheel.name}==${wheel.version} --hash=sha256:${wheel.sha256}`).join("\n") + "\n";
 }
 
+export interface LeanRuntimeFacts {
+  profile: string;
+  bun: string | undefined;
+  python: RuntimeFingerprint["python"];
+  ffmpeg: string | undefined;
+  ffprobe: string | undefined;
+  deno: string | undefined;
+  tokenImage: string;
+}
+
+export function leanFingerprintId(facts: LeanRuntimeFacts): string {
+  return createHash("sha256").update(JSON.stringify({ ...facts, python: orderedPythonFacts(facts.python) })).digest("hex");
+}
+
 /** Lean functions share the locked acquisition/probe toolchain, without detector or font payloads. */
 export async function assertLeanEnvironment(lock: RuntimeLock = loadLock()) {
   if (platformKey() !== "linux-x64") throw new Error("Lean image verification requires linux-x64");
@@ -558,7 +578,7 @@ export async function assertLeanEnvironment(lock: RuntimeLock = loadLock()) {
     if (installed.get(name) !== expected.apt.installed[name]) throw new Error(`Lean media package ${name} differs from runtime-lock.json`);
   }
   const facts = { profile: "lean", bun, python, ffmpeg: ffmpeg.stdout.split("\n")[0], ffprobe: ffprobe.stdout.split("\n")[0], deno: deno.stdout.split("\n")[0], tokenImage: lock.images.youtubeTokens!.digest };
-  return { id: createHash("sha256").update(JSON.stringify(facts)).digest("hex"), facts };
+  return { id: leanFingerprintId(facts), facts };
 }
 
 async function main(): Promise<void> {
