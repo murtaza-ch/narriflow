@@ -24,7 +24,12 @@
       "SQL rejects clearing a started charge or decreasing group count",
       "Both shutdown and startup_rejected before start consume zero",
       "Existing cancellation/expiry and restore paths retain the same history/count"
-    ]
+    ],
+    "preparationFactorySigkill": {
+      "passed": 22,
+      "assertions": 214,
+      "seconds": 40.02
+    }
   },
   "migration": "20261101050000_execution_render_charge",
   "historicalRewrite": false,
@@ -44,6 +49,10 @@
     "render-group-charge-tsc.log": {
       "path": "/tmp/narriflow-serverless-gates/final-media-21/render-group-charge-tsc.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "render-group-release-domain.log": {
+      "path": "/tmp/narriflow-serverless-gates/final-media-21/render-group-release-domain.log",
+      "sha256": "6481f07b8fbc2046d52f3199ceb1598d0d3ff65b08fca0b226ed5bcf9b4d19e3"
     }
   },
   "removed": "Unused render-telemetry-report expected retired Railway release/settlement messages; current runbook uses safe diagnostics and authoritative ledger facts"

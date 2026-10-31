@@ -1,0 +1,195 @@
+{
+  "date": "2026-11-01",
+  "status": "PASS independent current-source Linux parity, native faults and bounded transfer/cache tests",
+  "candidateCommit": "f1d4f054a4eec637bf92ff2d002b42aac221bb18",
+  "dirtyFiles": [],
+  "image": {
+    "candidateCommit": "f1d4f054a4eec637bf92ff2d002b42aac221bb18",
+    "sandboxId": "sb-01M69VDNNG5GPAPDJV73KZG9Z0",
+    "imageId": "im-m1o1Ri9tUwxXuVZCxfxUNq",
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "networkBlocked": true,
+    "secrets": [],
+    "files": {
+      "/tmp/candidate.tar.gz": "647814bc8454ea80a06654f9504f15702b18b80796220c03339ce6c555af4670",
+      "/tmp/frozen-manifest.json": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+      "/tmp/frozen-capture.gz": "51c3ec62bdff13ecb31e2d31e2323cffd0ab3a4278eefc05050f8a8f567a31fc",
+      "/tmp/run.py": "26efd8f55d5b97c849bf90714028687c572e25c38e6e5b9231cbb8ba766bf40d"
+    }
+  },
+  "terminated": true,
+  "runtime": {
+    "id": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee",
+    "bun": "1.3.6",
+    "python": "3.13.5",
+    "platform": "linux-x64"
+  },
+  "executionDurationsDiagnosticOnly": {
+    "runtime": {
+      "exitCode": 0,
+      "seconds": 26.935
+    },
+    "candidate-all": {
+      "exitCode": 0,
+      "seconds": 263.018
+    },
+    "media-tests": {
+      "exitCode": 0,
+      "seconds": 10.84
+    },
+    "all-native-tests": {
+      "exitCode": 0,
+      "seconds": 131.945
+    }
+  },
+  "golden": {
+    "referenceCommit": "623aadca7e5790cf456100f7b7966fbaf74e8bf7",
+    "referenceCaptureSha256": "d114c6f0030b0fad75d487f34cdae0e83dc25dbf536954aac40e274f1981883f",
+    "referenceManifestSha256": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+    "ok": true,
+    "summary": {
+      "normal": {
+        "total": 18,
+        "pass": 18,
+        "fail": 0
+      },
+      "knownDefects": {
+        "total": 18,
+        "xfail": 2,
+        "xpass": 0,
+        "changed": 0,
+        "activatedPass": 16,
+        "activatedFail": 0
+      }
+    },
+    "failures": [],
+    "priorReferenceRecaptureProof": "canonical-modal-media-parity-20261031.json",
+    "checker": "The same recorded measurement checker; no new normalization, reference refresh or media tolerance changes.",
+    "checkerSha256": "dd1505e18903d155021a80f35a166b0ac955c39f1e443bc100412d7d549eec3e"
+  },
+  "mediaTests": {
+    "passed": 42,
+    "failed": 0,
+    "assertions": 306,
+    "files": [
+      "camera-cut-timing.test.ts",
+      "layout-evidence.test.ts",
+      "ffmpeg-thread-policy.test.ts",
+      "prepare-clip.test.ts"
+    ],
+    "includes": "Actual VFR preview normalization with unchanged source window and audio clock, current layout evidence and zero detector reruns, declared decoder/filter/encoder limits"
+  },
+  "nativeTests": {
+    "passed": 162,
+    "failed": 0,
+    "seconds": 131.605,
+    "discovery": "python -m unittest discover -s apps/media/python/tests -p test_*.py",
+    "fixtures": "Actual Bun/Python children and loopback HTTP/TLS fixtures; controlled domain/control/storage/provider responses. No external network or credentials.",
+    "covered": [
+      "Actual process-start acknowledgement and child-group cancellation",
+      "Conditional exact source reads, lease revocation and source identity mismatch",
+      "Bounded multipart uploads, checksum/header verification, lost completion/commit acknowledgements",
+      "Source cache backpressure, overlap reuse, finite entries and eviction",
+      "Source audio/video handoff, pinning, probe, clip preparation and render wrappers",
+      "Publication, generated images, dubbing and export-bundle typed operation/failure paths",
+      "Local restore and native R2 transfer harness fault behavior (no live R2 claim)"
+    ]
+  },
+  "boundedAllocations": {
+    "multipart": {
+      "virtualObjectBytes": 10737418240,
+      "parts": 640,
+      "maximumPartBuffers": 4,
+      "peakTrackedBytes": 67359053,
+      "ceilingBytes": 83886080
+    },
+    "sourceCache": {
+      "virtualObjectBytes": 10737418240,
+      "streamReadBytes": 84934656,
+      "configuredCacheBytes": 67108864,
+      "configuredEntries": 128,
+      "peakTrackedBytes": 68622512,
+      "ceilingBytes": 83886080
+    },
+    "scope": "Python tracked allocations in dedicated tests, not whole-process or cgroup peak memory. Full-operation sampled RSS is in the representative-source proof."
+  },
+  "representativeSourceReadGate": "three-hour-twelve-window-representative-20261101.json",
+  "compactSourceFailureDiagnostic": "three-hour-twelve-window-baseline-20261101.json",
+  "startedReleaseAccounting": "render-started-release-20261101.json",
+  "keySourceSha256": {
+    "apps/media/runtime-lock.json": "ed10a2a61cf38be84da119a2925e9f51fc29bcee2b21f5546fa37312641abaed",
+    "apps/media/src/worker-process.ts": "73715e35ee45c20fec1c29092b290228ea5cba710cf08d35a54993db4bd5dbfa",
+    "apps/media/src/ffmpeg-thread-policy.ts": "cefc6267393108d1a71c754d0122da0b891e4bdef9221901101fdc86be7e0555",
+    "apps/media/src/prepare-clip.ts": "27069bcdcc548b7797e44120738d49f0fbad5a3948227ca71735ef982fe25f7f",
+    "apps/media/scripts/render-golden.ts": "dd1505e18903d155021a80f35a166b0ac955c39f1e443bc100412d7d549eec3e",
+    "packages/services/src/clip-preparation-policy.ts": "e5e4cd2d53d97d142016aae6ce58840c99bcf3f02636039e369c99cbe683c1bc",
+    "apps/media/python/narriflow_media/process.py": "0ca82dd79db0728fd853fd34fe54efff88ff4065b0506e6987323a707f32a690",
+    "apps/media/python/narriflow_media/source_server.py": "efffb437df602f0d838578f480fb9869a702b4d84f0e39d1ca1e9868d46655e7",
+    "apps/media/python/narriflow_media/multipart.py": "8f32a89204b1336a03235b242e6d00156b787dd846dacfb2883eba001f1550ba",
+    "apps/media/python/narriflow_media/entrypoint.py": "6c889b921da78b954c265326d299d0c3075b0c6859089c76d8f257e68820d180",
+    "apps/media/python/narriflow_media/render_runtime.py": "154163ce2ddd66cb27807e0bf067434b744c8159d6373dc174809914ca76dcbb",
+    "apps/media/python/narriflow_media/dubbing_runtime.py": "173e87772554b0a3837cca928e64ceb3ac5933fe1e69cab8fa37ef89398fce5c",
+    "apps/media/python/narriflow_media/export_bundle_runtime.py": "10bedd1b0aea4bf06a5f59292d1016b42471e8c2ffd577e9fe83ff3065d4773b"
+  },
+  "rawEvidence": {
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/runtime.log": {
+      "sha256": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "byteLength": 17949
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/candidate-all.log": {
+      "sha256": "9e6f490727f25bec299e51c8c15d0845ce0d1c596d53d143d80308c4011af06d",
+      "byteLength": 10450
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/media-tests.log": {
+      "sha256": "d1c8d425dba6a80ce93aa7ee6a1633cb52386253fab9fe11a66430d5164ac65c",
+      "byteLength": 4872
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/all-native-tests.log": {
+      "sha256": "adc13fc1262fd343229fb75bb8d817ff86430e0b03cfd82eab0a559572877017",
+      "byteLength": 18598
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/candidate-capture-report.json": {
+      "sha256": "415cd6637b67d40f383139441bc562408d286548dd63fda47a36c9a8305c4172",
+      "byteLength": 15274
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/candidate-capture-report.md": {
+      "sha256": "ef5584fcb4a831a8f757bfb2b4c77ddfaccc96076b958bc3ae1e9cfcd29c89fa",
+      "byteLength": 2097
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/candidate-capture-capture.json": {
+      "sha256": "f5f143bb042c7fc265eee1eb9c9f28e246ce34520f0c9a08fdd38f723101b342",
+      "byteLength": 1845292
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/status.json": {
+      "sha256": "5113b462c47a76853d6ae6ff1f78f04b65b0ba9579865b1f1e028a3f5ce315aa",
+      "byteLength": 267
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/source.json": {
+      "sha256": "d502fe878d80a2dfd763b2d1219e6841221dab9ea74c483918ca053637b7f75a",
+      "byteLength": 124295
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/provenance.json": {
+      "sha256": "f0b9b85fda652efc7daa307299f16f9bb338fab1fca3c1dc5adc0149cb70c4e2",
+      "byteLength": 634
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/remote.py": {
+      "sha256": "26efd8f55d5b97c849bf90714028687c572e25c38e6e5b9231cbb8ba766bf40d",
+      "byteLength": 2296
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/run.py": {
+      "sha256": "858983fb447c40872cd89ad8f62033e8ae6b9d8f8d32659069afdf758f9aa402",
+      "byteLength": 2757
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/final-current-sweep/candidate.tar.gz": {
+      "sha256": "647814bc8454ea80a06654f9504f15702b18b80796220c03339ce6c555af4670",
+      "byteLength": 2784262
+    }
+  },
+  "remainingScope": [
+    "Root owns final immutable image refresh/actual Function acceptance, live R2/domain fault combinations and ticket22 performance cohorts.",
+    "No paid provider, residential proxy egress or production latency acceptance is established by these credential-free fixtures.",
+    "The source-overlay Sandbox is a reproducible Linux test context, not a substitute for an actual gVisor Function gate. Root previously passed actual Function render and dubbing/bundle verifiers; final-source deployment remains Root-owned."
+  ]
+}

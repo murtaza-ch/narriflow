@@ -1,0 +1,15 @@
+# Multipart authorization batching
+
+Root authorized this change after five actual Cloudflare transfer requests took 4,434, 5,210, 7,258, 8,815 and 7,004 ms wall time. CPU time was 489, 453, 478, 1,054 and 362 ms. Safe parsing confirms all five used the transfer endpoint, so none was a command-endpoint renewal. The samples contain no action-level log; they do not distinguish part authorization from other transfer actions. No credential, request object or grant URL is reproduced here.
+
+`ScopedMultipartControl` now combines at most four ready checksum tuples into the existing `upload-parts` command. A full batch starts immediately. A partial batch has a 10 ms flush timer. Only metadata and waiter futures are queued. Native transfer still owns at most four 16 MiB bodies, and source ranges still use the existing single-part protocol. Whole-object hashing, deadlines, server authority, retry generations and completion remain unchanged.
+
+Grants must contain exactly the requested part-number set and are returned to the matching caller independently of response ordering. Cancelling one caller preserves its siblings. Cancelling every caller or aborting settles pending work without hanging futures. Cancellation of `asyncio.to_thread` does not forcibly stop an already-running HTTP thread; that exchange retains the existing control-client timeout and its result is discarded. No new retry or authority bypass is added.
+
+Tests cover four participants sharing one command, a partial batch completing within 50 ms, nine participants bounded at four, exact grant mapping, duplicate-number separation, queued and in-flight cancellation, abort before the batch coroutine starts, authority/transport failure, missing grants, and a lost acknowledgement retried by the actual signed control client with identical inbox bytes and signature.
+
+- macOS arm64, Python 3.13.5: all 39 batching, signed-control, multipart and gate-timing tests pass in 33.645 s. The existing virtual 10 GiB/640-part memory test reports 67,361,453 peak tracked bytes and four part buffers. This is a virtual memory proof, not an R2 throughput result.
+- Local Linux x86_64 image `narriflow-media:cutover-render`, Python 3.13.5, Bun 1.3.6, network disabled, 2 CPUs and 4 GiB: all 27 focused batching, signed-control, timing and ordering tests pass in 3.241 s.
+- An initial full Linux sweep exposed an existing sleep-based ordering fixture. Its 40 ms sleep gaps did not force completion order under slower hashing. The fixture now uses explicit asynchronous release barriers and retains its exact `[3,2,1]` completion, `[1,2,3]` receipt and full-hash assertions. The corrected case passes on both platforms. No production multipart algorithm changed.
+
+Local logs are `/tmp/narriflow-part-coalescing-final-tests.log` and `/tmp/narriflow-serverless-gates/linux-part-coalescing-final-focused.log`. The prepared gate-only aggregate timings remain separate. This checkpoint performs no cloud deployment or invocation and does not alter the running baseline transfer. Actual batching rate and the combined 45-minute transfer gate remain unproved until Root deploys and runs the final candidate.
