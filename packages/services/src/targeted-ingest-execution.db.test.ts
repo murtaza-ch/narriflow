@@ -48,11 +48,11 @@ dbDescribe("Targeted Ingest execution", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(executionDeadline?: Date) {
+  async function fixture(executionDeadline?: Date,audioPolicy:"none"|"pending_pack"="pending_pack") {
     const user = await db.user.create({ data: { clerkId: `targeted-ingest:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted ingest", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted ingest", sourceType: "youtube", sourceMediaUrl: "https://youtube.com/watch?v=dQw4w9WgXcQ", ingestStatus: "queued" } });
-    const job = await db.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: { provider: "youtube", mediaId: "dQw4w9WgXcQ", url: project.sourceMediaUrl } } }); subjects.push(job.id);
+    const job = await db.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: { acquisition:{audioPolicy}, provider: "youtube", mediaId: "dQw4w9WgXcQ", url: project.sourceMediaUrl } } }); subjects.push(job.id);
     const usage = new ProcessingUsage({ prisma: db, log: () => {} });
     await db.$transaction((tx) => usage.reserve(tx, { workspaceId: workspace.id, projectId: project.id, actorUserId: user.id, intakeKind: "link", declaredSeconds: 120 }));
     const workflow = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
@@ -172,6 +172,19 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.sourceAudio.findUniqueOrThrow({ where: { id: f.token } })).toMatchObject({ mediaId: "dQw4w9WgXcQ", storageKey: assigned.storageKey, durationSeconds: 120.25 });
     await expect(Promise.resolve(db.ingestJob.update({ where: { id: f.job.id }, data: { payload: { provider: "youtube", url: "https://youtu.be/abcdefghijk" } } }))).rejects.toThrow();
   }, 60_000);
+
+  test("known supplied or declined captions never receive a fresh SourceAudio destination",async()=>{
+    const f=await fixture(undefined,"none");
+    const factory=createIngestSourceExecution({database:db,domain:f.lifecycle,workflow:f.workflow,toolchainFingerprint:"d".repeat(64),
+      storage:createExecutionStorage({accountId:"a".repeat(32),bucket:"test",accessKeyId:"fixture",secretAccessKey:"fixture"}),
+      artifacts:{head:async assignment=>({etag:'"audio-etag"',contentType:assignment.contentType,byteLength:1024n,sha256:"c".repeat(64)})},deliverWakes:async()=>{}});
+    const fence={reference:f.reference,attemptToken:f.token,owner:f.owner};
+    await factory.control.execute({command:{action:"acquire",...fence,leaseSeconds:120},verifiedRequest:f.verified()});
+    const result=await factory.transfer.execute({command:{action:"work-package",fence},verifiedRequest:f.verified()});
+    if(result.disposition!=="work_package" || result.input.kind!=="inline")throw new Error("No source package");
+    expect(result.outputs.map(value=>value.role)).toEqual(["source_video"]);
+    expect(result.input.command).toMatchObject({audioPolicy:"none"});
+  });
 
   async function earlyAudio(f: Awaited<ReturnType<typeof fixture>>, draft = false) {
     await db.project.update({ where: { id: f.project.id }, data: { ingestStatus: "downloading", sourceDurationSeconds: null } });

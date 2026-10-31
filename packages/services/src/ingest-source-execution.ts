@@ -1,5 +1,5 @@
 import type { IngestJob, Prisma, PrismaClient } from "@prisma/client";
-import { ingestFetchSourceCommandSchema, sourceAudioBindingSchema, sourceVideoBindingSchema } from "@narriflow/validators/execution";
+import { ingestAcquisitionSchema, ingestFetchSourceCommandSchema, sourceAudioBindingSchema, sourceVideoBindingSchema } from "@narriflow/validators/execution";
 import { createExecutorControl, ExecutorControlError, type ExecutorArtifactHead } from "./executor-control";
 import { createExecutionTransfer } from "./execution-transfer";
 import type { createExecutionStorage } from "./execution-storage";
@@ -130,6 +130,7 @@ export function createIngestSourceExecution(options: {
         reference.inputHash !== await ingestExecutionInputHash(job, options.toolchainFingerprint)) throw new ExecutorControlError("authority_lost");
       const payload = job.payload;
       if (job.jobType !== "link_import" || !payload || Array.isArray(payload) || typeof payload !== "object" || payload.provider !== "youtube") throw new ExecutorControlError("invalid_reference");
+      const acquisition=ingestAcquisitionSchema.parse(payload.acquisition);
       const mediaId = ingestYouTubeMediaId(payload.url);
       const audio = await options.database.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: job.projectId, sourceRevision: job.sourceRevision } } });
       const existingSourceAudio = audio ? sourceAudioBindingSchema.parse({ sourceAudioId: audio.id, projectId: audio.projectId, sourceRevision: audio.sourceRevision,
@@ -139,7 +140,7 @@ export function createIngestSourceExecution(options: {
       if (existingSourceAudio && (existingSourceAudio.mediaIdentity.provider !== "youtube" || existingSourceAudio.mediaIdentity.mediaId !== mediaId ||
         existingSourceAudio.toolchainFingerprint !== options.toolchainFingerprint || existingSourceAudio.probeVersion !== "normalized-probe-v1")) throw new ExecutorControlError("authority_lost");
       const optionalProbe = await probe.descriptorForIngest(authority.fence);
-      const command = ingestFetchSourceCommandSchema.parse({ kind: "youtube_source", projectId: job.projectId, sourceRevision: job.sourceRevision,
+      const command = ingestFetchSourceCommandSchema.parse({ kind: "youtube_source", audioPolicy:acquisition.audioPolicy, projectId: job.projectId, sourceRevision: job.sourceRevision,
         mediaId, sourceAudioId: existingSourceAudio?.sourceAudioId ?? attemptToken, toolchainFingerprint: options.toolchainFingerprint,
         probeVersion: "normalized-probe-v1", existingSourceAudio, languageProbe: optionalProbe?.input ?? null });
       const output = async (role: "source_audio" | "source_video", contentType: string, maxBytes: number) => ({ role, contentType, maxBytes,
@@ -147,7 +148,7 @@ export function createIngestSourceExecution(options: {
       return { input: { kind: "inline", command },
         sources: optionalProbe && existingSourceAudio ? [{ name: "source_audio", storageKey: existingSourceAudio.object.key, etag: existingSourceAudio.object.etag,
           byteLength: existingSourceAudio.object.byteLength, sha256: existingSourceAudio.object.sha256 }] : [],
-        outputs: [await output("source_video", "video/mp4", 10 * 1024 ** 3), ...(!existingSourceAudio ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : [])] };
+        outputs: [await output("source_video", "video/mp4", 10 * 1024 ** 3), ...(!existingSourceAudio && acquisition.audioPolicy!=="none" ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : [])] };
     },
   });
   return { control, transfer };

@@ -565,7 +565,8 @@
     "./ingest-acquisition": "./src/ingest-acquisition.ts",
     "./outbound-delivery": "./src/outbound-delivery.ts",
     "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
-    "./notification-body-storage": "./src/notification-body-storage.ts"
+    "./notification-body-storage": "./src/notification-body-storage.ts",
+    "./drive-source-contract": "./src/drive-source-contract.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
