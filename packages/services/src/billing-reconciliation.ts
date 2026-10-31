@@ -32,10 +32,18 @@ export async function queueBillingReconciliation(tx: Tx, workspaceId: string): P
 }
 /** A receipt retry repairs registration without admitting a new generation. */
 export async function recoverBillingReconciliation(tx: Tx, workspaceId: string): Promise<ExecutionDispatchReference | null> {
+  await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${workspaceId}::uuid FOR UPDATE`;
   const row = await tx.workspaceBillingAccount.findUnique({ where: { workspaceId } });
   if (!row) return null;
   const { epoch } = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
   return row.reconciliationGeneration === 0 || row.reconciliationEpoch !== epoch ? queueBillingReconciliation(tx, workspaceId) : append(tx, row);
+}
+
+export async function appendBillingLeaseWatchdog(tx: Tx, reference: ExecutionDispatchReference, deadline: Date) {
+  const watchdog = await appendExecutionDispatch(tx, { ...reference, subject: reference.subject, dueAt: deadline,
+    wakeKind: "billing_lease", deadlineKind: "lease", observedDeadlineAt: deadline });
+  collectExecutionDispatch(tx, watchdog.reference.dispatchId);
+  return watchdog.reference.dispatchId;
 }
 
 /** One exact account per command. Provider I/O runs after claim+watchdog commit,
@@ -67,11 +75,9 @@ export function createBillingReconciliation(options: {
         reconcileAttemptId: crypto.randomUUID(), leaseExpiresAt: new Date(clock.now.getTime() + options.leaseMs), attemptCount: { increment: 1 },
       } });
       const deadline = row.leaseExpiresAt!;
-      const watchdog = await appendExecutionDispatch(tx, { ...reference, subject: reference.subject, dueAt: deadline,
-        wakeKind: "billing_lease", deadlineKind: "lease", observedDeadlineAt: deadline });
-      collectExecutionDispatch(tx, watchdog.reference.dispatchId);
+      const watchdogId = await appendBillingLeaseWatchdog(tx, reference, deadline);
       const claim: BillingReconciliationClaim = { workspaceId: row.workspaceId, attemptId: row.reconcileAttemptId!, attemptCount: row.attemptCount, dueAt: row.nextReconcileAt };
-      return { kind: held ? "held" as const : "claimed" as const, dueAt: deadline, claim, watchdogId: watchdog.reference.dispatchId };
+      return { kind: held ? "held" as const : "claimed" as const, dueAt: deadline, claim, watchdogId };
     });
     if (prepared.kind === "superseded" || prepared.kind === "sleep") return prepared;
     try { await options.register([prepared.watchdogId]); }

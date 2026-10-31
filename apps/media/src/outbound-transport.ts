@@ -76,7 +76,7 @@ export async function assertPublicHttpUrlResolved(
 }
 
 /** Validates a URL and returns the exact addresses a connection may use. */
-async function resolvePublicHttpUrl(
+export async function resolvePublicHttpUrl(
   raw: string | URL,
   resolver: HostResolver,
 ): Promise<{ url: URL; addresses: readonly ResolvedAddress[] }> {
@@ -139,7 +139,7 @@ export const pinnedTransport: PinnedTransport = (url, request) =>
     });
     headers.host = url.host;
     if (!headers["accept-encoding"]) headers["accept-encoding"] = "gzip, deflate, br";
-    if (request.body !== undefined) headers["content-length"] = String(Buffer.byteLength(request.body));
+    if (request.body !== undefined) headers["content-length"] = String(request.body instanceof Blob?request.body.size:Buffer.byteLength(request.body));
     const client = url.protocol === "https:" ? https : http;
     const outgoing = client.request(
       {
@@ -198,7 +198,10 @@ export const pinnedTransport: PinnedTransport = (url, request) =>
     else request.signal.addEventListener("abort", abort, { once: true });
     outgoing.on("close", () => request.signal.removeEventListener("abort", abort));
     outgoing.on("error", reject);
-    outgoing.end(request.body);
+    if(request.body instanceof Blob){
+      const source=Readable.fromWeb(request.body.stream() as import("node:stream/web").ReadableStream<Uint8Array>);
+      source.once("error",error=>outgoing.destroy(error));outgoing.once("close",()=>source.destroy());source.pipe(outgoing);
+    }else outgoing.end(request.body);
   });
 
 /** Fetches a public URL while manually validating every redirect hop. */

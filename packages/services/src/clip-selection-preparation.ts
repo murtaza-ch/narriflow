@@ -9,6 +9,8 @@ import { CLIP_DETECTION_JSON_SCHEMA, SYSTEM_PROMPT } from "./clip-selection-poli
 import { clipSelectionTranscriptHash, lockClipSelectionParent, lockClipSelectionWindow, registerClipSelectionWindow, type ClipSelectionObjectReference } from "./clip-selection-window";
 import { WorkflowFailure } from "./workflow-attempt-contract";
 import type { ClipSelectionFinalizationProof } from "./clip-selection-finalization";
+import { admitMediaCleanupObligations } from "./media-cleanup";
+import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 
 type Tx = Prisma.TransactionClient;
 export interface ClipSelectionStorage {
@@ -68,20 +70,35 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
       const audienceDataLine = await config.guidance?.promptLine(initial.state.project.workspaceId).catch(() => null) ?? null;
       const input: ClipSelectionInput = { ...initial.capsule, planning: { ...initial.capsule.planning, audienceDataLine } };
       const encoded = await encodeClipSelectionInput(input), plan = buildClipSelectionPlan(input.planning);
-      const inputReference = await confirmWrite(config.storage, `projects/${input.parent.projectId}/selection/${input.parent.id}/${encoded.sha256}.json`, encoded);
+      const inputKey = `projects/${input.parent.projectId}/selection/${input.parent.id}/${crypto.randomUUID()}/${encoded.sha256}.json`;
       const planned = plan.kind === "selection" ? plan.windows : [{ windowIndex: 0, startSec: plan.clips[0]!.startSec, endSec: plan.clips[0]!.endSec, userPrompt: null }];
-      const proposed = await Promise.all(planned.map(async window => {
+      const staged = await Promise.all(planned.map(async window => {
         const id = crypto.randomUUID(), inputHash = await clipSelectionWindowInputHash({ selectionHash: encoded.sha256, windowIndex: window.windowIndex, startSec: window.startSec, endSec: window.endSec });
         const empty = window.userPrompt === null ? await encodeClipSelectionResult({ parentId: input.parent.id, parentGeneration: input.parent.generation, selectionHash: encoded.sha256, windowIndex: window.windowIndex }, '{"clips":[]}', { tokensUsed: 0, providerRequestId: null }) : null;
-        const result = empty ? await confirmWrite(config.storage, `execution/${input.parent.deploymentEpoch}/clip_selection_window/${id}/1/server/selection_window/${empty.sha256}.json`, empty) : null;
-        return { id, window, inputHash, result, estimatedTokens: Math.max(1, Math.ceil(((window.userPrompt?.length ?? 0) + input.systemPrompt.length) / 4) + input.provider.maxOutputTokens) };
+        const resultKey = empty ? `execution/${input.parent.deploymentEpoch}/clip_selection_window/${id}/1/server/selection_window/${crypto.randomUUID()}/${empty.sha256}.json` : null;
+        return { id, window, inputHash, empty, resultKey, estimatedTokens: Math.max(1, Math.ceil(((window.userPrompt?.length ?? 0) + input.systemPrompt.length) / 4) + input.provider.maxOutputTokens) };
       }));
+      const objectKeys = [inputKey, ...staged.flatMap(item => item.resultKey ? [item.resultKey] : [])];
+      const intent = await transaction(async tx => {
+        const state = await lockClipSelectionParent(tx, reference);
+        if (!state || !["queued", "waiting"].includes(state.run.status)) return { kind: "superseded" as const, dispatchIds: [] };
+        const existing = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
+        if (existing.length) return register(tx, existing);
+        await admitMediaCleanupObligations(tx.mediaCleanupObligation, objectKeys.map(objectKey => ({ origin: "selection_execution" as const, cleanupClass: "execution_input" as const,
+          projectId: state.project.id, objectKey, notBefore: new Date(state.now.getTime() + 720_000) })));
+        return { kind: "planned" as const };
+      });
+      if (intent.kind !== "planned") return intent;
+      const inputReference = await confirmWrite(config.storage, inputKey, encoded);
+      const proposed = await Promise.all(staged.map(async item => ({ ...item, result: item.empty ? await confirmWrite(config.storage, item.resultKey!, item.empty) : null })));
       return transaction(async tx => {
         const state = await lockClipSelectionParent(tx, reference);
         if (!state || !["queued", "waiting"].includes(state.run.status)) return { kind: "superseded", dispatchIds: [] };
         const existing = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
         if (existing.length) return register(tx, existing);
         if ((await encodeClipSelectionInput(await capsule(state, reference, audienceDataLine))).sha256 !== encoded.sha256) return { kind: "superseded", dispatchIds: [] };
+        for (const storageKey of objectKeys.slice().sort()) await lockPlannedExecutionObject(tx, { origin: "selection_execution", storageKey });
+        await tx.mediaCleanupObligation.updateMany({ where: { origin: "selection_execution", cleanupClass: "execution_input", objectKey: { in: objectKeys } }, data: { nextAttemptAt: new Date(state.now.getTime() + 720_000) } });
         const rows: ClipSelectionWindow[] = [];
         for (const item of proposed) rows.push(await tx.clipSelectionWindow.create({ data: { id: item.id, projectId: input.parent.projectId, workflowRunId: input.parent.id,
           workflowGeneration: input.parent.generation, deploymentEpoch: input.parent.deploymentEpoch, transcriptId: input.transcript.id, transcriptGeneration: input.transcript.generation,

@@ -26,7 +26,8 @@ import type { ExecutionDispatchReference, ExecutionDisposition } from "@narriflo
 import { renderGroupOutcomeSchema, renderVariantFailureSchema, type RenderGroupOutcome, type RenderVariantFailure } from "@narriflow/validators/render-execution";
 import { renderArtifactBindingHash } from "./render-artifact";
 import { admitMediaCleanupObligations } from "./media-cleanup";
-import type { ClipPreparationObject } from "@narriflow/validators/clip-preparation";
+import { clipPreparationObjectSchema, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
+import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import type { NativeValidationPreparation } from "./native-validation";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { lockWorkspaceUsage } from "./processing-usage";
@@ -627,11 +628,17 @@ export class RenderGroupLifecycle {
   }
 
   async adoptInput(reference: ExecutionDispatchReference, preparationId: string, input: ClipPreparationObject): Promise<ClipPreparationObject> {
+    const parsed = clipPreparationObjectSchema.safeParse(input);
+    if (!parsed.success || parsed.data.byteLength > 16_777_216) throw new Error("render_input_invalid");
+    input = parsed.data;
     return this.transaction(async tx => {
       const state = await this.prepareInputWithinTransaction(tx, reference);
       if (state.kind !== "ready" || state.group.status !== "queued" || state.group.attemptToken || state.group.preparationId !== preparationId) throw new Error("render_input_unavailable");
       const prepared = await tx.clipPreparation.findUnique({ where: { id: preparationId } });
-      if (prepared?.status !== "completed") throw new Error("render_input_unavailable");
+      if (prepared?.status !== "completed" || prepared.projectId !== state.parent.projectId || prepared.clipId !== state.group.clipId || prepared.deploymentEpoch !== state.group.deploymentEpoch) throw new Error("render_input_unavailable");
+      const prefix = `projects/${state.parent.projectId}/render-groups/${state.group.id}/`;
+      if (!input.storageKey.startsWith(prefix) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(input.storageKey.slice(prefix.length))) throw new Error("render_input_invalid");
+      if (!state.group.inputStorageKey) await lockPlannedExecutionObject(tx, { origin: "clip_preparation_input", storageKey: input.storageKey });
       const current = state.group.inputStorageKey ? state.group : await tx.renderGroup.update({ where: { id: state.group.id }, data: {
         inputStorageKey: input.storageKey, inputEtag: input.etag, inputByteLength: BigInt(input.byteLength), inputChecksumSha256: input.sha256 } });
       return { storageKey: current.inputStorageKey!, etag: current.inputEtag!, byteLength: Number(current.inputByteLength!), sha256: current.inputChecksumSha256! };

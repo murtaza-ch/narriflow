@@ -85,6 +85,22 @@ def verify_generated_image_resources() -> dict:
     return json.loads(result.stdout)
 
 
+@app.function(image=render_image, max_containers=1, timeout=900,
+              restrict_modal_access=True, **RENDER_RESOURCES)
+async def verify_render_native_fixture() -> dict:
+    """Real Function/process gate with synthetic control and storage ports."""
+    import sys
+    sys.path.insert(0, "/app/apps/media/python/tests")
+    from test_render_runtime import RenderRuntimeTests
+    fingerprint = _verify("render")["id"]
+    case = RenderRuntimeTests("test_actual_renderer_uploads_measured_bytes_then_waits_for_real_final_ack")
+    success = await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True)
+    failure = await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True, source_mismatch=True)
+    await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True, lost_ack=True)
+    return {"profile": "render", "toolchainFingerprint": fingerprint, "success": success,
+            "permanentFailure": failure, "lostAcknowledgementRetained": True, "providerRequests": 0, "databaseRequests": 0}
+
+
 @app.function(image=lean_image, secrets=[executor_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def asset_validation(invocation: dict) -> dict:
@@ -136,6 +152,15 @@ async def prepare_clip(invocation: dict) -> dict:
                                operation=run_prepare_clip, max_operation_seconds=2700)
 
 
+@app.function(image=render_image, secrets=[executor_secret], timeout=2700,
+              max_containers=80, restrict_modal_access=True, **RENDER_RESOURCES)
+async def render_group(invocation: dict) -> dict:
+    from narriflow_media.entrypoint import invoke_native, native_client
+    from narriflow_media.render_runtime import run_render_group
+    return await invoke_native(invocation, "render_group", client=native_client(os.environ),
+                               operation=run_render_group, max_operation_seconds=2700)
+
+
 @app.function(image=lean_image, secrets=[executor_secret, image_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def generated_image(invocation: dict) -> dict:
@@ -154,6 +179,6 @@ def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge
     from narriflow_media.bridge_runtime import ModalBackend, ModalDictStore, parse_bridge_keys
     bridge = ModalBridge(store=ModalDictStore(dispatch_receipts),
-        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "prepare_clip": prepare_clip, "generated_image": generated_image}),
+        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "prepare_clip": prepare_clip, "render_group": render_group, "generated_image": generated_image}),
         key_ring=parse_bridge_keys(os.environ["MODAL_BRIDGE_KEYS_JSON"]))
     return BridgeAsgiApp(bridge, time.time)

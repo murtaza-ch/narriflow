@@ -1,4 +1,5 @@
-import { queueBillingReconciliation, recoverBillingReconciliation, type BillingReconciliationClaim } from "./billing-reconciliation";
+import { appendBillingLeaseWatchdog, queueBillingReconciliation, recoverBillingReconciliation, type BillingReconciliationClaim } from "./billing-reconciliation";
+import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 import { readExecutionAdmission } from "./execution-admission";
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
 import type { ExecutionDispatchRecord } from "./execution-dispatch";
@@ -1100,7 +1101,7 @@ function snapshotPlanChange(snapshot: unknown): BillingPlanChange | null {
   return billingPlanChangeSchema.parse(snapshot.planChange);
 }
 
-export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
+export function createPrismaWorkspaceBillingStore(options: { register?(ids: readonly string[]): Promise<void> } = {}): WorkspaceBillingStore {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("DATABASE_URL is required for Workspace Billing");
 
@@ -1212,134 +1213,145 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       return { desired, revision: account.seatRevision };
     },
     async prepareCheckoutAttempt(input) {
-      const toAttempt = (row: {
-        id: string;
-        billingAccount: { workspaceId: string };
-        actorUserId: string;
-        clientIdempotencyKey: string;
-        targetTier: string;
-        interval: string;
-        catalogVersion: string;
-        returnDestination: string;
-        customerOperationKey: string;
-        checkoutOperationKey: string;
-        providerSessionId: string | null;
-        expiresAt: Date | null;
-        activeBillingAccountId: string | null;
-        createdAt: Date;
-      }): WorkspaceCheckoutAttempt => {
-        if (
-          row.targetTier !== "creator" &&
-          row.targetTier !== "pro" &&
-          row.targetTier !== "business"
-        ) {
-          throw new WorkspaceBillingError(
-            "checkout_attempt_invalid",
-          );
-        }
-        if (row.interval !== "monthly" && row.interval !== "annual") {
-          throw new WorkspaceBillingError(
-            "checkout_attempt_invalid",
-          );
-        }
-        return {
-          id: row.id,
-          workspaceId: row.billingAccount.workspaceId,
-          actorUserId: row.actorUserId,
-          clientIdempotencyKey: row.clientIdempotencyKey,
-          targetTier: row.targetTier,
-          interval: row.interval,
-          catalogVersion: row.catalogVersion,
-          returnDestination: row.returnDestination,
-          customerOperationKey: row.customerOperationKey,
-          checkoutOperationKey: row.checkoutOperationKey,
-          providerSessionId: row.providerSessionId,
-          expiresAt: row.expiresAt,
-          holdsSlot: row.activeBillingAccountId !== null,
-          createdAt: row.createdAt,
+      const prepared = await prisma.$transaction(async tx => {
+        await readExecutionAdmission(tx);
+        const key = `billing-checkout:${input.clientIdempotencyKey}`;
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key},0)) IS NULL AS "locked"`;
+        await lockWorkspaceUsage(tx, input.workspaceId);
+        await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
+        const accept = async <T>(result: T) => ({ result, reference: await recoverBillingReconciliation(tx, input.workspaceId) });
+
+        const toAttempt = (row: {
+          id: string;
+          billingAccount: { workspaceId: string };
+          actorUserId: string;
+          clientIdempotencyKey: string;
+          targetTier: string;
+          interval: string;
+          catalogVersion: string;
+          returnDestination: string;
+          customerOperationKey: string;
+          checkoutOperationKey: string;
+          providerSessionId: string | null;
+          expiresAt: Date | null;
+          activeBillingAccountId: string | null;
+          createdAt: Date;
+        }): WorkspaceCheckoutAttempt => {
+          if (
+            row.targetTier !== "creator" &&
+            row.targetTier !== "pro" &&
+            row.targetTier !== "business"
+          ) {
+            throw new WorkspaceBillingError(
+              "checkout_attempt_invalid",
+            );
+          }
+          if (row.interval !== "monthly" && row.interval !== "annual") {
+            throw new WorkspaceBillingError(
+              "checkout_attempt_invalid",
+            );
+          }
+          return {
+            id: row.id,
+            workspaceId: row.billingAccount.workspaceId,
+            actorUserId: row.actorUserId,
+            clientIdempotencyKey: row.clientIdempotencyKey,
+            targetTier: row.targetTier,
+            interval: row.interval,
+            catalogVersion: row.catalogVersion,
+            returnDestination: row.returnDestination,
+            customerOperationKey: row.customerOperationKey,
+            checkoutOperationKey: row.checkoutOperationKey,
+            providerSessionId: row.providerSessionId,
+            expiresAt: row.expiresAt,
+            holdsSlot: row.activeBillingAccountId !== null,
+            createdAt: row.createdAt,
+          };
         };
-      };
-      const classify = (attempt: WorkspaceCheckoutAttempt) => {
-        const unchanged =
-          attempt.workspaceId === input.workspaceId &&
-          attempt.actorUserId === input.actorUserId &&
-          attempt.targetTier === input.targetTier &&
-          attempt.interval === input.interval &&
-          attempt.catalogVersion === input.catalogVersion &&
-          attempt.returnDestination === input.returnDestination;
-        return {
-          kind: unchanged ? ("existing" as const) : ("conflict" as const),
-          attempt,
+        const classify = (attempt: WorkspaceCheckoutAttempt) => {
+          const unchanged =
+            attempt.workspaceId === input.workspaceId &&
+            attempt.actorUserId === input.actorUserId &&
+            attempt.targetTier === input.targetTier &&
+            attempt.interval === input.interval &&
+            attempt.catalogVersion === input.catalogVersion &&
+            attempt.returnDestination === input.returnDestination;
+          return {
+            kind: unchanged ? ("existing" as const) : ("conflict" as const),
+            attempt,
+          };
         };
-      };
-      const select = {
-        id: true,
-        actorUserId: true,
-        clientIdempotencyKey: true,
-        targetTier: true,
-        interval: true,
-        catalogVersion: true,
-        returnDestination: true,
-        customerOperationKey: true,
-        checkoutOperationKey: true,
-        providerSessionId: true,
-        expiresAt: true,
-        activeBillingAccountId: true,
-        createdAt: true,
-        billingAccount: { select: { workspaceId: true } },
-      } as const;
-      const account = await prisma.workspaceBillingAccount.findUnique({
-        where: { workspaceId: input.workspaceId },
-        select: { id: true },
-      });
-      if (!account) throw new WorkspaceBillingError("workspace_not_found");
-      // The unique slot column admits one holder. A lost insert race (on the
-      // client key or the slot) re-reads; it never creates a second holder.
-      for (let pass = 0; pass < 3; pass += 1) {
-        const existing = await prisma.workspaceCheckoutAttempt.findUnique({
-          where: { clientIdempotencyKey: input.clientIdempotencyKey },
-          select,
+        const select = {
+          id: true,
+          actorUserId: true,
+          clientIdempotencyKey: true,
+          targetTier: true,
+          interval: true,
+          catalogVersion: true,
+          returnDestination: true,
+          customerOperationKey: true,
+          checkoutOperationKey: true,
+          providerSessionId: true,
+          expiresAt: true,
+          activeBillingAccountId: true,
+          createdAt: true,
+          billingAccount: { select: { workspaceId: true } },
+        } as const;
+        const account = await tx.workspaceBillingAccount.findUnique({
+          where: { workspaceId: input.workspaceId },
+          select: { id: true },
         });
-        if (existing) return classify(toAttempt(existing));
-        const holder = await prisma.workspaceCheckoutAttempt.findUnique({
-          where: { activeBillingAccountId: account.id },
-          select,
-        });
-        if (holder) return { kind: "held" as const, attempt: toAttempt(holder) };
-        const id = randomUUID();
-        try {
-          const created = await prisma.workspaceCheckoutAttempt.create({
-            data: {
-              id,
-              billingAccountId: account.id,
-              activeBillingAccountId: account.id,
-              actorUserId: input.actorUserId,
-              clientIdempotencyKey: input.clientIdempotencyKey,
-              targetTier: input.targetTier,
-              interval: input.interval,
-              catalogVersion: input.catalogVersion,
-              returnDestination: input.returnDestination,
-              customerOperationKey: `workspace-customer-${input.workspaceId}`,
-              checkoutOperationKey: `workspace-checkout-${id}`,
-              createdAt: input.now,
-            },
+        if (!account) throw new WorkspaceBillingError("workspace_not_found");
+        // The unique slot column admits one holder. A lost insert race (on the
+        // client key or the slot) re-reads; it never creates a second holder.
+        for (let pass = 0; pass < 3; pass += 1) {
+          const existing = await tx.workspaceCheckoutAttempt.findUnique({
+            where: { clientIdempotencyKey: input.clientIdempotencyKey },
             select,
           });
-          return { kind: "created" as const, attempt: toAttempt(created) };
-        } catch (error) {
-          if (
-            !(
-              error &&
-              typeof error === "object" &&
-              "code" in error &&
-              error.code === "P2002"
-            )
-          ) {
-            throw error;
+          if (existing) return accept(classify(toAttempt(existing)));
+          const holder = await tx.workspaceCheckoutAttempt.findUnique({
+            where: { activeBillingAccountId: account.id },
+            select,
+          });
+          if (holder) return accept({ kind: "held" as const, attempt: toAttempt(holder) });
+          const id = randomUUID();
+          try {
+            const created = await tx.workspaceCheckoutAttempt.create({
+              data: {
+                id,
+                billingAccountId: account.id,
+                activeBillingAccountId: account.id,
+                actorUserId: input.actorUserId,
+                clientIdempotencyKey: input.clientIdempotencyKey,
+                targetTier: input.targetTier,
+                interval: input.interval,
+                catalogVersion: input.catalogVersion,
+                returnDestination: input.returnDestination,
+                customerOperationKey: `workspace-customer-${input.workspaceId}`,
+                checkoutOperationKey: `workspace-checkout-${id}`,
+                createdAt: input.now,
+              },
+              select,
+            });
+            return accept({ kind: "created" as const, attempt: toAttempt(created) });
+          } catch (error) {
+            if (
+              !(
+                error &&
+                typeof error === "object" &&
+                "code" in error &&
+                error.code === "P2002"
+              )
+            ) {
+              throw error;
+            }
           }
         }
-      }
-      throw new WorkspaceBillingError("checkout_in_progress");
+        throw new WorkspaceBillingError("checkout_in_progress");
+      });
+      if (prepared.reference) await (options.register ?? deliverExecutionDispatches)([prepared.reference.dispatchId]);
+      return prepared.result;
     },
     async releaseCheckoutSlot(input) {
       // One conditional row update: it serializes with bindCheckoutSession on
@@ -1417,6 +1429,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     async recordCheckoutState(input) {
       return prisma.$transaction(async (tx) => {
         await readExecutionAdmission(tx);
+        await lockWorkspaceUsage(tx, input.workspaceId);
+        await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
         const attempt = await tx.workspaceCheckoutAttempt.findUnique({
           where: { providerSessionId: input.sessionId },
           select: {
@@ -1527,15 +1541,22 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           });
         }
         if (input.wakeReconciliation && !preservesEstablishedOutcome) {
+          const account = await tx.workspaceBillingAccount.findUniqueOrThrow({ where: { id: attempt.billingAccount.id } });
+          const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+          if (!clock) throw new WorkspaceBillingAttemptLost();
+          const reconciling = account.reconcileAttemptId !== null && account.leaseExpiresAt !== null && account.leaseExpiresAt > clock.now;
           await tx.workspaceBillingAccount.update({
             where: { id: attempt.billingAccount.id },
             data: {
               health: "activating",
               attentionReason: null,
-              nextReconcileAt: input.now,
+              ...(reconciling ? {} : { nextReconcileAt: input.now }),
             },
           });
-          await queueBillingReconciliation(tx, attempt.billingAccount.workspaceId);
+          // A browser observation asks the current provider read to finish.
+          // It cannot revoke that reader and discard a concurrent payment fact.
+          if (reconciling) await recoverBillingReconciliation(tx, attempt.billingAccount.workspaceId);
+          else await queueBillingReconciliation(tx, attempt.billingAccount.workspaceId);
         }
         return {
           id: attempt.id,
@@ -1745,21 +1766,36 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       return claims;
     },
     async claimAccount(input) {
-      return prisma.$transaction(async tx => {
+      const prepared = await prisma.$transaction(async tx => {
         const { epoch } = await readExecutionAdmission(tx);
         await lockWorkspaceUsage(tx, input.workspaceId);
         await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
         const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
         if (!clock) throw new WorkspaceBillingAttemptLost();
-        const attemptId = randomUUID();
-        const won = await tx.workspaceBillingAccount.updateMany({ where: { workspaceId: input.workspaceId,
-          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: clock.now } }] },
-          data: { reconcileAttemptId: attemptId, reconciliationEpoch: epoch,
+        const initial = await tx.workspaceBillingAccount.findUnique({ where: { workspaceId: input.workspaceId } });
+        if (!initial || initial.leaseExpiresAt && initial.leaseExpiresAt > clock.now) return null;
+        await tx.workspaceBillingAccount.update({ where: { workspaceId: input.workspaceId }, data: { nextReconcileAt: clock.now } });
+        const reference = await queueBillingReconciliation(tx, input.workspaceId);
+        const account = await tx.workspaceBillingAccount.update({ where: { workspaceId: input.workspaceId },
+          data: { reconcileAttemptId: randomUUID(), reconciliationEpoch: epoch,
             leaseExpiresAt: new Date(clock.now.getTime() + input.leaseMs), attemptCount: { increment: 1 } } });
-        if (!won.count) return null;
-        const account = await tx.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: input.workspaceId } });
-        return { workspaceId: account.workspaceId, attemptId, attemptCount: account.attemptCount, dueAt: account.nextReconcileAt };
+        const watchdogId = await appendBillingLeaseWatchdog(tx, reference, account.leaseExpiresAt!);
+        return { claim: { workspaceId: account.workspaceId, attemptId: account.reconcileAttemptId!, attemptCount: account.attemptCount, dueAt: account.nextReconcileAt },
+          reference, watchdogId };
       });
+      if (!prepared) return null;
+      try { await (options.register ?? deliverExecutionDispatches)([prepared.watchdogId, prepared.reference.dispatchId]); }
+      catch (error) {
+        await prisma.$transaction(async tx => {
+          const { epoch } = await readExecutionAdmission(tx);
+          if (epoch !== prepared.reference.deploymentEpoch) return;
+          await tx.workspaceBillingAccount.updateMany({ where: { workspaceId: input.workspaceId, reconciliationEpoch: epoch,
+            reconciliationGeneration: prepared.reference.generation, reconcileAttemptId: prepared.claim.attemptId },
+            data: { reconcileAttemptId: null, leaseExpiresAt: null, attemptCount: { decrement: 1 } } });
+        });
+        throw error;
+      }
+      return prepared.claim;
     },
     async renewClaim(input) {
       return prisma.$transaction(async tx => {
@@ -1823,6 +1859,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         // concurrent intake reservation observes either the old or new status.
         // Lock order: usage lock, then Project rows, then billing rows.
         await lockWorkspaceUsage(tx, input.workspaceId);
+        await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
         const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
         if (!clock) throw new WorkspaceBillingAttemptLost();
         const row = await tx.workspace.findUnique({
@@ -1948,6 +1985,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         const { epoch } = await readExecutionAdmission(tx);
         // Same lock order as commitNoSubscriptionState: usage lock first.
         await lockWorkspaceUsage(tx, input.workspaceId);
+        await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
         const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
         if (!clock) throw new WorkspaceBillingAttemptLost();
         const row = await tx.workspace.findUnique({

@@ -1,10 +1,10 @@
 {
   "status": "targeted driver and store integration verified; ticket19 remains open",
   "databaseTests": {
-    "passed": 4,
-    "assertions": 33,
+    "passed": 6,
+    "assertions": 48,
     "database": "disposable PostgreSQL17 schema",
-    "migrations": 137
+    "migrations": 138
   },
   "unitTests": {
     "passed": 50,
@@ -17,7 +17,11 @@
     "lease watchdog confirmed before provider I/O",
     "failed scheduler registration releases unstarted claim",
     "actual billing store commits next due and wake with provider projection",
-    "deployment epoch change during provider reply prevents stale pricing mutation"
+    "deployment epoch change during provider reply prevents stale pricing mutation",
+    "interactive and plan-change claims register watchdog before provider authority",
+    "unconfirmed interactive registration releases unstarted claim",
+    "Checkout slot and initial due obligation commit together and exact lost-ack retry repairs same reference",
+    "browser Checkout observation preserves concurrent authoritative payment reconciliation"
   ],
   "workerBundleAudit": {
     "forbiddenPackages": [],
@@ -26,9 +30,10 @@
   },
   "remaining": [
     "replace remaining old billing batch caller at ticket23",
-    "verify billing interactive and plan-change claim watchdog registration paths",
-    "wire initial account and receipt-replay recovery paths",
-    "run legacy PostgreSQL billing suites with database-time lease fixtures",
     "deployed Workflow and sandbox Stripe gate"
-  ]
+  ],
+  "existingBillingPostgresSuite": {
+    "passed": 30,
+    "assertions": 145
+  }
 }

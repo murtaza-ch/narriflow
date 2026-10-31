@@ -53,7 +53,7 @@ export type PinnedTransport = (
     addresses: readonly ResolvedAddress[];
     method: string;
     headers: Headers;
-    body?: string | Uint8Array;
+    body?: string | Uint8Array | Blob;
     signal: AbortSignal;
   },
 ) => Promise<Response>;
@@ -61,8 +61,8 @@ export type PinnedTransport = (
 export interface GuardedFetchOptions {
   /** Test seam. Production connections use `pinnedTransport`. */
   transport?: PinnedTransport;
-  method?: "GET" | "POST";
-  body?: string | Uint8Array;
+  method?: "GET" | "HEAD" | "POST" | "PUT" | "DELETE";
+  body?: string | Uint8Array | Blob;
   headers?: HeadersInit;
   maxRedirects?: number;
   resolver?: HostResolver;

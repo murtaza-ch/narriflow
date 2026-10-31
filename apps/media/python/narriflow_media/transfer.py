@@ -178,7 +178,7 @@ def parse_transfer_disposition(value):
         if (value['functionName']=='publication') != ('publication' in value):_invalid()
         if 'publication' in value:
             publication=value['publication']
-            _object(publication,{'version','inputKey','checkpointKey','account'},{'priorCheckpointKey'})
+            _object(publication,{'version','inputKey','checkpointKey','account'},{'priorCheckpointKey','media','thumbnail','webhook'})
             if publication['version']!=1 or len(json.dumps(publication,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode())>32*1024:_invalid()
             for name in ('inputKey','checkpointKey','priorCheckpointKey'):
                 if name not in publication:continue
@@ -190,6 +190,17 @@ def parse_transfer_disposition(value):
                 _integer(scope['deploymentEpoch'],2147483647);_text(scope['bindingHash'],64,SHA)
                 for field in ('socialPostId','attemptId','claimId'):_id(scope[field])
                 if name=='priorCheckpointKey':_id(material['artifactId'])
+            if 'webhook' in publication:
+                hook=_object(publication['webhook'],{'receiverUrl','bodySha256','signature','deadlineMs','maxResponseBytes','reconciliationMaxMs'})
+                _text(hook['bodySha256'],64,SHA);_text(hook['signature'],71,r'sha256=[a-f0-9]{64}')
+                _integer(hook['deadlineMs'],60000,1000);_integer(hook['maxResponseBytes'],1048576,1024);_integer(hook['reconciliationMaxMs'],7*86400000,60000)
+                if 'media' not in publication:_invalid()
+                _grant({'url':hook['receiverUrl'],'headers':{},'expiresAt':publication['media']['expiresAt']})
+            for name in ('media','thumbnail'):
+                if name in publication:
+                    pull=_object(publication[name],{'url','expiresAt'}|({'contentType'} if name=='thumbnail' else set()))
+                    if name=='thumbnail' and pull['contentType'] not in {'image/png','image/jpeg','image/webp'}:_invalid()
+                    _grant({'url':pull['url'],'headers':{},'expiresAt':pull['expiresAt']})
             account=publication['account']
             if account is not None:
                 _object(account,{'id','userId','platform','providerAccountId','displayName','handle','accessToken','scopes','metadata'})

@@ -12,6 +12,7 @@ import { createClipSelectionControl } from "./clip-selection-control";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { withServiceEnvironment } from "./runtime-environment";
 import { lockWorkspaceUsage } from "./processing-usage";
+import { selectionExecutionObjectRetainUntil } from "./execution-object-cleanup";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -69,10 +70,28 @@ dbDescribe("Frozen selection preparation", () => {
     expect(guidanceReads).toBe(1);
     const metadata = await preparation.readWindow(prepared.windows[0]!);
     if (!metadata) throw new Error("Frozen input unavailable");
+    expect((await selectionExecutionObjectRetainUntil(db, metadata.input.storageKey))!.getTime()).toBeGreaterThan(Date.now());
     const decoded = await decodeClipSelectionInput(await store.storage.read(metadata.input), metadata.input, metadata.parent);
     expect(decoded.planning).toMatchObject({ projectTitle: "Frozen source", audienceDataLine: "Frozen audience data", sourceLanguageCode: "en" });
     expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } }))).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, leaseExpiresAt: null, attemptCount: 0 });
     expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: { in: prepared.windows.map(reference => reference.subject.id) } } } })).toBe(0);
+  });
+  test("input PUT is planned before I/O and a cleanup claimant prevents adoption or future key revival", async () => {
+    const f = await fixture(), store = storageFixture();
+    let writes = 0;
+    const preparation = createClipSelectionPreparation({ database: db, provider, storage: { ...store.storage, async write(key, bytes) {
+      const plan = await db.mediaCleanupObligation.findFirst({ where: { origin: "selection_execution", objectKey: key } });
+      expect(plan).not.toBeNull();
+      expect(key).toMatch(new RegExp(`^projects/${f.project.id}/selection/${f.run.id}/[a-f0-9-]{36}/[a-f0-9]{64}\\.json$`));
+      if (++writes === 1) await db.mediaCleanupObligation.update({ where: { id: plan!.id }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } });
+      return store.storage.write(key, bytes);
+    } } });
+    await expect(preparation.prepare(f.reference)).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect(await db.clipSelectionWindow.count({ where: { workflowRunId: f.run.id } })).toBe(0);
+    expect((await preparation.prepare(f.reference)).kind).toBe("prepared");
+    const row = await db.clipSelectionWindow.findFirstOrThrow({ where: { workflowRunId: f.run.id } });
+    expect(store.objects.size).toBe(2);
+    expect(row.inputStorageKey).not.toBe([...store.objects.keys()][0]);
   });
   test("sparse and caption-only windows persist deterministic results without a provider permit or charge", async () => {
     for (const captionOnly of [false, true]) {
@@ -254,7 +273,7 @@ dbDescribe("Frozen selection preparation", () => {
     expect(await withServiceEnvironment({}, () => control.runParent(f.reference))).toEqual({ kind: "complete", outcome: "failed" });
     expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: prepared.windows[1]!.subject.id } })).status).toBe("cancelled");
     expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: sibling.attempt.token } }))).toMatchObject({ status: "cancelled", failureCode: "openai_quota_exhausted" });
-    expect((await lifecycle.complete(sibling.attempt, { storageKey: clipSelectionWindowResultKey(sibling.attempt, "f".repeat(64)), etag: '"late"', sha256: "f".repeat(64), byteLength: 100, tokensUsed: 100, providerRequestId: "req_late" })).kind).toBe("superseded");
+    expect((await lifecycle.complete(sibling.attempt, { storageKey: clipSelectionWindowResultKey(sibling.attempt, "f".repeat(64), crypto.randomUUID()), etag: '"late"', sha256: "f".repeat(64), byteLength: 100, tokensUsed: 100, providerRequestId: "req_late" })).kind).toBe("superseded");
     expect(await db.clip.count({ where: { projectId: f.project.id } })).toBe(0);
     expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } }))).toMatchObject({ status: "failed", errorCode: "openai_quota_exhausted", attemptId: null });
   });
