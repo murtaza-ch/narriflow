@@ -8,8 +8,8 @@ test("exact-key cleanup drains only that destination's MPUs before acknowledged 
   const calls: unknown[] = [];
   const storage = createMediaCleanupStorage(config, { client: { async send(command: unknown, options: { abortSignal: AbortSignal }) {
     calls.push(command); expect(options.abortSignal).toBeInstanceOf(AbortSignal);
-    if (command instanceof ListMultipartUploadsCommand) { expect(command.input.Prefix).toBe(key); expect(command.input.MaxUploads).toBe(9); return { Uploads: [{ Key: key, UploadId: "known" }, { Key: `${key}.unrelated`, UploadId: "other" }], IsTruncated: false }; }
-    if (command instanceof AbortMultipartUploadCommand) { expect(command.input.Key).toBe(key); expect(command.input.UploadId).toBe("known"); return {}; }
+    if (command instanceof ListMultipartUploadsCommand) { expect(command.input.Prefix).toBe(key); expect(command.input.MaxUploads).toBe(9); return { $metadata: { httpStatusCode: 200 }, Uploads: [{ Key: key, UploadId: "known" }, { Key: `${key}.unrelated`, UploadId: "other" }], IsTruncated: false }; }
+    if (command instanceof AbortMultipartUploadCommand) { expect(command.input.Key).toBe(key); expect(command.input.UploadId).toBe("known"); return { $metadata: { httpStatusCode: 204 } }; }
     if (command instanceof DeleteObjectCommand) { expect(command.input).toEqual({ Bucket: "private", Key: key }); return { $metadata: { httpStatusCode: 204 } }; }
     throw new Error("unexpected");
   } } as unknown as S3Client });
@@ -22,11 +22,15 @@ test("unknown DELETE acceptance and truncated MPU inventory cannot complete clea
   for (const truncated of [true, false]) {
     let deletes = 0;
     const storage = createMediaCleanupStorage(config, { client: { async send(command: unknown) {
-      if (command instanceof ListMultipartUploadsCommand) return { Uploads: [], IsTruncated: truncated };
+      if (command instanceof ListMultipartUploadsCommand) return { $metadata: { httpStatusCode: 200 }, Uploads: [], IsTruncated: truncated };
       if (command instanceof DeleteObjectCommand) { deletes++; throw new Error("lost HTTP response"); }
       throw new Error("unexpected");
     } } as unknown as S3Client });
     await expect(storage.deleteExact("projects/known/key.mp4", { signal: new AbortController().signal })).rejects.toMatchObject({ code: "cleanup_storage_unconfirmed" });
     expect(deletes).toBe(truncated ? 0 : 1);
   }
+});
+test("a missing-key error during MPU inventory is not a DELETE acknowledgement", async () => {
+  const storage = createMediaCleanupStorage(config, { client: { async send() { throw { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } }; } } as unknown as S3Client });
+  await expect(storage.deleteExact("projects/known/key.mp4", { signal: new AbortController().signal })).rejects.toMatchObject({ code: "cleanup_storage_unconfirmed" });
 });

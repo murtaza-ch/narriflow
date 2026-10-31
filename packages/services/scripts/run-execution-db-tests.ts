@@ -72,7 +72,11 @@ try {
     // Epoch-fencing tests deliberately invalidate every old reference. Run
     // them after suites whose fixtures freeze the initial deployment epoch.
     const fences = remaining.filter(path => path === "packages/services/src/billing-reconciliation.db.test.ts");
-    const ordinary = remaining.filter(path => !fences.includes(path));
+    // This suite deliberately reconciles the whole disposable outbox. Run it
+    // before domain fixtures create their own pending durable obligations.
+    const dispatch = "packages/services/src/execution-dispatch.db.test.ts";
+    if (remaining.includes(dispatch)) await run(["bun", "test", dispatch], testEnvironment);
+    const ordinary = remaining.filter(path => !fences.includes(path) && path !== dispatch);
     if (ordinary.length) await run(["bun", "test", ...ordinary], testEnvironment);
     for (const path of fences) await run(["bun", "test", path], testEnvironment);
     // Restore advances authority and leaves intake closed. Keep it last.

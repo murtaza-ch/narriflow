@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 /** Exact planned inputs and assigned instruction blobs survive uncertain
  * outcomes. Project expiry/purge or explicit resolution releases the hold. */
-export async function publicationObjectIsHeld(db: PrismaClient, key: string) {
+export async function publicationObjectIsHeld(db: Pick<PrismaClient, "publicationClaim" | "executionArtifact" | "socialPost">, key: string, now = new Date()) {
 	const planned =
 		/^execution-inputs\/\d+\/publication\/([a-f0-9-]{36})\/\d+\/([a-f0-9-]{36})\.json$/.exec(
 			key,
@@ -48,7 +48,7 @@ export async function publicationObjectIsHeld(db: PrismaClient, key: string) {
 	if (
 		!post ||
 		post.project.purgeStartedAt ||
-		(post.project.expiresAt && post.project.expiresAt <= new Date())
+		(post.project.expiresAt && post.project.expiresAt <= now)
 	)
 		return false;
 	return ![

@@ -637,7 +637,7 @@ export class RenderGroupLifecycle {
       const state = await this.prepareInputWithinTransaction(tx, reference);
       if (state.kind !== "ready" || state.group.status !== "queued" || state.group.attemptToken || state.group.preparationId !== preparationId) throw new Error("render_input_unavailable");
       const key = `projects/${state.parent.projectId}/render-groups/${state.group.id}/${randomUUID()}.json`;
-      await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: state.parent.projectId,
+      await admitMediaCleanupObligations(tx, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: state.parent.projectId,
         clipId: state.group.clipId, objectKey: key, notBefore: new Date(state.deadlineAt.getTime()+120_000) }]);
       return key;
     });
