@@ -1,3 +1,4 @@
+import {recoverProjectNotificationDeliveries} from "./notification-execution";
 import { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 export { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 import { randomUUID } from "node:crypto";
@@ -3139,6 +3140,7 @@ export class WorkflowRunLifecycle {
     const event = { workflowRunId: ref.workflowRunId, projectId: ref.projectId, stage: "clip_rendering" as const, attemptId: ref.eventId };
     const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.workflowRunId } });
     if (["completed", "partial", "failed"].includes(run.status) && run.requestedCount !== null && run.succeededCount !== null && run.failedCount !== null) {
+      await recoverProjectNotificationDeliveries(tx,{projectId:ref.projectId,sourceId:ref.workflowRunId,outcomes:["clips_ready","no_clips","generation_failed"]});
       const followUp = await tx.workflowRun.findUnique({ where: { projectId_idempotencyKey: { projectId: ref.projectId, idempotencyKey: `drain-${ref.workflowRunId}` } }, select: { id: true } });
       return { status: run.status as "completed" | "partial" | "failed", requested: run.requestedCount, succeeded: run.succeededCount, failed: run.failedCount,
         superseded: Math.max(0, run.requestedCount - run.succeededCount - run.failedCount), followUpWorkflowRunId: followUp?.id ?? null };

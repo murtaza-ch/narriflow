@@ -1,3 +1,4 @@
+import {clipPreparationReadyObjectsSchema} from "@narriflow/validators/clip-preparation";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { PrismaClient } from "@prisma/client";
@@ -48,7 +49,9 @@ suite("Clip preparation frozen input ledger", () => {
   });
   test("completed preparation evidence and historical charge cannot be replaced", async () => {
     await client.query('UPDATE "ClipPreparation" SET status=\'running\',"attemptToken"=$2,"executorOwner"=$3,"leaseExpiresAt"=now()+interval \'120 seconds\',"chargedAttempts"=2 WHERE id=$1', [id, crypto.randomUUID(), crypto.randomUUID()]);
-    await client.query('UPDATE "ClipPreparation" SET status=\'completed\',"executorOwner"=NULL,"leaseExpiresAt"=NULL,"completedAt"=now(),result=\'{"fixture":true}\'::jsonb WHERE id=$1', [id]);
+    const readyObjects=clipPreparationReadyObjectsSchema.parse({preview:{storageKey:`projects/${projectId}/preparations/${id}/fixture-preview.mp4`,etag:'"preview"',byteLength:1024,sha256:"f".repeat(64)},peaks:null,manifest:{storageKey:`projects/${projectId}/preparations/${id}/fixture-manifest.json`,etag:'"manifest"',byteLength:1024,sha256:"f".repeat(64)}});
+    await client.query('UPDATE "ClipPreparation" SET status=\'completed\',"executorOwner"=NULL,"leaseExpiresAt"=NULL,"completedAt"=now(),"readyObjects"=$2::jsonb,result=\'{"fixture":true}\'::jsonb WHERE id=$1', [id,JSON.stringify(readyObjects)]);
+    await expect(client.query('UPDATE "ClipPreparation" SET "readyObjects"=\'{}\'::jsonb WHERE id=$1',[id])).rejects.toThrow();
     await expect(client.query('UPDATE "ClipPreparation" SET result=\'{"replacement":true}\'::jsonb WHERE id=$1', [id])).rejects.toThrow();
     await expect(client.query('UPDATE "ClipPreparation" SET status=\'queued\',"completedAt"=NULL WHERE id=$1', [id])).rejects.toThrow();
     expect((await client.query('SELECT status,"chargedAttempts",result FROM "ClipPreparation" WHERE id=$1', [id])).rows[0]).toEqual({ status: "completed", chargedAttempts: 2, result: { fixture: true } });

@@ -1,3 +1,5 @@
+import {appendProjectNotificationIntent} from "./notification-execution";
+import {withExecutionDispatches} from "./execution-dispatch-runtime";
 import {planFinishingRecoveryPage,planFinishingRestorePage} from "./generation-finishing-maintenance";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -155,6 +157,23 @@ suite("Targeted generation finishing obligations", () => {
     await service.run(next);
     expect(await db.notificationLedger.count({where:{projectId:value.row.projectId}})).toBe(0);
     expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({state:"due",finishedAt:null,claimToken:null,attempts:1});
+  });
+  test("terminal Finishing replay repairs a committed mail wake after the final scheduler acknowledgement is lost",async()=>{
+    const value=await due({topClips:1});await withClips(value);let notifications=0,lose=true;const repaired:string[]=[];
+    const service=driver({register:async ids=>{const mails=await db.executionDispatch.findMany({where:{id:{in:[...ids]},subjectKind:"notification"},select:{id:true}});repaired.push(...mails.map(row=>row.id));},createExport:async(_scope,projectId,clipId,input,key)=>{
+      const row=await db.clipExport.create({data:{workspaceId:value.row.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"ready",resolution:"720p",watermark:false}});return{export:{id:row.id,status:row.status},reused:false};
+    },notify:async(input,_authority,tx)=>{notifications++;await appendProjectNotificationIntent(tx,{...input,outcome:"finishing_ready"});}});
+    await service.run(value.reference);const reference=(await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!;
+    const invoke=()=>withExecutionDispatches(()=>service.run(reference),{database:db,deliver:async ids=>{
+      const mails=await db.executionDispatch.count({where:{id:{in:[...ids]},subjectKind:"notification"}});if(mails&&lose){lose=false;throw Error("terminal_mail_ack_lost");}
+    }});
+    await expect(invoke()).rejects.toThrow("terminal_mail_ack_lost");
+    const committed=await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}}),mail=await db.notificationLedger.findFirstOrThrow({where:{projectId:value.row.projectId,outcome:"finishing_ready"}});
+    expect(committed.state).toBe("ready");expect(notifications).toBe(1);expect(repaired).toHaveLength(0);
+    expect((await invoke()).kind).toBe("complete");expect(notifications).toBe(1);
+    const mailWake=await db.executionDispatch.findFirstOrThrow({where:{subjectKind:"notification",subjectId:`em1.p.${mail.id}`}});
+    expect(repaired).toEqual([mailWake.id]);expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toEqual(committed);
+    expect(await db.notificationLedger.count({where:{projectId:value.row.projectId,outcome:"finishing_ready"}})).toBe(1);
   });
   test("an already-started copy request ends partial under its original key without a fresh paid retry",async()=>{
     const value=await due({topClips:1,copyPlatforms:["x"]});await withClips(value);let copies=0;
