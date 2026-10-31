@@ -158,7 +158,7 @@ CREATE TABLE "SourceRefundNeed" (
     "sourceRevision" INTEGER NOT NULL,
     "sourceAudioId" UUID NOT NULL,
     "sourceAudioBindingHash" CHAR(64) NOT NULL,
-    "videoBindingHash" CHAR(64) NOT NULL,
+    "videoBindingHash" CHAR(64),
     "failureCode" VARCHAR(100) NOT NULL DEFAULT 'source_audio_video_mismatch',
     "resolvedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -345,7 +345,7 @@ ALTER TABLE "SourceAudio" ADD CONSTRAINT "SourceAudio_whole_source_check" CHECK 
   AND "toolchainFingerprint" ~ '^[a-f0-9]{64}$' AND jsonb_typeof("audioTrack") = 'object'
 );
 ALTER TABLE "SourceRefundNeed" ADD CONSTRAINT "SourceRefundNeed_binding_check" CHECK (
-  "sourceRevision" > 0 AND "sourceAudioBindingHash" ~ '^[a-f0-9]{64}$' AND "videoBindingHash" ~ '^[a-f0-9]{64}$'
+  "sourceRevision" > 0 AND "sourceAudioBindingHash" ~ '^[a-f0-9]{64}$' AND ("videoBindingHash" IS NULL OR "videoBindingHash" ~ '^[a-f0-9]{64}$')
 );
 ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_bounds_check" CHECK (
   "generation" > 0 AND "workflowGeneration" > 0 AND "deploymentEpoch" > 0 AND "transcriptGeneration" > 0 AND "sourceRevision" > 0

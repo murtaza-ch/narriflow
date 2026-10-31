@@ -269,7 +269,7 @@ export const executionInvocationSchema = z.strictObject({
 });
 export const executionMediaFunctionSchema = z.enum([
   "fetch_source", "pin_source", "prepare_clip", "render_group", "probe_extract", "thumbnail",
-  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation",
+  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation", "generated_image",
 ]);
 const bridgeInvocation = executionInvocationSchema.shape;
 export const modalBridgeCommandSchema = z.discriminatedUnion("action", [

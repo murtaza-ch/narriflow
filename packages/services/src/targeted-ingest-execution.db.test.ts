@@ -440,7 +440,7 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
   }, 120_000);
 
-  test("late video mismatch cancels admitted provider work without erasing charged usage", async () => {
+  test.each(["sealed_video", "source_audio_video_mismatch", "source_identity_mismatch"])("late mismatch %s cancels admitted provider work without erasing charged usage", async mode => {
     const f = await fixture();
     await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
       clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
@@ -462,16 +462,19 @@ dbDescribe("Targeted Ingest execution", () => {
     const reference = (await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id))).reference;
     const begun = await withServiceEnvironment({}, () => createTranscriptionAdmission({ database: db, workflow: f.workflow, maxUnits: 12 }).admit(reference, { owner: crypto.randomUUID() }));
     if (begun.kind !== "begun") throw new Error("Provider work must be admitted before the late mismatch");
-    const command = { action: "commit-artifact" as const, fence, artifact: { artifactId: video.id, role: "source_video" as const, contentType: video.contentType,
-      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: bindings.video } };
+    const command = mode === "sealed_video" ? { action: "commit-artifact" as const, fence, artifact: { artifactId: video.id, role: "source_video" as const, contentType: video.contentType,
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: bindings.video } }
+      : { action: "fail" as const, fence, failureCode: mode, retryable: false };
     const receipt = f.verified();
-    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe("committed");
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe(mode === "sealed_video" ? "committed" : "failed");
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "cancelled", attemptCount: 1, leaseOwner: null, nextPollAt: null });
     expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "source_audio_video_mismatch" });
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 120 });
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
+    const refund = await db.sourceRefundNeed.findUniqueOrThrow({ where: { projectId_sourceRevision: { projectId: f.project.id, sourceRevision: 1 } } });
+    expect(refund.videoBindingHash === null).toBe(mode !== "sealed_video");
     expect(await db.executionDispatch.count({ where: { subjectId: run.id, wakeKind: "source_cancelled" } })).toBe(1);
-    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe("committed");
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest: receipt }))).disposition).toBe(mode === "sealed_video" ? "committed" : "failed");
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
     expect(await f.workflow.recordProviderAcceptance(begun.intent.reference, { requestId: "late-mismatch", transcriptionId: "late-mismatch", nextPollAt: new Date() })).toMatchObject({ kind: "stale", reason: "source_superseded" });
     expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "failed", errorCode: "source_audio_video_mismatch", providerResultDeadlineAt: null });

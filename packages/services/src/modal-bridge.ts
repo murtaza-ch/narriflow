@@ -13,7 +13,7 @@ export function createModalBridgeClient(config: { origin: string; keyId: string;
   options: { fetch?: typeof fetch; now?: () => Date } = {}) {
   let origin: URL;
   try { origin = new URL(config.origin); } catch { throw new ModalBridgeError("modal_bridge_configuration_invalid"); }
-  if (origin.protocol !== "https:" || !/^[a-z0-9-]+\.modal\.run$/.test(origin.hostname) || origin.username || origin.password ||
+  if (origin.protocol !== "https:" || !/^[a-z0-9-]+(?:\.[a-z0-9-]+)?\.modal\.run$/.test(origin.hostname) || origin.username || origin.password ||
     origin.port || origin.pathname !== "/" || origin.search || origin.hash || !/^[A-Za-z0-9_-]{1,64}$/.test(config.keyId) || !(config.key instanceof Uint8Array) || config.key.length < 32 || config.key.length > 64) {
     throw new ModalBridgeError("modal_bridge_configuration_invalid");
   }

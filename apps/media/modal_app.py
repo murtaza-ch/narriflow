@@ -39,13 +39,15 @@ dispatch_receipts = modal.Dict.from_name("narriflow-dispatch-receipts-v1", creat
 
 # One active input per container is Modal's default without @modal.concurrent.
 # CPU requests are physical cores. Tuple limits bound both compute and memory.
-LEAN_RESOURCES = dict(cpu=(2, 2), memory=(4096, 4096), ephemeral_disk=64 * 1024,
+LEAN_RESOURCES = dict(cpu=(2, 2), memory=(4096, 4096),
                       min_containers=0, buffer_containers=0, scaledown_window=2,
                       retries=0, startup_timeout=60)
-RENDER_RESOURCES = dict(cpu=(4, 4), memory=(8192, 8192), ephemeral_disk=64 * 1024,
+RENDER_RESOURCES = dict(cpu=(4, 4), memory=(8192, 8192),
                         min_containers=0, buffer_containers=0, scaledown_window=2,
                         retries=0, startup_timeout=60)
-# SDK 1.2.6 rejects an explicit retries option on ASGI endpoints, including 0.
+# The default ephemeral quota is already 512 GiB. Requesting disk explicitly
+# increases the billed memory request and is unnecessary for bounded scratch.
+# ASGI endpoints reject an explicit retries option, including 0.
 BRIDGE_RESOURCES = {key: value for key, value in LEAN_RESOURCES.items() if key != "retries"}
 
 
