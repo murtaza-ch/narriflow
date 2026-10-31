@@ -39,7 +39,7 @@ export interface ExecutorArtifactCommit {
 export type ExecutorFailureInput = Pick<Extract<ExecutionCommand, { action: "fail" }>, "failureCode" | "retryable">;
 export type ExecutorReleaseInput = Pick<Extract<ExecutionCommand, { action: "release" }>, "reason">;
 export type ExecutorProgressInput = Pick<Extract<ExecutionCommand, { action: "progress" }>, "phase" | "progress">;
-export type ExecutorMutationResult = void | { dispatchIds: readonly string[] };
+export type ExecutorMutationResult = undefined | { dispatchIds: readonly string[] };
 
 /** Trusted TypeScript service ports. None is exposed as a generic remote command. */
 export interface ExecutorDomainControl<TRef = unknown, TArtifact extends ExecutorArtifactCommit = ExecutorArtifactCommit> {

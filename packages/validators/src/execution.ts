@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { clipRenderCaptionDiagnosticsSchema } from "./clip";
+import { mediaFactsSchema, sourceProbeSchema } from "./source-probe";
 
 export const EXECUTION_ENVELOPE_MAX_BYTES = 64 * 1024;
 export const EXECUTION_COMMAND_MAX_BYTES = 64 * 1024;
@@ -8,6 +10,17 @@ export const EXECUTION_SIGNATURE_MAX_AGE_SECONDS = 300;
 const executionId = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const generation = z.number().int().positive().safe();
+export const executionMediaIdentitySchema = z.strictObject({
+  provider: z.enum(["youtube", "upload", "rss", "direct", "drive", "zoom"]),
+  mediaId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-][A-Za-z0-9._:-]*$/),
+}).refine(value => value.provider !== "youtube" || /^[A-Za-z0-9_-]{11}$/.test(value.mediaId), "Invalid normalized YouTube media identity");
+export const executionAudioTrackSchema = z.strictObject({
+  id: executionId,
+  language: z.string().min(1).max(32).regex(/^[A-Za-z0-9-]+$/).nullable(),
+  codec: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
+  sampleRate: z.number().int().positive().max(768000),
+  channels: z.number().int().positive().max(64),
+});
 
 /** A dispatch names durable state. Workflow payloads never contain the state itself. */
 export const executionDispatchKindSchema = z.enum([
@@ -63,6 +76,16 @@ export const executionArtifactSchema = z.strictObject({
   sha256,
   etag: z.string().min(1).max(160).regex(/^[\x21-\x7e]+$/),
   bindingHash: sha256,
+  sourceAudio: z.lazy(() => sourceAudioBindingSchema).optional(),
+  sourceVideo: z.lazy(() => sourceVideoBindingSchema).optional(),
+  renderVariant: z.strictObject({ renderId: z.string().uuid(), durationSec: z.number().finite().positive(),
+    captionDiagnostics: clipRenderCaptionDiagnosticsSchema.optional() }).optional(),
+}).superRefine((value, context) => {
+  for (const [field, role] of [["sourceAudio", "source_audio"], ["sourceVideo", "source_video"], ["renderVariant", "render_variant"]] as const) {
+    if (value[field] !== undefined && value.role !== role) context.addIssue({ code: "custom", path: [field], message: "Artifact evidence must match its assigned role" });
+  }
+  if (value.role === "source_audio" && !value.sourceAudio) context.addIssue({ code: "custom", path: ["sourceAudio"], message: "Whole-source audio evidence is required" });
+  if (value.role === "source_video" && !value.sourceVideo) context.addIssue({ code: "custom", path: ["sourceVideo"], message: "Whole-source video evidence is required" });
 });
 
 const failureCode = z.string().min(1).max(100).regex(/^[a-z][a-z0-9_]*$/);
@@ -167,17 +190,8 @@ export const sourceAudioBindingSchema = z.strictObject({
   sourceAudioId: z.string().uuid(),
   projectId: z.string().uuid(),
   sourceRevision: generation,
-  mediaIdentity: z.strictObject({
-    provider: z.enum(["youtube", "upload", "rss", "direct", "drive", "zoom"]),
-    mediaId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-][A-Za-z0-9._:-]*$/),
-  }).refine(value => value.provider !== "youtube" || /^[A-Za-z0-9_-]{11}$/.test(value.mediaId), "Invalid normalized YouTube media identity"),
-  audioTrack: z.strictObject({
-    id: executionId,
-    language: z.string().min(1).max(32).regex(/^[A-Za-z0-9-]+$/).nullable(),
-    codec: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
-    sampleRate: z.number().int().positive().max(768000),
-    channels: z.number().int().positive().max(64),
-  }),
+  mediaIdentity: executionMediaIdentitySchema,
+  audioTrack: executionAudioTrackSchema,
   object: executionObjectIdentitySchema,
   durationSeconds: z.number().finite().positive(),
   wholeSource: z.literal(true),
@@ -188,3 +202,18 @@ export const sourceAudioBindingSchema = z.strictObject({
 
 export type ExecutionObjectIdentity = z.infer<typeof executionObjectIdentitySchema>;
 export type SourceAudioBinding = z.infer<typeof sourceAudioBindingSchema>;
+
+/** Complete probe facts plus the extraction identity, before any full-video publication. */
+export const sourceVideoBindingSchema = z.strictObject({
+  projectId: z.string().uuid(),
+  sourceRevision: generation,
+  mediaIdentity: executionMediaIdentitySchema,
+  audioTrack: executionAudioTrackSchema.nullable(),
+  probe: sourceProbeSchema.extend({ facts: mediaFactsSchema }),
+  wholeSource: z.literal(true),
+  audioStartTimeSec: z.number().finite().nullable(),
+  videoStartTimeSec: z.number().finite().nullable(),
+  probeVersion: executionId,
+  toolchainFingerprint: sha256,
+});
+export type SourceVideoBinding = z.infer<typeof sourceVideoBindingSchema>;

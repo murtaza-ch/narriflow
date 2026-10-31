@@ -8,7 +8,7 @@ import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationCon
 
 type Tx = Prisma.TransactionClient;
 type Attempt = AttemptRow & { dispatch: DispatchRow };
-type FailureCode = "invalid_reference" | "replay_conflict" | "authority_lost" | "artifact_invalid" | "storage_unavailable" | "scheduler_unavailable" | "epoch_unavailable" | "invalid_audience";
+type FailureCode = "invalid_reference" | "replay_conflict" | "authority_lost" | "artifact_invalid" | "storage_unavailable" | "scheduler_unavailable" | "epoch_unavailable" | "keys_unavailable" | "invalid_audience";
 export class ExecutorControlError extends Error {
   constructor(readonly code: FailureCode) { super(code); this.name = "ExecutorControlError"; }
 }
@@ -17,7 +17,8 @@ export interface ExecutorArtifactHead {
   etag: string;
   contentType: string;
   byteLength: bigint;
-  sha256: string;
+  /** Available for R2 single puts with a verified checksum, absent for multipart objects. */
+  sha256?: string;
 }
 
 interface Options<TRef, TArtifact extends ExecutorArtifactCommit> {
@@ -28,7 +29,7 @@ interface Options<TRef, TArtifact extends ExecutorArtifactCommit> {
   artifacts?: {
     head(assignment: Readonly<ArtifactRow>): Promise<ExecutorArtifactHead | null>;
     /** Typed role evidence comes from assigned, immutable storage, never callback-selected keys. */
-    prepare(assignment: Readonly<ArtifactRow>, verified: ExecutorArtifactCommit): Promise<TArtifact>;
+    prepare(assignment: Readonly<ArtifactRow>, verified: ExecutorArtifactCommit, reported: Extract<ExecutionCommand, { action: "commit-artifact" }>["artifact"]): Promise<TArtifact>;
   };
   /** Server-owned immutable work inputs supply expected render provenance. */
   prepareContext?(attempt: Readonly<AttemptRow>): Promise<ExecutorMutationContext["fingerprints"]>;
@@ -112,12 +113,12 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         if (!options.artifacts) throw new ExecutorControlError("storage_unavailable");
         const head = await options.artifacts.head(assignment);
         if (!head || head.etag !== command.artifact.etag || head.contentType !== assignment.contentType ||
-          head.byteLength !== BigInt(command.artifact.byteLength) || head.sha256 !== command.artifact.sha256) throw new ExecutorControlError("artifact_invalid");
+          head.byteLength !== BigInt(command.artifact.byteLength) || (head.sha256 !== undefined && head.sha256 !== command.artifact.sha256)) throw new ExecutorControlError("artifact_invalid");
         const artifact: ExecutorArtifactCommit = {
           artifactId: assignment.id, role: command.artifact.role, storageKey: assignment.storageKey, contentType: assignment.contentType,
-          byteLength: head.byteLength, sha256: head.sha256, etag: head.etag, bindingHash: assignment.bindingHash,
+          byteLength: head.byteLength, sha256: command.artifact.sha256, etag: head.etag, bindingHash: assignment.bindingHash,
         };
-        prepared = await options.artifacts.prepare(assignment, artifact);
+        prepared = await options.artifacts.prepare(assignment, artifact, command.artifact);
       }
     }
 

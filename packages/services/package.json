@@ -413,6 +413,10 @@
     "./progress-feed": {
       "types": "./src/progress-feed.ts",
       "default": "./src/progress-feed.ts"
+    },
+    "./executor-control": {
+      "types": "./src/executor-control.ts",
+      "default": "./src/executor-control.ts"
     }
   },
   "scripts": {

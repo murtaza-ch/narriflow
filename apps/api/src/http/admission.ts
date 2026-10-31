@@ -81,7 +81,8 @@ export type IndependentTrust =
   | "public_share_token"
   | "signed_opt_out_token"
   | "oauth_state"
-  | "provider_signature";
+  | "provider_signature"
+  | "executor_signature";
 
 const REGISTRATION_MARK = Symbol.for("narriflow.api.registration");
 const GUARD_MARK = Symbol.for("narriflow.api.admission-guard");

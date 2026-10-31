@@ -70,5 +70,10 @@ describe("Source Audio evidence", () => {
     expect(sourceAudioBindingSchema.safeParse({ ...binding, object: { ...binding.object, signedUrl: "https://storage.example/audio" } }).success).toBe(false);
     expect(sourceAudioBindingSchema.safeParse({ ...binding, object: { ...binding.object, key: "../other/audio.webm" } }).success).toBe(false);
     expect(sourceAudioBindingSchema.safeParse({ ...binding, durationSeconds: Number.NaN }).success).toBe(false);
+    const artifact = { artifactId: "edb005cc-1635-49c9-a545-d4ac6e403cb9", role: "source_audio", contentType: "audio/webm",
+      byteLength: binding.object.byteLength, sha256: binding.object.sha256, etag: binding.object.etag, bindingHash: "b".repeat(64) };
+    expect(executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact }).success).toBe(false);
+    expect(executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact: { ...artifact, sourceAudio: binding } }).success).toBe(true);
+    expect(executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact: { ...artifact, role: "probe", sourceAudio: binding } }).success).toBe(false);
   });
 });
