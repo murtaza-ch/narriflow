@@ -51,8 +51,6 @@ export interface BillingCatalogInput {
   }>;
   seatPrices: Array<{ priceId: string; interval: BillingInterval }>;
   worker: {
-    batchSize: number;
-    concurrency: number;
     leaseMs: number;
     providerDeadlineMs: number;
     providerCallBudget: number;
@@ -149,8 +147,6 @@ export function createBillingCatalog(input: BillingCatalogInput): BillingCatalog
     }
   }
   const numericLimits = [
-    ["batchSize", input.worker.batchSize, 1, 500],
-    ["concurrency", input.worker.concurrency, 1, 32],
     ["leaseMs", input.worker.leaseMs, 1_000, 300_000],
     ["providerDeadlineMs", input.worker.providerDeadlineMs, 100, 120_000],
     ["providerCallBudget", input.worker.providerCallBudget, 1, 20],
@@ -369,18 +365,6 @@ export interface WorkspaceBillingStore extends WorkspacePlanChangeStore {
     kind: "accepted" | "duplicate";
     workspaceId: string | null;
   }>;
-  claimDueAccounts(input: {
-    now: Date;
-    limit: number;
-    leaseMs: number;
-  }): Promise<
-    Array<{
-      workspaceId: string;
-      attemptId: string;
-      attemptCount: number;
-      dueAt: Date;
-    }>
-  >;
   claimAccount(input: {
     workspaceId: string;
     now: Date;
@@ -885,36 +869,6 @@ export function createInMemoryWorkspaceBillingStore(
       const workspaceId = matched?.workspaceId ?? null;
       deliveries.set(input.delivery.eventId, workspaceId);
       return { kind: "accepted", workspaceId };
-    },
-    async claimDueAccounts(input) {
-      const claimed: Array<{
-        workspaceId: string;
-        attemptId: string;
-        attemptCount: number;
-        dueAt: Date;
-      }> = [];
-      for (const workspaceId of [...runtime.keys()].sort()) {
-        if (claimed.length >= input.limit) break;
-        const state = runtime.get(workspaceId)!;
-        if (state.nextReconcileAt.getTime() > input.now.getTime()) continue;
-        if (
-          state.leaseExpiresAt &&
-          state.leaseExpiresAt.getTime() > input.now.getTime()
-        ) {
-          continue;
-        }
-        const attemptId = randomUUID();
-        state.attemptId = attemptId;
-        state.leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs);
-        state.attemptCount += 1;
-        claimed.push({
-          workspaceId,
-          attemptId,
-          attemptCount: state.attemptCount,
-          dueAt: state.nextReconcileAt,
-        });
-      }
-      return claimed;
     },
     async claimAccount(input) {
       const state = runtime.get(input.workspaceId);
@@ -1710,60 +1664,6 @@ export function createPrismaWorkspaceBillingStore(options: { register?(ids: read
         }
         throw error;
       }
-    },
-    async claimDueAccounts(input) {
-      const claims: Array<{
-        workspaceId: string;
-        attemptId: string;
-        attemptCount: number;
-        dueAt: Date;
-      }> = [];
-      for (let index = 0; index < input.limit; index += 1) {
-        const candidate = await prisma.workspaceBillingAccount.findFirst({
-          where: {
-            nextReconcileAt: { lte: input.now },
-            OR: [
-              { leaseExpiresAt: null },
-              { leaseExpiresAt: { lte: input.now } },
-            ],
-          },
-          orderBy: [{ nextReconcileAt: "asc" }, { id: "asc" }],
-          select: {
-            id: true,
-            workspaceId: true,
-            attemptCount: true,
-            nextReconcileAt: true,
-          },
-        });
-        if (!candidate) break;
-        const attemptId = randomUUID();
-        const won = await prisma.workspaceBillingAccount.updateMany({
-          where: {
-            id: candidate.id,
-            nextReconcileAt: { lte: input.now },
-            OR: [
-              { leaseExpiresAt: null },
-              { leaseExpiresAt: { lte: input.now } },
-            ],
-          },
-          data: {
-            reconcileAttemptId: attemptId,
-            leaseExpiresAt: new Date(input.now.getTime() + input.leaseMs),
-            attemptCount: { increment: 1 },
-          },
-        });
-        if (won.count === 0) {
-          index -= 1;
-          continue;
-        }
-        claims.push({
-          workspaceId: candidate.workspaceId,
-          attemptId,
-          attemptCount: candidate.attemptCount + 1,
-          dueAt: candidate.nextReconcileAt,
-        });
-      }
-      return claims;
     },
     async claimAccount(input) {
       const prepared = await prisma.$transaction(async tx => {
@@ -3438,76 +3338,6 @@ export function createWorkspaceBillingModule(dependencies: {
       }
     },
     async reconcileClaim(claim: BillingReconciliationClaim): Promise<void> { await reconcileClaim(claim); },
-    async reconcileDueAccounts() {
-      const now = dependencies.clock.now();
-      const claims = await dependencies.store.claimDueAccounts({
-        now,
-        // Waiting for a worker slot must not consume an account's lease.
-        limit: Math.min(dependencies.catalog.worker.batchSize, dependencies.catalog.worker.concurrency),
-        leaseMs: dependencies.catalog.worker.leaseMs,
-      });
-      const summary = {
-        claimed: claims.length,
-        reconciled: 0,
-        retried: 0,
-        unresolved: 0,
-        staleSettlements: 0,
-      };
-      // The worker polls every few seconds; an empty poll is not an event.
-      if (claims.length === 0) return summary;
-      dependencies.diagnostics.record({
-        level: "info",
-        message: "workspace_billing_accounts_claimed",
-        phase: "claim",
-        claimed: claims.length,
-      });
-      metrics.observe("workspace_billing_claims_total", claims.length, {
-        surface: "worker",
-      });
-      for (const claim of claims) {
-        metrics.observe(
-          "workspace_billing_queue_age_ms",
-          Math.max(0, now.getTime() - claim.dueAt.getTime()),
-          {},
-        );
-      }
-      let cursor = 0;
-      const worker = async () => {
-        for (;;) {
-          const claim = claims[cursor++];
-          if (!claim) return;
-          const outcome = await reconcileClaim(claim);
-          summary.reconciled += outcome.reconciled;
-          summary.retried += outcome.retried;
-          summary.unresolved += outcome.unresolved;
-          summary.staleSettlements += outcome.staleSettlements;
-        }
-      };
-      await Promise.all(
-        Array.from(
-          {
-            length: Math.min(
-              dependencies.catalog.worker.concurrency,
-              claims.length,
-            ),
-          },
-          worker,
-        ),
-      );
-      dependencies.diagnostics.record({
-        level: "info",
-        message: "workspace_billing_batch_settled",
-        phase: "settlement",
-        ...summary,
-      });
-      for (const [outcome, value] of Object.entries(summary)) {
-        metrics.observe("workspace_billing_settlements_total", value, {
-          outcome,
-          surface: "worker",
-        });
-      }
-      return summary;
-    },
     async readBillingState(workspaceId: string): Promise<WorkspaceBillingView> {
       const current = await dependencies.store.readProjection(workspaceId);
       if (!current) throw new Error("Workspace Billing Account not found");

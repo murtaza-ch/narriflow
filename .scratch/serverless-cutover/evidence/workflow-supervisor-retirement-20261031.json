@@ -320,7 +320,7 @@
     "Workflow runner supplies explicit controlled MEDIA_FETCH_TOOLCHAIN_FINGERPRINT matching other isolated runners"
   ],
   "selection_replacement_028": {
-    "status": "focused_passed_broader_gates_running",
+    "status": "focused_and_surrounding_gates_passed",
     "migration": "20261101040000_execution_preparation_history",
     "model": "ClipPreparation.clipId is immutable historical identity with an insert-time live Project/Clip lineage guard. Project privacy deletion still cascades histories; Clip replacement preserves charged Prep/RenderGroup/executions.",
     "authority": "Core rejects work-package and process-start after live Clip deletion. A signed command atomically supersedes only the exact affected group/token with parent wakes, preserving other groups and all charged counts.",
@@ -340,7 +340,15 @@
         "assertions": 16
       },
       "services_typecheck": true,
-      "changed_ts_biome": true
+      "changed_ts_biome": true,
+      "surrounding_preparation_and_cleanup": {
+        "tests": 34,
+        "assertions": 274
+      },
+      "native_metadata_restore": {
+        "tests": 1,
+        "assertions": 38
+      }
     },
     "remaining": "Parent owns actual cloud/migration acceptance and full23 completion. No shared resource actions performed."
   }
