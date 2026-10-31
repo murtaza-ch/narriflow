@@ -5,6 +5,7 @@ import { executionDispatchIdentity } from "@narriflow/services/execution-dispatc
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { withWorkerServices, workerServiceEnvironment } from "../worker-services";
 import { withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
+import { canRunWhileFenced } from "./execution-fence";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { workflowDomainRegistry } from "./domain-runtime";
 import { assertMetadataBound, dispatchContinuationInstanceId, workflowDirectiveSchema, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT, type WorkflowHandlerRegistry, type WorkflowKind, type WorkflowWake } from "./protocol";
@@ -21,6 +22,7 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
     let reference: ExecutionDispatchReference;
     try { assertMetadataBound(event.payload); reference = executionDispatchReferenceSchema.parse(event.payload); }
     catch { throw new NonRetryableError("invalid_workflow_reference"); }
+    if (this.env.ADMISSION_STATE === "fenced" && !canRunWhileFenced(reference)) throw new NonRetryableError("execution_fenced");
     const continuation = this.workflowKind === "maintenance" && event.instanceId === dispatchContinuationInstanceId(reference);
     if (!continuation && reference.kind !== this.workflowKind && !(this.workflowKind === "maintenance" && reference.kind === "project_progress")) throw new NonRetryableError("wrong_workflow_entrypoint");
     if (!continuation && event.instanceId !== (await executionDispatchIdentity(reference)).instanceId) throw new NonRetryableError("wrong_workflow_instance");

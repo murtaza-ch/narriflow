@@ -44,15 +44,17 @@ async function append(tx: Tx, row: Transcript) {
 
 /** Transcript completion and its indexing obligation share the owning transaction.
  * An unchanged receipt repairs registration without resetting charges or deadlines. */
-export async function queueLibraryIndex(tx: Tx, id: string): Promise<ExecutionDispatchReference | null> {
+export async function queueLibraryIndex(tx: Tx, id: string, options?: { deferDispatch: true }): Promise<ExecutionDispatchReference | null> {
+  if (options?.deferDispatch && (await readExecutionAdmission(tx)).admissionOpen) throw Error("library_restore_requires_closed_admission");
   const state = await lock(tx, id);
   if (!state) return null;
   const { row, epoch, now } = state, fingerprint = sourceHash(row), changed = fingerprint !== row.passagesSourceHash;
-  if (!changed && row.passagesEpoch === epoch && row.passagesGeneration > 0) return append(tx, row);
+  if (options?.deferDispatch && (changed || row.passagesGeneration < 1 || !row.passagesDeadlineAt)) throw Error("library_restore_input_unavailable");
+  if (!changed && row.passagesEpoch === epoch && row.passagesGeneration > 0) return options?.deferDispatch ? null : append(tx, row);
   const next = await tx.transcript.update({ where: { id }, data: { passagesEpoch: epoch, passagesGeneration: { increment: 1 }, passagesSourceHash: fingerprint,
-    passagesClaimId: null, passagesLeaseUntil: null, passagesRetryAt: now,
+    passagesClaimId: null, passagesLeaseUntil: null, passagesRetryAt: changed ? now : row.passagesRetryAt,
     ...(changed ? { passagesAttempts: 0, passagesIndexError: null, passagesDeadlineAt: new Date(now.getTime() + DEADLINE_MS) } : {}) } });
-  return append(tx, next);
+  return options?.deferDispatch ? null : append(tx, next);
 }
 
 /** A completion receipt can repair a committed wake, but cannot admit indexing

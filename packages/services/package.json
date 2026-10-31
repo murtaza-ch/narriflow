@@ -643,7 +643,8 @@
     "./execution-maintenance-ports": "./src/execution-maintenance-ports.ts",
     "./execution-retention-pages": "./src/execution-retention-pages.ts",
     "./execution-safety-pages": "./src/execution-safety-pages.ts",
-    "./execution-account-recovery-pages": "./src/execution-account-recovery-pages.ts"
+    "./execution-account-recovery-pages": "./src/execution-account-recovery-pages.ts",
+    "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

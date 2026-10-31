@@ -1,3 +1,8 @@
+import {readExecutionAdmission} from "./execution-admission";
+import {recoverPublicationDispatches} from "./publication-dispatch";
+import {lockPublicationPost} from "./publication-locks";
+import {acceptSocialPostProposalSchema,ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT} from "@narriflow/validators";
+import {acceptAllProposalsRequestSchema} from "@narriflow/validators/api/publishing";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -51,6 +56,7 @@ const queueFailureCatalog = {
 	social_proposal_caption_too_long: "invalid",
 	social_proposal_limit_reached: "conflict",
 	social_proposal_not_found: "missing",
+ social_proposal_changed:"conflict",
 	social_proposal_tiktok_options_required: "invalid",
 	social_proposal_variant_unavailable: "unprocessable",
 	social_provider_publishing_disabled: "unavailable",
@@ -67,12 +73,12 @@ export class PublishingQueueError extends ExpectedDomainFailureError<keyof typeo
 export const MAX_OPEN_PROPOSALS = 200;
 /** One "Accept all" call works through this many, oldest first, so a long inbox
  * never outlasts a request; the caller continues from `nextCursor`. */
-export const ACCEPT_ALL_BATCH = 25;
+export const ACCEPT_ALL_BATCH = ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT;
 
 /** A proposal's own key, written when it is made and kept when it is accepted. It is not a UUID,
  * which is all any client or integration can choose, so nobody can claim it ahead of time, and a
  * retry after a lost response finds the post the first attempt made. */
-export const proposalAcceptKey = (proposalId: string) => `proposal-accept:${proposalId}`;
+export const proposalAcceptKey = (proposalId: string,scheduleRevision:number) => `proposal-accept:${proposalId}:${scheduleRevision}`;
 
 function requirePrisma() {
 	const prisma = getPrismaClient();
@@ -86,6 +92,7 @@ function sha256(value: string) {
 
 const proposalSelect = {
 	id: true,
+ scheduleRevision:true,
 	projectId: true,
 	clipId: true,
 	socialAccountId: true,
@@ -118,6 +125,7 @@ function toProposalView(row: ProposalRow): SocialPostProposalView {
 	const proposal = row.proposal!;
 	return {
 		proposalId: row.id,
+  scheduleRevision:row.scheduleRevision,
 		projectId: row.projectId,
 		clipId: row.clipId!,
 		socialAccountId: row.socialAccountId!,
@@ -288,7 +296,7 @@ export const publishingQueue = {
 						platform: account.platform,
 						status: "draft",
 						// A proposal has no request to key; its acceptance's key is reserved from the start.
-						clientIdempotencyKey: proposalAcceptKey(id),
+						clientIdempotencyKey: proposalAcceptKey(id,1),
 						immutableRequestHash: sha256(JSON.stringify(["proposal-v1", id, variant.id, caption])),
 						caption,
 						aspectRatio: variant.aspectRatio,
@@ -393,20 +401,23 @@ export const publishingQueue = {
 	async accept(
 		scope: ActorScope,
 		proposalId: string,
-		input: AcceptSocialPostProposalInput = {},
+		input: AcceptSocialPostProposalInput,
 		/** A Standing Grant accepting for a person who isn't there: it is checked, and its caps counted, under the account lock. */
 		options: { grant?: PublicationSlotQueue["grant"] } = {},
 	): Promise<AcceptedProposal> {
 		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 		const prisma = requirePrisma();
-		const acceptKey = proposalAcceptKey(proposalId);
-		const already = await prisma.socialPost.findUnique({
-			where: { workspaceId_clientIdempotencyKey: { workspaceId: scope.workspaceId, clientIdempotencyKey: acceptKey } },
-			select: { id: true, projectId: true, clipId: true, platform: true, status: true, scheduledFor: true },
-		});
-		if (already?.scheduledFor && already.clipId && already.status !== "cancelled") {
-			return { socialPostId: already.id, projectId: already.projectId, clipId: already.clipId, platform: already.platform, status: already.status, scheduledFor: already.scheduledFor.toISOString(), replayed: true };
-		}
+  const choices=acceptSocialPostProposalSchema.parse(input),acceptKey=proposalAcceptKey(proposalId,choices.expectedScheduleRevision);
+  const replay=await prisma.$transaction(async tx=>{
+   await readExecutionAdmission(tx);await lockPublicationPost(tx,proposalId);
+   const post=await tx.socialPost.findFirst({where:{id:proposalId,workspaceId:scope.workspaceId,project:{workspaceId:scope.workspaceId,...accessibleProjectWhere()}},select:{id:true,projectId:true,clipId:true,platform:true,status:true,frozenState:true,retiredPublicationStates:{where:{confirmedScheduleRevision:choices.expectedScheduleRevision},take:1}}});
+   if(!post)return null;
+   const frozen=post.frozenState?.confirmedScheduleRevision===choices.expectedScheduleRevision?post.frozenState:post.retiredPublicationStates[0];if(!frozen)return null;
+   await recoverPublicationDispatches(tx,post.id,scope.workspaceId);
+   if(post.status==="draft"||frozen.retiredForPostId!==null)throw new PublishingQueueError("social_proposal_changed","This proposal needs your review again. Reload it before accepting.");
+   return {socialPostId:post.id,projectId:post.projectId,clipId:post.clipId!,platform:frozen.platform,status:post.status,scheduledFor:frozen.scheduledFor.toISOString(),replayed:true};
+  });
+  if(replay)return replay;
 		// Scheduling checks this again with the account; asking first spares the work below.
 		requirePlanFeature(actor.pricingTier, "publishing.schedule");
 		const row = await prisma.socialPost.findFirst({
@@ -418,6 +429,7 @@ export const publishingQueue = {
 			},
 		});
 		if (!row?.proposal || !row.clipId || !row.socialAccountId) throw new PublishingQueueError("social_proposal_not_found", "This proposal was already accepted or rejected.");
+  if(row.scheduleRevision!==choices.expectedScheduleRevision)throw new PublishingQueueError("social_proposal_changed","This proposal changed. Reload it and review before accepting.");
 		if (row.socialAccount?.status !== "active") throw new PublishingQueueError("social_account_unavailable", "Reconnect this account, then accept the proposal.");
 		const schedule = parsePostingSchedule(row.socialAccount.postingSchedule);
 		if (!schedule) throw new PublishingQueueError("posting_schedule_missing", "Add posting slots to this account before accepting posts into its queue.");
@@ -475,6 +487,7 @@ export const publishingQueue = {
 				...(options.grant ? { grant: options.grant } : {}),
 			},
 			proposalId,
+   expectedProposalRevision:choices.expectedScheduleRevision,
 		});
 		return { socialPostId: intent.id, projectId: intent.projectId, clipId: intent.clipId, platform: intent.frozen.platform, status: intent.status, scheduledFor: intent.frozen.scheduledFor.toISOString(), replayed: false };
 	},
@@ -482,38 +495,19 @@ export const publishingQueue = {
 	/** Accepts the open proposals, oldest first, each into its own account's next
 	 * slot. TikTok proposals are skipped: each needs its creator's choices.
 	 * A proposal that can't be accepted is reported and the rest go on. */
-	async acceptAll(scope: ActorScope, options: { limit?: number; after?: string | null } = {}) {
-		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
-		requirePlanFeature(actor.pricingTier, "publishing.schedule");
-		const prisma = requirePrisma();
-		// A call takes one batch. `after` is the last proposal the previous call tried, so
-		// proposals that can't be accepted are not tried again and never starve the rest.
-		const cursor = options.after
-			? await prisma.socialPost.findFirst({ where: { id: options.after, workspaceId: scope.workspaceId }, select: { createdAt: true, id: true } })
-			: null;
-		const waiting: Prisma.SocialPostWhereInput = {
-			...proposalWhere(scope.workspaceId),
-			platform: { not: "tiktok" },
-			...(cursor ? { OR: [{ createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } }] } : {}),
-		};
-		const [rows, total, skippedTikTok] = await Promise.all([
-			prisma.socialPost.findMany({ where: waiting, orderBy: [{ createdAt: "asc" }, { id: "asc" }], take: options.limit ?? ACCEPT_ALL_BATCH, select: { id: true } }),
-			prisma.socialPost.count({ where: waiting }),
-			prisma.socialPost.count({ where: { ...proposalWhere(scope.workspaceId), platform: "tiktok" } }),
-		]);
-		const accepted: AcceptedProposal[] = [];
-		const failed: Array<{ proposalId: string; code: string; message: string }> = [];
-		for (const row of rows) {
-			try {
-				accepted.push(await publishingQueue.accept(scope, row.id));
-			} catch (error) {
-				if (!(error instanceof ExpectedDomainFailureError)) throw error;
-				failed.push({ proposalId: row.id, code: error.code, message: error.message });
-			}
-		}
-		const remaining = Math.max(0, total - rows.length);
-		return { accepted, skippedTikTok, failed, remaining, nextCursor: remaining > 0 ? (rows.at(-1)?.id ?? null) : null };
-	},
+ async acceptAll(scope:ActorScope,input:{proposals:Array<{proposalId:string;expectedScheduleRevision:number}>}){
+  await workspaceService.requireActor(scope.actorUserId,scope.workspaceId,"publishing.manage");
+  const observed=acceptAllProposalsRequestSchema.parse(input),accepted:AcceptedProposal[]=[],failed:Array<{proposalId:string;code:string;message:string}>=[];let skippedTikTok=0;
+  for(const proposal of observed.proposals){
+   try{
+    const row=await requirePrisma().socialPost.findFirst({where:{id:proposal.proposalId,...proposalWhere(scope.workspaceId)},select:{platform:true,scheduleRevision:true}});
+    if(row&&row.scheduleRevision!==proposal.expectedScheduleRevision)throw new PublishingQueueError("social_proposal_changed","This proposal changed. Reload it and review before accepting.");
+    if(row?.platform==="tiktok"){skippedTikTok++;continue;}
+    accepted.push(await publishingQueue.accept(scope,proposal.proposalId,{expectedScheduleRevision:proposal.expectedScheduleRevision}));
+   }catch(error){if(!(error instanceof ExpectedDomainFailureError))throw error;failed.push({proposalId:proposal.proposalId,code:error.code,message:error.message});}
+  }
+  return {accepted,skippedTikTok,failed};
+ },
 
 	/** The named accounts that are active and that the Workspace's plan lets publish, for settings that name them. */
 	async activeAccounts(workspaceId: string, accountIds: string[]): Promise<Array<{ id: string; platform: SocialPlatform }>> {

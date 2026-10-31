@@ -65,7 +65,7 @@ function QueueContent({ scope }: { scope: WorkspaceScope }) {
 			updateCaption: (proposalId, caption) => commands.updateProposalCaption(proposalId, caption),
 			reject: (proposalId) => commands.rejectProposal(proposalId),
 			accept: (proposalId, choices) => commands.acceptProposal(proposalId, choices),
-			acceptAll: (after) => commands.acceptAllProposals(after),
+			acceptAll: (proposals) => commands.acceptAllProposals(proposals),
 			onChanged: refresh,
 		};
 	}, [runtime.transport, scope, refresh]);

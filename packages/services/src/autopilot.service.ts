@@ -1,3 +1,4 @@
+import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { zoomService } from "./zoom.service";
 import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 import { ZoomError } from "./zoom";
@@ -830,6 +831,7 @@ export class AutopilotService {
       await this.pauseClaim(claim, "acting_member", await this.actingMemberLostReason(rule));
       return { imported: 0 };
     }
+    const autopilotSource = await readAutopilotImportSource(prisma, rule);
     const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl!, {
       scope, requestKey: `autopilot:${rule.id}:${rule.lastCheckedAt?.toISOString() ?? "initial"}`,
       etag: rule.initializedAt ? rule.etag : null,
@@ -882,7 +884,7 @@ export class AutopilotService {
           {
             // The Recipe and revision are kept with the Project's settings for audit.
             generationContext: { contentPack: recipe.contentPack, languageCode: recipe.languageCode, finishing: recipe.finishing, recipe: acceptedRecipe(recipe) },
-            autopilotRuleId: rule.id,
+            autopilotSource,
           },
         );
         imported += result.count;

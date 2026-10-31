@@ -42,11 +42,11 @@ export function publishingCommands(client: PublishingClient) {
       (await client.social.proposals[":proposalId"].$patch({ param: { proposalId }, json: { caption } })).json(),
     rejectProposal: async (proposalId: string) =>
       (await client.social.proposals[":proposalId"].reject.$post({ param: { proposalId } })).json(),
-    acceptProposal: async (proposalId: string, choices: AcceptProposalInput = {}) =>
+    acceptProposal: async (proposalId: string, choices: AcceptProposalInput) =>
       (await client.social.proposals[":proposalId"].accept.$post({ param: { proposalId }, json: choices })).json(),
-    /** One batch; call again with `nextCursor` until it is null. */
-    acceptAllProposals: async (after: string | null = null) =>
-      (await client.social.proposals["accept-all"].$post({ json: { after } })).json(),
+    /** One frozen inbox batch; keep the same revisions through a retry. */
+    acceptAllProposals: async (proposals:JsonOf<PublishingClient["social"]["proposals"]["accept-all"]>["proposals"]) =>
+      (await client.social.proposals["accept-all"].$post({ json: { proposals } })).json(),
     cancelPost: async (projectId: string, postId: string) =>
       (await client.projects[":id"]["social-posts"][":postId"].$delete({ param: { id: projectId, postId } })).json(),
     recheck: async (projectId: string, postId: string, input: RecheckInput, idempotencyKey: string) =>

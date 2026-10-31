@@ -53,13 +53,39 @@ export async function refreshPublicationExport(tx:Tx,post:PublicationSchedule):P
  await tx.frozenPublicationState.update({where:{id:frozen.id},data:{storageKey:variant.storageKey,sizeBytes:variant.sizeBytes,durationSec:variant.durationSec,mediaReadyAt:variant.completedAt??await now(tx)}});
  await tx.socialPost.updateMany({where:{id:post.id,status:"preparing_video"},data:{status:"scheduled"}});return "ready";
 }
-export async function returnPublicationGrantPost(tx:Tx,post:PublicationSchedule,grant:{id:string;revision:number;status:string}){
- if(!["revoked","expired"].includes(grant.status)||!["scheduled","preparing_video"].includes(post.status)||await tx.socialPublicationAttempt.count({where:{socialPostId:post.id}}))return false;
- await tx.frozenPublicationState.deleteMany({where:{socialPostId:post.id}});
- await tx.socialPost.update({where:{id:post.id},data:{status:"draft",scheduledFor:null,nextAttemptAt:null,standingGrantId:null,standingGrantRevision:null}});
- await tx.socialPostProposal.updateMany({where:{socialPostId:post.id},data:{acceptedAt:null,acceptedByUserId:null}});
- await tx.standingGrantEvent.create({data:{grantId:grant.id,kind:"returned",revision:grant.revision,actorUserId:null,reason:"Scheduled post returned to the proposal inbox because its grant ended"}});return true;
+export async function publicationHasProviderPermission(tx:Tx,snapshotId:string){
+ const [proof]=await tx.$queryRaw<Array<{blocked:boolean}>>`SELECT EXISTS(
+  SELECT 1 FROM "SocialPublicationAttempt" a WHERE a."frozenStateId"=${snapshotId}::uuid AND (
+   a."providerCallCount">0 OR a."operationKind" IS NOT NULL OR a."checkpointEncrypted" IS NOT NULL OR a."phase" IN ('succeeded','needs_attention')
+   OR EXISTS(SELECT 1 FROM "ProviderReceipt" r WHERE r."attemptId"=a."id")
+   OR EXISTS(SELECT 1 FROM "PublicationClaim" c WHERE c."attemptId"=a."id" AND (
+    c."workState"->'providerGrant' IS NOT NULL AND c."workState"->'providerGrant'<>'null'::jsonb
+    OR c."workState"->'irreversibleGrants' IS NOT NULL AND c."workState"->'irreversibleGrants'<>'[]'::jsonb
+   ))
+  )) AS blocked`;
+ return proof?.blocked??true;
 }
+/** Returning a startup to the inbox is safe only before any recorded provider
+ * permission, checkpoint or receipt. Charged native history remains attached to
+ * the retired immutable snapshot; a new approval creates a distinct attempt. */
+export async function returnPublicationGrantPost(tx:Tx,post:PublicationSchedule,grant:{id:string;revision:number;status:string}){
+ if(!post.frozenState||(!["revoked","expired"].includes(grant.status)&&grant.revision===post.standingGrantRevision)||!["scheduled","preparing_video","publishing","processing","reconciling"].includes(post.status))return false;
+ const snapshot=post.frozenState;
+ if(await publicationHasProviderPermission(tx,snapshot.id))return false;
+ const at=await now(tx),attempts=await tx.socialPublicationAttempt.findMany({where:{frozenStateId:snapshot.id},orderBy:{id:"asc"},select:{id:true}});
+ for(const attempt of attempts)await tx.$queryRaw`SELECT "id" FROM "SocialPublicationAttempt" WHERE "id"=${attempt.id}::uuid FOR UPDATE`;
+ const ids=attempts.map(row=>row.id),claims=await tx.publicationClaim.findMany({where:{attemptId:{in:ids}},orderBy:{id:"asc"},select:{id:true}});
+ await tx.socialPublicationAttempt.updateMany({where:{id:{in:ids},phase:{notIn:["failed","succeeded","needs_attention"]}},data:{phase:"failed",outcome:"failed",failureCode:"publication_grant_changed",failureDisposition:"permanent",terminalAt:at,currentClaimId:null}});
+ await tx.publicationClaim.updateMany({where:{attemptId:{in:ids},releasedAt:null},data:{releasedAt:at,accountSlotKey:null}});
+ await tx.publicationClaim.updateMany({where:{attemptId:{in:ids},accountSlotKey:{not:null}},data:{accountSlotKey:null}});
+ await tx.executionAttempt.updateMany({where:{attemptToken:{in:claims.map(row=>row.id)},status:{in:["queued","owned","running"]}},data:{status:"cancelled",finishedAt:at}});
+ await tx.socialPost.update({where:{id:post.id},data:{status:"draft",scheduledFor:null,nextAttemptAt:null,standingGrantId:null,standingGrantRevision:null,errorCode:null,errorDisposition:null}});
+ await tx.frozenPublicationState.update({where:{id:snapshot.id},data:{socialPostId:null,retiredForPostId:post.id}});
+ await tx.socialPostProposal.updateMany({where:{socialPostId:post.id},data:{acceptedAt:null,acceptedByUserId:null}});
+ await tx.standingGrantEvent.create({data:{grantId:grant.id,kind:"returned",revision:grant.revision,actorUserId:null,reason:"Scheduled post returned for fresh approval because its grant ended or its terms changed"}});
+ return true;
+}
+
 export interface PublicationProducerResult {kind:"complete"|"superseded"|"sleep";dispatchIds:string[];dueAt?:Date}
 /** One exact fixed obligation, a bounded page, and post-commit confirmation.
  * Cursor pages have durable receipts, so a lost ACK cannot strand their child. */

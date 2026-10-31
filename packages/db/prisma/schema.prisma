@@ -578,6 +578,8 @@ model ContentPack {
   /// Set only by the Autopilot import, from the rule that imported the Project.
   /// A generation's finishing copies it, and Standing Grants cover finishing by it.
   autopilotRuleId         String?      @db.Uuid
+  /// Exact source settings and intended grant revisions at accepted intake.
+  autopilotAuthority      Json?
   /// Captioned-video settings (framing, caption source with normalized
   /// supplied utterances, export formats), validated by
   /// captionedVideoSettingsSchema. Requires mode "caption_only".
@@ -2755,7 +2757,8 @@ model SocialPost {
   clip                   Clip?                       @relation(fields: [clipId], references: [id], onDelete: SetNull)
   socialAccount          SocialAccount?              @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
   trackedVideos          TrackedVideo[]
-  frozenState            FrozenPublicationState?
+  frozenState            FrozenPublicationState? @relation("CurrentPublicationState")
+  retiredPublicationStates FrozenPublicationState[] @relation("RetiredPublicationStates")
   publicationAttempts    SocialPublicationAttempt[]
   manualDecisions        PublicationManualDecision[]
   reviewApprovalOverride ReviewApprovalOverride?     @relation(fields: [reviewApprovalOverrideId], references: [id], onDelete: SetNull)
@@ -2777,7 +2780,9 @@ model SocialPost {
 model FrozenPublicationState {
   deliveryMode        SocialDeliveryMode @default(direct)
   id                  String             @id @default(uuid()) @db.Uuid
-  socialPostId        String             @unique @db.Uuid
+  socialPostId        String?            @unique @db.Uuid
+  retiredForPostId    String?            @db.Uuid
+  confirmedScheduleRevision Int?
   clipExportId        String             @db.Uuid
   clipExportVariantId String             @db.Uuid
   socialAccountId     String?            @db.Uuid
@@ -2795,12 +2800,14 @@ model FrozenPublicationState {
   createdAt           DateTime           @default(now())
   mediaReadyAt        DateTime?
 
-  socialPost        SocialPost                 @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  socialPost        SocialPost?                @relation("CurrentPublicationState", fields: [socialPostId], references: [id], onDelete: Cascade)
+  retiredForPost    SocialPost?                @relation("RetiredPublicationStates", fields: [retiredForPostId], references: [id], onDelete: Cascade)
   clipExport        ClipExport                 @relation(fields: [clipExportId], references: [id], onDelete: Restrict)
   clipExportVariant ClipExportVariant          @relation(fields: [clipExportVariantId], references: [id], onDelete: Restrict)
   socialAccount     SocialAccount?             @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
   attempts          SocialPublicationAttempt[]
 
+  @@index([retiredForPostId,confirmedScheduleRevision], map: "FrozenPublicationState_retired_confirmation_idx")
   @@index([clipExportId])
   @@index([clipExportVariantId])
   @@index([clipExportVariantId,socialPostId])

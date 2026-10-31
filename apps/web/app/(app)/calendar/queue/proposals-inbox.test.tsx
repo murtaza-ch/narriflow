@@ -15,7 +15,7 @@ const proposalsApi: ProposalsApi = {
 	updateCaption: noop,
 	reject: noop,
 	accept: noop,
-	acceptAll: async () => ({ accepted: [], skippedTikTok: 0, failed: [], nextCursor: null }),
+	acceptAll: async () => ({ accepted: [], skippedTikTok: 0, failed: [] }),
 	onChanged() {},
 };
 const scheduleApi: PostingScheduleApi = { save: noop, onChanged() {} };
@@ -25,6 +25,7 @@ const UPGRADE: UpgradePrompt = { tier: "creator", headline: "Upgrade to schedule
 function proposal(overrides: Partial<ProposalInboxItem> = {}): ProposalInboxItem {
 	return {
 		proposalId: "00000000-0000-4000-8000-0000000000f1",
+  scheduleRevision:1,
 		projectId: "00000000-0000-4000-8000-0000000000f2",
 		clipId: "00000000-0000-4000-8000-0000000000f3",
 		socialAccountId: "00000000-0000-4000-8000-0000000000f4",

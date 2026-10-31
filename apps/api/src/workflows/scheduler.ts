@@ -10,6 +10,7 @@ import { executionKeyRing } from "../execution-keys";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { assertMetadataBound, dispatchContinuationInstanceId, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT } from "./protocol";
+import { canRunWhileFenced } from "./execution-fence";
 
 const REGISTERED = new Set(["queued", "running", "paused", "errored", "terminated", "complete", "waiting", "waitingForPause"]);
 /** A reconnect may redeliver an acknowledged mailbox message. Only the
@@ -54,7 +55,7 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
       assertMetadataBound(delivery.reference);
       // Restore metadata can advance while every physical consumer remains
       // stopped. A refused dispatch stays pending; it is never acknowledged.
-      if (bindings.ADMISSION_STATE === "fenced" && (reference.kind === "modal_execution" || reference.kind === "local_fetch")) throw new ExecutionDispatchError("scheduler_unavailable");
+      if (bindings.ADMISSION_STATE === "fenced" && !canRunWhileFenced(reference)) throw new ExecutionDispatchError("scheduler_unavailable");
       if (bindings.DEV_CLOUD) return bindings.DEV_CLOUD.dispatch(reference);
       if (reference.kind === "project_progress") {
         const database = getPrismaClient();

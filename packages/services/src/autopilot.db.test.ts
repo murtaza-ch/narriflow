@@ -1,3 +1,4 @@
+import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
@@ -823,7 +824,8 @@ describeDb("Autopilot database concurrency and recovery", () => {
       recipeId, initializedAt: new Date(), nextRunAt: new Date(Date.now() + 86_400_000) } });
     const input = { rssUrl: "https://feeds.example.test/events.xml",
       episodes: [{ id: `episode-event-${suffix}`, title: "Episode", enclosureUrl: "https://cdn.example.test/event.mp3", durationSeconds: 600 }] };
-    const options = { autopilotRuleId: owner.id, generationContext: { contentPack: CONTENT_PACK, languageCode: null } };
+    const resolved = await recipeService.resolve({ actorUserId: userId, workspaceId }, recipeId);
+    const options = { autopilotSource: await readAutopilotImportSource(prisma, owner), generationContext: { contentPack: resolved.contentPack, languageCode: resolved.languageCode, finishing: resolved.finishing, recipe: { id: resolved.id, revision: resolved.revision } } };
     const imported = await projectService.importResolvedRssEpisodes({ actorUserId: userId, workspaceId }, input, options);
     expect(imported.count).toBe(1);
     const created = imported.projects[0]!.project.id;

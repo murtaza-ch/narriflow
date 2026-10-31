@@ -742,3 +742,4 @@ export * from "./execution-maintenance-ports";
 export * from "./execution-retention-pages";
 export * from "./execution-safety-pages";
 export * from "./execution-account-recovery-pages";
+export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";

@@ -25,25 +25,25 @@ import { accessibleProjectWhere } from "./project-access";
 import { uuidV5 } from "./uuid-v5";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
 import { readExecutionAdmission } from "./execution-admission";
-import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
+import { autopilotFinishingAuthoritySchema, type FrozenStandingGrant } from "@narriflow/validators/autopilot-finishing-authority";
 import { lockWorkspaceUsage } from "./processing-usage";
 
 /** Finishing: after a generation completes, export its best clips and write
  * assisted copy as the person who asked, then leave the Project ready to
  * review. See `GenerationFinishing` in the schema for the row's life.
  *
- * Two kinds of function live here. The transaction helpers (`freeze…`,
- * `transition…`) are called inside other lifecycles' transactions and only
- * touch this table, so they add no lock the Workflow Run lifecycle doesn't
- * already order. The runner claims `due` rows and does the work outside any
- * long transaction. */
+ * The transaction helpers freeze accepted input and its durable obligation.
+ * Each exact driver command claims this one row and performs one child action
+ * outside SQL locks. Export outcomes and absolute timers resume its continuation. */
 
 type Tx = Prisma.TransactionClient;
 
 const finishingFailureCatalog = {
   finishing_origin_invalid: "invalid",
+  finishing_authority_invalid: "invalid",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export class GenerationFinishingError extends ExpectedDomainFailureError<keyof typeof finishingFailureCatalog> {
@@ -52,9 +52,6 @@ export class GenerationFinishingError extends ExpectedDomainFailureError<keyof t
     this.name = "GenerationFinishingError";
   }
 }
-
-/** A Date as the UTC `timestamp` the table stores, whatever the session zone. */
-const utc = (date: Date) => Prisma.sql`(${date.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
 
 /** Namespace of the idempotency keys derived from a finishing row. */
 const FINISHING_KEY_NAMESPACE = "3f6c1a52-8d47-5b9e-a0c3-7e2d94b6f118";
@@ -70,6 +67,9 @@ export const finishingQueueKey = (finishingId: string, clipId: string, accountId
 export const FINISHING_LEASE_MS = 5 * 60 * 1000;
 /** Exports that haven't finished this long after finishing became due count as failed. */
 export const FINISHING_MAX_WAIT_MS = 6 * 60 * 60 * 1000;
+/** Keep the existing six-hour export wait, then allow a bounded hour for the
+ * remaining copy, queue and review actions. Neither clock moves on replay. */
+export const FINISHING_MAX_OPERATION_MS = FINISHING_MAX_WAIT_MS + 60 * 60_000;
 export const FINISHING_MAX_ATTEMPTS = 5;
 /** How often a clip edited mid-run is exported again at its new revision. */
 const MAX_REVISION_RETRIES = 3;
@@ -85,9 +85,11 @@ function finishingInputHash(row: GenerationFinishing) {
 }
 async function appendFinishing(tx: Tx, row: GenerationFinishing, deadline?: { kind: "lease" | "operation"; at: Date }) {
   if (row.generation < 1 || !row.dueAt || !row.operationDeadlineAt) throw Error("finishing_obligation_invalid");
-  const record = await appendExecutionDispatch(tx, { deploymentEpoch: row.deploymentEpoch, generation: row.generation,
-    kind: "operation_driver", subject: { kind: "generation_finishing", id: row.id }, inputHash: finishingInputHash(row),
-    dueAt: deadline?.at ?? row.nextAttemptAt ?? row.dueAt,
+  const identity = { deploymentEpoch: row.deploymentEpoch, generation: row.generation, kind: "operation_driver" as const, subject: { kind: "generation_finishing" as const, id: row.id } };
+  const key = deadline ? null : await executionDispatchIdentity(identity);
+  const existing = key ? await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } }) : null;
+  const record = await appendExecutionDispatch(tx, { ...identity, inputHash: finishingInputHash(row),
+    dueAt: deadline?.at ?? existing?.dueAt ?? row.nextAttemptAt ?? row.dueAt,
     ...(deadline ? { deadlineKind: deadline.kind, observedDeadlineAt: deadline.at } : {}) });
   collectExecutionDispatch(tx, record.reference.dispatchId);
   return record.reference;
@@ -103,7 +105,7 @@ export async function queueGenerationFinishing(tx: Tx, id: string): Promise<Exec
   if (row.generation === 0) {
     const now = await finishingNow(tx), dueAt = row.dueAt ?? now;
     row = await tx.generationFinishing.update({ where: { id }, data: { generation: 1, dueAt,
-      operationDeadlineAt: new Date(dueAt.getTime() + FINISHING_MAX_WAIT_MS) } });
+      operationDeadlineAt: new Date(dueAt.getTime() + FINISHING_MAX_OPERATION_MS) } });
   }
   return appendFinishing(tx, row);
 }
@@ -144,6 +146,8 @@ export async function freezeGenerationFinishing(tx: Tx, input: {
     throw new GenerationFinishingError("finishing_origin_invalid", "Finishing belongs to a generation's speech-to-text run.");
   }
   const settings = freezeFinishingSettings(input.settings, input.defaultAspectRatio);
+  const authority = input.autopilotAuthority == null ? null : autopilotFinishingAuthoritySchema.parse(input.autopilotAuthority);
+  if (authority && !input.autopilotRuleId) throw new GenerationFinishingError("finishing_authority_invalid","Automatic finishing authority belongs to its accepted source rule.");
   const created = await tx.generationFinishing.createMany({
     data: [{
       workspaceId: input.workspaceId,
@@ -153,7 +157,7 @@ export async function freezeGenerationFinishing(tx: Tx, input: {
       actorUserId: input.actorUserId,
       settings: settings as Prisma.InputJsonValue,
       autopilotRuleId: input.autopilotRuleId ?? null,
-      autopilotAuthority: input.autopilotAuthority ?? Prisma.DbNull,
+      autopilotAuthority: authority ?? Prisma.DbNull,
     }],
     skipDuplicates: true,
   });
@@ -223,17 +227,17 @@ interface ClaimedRow {
   originRunId: string;
   actorUserId: string | null;
   settings: unknown;
+  autopilotAuthority: unknown;
   picks: unknown;
   attempts: number;
   dueAt: Date | null;
   claimToken: string;
-  reference?: ExecutionDispatchReference;
+  reference: ExecutionDispatchReference;
 }
 
 export interface GenerationFinishingDependencies {
   prisma: PrismaClient;
-  register?(ids: readonly string[]): Promise<void>;
-  now?: () => Date;
+  register(ids: readonly string[]): Promise<void>;
   /** Throws when the person has lost access; returns the Workspace's plan. */
   requireActor(userId: string, workspaceId: string): Promise<{ pricingTier: string }>;
   /** Whether the person can manage publishing now. Settings are saved by one
@@ -260,15 +264,15 @@ export interface GenerationFinishingDependencies {
   /** Proposes one picked clip to one account's Publishing Queue, using the
    * platform's variant of the pick's copy. The key is derived from the finishing
    * row, so a repeat returns the proposal made before. */
-  propose(input: { actorUserId: string; workspaceId: string; clipId: string; exportId: string; socialAccountId: string; copyGenerationId: string; idempotencyKey: string }): Promise<{ proposal: { proposalId: string } }>;
+  propose(input: { actorUserId: string; workspaceId: string; clipId: string; exportId: string; socialAccountId: string; copyGenerationId: string; idempotencyKey: string }): Promise<{ proposal: { proposalId: string; scheduleRevision: number } }>;
   /** Accepts a just-proposed post under the publish Standing Grant that covers its
    * rule and account, if there is one. Returns `accepted`, or why the post stays a
    * proposal (`no_grant` when nothing covers it). A refusal is an outcome, not an error. */
-  acceptUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string }): Promise<string>;
+  acceptUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string; expectedScheduleRevision: number; expectedGrant: FrozenStandingGrant | null }): Promise<string>;
   /** Sends the finished exports as a Review Round under the review-send Standing
    * Grant that covers the Project's rule. At most one round per finishing row; a
    * repeat finds it. A refusal says why, and the row ends with that reason. */
-  sendReviewRound(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[] }): Promise<{ sent: true } | { sent: false; reason: FinishingReason }>;
+  sendReviewRound(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[]; expectedGrant: FrozenStandingGrant | null }): Promise<{ sent: true } | { sent: false; reason: FinishingReason }>;
   /** The "clips ready to review" notification to the acting user, through the
    * existing path. `sourceId` is the finishing row's id. Best effort. */
   notify(input: { projectId: string; sourceId: string; clipCount: number }): Promise<void>;
@@ -299,7 +303,6 @@ function log(message: string, context: Record<string, unknown>) {
 
 export function createGenerationFinishing(deps: GenerationFinishingDependencies) {
   const { prisma } = deps;
-  const now = () => deps.now?.() ?? new Date();
 
   async function register(ids: readonly string[]) {
     if (!ids.length) return;
@@ -354,7 +357,19 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       return { kind: "claimed" as const, row: { ...claimed, claimToken, reference }, watchdogId: watchdog.dispatchId };
     });
     if (prepared.kind === "advanced") { await register([prepared.dispatchId]); return { kind: "complete" }; }
-    if (prepared.kind !== "claimed") return prepared;
+    if (prepared.kind !== "claimed") {
+      if (prepared.kind === "superseded" && reference.kind === "operation_driver" && reference.subject.kind === "generation_finishing") {
+        const repaired = await prisma.$transaction(async tx => {
+          const { epoch } = await readExecutionAdmission(tx), original = await readExecutionDispatch(tx,reference.dispatchId);
+          if (epoch !== reference.deploymentEpoch || !original || JSON.stringify(original.reference) !== JSON.stringify(reference)) return null;
+          // Repair only the already committed current obligation. An old
+          // receipt cannot grant another generation, deadline or claim.
+          return queueGenerationFinishing(tx,reference.subject.id);
+        });
+        if (repaired) await register([repaired.dispatchId]);
+      }
+      return prepared;
+    }
     try { await register([prepared.watchdogId]); }
     catch (error) {
       await prisma.$transaction(async tx => { const state = await current(tx,reference,prepared.row.claimToken); if (state) await tx.generationFinishing.update({ where: { id: state.row.id }, data: { state: "due", claimToken: null, leaseExpiresAt: null } }); });
@@ -365,66 +380,35 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       if (error instanceof ClaimLost) return { kind: "superseded" };
       try { await fail(prepared.row,error); } catch (failure) { if (failure instanceof ClaimLost) return { kind: "superseded" }; throw failure; }
     }
+    const parked = await prisma.generationFinishing.findUnique({ where: { id: reference.subject.id }, select: { state: true, dueAt: true, operationDeadlineAt: true, deploymentEpoch: true, generation: true } });
+    if (parked?.state === "exporting" && parked.deploymentEpoch === reference.deploymentEpoch && parked.generation === reference.generation && parked.dueAt && parked.operationDeadlineAt) {
+      return { kind: "wait", dueAt: new Date(Math.min(parked.dueAt.getTime()+FINISHING_MAX_WAIT_MS,parked.operationDeadlineAt.getTime())) };
+    }
     return { kind: "complete" };
   }
 
-  /** Rows parked while their exports render wake here, in one statement, once
-   * every export is terminal or the wait ran out. A poll costs no claim, so
-   * waiting rows never use up a batch that new work could use. */
-  async function wakeExporting(): Promise<void> {
-    const at = now();
-    await prisma.$executeRaw`
-      UPDATE "GenerationFinishing" AS f SET "state" = 'due', "updatedAt" = ${utc(at)}
-      WHERE f."state" = 'exporting'
-        AND (f."dueAt" <= ${utc(new Date(at.getTime() - FINISHING_MAX_WAIT_MS))}
-          OR NOT EXISTS (
-            SELECT 1 FROM jsonb_array_elements(f."picks") AS pick
-            JOIN "ClipExport" AS e ON e."id" = (pick->>'exportId')::uuid
-            WHERE e."status" NOT IN ('ready', 'partial_ready', 'failed')))
-    `;
-  }
-
-  /** Claims the next due row, or one whose lease ran out. Reclaiming a lapsed
-   * lease counts as an attempt, so a row that keeps killing its worker ends. */
-  async function claimNext(): Promise<ClaimedRow | null> {
-    const at = now();
-    const [row] = await prisma.$queryRaw<ClaimedRow[]>`
-      UPDATE "GenerationFinishing" SET "state" = 'running', "claimToken" = ${randomUUID()}::uuid,
-        "attempts" = CASE WHEN "state" = 'running' THEN "attempts" + 1 ELSE "attempts" END,
-        "leaseExpiresAt" = ${utc(new Date(at.getTime() + FINISHING_LEASE_MS))}, "updatedAt" = ${utc(at)}
-      WHERE "id" = (
-        SELECT "id" FROM "GenerationFinishing"
-        WHERE ("state" = 'due' AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= ${utc(at)}))
-           OR ("state" = 'running' AND "leaseExpiresAt" <= ${utc(at)})
-        ORDER BY COALESCE("nextAttemptAt", "dueAt"), "id" FOR UPDATE SKIP LOCKED LIMIT 1)
-      RETURNING "id", "workspaceId", "projectId", "originRunId", "actorUserId", "settings", "picks", "attempts", "dueAt", "claimToken"
-    `;
-    return row ?? null;
-  }
-
   /** Writes only while this claim still owns the row. */
-  async function save(row: ClaimedRow, data: Prisma.GenerationFinishingUncheckedUpdateManyInput) {
-    if (row.reference) {
+  async function save(row: ClaimedRow, data: Prisma.GenerationFinishingUncheckedUpdateManyInput, options?: { renewLease: true }) {
       const ids = await prisma.$transaction(async tx => {
-        const state = await current(tx,row.reference!,row.claimToken);
+        const state = await current(tx,row.reference,row.claimToken);
         if (!state) throw new ClaimLost();
-        const patched = await tx.generationFinishing.update({ where: { id: row.id }, data });
+        const updates = { ...data };
+        if (options?.renewLease) updates.leaseExpiresAt = new Date(Math.min(state.clock.getTime()+FINISHING_LEASE_MS,state.row.operationDeadlineAt!.getTime()));
+        if (updates.state === "due") updates.nextAttemptAt = new Date(Math.min(state.clock.getTime()+(typeof updates.attempts === "number" ? Math.min(2**updates.attempts*30_000,15*60_000) : 0),state.row.operationDeadlineAt!.getTime()));
+        const patched = await tx.generationFinishing.update({ where: { id: row.id }, data: updates });
         if (data.state === "due") {
           const next = await tx.generationFinishing.update({ where: { id: row.id }, data: { generation: { increment: 1 } } });
           return [(await appendFinishing(tx,next)).dispatchId];
         }
-        if (data.state === "exporting") return [(await appendFinishing(tx,patched,{ kind: "operation", at: patched.operationDeadlineAt! })).dispatchId];
-        if (data.leaseExpiresAt instanceof Date) return [(await appendFinishing(tx,patched,{ kind: "lease", at: data.leaseExpiresAt })).dispatchId];
+        if (data.state === "exporting") return [(await appendFinishing(tx,patched,{ kind: "operation", at: new Date(Math.min(patched.dueAt!.getTime()+FINISHING_MAX_WAIT_MS,patched.operationDeadlineAt!.getTime())) })).dispatchId];
+        if (updates.leaseExpiresAt instanceof Date) return [(await appendFinishing(tx,patched,{ kind: "lease", at: updates.leaseExpiresAt })).dispatchId];
         return [];
       });
       await register(ids);
-      return;
-    }
-    const written = await prisma.generationFinishing.updateMany({ where: { id: row.id, state: "running", claimToken: row.claimToken }, data });
-    if (written.count !== 1) throw new ClaimLost();
   }
   const savePicks = (row: ClaimedRow, picks: FinishingPick[]) => save(row, { picks: picks as Prisma.InputJsonValue });
-  const renew = (row: ClaimedRow) => save(row, { leaseExpiresAt: new Date(now().getTime() + FINISHING_LEASE_MS) });
+  const advance = (row: ClaimedRow, picks: FinishingPick[]) => save(row,{ state: "due", picks: picks as Prisma.InputJsonValue, nextAttemptAt: null, claimToken: null, leaseExpiresAt: null });
+  const renew = (row: ClaimedRow) => save(row, {}, { renewLease: true });
 
   async function exportStatuses(picks: FinishingPick[]) {
     const ids = picks.flatMap((pick) => (pick.exportId ? [pick.exportId] : []));
@@ -438,10 +422,11 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     const statuses = await exportStatuses(outcome.picks);
     const exportIds = outcome.picks.flatMap((pick) => (pick.exportId && !pick.exportError && EXPORT_USABLE.includes(statuses.get(pick.exportId) ?? "failed") ? [pick.exportId] : []));
     await prisma.$transaction(async (tx) => {
-      if (row.reference && !await current(tx,row.reference,row.claimToken)) throw new ClaimLost();
+      const state = await current(tx,row.reference,row.claimToken);
+      if (!state) throw new ClaimLost();
       const ended = await tx.generationFinishing.updateMany({
         where: { id: row.id, state: "running", claimToken: row.claimToken },
-        data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: now(), claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
+        data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: state.clock, claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
       });
       if (ended.count !== 1) throw new ClaimLost();
       queueFinishingFinished(tx, { ...row, state: outcome.state, reason: outcome.reason, exportIds });
@@ -522,6 +507,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
 
   async function run(row: ClaimedRow): Promise<void> {
     const settings = frozenFinishingSettingsSchema.parse(row.settings);
+    const authority = row.autopilotAuthority == null ? null : autopilotFinishingAuthoritySchema.parse(row.autopilotAuthority);
     if (row.attempts >= FINISHING_MAX_ATTEMPTS) return endFailed(row);
     let picks = row.picks == null ? null : finishingPicksSchema.parse(row.picks);
 
@@ -548,13 +534,15 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       await renew(row);
       await exportPick(row, actor, settings, pick, picks);
       await savePicks(row, picks);
+      return advance(row,picks);
     }
 
     // Park the row while the renders run. It wakes without a claim.
     const statuses = await exportStatuses(picks);
     const unfinished = picks.filter((pick) => pick.exportId && !EXPORT_TERMINAL.includes(statuses.get(pick.exportId) ?? "failed"));
     if (unfinished.length > 0) {
-      if (now().getTime() - (row.dueAt ?? now()).getTime() < FINISHING_MAX_WAIT_MS) {
+      const observed = await prisma.$transaction(finishingNow);
+      if (observed.getTime() - (row.dueAt ?? observed).getTime() < FINISHING_MAX_WAIT_MS) {
         return save(row, { state: "exporting", nextAttemptAt: null, claimToken: null, leaseExpiresAt: null });
       }
       for (const pick of unfinished) pick.exportError = "export_timeout";
@@ -591,6 +579,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
           pick.copyError = error instanceof ExpectedDomainFailureError ? error.code : "copy_failed";
         }
         await savePicks(row, picks);
+        return advance(row,picks);
       }
     }
 
@@ -610,7 +599,8 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
             const { proposal } = await deps.propose({ ...actor, clipId: pick.clipId, exportId: pick.exportId!, socialAccountId: account.id, copyGenerationId: pick.copyGenerationId,
               idempotencyKey: finishingQueueKey(row.id, pick.clipId, account.id) });
             // A grant that covers this rule and account takes the proposal into its slot; otherwise it waits for a person.
-            const granted = await deps.acceptUnderGrant({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, proposalId: proposal.proposalId });
+            const granted = await deps.acceptUnderGrant({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, proposalId: proposal.proposalId,
+              expectedScheduleRevision: proposal.scheduleRevision, expectedGrant: authority?.publish.find(item=>item.socialAccountId===account.id)?.grant ?? null });
             if (granted !== "no_grant") {
               pick.grant = { ...pick.grant, [account.id]: granted };
               if (granted !== "accepted") log("generation_finishing_grant_refused", { finishingId: row.id, projectId: row.projectId, socialAccountId: account.id, outcome: granted });
@@ -621,6 +611,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
             results[account.id] = error.code;
           }
           await savePicks(row, picks);
+          return advance(row,picks);
         }
       }
     }
@@ -634,7 +625,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     // row, so a re-claim finds it; a refusal leaves the clips for a person and says why.
     let reviewReason: FinishingReason | null = null;
     if (complete && settings.delivery === "send_review_round") {
-      const sent = await deps.sendReviewRound({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, exportIds: picks.filter(usable).map((pick) => pick.exportId!) });
+      const sent = await deps.sendReviewRound({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, exportIds: picks.filter(usable).map((pick) => pick.exportId!), expectedGrant: authority?.review ?? null });
       if (!sent.sent) reviewReason = sent.reason;
     }
     const reason: FinishingReason | null = complete ? reviewReason
@@ -644,7 +635,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
             : queue && queue.missing > 0 ? "queue_account_unavailable" : "queue_failed";
     // The ledger keys the notification by the row, so a repeat sends nothing.
     if (exportCount > 0) await deps.notify({ projectId: row.projectId, sourceId: row.id, clipCount: exportCount }).catch((error) => {
-      log("generation_finishing_notification_failed", { finishingId: row.id, error: error instanceof Error ? error.message : String(error) });
+      log("generation_finishing_notification_failed", { finishingId: row.id, code: error instanceof ExpectedDomainFailureError ? error.code : "notification_handoff_failed" });
     });
     await finish(row, { state: complete && !reviewReason ? "ready" : "partial", reason, picks });
   }
@@ -658,9 +649,9 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
   /** An unexpected failure releases the row to try again, until the budget runs out. */
   async function fail(row: ClaimedRow, error: unknown) {
     const attempts = row.attempts + 1;
-    log("generation_finishing_attempt_failed", { finishingId: row.id, projectId: row.projectId, attempts, error: error instanceof Error ? error.message : String(error) });
+    log("generation_finishing_attempt_failed", { finishingId: row.id, projectId: row.projectId, attempts, code: error instanceof ExpectedDomainFailureError ? error.code : "finishing_action_failed" });
     if (attempts < FINISHING_MAX_ATTEMPTS) {
-      await save(row, { state: "due", attempts, nextAttemptAt: new Date(now().getTime() + Math.min(2 ** attempts * 30_000, 15 * 60_000)), claimToken: null, leaseExpiresAt: null });
+      await save(row, { state: "due", attempts, nextAttemptAt: null, claimToken: null, leaseExpiresAt: null });
       return;
     }
     await endFailed(row);
@@ -674,27 +665,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     await finish(row, { state: picks.some((pick) => pick.exportId) ? "partial" : "skipped", reason: "finishing_failed", picks });
   }
 
-  return {
-    run: runReference,
-    /** Wakes rows whose exports finished, then claims and runs due rows, up to
-     * `limit`. Returns how many it ran. */
-    async processDue(limit = 3): Promise<number> {
-      await wakeExporting();
-      let handled = 0;
-      while (handled < limit) {
-        const row = await claimNext();
-        if (!row) break;
-        handled += 1;
-        try {
-          await run(row);
-        } catch (error) {
-          if (error instanceof ClaimLost) continue;
-          try { await fail(row, error); } catch (inner) { if (!(inner instanceof ClaimLost)) throw inner; }
-        }
-      }
-      return handled;
-    },
-  };
+  return { run: runReference };
 }
 
 // --- Reading ------------------------------------------------------------------

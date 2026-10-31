@@ -141,6 +141,10 @@
   "20261031070000_selection_execution_objects",
   "20261031080000_execution_library",
   "20261031090000_execution_cleanup",
+  "20261031100000_execution_restore",
   "20261031110000_execution_oauth",
+  "20261031120000_execution_finishing",
+  "20261031130000_execution_export_bundle",
+  "20261031140000_execution_dubbing",
   "20261031150000_publication_restore"
 ]

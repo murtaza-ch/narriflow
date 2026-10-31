@@ -6,6 +6,7 @@ import { createGenerationFinishing, readProjectFinishing, type GenerationFinishi
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { acceptProposalUnderGrant, sendReviewRoundUnderGrant } from "./standing-grant-runtime";
 import { workspaceService } from "./workspace.service";
+import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -13,11 +14,11 @@ function requirePrisma() {
   return prisma;
 }
 
-/** The worker's finishing loop. `notify` is the worker's own "clips ready"
- * notification, which knows the app's base URL. */
+/** Fresh runtime wiring for one targeted Finishing command. */
 export function getGenerationFinishing(notify: GenerationFinishingDependencies["notify"]) {
   return createGenerationFinishing({
     prisma: requirePrisma(),
+    register: deliverExecutionDispatches,
     requireActor: (userId, workspaceId) => workspaceService.requireActor(userId, workspaceId, "processing.consume"),
     canManagePublishing: (userId, workspaceId) =>
       workspaceService.requireActor(userId, workspaceId, "publishing.manage").then(
