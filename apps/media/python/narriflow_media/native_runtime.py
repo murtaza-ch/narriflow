@@ -14,6 +14,7 @@ from .artifacts import AssignedArtifacts
 from .callback_delivery_runtime import run_callback_delivery
 from .control import ExecutionControlError, ExecutorSession
 from .generated_image_runtime import run_generated_image as execute_generated_image
+from .publication_runtime import run_publication as execute_publication, validate_publication_package
 from .fetch import FileSnapshot
 from .multipart import TransferTransport
 from .outbound_runtime import run_rss_probe
@@ -375,3 +376,37 @@ async def run_generated_image(session: ExecutorSession, package: WorkPackage, wo
         raise NativeOperationFailure('native_result_invalid')
     await artifacts.upload(binary['artifactId'], files.image_path, content_type='image/png',
         byte_length=size, sha256=sha, transport=transport)
+
+
+async def run_publication(session: ExecutorSession, package: WorkPackage, work: Path, *,
+                          transport: TransferTransport | None = None, bun_executable: str = 'bun',
+                          curl_executable: str = 'curl') -> None:
+    """Exact named sources only. Python keeps control and assignment custody;
+    the bounded Bun process performs the frozen provider protocol."""
+    validate_publication_package(session, package)
+    names = [source['name'] for source in package.sources]
+    if ('publication_media' not in names or len(names) != len(set(names)) or
+            set(names) - {'publication_media', 'publication_thumbnail', 'publication_instructions'}):
+        raise NativeOperationFailure('publication_source_invalid')
+    context = package.publication
+    if (('publication_instructions' in names) != ('priorCheckpointKey' in context) or
+            ('publication_thumbnail' in names) != ('thumbnail' in context)):
+        raise NativeOperationFailure('publication_source_invalid')
+    directory = _work(work)
+    paths = {}
+    for name, maximum in (('publication_media', MAX_BYTES), ('publication_thumbnail', 2 * 1024**3),
+                           ('publication_instructions', 16 * 1024**2)):
+        if name not in names:
+            continue
+        source_directory = directory / name
+        source_directory.mkdir(mode=0o700)
+        paths[name] = await download_assigned_source(session, package, source_directory,
+            source_name=name, maximum_bytes=maximum, curl_executable=curl_executable)
+    try:
+        await execute_publication(session, package, directory, media_path=paths['publication_media'],
+            thumbnail_path=paths.get('publication_thumbnail'), instructions_path=paths.get('publication_instructions'),
+            bun_executable=bun_executable, upload_transport=transport)
+    except MediaProcessError as error:
+        if error.code in {'media_process_start_unconfirmed', 'media_execution_cancelled'}:
+            raise ExecutionControlError('execution_start_unconfirmed' if error.code == 'media_process_start_unconfirmed' else 'execution_authority_lost') from None
+        raise
