@@ -9,6 +9,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "limits": { "cpu_ms": 30000 },
+  // Neon is in AWS us-east-2. Control commands make several transactional
+  // round trips; run fetch handlers near that database.
+  "placement": { "region": "aws:us-east-2" },
   "routes": [],
   "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }, { "name": "LOCAL_FETCH_MAILBOX", "class_name": "LocalFetchMailbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress", "LocalFetchMailbox"] }],
