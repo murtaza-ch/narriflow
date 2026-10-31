@@ -5,8 +5,8 @@ import { createRenderOutputFixture } from "../../media/src/render-output-validat
 import { parseRenderConfig } from "../../media/src/render-config";
 import { RenderFactCache } from "../../media/src/render-fact-cache";
 import { LayoutEvidence } from "../../media/src/layout-evidence";
-import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "./tasks/clip-render-attempt";
-import { selectDurableLayoutEvidence } from "./tasks/clip-render-attempt";
+import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "../../media/src/tasks/clip-render-attempt";
+import { selectDurableLayoutEvidence } from "../../media/src/tasks/clip-render-attempt";
 import { createClipRenderAttempt } from "./tasks/clip-render-attempt-runtime";
 
 /**

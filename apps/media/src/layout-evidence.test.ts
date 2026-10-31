@@ -5,7 +5,7 @@ import { LayoutEvidence, type LayoutEvidenceDependencies, type LayoutEvidenceInp
 import { parseRenderConfig } from "./render-config";
 import { analyzeClipAutoLayout } from "../../worker/src/tasks/auto-layout-analysis";
 import { WorkflowFailure } from "@narriflow/services";
-import { deriveRenderCompositionEvidence } from "../../worker/src/tasks/clip-render-attempt";
+import { deriveRenderCompositionEvidence } from "./tasks/clip-render-attempt";
 import { WorkerProcessFailure, type WorkerProcessModule } from "./worker-process";
 
 const requests: CompositionEvidenceRequest[] = [

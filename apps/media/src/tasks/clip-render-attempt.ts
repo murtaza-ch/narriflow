@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { RenderAttemptTelemetry, renderReplicaResources } from "../../../media/src/render-diagnostic-adapter";
-import { mediaWorkScheduler } from "../media-work-scheduler";
-import { executorProcessFailure } from "../../../media/src/worker-process";
+import { RenderAttemptTelemetry, renderReplicaResources } from "../render-diagnostic-adapter";
+import { executorProcessFailure } from "../worker-process";
 import { statfs } from "node:fs/promises";
-import { transportRenderCommand } from "../../../media/src/render-command-transport";
-import { RenderFactCache, sourceProbeIdentity } from "../../../media/src/render-fact-cache";
-import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../../../media/src/brand-font-resolution";
+import { transportRenderCommand } from "../render-command-transport";
+import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
+import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { basename, extname, join } from "node:path";
 import {
@@ -17,26 +16,12 @@ import {
 	type ClipCompositionPlanInput,
 	type CompositionMode,
 } from "@narriflow/composition-plan";
-import {
-	assertPublicHttpUrl,
-	type audioAssetService as productionAudioAssetService,
-	type clipService as productionClipService,
-	decodeFrozenClipEditorDocument,
-	type deleteObject as productionDeleteObject,
-	type downloadObjectToFile as productionDownloadObjectToFile,
-	hasFeature,
-	motionRenderAnalyticsMetadata,
-	type presignDownloadUrl as productionPresignDownloadUrl,
-	type putFileFromPath as productionPutFileFromPath,
-	rethrowWorkflowAttemptLost,
-	WorkflowAttemptLost,
-	WorkflowFailure,
-	workflowFailureFromUnknown,
-	type LayoutEvidenceLifecycle,
-	type MotionRenderAnalyticsMetadata,
-	type WorkflowAttemptContext,
-	type WorkflowAttemptRef,
-} from "@narriflow/services";
+import { assertPublicHttpUrl } from "@narriflow/services/url-guard";
+import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-document-codec";
+import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
+import { hasFeature } from "@narriflow/validators";
+import { rethrowWorkflowAttemptLost, WorkflowAttemptLost, WorkflowFailure, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
+import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, downloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, putFileFromPath as productionPutFileFromPath, LayoutEvidenceLifecycle } from "@narriflow/services";
 import {
 	AUDIO_UPLOAD_MAX_BYTES,
 	CLIP_AUTO_LAYOUT_ENGINE,
@@ -62,23 +47,16 @@ import type {
 	EditorDocument,
 	StudioEdits,
 } from "@narriflow/validators";
-import { buildClipCutPlan } from "../../../media/src/tasks/cut-plan";
+import { buildClipCutPlan } from "./cut-plan";
 import {
 	LayoutEvidence,
 	type LayoutEvidenceDetectors,
 	type LayoutEvidenceAvailability,
-} from "../../../media/src/layout-evidence";
-import {
-	brollQueryForClip,
-	dominantPexelsOrientation,
-	getCachedBrollAssetPath,
-	planBrollWindow,
-	remapBrollCuesForCutPlan,
-	resolveBrollCutaways,
-	saveBrollAssetToCache,
-	type BrollCueInput,
-} from "./broll";
-import { type RenderConfig } from "../../../media/src/render-config";
+} from "../layout-evidence";
+import { brollQueryForClip, dominantPexelsOrientation, planBrollWindow } from "@narriflow/validators";
+import { remapBrollCuesForCutPlan } from "./broll";
+import type { getCachedBrollAssetPath, ResolveBrollCutaways, saveBrollAssetToCache, BrollCueInput } from "./broll";
+import { type RenderConfig } from "../render-config";
 import {
 	RenderResourceDeferral,
 	ScratchFileRefs,
@@ -90,12 +68,12 @@ import {
 	type BudgetEnvironment,
 	type RenderReservation,
 	type ReservationRequest,
-} from "../../../media/src/render-resource-budget";
+} from "../render-resource-budget";
 import {
 	clipExportAttemptStorageKey,
 	clipRenderAttemptStorageKey,
 	isAttemptUniqueProjectRenderObjectKey,
-} from "../../../media/src/render-object-key";
+} from "../render-object-key";
 import {
 	resolveDisplayGeometry,
 	WorkerProcessFailure,
@@ -103,7 +81,7 @@ import {
 	type WorkerMediaInspection,
 	type WorkerProcessDiagnostic,
 	type WorkerProcessModule,
-} from "../../../media/src/worker-process";
+} from "../worker-process";
 import {
 	compileClipCompositionCommand,
 	compileCompositionPlanCaptions,
@@ -112,8 +90,8 @@ import {
 	hdrColorOf,
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
-} from "../../../media/src/composition-ffmpeg-adapter";
-import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../../../media/src/caption-ass";
+} from "../composition-ffmpeg-adapter";
+import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../caption-ass";
 import {
 	CAPTION_RENDER_DIAGNOSTIC_PATTERN,
 	type CaptionGlyphUnavailableError,
@@ -121,14 +99,14 @@ import {
 	type SkippedEmoji,
 	captionRenderDiagnosticsFailure,
 	classifyCaptionRenderDiagnostics,
-} from "../../../media/src/caption-glyphs";
-import { classifyRenderObjectKey } from "../../../media/src/render-object-key";
-import { compositionOutputExpectation, validateRenderOutput, type ValidatedRenderResult } from "../../../media/src/render-output-validation";
-import { guardMixPeak, mixPeakMeasureDeadlineMs, type MixPeakResult } from "../../../media/src/render-mix-peak";
+} from "../caption-glyphs";
+import { classifyRenderObjectKey } from "../render-object-key";
+import { compositionOutputExpectation, validateRenderOutput, type ValidatedRenderResult } from "../render-output-validation";
+import { guardMixPeak, mixPeakMeasureDeadlineMs, type MixPeakResult } from "../render-mix-peak";
 import {
 	type RenderClockAdapter,
 	type RenderWorkspaceAdapter,
-} from "../../../media/src/render-runtime-adapters";
+} from "../render-runtime-adapters";
 
 interface BrollCutaway {
 	ref: string;
@@ -366,7 +344,7 @@ export interface ClipRenderAttemptAdapters {
 			kind: "video" | "audio" | "image",
 			window?: { startSec: number; durationSec: number },
 		): Promise<boolean>;
-		resolveBrollCutaways: typeof resolveBrollCutaways;
+		resolveBrollCutaways: ResolveBrollCutaways;
 		getCachedBrollAssetPath: typeof getCachedBrollAssetPath;
 		saveBrollAssetToCache: typeof saveBrollAssetToCache;
 		probeMediaDurationSec(path: string): Promise<number | null>;
@@ -4629,7 +4607,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			signal?.throwIfAborted();
 			const renderGroup = clipGroups[clipGroupIndex]!;
 			try {
-				await mediaWorkScheduler.run("render", renderGroup[0]!.clipId, signal, () => renderClipGroup({
+				await renderClipGroup({
 					run,
 					attempt,
 					renderGroup,
@@ -4644,7 +4622,7 @@ async function executeClipRenderAttemptInScratch(params: {
 					applyWatermark,
 					scratch,
 					scheduleUpload,
-				}));
+				});
 			} catch (error) {
 				rethrowRenderControlFlow(error);
 				// Any delivery already scheduled must settle before failure writes.

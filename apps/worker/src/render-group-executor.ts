@@ -27,7 +27,7 @@ import type {
 	ClipRenderAttemptLifecycle,
 	ClipRenderingWorkflowAttempt,
 	RenderGroupOutcome,
-} from "./tasks/clip-render-attempt";
+} from "../../media/src/tasks/clip-render-attempt";
 
 type GroupLifecycle = Pick<
 	RenderGroupLifecycle,

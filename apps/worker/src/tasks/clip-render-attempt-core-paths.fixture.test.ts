@@ -1,4 +1,4 @@
-import type { RenderGroupOutcome } from "./clip-render-attempt";
+import type { RenderGroupOutcome } from "../../../media/src/tasks/clip-render-attempt";
 import { RenderFactCache } from "../../../media/src/render-fact-cache";
 import {
 	createClipRenderAttempt,
@@ -26,7 +26,7 @@ import { productionWorkerProcessModule, WorkerProcessFailure } from "../../../me
 import {
 	compileClipCompositionCommand,
 } from "../../../media/src/composition-ffmpeg-adapter";
-import { type ClipRenderingWorkflowAttempt } from "./clip-render-attempt";
+import { type ClipRenderingWorkflowAttempt } from "../../../media/src/tasks/clip-render-attempt";
 
 export type PendingClipRender = Awaited<
 	ReturnType<typeof clipService.getPendingClipRendersForWorkSet>

@@ -18,7 +18,7 @@ import {
 import {
 	type RenderGroupOutcome,
 	type ClipRenderingWorkflowAttempt,
-} from "./clip-render-attempt";
+} from "../../../media/src/tasks/clip-render-attempt";
 
 export type PendingClipRender = Awaited<
 	ReturnType<typeof clipService.getPendingClipRendersForWorkSet>

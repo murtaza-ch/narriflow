@@ -23,7 +23,7 @@ import {
 	type RenderGroupOutcome,
 	type ClipRenderAttemptAdapters,
 	type ClipRenderingWorkflowAttempt,
-} from "./clip-render-attempt";
+} from "../../../media/src/tasks/clip-render-attempt";
 import {
 	productionRenderClockAdapter,
 	productionRenderWorkspaceAdapter,

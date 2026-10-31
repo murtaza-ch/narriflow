@@ -4,7 +4,7 @@ import { WorkerProcessFailure } from "../../../media/src/worker-process";
 import {
 	isRecoverableRangedSourceFailure,
 	normalizeRenderProcessFailure,
-} from "./clip-render-attempt";
+} from "../../../media/src/tasks/clip-render-attempt";
 
 describe("ranged source recovery", () => {
 	for (const diagnostic of [

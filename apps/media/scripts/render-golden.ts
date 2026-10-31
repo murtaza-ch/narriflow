@@ -63,7 +63,7 @@ import {
 } from "../src/composition-ffmpeg-adapter";
 import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
-import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../../worker/src/tasks/clip-render-attempt";
+import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection, withAudioTimestampGaps } from "../src/worker-process";
 import {
   collectRuntimeFingerprint,

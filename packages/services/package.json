@@ -41,6 +41,10 @@
     "./url-guard": {
       "types": "./src/url-guard.ts",
       "default": "./src/url-guard.ts"
+    },
+    "./pexels-contract": {
+      "types": "./src/pexels-contract.ts",
+      "default": "./src/pexels-contract.ts"
     }
   },
   "scripts": {
