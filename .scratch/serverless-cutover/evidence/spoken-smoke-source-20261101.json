@@ -1,0 +1,33 @@
+{
+  "status": "prepared_only",
+  "sourcePage": "https://commons.wikimedia.org/wiki/File:WIKITONGUES-_Gereon_speaking_English.webm",
+  "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/c/cd/WIKITONGUES-_Gereon_speaking_English.webm",
+  "author": "Bogreudell",
+  "recordedAt": "2018-07-20",
+  "license": "CC BY-SA 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "changes": "None. Original source bytes downloaded for private acceptance. No generated transcript or clips yet.",
+  "byteLength": 22741661,
+  "sha256": "32b20a20e84d46d17da126689572f9a431d01ddc23880b90240952875b2a3fe8",
+  "durationSeconds": 146.147,
+  "streams": [
+    {
+      "codec_type": "video",
+      "codec_name": "vp8",
+      "width": 1080,
+      "height": 606,
+      "sample_rate": null,
+      "channels": null
+    },
+    {
+      "codec_type": "audio",
+      "codec_name": "vorbis",
+      "width": null,
+      "height": null,
+      "sample_rate": "44100",
+      "channels": 2
+    }
+  ],
+  "preparedAt": "2026-10-31T20:52:58.149631+00:00",
+  "scope": "Real English speech, source acquisition only. Scribe, selection, twelve-clip processing and latency acceptance remain unexecuted."
+}

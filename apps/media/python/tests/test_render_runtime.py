@@ -60,7 +60,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured['sourceBytesTransferred'],0)
         self.assertNotIn('private',logs.getvalue())
 
-    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1'):
+    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,source_sha256=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1'):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);source=Path(source_path) if source_path is not None else base/'original.mp4';work=base/'work';work.mkdir()
@@ -70,7 +70,10 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 piece=base/'piece.mp4';source.rename(piece)
                 subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-stream_loop','2699','-i',str(piece),'-t','10800','-c','copy','-movflags','+faststart',str(source)],check=True,timeout=60)
             source_size=source.stat().st_size
-            with source.open('rb') as stream:source_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+            if source_sha256 is None:
+                with source.open('rb') as stream:source_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+            else:
+                self.assertRegex(source_sha256,r'^[a-f0-9]{64}$');source_sha=source_sha256
             payload=None if long_source or source_path is not None else source.read_bytes()
             library_payload=None;audio=[]
             if many_assets:

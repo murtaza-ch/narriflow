@@ -1,0 +1,20 @@
+import {expect,test} from "bun:test";
+import {candidateRestoreJournal,candidateRestoreTarget,candidateRestoreRefusal} from "./qualified-restore-candidate";
+const connection="postgresql://operator:example@ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech/serverless_pipeline_gates?sslmode=verify-full";
+const journal=()=>({version:1,runId:crypto.randomUUID(),jobId:crypto.randomUUID(),dispatchId:crypto.randomUUID(),attemptToken:crypto.randomUUID(),artifactId:crypto.randomUUID(),commandSha256:"a".repeat(64),operationDeadlineAt:"2026-11-01T01:10:00.000Z",fencedVersion:"fenced-version",snapshotPath:"/private/run/snapshot.dump",proofPath:"/private/run/proof.json",refusalPath:"/private/run/refusal.json"});
+test("candidate snapshot tooling refuses another database, pooled/shared host or TLS downgrade before any connection",()=>{
+ expect(candidateRestoreTarget(`${connection}&schema=public`).hostname).toBe("ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech");
+ for(const value of [connection.replace("serverless_pipeline_gates","neondb"),connection.replace("ep-wispy-field-b5wyn9o3","ep-rough-hill-b57kvyah"),connection.replace(".c-7.","-pooler.c-7."),connection.replace("verify-full","require"),`${connection}&schema=another`,`${connection}&options=-csearch_path%3Dpublic`])expect(()=>candidateRestoreTarget(value)).toThrow();
+});
+test("the operator journal freezes exact IDs and distinct absolute files without accepting credential or deadline override fields",()=>{
+ const j=journal();
+ expect(candidateRestoreJournal(j)).toEqual(j);
+ for(const value of [{...j,snapshotPath:"./snapshot"},{...j,proofPath:j.snapshotPath},{...j,attemptToken:"latest"},{...j,key:"secret"},{...j,operationDeadlineAt:"invalid"}])expect(()=>candidateRestoreJournal(value)).toThrow();
+});
+test("the qualified gate accepts only the new source3 to restored5 refusal and rejects the obsolete epoch2 sequence",()=>{
+ const j=candidateRestoreJournal(journal());
+ const report={event:"restore_fault_refused",runId:j.runId,sourceEpoch:3,targetEpoch:5,dispatchId:j.dispatchId,attemptToken:j.attemptToken,artifactId:j.artifactId,commandSha256:j.commandSha256,refusal:"superseded"};
+ expect(candidateRestoreRefusal(report,j)).toEqual(report);
+ for(const epochs of [{sourceEpoch:2,targetEpoch:4},{sourceEpoch:3,targetEpoch:4},{sourceEpoch:4,targetEpoch:5},{sourceEpoch:4,targetEpoch:6}])expect(()=>candidateRestoreRefusal({...report,...epochs},j)).toThrow();
+ expect(()=>candidateRestoreRefusal({...report,artifactId:crypto.randomUUID()},j)).toThrow();
+});
