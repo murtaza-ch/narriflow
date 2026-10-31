@@ -678,7 +678,8 @@
     "./project-retention-storage": "./src/project-retention-storage.ts",
     "./zoom-execution": "./src/zoom-execution.ts",
     "./zoom-execution-runtime": "./src/zoom-execution-runtime.ts",
-    "./zoom-token-refresh": "./src/zoom-token-refresh.ts"
+    "./zoom-token-refresh": "./src/zoom-token-refresh.ts",
+    "./autopilot-maintenance": "./src/autopilot-maintenance.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
