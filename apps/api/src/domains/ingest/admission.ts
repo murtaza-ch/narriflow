@@ -3,6 +3,7 @@ import type { AdmissionTable } from "../platform/admission-table";
 /** Admission of the ingest routes, keyed by `METHOD /path` under `/api`. */
 export const ingestAdmission = {
   "GET /ingest/configuration": { kind: "workspace", capability: "processing.consume" },
+  "POST /ingest/local-fetch/session": { kind: "workspace", capability: "processing.consume", rate: { scope: "actor", prefix: "local-fetch-session", limit: 5 } },
   "GET /ingest/link/metadata": { kind: "workspace", capability: "content.view" },
   "POST /ingest/link": { kind: "workspace", capability: "processing.consume" },
   // Each commit makes one Drive API call on the person's behalf.

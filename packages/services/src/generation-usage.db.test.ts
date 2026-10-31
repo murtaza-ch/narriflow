@@ -7,8 +7,6 @@ import { PrismaClient } from "@prisma/client";
 import { processingPeriodStart } from "@narriflow/validators";
 import { Pool } from "pg";
 import { dubbingService } from "./dubbing.service";
-import type { GeneratedMediaJobRecord } from "./generated-media";
-import { prismaGeneratedMediaStore } from "./generated-media-prisma-store";
 import {
   createPrismaGenerationUsageLedger,
   reconcileGenerationUsageReservations,
@@ -190,62 +188,11 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     completedAt: new Date(),
   });
 
-  function imageRecord(input: {
-    id: string;
-    reservationId: string;
-    workspaceId: string;
-    actorUserId: string;
-    projectId: string;
-  }): GeneratedMediaJobRecord {
-    return {
-      id: input.id,
-      scope: {
-        actorUserId: input.actorUserId,
-        workspaceId: input.workspaceId,
-        workspaceOwnerUserId: input.actorUserId,
-        role: "owner",
-        status: "active",
-        pricingTier: "creator",
-        isPersonalWorkspace: true,
-      },
-      projectId: input.projectId,
-      clipId: null,
-      mediaKind: "image",
-      idempotencyKey: `generation-${randomUUID()}`,
-      requestFingerprint: "fingerprint",
-      protectedPrompt: "protected",
-      promptFingerprint: "prompt-fingerprint",
-      promptOrigin: "manual",
-      sourceStartSec: null,
-      sourceEndSec: null,
-      sourceCueAtSec: null,
-      aspectRatio: "9:16",
-      style: "editorial",
-      title: "Generated editorial frame",
-      status: "queued",
-      moderationStatus: "pending",
-      usageStatus: "reserved",
-      usageReservationId: input.reservationId,
-      provider: "openai",
-      providerModel: "test",
-      providerRef: null,
-      providerUsageImages: null,
-      providerResultContentType: null,
-      resultAsset: null,
-      validationJobId: null,
-      validationInput: null,
-      attempt: 0,
-      retryAt: null,
-      claimId: null,
-      claimExpiresAt: null,
-      errorCode: null,
-      outcomeUnknown: false,
-      insertedAt: null,
-      brandSavedAt: null,
-      promptExpiresAt: new Date(Date.now() + 30 * DAY_MS),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+  async function createImageSubject(input:{id:string;reservationId:string;workspaceId:string;actorUserId:string;projectId:string}){
+   return prisma.$transaction(async tx=>{
+    await tx.generatedMediaUsageReservation.update({where:{id:input.reservationId},data:{attachedAt:new Date()}});
+    return tx.generatedMediaJob.create({data:{id:input.id,workspaceId:input.workspaceId,projectId:input.projectId,createdByUserId:input.actorUserId,workspaceOwnerUserId:input.actorUserId,actorRole:"owner",actorStatus:"active",pricingTier:"creator",isPersonalWorkspace:true,idempotencyKey:randomUUID(),requestFingerprint:"fixture",protectedPrompt:"protected",promptFingerprint:"fixture",promptOrigin:"manual",aspectRatio:"9:16",style:"editorial",title:"Generated fixture",usageReservationId:input.reservationId,provider:"openai",providerModel:"fixture",promptExpiresAt:new Date(Date.now()+30*DAY_MS)}});
+   });
   }
 
   const reserveImage = (workspaceId: string, actorUserId: string, pricingTier: string) =>
@@ -352,48 +299,13 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     });
   })));
 
-  test("attaching an image job requires its own image reservation in the same Workspace", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-    const { owner, workspace: ws } = await workspace("creator", "attach");
-    const other = await workspace("creator", "attach-other");
-    const { project } = await dubbableProject(ws.id, owner.id);
-    const id = randomUUID();
-    const reservation = await ledger.reserve({
-      kind: "image",
-      jobId: id,
-      workspaceId: other.workspace.id,
-      actorUserId: other.owner.id,
-      pricingTier: "creator",
-    });
-    await expect(
-      prismaGeneratedMediaStore.create(
-        imageRecord({ id, reservationId: reservation.reservationId, workspaceId: ws.id, actorUserId: owner.id, projectId: project.id }),
-      ),
-    ).rejects.toMatchObject({ code: "generated_media_usage_reconciliation_required" });
-    const dubReservation = randomUUID();
-    await prisma.generatedMediaUsageReservation.create({
-      data: { id: dubReservation, jobId: randomUUID(), kind: "dub", workspaceId: ws.id, policy: "metered", periodStart: currentPeriod },
-    });
-    await expect(
-      prismaGeneratedMediaStore.create(
-        imageRecord({ id: randomUUID(), reservationId: dubReservation, workspaceId: ws.id, actorUserId: owner.id, projectId: project.id }),
-      ),
-    ).rejects.toMatchObject({ code: "generated_media_usage_reconciliation_required" });
-    // A released image reservation cannot be replayed as active.
-    await ledger.release({ jobId: id, reservationId: reservation.reservationId, reason: "test" });
-    await expect(
-      ledger.reserve({ kind: "image", jobId: id, workspaceId: other.workspace.id, actorUserId: other.owner.id, pricingTier: "creator" }),
-    ).rejects.toMatchObject({ code: "generated_media_usage_reconciliation_required" });
-  })));
-
   test("the sweep releases admission orphans, keeps unknown outcomes reserved, and never refunds deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("creator", "sweep-images");
     const { project } = await dubbableProject(ws.id, owner.id);
     const orphan = await reserveImage(ws.id, owner.id, "creator");
     const unknownId = randomUUID();
     const unknown = await ledger.reserve({ kind: "image", jobId: unknownId, workspaceId: ws.id, actorUserId: owner.id, pricingTier: "creator" });
-    await prismaGeneratedMediaStore.create(
-      imageRecord({ id: unknownId, reservationId: unknown.reservationId, workspaceId: ws.id, actorUserId: owner.id, projectId: project.id }),
-    );
+    await createImageSubject({id:unknownId,reservationId:unknown.reservationId,workspaceId:ws.id,actorUserId:owner.id,projectId:project.id});
     await prisma.generatedMediaJob.update({
       where: { id: unknownId },
       data: { status: "waiting", outcomeUnknown: true, errorCode: "provider_outcome_unknown" },
@@ -418,45 +330,6 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { id: unknown.reservationId } }),
     ).toMatchObject({ status: "finalized", reason: "generation_subject_deleted" });
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, concurrency: { active: 0 } });
-  })));
-
-  test("image claims fence expired owners and serialize cancellation with processing", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-    const { owner, workspace: ws } = await workspace("creator", "image-claims");
-    const { project } = await dubbableProject(ws.id, owner.id);
-    const id = randomUUID();
-    const reservation = await ledger.reserve({ kind: "image", jobId: id, workspaceId: ws.id, actorUserId: owner.id, pricingTier: "creator" });
-    await prismaGeneratedMediaStore.create(
-      imageRecord({ id, reservationId: reservation.reservationId, workspaceId: ws.id, actorUserId: owner.id, projectId: project.id }),
-    );
-    const startedAt = new Date();
-    const expiredAt = new Date(startedAt.getTime() + 1_000);
-    const firstClaim = randomUUID();
-    const secondClaim = randomUUID();
-    expect(await prismaGeneratedMediaStore.claim(id, firstClaim, startedAt, 1_000)).not.toBeNull();
-    await expect(prismaGeneratedMediaStore.updateClaimed(id, firstClaim, { status: "failed", updatedAt: expiredAt }))
-      .rejects.toMatchObject({ code: "generated_media_claim_lost" });
-    expect(await prismaGeneratedMediaStore.claim(id, secondClaim, expiredAt, 1_000)).not.toBeNull();
-    await expect(prismaGeneratedMediaStore.updateClaimed(id, firstClaim, { status: "failed", updatedAt: expiredAt }))
-      .rejects.toMatchObject({ code: "generated_media_claim_lost" });
-    await prismaGeneratedMediaStore.updateClaimed(id, secondClaim, { claimId: null, claimExpiresAt: null, updatedAt: expiredAt });
-
-    await prismaGeneratedMediaStore.update(id, { status: "running" });
-    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
-    await prismaGeneratedMediaStore.update(id, { status: "queued", providerUsageImages: 1 });
-    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
-    await prismaGeneratedMediaStore.update(id, { providerUsageImages: null });
-    await prismaGeneratedMediaStore.update(id, { outcomeUnknown: true });
-    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000)).toBeNull();
-    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
-    await prismaGeneratedMediaStore.update(id, { outcomeUnknown: false, retryAt: new Date(expiredAt.getTime() + 60_000) });
-    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000)).toBeNull();
-    const cancellationClaim = randomUUID();
-    expect(await prismaGeneratedMediaStore.claim(id, cancellationClaim, expiredAt, 1_000, "cancel")).not.toBeNull();
-    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
-    await prismaGeneratedMediaStore.updateClaimed(id, cancellationClaim, {
-      status: "cancelled", claimId: null, claimExpiresAt: null, updatedAt: expiredAt,
-    });
-    await ledger.release({ jobId: id, reservationId: reservation.reservationId, reason: "test_cancelled" });
   })));
 
   test("deleting the actor, output, or Project never refunds a finalized count", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

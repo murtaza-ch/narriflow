@@ -30,6 +30,7 @@ import {
 } from "./media-cleanup";
 import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
+import { takeNotificationDispatchIds } from "./notification-dispatch";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
@@ -447,7 +448,7 @@ export class WorkflowRunLifecycle {
         const result = await this.prisma.$transaction(async (tx) => {
           const result = await operation(tx);
           await flushWorkspaceEvents(tx);
-          progressDispatchIds = await flushProjectProgressDrains(tx);
+          progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)];
           return result;
         });
         if (progressDeliveryPort()) await deliverExecutionDispatches(progressDispatchIds);
@@ -1303,7 +1304,8 @@ export class WorkflowRunLifecycle {
 
   private async sourceCancellationPage(tx: TransactionClient, input: { projectId: string; deploymentEpoch: number; errorCode: string; cancelledAt: Date }, extraIds: string[] = [],
     after?: { kind: "workflow_run" | "render_group"; id: string }): Promise<{ dispatchIds: string[] }> {
-    const available = 124 - extraIds.length;
+    // Reserve Ingest terminal2 + audio-ready1 + progress1 + notification1.
+    const available = 123 - extraIds.length;
     if (available < 2) throw new Error("Source cancellation wake budget exceeded");
     const rows = await tx.$queryRaw<Array<{ kind: "workflow_run" | "render_group"; id: string }>>`SELECT kind, id FROM (
       SELECT 'workflow_run'::text AS kind, r.id FROM "WorkflowRun" r WHERE r."projectId" = ${input.projectId}::uuid

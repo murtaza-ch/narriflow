@@ -530,10 +530,6 @@
       "types": "./src/outbound-probe-execution.ts",
       "default": "./src/outbound-probe-execution.ts"
     },
-    "./generated-media-validation": {
-      "types": "./src/generated-media-validation.ts",
-      "default": "./src/generated-media-validation.ts"
-    },
     "./clip-selection-plan": {
       "types": "./src/clip-selection-plan.ts",
       "default": "./src/clip-selection-plan.ts"
@@ -563,7 +559,11 @@
     "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
     "./notification-body-storage": "./src/notification-body-storage.ts",
     "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts",
+    "./notification-dispatch": "./src/notification-dispatch.ts",
     "./drive-source-contract": "./src/drive-source-contract.ts",
+    "./generated-media-execution": "./src/generated-media-execution.ts",
+    "./generated-media-control": "./src/generated-media-control.ts",
+    "./generated-media-retention": "./src/generated-media-retention.ts",
     "./clip-selection-runtime": {
       "types": "./src/clip-selection-runtime.ts",
       "default": "./src/clip-selection-runtime.ts"
@@ -576,11 +576,12 @@
       "types": "./src/clip-selection-finalization.ts",
       "default": "./src/clip-selection-finalization.ts"
     },
-    "./url-guard": {
-      "types": "./src/url-guard.ts",
-      "default": "./src/url-guard.ts"
-    },
     "./ingest-source-definition": "./src/ingest-source-definition.ts",
+    "./publication-dispatch": "./src/publication-dispatch.ts",
+    "./local-fetch-device": "./src/local-fetch-device.ts",
+    "./source-fetch-capability": "./src/source-fetch-capability.ts",
+    "./drive-source": "./src/drive-source.ts",
+    "./social-publication-driver": "./src/social-publication-driver.ts",
     "./clip-preparation-input": {
       "types": "./src/clip-preparation-input.ts",
       "default": "./src/clip-preparation-input.ts"

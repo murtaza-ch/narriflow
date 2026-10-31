@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createProductionModule, GeneratedMediaService } from "./generated-media-runtime";
+import { GeneratedMediaService } from "./generated-media-runtime";
 import { generatedImageCapability, generatedImagePolicy } from "./generation-usage";
 
 const scope = {
@@ -13,7 +13,7 @@ const scope = {
 };
 
 const configured = {
-  OPENAI_API_KEY: "test-key-never-sent",
+  GENERATED_IMAGE_EXECUTOR_CONFIGURED: "true",
   OPENAI_IMAGE_MODEL: "gpt-image-2",
   GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION: "test-v1",
   GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
@@ -28,7 +28,7 @@ describe("generation access", () => {
     expect(generatedImagePolicy("business")).toBe("metered");
   });
 
-  test("admits included image generation without deployment switches", () => {
+  test("admits included image generation through the configured native executor", () => {
     expect(generatedImageCapability(scope, configured)).toMatchObject({ available: true, reason: "available", usage: "metered" });
     expect(generatedImageCapability({ ...scope, pricingTier: "free" }, configured)).toMatchObject({ available: true, reason: "available", usage: "trial_metered" });
   });
@@ -46,7 +46,7 @@ describe("generation access", () => {
   });
 
   test("admission without provider setup refuses with a typed unavailable failure", async () => {
-    const service = new GeneratedMediaService(() => createProductionModule({}));
+    const service = new GeneratedMediaService(undefined,()=>false);
     await expect(Promise.resolve().then(() => service.create(scope, {} as never))).rejects.toMatchObject({
       code: "generated_media_provider_not_configured",
       kind: "unavailable",

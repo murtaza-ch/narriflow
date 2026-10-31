@@ -1,3 +1,4 @@
+import type { PublicationNativeCommand, PublicationNativeReply } from "@narriflow/validators/publication-execution";
 import type { Prisma } from "@prisma/client";
 import type { ExecutionArtifactRole, ExecutionCommand, ExecutionDispatchReference, ExecutionDisposition } from "@narriflow/validators/execution";
 
@@ -52,6 +53,7 @@ export type ExecutorExpiryResult =
 
 /** Trusted TypeScript service ports. None is exposed as a generic remote command. */
 export interface ExecutorDomainControl<TRef = unknown, TArtifact extends ExecutorArtifactCommit = ExecutorArtifactCommit> {
+  publicationCommandExecution?(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, command: PublicationNativeCommand): Promise<{reply: PublicationNativeReply; dispatchIds?: readonly string[]; complete?: boolean}>;
   expireExecution?(tx: ExecutorDomainTransaction, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult>;
   /** Epoch is already locked. Take owner-defined domain locks before the attempt lock. */
   lockExecution(tx: ExecutorDomainTransaction, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<TRef>>;

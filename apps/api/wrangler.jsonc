@@ -8,9 +8,10 @@
   "alias": { "@aws-sdk/xml-builder": "@aws-sdk/xml-builder/dist-cjs/index.js" },
   "workers_dev": false,
   "preview_urls": false,
+  "limits": { "cpu_ms": 30000 },
   "routes": [],
-  "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress"] }],
+  "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }, { "name": "LOCAL_FETCH_MAILBOX", "class_name": "LocalFetchMailbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress", "LocalFetchMailbox"] }],
   "workflows": [
     { "binding": "IMPORT_PIPELINE", "name": "narriflow-import-candidate", "class_name": "ImportPipeline" },
     { "binding": "RENDER_RUN", "name": "narriflow-render-candidate", "class_name": "RenderRun" },

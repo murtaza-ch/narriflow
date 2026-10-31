@@ -6,10 +6,15 @@ import { recipeService } from "@narriflow/services/recipe.service";
 import { uploadSessionService } from "@narriflow/services/upload-session.service";
 import type { ApiConfig } from "../../config";
 import type { IngestRouteDeps } from "./routes";
+import { youtubeImportCapability } from "@narriflow/services/source-fetch-capability";
+import { issueLocalFetchDevice } from "../execution/local-device";
+import type { ApiWorkerBindings } from "../../worker-bindings";
 
 /** Production wiring of the ingest routes. */
 export function createIngestRouteDeps(_config: ApiConfig): IngestRouteDeps {
   return {
+    youtubeImportCapability,
+    issueLocalFetchDevice: (actor, bindings) => issueLocalFetchDevice(actor, bindings as ApiWorkerBindings),
     projectService,
     recipeService,
     brandTemplateService,

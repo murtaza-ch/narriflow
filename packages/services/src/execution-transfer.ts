@@ -38,6 +38,8 @@ const contentTypes: Readonly<Record<string, readonly string[]>> = {
 };
 const invalid = (): never => { throw new ExecutorControlError("artifact_invalid"); };
 const pending = { disposition: "transfer_pending" };
+const granted = { disposition: "transfer_granted" };
+function isGranted(value: Prisma.JsonValue) { return value !== null && typeof value === "object" && !Array.isArray(value) && value.disposition === "transfer_granted"; }
 function isPending(value: Prisma.JsonValue) { return value !== null && typeof value === "object" && !Array.isArray(value) && value.disposition === "transfer_pending"; }
 function wireGrant(value: { url: string; headers: Record<string, string>; expiresAt: Date }) { return { ...value, expiresAt: value.expiresAt.toISOString() }; }
 function assignment(row: ExecutionArtifact): ExecutionMultipartAssignment {
@@ -63,7 +65,7 @@ export function createExecutionTransfer(options: Options) {
   async function readReceipt(verified: VerifiedExecutionRequest) {
     const found = await db.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId } } });
     if (found && found.requestHash !== verified.requestHash) throw new ExecutorControlError("replay_conflict");
-    return found && !isPending(found.disposition) ? executionTransferDispositionSchema.parse(found.disposition) : null;
+    return found && !isPending(found.disposition) && !isGranted(found.disposition) ? executionTransferDispositionSchema.parse(found.disposition) : null;
   }
   async function begin(verified: VerifiedExecutionRequest, command: ExecutionTransferCommand) {
     return db.$transaction(async tx => {
@@ -74,7 +76,7 @@ export function createExecutionTransfer(options: Options) {
       const prior = await tx.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId } } });
       if (prior) {
         if (prior.requestHash !== verified.requestHash) throw new ExecutorControlError("replay_conflict");
-        return isPending(prior.disposition) ? null : executionTransferDispositionSchema.parse(prior.disposition);
+        return isPending(prior.disposition) || isGranted(prior.disposition) ? null : executionTransferDispositionSchema.parse(prior.disposition);
       }
       await tx.executionInboxReceipt.create({ data: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId, requestHash: verified.requestHash,
         keyId: verified.metadata.keyId, disposition: pending, committedAt: epoch.now, expiresAt: new Date(epoch.now.getTime() + 7 * 24 * 60 * 60_000) } });
@@ -92,6 +94,16 @@ export function createExecutionTransfer(options: Options) {
         await tx.executionArtifact.update({ where: { id: current.id }, data: { grantExpiresAt: new Date(Math.max(current.grantExpiresAt.getTime(), ...expires)) } });
       }
       const where = { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId, requestHash: verified.requestHash };
+      if (["work_package", "source_read", "upload_parts", "source_range"].includes(value.disposition)) {
+        // Only canonical command identity is durable. Replays pass this fresh
+        // ownership boundary again and issue new grants; URLs and credentials
+        // never become seven-day inbox facts or revive a revoked owner.
+        await tx.executionInboxReceipt.updateMany({where:{...where,disposition:{equals:pending}},data:{disposition:granted}});
+        const receipt=await tx.executionInboxReceipt.findUniqueOrThrow({where:{audience_deliveryId:{audience:where.audience,deliveryId:where.deliveryId}}});
+        if(receipt.requestHash!==verified.requestHash)throw new ExecutorControlError("replay_conflict");
+        if(!isGranted(receipt.disposition))throw new ExecutorControlError("artifact_invalid");
+        return value;
+      }
       await tx.executionInboxReceipt.updateMany({ where: { ...where, disposition: { equals: pending } }, data: { disposition: value as Prisma.InputJsonValue } });
       const winner = await tx.executionInboxReceipt.findUniqueOrThrow({ where: { audience_deliveryId: { audience: where.audience, deliveryId: where.deliveryId } } });
       if (winner.requestHash !== verified.requestHash) throw new ExecutorControlError("replay_conflict");

@@ -1,0 +1,92 @@
+{
+  "runtime": "Cloudflare Workers Paid",
+  "version": "154aaf47-ee06-4a47-b4e4-9f59405b790b",
+  "accountEmail": "murtazach275@gmail.com",
+  "gates": {
+    "selection-locks": {
+      "httpStatus": 200,
+      "path": "selection-locks",
+      "accountId": "5359f28d385b8632c3abee12d1f5b011",
+      "hyperdriveId": "4dca48a8bdfd4cc3908d205082e36b82",
+      "idleHyperdriveQueried": false,
+      "result": {
+        "checks": [
+          "interactive_transactions",
+          "advisory_transaction_lock_exclusion",
+          "row_lock_skip_locked_exclusion",
+          "commit_visibility_and_lock_release",
+          "transaction_rollback",
+          "server_statement_timeout_sqlstate_57014",
+          "fresh_query_after_cancelled_transaction"
+        ],
+        "passed": 7,
+        "database": "isolated-platform-gates",
+        "completedAt": "2026-10-31T09:33:18.087Z"
+      }
+    },
+    "selection-memory": {
+      "httpStatus": 200,
+      "path": "selection-memory",
+      "accountId": "5359f28d385b8632c3abee12d1f5b011",
+      "hyperdriveId": null,
+      "idleHyperdriveQueried": false,
+      "result": {
+        "passed": true,
+        "oneIsolateInvocation": true,
+        "sourceSeconds": 10800,
+        "words": 28800,
+        "utterances": 960,
+        "privateInputBytes": 2761506,
+        "windows": 6,
+        "concurrentProviderWaits": 6,
+        "syntheticProviderHoldMs": 10000,
+        "wallMs": 13225,
+        "domainDatabasePortsSynthetic": true,
+        "realSelectionStorageInjected": true,
+        "externalProviderRequests": 0,
+        "objectsRemoved": 7,
+        "completedAt": "2026-10-31T09:33:32.789Z"
+      }
+    },
+    "selection-finalization": {
+      "httpStatus": 200,
+      "path": "selection-finalization",
+      "accountId": "5359f28d385b8632c3abee12d1f5b011",
+      "hyperdriveId": "4dca48a8bdfd4cc3908d205082e36b82",
+      "idleHyperdriveQueried": false,
+      "result": {
+        "passed": true,
+        "sourceSeconds": 10800,
+        "words": 28800,
+        "windowCount": 6,
+        "clips": 30,
+        "renders": 30,
+        "renderRuns": 1,
+        "terminalEvents": 1,
+        "parentUnleased": true,
+        "prepareMs": 23079,
+        "finalizeMs": 34877,
+        "authorityTransactionMs": [
+          23038,
+          10297
+        ],
+        "replayMs": 16244,
+        "providerRequests": 0,
+        "privateStorageSynthetic": true,
+        "schedulerConfirmationSynthetic": true,
+        "database": "isolated-platform-gates",
+        "completedAt": "2026-10-31T09:34:44.476Z"
+      }
+    }
+  },
+  "initialPolicy": {
+    "maxInFlightRequests": 4,
+    "maxEstimatedTokens": 240000,
+    "vendorQuotaClaim": false
+  },
+  "limits": [
+    "Provider and storage fixtures are explicitly identified by each result.",
+    "The measured longest authority transaction was23038ms under the30000ms timeout; high-volume p95 is not established.",
+    "Free-plan CPU failures were not counted as passing proof."
+  ]
+}

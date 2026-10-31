@@ -381,7 +381,7 @@ export {
 	type GeneratedMediaJobStatus,
 	type GeneratedMediaUsageStatus,
 } from "./generated-media";
-export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-prisma-store";
+export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-retention";
 export {
 	socialService,
 	SocialService,
@@ -696,6 +696,15 @@ export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
 
+export * from "./local-fetch-device";
+
+export * from "./source-fetch-capability";
+export * from "./generated-media-execution";
+export * from "./generated-media-control";
+
+export * from "./publication-dispatch";
+export * from "./notification-dispatch";
+export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash } from "./notification-identity";
 export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
 
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";

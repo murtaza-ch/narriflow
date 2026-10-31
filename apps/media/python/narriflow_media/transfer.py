@@ -26,7 +26,7 @@ MIME = re.compile(r'[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*')
 ROLES = {'source_audio', 'source_video', 'layout_evidence', 'render_variant', 'render_outcome', 'clip_preview', 'preview_peaks', 'probe', 'thumbnail',
          'export_bundle', 'dub_mix', 'validated_font', 'validated_asset', 'outbound_receipt'}
 FUNCTIONS = {'fetch_source', 'pin_source', 'prepare_clip', 'render_group', 'probe_extract', 'thumbnail',
-             'export_bundle', 'dub_mix', 'outbound_delivery', 'asset_validation'}
+             'export_bundle', 'dub_mix', 'outbound_delivery', 'asset_validation', 'generated_image', 'publication'}
 
 
 def _invalid():

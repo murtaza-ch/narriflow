@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { publicationNativeCommandSchema, publicationNativeReplySchema } from "./publication-execution";
 import { clipRenderCaptionDiagnosticsSchema } from "./clip";
 import { mediaFactsSchema, sourceProbeSchema } from "./source-probe";
 
@@ -123,6 +124,7 @@ export const executionCommandSchema = z.discriminatedUnion("action", [
     leaseSeconds: z.number().int().positive().max(EXECUTOR_MAX_LEASE_SECONDS),
   }),
   z.strictObject({ action: z.literal("process-start"), ...ownedCommand }),
+  z.strictObject({ action: z.literal("publication-command"), ...ownedCommand, command: publicationNativeCommandSchema }),
   z.strictObject({ action: z.literal("read-disposition"), ...ownedCommand }),
   z.strictObject({ action: z.literal("commit-artifact"), ...ownedCommand, artifact: executionArtifactSchema }),
   z.strictObject({ action: z.literal("fail"), ...ownedCommand, failureCode, retryable: z.boolean() }),
@@ -175,6 +177,7 @@ export const executionDispositionSchema = z.discriminatedUnion("disposition", [
   z.strictObject({ disposition: z.literal("started") }),
   z.strictObject({ disposition: z.literal("committed"), artifactId: z.string().uuid() }),
   z.strictObject({ disposition: z.literal("progress_recorded") }),
+  z.strictObject({ disposition: z.literal("publication_recorded"), result: publicationNativeReplySchema }),
   z.strictObject({ disposition: z.literal("released"), dueAt: instant.nullable() }),
   z.strictObject({ disposition: z.literal("retry_due"), dueAt: instant }),
   z.strictObject({ disposition: z.literal("completed") }),
@@ -284,7 +287,7 @@ export const executionInvocationSchema = z.strictObject({
 });
 export const executionMediaFunctionSchema = z.enum([
   "fetch_source", "pin_source", "prepare_clip", "render_group", "probe_extract", "thumbnail",
-  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation", "generated_image",
+  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation", "generated_image", "publication",
 ]);
 const bridgeInvocation = executionInvocationSchema.shape;
 export const modalBridgeCommandSchema = z.discriminatedUnion("action", [

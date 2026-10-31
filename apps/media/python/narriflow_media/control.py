@@ -17,7 +17,7 @@ from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 from .signing import COMMAND_MAX_BYTES, sign_execution_request
 
@@ -123,13 +123,35 @@ def _disposition(value: object):
         'already_owned': {'leaseExpiresAt'}, 'busy': {'leaseExpiresAt'}, 'renewed': {'leaseExpiresAt'},
         'started': set(), 'committed': {'artifactId'}, 'progress_recorded': set(), 'released': {'dueAt'},
         'retry_due': {'dueAt'}, 'completed': set(), 'failed': {'failureCode'}, 'cancelled': set(),
-        'expired': set(), 'superseded': set(),
+        'expired': set(), 'superseded': set(), 'publication_recorded': {'result'},
     }
     if not isinstance(kind, str) or kind not in fields or set(value) != fields[kind] | {'disposition'}:
         raise ExecutionControlError('execution_response_invalid')
     for name in ('serverTime', 'leaseExpiresAt', 'operationDeadlineAt', 'dueAt'):
         if name in value and value[name] is not None:
             _instant(value[name])
+    if kind == 'publication_recorded':
+        result = value['result']
+        if not isinstance(result,dict):
+            raise ExecutionControlError('execution_response_invalid')
+        if result.get('kind') == 'recorded':
+            if set(result) != {'kind'}:
+                raise ExecutionControlError('execution_response_invalid')
+        elif result.get('kind') == 'settled':
+            required={'kind','outcome','attemptId','socialPostId'}
+            if (not required <= set(result) <= required | {'nextActionAt','nextAttemptId','code'} or
+                    result['outcome'] not in {'posted','inbox_delivered','failed','needs_attention','processing','reconciling','retry_scheduled','interrupted'}):
+                raise ExecutionControlError('execution_response_invalid')
+            try:
+                for name in ('attemptId','socialPostId','nextAttemptId'):
+                    if name in result and (not isinstance(result[name],str) or str(UUID(result[name])) != result[name]):raise ValueError()
+            except ValueError:
+                raise ExecutionControlError('execution_response_invalid') from None
+            if 'nextActionAt' in result:_instant(result['nextActionAt'])
+            if 'code' in result and (not isinstance(result['code'],str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,99}',result['code'])):
+                raise ExecutionControlError('execution_response_invalid')
+        else:
+            raise ExecutionControlError('execution_response_invalid')
     if kind == 'acquired':
         if (not isinstance(value['fence'], dict) or _instant(value['leaseExpiresAt']) <= _instant(value['serverTime'])
                 or _instant(value['leaseExpiresAt']) > _instant(value['operationDeadlineAt'])):
@@ -140,7 +162,8 @@ def _disposition(value: object):
 class ExecutionControlClient:
     def __init__(self, *, origin: str, key_id: str, key: bytes,
                  transport: ControlTransport = _https, clock: Callable[[], float] = time.time,
-                 timeout_seconds: float = 10, max_attempts: int = 3, retry_delay_seconds: float = 0.25):
+                 timeout_seconds: float = 10, max_attempts: int = 3, retry_delay_seconds: float = 0.25,
+                 device_session_token: str | None = None):
         try:
             parsed = urlsplit(origin)
             if (parsed.scheme != 'https' or not parsed.hostname or parsed.path not in {'', '/'} or parsed.query
@@ -152,6 +175,9 @@ class ExecutionControlClient:
                 raise ValueError()
             if not isinstance(key, bytes) or not 32 <= len(key) <= 64:
                 raise ValueError()
+            if device_session_token is not None and (not isinstance(device_session_token, str) or not 1 <= len(device_session_token) <= 2048
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', device_session_token)):
+                raise ValueError()
             if not 0 < timeout_seconds <= 10 or type(max_attempts) is not int or not 1 <= max_attempts <= 3 or not 0 <= retry_delay_seconds <= 1:
                 raise ValueError()
         except (ValueError, TypeError):
@@ -159,23 +185,30 @@ class ExecutionControlClient:
         self._origin, self._key_id, self._key = origin.rstrip('/'), key_id, key
         self._transport, self._clock = transport, clock
         self._timeout, self._attempts, self._delay = timeout_seconds, max_attempts, retry_delay_seconds
+        self._device_session_token = device_session_token
 
     def command(self, command: Mapping[str, Any], *, deadline_monotonic: float | None = None) -> CommandResult:
         return self._post(TARGET, command, _disposition, deadline_monotonic=deadline_monotonic)
 
     def _post(self, target: str, command: Mapping[str, Any], parse: Callable[[object], Mapping[str, Any]],
               *, deadline_monotonic: float | None = None) -> CommandResult:
+        if self._device_session_token is not None:
+            if target not in {'/api/execution/command', '/api/execution/transfer'}:
+                raise ExecutionControlError('execution_client_invalid')
+            target = target.replace('/api/execution/', '/api/dev-device/execution/')
         try:
             body = json.dumps(command, separators=(',', ':'), sort_keys=True, allow_nan=False).encode()
             if len(body) > COMMAND_MAX_BYTES:
                 raise ValueError()
         except (ValueError, TypeError, UnicodeError):
             raise ExecutionControlError('execution_command_invalid') from None
-        signature = sign_execution_request(key_id=self._key_id, key=self._key, audience='executor-control',
+        signature = sign_execution_request(key_id=self._key_id, key=self._key, audience='dev-device' if self._device_session_token else 'executor-control',
                                            method='POST', target=target, body=body,
                                            timestamp=int(self._clock()), delivery_id=str(uuid4()))
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json', 'Cache-Control': 'no-store',
                    'X-Execution-Signature': json.dumps(signature, separators=(',', ':'))}
+        if self._device_session_token is not None:
+            headers['X-Local-Fetch-Session'] = self._device_session_token
         # A delivery's exact bytes, signature timestamp and ID never change on
         # a transport retry. The whole sequence is shorter than the 300s window.
         initial_mono, initial_wall = time.monotonic(), self._clock()
@@ -272,7 +305,7 @@ class ExecutorSession:
             raise ExecutionControlError('execution_authority_lost')
 
     def command(self, action: str, **fields: Any) -> CommandResult:
-        if action not in {'read-disposition', 'commit-artifact', 'fail', 'release', 'progress'} or {'fence', 'action'} & fields.keys():
+        if action not in {'read-disposition', 'commit-artifact', 'fail', 'release', 'progress', 'publication-command'} or {'fence', 'action'} & fields.keys():
             raise ExecutionControlError('execution_command_invalid')
         # Auditing never restores permission and remains possible after local
         # cancellation or an uncertain acknowledgement. Mutations require it.

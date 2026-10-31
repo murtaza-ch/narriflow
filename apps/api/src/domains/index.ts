@@ -21,6 +21,7 @@ import { reviewsAdmission } from "./reviews/admission";
 import { sessionAdmission } from "./session/admission";
 import { studioAdmission } from "./studio/admission";
 import { workspaceAdmission } from "./workspace/admission";
+import { localDeviceAdmission } from "./execution/local-device";
 
 /** A chained domain app of any shape. Concrete types are exported per domain from `src/types`. */
 export type AnyRoutes = Hono<ApiEnv, any, any>;
@@ -89,5 +90,6 @@ export const ADMISSION_TABLES = {
   progress: progressAdmission,
   progressSocket: progressSocketAdmission,
   execution: executionAdmission,
+  localDevice: localDeviceAdmission,
   rest: restAdmission,
 } as const satisfies Record<string, AdmissionTable>;

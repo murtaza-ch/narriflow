@@ -242,6 +242,7 @@ describe("retry, resume and metadata", () => {
       brandProfileService: { list, getApplicableDefaultId: async () => "profile-1" } as never,
       projectService: { getUsageSummary: async () => ({ remainingCredits: 5 }) } as never,
       recipeService: { list: async () => [{ id: "recipe-1" }] } as never,
+      youtubeImportCapability: async () => ({ available: false, reason: "youtube_unavailable", deviceSetupAvailable: false }),
     });
     const response = await routes.request("/api/ingest/configuration", { headers: signedIn });
     expect(response.status).toBe(200);
@@ -250,6 +251,7 @@ describe("retry, resume and metadata", () => {
       brandProfiles: { items: [{ id: "profile-1" }], defaultId: "profile-1" },
       usageSummary: { remainingCredits: 5 },
       recipes: [{ id: "recipe-1" }],
+      youtubeImport: { available: false, reason: "youtube_unavailable", deviceSetupAvailable: false },
     });
     expect(list.mock.calls[0]?.[1]).toEqual({ limit: 100, includeDeleted: false });
   });

@@ -21,8 +21,8 @@ testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
   "execution-ledger", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
-  "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "modal-dispatch", "progress-outbox",
+  "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "modal-dispatch", "progress-outbox",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
 
@@ -45,6 +45,11 @@ try {
     ALLOW_SERVERLESS_DB_TESTS: "1", ALLOW_EXECUTION_CONTROL_DB_TESTS: "1", ALLOW_EXECUTION_TRANSFER_DB_TESTS: "1", ALLOW_SOURCE_AUDIO_DB_TESTS: "1",
     SERVERLESS_TEST_DATABASE_URL: testUrl.toString(),
     SERVERLESS_TEST_DATABASE_SCHEMA: schema,
+    ...(tests.includes("packages/services/src/generation-usage.db.test.ts") ? {
+      ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
+      VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),
+      VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
+    } : {}),
   });
 } finally {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

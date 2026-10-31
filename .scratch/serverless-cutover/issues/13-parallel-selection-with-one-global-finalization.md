@@ -37,4 +37,25 @@ The parent controller now verifies every completed result against frozen private
 
 The production factory now constructs fresh scoped database, guidance, finalization, provider and private storage ports. It retains the original model/reasoning/output settings and requires explicit `OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS` and `OPENAI_SELECTION_MAX_ESTIMATED_TOKENS`. Its R2 adapter uses the Worker fetch handler, conditional writes, measured HEAD proof, exact quoted ETag/Range/If-Match, streaming byte limits and SHA verification. Sanitized provider limit headers can be observed without keys or prompt/result text. After merging current integration, all 134 migrations plus the full execution PostgreSQL gate pass 111 tests/653 assertions; services typechecking and focused Biome checks pass.
 
-Workflow registry wiring and runtime acceptance remain in progress. Before completion, measure a representative three-hour/six-window input at the explicitly configured provider concurrency in actual Workerd, and measure global finalization against deployed Hyperdrive within the two-minute step budget. The current shared capsule deliberately remains unsharded pending that measurement. No paid provider execution or deployed selection performance is claimed. This ticket is not complete.
+The [primary local Workerd memory measurement](../evidence/selection-memory-20261031.md) now covers the representative three-hour/six-window input at one/two/four/six concurrent executions, using the real controller/provider serialization/S3 adapter and synthetic database ports. All cases complete. Both used and allocated heap combinations are recorded; local success does not certify the edge limit. The fixed deployed one-invocation memory gate and isolated Hyperdrive finalization gate are committed and their guard/cleanup fixture is verified locally. Workflow registry wiring and deployed acceptance are owned by integration. Explicit launch concurrency and deployed global-finalization timing within the two-minute step budget remain required. No paid provider execution or deployed selection performance is claimed here. This ticket is not complete.
+
+The [deployed fixed gates](../evidence/selection-deployed-gates-20261031.json) now pass
+on the user's verified paid Cloudflare account with an explicit thirty-second CPU
+budget. The single-invocation edge gate runs all six windows over a three-hour,
+28,800-word, 2,761,506-byte capsule with real private storage and ten-second synthetic
+provider waits. It completes in 13,225 ms and removes all seven fixture objects.
+The separate isolated Hyperdrive gate passes seven transaction/lock/cancellation
+checks and globally finalizes thirty Clips, thirty renders, one unleased render
+parent and one terminal event. Preparation takes 23,079 ms; finalization takes
+34,877 ms overall and its authority transaction takes 23,038 ms; replay takes
+16,244 ms. Each command remains within the two-minute Workflow step budget.
+
+The authority transaction has about seven seconds of margin below its thirty-second
+timeout. That measured margin belongs in ticket22 capacity evidence. The initial
+explicit policy is four in-flight requests and 240,000 estimated tokens; it is an
+application policy, not a claim about provider account quota. The edge gate uses
+synthetic database ports; the Hyperdrive finalization gate uses synthetic private
+storage and scheduler confirmations. Neither sends a paid provider request. All
+ticket13 implementation requirements and its specific acceptance checks now pass.
+The tracker still has integration dependencies03/05 claimed, so ticket13 remains
+claimed until their acceptance is closed by integration.

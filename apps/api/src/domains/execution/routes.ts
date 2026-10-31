@@ -12,16 +12,17 @@ import { executionAdmission } from "./admission";
 import type { ApiWorkerBindings } from "../../worker-bindings";
 
 export interface ExecutionRouteDependencies {
-  keyRing(): ReadonlyMap<string, Uint8Array>;
+  keyRing(request?: Request, bindings?: ApiWorkerBindings): ReadonlyMap<string, Uint8Array> | Promise<ReadonlyMap<string, Uint8Array>>;
+  audience?: "executor-control" | "dev-device";
   nowSeconds(): number;
   /** Construct database/domain work only after the signature and command have passed. */
-  execute(command: ExecutionCommand, verifiedRequest: VerifiedExecutionRequest, bindings?: ApiWorkerBindings): Promise<ExecutionDisposition>;
-  transfer(command: ExecutionTransferCommand, verifiedRequest: VerifiedExecutionRequest, bindings?: ApiWorkerBindings): Promise<ExecutionTransferDisposition>;
+  execute(command: ExecutionCommand, verifiedRequest: VerifiedExecutionRequest, bindings?: ApiWorkerBindings, request?: Request): Promise<ExecutionDisposition>;
+  transfer(command: ExecutionTransferCommand, verifiedRequest: VerifiedExecutionRequest, bindings?: ApiWorkerBindings, request?: Request): Promise<ExecutionTransferDisposition>;
 }
 
-class CommandTooLarge extends Error {}
-async function readCommandBody(request: Request) {
-  if (Number(request.headers.get("Content-Length")) > EXECUTION_COMMAND_MAX_BYTES) throw new CommandTooLarge();
+export class CommandTooLarge extends Error {}
+export async function readCommandBody(request: Request, maxBytes = EXECUTION_COMMAND_MAX_BYTES) {
+  if (Number(request.headers.get("Content-Length")) > maxBytes) throw new CommandTooLarge();
   const reader = request.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
@@ -31,7 +32,7 @@ async function readCommandBody(request: Request) {
       const part = await reader.read();
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > EXECUTION_COMMAND_MAX_BYTES) { await reader.cancel(); throw new CommandTooLarge(); }
+      if (size > maxBytes) { await reader.cancel(); throw new CommandTooLarge(); }
       chunks.push(part.value);
     }
   } finally { reader.releaseLock(); }
@@ -41,8 +42,8 @@ async function readCommandBody(request: Request) {
   return body;
 }
 
-export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
-  const handle = (kind: "command" | "transfer") => async (c: Context) => {
+export function executionCommandHandler(deps: ExecutionRouteDependencies, kind: "command" | "transfer") {
+  return async (c: Context) => {
     const serverTime = () => new Date(deps.nowSeconds() * 1_000).toISOString();
     const refuse = (status: number, code: string, message: string) => markEnvelope(c, jsonError(status, code, message, requestIdOf(c), {
       "X-Execution-Server-Time": serverTime(),
@@ -55,7 +56,7 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       let signature: unknown;
       try { signature = JSON.parse(encoded); } catch { return refuse(401, "execution_signature_invalid", "Execution signature is invalid"); }
       const url = new URL(c.req.url);
-      const verified = await verifyExecutionRequest({ signature, keyRing: deps.keyRing(), audience: "executor-control",
+      const verified = await verifyExecutionRequest({ signature, keyRing: await deps.keyRing(c.req.raw, c.env as ApiWorkerBindings), audience: deps.audience ?? "executor-control",
         method: c.req.method, target: url.pathname + url.search, body, nowSeconds: deps.nowSeconds() });
       let parsed: unknown;
       try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
@@ -63,8 +64,8 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       const command = kind === "command" ? executionCommandSchema.safeParse(parsed) : executionTransferCommandSchema.safeParse(parsed);
       if (!command.success) return refuse(400, "execution_command_invalid", "Execution command is invalid");
       const disposition = kind === "command"
-        ? executionDispositionSchema.parse(await deps.execute(command.data as ExecutionCommand, verified, c.env as ApiWorkerBindings))
-        : executionTransferDispositionSchema.parse(await deps.transfer(command.data as ExecutionTransferCommand, verified, c.env as ApiWorkerBindings));
+        ? executionDispositionSchema.parse(await deps.execute(command.data as ExecutionCommand, verified, c.env as ApiWorkerBindings, c.req.raw))
+        : executionTransferDispositionSchema.parse(await deps.transfer(command.data as ExecutionTransferCommand, verified, c.env as ApiWorkerBindings, c.req.raw));
       c.header("X-Execution-Server-Time", serverTime());
       return c.json(disposition);
     } catch (error) {
@@ -82,7 +83,9 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       throw error;
     }
   };
+}
+export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
   return createRouteApp(executionAdmission)
-    .post("/execution/command", handle("command"))
-    .post("/execution/transfer", handle("transfer"));
+    .post("/execution/command", executionCommandHandler(deps, "command"))
+    .post("/execution/transfer", executionCommandHandler(deps, "transfer"));
 }

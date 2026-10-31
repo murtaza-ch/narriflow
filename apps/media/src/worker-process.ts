@@ -269,6 +269,7 @@ export async function inspectAudioTimestampGaps(
     signal: AbortSignal;
     deadlineMs: number;
     diagnose?(event: WorkerProcessDiagnostic): void;
+    localOnly?: boolean;
   },
 ): Promise<AudioTimestampGaps | null> {
   const audio = request.inspection.facts?.audios[0];

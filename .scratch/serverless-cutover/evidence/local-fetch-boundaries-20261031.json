@@ -1,0 +1,31 @@
+{
+  "implemented": [
+    "two-hour device HMAC session scoped to Workspace actor epoch and HTTPS origin",
+    "one-use30second WebSocket tickets and hibernating mailbox",
+    "idle auto-pong without PostgreSQL binding",
+    "membership revocation and foreign Workspace command refusal",
+    "native client distinct dev-device audience and paths",
+    "laptop pinned-runtime preflight before presence; max2 native processes and bounded reference queue",
+    "one paged reconciliation per connection; no SQL polling",
+    "offline admission refusal; production device routing disabled"
+  ],
+  "verification": {
+    "workerdChecks": 5,
+    "httpAndServiceTests": 25,
+    "httpAndServiceAssertions": 100,
+    "nativeDeviceTests": 2,
+    "nativeControlRegressionTests": 10,
+    "routeInventory": {
+      "routes": 296,
+      "protocolRoutes": 45,
+      "problems": 0
+    },
+    "workerDryBuildAndNativeAudit": "pass",
+    "mediaAndWebTypecheck": "pass"
+  },
+  "pending": [
+    "deployed Workflow through Mac YouTube fetch",
+    "integrated sleep crash expiry cancellation and stale upload gates"
+  ],
+  "completed": false
+}

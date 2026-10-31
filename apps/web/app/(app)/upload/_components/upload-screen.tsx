@@ -2,7 +2,7 @@
 
 import { Box, Stack, Text } from "@chakra-ui/react";
 import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
-import { ingestConfigurationQueryOptions, linkResumeQueryOptions } from "@narriflow/api-client/ingest";
+import { createIngestActions, ingestConfigurationQueryOptions, linkResumeQueryOptions } from "@narriflow/api-client/ingest";
 import { Button } from "@narriflow/ui/components/button";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
@@ -63,6 +63,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
     openedWith.projectId ? { kind: "pending" } : { kind: "fresh" },
   );
   const [startedProjectId, setStartedProjectId] = useState<string | null>(null);
+  const [deviceSessionState, setDeviceSessionState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const processingProjectId = decision.kind === "processing" ? decision.projectId : startedProjectId;
   // Nothing to resume starts over, as the old redirect to /upload did: the link's other settings go too.
   const entry = decision.kind === "restart" ? FRESH_ENTRY : openedWith;
@@ -136,10 +137,22 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
     return <UploadLoading />;
   }
 
-  const { brandTemplates, brandProfiles, usageSummary, recipes } = configuration.data;
+  const { brandTemplates, brandProfiles, usageSummary, recipes, youtubeImport } = configuration.data;
   return (
     <IntakeProvider scope={scope}>
       <Stack gap={{ base: "6", md: "7" }} maxW="1080px" mx="auto">
+        {youtubeImport.deviceSetupAvailable && !processingProjectId && <Box>
+          <Button size="sm" variant="subtle" disabled={deviceSessionState === "saving"} onClick={async () => {
+            setDeviceSessionState("saving");
+            try {
+              const session = await createIngestActions(transport, scope).issueLocalFetchSession();
+              const url = URL.createObjectURL(new Blob([JSON.stringify(session)], { type: "application/json" }));
+              const link = document.createElement("a"); link.href = url; link.download = "narriflow-local-fetch-device.json"; link.click(); URL.revokeObjectURL(url);
+              setDeviceSessionState("saved");
+            } catch { setDeviceSessionState("failed"); }
+          }}>Create development fetch session</Button>
+          <Text fontSize="sm" color="fg.muted">{deviceSessionState === "saved" ? "Session file saved. Start the development fetch agent with this file, then refresh this page." : deviceSessionState === "failed" ? "Device session could not be created. Try again." : "A session lasts two hours and replaces the connected development device."}</Text>
+        </Box>}
         <Box animation="fade-up" style={{ animationDelay: "60ms" }} animationFillMode="backwards">
           {processingProjectId ? (
             <ImportProgress projectId={processingProjectId} />
@@ -153,6 +166,8 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
               initialMode={entry.mode}
               resumeData={decision.kind === "resume" ? decision.data : null}
               usageSummary={usageSummary}
+              youtubeImportAvailable={youtubeImport.available}
+              youtubeImportUnavailableMessage={youtubeImport.reason === "local_fetch_offline" ? "Your development fetch device is offline. Connect it or upload the video instead." : "YouTube import is unavailable. Upload the video instead."}
               sourcePickers={SOURCE_PICKERS}
               onGenerating={setStartedProjectId}
             />

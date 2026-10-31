@@ -6,6 +6,8 @@ import { getThumbnailFrameExecution } from "@narriflow/services/thumbnail-frame-
 import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runtime";
 import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
 import { getClipSelectionControl } from "@narriflow/services/clip-selection-runtime";
+import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
+import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
@@ -25,6 +27,7 @@ function nativeDomain(reference: ExecutionDispatchReference) {
   if (reference.subject.kind === "thumbnail_frame") return getThumbnailFrameExecution();
   if (reference.subject.kind === "outbound_probe") return getOutboundProbeService();
   if (reference.subject.kind === "outbound_delivery") return getOutboundDeliveryService();
+  if (reference.subject.kind === "generated_media") return getGeneratedMediaExecution();
   throw new NonRetryableError("unsupported_native_subject");
 }
 
@@ -36,6 +39,14 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (!database) throw new Error("Native driver requires a database scope");
     const record = await readExecutionDispatch(database, command.reference.dispatchId);
     if (!record || JSON.stringify(record.reference) !== JSON.stringify(command.reference)) return { type: "complete", disposition: "superseded" };
+    if (command.reference.kind === "import_pipeline" && command.reference.subject.kind === "ingest_job") {
+      const handoff = await getIngestJobLifecycle().handoffGeneration(command.reference);
+      await deliverExecutionDispatches(handoff.dispatchIds);
+      if (handoff.kind === "deferred") {
+        if (!handoff.retryAt) throw new Error("ingest_handoff_retry_missing");
+        return { type: "sleep", until: handoff.retryAt.toISOString() };
+      }
+    }
     if (record.deadlineKind) {
       if (record.deadlineKind !== "lease" && record.deadlineKind !== "operation") throw new NonRetryableError("unsupported_native_deadline");
       if (!record.observedDeadlineAt) throw new NonRetryableError("missing_native_deadline");
@@ -111,13 +122,21 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     const record = await readExecutionDispatch(database, reference.dispatchId);
     const epoch = await database.executionEpoch.findUnique({ where: { id: 1 } });
     if (!record || JSON.stringify(record.reference) !== JSON.stringify(reference) || epoch?.epoch !== reference.deploymentEpoch) return { type: "complete", disposition: "superseded" };
+    if (!await isCurrentNotificationTarget(database, reference)) return { type: "complete", disposition: "superseded" };
     const service = getOutboundDeliveryService();
     if (reference.subject.kind === "completion_callback") {
-      await service.prepareCompletion(reference.subject.id);
+      await service.prepareCompletion(reference.subject.id, reference);
       return { type: "complete", disposition: "terminal" };
     }
-    const result = await service.prepareSubscription(reference.subject.id);
+    const result = await service.prepareSubscription(reference.subject.id, reference);
     return result.kind === "sleep" ? { type: "sleep", until: result.dueAt.toISOString() } : { type: "complete", disposition: "terminal" };
+  };
+  const notificationEvents: WorkflowCommandHandler = async ({ reference }) => {
+    const database = getPrismaClient();
+    if (!database) throw new Error("Notification dispatcher requires a database scope");
+    if (reference.subject.kind === "maintenance" && !reference.subject.id.startsWith("wn1.")) throw new NonRetryableError("unsupported_notification_maintenance");
+    await createWorkspaceNotificationDispatcher({ database, deliver: deliverExecutionDispatches }).dispatch(reference);
+    return { type: "complete", disposition: "terminal" };
   };
   const progress: WorkflowCommandHandler = async ({ reference }) => {
     const outcome = await getExecutionDispatch(createWorkerExecutionScheduler(bindings)).deliver(reference.dispatchId);
@@ -128,6 +147,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   };
   return { project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native },
-    operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, completion_callback: notification, webhook_subscription: notification } };
+    operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, ingest_job: native,
+      workflow_run: workflow, clip_selection_window: selectionWindow, completion_callback: notification, webhook_subscription: notification,
+      workspace_event: notificationEvents, maintenance: notificationEvents } };
 }
