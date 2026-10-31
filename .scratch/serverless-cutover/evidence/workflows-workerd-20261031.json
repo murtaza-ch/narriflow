@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-31",
+  "runtime": "local workerd with actual Cloudflare Workflows engine and isolated Neon gate PostgreSQL",
+  "passed": 8,
+  "failed": 0,
+  "checks": [
+    "confirmed_creation_and_idle_wait_zero_sql",
+    "fresh_sql_scope_after_durable_event_wait",
+    "events_before_wait_are_buffered_and_duplicates_do_not_restart_completed_command",
+    "wait_timeout_rereads_ledger_in_fresh_scope",
+    "unsupported_subject_fails_without_sql_or_fake_completion",
+    "cross_subject_wake_rejected_before_next_sql_command",
+    "postcommit_progress_continuation_workflow_revokes_online_second_page",
+    "uncertain_progress_ack_registers_maintenance_retry_and_eventually_checkpoints"
+  ],
+  "observations": [
+    "Every query step opens a distinct Prisma client and records disposal before the durable wait. No PostgreSQL query occurs while parked.",
+    "The101Project fixture opens a socket on the last page, then the actual postcommit path registers Maintenance and revokes that socket through ProjectProgress. Both obligations acknowledge.",
+    "An injected lost DO acknowledgement retains the obligation, registers a Maintenance retry and eventually acknowledges the same obligation.",
+    "The test observer waits on platform instance status and reads PostgreSQL acknowledgement once, without PostgreSQL polling.",
+    "Unsupported/cross-subject negative cases intentionally emit NonRetryableError."
+  ],
+  "fixtureCleanup": "Tagged users/workspaces/projects/dispatch rows deleted; no epoch mutation.",
+  "limitations": [
+    "No Cloudflare account deployment in these local tests. Protected deployed Workflows wait/timeout and DO hibernation/close gates remain required.",
+    "Business Workflow handlers are intentionally absent and explicitly fail until domain owners install them. This is infrastructure proof, not full ticket14 acceptance."
+  ],
+  "primarySources": [
+    "https://developers.cloudflare.com/workflows/build/events-and-parameters/",
+    "https://developers.cloudflare.com/workflows/build/rules-of-workflows/",
+    "https://github.com/cloudflare/docs-examples/blob/main/workflows/waitForEvent/workflow/src/index.ts"
+  ],
+  "deployedRisksToExercise": [
+    "https://github.com/cloudflare/workers-sdk/issues/16297",
+    "https://github.com/cloudflare/workerd/issues/6925"
+  ],
+  "sha256": {
+    "apps/api/src/workflows/protocol.ts": "b434f92f192b64b94578059f1ba6b9c864099cd4f6309e089c477ba5551561bc",
+    "apps/api/src/workflows/scoped-workflow.ts": "580fad4c5f4cd9f50c49f1a2c796119038890c7a6e809f97999ffc61457edcea",
+    "apps/api/src/workflows/scheduler.ts": "6f8b2db6ef082106e19d1c2eac7d155880f132369bbbdb2e9f7d7d9085205c47",
+    "apps/api/src/workflows/domain-runtime.ts": "70d3892321d52c9815714143c358eaf4cc3b29fd033657a16207e1e534099489",
+    "apps/api/scripts/gates/workflow-runtime-probe.ts": "4a75168be8e34bf1c074a528cf476eff8eae779dccc2ec6c43e79acee4bb0ce0",
+    "apps/api/scripts/run-workflow-runtime-gates.ts": "0137f093819e5d70e79a2795e514426bd019869d58c973740e0e3b4644e3d6ac",
+    "apps/api/src/worker-services.ts": "a3a5685418fbb5111512ede135c2af019274f86af1b11c4d97733c20a8617cbe",
+    "packages/services/src/progress-delivery.ts": "b026f5c6e3d6043369097353d7b8cd7cd87e4390c5b90ef20c461b7e891d009f",
+    "packages/services/src/progress-outbox.ts": "24274559d4300eba79d93d1d67240fa721823d1b7d5c086617fae0075903c3ea"
+  }
+}

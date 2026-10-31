@@ -27,6 +27,7 @@
     "audit:worker": "bun scripts/audit-worker-bundle.ts",
     "test:mcp:workerd": "node --experimental-strip-types scripts/run-mcp-runtime-gates.ts",
     "test:progress:workerd": "node --experimental-strip-types scripts/run-progress-runtime-gates.ts",
+    "test:workflows:workerd": "node --experimental-strip-types scripts/run-workflow-runtime-gates.ts",
     "test:storage:workerd": "node --experimental-strip-types scripts/run-storage-runtime-gates.ts"
   },
   "dependencies": {
