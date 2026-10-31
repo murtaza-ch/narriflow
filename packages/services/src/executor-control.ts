@@ -4,6 +4,7 @@ import {
   type ExecutionCommand, type ExecutionDispatchReference, type ExecutionDisposition, type ExecutionSubjectKind,
 } from "@narriflow/validators/execution";
 import type { VerifiedExecutionRequest } from "./execution-signature";
+import { flushProjectProgressDrains } from "./progress-outbox";
 import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult, ExecutorExpiryResult } from "./executor-domain-control";
 
 type Tx = Prisma.TransactionClient;
@@ -142,6 +143,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
 
       const record = async (value: ExecutionDisposition, now: Date) => {
         const disposition = executionDispositionSchema.parse(value);
+        wakeDispatchIds.push(...await flushProjectProgressDrains(tx));
         const uniqueWakes = [...new Set(wakeDispatchIds)];
         if (uniqueWakes.length > 128) throw new ExecutorControlError("invalid_reference");
         await tx.executionInboxReceipt.create({ data: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId,
@@ -280,7 +282,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       }
       const record = async (outcome: ExecutorExpiryResult, now: Date) => {
         if (outcome.kind === "sleep") return { outcome, dispatchIds: [] };
-        const dispatchIds = [...new Set(outcome.dispatchIds ?? [])];
+        const dispatchIds = [...new Set([...(outcome.dispatchIds ?? []), ...await flushProjectProgressDrains(tx)])];
         if (dispatchIds.length > 128) throw new ExecutorControlError("invalid_reference");
         await tx.executionInboxReceipt.create({ data: { ...receiptKey, requestHash, keyId: "internal-watchdog",
           disposition: { kind: outcome.kind }, wakeDispatchIds: dispatchIds, committedAt: now, expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60_000) } });

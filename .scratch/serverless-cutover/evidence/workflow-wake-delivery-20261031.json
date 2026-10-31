@@ -1,0 +1,25 @@
+{
+  "runtime": "workerd-workflows",
+  "database": "isolated-direct-neon",
+  "checks": [
+    "confirmed_creation_and_idle_wait_zero_sql",
+    "fresh_sql_scope_after_durable_event_wait",
+    "events_before_wait_are_buffered_and_duplicates_do_not_restart_completed_command",
+    "wait_timeout_rereads_ledger_in_fresh_scope",
+    "unsupported_subject_fails_without_sql_or_fake_completion",
+    "cross_subject_wake_rejected_before_next_sql_command",
+    "late_wake_after_closed_parent_runs_distinct_fresh_scope_continuation",
+    "deadline_has_independent_durable_instance_and_duplicate_registration_does_not_restart",
+    "postcommit_progress_continuation_workflow_revokes_online_second_page"
+  ],
+  "passed": 9,
+  "status": "passed_isolated_runtime_gate",
+  "shared_development_database_changed": false,
+  "limitation": "The candidate business handlers and final cutover remain incomplete; these checks prove Workflow transport and scope behavior only.",
+  "local_database_progress_gate": {
+    "tests": 84,
+    "assertions": 452,
+    "suites": 13,
+    "log": "/tmp/narriflow-serverless-gates/progress-catchup-all.log"
+  }
+}

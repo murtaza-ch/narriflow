@@ -8,6 +8,18 @@ import { createWorkerExecutionScheduler } from "./scheduler";
 const reference: ExecutionDispatchReference = { dispatchId: crypto.randomUUID(), kind: "operation_driver", subject: { kind: "native_validation", id: crypto.randomUUID() }, deploymentEpoch: 1, generation: 1, inputHash: "a".repeat(64) };
 async function delivery() { return { reference, ...await executionDispatchIdentity(reference), dueAt: new Date(), mode: "wake" as const, wakeKind: "native.completed", deadlineKind: null, observedDeadlineAt: null }; }
 
+test("registration requires creation or an independently confirmed existing instance", async () => {
+  let exists = false;
+  const bindings = { OPERATION_DRIVER: { create: async ({ id }: { id: string }) => { if (exists) throw new Error("Existing"); exists = true; return { id }; }, get: async (id: string) => ({ id, status: async () => ({ status: exists ? "running" : "unknown" }) }) } } as unknown as ApiWorkerBindings;
+  const scheduler = createWorkerExecutionScheduler(bindings);
+  const input = { ...await delivery(), mode: "registration" as const, wakeKind: null };
+  expect((await scheduler.deliver(input)).status).toBe("confirmed_created");
+  expect((await scheduler.deliver(input)).status).toBe("confirmed_existing");
+  exists = false;
+  bindings.OPERATION_DRIVER = { create: async () => { throw new Error("Transport failed"); }, get: bindings.OPERATION_DRIVER.get } as Workflow;
+  await expect(scheduler.deliver(input)).rejects.toThrow("Transport failed");
+});
+
 test("an accepted event still requires a separately confirmed durable command", async () => {
   let events = 0, commands = 0;
   const bindings = { OPERATION_DRIVER: { get: async () => ({ sendEvent: async () => { events++; } }) }, MAINTENANCE: { create: async (input: { id: string; params: unknown }) => { commands++; expect(input.params).toEqual(reference); return { id: input.id }; } } } as unknown as ApiWorkerBindings;
