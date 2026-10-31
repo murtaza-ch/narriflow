@@ -1,4 +1,4 @@
-import type { IntegrationCommand } from "@narriflow/services";
+import { type IntegrationCommand } from "@narriflow/services/integration-admission";
 import type { AdmissionTable } from "../platform/admission-table";
 
 /** REST is outside the first-party inventory; its complete API-key command table is below. */

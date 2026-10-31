@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { type AppUser, ClerkDirectoryUnavailableError, type WorkspaceActorContext } from "@narriflow/auth";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { Hono } from "hono";
 import { z } from "zod";
 import {

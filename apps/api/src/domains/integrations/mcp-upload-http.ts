@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import type { ActorScope, IntegrationUploadSessions } from "@narriflow/services";
-import { isExpectedDomainFailure, boundedExpectedDomainFailureDetails } from "@narriflow/services";
+import { type ActorScope } from "@narriflow/services/actor-scope";
+import { type IntegrationUploadSessions } from "@narriflow/services/integration-commands";
+import { isExpectedDomainFailure, boundedExpectedDomainFailureDetails } from "@narriflow/services/expected-domain-failure";
 import { mcpFailureMessage } from "@narriflow/mcp-core";
 import { createUploadSessionHttpRoutes } from "../ingest/upload-session-http";
 

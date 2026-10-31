@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { createMcpConfirmation, verifyMcpPreparation, acceptMcpConfirmation, verifyMcpConfirmation, createMcpUploadHandoff, verifyMcpUploadHandoff, openMcpContinuationAccessToken, MCP_CONTINUATION_TTL_MS } from "./mcp-confirmation";
 
@@ -5,14 +6,14 @@ const principal = { kind: "oauth" as const, userId: "00000000-0000-4000-8000-000
 const intent = { workspaceId: "00000000-0000-4000-8000-000000000002", clientIdempotencyKey: "00000000-0000-4000-8000-000000000003", projectId: "00000000-0000-4000-8000-000000000004", clipId: "00000000-0000-4000-8000-000000000005", accountId: "00000000-0000-4000-8000-000000000006", clipExportId: "00000000-0000-4000-8000-000000000007", clipExportVariantId: "00000000-0000-4000-8000-000000000008", expectedEditorRevision: 3, platform: "youtube_shorts" as const, aspectRatio: "9:16" as const, resolution: "1080p" as const, caption: "The exact caption", scheduledFor: "2026-10-06T12:00:00.000Z", providerSettings: {} };
 const options = { secret: "a-shared-secret-of-at-least-32-bytes-long", now: 1_000_000 };
 describe("Exact publication confirmation", () => {
-  test("preparation alone cannot schedule and approval covers the exact immutable intent", () => {
+  test("preparation alone cannot schedule and approval covers the exact immutable intent", bindServiceTestEnvironment(() => {
     const prepared = createMcpConfirmation(principal, intent, options);
     expect(verifyMcpPreparation(prepared.token, { ...options, principal }).intent.caption).toBe("The exact caption");
     expect(() => verifyMcpConfirmation(prepared.token, prepared.token, principal, intent.workspaceId, intent.clientIdempotencyKey, options)).toThrow();
     const receipt = acceptMcpConfirmation(prepared.token, { ...options, actorUserId: principal.userId, accepted: true });
     expect(verifyMcpConfirmation(prepared.token, receipt, principal, intent.workspaceId, intent.clientIdempotencyKey, options).intent.expectedEditorRevision).toBe(3);
-  });
-  test("declined, expired, tampered, foreign caller and changed retry identity are rejected", () => {
+  }));
+  test("declined, expired, tampered, foreign caller and changed retry identity are rejected", bindServiceTestEnvironment(() => {
     const prepared = createMcpConfirmation(principal, intent, options);
     expect(() => acceptMcpConfirmation(prepared.token, { ...options, actorUserId: principal.userId, accepted: false })).toThrow();
     expect(() => verifyMcpPreparation(`${prepared.token.slice(0, -2)}xx`, { ...options, principal })).toThrow();
@@ -22,7 +23,7 @@ describe("Exact publication confirmation", () => {
     expect(() => verifyMcpConfirmation(prepared.token, receipt, principal, intent.workspaceId, "changed-key", options)).toThrow();
     const changed = createMcpConfirmation(principal, { ...intent, caption: "Changed caption" }, options);
     expect(() => verifyMcpConfirmation(changed.token, receipt, principal, intent.workspaceId, intent.clientIdempotencyKey, options)).toThrow();
-  });
+  }));
 });
 
 function tamper(token: string, patch: Record<string, unknown>) {
@@ -32,7 +33,7 @@ function tamper(token: string, patch: Record<string, unknown>) {
 }
 describe("Signed continuation grants", () => {
   const upload = { workspaceId: intent.workspaceId, clientIdempotencyKey: intent.clientIdempotencyKey };
-  test("OAuth continuation evidence is encrypted, caller-bound, and authenticated", () => {
+  test("OAuth continuation evidence is encrypted, caller-bound, and authenticated", bindServiceTestEnvironment(() => {
     const prepared = createMcpConfirmation(principal, intent, options);
     const handoff = createMcpUploadHandoff(principal, upload, options);
     for (const state of [verifyMcpPreparation(prepared.token, options), verifyMcpUploadHandoff(handoff.token, options)]) {
@@ -44,19 +45,19 @@ describe("Signed continuation grants", () => {
     }
     expect(verifyMcpPreparation(createMcpConfirmation(principal, intent, options).token, options).oauthToken)
       .not.toBe(verifyMcpPreparation(prepared.token, options).oauthToken);
-  });
-  test("OAuth continuations cannot be minted without the originating credential", () => {
+  }));
+  test("OAuth continuations cannot be minted without the originating credential", bindServiceTestEnvironment(() => {
     const { oauthAccessToken: _token, ...withoutCredential } = principal;
     expect(() => createMcpConfirmation(withoutCredential, intent, options)).toThrow();
     expect(() => createMcpUploadHandoff(withoutCredential, upload, options)).toThrow();
-  });
-  test("states carry the originating credential kind and its granted scopes, never synthesized ones", () => {
+  }));
+  test("states carry the originating credential kind and its granted scopes, never synthesized ones", bindServiceTestEnvironment(() => {
     const readOnly = { ...principal, scopes: ["projects:read"] };
     expect(verifyMcpPreparation(createMcpConfirmation(readOnly, intent, options).token, options)).toMatchObject({ principalKind: "oauth", scopes: ["projects:read"] });
     const key = { kind: "api_key" as const, userId: principal.userId, clientId: "narriflow-api-key:key", apiKeyId: "00000000-0000-4000-8000-000000000009", workspaceId: intent.workspaceId, scopes: ["processing:write"] };
     expect(verifyMcpUploadHandoff(createMcpUploadHandoff(key, upload, options).token, options)).toMatchObject({ principalKind: "api_key", scopes: ["processing:write"] });
-  });
-  test("OAuth continuations expire at the earlier of ten minutes and the access token expiration", () => {
+  }));
+  test("OAuth continuations expire at the earlier of ten minutes and the access token expiration", bindServiceTestEnvironment(() => {
     const shortLived = { ...principal, expiresAt: (options.now + 120_000) / 1000 };
     const prepared = createMcpConfirmation(shortLived, intent, options);
     expect(prepared.expiresAt).toBe(new Date(options.now + 120_000).toISOString());
@@ -64,18 +65,18 @@ describe("Signed continuation grants", () => {
     const handoff = createMcpUploadHandoff(shortLived, upload, options);
     expect(() => verifyMcpUploadHandoff(handoff.token, { ...options, now: options.now + 120_000 })).toThrow(expect.objectContaining({ code: "mcp_upload_handoff_expired" }));
     expect(createMcpConfirmation({ ...principal, expiresAt: (options.now + 3_600_000) / 1000 }, intent, options).expiresAt).toBe(new Date(options.now + MCP_CONTINUATION_TTL_MS).toISOString());
-  });
-  test("tampered scope lists or credential kinds are refused", () => {
+  }));
+  test("tampered scope lists or credential kinds are refused", bindServiceTestEnvironment(() => {
     const prepared = createMcpConfirmation({ ...principal, scopes: ["projects:read"] }, intent, options);
     expect(() => verifyMcpPreparation(tamper(prepared.token, { scopes: ["publishing:write"] }), options)).toThrow(expect.objectContaining({ code: "mcp_confirmation_invalid" }));
     const handoff = createMcpUploadHandoff({ ...principal, scopes: ["projects:read"] }, upload, options);
     expect(() => verifyMcpUploadHandoff(tamper(handoff.token, { scopes: ["processing:write"] }), options)).toThrow(expect.objectContaining({ code: "mcp_upload_handoff_invalid" }));
     expect(() => verifyMcpUploadHandoff(tamper(handoff.token, { principalKind: "api_key" }), options)).toThrow(expect.objectContaining({ code: "mcp_upload_handoff_invalid" }));
-  });
-  test("expired upload handoffs still identify their session only when explicitly allowed", () => {
+  }));
+  test("expired upload handoffs still identify their session only when explicitly allowed", bindServiceTestEnvironment(() => {
     const handoff = createMcpUploadHandoff(principal, upload, options);
     const later = { ...options, now: options.now + MCP_CONTINUATION_TTL_MS };
     expect(() => verifyMcpUploadHandoff(handoff.token, later)).toThrow(expect.objectContaining({ code: "mcp_upload_handoff_expired" }));
     expect(verifyMcpUploadHandoff(handoff.token, { ...later, allowExpired: true }).intent.clientIdempotencyKey).toBe(upload.clientIdempotencyKey);
-  });
+  }));
 });

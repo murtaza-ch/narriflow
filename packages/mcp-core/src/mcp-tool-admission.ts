@@ -1,16 +1,7 @@
-import {
-  boundedExpectedDomainFailureDetails,
-  hasFeature,
-  INTEGRATION_ACCESS_MESSAGES,
-  INTEGRATION_COMMANDS,
-  IntegrationAdmission,
-  isExpectedDomainFailure,
-  operationReadScope,
-  type ExpectedDomainFailureKind,
-  type IntegrationCommand,
-  type IntegrationPrincipal,
-  type WorkspaceService,
-} from "@narriflow/services";
+import { boundedExpectedDomainFailureDetails, isExpectedDomainFailure, type ExpectedDomainFailureKind } from "@narriflow/services/expected-domain-failure";
+import { hasFeature } from "@narriflow/services/plan-features";
+import { INTEGRATION_ACCESS_MESSAGES, INTEGRATION_COMMANDS, IntegrationAdmission, operationReadScope, type IntegrationCommand, type IntegrationPrincipal } from "@narriflow/services/integration-admission";
+import { type WorkspaceService } from "@narriflow/services/workspace.service";
 import type { WorkspaceApiKeyScope } from "@narriflow/validators";
 
 export type NarriflowMcpPrincipal = IntegrationPrincipal & {

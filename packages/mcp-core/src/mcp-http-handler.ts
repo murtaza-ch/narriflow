@@ -1,10 +1,10 @@
 import { bearerAuthChallengeResponse, createMcpHandler, hostHeaderValidationResponse, OAuthError, OAuthErrorCode,
   verifyBearerToken, type McpServer, type Server, type OAuthTokenVerifier } from "@modelcontextprotocol/server";
-import type { RateLimitResult } from "@narriflow/services";
+import { type RateLimitResult } from "@narriflow/services/rate-limit";
 import { McpAuthUnavailableError, principalFromMcpAuth } from "./mcp-auth";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
 import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin } from "./mcp-http";
-import { requireNewMutationAllowed } from "@narriflow/services";
+import { requireNewMutationAllowed } from "@narriflow/services/rate-limit";
 import { mcpToolRequiredScope, type NarriflowMcpPrincipal } from "./mcp-tool-admission";
 
 export function mcpAuthFailureResponse(error: unknown, metadataUrl: string, requiredScopes: string[] = []) {

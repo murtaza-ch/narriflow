@@ -1,13 +1,11 @@
 import { listUserWorkspaces } from "@narriflow/auth";
 import { sendEmail } from "@narriflow/email";
-import {
-  autoCensorService,
-  performanceService,
-  projectService,
-  workspaceCommands,
-  workspaceMembershipService,
-  workspaceService,
-} from "@narriflow/services";
+import { autoCensorService } from "@narriflow/services/auto-censor.service";
+import { performanceService } from "@narriflow/services/performance.service";
+import { projectService } from "@narriflow/services/project.service";
+import { workspaceCommands } from "@narriflow/services/workspace-commands-runtime";
+import { workspaceMembershipService } from "@narriflow/services/workspace-membership.service";
+import { workspaceService } from "@narriflow/services/workspace.service";
 import type { ApiConfig } from "../../config";
 import type { WorkspaceRouteDeps } from "./routes";
 

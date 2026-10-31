@@ -1,11 +1,8 @@
-import {
-  brandCountRequirement,
-  type BrandActorScope,
-  type BrandFontService,
-  type BrandProfileService,
-  type BrandTemplateService,
-  type SceneTemplateService,
-} from "@narriflow/services";
+import { brandCountRequirement, type BrandActorScope } from "@narriflow/services/brand-ownership";
+import { type BrandFontService } from "@narriflow/services/brand-font.service";
+import { type BrandProfileService } from "@narriflow/services/brand-profile.service";
+import { type BrandTemplateService } from "@narriflow/services/brand-template.service";
+import { type SceneTemplateService } from "@narriflow/services/scene-template.service";
 import {
   brandPlanRequirement,
   planCountRequirement,

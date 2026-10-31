@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { Hono } from "hono";
 import { requestId } from "hono/request-id";
 import type { ApiEnv } from "./env";

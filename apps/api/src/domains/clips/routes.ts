@@ -1,10 +1,8 @@
-import {
-  campaignOperationService,
-  clipEditorDocumentPersistence,
-  clipService,
-  clipsCommands,
-  thumbnailFramePreparationService,
-} from "@narriflow/services";
+import { campaignOperationService } from "@narriflow/services/campaign-operation.service";
+import { clipEditorDocumentPersistence } from "@narriflow/services/clip-editor-document-persistence";
+import { clipService } from "@narriflow/services/clip.service";
+import { clipsCommands } from "@narriflow/services/clips-commands-runtime";
+import { thumbnailFramePreparationService } from "@narriflow/services/thumbnail-frame-preparation-runtime";
 import {
   applyCaptionPresetToAllSchema,
   applyMotionSelectedSchema,

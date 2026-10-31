@@ -1,5 +1,26 @@
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { acceptedContent, inputRequired, inputResponse, type InputRequiredResult, type ToolAnnotations, type ClientCapabilities } from "@modelcontextprotocol/server";
-import { autopilotService, brandProfileService, clipService, clipExportService, clipTimelineService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getOperationReceiptExecutor, librarySearchService, listEvents, createCaptionedVideo, captionedVideoSettings, ExpectedDomainFailureError, submitVideo, generateClips, createClipExport, proposeSocialPost, requireQueueDeliveryScope, socialAccountsView, projectView, clipView, exportView, integrationUploadSessions, recipeService, recipesView, type IntegrationMutation } from "@narriflow/services";
+import { autopilotService } from "@narriflow/services/autopilot.service";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { clipService } from "@narriflow/services/clip.service";
+import { clipExportService } from "@narriflow/services/clip-export.service";
+import { clipTimelineService } from "@narriflow/services/clip-timeline.service";
+import { encodeReviewSelection, reviewService } from "@narriflow/services/review.service";
+import { projectService } from "@narriflow/services/project.service";
+import { operationStatusService } from "@narriflow/services/operation-status-runtime";
+import { socialService } from "@narriflow/services/social.service";
+import { socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { socialPublishingOptions } from "@narriflow/services/social-publishing-options";
+import { socialPublicationScheduling } from "@narriflow/services/social-publication-scheduling-runtime";
+import { uploadSessionService } from "@narriflow/services/upload-session.service";
+import { workspaceService } from "@narriflow/services/workspace.service";
+import { workspaceLibraryService } from "@narriflow/services/workspace-library.service";
+import { getOperationReceiptExecutor } from "@narriflow/services/operation-receipt-runtime";
+import { librarySearchService } from "@narriflow/services/library-search-runtime";
+import { listEvents, createCaptionedVideo, captionedVideoSettings, submitVideo, generateClips, createClipExport, proposeSocialPost, requireQueueDeliveryScope, socialAccountsView, projectView, clipView, exportView, integrationUploadSessions, recipesView } from "@narriflow/services/integration-commands";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { type IntegrationMutation } from "@narriflow/services/operation-receipt";
 import * as schemas from "@narriflow/validators";
 import * as z from "zod/v4";
 import { McpToolAdmission, mcpOperationReadScope, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
@@ -38,7 +59,7 @@ function config<T extends z.ZodType>(title: string, description: string, output:
     ...(view ? { _meta: getNarriflowAppToolMeta(view) } : {}) };
 }
 export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, options: NarriflowMcpServerOptions = {}) {
-  const appOrigin = new URL(options.appOrigin ?? process.env.WEB_ORIGIN ?? "http://localhost:3000").origin;
+  const appOrigin = new URL(options.appOrigin ?? readServiceEnvironment().WEB_ORIGIN ?? "http://localhost:3000").origin;
   const currentPrincipal = options.authenticatePrincipal ?? (async () => principal);
   const server = new McpServer({ name: NARRIFLOW_MCP_SERVER_NAME, version: NARRIFLOW_MCP_SERVER_VERSION }, {
     instructions: NARRIFLOW_MCP_INSTRUCTIONS,
@@ -288,7 +309,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     const actor = await workspace("narriflow_publish_social_publication_again", current, input.workspaceId);
     return { data: await socialService.republishPublication(actor, input.socialPostId, { reason: input.reason, duplicateRiskAcknowledged: input.duplicateRiskAcknowledged }, undefined, mutation("narriflow_publish_social_publication_again", current, actor.workspaceId, input.clientIdempotencyKey)) };
   }));
-  registerNarriflowMcpApps(server, { appOrigin, apiOrigin: options.apiOrigin ?? process.env.API_ORIGIN ?? "http://localhost:4000", protocolEra: options.protocolEra, connectDomains: options.appConnectDomains, resourceDomains: options.appResourceDomains,
+  registerNarriflowMcpApps(server, { appOrigin, apiOrigin: options.apiOrigin ?? readServiceEnvironment().API_ORIGIN ?? "http://localhost:4000", protocolEra: options.protocolEra, connectDomains: options.appConnectDomains, resourceDomains: options.appResourceDomains,
     callUpload: async (action, input) => {
       try {
       const current = await currentPrincipal();

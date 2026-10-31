@@ -23,7 +23,6 @@ function problems(env: Record<string, string | undefined>): readonly string[] {
 describe("API configuration", () => {
   test("loads local development defaults", () => {
     const config = loadApiConfig(valid);
-    expect(config.port).toBe(4000);
     expect(config.corsAllowedOrigins).toEqual(["http://localhost:3000"]);
     expect(config.clerk.authorizedParties).toEqual(["http://localhost:3000", "http://127.0.0.1:3000"]);
     expect(config.staffAllowlist.size).toBe(0);

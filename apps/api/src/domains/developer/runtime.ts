@@ -1,10 +1,8 @@
-import {
-  callbackSigningSecrets,
-  developerCommands,
-  socialOAuthService,
-  webhookSubscriptions,
-  workspaceService,
-} from "@narriflow/services";
+import { callbackSigningSecrets } from "@narriflow/services/completion-callback-runtime";
+import { developerCommands } from "@narriflow/services/developer-commands-runtime";
+import { socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { webhookSubscriptions } from "@narriflow/services/webhook-subscription-runtime";
+import { workspaceService } from "@narriflow/services/workspace.service";
 import type { ApiConfig } from "../../config";
 import type { DeveloperRouteDeps } from "./routes";
 

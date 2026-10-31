@@ -1,5 +1,6 @@
 import type { listUserWorkspaces } from "@narriflow/auth";
-import type { projectService, workspaceService } from "@narriflow/services";
+import { type projectService } from "@narriflow/services/project.service";
+import { type workspaceService } from "@narriflow/services/workspace.service";
 import { resolvePricingTier } from "@narriflow/validators";
 import type { SessionUser, WorkspaceSummary } from "@narriflow/validators/api/session";
 import type { WorkspaceUsage } from "@narriflow/validators/api/workspace";

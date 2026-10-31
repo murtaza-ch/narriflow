@@ -1,9 +1,4 @@
-import {
-  boundedExpectedDomainFailureDetails,
-  type ExpectedDomainFailure,
-  type ExpectedDomainFailureKind,
-  isExpectedDomainFailure,
-} from "@narriflow/services";
+import { boundedExpectedDomainFailureDetails, type ExpectedDomainFailure, type ExpectedDomainFailureKind, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
 import type { ApiErrorBody } from "@narriflow/validators/api/errors";
 import type { Context, Next } from "hono";
 import type { ApiEnv } from "./env";

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MCP_TOOL_COMMANDS } from "@narriflow/mcp-core";
-import { INTEGRATION_COMMANDS, type IntegrationCommand } from "@narriflow/services";
+import { INTEGRATION_COMMANDS, type IntegrationCommand } from "@narriflow/services/integration-admission";
 import { Hono } from "hono";
 import { ADMISSION_TABLES } from "./domains";
 import type { AdmissionEntry } from "./domains/platform/admission-table";

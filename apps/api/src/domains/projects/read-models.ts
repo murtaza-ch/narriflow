@@ -8,22 +8,20 @@ import {
   workspaceAllowsCapability,
 } from "@narriflow/validators";
 import type { ProjectListQuery, ProjectTab } from "@narriflow/validators/api/projects";
-import type {
-  analyticsService,
-  autopilotService,
-  brandProfileService,
-  clipService,
-  dubbingService,
-  getProcessingUsage,
-  getProjectFinishing,
-  presignDownloadUrl,
-  projectService,
-  reviewService,
-  socialOAuthService,
-  socialService,
-  workspaceLibraryService,
-  workspaceService,
-} from "@narriflow/services";
+import { type analyticsService } from "@narriflow/services/analytics.service";
+import { type autopilotService } from "@narriflow/services/autopilot.service";
+import { type brandProfileService } from "@narriflow/services/brand-profile.service";
+import { type clipService } from "@narriflow/services/clip.service";
+import { type dubbingService } from "@narriflow/services/dubbing.service";
+import { type getProcessingUsage } from "@narriflow/services/processing-usage-runtime";
+import { type getProjectFinishing } from "@narriflow/services/generation-finishing-runtime";
+import { type presignDownloadUrl } from "@narriflow/services/r2-storage";
+import { type projectService } from "@narriflow/services/project.service";
+import { type reviewService } from "@narriflow/services/review.service";
+import { type socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { type socialService } from "@narriflow/services/social.service";
+import { type workspaceLibraryService } from "@narriflow/services/workspace-library.service";
+import { type workspaceService } from "@narriflow/services/workspace.service";
 
 /** The services the screen aggregates call. They stay authoritative; this module only fans out and projects. */
 export interface ProjectReadDeps {

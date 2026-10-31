@@ -6,10 +6,8 @@ import {
   openUploadSessionSchema,
   readUploadSessionSchema,
 } from "@narriflow/validators";
-import {
-  type ActorScope,
-  type UploadSessionService,
-} from "@narriflow/services";
+import { type ActorScope } from "@narriflow/services/actor-scope";
+import { type UploadSessionService } from "@narriflow/services/upload-session.service";
 
 /**
  * The Upload Session HTTP adapter for callers that bring their own credential

@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import { WorkspaceOperationError } from "@narriflow/services";
+import { WorkspaceOperationError } from "@narriflow/services/workspace.service";
 import { createRequestPolicyRuntime } from "../../http/request-policy-runtime";
 import { createInventoryApp } from "../../test-app";
 import { createSessionRoutes, type SessionRouteDeps } from "./routes";

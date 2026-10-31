@@ -1,11 +1,9 @@
-import {
-  brandProfileService,
-  brandTemplateService,
-  getIngestJobLifecycle,
-  projectService,
-  recipeService,
-  uploadSessionService,
-} from "@narriflow/services";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { brandTemplateService } from "@narriflow/services/brand-template.service";
+import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
+import { projectService } from "@narriflow/services/project.service";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { uploadSessionService } from "@narriflow/services/upload-session.service";
 import type { ApiConfig } from "../../config";
 import type { IngestRouteDeps } from "./routes";
 

@@ -1,8 +1,15 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { brandProfileService, clipExportService, clipTimelineService, ExpectedDomainFailureError, operationStatusService, projectService, reviewService, workspaceService,
-  type WorkspaceActorContext } from "@narriflow/services";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { clipExportService } from "@narriflow/services/clip-export.service";
+import { clipTimelineService } from "@narriflow/services/clip-timeline.service";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { operationStatusService } from "@narriflow/services/operation-status-runtime";
+import { projectService } from "@narriflow/services/project.service";
+import { reviewService } from "@narriflow/services/review.service";
+import { workspaceService, type WorkspaceActorContext } from "@narriflow/services/workspace.service";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { buildNarriflowMcpServer, MCP_WORKSPACE_ACCESS_MESSAGE, mcpFailureMessage, verifyMcpUploadHandoff, type NarriflowMcpPrincipal } from "./index";
 
@@ -21,10 +28,10 @@ const oauth = (scopes = allScopes): NarriflowMcpPrincipal => ({ kind: "oauth", u
 
 const restores: Array<{ mockRestore(): void }> = [];
 const clients: Client[] = [];
-afterEach(async () => {
+afterEach(bindServiceTestEnvironment(async () => {
   for (const spy of restores.splice(0)) spy.mockRestore();
   await Promise.all(clients.splice(0).map((client) => client.close()));
-});
+}));
 function track<T extends { mockRestore(): void }>(spy: T) { restores.push(spy); return spy; }
 async function connect(principal: NarriflowMcpPrincipal) {
   track(spyOn(workspaceService, "requireActor").mockResolvedValue(actor));
@@ -44,7 +51,7 @@ function snapshot(): ClipExportSnapshot {
 }
 
 describe("Operation Status tool", () => {
-  test("intake and generation need projects:read while export operations need exports:read", async () => {
+  test("intake and generation need projects:read while export operations need exports:read", bindServiceTestEnvironment(async () => {
     const read = track(spyOn(operationStatusService, "read").mockResolvedValue({ kind: "intake", id: KEY, state: "partial", stage: "rendering", progress: 1,
       items: [{ kind: "clip", id: CLIP, state: "failed", failureCode: "render_failed" }], results: { projectId: PROJECT, clipIds: [CLIP], exportId: null },
       notices: [{ code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 }], failureCode: "render_failed" }));
@@ -58,18 +65,18 @@ describe("Operation Status tool", () => {
     const exportsOnly = await connect(oauth(["exports:read"]));
     const generation = await exportsOnly.callTool({ name: "narriflow_get_operation", arguments: { workspaceId: WORKSPACE, operation: { kind: "generation", id: KEY } } });
     expect(data(generation)).toMatchObject({ error: "scope_required" });
-  });
+  }));
 
-  test("accepted mutations point at their own operation, not the Project's latest run", async () => {
+  test("accepted mutations point at their own operation, not the Project's latest run", bindServiceTestEnvironment(async () => {
     track(spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: PROJECT } as never, queuedJobId: KEY }));
     const client = await connect(oauth());
     const result = await client.callTool({ name: "narriflow_submit_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/talk.mp4" } });
     expect(data(result)).toEqual({ projectId: PROJECT, operation: { kind: "intake", id: KEY }, status: "accepted", statusTool: "narriflow_get_operation", reviewUrl: `https://app.narriflow.test/projects/${PROJECT}` });
-  });
+  }));
 });
 
 describe("Captioned video tool", () => {
-  test("captions a link through the captioned-video command and points at its intake operation", async () => {
+  test("captions a link through the captioned-video command and points at its intake operation", bindServiceTestEnvironment(async () => {
     const queue = track(spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: PROJECT } as never, queuedJobId: KEY }));
     const client = await connect(oauth());
     const result = await client.callTool({ name: "narriflow_create_captioned_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/short.mp4",
@@ -81,20 +88,20 @@ describe("Captioned video tool", () => {
     const pack = options!.generationContext!.contentPack;
     expect(pack).toMatchObject({ mode: "caption_only", defaultAspectRatio: "9:16", captionedVideo: { framing: "center", aspectRatios: ["9:16", "1:1"], resolution: "1080p",
       captions: { source: "supplied", utterances: [{ text: "Hello there", startSec: 0, endSec: 2, words: [{ word: "Hello" }, { word: "there" }] }] } } });
-  });
+  }));
 
-  test("refuses malformed supplied captions with a typed error before accepting work", async () => {
+  test("refuses malformed supplied captions with a typed error before accepting work", bindServiceTestEnvironment(async () => {
     const queue = track(spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: PROJECT } as never, queuedJobId: KEY }));
     const client = await connect(oauth());
     const result = await client.callTool({ name: "narriflow_create_captioned_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/short.mp4",
       captions: { source: "supplied", text: "not captions at all" } } });
     expect(data(result)).toMatchObject({ error: "supplied_captions_malformed" });
     expect(queue).not.toHaveBeenCalled();
-  });
+  }));
 });
 
 describe("Brand Profile selection", () => {
-  test("submission passes the requested profile unchanged so intake resolves the default after replay lookup", async () => {
+  test("submission passes the requested profile unchanged so intake resolves the default after replay lookup", bindServiceTestEnvironment(async () => {
     const queue = track(spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: PROJECT } as never, queuedJobId: KEY }));
     track(spyOn(brandProfileService, "listSummaries").mockResolvedValue([{ id: BRAND, name: "Acme", isDefault: true, defaultStyle: { id: VARIANT, name: "Bold" } }]));
     const client = await connect(oauth());
@@ -104,9 +111,9 @@ describe("Brand Profile selection", () => {
     expect(queue.mock.calls[1]![1].brandProfileId).toBeUndefined();
     const listed = await client.callTool({ name: "narriflow_list_brand_profiles", arguments: { workspaceId: WORKSPACE } });
     expect(data(listed)).toEqual({ profiles: [{ brandProfileId: BRAND, name: "Acme", isDefault: true, defaultStyle: { templateId: VARIANT, name: "Bold" } }] });
-  });
+  }));
 
-  test("an inaccessible profile is reported missing", async () => {
+  test("an inaccessible profile is reported missing", bindServiceTestEnvironment(async () => {
     const missing = new ExpectedDomainFailureError({ code: "brand_profile_not_found", kind: "missing", message: "Brand Profile not found" });
     track(spyOn(projectService, "queueLinkIngest").mockRejectedValue(missing));
     const usable = track(spyOn(brandProfileService, "requireUsableId").mockRejectedValue(missing));
@@ -116,9 +123,9 @@ describe("Brand Profile selection", () => {
     const uploaded = await client.callTool({ name: "narriflow_upload_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, brandProfileId: BRAND } });
     expect(data(uploaded)).toMatchObject({ error: "brand_profile_not_found", kind: "missing" });
     expect(usable).toHaveBeenCalledWith(actor, BRAND);
-  });
+  }));
 
-  test("the upload handoff signs exactly the requested profile", async () => {
+  test("the upload handoff signs exactly the requested profile", bindServiceTestEnvironment(async () => {
     const previous = process.env.MCP_CONTINUATION_SECRET;
     process.env.MCP_CONTINUATION_SECRET = "a-shared-secret-of-at-least-32-bytes-long";
     try {
@@ -131,11 +138,11 @@ describe("Brand Profile selection", () => {
       expect((await intent({ brandProfileId: BRAND })).brandProfileId).toBe(BRAND);
       expect((await intent({})).brandProfileId).toBeUndefined();
     } finally { process.env.MCP_CONTINUATION_SECRET = previous; }
-  });
+  }));
 });
 
 describe("export delivery", () => {
-  test("export results state requested and granted output and never carry media URLs", async () => {
+  test("export results state requested and granted output and never carry media URLs", bindServiceTestEnvironment(async () => {
     track(spyOn(clipExportService, "create").mockResolvedValue({ export: snapshot(), reused: false,
       output: { requested: { resolution: "1080p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" } }));
     track(spyOn(clipExportService, "getOwned").mockResolvedValue(snapshot()));
@@ -145,9 +152,9 @@ describe("export delivery", () => {
       operation: { kind: "export", id: EXPORT }, statusTool: "narriflow_get_operation", export: { watermark: true } });
     const read = await client.callTool({ name: "narriflow_get_clip_export", arguments: { workspaceId: WORKSPACE, projectId: PROJECT, clipId: CLIP, exportId: EXPORT } });
     for (const result of [created, read]) expect(JSON.stringify(result)).not.toContain("storage.test");
-  });
+  }));
 
-  test("only the download tool returns Download Grants, for the calling credential kind", async () => {
+  test("only the download tool returns Download Grants, for the calling credential kind", bindServiceTestEnvironment(async () => {
     const grants = track(spyOn(clipExportService, "issueDownloadGrants").mockResolvedValue({ exportId: EXPORT, projectId: PROJECT, clipId: CLIP, editorRevision: 2,
       variants: [{ variantId: VARIANT, aspectRatio: "9:16", resolution: "720p", watermark: true, fileName: "hook-9x16-720p-v2.mp4", sizeBytes: 10,
         downloadUrl: "https://storage.test/download?X-Amz-Signature=fresh", expiresAt: "2026-10-07T00:16:00.000Z" }],
@@ -156,11 +163,11 @@ describe("export delivery", () => {
     const result = await client.callTool({ name: "narriflow_get_export_download", arguments: { workspaceId: WORKSPACE, exportId: EXPORT, variantId: VARIANT } });
     expect(data(result)).toMatchObject({ variants: [{ downloadUrl: "https://storage.test/download?X-Amz-Signature=fresh", expiresAt: "2026-10-07T00:16:00.000Z" }], subtitles: [{ format: "srt" }, { format: "vtt" }] });
     expect(grants).toHaveBeenCalledWith(actor, EXPORT, { variantId: VARIANT, credentialKind: "oauth" });
-  });
+  }));
 });
 
 describe("editor timelines", () => {
-  test("return the timeline text with a source grant only to a credential that may download", async () => {
+  test("return the timeline text with a source grant only to a credential that may download", bindServiceTestEnvironment(async () => {
     const timeline = { projectId: PROJECT, clipId: CLIP, editorRevision: 2, format: "xmeml",
       timeline: { fileName: "hook-v2.xml", content: '<xmeml version="5"/>' }, subtitles: { format: "srt", fileName: "hook-v2.srt", content: "" },
       source: { fileName: "talk-source.mp4", sizeBytes: 10, downloadUrl: "https://storage.test/source?X-Amz-Signature=fresh", expiresAt: "2026-10-24T00:15:00.000Z" } };
@@ -174,20 +181,20 @@ describe("editor timelines", () => {
     expect(data(refused)).toMatchObject({ error: "scope_required" });
     const unknown = await client.callTool({ name: "narriflow_get_clip_timeline", arguments: { workspaceId: WORKSPACE, projectId: PROJECT, clipId: CLIP, format: "aaf" } });
     expect(unknown.isError).toBe(true);
-  });
+  }));
 });
 
 describe("review handoff", () => {
-  test("returns a composer link with the checked selection and creates nothing", async () => {
+  test("returns a composer link with the checked selection and creates nothing", bindServiceTestEnvironment(async () => {
     track(spyOn(reviewService, "prepareHandoff").mockResolvedValue({ projectId: PROJECT, items: [{ clipId: CLIP, exportId: EXPORT, editorRevision: 2, variantIds: [VARIANT] }] }));
     const create = track(spyOn(reviewService, "createRound"));
     const client = await connect(oauth(["exports:read"]));
     const result = await client.callTool({ name: "narriflow_create_review_handoff", arguments: { workspaceId: WORKSPACE, items: [{ exportId: EXPORT, variantIds: [VARIANT] }] } });
     expect(new URL(String(data(result).composerUrl)).searchParams.get("reviewSelection")).toBe(`${EXPORT}:${VARIANT}`);
     expect(create).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("round reads report decisions through the summary projection", async () => {
+  test("round reads report decisions through the summary projection", bindServiceTestEnvironment(async () => {
     const round = { roundId: KEY, projectId: PROJECT, revision: 1, title: "Client cut", status: "approved", decision: "approved", sentAt: "2026-10-07T00:00:00.000Z", expiresAt: null,
       items: [{ itemId: VARIANT, clipId: CLIP, clipTitle: "Hook", exportId: EXPORT, editorRevision: 2, required: true, decision: "approved", commentCount: 2 }], generalCommentCount: 0 };
     const list = track(spyOn(reviewService, "listRoundSummaries").mockResolvedValue([round]));
@@ -196,10 +203,10 @@ describe("review handoff", () => {
     expect(data(await client.callTool({ name: "narriflow_list_review_rounds", arguments: { workspaceId: WORKSPACE, projectId: PROJECT } }))).toMatchObject({ rounds: [{ status: "approved" }] });
     expect(list).toHaveBeenCalledWith(actor, { projectId: PROJECT, limit: 10 });
     expect(data(await client.callTool({ name: "narriflow_get_review_round", arguments: { workspaceId: WORKSPACE, roundId: KEY } }))).toMatchObject({ round: { items: [{ decision: "approved", commentCount: 2 }], reviewUrl: `https://app.narriflow.test/projects/${PROJECT}?tab=review` } });
-  });
+  }));
 });
 
-test("Workspace access errors name the requirement without sales prompts", async () => {
+test("Workspace access errors name the requirement without sales prompts", bindServiceTestEnvironment(async () => {
   const client = await connect(oauth());
   const requireActor = track(spyOn(workspaceService, "requireActor").mockResolvedValue({ ...actor, pricingTier: "creator" }));
   const planRefusal = data(await client.callTool({ name: "narriflow_list_brand_profiles", arguments: { workspaceId: WORKSPACE } }));
@@ -211,9 +218,9 @@ test("Workspace access errors name the requirement without sales prompts", async
   for (const message of [String(planRefusal.message), MCP_WORKSPACE_ACCESS_MESSAGE]) {
     for (const word of ["upgrade", "checkout", "billing", "http", "price", "subscribe"]) expect(message.toLowerCase()).not.toContain(word);
   }
-});
+}));
 
-test("credit and per-video limits reach assistants as the requirement, without upgrade prompts", async () => {
+test("credit and per-video limits reach assistants as the requirement, without upgrade prompts", bindServiceTestEnvironment(async () => {
   track(spyOn(projectService, "queueLinkIngest").mockRejectedValue(new ExpectedDomainFailureError({ code: "credits_exhausted", kind: "payment_required",
     message: "This video needs 30 credits, but the workspace has 10 of 1800 Business credits left this month. Credits renew on 2026-11-01 (UTC), or upgrade for more.",
     details: { tier: "business", limitCredits: 1800, remainingCredits: 10, requestedCredits: 30, renewsAt: "2026-11-01T00:00:00.000Z" } })));
@@ -222,4 +229,4 @@ test("credit and per-video limits reach assistants as the requirement, without u
   expect(result).toMatchObject({ error: "credits_exhausted", message: "This video needs 30 credits, but the workspace has 10 of 1800 left this month. Credits renew on 2026-11-01 (UTC).", details: { requestedCredits: 30 } });
   expect(String(result.message).toLowerCase()).not.toContain("upgrade");
   expect(mcpFailureMessage({ code: "upload_too_long", message: "Upgrade for longer videos.", details: { maxSeconds: 10_800 } })).toBe("This video is longer than the workspace's 180-minute per-video limit.");
-});
+}));

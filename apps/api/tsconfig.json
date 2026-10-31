@@ -2,18 +2,41 @@
   "extends": "../../packages/config/tsconfig.base.json",
   "compilerOptions": {
     "baseUrl": ".",
-    "types": ["node"],
+    "types": [
+      "node",
+      "@cloudflare/workers-types"
+    ],
     "paths": {
-      "@narriflow/auth": ["../../packages/auth/src/index.ts"],
-      "@narriflow/db": ["../../packages/db/src/index.ts"],
-      "@narriflow/db/*": ["../../packages/db/src/*"],
-      "@narriflow/email": ["../../packages/email/src/index.ts"],
-      "@narriflow/services": ["../../packages/services/src/index.ts"],
-      "@narriflow/services/*": ["../../packages/services/src/*"],
-      "@narriflow/validators": ["../../packages/validators/src/index.ts"],
-      "@narriflow/validators/*": ["../../packages/validators/src/*"]
+      "@narriflow/auth": [
+        "../../packages/auth/src/index.ts"
+      ],
+      "@narriflow/db": [
+        "../../packages/db/src/index.ts"
+      ],
+      "@narriflow/db/*": [
+        "../../packages/db/src/*"
+      ],
+      "@narriflow/email": [
+        "../../packages/email/src/index.ts"
+      ],
+      "@narriflow/services": [
+        "../../packages/services/src/index.ts"
+      ],
+      "@narriflow/services/*": [
+        "../../packages/services/src/*"
+      ],
+      "@narriflow/validators": [
+        "../../packages/validators/src/index.ts"
+      ],
+      "@narriflow/validators/*": [
+        "../../packages/validators/src/*"
+      ]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
 }
