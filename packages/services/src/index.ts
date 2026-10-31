@@ -710,3 +710,4 @@ export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparati
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
 
 export * from "./publication-checkpoint-blob";
+export { renderArtifactBindingHash, encodeRenderVariantFailure, decodeRenderVariantFailure } from "./render-artifact";

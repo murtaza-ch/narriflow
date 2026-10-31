@@ -590,7 +590,11 @@
       "types": "./src/clip-preparation-policy.ts",
       "default": "./src/clip-preparation-policy.ts"
     },
-    "./publication-checkpoint-blob": "./src/publication-checkpoint-blob.ts"
+    "./publication-checkpoint-blob": "./src/publication-checkpoint-blob.ts",
+    "./render-artifact": {
+      "types": "./src/render-artifact.ts",
+      "default": "./src/render-artifact.ts"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -23,6 +23,8 @@ import {
 } from "./render-group-contract";
 
 import type { ExecutionDispatchReference, ExecutionDisposition } from "@narriflow/validators/execution";
+import { renderGroupOutcomeSchema, renderVariantFailureSchema, type RenderGroupOutcome, type RenderVariantFailure } from "@narriflow/validators/render-execution";
+import { renderArtifactBindingHash } from "./render-artifact";
 import { appendExecutionDispatch } from "./execution-dispatch";
 import { lockWorkspaceUsage } from "./processing-usage";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationResult, ExecutorFailureInput, ExecutorMutationContext, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
@@ -35,11 +37,20 @@ export interface RenderGroupExecutionReference extends RenderGroupRef {
   deploymentEpoch: number;
   attemptToken: string;
 }
-export interface RenderGroupArtifactCommit extends ExecutorArtifactCommit {
+export type RenderGroupArtifactCommit = ExecutorArtifactCommit & ({
   role: "render_variant";
   renderId: string;
   durationSec: number;
   captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+} | {
+  role: "render_outcome";
+  renderId: string;
+  /** Read from the sealed assigned object outside the transaction. */
+  failure: RenderVariantFailure;
+});
+export interface RenderGroupArtifactResult {
+  dispatchIds: readonly string[];
+  renderGroup: RenderGroupOutcome;
 }
 
 /** The column value for a render's caption diagnostics: null when nothing was left out. */
@@ -532,7 +543,7 @@ export class RenderGroupLifecycle {
     const current = await tx.renderGroup.update({ where: { id: ref.groupId }, data: retry ? { generation: { increment: 1 } } : {} });
     const now = await renderGroupDatabaseNow(tx);
     const wake = await appendExecutionDispatch(tx, { deploymentEpoch: current.deploymentEpoch, kind: "render_run", subject: { kind: "render_group", id: current.id },
-      generation: current.generation, inputHash: inputHash, dueAt: now, wakeKind: "group_outcome" });
+      generation: current.generation, inputHash: inputHash, dueAt: now, wakeKind: retry ? "group_retry" : "group_outcome" });
     const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: ref.groupId },
       generation: ref.generation, inputHash: inputHash, dueAt: now, wakeKind: "execution_finished" });
     const ids = [wake.reference.dispatchId, finished.reference.dispatchId];
@@ -544,16 +555,30 @@ export class RenderGroupLifecycle {
     return { dispatchIds: ids };
   }
 
-  async commitArtifactExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, artifact: RenderGroupArtifactCommit): Promise<ExecutorMutationResult> {
+  async commitArtifactExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, artifact: RenderGroupArtifactCommit): Promise<RenderGroupArtifactResult | undefined> {
     const attempt = this.executionAttempt(ref, context);
-    if (artifact.role !== "render_variant" || !Number.isSafeInteger(Number(artifact.byteLength)) || !Number.isFinite(artifact.durationSec) || artifact.durationSec <= 0) throw new Error("Invalid prepared render artifact");
-    if (!await this.completeClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, { storageKey: artifact.storageKey, sizeBytes: Number(artifact.byteLength), durationSec: artifact.durationSec, captionDiagnostics: artifact.captionDiagnostics })) {
+    if (!["render_variant", "render_outcome"].includes(artifact.role) || !Number.isSafeInteger(Number(artifact.byteLength)) || artifact.byteLength <= 0n ||
+      artifact.bindingHash !== await renderArtifactBindingHash({ inputHash: context.reference.inputHash, renderId: artifact.renderId, role: artifact.role })) throw new Error("Invalid prepared render artifact");
+    let accepted: boolean;
+    if (artifact.role === "render_outcome") {
+      const parsed = renderVariantFailureSchema.safeParse(artifact.failure);
+      if (artifact.contentType !== "application/json" || artifact.byteLength > 65536n || !parsed.success ||
+        parsed.data.renderId !== artifact.renderId || parsed.data.bindingHash !== artifact.bindingHash) throw new Error("Invalid prepared render artifact");
+      accepted = await this.failClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, parsed.data.errorCode, parsed.data.disposition);
+    } else {
+      if (artifact.contentType !== "video/mp4" || !Number.isFinite(artifact.durationSec) || artifact.durationSec <= 0) throw new Error("Invalid prepared render artifact");
+      accepted = await this.completeClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, { storageKey: artifact.storageKey, sizeBytes: Number(artifact.byteLength), durationSec: artifact.durationSec, captionDiagnostics: artifact.captionDiagnostics });
+    }
+    if (!accepted) {
       throw new RenderGroupAttemptLost(attempt);
     }
     const members = await memberSnapshot(tx, ref);
-    if (members.some((member) => member.status === "pending" || member.status === "rendering" || (member.status === "failed" && member.failureDisposition === "retryable"))) return;
-    await this.finishCommandWithinTransaction(tx, { ...attempt, result: "completed", errorCode: null, failureDisposition: null });
-    return this.executionWakes(tx, ref, context.reference.inputHash, false);
+    if (members.some((member) => member.status === "pending" || member.status === "rendering")) return;
+    const failed = members.find(member => member.status === "failed");
+    const decision = await this.finishWithinTransaction(tx, { ...attempt, result: failed ? "failed" : "completed", errorCode: failed?.variant?.errorCode ?? null, failureDisposition: failed?.failureDisposition ?? null }, false);
+    const { status, requested, succeeded, failed: failedCount, superseded } = decision;
+    const renderGroup = renderGroupOutcomeSchema.parse({ status, requested, succeeded, failed: failedCount, superseded });
+    return { ...await this.executionWakes(tx, ref, context.reference.inputHash, decision.status === "queued"), renderGroup };
   }
 
   async failExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
