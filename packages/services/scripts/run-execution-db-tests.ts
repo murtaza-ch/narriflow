@@ -45,6 +45,11 @@ try {
     ALLOW_SERVERLESS_DB_TESTS: "1", ALLOW_EXECUTION_CONTROL_DB_TESTS: "1", ALLOW_EXECUTION_TRANSFER_DB_TESTS: "1", ALLOW_SOURCE_AUDIO_DB_TESTS: "1",
     SERVERLESS_TEST_DATABASE_URL: testUrl.toString(),
     SERVERLESS_TEST_DATABASE_SCHEMA: schema,
+    ...(tests.includes("packages/services/src/social-publication.db.test.ts") ? {
+      ALLOW_SOCIAL_PUBLICATION_DB_TESTS: "1",
+      SOCIAL_PUBLICATION_TEST_DATABASE_URL: testUrl.toString(),
+      SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA: schema,
+    } : {}),
     ...(tests.includes("packages/services/src/generation-usage.db.test.ts") ? {
       ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
       VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),

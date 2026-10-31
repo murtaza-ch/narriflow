@@ -2802,6 +2802,7 @@ model SocialPostProposal {
 }
 
 model SocialPublicationAttempt {
+  nativeStartRound       Int                            @default(1)
   nativeStartCount       Int                            @default(0)
   nativeStartCeiling     Int                            @default(104)
   id                     String                         @id @default(uuid()) @db.Uuid
@@ -2844,6 +2845,7 @@ model SocialPublicationAttempt {
 }
 
 model PublicationManualDecision {
+  executionBudgetAudit Json?
   id                 String                        @id @default(uuid()) @db.Uuid
   socialPostId       String                        @db.Uuid
   attemptId          String                        @db.Uuid
@@ -2868,6 +2870,7 @@ model PublicationManualDecision {
 }
 
 model PublicationClaim {
+  workState Json?
   executionMode String @default("publish") @db.VarChar(16)
   deploymentEpoch Int       @default(1)
   generation      Int       @default(1)

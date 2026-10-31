@@ -1,3 +1,4 @@
+import { lockPublicationAttempt, lockPublicationPost } from "./publication-locks";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -467,6 +468,8 @@ async function requireCurrentClaim(
 	owned: OwnedPublicationAttempt,
 	now: Date,
 ) {
+ await lockPublicationAttempt(tx,owned.attemptId);
+ await tx.$queryRaw`SELECT "id" FROM "PublicationClaim" WHERE "id"=${owned.claimId}::uuid FOR UPDATE`;
 	const attempt = await tx.socialPublicationAttempt.findFirst({
 		where: { id: owned.attemptId, currentClaimId: owned.claimId },
 		select: { id: true },
@@ -590,7 +593,7 @@ export function createPrismaSocialPublicationAttemptStore(database: () => Prisma
 		async settleAccepted(input) {
 			try {
 				return await transaction(async (tx) => {
-					await tx.$queryRaw`SELECT "id" FROM "SocialPublicationAttempt" WHERE "id" = ${input.owned.attemptId}::uuid FOR UPDATE`;
+					await lockPublicationAttempt(tx,input.owned.attemptId);
 					const row = await tx.socialPublicationAttempt.findUnique({
 						where: { id: input.owned.attemptId },
 						include: publicationAttemptInclude,
@@ -1123,6 +1126,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 		if (!post.frozenState) continue;
 		await prisma
 			.$transaction(async (tx) => {
+                await lockPublicationPost(tx,post.id);
 				const [locked] = await tx.$queryRaw<Array<{ status: string; standingGrantId: string | null }>>`
           SELECT "status"::text AS "status", "standingGrantId"
           FROM "SocialPost"
@@ -1228,6 +1232,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 			let leaseTakenOver = false;
 			try {
 				const claimed = await prisma.$transaction(async (tx) => {
+                    await lockPublicationAttempt(tx,candidate.id);
 					const current = await tx.socialPublicationAttempt.findUnique({
 						where: { id: candidate.id },
 						include: {

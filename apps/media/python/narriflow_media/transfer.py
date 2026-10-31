@@ -24,7 +24,7 @@ MAX_BYTES = 10 * 1024**3
 SHA = re.compile(r'[a-f0-9]{64}')
 MIME = re.compile(r'[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*')
 ROLES = {'source_audio', 'source_video', 'layout_evidence', 'render_variant', 'probe', 'thumbnail',
-         'export_bundle', 'dub_mix', 'validated_font', 'validated_asset', 'outbound_receipt'}
+         'export_bundle', 'dub_mix', 'validated_font', 'validated_asset', 'outbound_receipt', 'publication_checkpoint'}
 FUNCTIONS = {'fetch_source', 'pin_source', 'prepare_clip', 'render_group', 'probe_extract', 'thumbnail',
              'export_bundle', 'dub_mix', 'outbound_delivery', 'asset_validation', 'generated_image', 'publication'}
 
@@ -144,7 +144,7 @@ def parse_transfer_disposition(value):
         'upload_completed': {'artifactId', 'object'}, 'upload_aborted': {'artifactId'}}
     if not isinstance(kind, str) or kind not in fields:
         _invalid()
-    _object(value, {'disposition'} | fields[kind])
+    _object(value, {'disposition'} | fields[kind], {'publication'} if kind=='work_package' else ())
     if 'artifactId' in value:
         _id(value['artifactId'])
     if kind == 'upload_ready':
@@ -175,6 +175,31 @@ def parse_transfer_disposition(value):
         # The native dispatch layer owns function-specific immutable schemas.
         if _text(value['functionName'], 80) not in FUNCTIONS:
             _invalid()
+        if (value['functionName']=='publication') != ('publication' in value):_invalid()
+        if 'publication' in value:
+            publication=value['publication']
+            _object(publication,{'version','inputKey','checkpointKey','account'},{'priorCheckpointKey'})
+            if publication['version']!=1 or len(json.dumps(publication,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode())>32*1024:_invalid()
+            for name in ('inputKey','checkpointKey','priorCheckpointKey'):
+                if name not in publication:continue
+                material=publication[name]
+                _object(material,{'key','scope'}|({'artifactId'} if name=='priorCheckpointKey' else set()))
+                _text(material['key'],43,r'[A-Za-z0-9_-]{43}')
+                if base64.urlsafe_b64encode(base64.urlsafe_b64decode(material['key']+'=')).decode().rstrip('=')!=material['key']:_invalid()
+                scope=_object(material['scope'],{'deploymentEpoch','socialPostId','attemptId','claimId','bindingHash'})
+                _integer(scope['deploymentEpoch'],2147483647);_text(scope['bindingHash'],64,SHA)
+                for field in ('socialPostId','attemptId','claimId'):_id(scope[field])
+                if name=='priorCheckpointKey':_id(material['artifactId'])
+            account=publication['account']
+            if account is not None:
+                _object(account,{'id','userId','platform','providerAccountId','displayName','handle','accessToken','scopes','metadata'})
+                _id(account['id']);_id(account['userId'])
+                if account['platform'] not in {'youtube_shorts','instagram_reels','facebook_reels','tiktok','linkedin','x'} or account['metadata'] is not None:_invalid()
+                _text(account['providerAccountId'],2048);_text(account['accessToken'],16384)
+                if not isinstance(account['displayName'],str) or len(account['displayName'])>512 or account['handle'] is not None and (not isinstance(account['handle'],str) or len(account['handle'])>512):_invalid()
+                if not isinstance(account['scopes'],list) or len(account['scopes'])>100:_invalid()
+                for scope in account['scopes']:
+                    if not isinstance(scope,str) or len(scope)>512:_invalid()
         _text(value['inputHash'], 64, SHA)
         source = value['input']
         if not isinstance(source, dict):
@@ -252,6 +277,11 @@ class WorkPackage:
     _sources_wire: bytes = field(repr=False)
     _outputs_wire: bytes = field(repr=False)
     _fence_wire: bytes = field(repr=False)
+    _publication_wire: bytes | None = field(default=None,repr=False)
+
+    @property
+    def publication(self):
+        return json.loads(self._publication_wire) if self._publication_wire is not None else None
 
     @property
     def command(self):
@@ -313,7 +343,7 @@ async def load_work_package(session: ExecutorSession, *, transport=None) -> Work
             except (ValueError, UnicodeError):
                 raise ExecutionControlError('execution_input_invalid') from None
         return WorkPackage(value['functionName'], value['inputHash'], _wire(command), _wire(value['sources']),
-                           _wire(value['outputs']), _wire(session.fence))
+                           _wire(value['outputs']), _wire(session.fence), _wire(value['publication']) if 'publication' in value else None)
     raise ExecutionControlError('execution_input_unavailable')
 
 

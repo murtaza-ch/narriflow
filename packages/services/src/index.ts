@@ -708,3 +708,5 @@ export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash 
 export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
 
 export { clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
+
+export * from "./publication-checkpoint-blob";
