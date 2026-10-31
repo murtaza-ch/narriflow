@@ -11,7 +11,7 @@ import { hashSnapshotFile, hashSnapshotMigrations, readSnapshotJson, writeSnapsh
 import { createExecutionDispatch, ExecutionDispatchError } from "../src/execution-dispatch";
 import { ExecutionRestoreService, ExecutionRestoreError } from "../src/execution-restore";
 import { ExecutionPageReceiptError } from "../src/execution-page-receipt";
-import { parseExecutionRestoreOperatorArgs, restoreWorkflowTarget, createWranglerRestoreCommands, ExecutionRestoreOperatorError } from "../src/execution-restore-operator";
+import { parseExecutionRestoreOperatorArgs, restoreWorkflowTarget, createWranglerRestoreCommands, resumeExecutionRestoreDispatch, ExecutionRestoreOperatorError } from "../src/execution-restore-operator";
 
 // This command runs under Bun. JSONC is its sole runtime-specific intrinsic;
 // all file and child-process boundaries use the standard Node interfaces.
@@ -98,15 +98,7 @@ try {
       write({ mode: "registered", resource, ...begun, admissionOpen: false });
     } else {
       const before = await restore.inspect(input.dispatchId);
-      await observeResumeWorker(before.metadataReady);
-      if (before.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
-      const ledger = await dispatch.read(input.dispatchId);
-      if (!ledger || JSON.stringify(ledger.reference) !== JSON.stringify(before.reference)) throw new ExecutionRestoreError("restore_reference_invalid");
-      const result = await commands.resume(ledger.instanceId, { hasCommittedPage: before.receipt !== null, beforeRestart: async () => {
-        const fresh = await restore.inspect(input.dispatchId);
-        await observeResumeWorker(fresh.metadataReady);
-        if (fresh.admissionOpen || JSON.stringify(fresh.reference) !== JSON.stringify(before.reference)) throw new ExecutionRestoreError("restore_epoch_changed");
-      } });
+      const result = await resumeExecutionRestoreDispatch({dispatchId:input.dispatchId,restore,dispatch,commands,observeWorker:observeResumeWorker});
       write({ mode: "resume", resource, sourcePair: { snapshotEpoch: before.snapshotEpoch, fenceAboveEpoch: before.fenceAboveEpoch, deploymentEpoch: before.deploymentEpoch }, dispatchId: input.dispatchId, ...result, admissionOpen: false });
     }
   }

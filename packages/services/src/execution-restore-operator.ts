@@ -1,5 +1,6 @@
 import { executionDispatchReferenceSchema } from "@narriflow/validators/execution";
-import { executionDispatchIdentity, type ExecutionDispatchScheduler } from "./execution-dispatch";
+import { executionDispatchIdentity, ExecutionDispatchError, type createExecutionDispatch, type ExecutionDispatchScheduler } from "./execution-dispatch";
+import type { ExecutionRestoreService } from "./execution-restore";
 
 export const RESTORE_CLOUDFLARE_ACCOUNT_ID = "5359f28d385b8632c3abee12d1f5b011";
 export interface RestoreInstanceProof { id: string; status: string }
@@ -64,6 +65,24 @@ export function restoreWorkflowTarget(value: unknown, environment?: string) {
 }
 const REGISTERED = new Set(["queued", "running", "paused", "errored", "terminated", "complete", "waiting", "waitingForPause"]);
 const instanceId = (id: string) => /^nf_[a-f0-9]{64}$/.test(id);
+/** Metadata may commit a redispatch boundary while its registration is
+ * intentionally fenced. Resume confirms that exact ledger under closed mode
+ * before describing/restarting it. The previous page receipt stays unchanged. */
+export async function resumeExecutionRestoreDispatch(options:{dispatchId:string;restore:Pick<ExecutionRestoreService,"inspect">;dispatch:Pick<ReturnType<typeof createExecutionDispatch>,"read"|"deliver">;commands:Pick<ReturnType<typeof createWranglerRestoreCommands>,"resume">;observeWorker(metadataReady:boolean):Promise<unknown>}){
+ const before=await options.restore.inspect(options.dispatchId);
+ const validate=async()=>{
+  const fresh=await options.restore.inspect(options.dispatchId);
+  await options.observeWorker(fresh.metadataReady);
+  if(fresh.admissionOpen||JSON.stringify(fresh.reference)!==JSON.stringify(before.reference))throw new ExecutionRestoreOperatorError("restore_operator_dispatch_invalid");
+  return fresh;
+ };
+ await validate();
+ const ledger=await options.dispatch.read(options.dispatchId);
+ if(!ledger||JSON.stringify(ledger.reference)!==JSON.stringify(before.reference))throw new ExecutionRestoreOperatorError("restore_operator_dispatch_invalid");
+ if(!ledger.acknowledgedAt){if((await options.dispatch.deliver(options.dispatchId)).status!=="acknowledged")throw new ExecutionDispatchError("scheduler_unavailable");}
+ const current=await validate();
+ return options.commands.resume(ledger.instanceId,{hasCommittedPage:current.receipt!==null,beforeRestart:async()=>{await validate();}});
+}
 /** The runner executes the repository's pinned Wrangler with raw argv, never a
  * shell or a credential-reader. Only fixed restore metadata reaches Cloudflare. */
 export function createWranglerRestoreCommands(options: { workflowName: string; configPath: string; environment?: string; run(args: readonly string[]): Promise<unknown> }) {

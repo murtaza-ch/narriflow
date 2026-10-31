@@ -749,7 +749,7 @@ model RenderGroupMember {
 }
 
 /// One immutable claim token and owner per execution. Execution start and
-/// charging commit together; graceful release refunds the charge exactly once.
+/// charging commit together; every started execution retains its charge.
 model RenderGroupExecution {
   token                String                      @id @db.Uuid
   groupId              String                      @db.Uuid

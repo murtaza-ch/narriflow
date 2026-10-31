@@ -4,6 +4,8 @@ import type { ExecutionDispatchReference } from "@narriflow/validators/execution
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { dispatchContinuationInstanceId } from "./protocol";
 import { createWorkerExecutionScheduler } from "./scheduler";
+import { canRunWhileFenced } from "./execution-fence";
+import { EXECUTION_RESTORE_PHASES } from "@narriflow/services/execution-restore";
 
 const reference: ExecutionDispatchReference = { dispatchId: crypto.randomUUID(), kind: "operation_driver", subject: { kind: "native_validation", id: crypto.randomUUID() }, deploymentEpoch: 1, generation: 1, inputHash: "a".repeat(64) };
 async function delivery() { return { reference, ...await executionDispatchIdentity(reference), dueAt: new Date(), mode: "wake" as const, wakeKind: "native.completed", deadlineKind: null, observedDeadlineAt: null }; }
@@ -63,6 +65,18 @@ test("restore fencing defers every product consumer before local RPC, storage or
 test("restore metadata registration remains available while product consumers are fenced", async () => {
   let commands=0;
   const bindings={ADMISSION_STATE:"fenced",MAINTENANCE:{create:async({id}:{id:string})=>{commands++;return{id};}}} as unknown as ApiWorkerBindings;
-  const input={...await delivery(),mode:"registration" as const,wakeKind:null,reference:{...reference,kind:"maintenance" as const,subject:{kind:"maintenance" as const,id:`rs2.${crypto.randomUUID()}.0`}}};
+  const input={...await delivery(),mode:"registration" as const,wakeKind:null,reference:{...reference,deploymentEpoch:4,kind:"maintenance" as const,subject:{kind:"maintenance" as const,id:"rs2.3.3.4.1793440800000.attempts"}}};
   expect((await createWorkerExecutionScheduler(bindings).deliver(input)).status).toBe("confirmed_created");expect(commands).toBe(1);
+});
+
+test("the restore metadata boundary refuses every redispatch page before remote registration or SQL-capable execution",async()=>{
+ let remoteCalls=0;
+ const bindings={ADMISSION_STATE:"fenced",DEV_CLOUD:{dispatch:async()=>{remoteCalls++;throw Error("Redispatch reached remote consumer");}}} as unknown as ApiWorkerBindings;
+ for(const phase of EXECUTION_RESTORE_PHASES){
+  const ref={...reference,kind:"maintenance" as const,deploymentEpoch:4,subject:{kind:"maintenance" as const,id:`rs2.3.3.4.1793440800000.${phase}`}};
+  expect(canRunWhileFenced(ref)).toBe(!phase.startsWith("redispatch"));
+  if(phase.startsWith("redispatch"))await expect(createWorkerExecutionScheduler(bindings).deliver({...await delivery(),reference:ref})).rejects.toMatchObject({code:"scheduler_unavailable"});
+ }
+ expect(remoteCalls).toBe(0);
+ for(const id of ["rs2.not-a-page","rs2.3.3.4.1793440800000.unknown","rs2.3.2.4.1793440800000.attempts","rs2.3.3.5.1793440800000.attempts"]){expect(canRunWhileFenced({...reference,deploymentEpoch:4,kind:"maintenance",subject:{kind:"maintenance",id}})).toBe(false);}
 });
