@@ -15,6 +15,44 @@ def probe(video=False):
 
 
 class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_frozen_no_speech_plan_downloads_the_original_without_creating_audio(self):
+        calls=[]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);video=root/'source.mp4';video.write_bytes(b'original')
+            class Runtime:
+                async def resolve(self,source,session,work):return ResolvedSource(source.media_id,'140','137',None,work/'metadata.json')
+                async def download_audio(self,*args):raise AssertionError('No speech plan started audio')
+                async def download_video(self,selected,session,work):return DownloadedSource(video,selected.media_id,selected.audio_format_id)
+                async def probe(self,path):return probe(True)
+                async def end_session(self,work):calls.append('closed')
+            class Sink:
+                async def audio_ready(self,*args):raise AssertionError('No speech plan published audio')
+                async def video_ready(self,artifact,audio):
+                    if audio is not None:raise AssertionError('SourceAudio was fabricated')
+                    calls.append('original')
+            result=await fetch_source('_123456789-',source_revision=2,mode='local',development=True,work_directory=root,
+                runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64,acquire_audio=False)
+            self.assertIsNone(result.audio);self.assertEqual(calls,['original','closed'])
+
+    async def test_an_original_without_an_audio_stream_never_fabricates_a_source_audio(self):
+        calls=[]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);video=root/'silent.mp4';video.write_bytes(b'silent')
+            class Runtime:
+                async def resolve(self,source,session,work):return ResolvedSource(source.media_id,None,'137',None,work/'metadata.json')
+                async def download_audio(self,*args):raise AssertionError('No-audio source started extraction')
+                async def download_video(self,selected,session,work):return DownloadedSource(video,selected.media_id,None)
+                async def probe(self,path):return {**probe(True),'hasAudio':False,'facts':{'audios':[]}}
+                async def end_session(self,work):calls.append('closed')
+            class Sink:
+                async def audio_ready(self,*args):raise AssertionError('No-audio source published audio')
+                async def video_ready(self,artifact,audio):
+                    if audio is not None or artifact.manifest['audioTrack'] is not None:raise AssertionError('Fabricated audio')
+                    calls.append('original')
+            result=await fetch_source('_123456789-',source_revision=2,mode='local',development=True,work_directory=root,
+                runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64)
+            self.assertIsNone(result.audio);self.assertEqual(calls,['original','closed'])
+
     async def test_verified_audio_commits_while_full_video_is_still_downloading(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

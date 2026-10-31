@@ -47,7 +47,7 @@ class ScopedSourceSink:
         if package.function_name != "fetch_source":
             raise ExecutionControlError("execution_work_package_mismatch")
         if hasattr(self, "command") and any(package.command.get(key) != self.command.get(key) for key in
-                ("kind", "projectId", "sourceRevision", "mediaId", "sourceAudioId", "toolchainFingerprint", "probeVersion")):
+                ("kind", "audioPolicy", "projectId", "sourceRevision", "mediaId", "sourceAudioId", "toolchainFingerprint", "probeVersion")):
             raise ExecutionControlError("execution_work_package_mismatch")
         self.package, self.command = package, package.command
         self.artifacts = self._factory(self.session, package)

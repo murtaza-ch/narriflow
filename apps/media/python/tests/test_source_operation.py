@@ -25,7 +25,7 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
             "object": {"key":"assigned/audio","etag":'"etag"',"byteLength":5,"sha256":"c"*64},
             "durationSeconds":120,"wholeSource":True,"audioStartTimeSec":0,
             "probeVersion":"normalized-probe-v1","toolchainFingerprint":"a"*64}
-        command = {"kind":"youtube_source","projectId":project_id,"sourceRevision":1,"mediaId":"dQw4w9WgXcQ",
+        command = {"kind":"youtube_source","audioPolicy":"pending_pack","projectId":project_id,"sourceRevision":1,"mediaId":"dQw4w9WgXcQ",
             "sourceAudioId": audio_id, "toolchainFingerprint":"a"*64,"probeVersion":"normalized-probe-v1",
             "existingSourceAudio":audio if seeded else None,"languageProbe":None}
         package = WorkPackage("fetch_source","b"*64,_wire(command),_wire([]),_wire([]),_wire(fence))
