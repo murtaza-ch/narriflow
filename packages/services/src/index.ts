@@ -1,3 +1,4 @@
+export { workflowRunExecutionInputHash, type WorkflowRunExecutionInput } from "./workflow-execution-input";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,

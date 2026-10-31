@@ -38,6 +38,10 @@
       "types": "./src/workflow-attempt-contract.ts",
       "default": "./src/workflow-attempt-contract.ts"
     },
+    "./workflow-execution-input": {
+      "types": "./src/workflow-execution-input.ts",
+      "default": "./src/workflow-execution-input.ts"
+    },
     "./brand-font-parser": {
       "types": "./src/brand-font-parser.ts",
       "default": "./src/brand-font-parser.ts"

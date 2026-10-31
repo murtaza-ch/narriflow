@@ -513,6 +513,7 @@ export class RenderGroupLifecycle {
     if (!group.operationDeadlineAt || group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() ||
       context.leaseExpiresAt <= now || context.leaseExpiresAt > group.operationDeadlineAt) throw new RenderGroupAttemptLost(attempt);
     await tx.renderGroup.update({ where: { id: group.id }, data: { heartbeatAt: now, leaseExpiresAt: context.leaseExpiresAt } });
+    return undefined;
   }
 
   async startExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
@@ -522,6 +523,7 @@ export class RenderGroupLifecycle {
       analysisFingerprint: context.fingerprints.analysis, toolchainFingerprint: context.fingerprints.toolchain });
     const members = await memberSnapshot(tx, ref);
     for (const member of members) if (member.status === "pending") await this.markClipRenderVariantRenderingWithinTransaction(tx, attempt, member.clipRenderId);
+    return undefined;
   }
 
   private async executionWakes(tx: Tx, ref: RenderGroupExecutionReference, inputHash: string, retry: boolean): Promise<{ dispatchIds: string[] }> {
@@ -568,6 +570,7 @@ export class RenderGroupLifecycle {
   async progressExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, _progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
     // Public render progress is derived from committed member outcomes.
     await this.owned(tx, this.executionAttempt(ref, context));
+    return undefined;
   }
 
   async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
