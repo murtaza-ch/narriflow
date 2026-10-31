@@ -628,7 +628,10 @@
     "./publication-webhook-body": "./src/publication-webhook-body.ts",
     "./publication-execution-runtime": "./src/publication-execution-runtime.ts",
     "./publication-execution-control": "./src/publication-execution-control.ts",
-    "./publication-producers": "./src/publication-producers.ts"
+    "./publication-producers": "./src/publication-producers.ts",
+    "./publication-observations": "./src/publication-observations.ts",
+    "./publication-observations-runtime": "./src/publication-observations-runtime.ts",
+    "./performance-capture-contract": "./src/performance-capture-contract.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

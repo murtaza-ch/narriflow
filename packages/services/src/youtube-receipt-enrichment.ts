@@ -3,15 +3,8 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { socialOAuthService } from "./social-oauth.service";
 import type { SocialPublicationMetrics } from "./social-publication-observability";
 
-type YouTubeStatusResource = {
-  status?: {
-    uploadStatus?: string;
-    failureReason?: string;
-    rejectionReason?: string;
-    privacyStatus?: string;
-  };
-};
-
+import {interpretYouTubeProcessingStatus,type YouTubeStatusResource} from "./youtube-receipt-status";
+export {interpretYouTubeProcessingStatus} from "./youtube-receipt-status";
 function retryAfterMs(value: string | null, now: Date) {
 	if (!value) return 0;
 	const seconds = Number(value);
@@ -20,19 +13,6 @@ function retryAfterMs(value: string | null, now: Date) {
 	return Number.isFinite(instant) ? Math.max(0, instant - now.getTime()) : 0;
 }
 
-export function interpretYouTubeProcessingStatus(resource: YouTubeStatusResource) {
-  const uploadStatus = resource.status?.uploadStatus ?? "uploaded";
-  const failed = ["failed", "rejected", "deleted"].includes(uploadStatus);
-  return {
-    status: failed
-      ? ("failed" as const)
-      : uploadStatus === "processed"
-        ? ("succeeded" as const)
-        : ("processing" as const),
-    failureCode: failed ? "youtube_processing_failed" : null,
-    visibility: resource.status?.privacyStatus ?? null,
-  };
-}
 
 export function createYouTubeReceiptEnricher(dependencies: {
   fetch: typeof fetch;

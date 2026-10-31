@@ -1,3 +1,4 @@
+import {trackPublishedVideo} from "./publication-observations";
 import {readExecutionAdmission} from "./execution-admission";
 import {appendPublicationDispatch,recoverPublicationDispatches} from "./publication-dispatch";
 import {takeExecutionDispatchIds} from "./execution-dispatch-runtime";
@@ -396,6 +397,7 @@ export async function recordTikTokPublicationEvent(
 					},
 				});
 			}
+   if(published&&event.postId)await trackPublishedVideo(tx,{socialPostId:attempt.socialPostId,platformPostId:event.postId});
 			await emitSocialPostFinished(tx, { socialPostId: attempt.socialPostId, attemptId: attempt.id });
    await recordTerminalWake(tx,attempt.socialPostId,attempt.id,event,now);
 			return {

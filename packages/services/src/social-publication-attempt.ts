@@ -1,3 +1,4 @@
+import {appendYouTubeReceiptEnrichment,trackPublishedVideo} from "./publication-observations";
 import { lockPublicationAttempt, lockPublicationPost } from "./publication-locks";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -612,7 +613,7 @@ export function createPrismaSocialPublicationAttemptStore(database: () => Prisma
 						return rowExecutionResult(row)!;
 					}
 					await requireCurrentClaim(tx, input.owned, input.now);
-					await tx.providerReceipt.create({
+					const receipt=await tx.providerReceipt.create({
 						data: {
 							attemptId: row.id,
 							platform: row.frozenState.platform,
@@ -723,6 +724,8 @@ export function createPrismaSocialPublicationAttemptStore(database: () => Prisma
 							update: {},
 						});
 					}
+     await appendYouTubeReceiptEnrichment(tx,receipt.id);
+     for(const platformPostId of publishedIds)await trackPublishedVideo(tx,{socialPostId:row.socialPostId,platformPostId});
 					await releaseCurrentClaim(tx, input.owned, input.now);
 					await emitSocialPostFinished(tx, { socialPostId: row.socialPostId, attemptId: row.id });
 					return {
