@@ -3254,6 +3254,8 @@ model WebhookSubscription {
 /// re-claim resumes where the last attempt stopped instead of starting over.
 model GenerationFinishing {
   id             String    @id @default(uuid()) @db.Uuid
+  deploymentEpoch Int      @default(1)
+  generation      Int      @default(0)
   workspaceId    String    @db.Uuid
   projectId      String    @db.Uuid
   originRunId    String    @unique @db.Uuid
@@ -3264,6 +3266,9 @@ model GenerationFinishing {
   /// The Autopilot rule whose import froze this row, from its Content Pack. Null for
   /// finishing asked for inline by a request. Standing Grants cover only these rows.
   autopilotRuleId String?   @db.Uuid
+  /// Original accepted source authority, including explicit absence of grants.
+  /// A later grant renewal cannot authorize a replay of this finishing.
+  autopilotAuthority Json?
   /// waiting | due | running | exporting | ready | partial | skipped
   state          String    @default("waiting")
   reason         String?
@@ -3271,6 +3276,7 @@ model GenerationFinishing {
   /// Unexpected failures; waiting for exports is not an attempt.
   attempts       Int       @default(0)
   dueAt          DateTime?
+  operationDeadlineAt DateTime?
   nextAttemptAt  DateTime?
   claimToken     String?   @db.Uuid
   leaseExpiresAt DateTime?
