@@ -1,0 +1,30 @@
+{
+  "httpStatus": 200,
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "hyperdriveId": "1eab68bf4a3d41a996ad13d9ec03265a",
+  "idleHyperdriveQueried": false,
+  "result": {
+    "checks": [
+      "interactive_transactions",
+      "advisory_transaction_lock_exclusion",
+      "row_lock_skip_locked_exclusion",
+      "commit_visibility_and_lock_release",
+      "transaction_rollback",
+      "server_statement_timeout_sqlstate_57014",
+      "fresh_query_after_cancelled_transaction"
+    ],
+    "passed": 7,
+    "database": "isolated-platform-gates",
+    "completedAt": "2026-10-31T05:30:08.292Z"
+  },
+  "status": "passed_deployed_isolated_hyperdrive_gate",
+  "workerVersion": "d5154be2-8339-447a-82dc-6731ffc49a14",
+  "workerName": "narriflow-platform-gates",
+  "sharedDevelopmentDatabaseChanged": false,
+  "notes": [
+    "Fixed SQL only; no SQL or connection URL is accepted from HTTP.",
+    "Two request-scoped Prisma/pg clients test exclusion and close before the response.",
+    "The existing idle Hyperdrive and its Neon branch are not queried.",
+    "This does not replace full candidate domain and final idle verification."
+  ]
+}
