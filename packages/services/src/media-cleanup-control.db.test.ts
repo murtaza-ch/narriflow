@@ -1,0 +1,99 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
+import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
+import { readExecutionDispatch } from "./execution-dispatch";
+
+const url = process.env.SERVERLESS_TEST_DATABASE_URL;
+const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
+suite("Exact media cleanup authority", () => {
+  let database: PrismaClient;
+  beforeAll(() => {
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA!;
+    assertExecutionDatabaseTestTarget(url, schema);
+    database = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 5 }, { schema }), transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
+  });
+  afterAll(async () => { await database?.$disconnect(); });
+  async function fixture() {
+    const row = await database.mediaCleanupObligation.create({ data: { origin: "clip_editor_document_persistence", cleanupClass: "mutable_render", objectKey: `projects/${crypto.randomUUID()}/renders/${crypto.randomUUID()}.mp4`, nextAttemptAt: new Date(0) } });
+    return { row, reference: (await database.$transaction(tx => queueMediaCleanupWithinTransaction(tx, row.id)))! };
+  }
+  test("one exact owner confirms its lease timer before DELETE, and committed replay issues no HTTP", async () => {
+    const { row, reference } = await fixture();
+    const registered: string[][] = []; let deletes = 0;
+    const control = createMediaCleanupControl({ database, register: async ids => { registered.push([...ids]); }, hold: async () => null, storage: { async deleteExact(key) {
+      deletes++; expect(key).toBe(row.objectKey);
+      expect(registered).toHaveLength(1);
+      const timer = await readExecutionDispatch(database, registered[0]![0]!);
+      expect(timer).toMatchObject({ deadlineKind: "lease", wakeKind: "cleanup_claimed" });
+      expect((await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } })).completedAt).toBeNull();
+    } } });
+    expect(await control.run(reference)).toMatchObject({ kind: "complete" });
+    expect(await control.run(reference)).toEqual({ kind: "complete", dispatchIds: [] });
+    expect(deletes).toBe(1);
+    expect(await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ attemptCount: 1, claimId: null });
+  });
+  test("concurrent commands cannot both delete and a live claim reports its authoritative wait", async () => {
+    const { reference } = await fixture();
+    let release!: () => void, started!: () => void, deletes = 0;
+    const waiting = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { started = resolve; });
+    const control = createMediaCleanupControl({ database, register: async () => {}, hold: async () => null, storage: { async deleteExact() { deletes++; started(); await waiting; } } });
+    const first = control.run(reference);
+    await ready;
+    expect(await control.run(reference)).toMatchObject({ kind: "wait" });
+    release(); await first;
+    expect(deletes).toBe(1);
+  });
+  test("unknown DELETE acceptance retains the exact intent and registers a new bounded retry", async () => {
+    const { row, reference } = await fixture(); let deletes = 0;
+    const registered: string[][] = [];
+    const control = createMediaCleanupControl({ database, register: async ids => { registered.push([...ids]); }, hold: async () => null,
+      storage: { async deleteExact(key) { deletes++; expect(key).toBe(row.objectKey); throw new Error("transport reply lost"); } } });
+    const result = await control.run(reference);
+    expect(result).toMatchObject({ kind: "retry" });
+    const current = await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } });
+    expect(current).toMatchObject({ objectKey: row.objectKey, completedAt: null, claimId: null, attemptCount: 1, failureCode: "storage_delete_unconfirmed" });
+    const next = (await readExecutionDispatch(database, result.dispatchIds[0]!))!;
+    expect(next.reference.generation).toBe(reference.generation + 1);
+    expect(next.dueAt.getTime()).toBeGreaterThan(Date.now());
+    expect(registered.at(-1)).toEqual(result.dispatchIds);
+    expect(await control.run(reference)).toMatchObject({ kind: "superseded" });
+    expect(deletes).toBe(1);
+    expect(await database.$transaction(tx => queueMediaCleanupWithinTransaction(tx, row.id))).toEqual(next.reference);
+  });
+  test("a referenced or grant-held object is rescheduled and never forgotten", async () => {
+    const { row, reference } = await fixture(); let deletes = 0;
+    const until = new Date(Date.now() + 86_400_000);
+    const control = createMediaCleanupControl({ database, register: async () => {}, hold: async () => until, storage: { async deleteExact() { deletes++; } } });
+    const result = await control.run(reference);
+    expect(result).toMatchObject({ kind: "retry", until });
+    expect(await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ completedAt: null, claimId: null, nextAttemptAt: until, failureCode: "object_retained" });
+    expect((await readExecutionDispatch(database, result.dispatchIds[0]!))!.dueAt).toEqual(until);
+    expect(deletes).toBe(0);
+  });
+  test("a lost watchdog confirmation leaves the claim recoverable without starting DELETE", async () => {
+    const { row, reference } = await fixture(); let deletes = 0;
+    const control = createMediaCleanupControl({ database, register: async () => { throw new Error("registration unavailable"); }, hold: async () => null, storage: { async deleteExact() { deletes++; } } });
+    await expect(control.run(reference)).rejects.toThrow("registration unavailable");
+    expect(deletes).toBe(0);
+    const claim = await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } });
+    expect(claim.claimId).not.toBeNull();
+    const confirmed: string[][] = [];
+    const replay = createMediaCleanupControl({ database, register: async ids => { confirmed.push([...ids]); }, hold: async () => null, storage: { async deleteExact() { deletes++; } } });
+    expect(await replay.run(reference)).toMatchObject({ kind: "wait", until: claim.claimExpiresAt });
+    expect(confirmed[0]).toHaveLength(1);
+    expect(deletes).toBe(0);
+    await database.mediaCleanupObligation.update({ where: { id: row.id }, data: { claimExpiresAt: new Date(0) } });
+    const recovered = createMediaCleanupControl({ database, register: async () => {}, hold: async () => null, storage: { async deleteExact() { deletes++; } } });
+    expect(await recovered.run(reference)).toMatchObject({ kind: "complete" });
+    expect((await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } })).attemptCount).toBe(2);
+    expect(deletes).toBe(1);
+  });
+  test("immutable dispatch inputs are checked before selecting the trusted object or hold port", async () => {
+    const { reference } = await fixture(); let calls = 0;
+    const control = createMediaCleanupControl({ database, register: async () => {}, hold: async () => { calls++; return null; }, storage: { async deleteExact() { calls++; } } });
+    await expect(control.run({ ...reference, inputHash: "0".repeat(64) })).rejects.toMatchObject({ code: "cleanup_reference_invalid" });
+    expect(calls).toBe(0);
+  });
+});
