@@ -99,11 +99,11 @@ export {
 	encodeReviewSelection,
 	decodeReviewSelection,
 } from "./review.service";
-export {
-	type ReviewNotificationContext,
-	type ReviewNotificationKind,
-	type ReviewNotificationMailInput,
-	type ReviewNotificationStore,
+export type {
+	ReviewNotificationContext,
+	ReviewNotificationKind,
+	ReviewNotificationMailInput,
+	ReviewNotificationStore,
 } from "./review-notification.service";
 export {
 	brandFontService,
@@ -512,12 +512,12 @@ export {
 	acceptTikTokPublicationWebhook,
 	TikTokPublicationWebhookError,
 } from "./social-publication-tiktok-webhook";
-export {
-	type NotificationMailInput,
-	type NotificationMailResult,
-	type NotificationOutcome,
-	type NotificationProject,
-	type NotificationStore,
+export type {
+	NotificationMailInput,
+	NotificationMailResult,
+	NotificationOutcome,
+	NotificationProject,
+	NotificationStore,
 } from "./notification.service";
 
 export {
