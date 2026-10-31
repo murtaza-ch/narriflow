@@ -19,3 +19,25 @@ export const publicationNativeReplySchema=z.discriminatedUnion("kind",[
 ]);
 export type PublicationNativeCommand=z.infer<typeof publicationNativeCommandSchema>;
 export type PublicationNativeReply=z.infer<typeof publicationNativeReplySchema>;
+
+export const publicationKeyScopeSchema=z.strictObject({
+ deploymentEpoch:z.number().int().positive(),socialPostId:z.string().uuid(),attemptId:z.string().uuid(),
+ claimId:z.string().uuid(),bindingHash:z.string().regex(/^[a-f0-9]{64}$/),
+});
+const scopedKey=z.strictObject({key:z.string().regex(/^[A-Za-z0-9_-]{43}$/).refine(value=>{try{return btoa(atob(value.replaceAll("-","+").replaceAll("_","/")+"=")).replaceAll("+","-").replaceAll("/","_").replace(/=+$/,"")===value;}catch{return false;}},"Invalid canonical purpose key"),scope:publicationKeyScopeSchema});
+export const publicationEphemeralSchema=z.strictObject({
+ version:z.literal(1),inputKey:scopedKey,checkpointKey:scopedKey,
+ priorCheckpointKey:scopedKey.extend({artifactId:z.string().uuid()}).optional(),
+ account:z.strictObject({id:z.string().uuid(),userId:z.string().uuid(),platform:z.enum(["youtube_shorts","instagram_reels","facebook_reels","tiktok","linkedin","x"]),providerAccountId:z.string().min(1).max(2048),displayName:z.string().max(512),handle:z.string().max(512).nullable(),accessToken:z.string().min(1).max(16384),scopes:z.array(z.string().max(512)).max(100),metadata:z.null()}).nullable(),
+}).refine(value=>new TextEncoder().encode(JSON.stringify(value)).byteLength<=32*1024,"Publication context exceeds32KiB");
+export const linkedInInstructionBlobSchema=z.strictObject({
+ version:z.literal(1),kind:z.literal("linkedin_upload_instructions"),owner:z.string().min(1).max(2048),videoUrn:z.string().regex(/^urn:li:video:[A-Za-z0-9_-]+$/).max(2048),uploadToken:z.string().max(8192),
+ totalBytes:z.number().int().positive().max(10*1024**3),
+ uploadInstructions:z.array(z.strictObject({uploadUrl:z.string().url().max(8192).refine(raw=>{const u=new URL(raw);return u.protocol==="https:"&&!u.username&&!u.password&&!u.hash&&(!u.port||u.port==="443")&&(u.hostname==="www.linkedin.com"||u.hostname.endsWith(".licdn.com"));},"Invalid LinkedIn upload origin"),firstByte:z.number().int().nonnegative(),lastByte:z.number().int().nonnegative()})).min(1).max(2560),
+}).superRefine((value,context)=>{
+ let cursor=0;for(const part of value.uploadInstructions){if(part.firstByte!==cursor||part.lastByte<part.firstByte||part.lastByte>=value.totalBytes){context.addIssue({code:"custom",path:["uploadInstructions"],message:"Instructions must cover contiguous exact byte ranges"});return;}cursor=part.lastByte+1;}
+ if(cursor!==value.totalBytes)context.addIssue({code:"custom",path:["uploadInstructions"],message:"Incomplete instruction byte coverage"});
+});
+export type PublicationKeyScope=z.infer<typeof publicationKeyScopeSchema>;
+export type PublicationEphemeral=z.infer<typeof publicationEphemeralSchema>;
+export type LinkedInInstructionBlob=z.infer<typeof linkedInInstructionBlobSchema>;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { publicationEphemeralSchema } from "./publication-execution";
 import { executorFenceSchema, executionArtifactRoleSchema, executionMediaFunctionSchema, executionObjectIdentitySchema } from "./execution";
 
 export const EXECUTION_TRANSFER_PART_BYTES = 16 * 1024 * 1024;
@@ -33,7 +34,9 @@ export const executionTransferDispositionSchema = z.discriminatedUnion("disposit
       grant.extend({ kind: z.literal("object"), storageKey: z.string().max(1024), etag: z.string().max(160), byteLength: z.number().int().positive().max(EXECUTION_TRANSFER_PART_BYTES), sha256: sha256Hex }),
     ]),
     sources: z.array(grant.extend({ name: z.string().regex(/^[a-z][a-z0-9_]{0,159}$/), storageKey: z.string().max(1024), etag: z.string().max(160), byteLength, sha256: sha256Hex.optional() })).max(16),
-    outputs: z.array(executionOutputDescriptorSchema.extend({ artifactId: z.string().uuid(), contentTypes: z.array(mime).min(1).max(16) })).max(16) }),
+    outputs: z.array(executionOutputDescriptorSchema.extend({ artifactId: z.string().uuid(), contentTypes: z.array(mime).min(1).max(16) })).max(16),
+    publication: publicationEphemeralSchema.optional(),
+  }).superRefine((value,context)=>{if((value.functionName==="publication")!==(value.publication!==undefined))context.addIssue({code:"custom",path:["publication"],message:"Publication credentials require the publication function"});}),
   z.strictObject({ disposition: z.literal("source_read"), sourceId: z.string().max(160), grant, object: z.strictObject({ storageKey: z.string().max(1024), etag: z.string().max(160), byteLength, sha256: sha256Hex.optional() }) }),
   z.strictObject({ disposition: z.literal("upload_ready"), artifactId: z.string().uuid(), uploadId: z.string().min(1).max(2048), byteLength,
     partSizeBytes: z.literal(EXECUTION_TRANSFER_PART_BYTES), partCount: partNumber }),

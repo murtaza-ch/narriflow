@@ -589,7 +589,8 @@
     "./clip-preparation-policy": {
       "types": "./src/clip-preparation-policy.ts",
       "default": "./src/clip-preparation-policy.ts"
-    }
+    },
+    "./publication-checkpoint-blob": "./src/publication-checkpoint-blob.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

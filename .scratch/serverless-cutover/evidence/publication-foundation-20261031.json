@@ -1,0 +1,100 @@
+{
+  "date": "2026-10-31",
+  "status": "foundation tested; domain/controller/native integration in progress",
+  "identity": {
+    "subject": "SocialPost.id",
+    "generation": "physical execution cycle",
+    "scheduleRevision": "frozen scheduling intent",
+    "attemptToken": "PublicationClaim.id",
+    "logicalProviderOperation": "existing SocialPublicationAttempt"
+  },
+  "commands": {
+    "action": "publication-command",
+    "kinds": [
+      "checkpoint",
+      "provider_call",
+      "accepted",
+      "pending",
+      "unknown",
+      "failed",
+      "interrupted"
+    ],
+    "maximumMetadataBytes": 49152,
+    "inboxReplies": "strict outcome metadata only"
+  },
+  "grantReceipts": {
+    "stored": "transfer_granted marker with canonical request hash",
+    "replay": "fresh authorize and withAuthority before reissuing",
+    "completedUploadFacts": "durable replay preserved",
+    "oldNegativeTest": "grant response persisted and replayed without fresh authority; test failed before correction"
+  },
+  "publicationContext": {
+    "maximumBytes": 32768,
+    "onlyFunction": "publication",
+    "storedInInputObject": false,
+    "storedInInbox": false,
+    "pythonReprHidden": true
+  },
+  "checkpointEnvelope": {
+    "cipher": "AES-GCM256",
+    "nonceBytes": 12,
+    "maximumBytes": 16777216,
+    "keyDerivation": "HKDF-SHA256 from existing Worker checkpoint master",
+    "purposes": [
+      "input_state",
+      "linkedin_instructions"
+    ],
+    "scope": [
+      "epoch",
+      "SocialPost.id",
+      "SocialPublicationAttempt.id",
+      "original PublicationClaim.id",
+      "inputHash"
+    ],
+    "largeLinkedInState": "one immutable encrypted instructions object; compact progress append deltas; original object reused by new claims"
+  },
+  "gates": {
+    "postgresFresh134Migrations": {
+      "publicationAndTransferTests": 10,
+      "assertions": 54
+    },
+    "coreRegressionPostgres": {
+      "tests": 14,
+      "assertions": 84
+    },
+    "pureCryptoAndProtocol": {
+      "tests": 5,
+      "assertions": 26
+    },
+    "pythonProtocolAndTransfer": {
+      "tests": 12
+    },
+    "actualWorkerd": {
+      "checks": [
+        "independent_hkdf",
+        "ciphertext_only",
+        "large_checkpoint_roundtrip",
+        "claim_aad_fence"
+      ]
+    },
+    "typechecks": [
+      "services",
+      "api"
+    ]
+  },
+  "research": {
+    "primaryExamples": [
+      "https://github.com/googleapis/google-api-python-client/blob/main/docs/media.md",
+      "https://github.com/googleapis/google-api-python-client/blob/main/googleapiclient/http.py"
+    ],
+    "linkedinPrimary": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api?view=li-lms-2026-01",
+    "inference": "The documented GET/batch video response provides status/media fields without initializeUpload uploadInstructions, so it cannot replace the durable original upload plan."
+  },
+  "remaining": [
+    "targeted admission/claim and same-attempt driver wiring",
+    "native provider transport codec and scoped Python bridge",
+    "atomic checkpoint/settlement and continuation dispatch",
+    "finite receipt enrichment/performance capture timers",
+    "deployed provider sandbox failure matrix and zero-duplicate gate"
+  ]
+}

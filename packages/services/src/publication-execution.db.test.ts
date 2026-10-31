@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { appendPublicationDispatch,observePublicationSchedule,publicationExecutionInputHash } from "./publication-dispatch";
 import { createHash } from "node:crypto";
+import { createExecutionTransfer } from "./execution-transfer";
 import { createExecutorControl } from "./executor-control";
 import type { ExecutorDomainControl } from "./executor-domain-control";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
@@ -113,6 +114,33 @@ suite("Revision-bound publication execution",()=>{
   await db.executionAttempt.update({where:{attemptToken:token},data:{leaseExpiresAt:new Date(Date.now()-1000)}});
   expect((await execute(command)).disposition).toBe("expired");
   expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}})).providerCallCount).toBe(1);
+  await db.executionDispatch.update({where:{id:dispatch.reference.dispatchId},data:{acknowledgedAt:new Date()}});
+ });
+
+ test("publication OAuth and purpose keys remain fresh work-package data and never enter an inbox",async()=>{
+  const f=await fixture(),token=crypto.randomUUID(),owner=crypto.randomUUID();
+  const dispatch=await db.$transaction(tx=>appendExecutionDispatch(tx,{deploymentEpoch:f.post.deploymentEpoch,generation:f.post.generation,kind:"modal_execution",subject:{kind:"social_publication",id:f.post.id},inputHash:publicationExecutionInputHash(f.post),dueAt:f.post.createdAt}));
+  await db.executionAttempt.create({data:{attemptToken:token,dispatchId:dispatch.reference.dispatchId,deploymentEpoch:f.post.deploymentEpoch,generation:f.post.generation,inputHash:dispatch.reference.inputHash,functionName:"publication",operationDeadlineAt:new Date(Date.now()+600000)}});
+  const domain:ExecutorDomainControl<string>={lockExecution:async()=>({kind:"current",ref:f.post.id}),acquireExecution:async()=>undefined,renewExecution:async()=>undefined,startExecution:async()=>undefined,commitArtifactExecution:async()=>undefined,failExecution:async()=>undefined,releaseExecution:async()=>undefined,progressExecution:async()=>undefined};
+  const control=createExecutorControl({database:db,subjectKind:"social_publication",domain});
+  const fence={reference:dispatch.reference,attemptToken:token,owner};
+  const verified=(command:unknown,deliveryId=crypto.randomUUID())=>({requestHash:createHash("sha256").update(JSON.stringify(command)).digest("hex"),metadata:{version:1 as const,keyId:"fixture",audience:"executor-control" as const,method:"POST" as const,canonicalTarget:"/api/execution/transfer",bodySha256:"0".repeat(64),timestamp:Math.floor(Date.now()/1000),deliveryId,signature:"0".repeat(64)}});
+  const acquire={action:"acquire",reference:dispatch.reference,attemptToken:token,owner,leaseSeconds:120};
+  await control.execute({command:acquire,verifiedRequest:verified(acquire)});
+  const scope={deploymentEpoch:f.post.deploymentEpoch,socialPostId:f.post.id,attemptId:crypto.randomUUID(),claimId:token,bindingHash:dispatch.reference.inputHash};
+  const publication={version:1 as const,inputKey:{key:Buffer.alloc(32,1).toString("base64url"),scope},checkpointKey:{key:Buffer.alloc(32,2).toString("base64url"),scope},account:{id:f.post.socialAccountId!,userId:f.post.createdByUserId!,platform:"youtube_shorts" as const,providerAccountId:"fixture",displayName:"Fixture",handle:null,accessToken:"private-ephemeral-oauth",scopes:[],metadata:null}};
+  let resolves=0;
+  const transfer=createExecutionTransfer({database:db,authority:control,storage:{} as never,resolvePackage:async()=>{resolves++;return {input:{kind:"inline",command:{kind:"publication"}},sources:[],outputs:[],publication};}});
+  const command={action:"work-package",fence},deliveryId=crypto.randomUUID(),request=verified(command,deliveryId);
+  const response=await transfer.execute({command,verifiedRequest:request});
+  expect(response.disposition).toBe("work_package");
+  if(response.disposition==="work_package")expect(response.publication?.account?.accessToken).toBe("private-ephemeral-oauth");
+  const receipt=await db.executionInboxReceipt.findUniqueOrThrow({where:{audience_deliveryId:{audience:"executor-control",deliveryId}}});
+  expect(receipt.disposition).toEqual({disposition:"transfer_granted"});
+  expect(JSON.stringify(receipt.disposition)).not.toContain("private-ephemeral-oauth");
+  await db.executionAttempt.update({where:{attemptToken:token},data:{revokedAt:new Date()}});
+  await expect(transfer.execute({command,verifiedRequest:request})).rejects.toMatchObject({code:"authority_lost"});
+  expect(resolves).toBe(1);
   await db.executionDispatch.update({where:{id:dispatch.reference.dispatchId},data:{acknowledgedAt:new Date()}});
  });
 

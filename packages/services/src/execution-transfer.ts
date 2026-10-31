@@ -1,3 +1,4 @@
+import { publicationEphemeralSchema, type PublicationEphemeral } from "@narriflow/validators/publication-execution";
 import type { ExecutionArtifact, Prisma, PrismaClient } from "@prisma/client";
 import { executionOutputDescriptorSchema, executionPartPlanSchema, executionTransferCommandSchema, executionTransferDispositionSchema,
   EXECUTION_TRANSFER_PART_BYTES, type ExecutionOutputDescriptor, type ExecutionPartPlan, type ExecutionTransferCommand, type ExecutionTransferDisposition } from "@narriflow/validators/execution-transfer";
@@ -13,6 +14,8 @@ type Authority = {
   withAuthority<T>(fence: unknown, requireStarted: boolean, work: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>): Promise<T>;
 };
 export interface ExecutionPreparedPackage {
+  /** Fresh invocation-only provider access. Never serialized into an inbox or private input object. */
+  publication?: PublicationEphemeral;
   input: { kind: "inline"; command: Prisma.JsonValue } | { kind: "object" };
   sources: readonly (ExecutionPinSource & { name: string; sha256?: string })[];
   outputs: readonly ExecutionOutputDescriptor[];
@@ -34,7 +37,7 @@ const contentTypes: Readonly<Record<string, readonly string[]>> = {
   thumbnail: ["image/png", "image/jpeg", "image/webp"], export_bundle: ["application/zip"], dub_mix: ["video/mp4", "audio/wav", "audio/mpeg", "audio/mp4"], selection_window: ["application/json"],
   validated_font: ["font/ttf", "font/otf", "font/woff2", "application/font-sfnt", "application/x-font-ttf", "application/x-font-opentype", "application/octet-stream"],
   validated_asset: ["image/png", "image/jpeg", "image/webp", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska"],
-  outbound_receipt: ["application/json"],
+  outbound_receipt: ["application/json"], publication_checkpoint: ["application/octet-stream"],
 };
 const invalid = (): never => { throw new ExecutorControlError("artifact_invalid"); };
 const pending = { disposition: "transfer_pending" };
@@ -197,6 +200,8 @@ export function createExecutionTransfer(options: Options) {
     const authority = await options.authority.authorize(command.fence, false);
     const prepared = await options.resolvePackage(authority);
     if (prepared.outputs.length > 16 || prepared.sources.length > 4096) return invalid();
+    if ((authority.functionName === "publication") !== (prepared.publication !== undefined)) return invalid();
+    const publication = prepared.publication === undefined ? undefined : publicationEphemeralSchema.parse(prepared.publication);
     const descriptors = prepared.outputs.map(value => executionOutputDescriptorSchema.parse(value));
     const outputs = await options.authority.withAuthority(command.fence, false, async (tx, live) => {
       const values = [];
@@ -223,7 +228,7 @@ export function createExecutionTransfer(options: Options) {
       return { kind: "object" as const, ...frozen, sha256: authority.input.sha256, ...wireGrant(await options.storage.signInput(frozen, authority)) };
     })();
     const sources = await Promise.all(prepared.sources.slice(0, 16).map(async source => ({ ...source, ...wireGrant(await options.storage.signSource(source, authority)) })));
-    return executionTransferDispositionSchema.parse({ disposition: "work_package", functionName: executionMediaFunctionSchema.parse(authority.functionName), inputHash: authority.fence.reference.inputHash, input, sources, outputs });
+    return executionTransferDispositionSchema.parse({ disposition: "work_package", functionName: executionMediaFunctionSchema.parse(authority.functionName), inputHash: authority.fence.reference.inputHash, input, sources, outputs, ...(publication ? {publication} : {}) });
   }
   async function execute(input: { command: unknown; verifiedRequest: VerifiedExecutionRequest }): Promise<ExecutionTransferDisposition> {
     const command = executionTransferCommandSchema.parse(input.command), verified = input.verifiedRequest;
