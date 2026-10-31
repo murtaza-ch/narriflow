@@ -24,6 +24,12 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     if (stage !== "clip_rendering") throw Error(`Use a targeted ${stage} fixture`);
     const run = await this.fixturePrisma.workflowRun.findFirst({ where: { stage, status: { in: ["queued", "waiting"] } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], include: { project: true } });
     if (!run) return null;
+    return this.renderParent(run.id);
+  }
+  /** Registers the exact accepted parent without acquiring execution authority. */
+  async renderParent(runId: string) {
+    const run = await this.fixturePrisma.workflowRun.findUniqueOrThrow({ where: { id: runId }, include: { project: true } });
+    if (run.stage !== "clip_rendering") throw Error("Not a render parent");
     const reference = (await this.fixturePrisma.$transaction(tx => this.dispatchRunWithinTransaction(tx, run.id))).reference;
     this.parents.set(reference.dispatchId, reference);
     return { workflowRunId: run.id, projectId: run.projectId, stage: "clip_rendering" as const, attemptId: reference.dispatchId, attemptCount: 0,

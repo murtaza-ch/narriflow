@@ -76,6 +76,20 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commits[0][1]['artifact'],{'artifactId':output['artifactId'],'role':'thumbnail','bindingHash':'1'*64,
             'contentType':'image/png','byteLength':5,'sha256':hashlib.sha256(b'hello').hexdigest(),'etag':'"sealed"'})
 
+    async def test_a_pre_cancelled_assignment_never_opens_a_file_or_initializes_storage(self):
+        output = {'artifactId': str(uuid4()), 'role': 'thumbnail', 'bindingHash': '1' * 64,
+                  'maxBytes': 10, 'contentType': 'image/png', 'contentTypes': ['image/png']}
+        session, calls, stored, storage = self.session(output)
+        with session:
+            artifacts = AssignedArtifacts(session, await load_work_package(session))
+            before = len(calls)
+            session.cancel_event.set()
+            with self.assertRaisesRegex(ExecutionControlError, 'execution_authority_lost'):
+                await artifacts.upload(output['artifactId'], Path('/file-is-never-opened.png'),
+                    content_type='image/png', byte_length=5, sha256='a' * 64, transport=storage)
+            self.assertEqual(len(calls), before)
+            self.assertEqual(stored, [])
+
     async def test_uploaded_render_bytes_can_wait_for_measured_facts_before_the_real_domain_commit(self):
         output={'artifactId':str(uuid4()),'role':'render_variant','bindingHash':'1'*64,'maxBytes':10,
             'contentType':'video/mp4','contentTypes':['video/mp4']}
