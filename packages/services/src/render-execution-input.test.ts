@@ -12,7 +12,7 @@ test("render capsule binds completed source observations, exact objects and froz
     sourceProbe: { durationSec: 20, video: null, audio: null, facts: { format: { name: "fixture", startTimeSec: 0, durationSec: 20, sizeBytes: 100, bitRate: null }, attachedPictureCount: 0, videos: [], audios: [] } },
     document: documents.cases["solo-auto-vertical"].document, wholeSource: false, llmModel: "fixture" };
   const preparation = { ...raw, bindingHash: await clipPreparationBinding(raw) };
-  const input = renderExecutionInputSchema.parse({ version: 1, kind: "render_group", groupId: id(), workflowRunId: id(), workSetGeneration: id(), preparation,
+  const input = renderExecutionInputSchema.parse({ version: 1, kind: "render_group", watermark: true, groupId: id(), workflowRunId: id(), workSetGeneration: id(), preparation,
     prepared: { preview: object, result: { version: 1, preparationId: raw.preparationId, bindingHash: preparation.bindingHash,
       preview: { artifactId: id(), startSec: 0, durationSec: 8 }, peaks: { state: "unavailable", reason: "no_audio" }, layout: { automatic: { state: "failed", reason: "analysis_unavailable" }, screen: null, split: null } } },
     workspace: { id: id(), ownerUserId: id(), pricingTier: "free" }, captionLanguage: null, brandSnapshot: null,

@@ -28,7 +28,6 @@ import {
 	CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT,
 	brandTemplateSnapshotSchema,
 	brollCuesArraySchema,
-	CATEGORY_BROLL_FALLBACK_QUERY,
 	clipAspectRatioDbSchema,
 	clipAspectRatioFromDb,
 	clipAspectRatioOptions,
@@ -53,8 +52,8 @@ import {
 	type LayoutEvidenceDetectors,
 	type LayoutEvidenceAvailability,
 } from "../layout-evidence";
-import { brollQueryForClip, dominantPexelsOrientation, planBrollWindow } from "@narriflow/validators";
-import { remapBrollCuesForCutPlan } from "./broll";
+import { planBrollWindow } from "@narriflow/validators";
+import { compileBrollSearchRequest } from "@narriflow/services/broll-plan";
 import type { getCachedBrollAssetPath, ResolveBrollCutaways, saveBrollAssetToCache, BrollCueInput } from "./broll";
 import { type RenderConfig } from "../render-config";
 import {
@@ -248,10 +247,10 @@ export interface CompositionResourceMeasurement {
 
 export interface ClipRenderAttemptAdapters {
 	workerProcess: WorkerProcessModule;
-	state: Pick<
-		typeof productionClipService,
-		"getFrozenRenderingStateForWorkSet" | "getProjectRenderStorageReferences"
-	>;
+  state: Pick<typeof productionClipService, "getProjectRenderStorageReferences"> & {
+    getFrozenRenderingStateForWorkSet(...args: Parameters<typeof productionClipService.getFrozenRenderingStateForWorkSet>):
+      Promise<(NonNullable<Awaited<ReturnType<typeof productionClipService.getFrozenRenderingStateForWorkSet>>> & { frozenWatermark?: boolean }) | null>;
+  };
 	/** Layout evidence another group stored since this attempt's snapshot. */
 	layoutEvidence: Pick<LayoutEvidenceLifecycle, "readCompatibleDurable"> & { completedPreparation?: boolean };
 	/** Immutable facts shared by every render in this worker process. */
@@ -2384,7 +2383,7 @@ async function executeClipRenderAttempt(
  executionContext.exportId = pendingRenders[0]?.exportVariant?.exportId ?? null;
  executionContext.editorRevision = pendingRenders[0]?.clip?.editorRevision;
 	const pricingTier = frozenState.pricingTier;
-	const applyWatermark = !hasFeature(pricingTier, "export.noWatermark");
+  const applyWatermark = frozenState.frozenWatermark ?? !hasFeature(pricingTier, "export.noWatermark");
 
 	const runStartedAtMs = currentTimeMs();
 	const limits = currentRenderConfig();
@@ -3116,41 +3115,11 @@ async function renderClipGroup(input: {
 			// (post-cut) timeline once deletedRanges are in play — remap
 			// through the same cutPlan.map every other cut-concat consumer
 			// (captions, reframe) uses, dropping cues whose moment was cut.
-			const remappedCues = remapBrollCuesForCutPlan(
-				rawCues,
-				cutPlan,
-				clipStartSec,
-			);
-			const cues: BrollCueInput[] | null =
-				remappedCues && remappedCues.length > 0 ? remappedCues : null;
-
-			const category = clip.category as ClipCategory;
-			const fallbackQuery = brollQueryForClip(
-				clip.title,
-				clip.hookText,
-				category,
-			);
-			const broaderFallbackQuery =
-				CATEGORY_BROLL_FALLBACK_QUERY[category] ?? null;
-
-			if (cues || fallbackQuery) {
-				const orientation = dominantPexelsOrientation(
-					outputs.map((o) => o.aspectRatio),
-				);
-				const targetWidth = orientation === "landscape" ? 1920 : 1080;
-				const targetHeight = orientation === "landscape" ? 1080 : 1920;
-
-				try {
-					const resolvedCutaways =
-						await currentRenderAdapters().optionalAssets.resolveBrollCutaways({
-							clipDurationSec,
-							cues,
-							fallbackQuery,
-							broaderFallbackQuery,
-							orientation,
-							targetWidth,
-							targetHeight,
-						});
+            const searchRequest = compileBrollSearchRequest({ rawCues, cutPlan, clipStartSec, clipDurationSec,
+              title: clip.title, hookText: clip.hookText, category: clip.category as ClipCategory, aspects: outputs.map(output => output.aspectRatio) });
+            if (searchRequest) {
+                try {
+                    const resolvedCutaways = await currentRenderAdapters().optionalAssets.resolveBrollCutaways(searchRequest);
 
 					const cutaways: BrollCutaway[] = [];
 					const credits: BrollPlan["credits"] = [];
@@ -3261,7 +3230,7 @@ async function renderClipGroup(input: {
 						log("info", "clip_broll_selected", {
 							workflowRunId: run.id,
 							clipId: clip.id,
-							source: cues ? "cues" : "auto",
+              source: searchRequest.cues ? "cues" : "auto",
 							cutawayCount: cutaways.length,
 							credits,
 						});

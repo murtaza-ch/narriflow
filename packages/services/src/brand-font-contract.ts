@@ -1,4 +1,4 @@
-import type { CaptionFontFace, SceneBlock } from "@narriflow/validators";
+import type { CaptionFontFace, SceneBlock, CaptionPreset, StudioTextLayer } from "@narriflow/validators";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
 
 const brandFontIntegrityFailureCatalog = {
@@ -64,5 +64,26 @@ export interface ParsedBrandFont {
   style: string;
   weight: number;
   face: CaptionFontFace;
+}
+
+
+export type FontReference = NonNullable<CaptionPreset["fontAsset"]>;
+export const brandFontKey = (font: { id: string; fingerprint: string }) =>
+  `${font.id}:${font.fingerprint}`;
+
+export function documentFontReferences(document: {
+  captionPreset: CaptionPreset;
+  studioEdits: { textLayers: readonly StudioTextLayer[] };
+}): FontReference[] {
+  return [
+    ...new Map(
+      [
+        document.captionPreset.fontAsset,
+        ...document.studioEdits.textLayers.map((layer) => layer.fontAsset),
+      ]
+        .filter((font): font is FontReference => Boolean(font))
+        .map((font) => [brandFontKey(font), font]),
+    ).values(),
+  ];
 }
 

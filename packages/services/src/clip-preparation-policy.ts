@@ -1,5 +1,5 @@
 export { resolveDisplayGeometry, type DisplayGeometry } from "@narriflow/validators/source-display-geometry";
-import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, getEffectiveClipTiming } from "@narriflow/validators";
+import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, resolveClipRenderTiming } from "@narriflow/validators";
 import type { ClipPreparationInput } from "@narriflow/validators/clip-preparation";
 
 export const DEFAULT_PREVIEW_PADDING_SEC = 4;
@@ -14,7 +14,8 @@ export const DEFAULT_PREVIEW_PEAKS_PER_SEC = 20;
 export const DEFAULT_CLIP_PREVIEW_PADDING_SEC = DEFAULT_PREVIEW_PADDING_SEC;
 
 export const CLIP_PREPARATION_POLICY = Object.freeze({
-  version: 1,
+  version: 2,
+  sourceTiming: "clip-render-timing-v1",
   preview: Object.freeze({ paddingSec: DEFAULT_PREVIEW_PADDING_SEC, maxHeight: DEFAULT_PREVIEW_MAX_HEIGHT,
     x264Preset: DEFAULT_PREVIEW_X264_PRESET, x264Crf: DEFAULT_PREVIEW_X264_CRF,
     audioBitrate: DEFAULT_PREVIEW_AUDIO_BITRATE, x264Threads: DEFAULT_PREVIEW_X264_THREADS,
@@ -76,11 +77,11 @@ export function computeClipPreviewWindow(
 
 
 /** Same effective source window as preview admission and the Studio snapshot. */
-export function clipPreparationTiming(input: Pick<ClipPreparationInput, "document" | "sourceProbe">) {
-  return getEffectiveClipTiming({ utterances: input.document.transcriptSlice, startSec: input.document.clipStartSec,
-    endSec: input.document.clipEndSec, sourceDurationSec: input.sourceProbe.durationSec, tailPadSec: 0 });
+export function clipPreparationTiming(input: Pick<ClipPreparationInput, "document" | "sourceProbe" | "llmModel">) {
+  return resolveClipRenderTiming({ llmModel: input.llmModel, utterances: input.document.transcriptSlice,
+    startSec: input.document.clipStartSec, endSec: input.document.clipEndSec });
 }
-export function clipPreparationPreviewWindow(input: Pick<ClipPreparationInput, "document" | "sourceProbe">) {
+export function clipPreparationPreviewWindow(input: Pick<ClipPreparationInput, "document" | "sourceProbe" | "llmModel">) {
   const effective = clipPreparationTiming(input);
   return computeClipPreviewWindow(effective.startSec, effective.endSec, input.sourceProbe.durationSec);
 }

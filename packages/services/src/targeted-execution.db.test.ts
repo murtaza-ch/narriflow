@@ -41,7 +41,7 @@ dbDescribe("Targeted serverless domain execution", () => {
   }, 60_000);
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture(executionDeadline?: Date, aspects: readonly ("ratio_9_16" | "ratio_16_9" | "ratio_1_1")[] = ["ratio_9_16"]) {
+  async function fixture(executionDeadline?: Date, aspects: readonly ("ratio_9_16" | "ratio_16_9" | "ratio_1_1")[] = ["ratio_9_16"], sealed = true) {
     const user = await db.user.create({ data: { clerkId: `targeted-execution:${crypto.randomUUID()}` } });
     users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted execution gate", ownerUserId: user.id } });
@@ -58,10 +58,22 @@ dbDescribe("Targeted serverless domain execution", () => {
     const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID();
     const [clock] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
     const deadline = executionDeadline ?? new Date(clock!.now.getTime() + 10 * 60_000);
+    const input = sealed ? await sealInput(group, run.projectId, deadline) : {};
     await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline,
-      createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
+      ...input, createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
     const lifecycle = new RenderGroupLifecycle({ prisma: db, releaseGraceMs: 0 });
     return { lifecycle, reference: record.reference, attemptToken, owner, deadline, group, variant, variants, run };
+  }
+
+  async function sealInput(group: { id: string; clipId: string }, projectId: string, deadline: Date) {
+    const preparation = await db.clipPreparation.upsert({ where: { clipId_bindingHash_deploymentEpoch: { clipId: group.clipId, bindingHash: "a".repeat(64), deploymentEpoch: epoch } }, update: {}, create: { projectId, clipId: group.clipId, sourceRevision: 1, editorRevision: 1,
+      deploymentEpoch: epoch, operationDeadlineAt: deadline, bindingHash: "a".repeat(64), engineHash: "b".repeat(64), inputHash: "c".repeat(64),
+      inputStorageKey: `projects/${projectId}/preparations/${crypto.randomUUID()}/${crypto.randomUUID()}.json`, inputEtag: '"preparation"', inputByteLength: 1000n, inputChecksumSha256: "d".repeat(64),
+      createdAt: new Date(Math.min(Date.now(), deadline.getTime()-60000)),
+      status: "completed", chargedAttempts: 1, completedAt: new Date(), result: { version: 1, fixture: "verified preparation fixture" } } });
+    const input = { inputStorageKey: `projects/${projectId}/render-groups/${group.id}/${crypto.randomUUID()}.json`, inputEtag: '"render"', inputByteLength: 2000n, inputChecksumSha256: "e".repeat(64) };
+    await db.renderGroup.update({ where: { id: group.id }, data: { ...input, preparationId: preparation.id } });
+    return input;
   }
 
   async function mutate<T>(value: Awaited<ReturnType<typeof fixture>>, action: (tx: Prisma.TransactionClient, ref: RenderGroupExecutionReference, context: ExecutorMutationContext) => Promise<T>) {
@@ -123,8 +135,9 @@ dbDescribe("Targeted serverless domain execution", () => {
       generation: group.generation, inputHash: driver.reference.inputHash, dueAt: driver.dueAt }));
     dispatches.push(modal.reference.dispatchId);
     const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID(), deadline = new Date(Date.now() + 10 * 60_000);
+    const input = await sealInput(group, value.run.projectId, deadline);
     await db.executionAttempt.create({ data: { attemptToken, dispatchId: modal.reference.dispatchId, deploymentEpoch: epoch, generation: group.generation,
-      inputHash: modal.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline } });
+      inputHash: modal.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline, ...input } });
     const child = { ...value, group, reference: modal.reference, attemptToken, owner, deadline };
     const server = control(child);
     expect((await server.send(acquire(child))).disposition).toBe("acquired");
@@ -146,7 +159,7 @@ dbDescribe("Targeted serverless domain execution", () => {
   }, 180_000);
 
   test("a group seals one preparation and one complete input tuple across retries", async () => {
-    const value = await fixture();
+    const value = await fixture(undefined, undefined, false);
     const preparation = await db.clipPreparation.create({ data: { projectId: value.run.projectId, clipId: value.group.clipId,
       sourceRevision: 1, editorRevision: 1, bindingHash: "a".repeat(64), engineHash: "b".repeat(64), inputHash: "c".repeat(64),
       inputStorageKey: "projects/frozen/preparation.json", inputEtag: '"preparation"', inputByteLength: 1000n, inputChecksumSha256: "d".repeat(64),
@@ -176,6 +189,23 @@ dbDescribe("Targeted serverless domain execution", () => {
     await db.project.update({ where: { id: value.run.projectId }, data: { ingestStatus: "ready", sourceStorageKey: "gate/source" } });
     expect((await server.send(acquire(value))).disposition).toBe("acquired");
   }, 90_000);
+
+  test("a queued native token cannot acquire before completed preparation and its exact sealed capsule exist", async () => {
+    const value = await fixture(undefined, undefined, false), server = control(value);
+    await expect(server.send(acquire(value))).rejects.toThrow();
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "queued", chargedAttemptCount: 0, attemptToken: null });
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: value.attemptToken } })).toMatchObject({ owner: null, processStartedAt: null });
+    expect(await db.renderGroupExecution.count({ where: { groupId: value.group.id } })).toBe(0);
+  });
+
+  test("the shared preparation deadline resolves a running native owner by its actual generic token", async () => {
+    const value = await fixture(), server = control(value);
+    await server.send(acquire(value));
+    const watchdog = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: value.group.id, kind: "operation_driver", deadlineKind: "operation" } });
+    expect(await value.lifecycle.expirePreparationDeadline((await readExecutionDispatch(db,watchdog.id))!.reference,
+      { kind: "operation", observedDeadlineAt: value.deadline })).toEqual({ kind: "native", attemptToken: value.attemptToken });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "running", chargedAttemptCount: 0, attemptToken: value.attemptToken });
+  });
 
   test("a pre-start release creates no charged render attempt and admits one new generation", async () => {
     const value = await fixture();
@@ -244,6 +274,26 @@ dbDescribe("Targeted serverless domain execution", () => {
     expect(await db.executionDispatch.findFirst({ where: { subjectId: value.group.id, kind: "operation_driver", wakeKind: "execution_finished" } })).not.toBeNull();
   }, 90_000);
 
+  test("a source or frozen variant configuration change blocks an already-running owner's publication", async () => {
+    for (const change of ["source_revision", "resolution"] as const) {
+      const value = await fixture(), server = control(value);
+      await server.send(acquire(value)); await server.send({ action: "process-start", fence: fence(value) });
+      const bindingHash = await renderArtifactBindingHash({ inputHash: value.reference.inputHash, renderId: value.variant.id, role: "render_variant" });
+      const assigned = await db.executionArtifact.create({ data: { attemptToken: value.attemptToken, owner: value.owner, role: "render_variant", bindingHash,
+        storageKey: `execution/${epoch}/${value.attemptToken}/${value.owner}/${crypto.randomUUID()}.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: value.deadline } });
+      if (change === "source_revision") await db.project.update({ where: { id: value.run.projectId }, data: { sourceRevision: { increment: 1 } } });
+      else await db.clipRender.update({ where: { id: value.variant.id }, data: { resolution: "720p" } });
+      const command = { action: "commit-artifact" as const, fence: fence(value), artifact: { artifactId: assigned.id, role: "render_variant" as const, contentType: "video/mp4", byteLength: 1024, etag: '"gate-etag"', sha256: "a".repeat(64), bindingHash } };
+      if (change === "source_revision") {
+        expect(await server.send(command)).toEqual({ disposition: "superseded" });
+        expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "superseded", attemptToken: null, chargedAttemptCount: 1 });
+        expect(await db.renderGroupExecution.findUniqueOrThrow({ where: { token: value.attemptToken } })).toMatchObject({ result: "superseded", charged: true });
+      } else await expect(server.send(command)).rejects.toThrow();
+      expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ storageKey: null, durationSec: null });
+      expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: assigned.id } })).committedAt).toBeNull();
+    }
+  });
+
   test("an unacquired operation deadline settles failed without a fabricated render execution or charge", async () => {
     const expired = new Date(0);
     const value = await fixture(expired);
@@ -255,7 +305,7 @@ dbDescribe("Targeted serverless domain execution", () => {
   }, 90_000);
 
   test("a durable pre-input deadline expires a queued group with no generic invocation or invented process history", async () => {
-    const value = await fixture();
+    const value = await fixture(undefined, undefined, false);
     await db.executionAttempt.delete({ where: { attemptToken: value.attemptToken } });
     const absolute = new Date(0);
     await db.renderGroup.update({ where: { id: value.group.id }, data: { operationDeadlineAt: absolute } });
@@ -300,7 +350,9 @@ dbDescribe("Targeted serverless domain execution", () => {
     const record = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: value.reference.subject, generation: 2, inputHash: value.reference.inputHash, dueAt: new Date() }));
     dispatches.push(record.reference.dispatchId);
     const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID();
-    await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 2, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: value.deadline } });
+    const priorInput = await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } });
+    await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 2, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: value.deadline,
+      inputStorageKey: priorInput.inputStorageKey, inputEtag: priorInput.inputEtag, inputByteLength: priorInput.inputByteLength, inputChecksumSha256: priorInput.inputChecksumSha256 } });
     await db.renderGroup.update({ where: { id: value.group.id }, data: { nextAttemptAt: new Date(0) } });
     value = { ...value, reference: record.reference, attemptToken, owner };
     await mutate(value, (tx, ref, context) => value.lifecycle.acquireExecution(tx, ref, context));

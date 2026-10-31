@@ -31,7 +31,8 @@ export const renderGroupOutcomeSchema = z.strictObject({
 }, "Outcome counts must cover exactly the settled group members");
 export type RenderGroupOutcome = z.infer<typeof renderGroupOutcomeSchema>;
 
-const source = { name: z.string().regex(/^[a-z][a-z0-9_]{0,159}$/), object: clipPreparationObjectSchema };
+export const renderAssetObjectSchema = clipPreparationObjectSchema.extend({ sha256: z.string().regex(/^[a-f0-9]{64}$/).optional() });
+const source = { name: z.string().regex(/^[a-z][a-z0-9_]{0,159}$/), object: renderAssetObjectSchema };
 const id = z.string().uuid(), fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
 export const renderBrollRequestSchema = z.strictObject({
   clipDurationSec: z.number().finite().positive(), cues: brollCuesArraySchema.nullable(),
@@ -40,6 +41,7 @@ export const renderBrollRequestSchema = z.strictObject({
 });
 export const renderExecutionInputSchema = z.strictObject({
   version: z.literal(1), kind: z.literal("render_group"), groupId: id, workflowRunId: id, workSetGeneration: id,
+  watermark: z.boolean(),
   preparation: clipPreparationInputSchema,
   prepared: z.strictObject({ preview: clipPreparationObjectSchema, result: clipPreparationResultSchema }),
   workspace: z.strictObject({ id, ownerUserId: id, pricingTier: pricingTierSchema }),

@@ -27,7 +27,9 @@ export async function decodeRenderVariantFailure(bytes: Uint8Array, reference: {
 export async function prepareRenderArtifact(artifact: ExecutorArtifactCommit, reported: ExecutionArtifact, input: {
   inputHash: string; memberIds: readonly string[];
   stockCredits?: readonly BrollAttribution[];
-  read(reference: { storageKey: string; etag: string; byteLength: number; sha256: string }, maxBytes: number): Promise<Uint8Array>;
+  read?(reference: { storageKey: string; etag: string; byteLength: number; sha256: string }, maxBytes: number): Promise<Uint8Array>;
+  /** An adapter which already verified exact ETag/length/raw SHA before JSON parsing. */
+  readJson?(artifact: ExecutorArtifactCommit, maxBytes: number): Promise<unknown>;
 }): Promise<RenderGroupArtifactCommit> {
   const invalid = () => new Error("render_artifact_invalid");
   if (artifact.role === "render_variant") {
@@ -41,7 +43,8 @@ export async function prepareRenderArtifact(artifact: ExecutorArtifactCommit, re
   }
   if (artifact.role !== "render_outcome" || artifact.contentType !== "application/json" || artifact.byteLength <= 0n || artifact.byteLength > 65536n) throw invalid();
   const reference = { storageKey: artifact.storageKey, etag: artifact.etag, byteLength: Number(artifact.byteLength), sha256: artifact.sha256 };
-  const failure = await decodeRenderVariantFailure(await input.read(reference, 65536), reference);
+  const failure = input.read ? await decodeRenderVariantFailure(await input.read(reference, 65536), reference)
+    : input.readJson ? renderVariantFailureSchema.parse(await input.readJson(artifact, 65536)) : (() => { throw invalid(); })();
   if (!input.memberIds.includes(failure.renderId) || failure.bindingHash !== artifact.bindingHash ||
     artifact.bindingHash !== await renderArtifactBindingHash({ inputHash: input.inputHash, renderId: failure.renderId, role: artifact.role })) throw invalid();
   return { ...artifact, role: artifact.role, renderId: failure.renderId, failure };
