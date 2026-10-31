@@ -19,3 +19,10 @@ test("a publication native invocation confirms its exact watchdog before dispatc
   expect((await run({ reference, wake: { type: "start" } })).type).toBe("wait");
   expect(batches).toEqual([[watchdog],[native.dispatchId]]);
 });
+test("an account dependency confirms the peer deadline and parks without inventing a native token", async () => {
+  const watchdog=crypto.randomUUID(), wake=crypto.randomUUID(), batches:string[][]=[];
+  const run=createPublicationDriver({now:()=>now,prepare:async()=>({kind:"dependency_wait",dueAt:new Date(now+60_000),deadlineDispatchId:watchdog,dispatchIds:[watchdog,wake]}),
+    expire:async()=>{throw Error("No current native token");},deliver:async ids=>{batches.push([...ids]);return ids.map(dispatchId=>({status:"acknowledged",dispatchId,destinationId:"fixture"}));}});
+  expect(await run({reference,wake:{type:"start"}})).toEqual({type:"wait",until:new Date(now+60_000).toISOString(),deliveryId:watchdog});
+  expect(batches).toEqual([[watchdog],[wake]]);
+});

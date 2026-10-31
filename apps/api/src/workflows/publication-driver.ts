@@ -22,7 +22,7 @@ export function createPublicationDriver(ports: Ports): WorkflowCommandHandler {
       type: "wait", until: new Date(ports.now()+365*86_400_000).toISOString(), deliveryId: command.reference.dispatchId };
     if (prepared.kind === "terminal" || prepared.kind === "superseded") return { type: "complete", disposition: prepared.kind };
     if (prepared.kind === "sleep") return { type: "sleep", until: prepared.dueAt.toISOString() };
-    if (prepared.kind !== "waiting") throw Error("publication_preparation_invalid");
+    if (prepared.kind !== "waiting" && prepared.kind !== "dependency_wait") throw Error("publication_preparation_invalid");
     return createNativeOperationDriver({ ...ports, prepare: async () => prepared })(command);
   };
 }

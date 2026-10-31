@@ -1,6 +1,6 @@
 import type { ExecutionDispatch, MediaCleanupObligation, Prisma, PrismaClient } from "@prisma/client";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
-import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, appendExecutionDispatches, readExecutionDispatch } from "./execution-dispatch";
 import { readExecutionAdmission } from "./execution-admission";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { MEDIA_CLEANUP_CLASSES, MEDIA_CLEANUP_ORIGINS } from "./media-cleanup-contract";
@@ -58,6 +58,35 @@ export async function queueMediaCleanupWithinTransaction(tx: Tx, id: string): Pr
   if (!epoch) throw new MediaCleanupControlError("cleanup_clock_unavailable");
   const row = await lockIntent(tx, id);
   return row && !row.completedAt ? append(tx, epoch.epoch, row) : null;
+}
+
+/** Fixed SQL round trips for a bounded range page. Cleanup and tentative
+ * adopters both lock destinations in bytewise key order to avoid lock cycles. */
+export async function queueMediaCleanupBatchWithinTransaction(tx: Tx, ids: readonly string[]): Promise<ExecutionDispatchReference[]> {
+  if (ids.length > 100 || ids.some(id => !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))) throw new MediaCleanupControlError("cleanup_intent_invalid");
+  const unique = [...new Set(ids)];
+  if (!unique.length) return [];
+  const epoch = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 }, select: { epoch: true } });
+  const rows = await tx.$queryRaw<MediaCleanupObligation[]>`SELECT * FROM "MediaCleanupObligation" WHERE id = ANY(${unique}::uuid[]) AND "completedAt" IS NULL
+    ORDER BY "objectKey" COLLATE "C", origin COLLATE "C", "cleanupClass" COLLATE "C", id FOR UPDATE`;
+  const previous = await tx.$queryRaw<ExecutionDispatch[]>`SELECT base.* FROM unnest(${rows.map(row => row.id)}::text[]) AS subject(id)
+    CROSS JOIN LATERAL (SELECT * FROM "ExecutionDispatch" WHERE "deploymentEpoch" = ${epoch.epoch} AND "subjectId" = subject.id
+      AND kind = 'operation_driver' AND "subjectKind" = 'media_cleanup' AND "wakeKind" IS NULL AND "deadlineKind" IS NULL ORDER BY generation DESC LIMIT 1) AS base`;
+  const latestRows = new Map(previous.map(row => [row.subjectId, row])), result = new Map<string, ExecutionDispatchReference>();
+  const fresh = await Promise.all(rows.map(async row => {
+    validateIntent(row);
+    const old = latestRows.get(row.id), hash = await inputHash(row);
+    if (old?.inputHash === hash && old.dueAt.getTime() === row.nextAttemptAt.getTime()) {
+      result.set(row.id, executionDispatchReferenceSchema.parse({ dispatchId: old.id, deploymentEpoch: old.deploymentEpoch, generation: old.generation, kind: old.kind,
+        subject: { kind: old.subjectKind, id: old.subjectId }, inputHash: old.inputHash }));
+      return null;
+    }
+    return { deploymentEpoch: epoch.epoch, generation: (old?.generation ?? 0) + 1, kind: "operation_driver" as const, subject: { kind: "media_cleanup" as const, id: row.id }, inputHash: hash, dueAt: row.nextAttemptAt };
+  }));
+  for (const record of await appendExecutionDispatches(tx, fresh.filter(value => value !== null))) result.set(record.reference.subject.id, record.reference);
+  const references = unique.flatMap(id => { const reference = result.get(id); return reference ? [reference] : []; });
+  for (const reference of references) collectExecutionDispatch(tx, reference.dispatchId);
+  return references;
 }
 
 /** One exact fixed-origin HTTP delete, with no connection held across HTTP.
