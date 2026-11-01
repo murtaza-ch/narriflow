@@ -11,6 +11,7 @@ import http.client
 import json
 import logging
 import math
+from queue import Full, Queue
 import re
 import socket
 import ssl
@@ -25,6 +26,27 @@ from .signing import COMMAND_MAX_BYTES, sign_execution_request
 TARGET = '/api/execution/command'
 MAX_RESPONSE_BYTES = 64 * 1024
 _logger = logging.getLogger(__name__)
+# One blocked sink can retain only one active and one pending sanitized
+# record. Native permission, renewal and close paths never wait for a flush.
+_diagnostics: Queue[str] = Queue(maxsize=1)
+
+
+def _dispatch_diagnostics():
+    while True:
+        record = _diagnostics.get()
+        try:
+            _logger.warning(record)
+        except Exception:
+            pass
+        finally:
+            _diagnostics.task_done()
+
+
+try:
+    Thread(target=_dispatch_diagnostics, name='execution-diagnostics', daemon=True).start()
+except RuntimeError:
+    pass  # An unavailable diagnostic thread must not reject native work.
+
 _CANCELLATION_ERRORS = {
     'execution_transport_unavailable': 'transport', 'execution_command_deadline': 'deadline',
     'execution_clock_changed': 'clock', 'execution_response_invalid': 'response',
@@ -352,8 +374,12 @@ class ExecutorSession:
                     'operationRemainingMs': bounded_ms(min(self._deadline-mono, self._deadline_wall-wall)),
                     'clockDriftMs': bounded_ms((wall-self._anchor_wall)-(mono-self._anchor_mono)),
                     'rpcElapsedMs': bounded_ms(max(0, mono-started)) if started is not None else None}
-            _logger.warning(json.dumps({'level':'warn','message':'native_execution_cancelled','action':action,'stage':stage,
-                'errorCode':code,'failureKind':_CANCELLATION_ERRORS.get(code,'unexpected'),'status':status,**metrics}, separators=(',',':')))
+            record = json.dumps({'level':'warn','message':'native_execution_cancelled','action':action,'stage':stage,
+                'errorCode':code,'failureKind':_CANCELLATION_ERRORS.get(code,'unexpected'),'status':status,**metrics}, separators=(',',':'))
+            try:
+                _diagnostics.put_nowait(record)
+            except Full:
+                pass
         except Exception:
             pass
 

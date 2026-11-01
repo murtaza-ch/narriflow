@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import ssl
@@ -136,6 +137,56 @@ class SignedControlTests(unittest.TestCase):
             finally:
                 session.close()
 
+    def test_blocked_diagnostic_sink_cannot_delay_child_reaping_or_grow_work_without_bound(self):
+        entered, release, ready, done = (threading.Event() for _ in range(4))
+        records, children, failures = [], [], []
+        class BlockedHandler(logging.Handler):
+            def emit(self,record):
+                records.append(record.getMessage());entered.set();release.wait(5)
+        logger=logging.getLogger('narriflow_media.control');handler=BlockedHandler();logger.addHandler(handler)
+        wall=[time.time()]
+        def instant(seconds):return datetime.fromtimestamp(seconds,timezone.utc).isoformat().replace('+00:00','Z')
+        def transport(origin,target,body,headers,timeout):
+            command=json.loads(body)
+            if command['action']=='acquire':
+                result={'disposition':'acquired','fence':{key:command[key] for key in ('reference','attemptToken','owner')},
+                    'serverTime':instant(wall[0]),'leaseExpiresAt':instant(wall[0]+120),'operationDeadlineAt':instant(wall[0]+2700)}
+                return ControlResponse(200,{'X-Execution-Server-Time':instant(wall[0])},json.dumps(result).encode())
+            if command['action']=='process-start':
+                return ControlResponse(200,{'X-Execution-Server-Time':instant(wall[0])},b'{"disposition":"started"}')
+            return ControlResponse(409,{},b'private response')
+        client=ExecutionControlClient(origin='https://api.example',key_id='dev',key=b'k'*32,transport=transport,clock=lambda:wall[0])
+        session=ExecutorSession.acquire(client,reference={'dispatchId':'fixture'},attempt_token='fixture')
+        def started(pid):session.on_process_start(pid);children.append(pid);ready.set()
+        def own_child():
+            try:
+                run_owned_process([sys.executable,'-c','import time;time.sleep(60)'],timeout_seconds=4,
+                    kill_grace_seconds=.1,on_start=started,cancel_event=session.cancel_event)
+            except MediaProcessError as error:failures.append(error.code)
+            finally:done.set()
+        owner=threading.Thread(target=own_child);owner.start()
+        try:
+            self.assertTrue(ready.wait(2));wall[0]+=2
+            self.assertTrue(entered.wait(2));self.assertTrue(session.cancel_event.is_set())
+            self.assertTrue(done.wait(1),'owner must reap the child while the diagnostic sink remains blocked')
+            self.assertFalse(release.is_set());self.assertEqual(failures,['media_execution_cancelled'])
+            with self.assertRaises(ProcessLookupError):os.kill(children[0],0)
+            for _ in range(100):self.assertTrue(session.cancel_event.is_set())
+            began=time.monotonic();session.close();self.assertLess(time.monotonic()-began,.5)
+            for _ in range(8):
+                with ExecutorSession.acquire(client,reference={'dispatchId':'fixture'},attempt_token='fixture') as other:
+                    with self.assertRaises(ExecutionControlError):other.transfer('source-read',sourceId='original')
+                    self.assertTrue(other.cancel_event.is_set())
+            self.assertEqual(len([thread for thread in threading.enumerate() if thread.name=='execution-diagnostics']),1)
+            self.assertEqual(len(records),1)
+            release.set()
+            for _ in range(100):
+                if len(records)==2:break
+                time.sleep(.01)
+            self.assertEqual(len(records),2,'only one pending diagnostic may survive sink saturation')
+        finally:
+            release.set();owner.join(3);session.close();logger.removeHandler(handler)
+
     def test_clock_lease_and_operation_cutoffs_log_distinct_causes_before_another_spawn(self):
         for reason, elapsed, wall_extra in [('clock',0,2),('lease',120,0),('deadline',2700,0)]:
             with self.subTest(reason=reason):
@@ -155,6 +206,9 @@ class SignedControlTests(unittest.TestCase):
                             run_owned_process([sys.executable,'-c','raise SystemExit(99)'],timeout_seconds=2,
                                 on_start=session.on_process_start,cancel_event=session.cancel_event)
                         with self.assertRaises(ExecutionControlError):session.assert_live()
+                        for _ in range(100):
+                            if logs.records:break
+                            time.sleep(.01)
                 self.assertEqual(actions,['acquire'])
                 self.assertEqual(len(logs.records),1)
                 record=json.loads(logs.records[0].getMessage())
@@ -192,6 +246,9 @@ class SignedControlTests(unittest.TestCase):
                 self.assertEqual(stopped.exception.code,'media_execution_cancelled')
                 self.assertEqual(failures,['execution_transport_unavailable'])
                 with self.assertRaises(ExecutionControlError): session.assert_live()
+                for _ in range(100):
+                    if logs.records:break
+                    time.sleep(.01)
         self.assertEqual(actions,['acquire','process-start','source-read','source-read','source-read'])
         self.assertEqual(len(logs.records),1)
         record=json.loads(logs.records[0].getMessage())
@@ -265,6 +322,9 @@ class SignedControlTests(unittest.TestCase):
                                           on_start=started, cancel_event=session.cancel_event)
                     self.assertEqual(stopped.exception.code, 'media_execution_cancelled')
                     self.assertLess(time.monotonic() - began, 35)
+                    for _ in range(100):
+                        if logs.records:break
+                        time.sleep(.01)
                 self.assertEqual(actions, ['acquire', 'process-start'] + ['renew'] * (3 if mode == 'transport' else 1))
                 self.assertEqual(len(logs.records),1)
                 record=json.loads(logs.records[0].getMessage())

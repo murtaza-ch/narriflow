@@ -155,14 +155,20 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
                 session.transfer('source-read',sourceId='source')
             self.assertIs(stopped.exception,failure)
             self.assertTrue(session.cancel_event.is_set())
+            for _ in range(100):
+                if logs.records:break
+                await asyncio.sleep(.01)
         self.assertEqual(len(logs.records),1)
         record=json.loads(logs.records[0].getMessage())
         self.assertEqual((record['errorCode'],record['failureKind'],record['status']),('execution_control_unexpected','unexpected',None))
         self.assertNotIn(secret,logs.output[0])
 
     async def test_a_failed_diagnostic_sink_cannot_replace_the_control_failure_or_keep_permission(self):
+        attempted=Event()
         class BrokenHandler(logging.Handler):
-            def emit(self,record):raise RuntimeError('private logging sink failure')
+            def emit(self,record):
+                attempted.set()
+                raise RuntimeError('private logging sink failure')
         logger=logging.getLogger('narriflow_media.control');handler=BrokenHandler();logger.addHandler(handler)
         session,calls=self.make_session(lambda *_:ControlResponse(409,{},b'private response'))
         try:
@@ -171,6 +177,7 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((stopped.exception.code,stopped.exception.status),('execution_command_refused',409))
             self.assertTrue(session.cancel_event.is_set())
             self.assertEqual(len(calls),2)
+            self.assertTrue(attempted.wait(1))
         finally:logger.removeHandler(handler)
 
     async def test_lost_completion_acknowledgement_does_not_abort_or_delete_the_uploaded_object(self):
