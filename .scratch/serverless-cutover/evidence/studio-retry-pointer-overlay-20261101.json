@@ -1,0 +1,34 @@
+{
+  "status": "local_checks_passed_browser_pointer_acceptance_pending",
+  "baseCommit": "af605d72a73fedef62a4c1c30615049b134f3f7e",
+  "problem": "The non-ready preview stage is rendered before the retained source/selection layers without its own stacking level. Root observed pointer Retry select the speaker layer while keyboard activation reached the loading presentation.",
+  "change": "Put the existing non-ready recovery stage at the Chakra overlay stacking token so Retry and Use original source remain pointer reachable above canvas composition/selection layers. The media node and Editing Session stay mounted.",
+  "runtimeDelta": "One zIndex prop in apps/web/.../video-preview.tsx. No API/media/native/runtime protocol change.",
+  "checks": {
+    "webTypecheck": {
+      "command": "bun1.3.6 --no-env-file typescript/bin/tsc -p apps/web/tsconfig.json --noEmit --incremental false",
+      "exitCode": 0,
+      "logPath": "/tmp/narriflow-serverless-control-keys/studio-retry-overlay-typecheck-initial.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "targetedBiome": {
+      "command": "bun1.3.6 --no-env-file biome check apps/web/.../video-preview.tsx",
+      "exitCode": 0,
+      "logPath": "/tmp/narriflow-serverless-control-keys/studio-retry-overlay-lint.log",
+      "logSha256": "7d22636a27e1fee6bce8c5ab4795371569ce76dfffc92b406eec1c9c22ba999f"
+    }
+  },
+  "verificationLimits": [
+    "No new source-mirroring/CSS-string assertion was added. The unit DOM harness does not implement real layout hit testing. Root must confirm actual pointer behavior in the deployed preview.",
+    "Web build and real browser acceptance are not claimed by this local one-prop fix.",
+    "Keyboard zero-API cause remains unconfirmed; no speculative keyboard/session/transport change is included."
+  ],
+  "offlineKeyboardDiagnosis": {
+    "actualProductionModules": true,
+    "injectedHttpOnly": true,
+    "realCredentials": false,
+    "resultPath": "/tmp/narriflow-serverless-control-keys/studio-retry-diagnosis-af605d72-20261101/result.json",
+    "resultSha256": "48258ab1648ab8fd5926296e1adea8d1c8c51e612724c35a2ece51f1a04fc281",
+    "finding": "Normal ready proxy wiring requests preview-source. Starting/closed return superseded; missing port or token/scope failure returns failed without API. These distinguish source branches but do not prove the live browser cause."
+  }
+}

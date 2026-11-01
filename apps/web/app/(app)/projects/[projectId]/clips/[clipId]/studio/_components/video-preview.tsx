@@ -1830,6 +1830,7 @@ export function VideoPreview() {
             <Flex
               position="absolute"
               inset="0"
+              zIndex="overlay"
               bg="studio.subtle"
               align="center"
               justify="center"
