@@ -1,0 +1,80 @@
+{
+  "status": "local_fixture_regression_and_exact_final_full_execution_passed",
+  "baseCommit": "5abf835504d8a9996fc1e150fea8c11e35d8ee27",
+  "separateRunnerPrerequisite": "8313d6827a7d8234694fdb2f47481b1d265c17b1",
+  "scope": "Test harness and regression coverage only; approved localhost:55432 database, runner-owned disposable schemas and pinned Bun 1.3.6. No production implementation changes.",
+  "diagnosis": {
+    "originalFailureLog": "/tmp/narriflow-serverless-gates/final-recovery-5abf8355-full-execution-db.log",
+    "confirmedDeadlock": "The original PostgreSQL 40P01 cycle was fixture teardown DELETE Workspace cascading into ClipExport versus a still-running UPDATE ClipExport after Bun reported the five-second test timeout. It was not evidence of two production admission transactions taking opposite locks.",
+    "originalJsonCause": "Unproven. The original JSON Task replay error was not captured as a typed code. An unchanged full baseline and five fresh-schema focused repeats passed all Worker cases. The new assertion reports only numeric RPC code and typed data.error before reading result.taskId.",
+    "baselineFull": {
+      "passes": 472,
+      "failures": 52,
+      "assertions": 3424,
+      "bunTestProcesses": 8,
+      "log": "/tmp/narriflow-worker-registration-full-red.log",
+      "limit": "Worker cases passed; epoch cascade halted the runner before later fence suites."
+    },
+    "unchangedFocusedRepeats": {
+      "runs": 5,
+      "testsPerRun": 14,
+      "assertionsPerRun": 155,
+      "failures": 0,
+      "logs": "/tmp/narriflow-worker-registration-diagnostic-{1..5}.log"
+    }
+  },
+  "changes": [
+    "Snapshot fixture identities and active owned DatabaseScopes, release controlled barriers, and await those scopes before destructive teardown. A later test cannot be included by a delayed cleanup snapshot.",
+    "Make exact existing failed dispatches eligible in disposable Worker fixtures after checking their persisted failure, unacknowledged state and released delivery token. Remove wall-clock retry sleeps from registration tests; do not alter production retry configuration or domain rows.",
+    "Bind upload/render readiness selection to exact kind, epoch, generation and base obligation instead of an unordered broad subject selection.",
+    "Keep actual HTTP/SDK JSON/SSE calls, receipt assertions and delayed-confirmation barriers, with the original five-second test timeout.",
+    "Cover actual default production backoff once at the dispatch boundary: early replay remains not_due without another scheduler call or ledger change, then elapsed PostgreSQL due time admits the same dispatch without a new domain attempt."
+  ],
+  "red": {
+    "cleanup": {
+      "log": "/tmp/narriflow-worker-registration-cleanup-red.log",
+      "observed": "Cleanup finished while an owned request was still paused, and the eventual Workspace update could not complete."
+    },
+    "backoffMutation": {
+      "log": "/tmp/narriflow-worker-registration-backoff-mutation-red.log",
+      "tests": 15,
+      "failures": 1,
+      "observed": "Temporarily disabling only the local due predicate made the early-refusal regression fail. The exact production file was restored before every green gate and is absent from the patch."
+    }
+  },
+  "green": {
+    "focusedWorker": {
+      "tests": 15,
+      "assertions": 214,
+      "failures": 0,
+      "seconds": 5.82,
+      "log": "/tmp/narriflow-worker-registration-cleanup-green.log"
+    },
+    "firstCombinedFull": {
+      "tests": 557,
+      "assertions": 4205,
+      "failures": 0,
+      "bunTestProcesses": 15,
+      "exitCode": 0,
+      "log": "/tmp/narriflow-worker-registration-full-combined-green.log",
+      "limit": "Final code additionally snapshots cleanup ownership before awaiting; exact-final full gate is recorded separately."
+    },
+    "apiTypecheck": "pass",
+    "servicesTypecheck": "pass",
+    "changedFilesBiome": "pass",
+    "exactFinalFull": {
+      "tests": 557,
+      "assertions": 4205,
+      "failures": 0,
+      "skips": 0,
+      "bunTestProcesses": 15,
+      "exitCode": 0,
+      "log": "/tmp/narriflow-worker-registration-full-final.log"
+    }
+  },
+  "limits": [
+    "No claim that the original intermittent JSON failure cause was found or that a production runtime bug was fixed.",
+    "No higher test/request timeout, skip, production backoff change, live ledger change, epoch/charge/deadline reset, deployment, cloud call or root worktree edit.",
+    "Local PostgreSQL gates do not establish deployed Workflow, Modal or provider success."
+  ]
+}

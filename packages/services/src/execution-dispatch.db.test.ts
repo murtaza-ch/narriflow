@@ -235,6 +235,29 @@ dbDescribe("Transactional Execution Dispatch", () => {
     expect((await dispatch.read(id))?.errorCode).toBe("scheduler_unavailable");
   }, 60_000);
 
+  test("production backoff refuses an early replay, then delivers the same obligation after its persisted due time", async () => {
+    let unavailable = true, calls = 0;
+    const dispatch = createExecutionDispatch({ database, scheduler: { deliver: async ({ instanceId }) => {
+      calls++;
+      if (unavailable) throw Error("controlled registration failure");
+      return { status: "confirmed_created", destinationId: instanceId };
+    } } });
+    const { reference } = await append(), id = reference.dispatchId;
+    expect(await dispatch.deliver(id)).toMatchObject({ status: "pending", reason: "delivery_failed" });
+    const deferred = await database.executionDispatch.findUniqueOrThrow({ where: { id } });
+    expect(deferred.nextDeliveryAt.getTime() - deferred.updatedAt.getTime()).toBeGreaterThanOrEqual(999);
+    unavailable = false;
+    expect(await dispatch.deliver(id)).toMatchObject({ status: "pending", reason: "not_due", retryAt: deferred.nextDeliveryAt });
+    expect(calls).toBe(1);
+    expect(await database.executionDispatch.findUniqueOrThrow({ where: { id } })).toEqual(deferred);
+    const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
+    await Bun.sleep(Math.max(0, deferred.nextDeliveryAt.getTime() - clock!.now.getTime()) + 10);
+    expect(await dispatch.deliver(id)).toMatchObject({ status: "acknowledged", dispatchId: id });
+    expect(calls).toBe(2);
+    expect((await dispatch.read(id))?.deliveryAttempts).toBe(2);
+    expect(await database.executionAttempt.count({ where: { dispatchId: id } })).toBe(0);
+  });
+
   test("strict registration exposes its persisted retry without creating another domain attempt",async()=>{
     const record=await append();let calls=0;
     const rejected:ExecutionDispatchScheduler={deliver:async()=>{calls++;throw Error("controlled_transport_failure");}};
