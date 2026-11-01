@@ -1,0 +1,45 @@
+{
+  "base": "5abf835504d8a9996fc1e150fea8c11e35d8ee27",
+  "scope": "Upload Session and integration API PostgreSQL matrix failures; isolated worktree, local disposable schemas only",
+  "runtimeSourceChanged": false,
+  "diagnosis": {
+    "upload": "The owning Upload Session runner omitted the required MEDIA_FETCH_TOOLCHAIN_FINGERPRINT. Atomic ingest handoff correctly refused an input hash without its toolchain identity; the finalization wrapper returned reconciling. Supply the same explicit controlled fingerprint used by other native execution database runners. No production fallback was added.",
+    "integrationReplay": "Export acceptance remains frozen at editorRevision 0, while replay intentionally reads the current export projection, so an edit changes currentEditorRevision to 1 and isOlderVersion to true. The test still compares the entire response and now independently verifies that the durable receipt result remains unchanged.",
+    "integrationCancellation": "The obsolete assignedExportRun fixture manually created and rebound another active render run after ClipExportService.create had already atomically accepted one. The database's one-active-run constraint correctly rejected that fixture mutation. The replacement reads and asserts the actual accepted queued, unleased run, then exercises existing native lifecycle and cancellation service calls."
+  },
+  "strongerChecks": [
+    "Creator removal handoff produces exactly one import_pipeline dispatch with the queued job's epoch/generation and the configured toolchain input hash.",
+    "Export replay retains the entire accepted export/output/receipt identity while reporting fresh editor-version metadata; persisted receipt result stays immutable.",
+    "Cancellation fixtures require every selected export to name the same existing queued render run with zero parent attempts and no parent lease."
+  ],
+  "contracts": [
+    "GLOSSARY.md: Upload Session and Ingest Job definitions require exactly-once durable handoff.",
+    "GLOSSARY.md: Operation Receipt stores accepted identity and result.",
+    "ADR 0019: Postgres owns dispatch obligations; render parents remain unleased and real child starts own charges.",
+    "packages/services/src/clip-export.service.ts: create atomically calls handoffClipExportWithinTransaction and refreshes the export projection on receipt replay."
+  ],
+  "red": {
+    "upload": { "tests": 15, "passed": 12, "failed": 3, "assertions": 86, "log": "/tmp/narriflow-db-matrix-upload-session-red.log" },
+    "integration": { "tests": 13, "passed": 10, "failed": 3, "assertions": 59, "log": "/tmp/narriflow-db-matrix-integration-api-red.log" },
+    "originalMatrixLogsPreserved": [
+      "/tmp/narriflow-serverless-gates/final-recovery-5abf8355-db-upload-session.log",
+      "/tmp/narriflow-serverless-gates/final-recovery-5abf8355-db-integration-api.log"
+    ]
+  },
+  "green": {
+    "uploadFullOwningRunner": { "tests": 15, "assertions": 186, "failures": 0, "skips": 0, "log": "/tmp/narriflow-db-matrix-upload-session-final.log" },
+    "integrationFullOwningRunner": { "tests": 125, "assertions": 1108, "files": 11, "failures": 0, "skips": 0, "log": "/tmp/narriflow-db-matrix-integration-api-green.log" },
+    "servicesTypecheck": { "status": "passed", "log": "/tmp/narriflow-db-matrix-services-typecheck.log" },
+    "changedFilesBiome": { "status": "passed", "log": "/tmp/narriflow-db-matrix-biome.log" }
+  },
+  "execution": {
+    "bun": "1.3.6",
+    "environmentFile": "/tmp/narriflow-serverless-gates/local-database.env",
+    "target": "localhost:55432/narriflow_serverless_gates_20261031_a18f",
+    "inheritedTestSelectors": "removed; launch environment contains only PATH and unchanged HOME before loading the dedicated local env",
+    "schemaOwnership": "Existing owning runners create and drop their fresh disposable schemas in finally.",
+    "commands": ["bun run test:upload-session:db", "bun run test:integration-api:db"]
+  },
+  "unchanged": ["production services", "timeouts", "pool limits", "skip behavior", "owning suite selection", "authority", "deadlines", "charged execution history"],
+  "limitations": "Local database gate repairs only; no cloud/live-resource action or release qualification. The separately investigated full-execution matrix failures are outside this change."
+}

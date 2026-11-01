@@ -77,6 +77,7 @@ try {
   await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   await run(["bun", "test", "packages/services/src/upload-session.db.test.ts"], {
     ALLOW_UPLOAD_SESSION_DB_TESTS: "1",
+    MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
     DATABASE_URL: testUrl.toString(),
     DIRECT_URL: testUrl.toString(),
     UPLOAD_SESSION_TEST_DATABASE_URL: testUrl.toString(),

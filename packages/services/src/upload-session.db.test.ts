@@ -18,6 +18,7 @@ import { recipeService } from "./recipe.service";
 import { listWorkspaceEvents } from "./workspace-event";
 import { createMediaCleanupControl,queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
 import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
+import { ingestExecutionInputHash } from "./ingest-source-execution";
 import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
@@ -211,7 +212,14 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     const result = await prismaUploadSessionPersistence.handoff({ sessionId: session.id, queuedJobId: jobId, verifiedSizeBytes: 2048, verifiedContentType: "video/mp4", reconciliationAttemptId: null, updatedAt: now });
     expect(result.status).toBe("queued_for_ingest");
     expect(await prisma.project.findUnique({ where: { id: session.preallocatedProjectId } })).toMatchObject({ workspaceId: workspace.id, createdByUserId: null, ingestStatus: "queued" });
-    expect(await prisma.ingestJob.findUnique({ where: { id: jobId } })).toMatchObject({ projectId: session.preallocatedProjectId, status: "queued" });
+    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } });
+    expect(job).toMatchObject({ projectId: session.preallocatedProjectId, status: "queued" });
+    const dispatches = await prisma.executionDispatch.findMany({ where: { kind: "import_pipeline", subjectKind: "ingest_job", subjectId: jobId } });
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toMatchObject({
+      deploymentEpoch: job.deploymentEpoch, generation: job.generation,
+      inputHash: await ingestExecutionInputHash(job, "f".repeat(64)),
+    });
     expect(await prismaUploadSessionPersistence.handoff({ sessionId: session.id, queuedJobId: randomUUID(), verifiedSizeBytes: 2048, verifiedContentType: "video/mp4", reconciliationAttemptId: null, updatedAt: now })).toMatchObject({ queuedJobId: jobId });
   })));
 

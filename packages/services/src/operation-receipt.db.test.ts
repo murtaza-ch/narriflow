@@ -115,9 +115,14 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		const clip = await createClip(project.id, detection.id);
 		return { project, clip, scope: { actorUserId, workspaceId } };
 	}
-	async function assignedExportRun(projectId: string, exportIds: string[]) {
-    const run = await prisma.workflowRun.create({data:{projectId,stage:"clip_rendering",status:"queued",idempotencyKey:randomUUID()}});
-    await prisma.clipExport.updateMany({where:{id:{in:exportIds}},data:{workflowRunId:run.id}});
+	async function acceptedExportRun(projectId: string, exportIds: string[]) {
+    const exports = await prisma.clipExport.findMany({ where: { id: { in: exportIds }, projectId }, select: { workflowRunId: true } });
+    expect(exports).toHaveLength(exportIds.length);
+    const runIds = [...new Set(exports.map(row => row.workflowRunId))];
+    expect(runIds).toHaveLength(1);
+    expect(runIds[0]).not.toBeNull();
+    const run = await prisma.workflowRun.findUniqueOrThrow({ where: { id: runIds[0]! } });
+    expect(run).toMatchObject({ projectId, stage: "clip_rendering", status: "queued", attemptCount: 0, leaseOwner: null, leaseExpiresAt: null });
     const lifecycle=new RenderFixtureLifecycle({prisma,leaseOwner:randomUUID()});
     const attempt=await lifecycle.renderParent(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
@@ -690,13 +695,15 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			format,
 			key,
 		);
+		const receipt = await prisma.operationReceipt.findUniqueOrThrow({ where: { id: first.receiptId } });
 		await prisma.clip.update({
 			where: { id: clip.id },
 			data: { editorRevision: 1 },
 		});
 		expect(
 			await clipExportService.create(scope, project.id, clip.id, format, key),
-		).toEqual({ ...first, replayed: true });
+		).toEqual({ ...first, export: { ...first.export, currentEditorRevision: 1, isOlderVersion: true }, replayed: true });
+		expect((await prisma.operationReceipt.findUniqueOrThrow({ where: { id: first.receiptId } })).result).toEqual(receipt.result);
 		await expect(
 			clipExportService.create(
 				scope,
@@ -720,7 +727,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		);
 	})));
 
-	test("export cancellation stops pending variants before a render run is assigned", bindServiceTestEnvironment(globalPrisma.bind(async () => {
+	test("export cancellation stops pending variants before a Render Group is acquired", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const project = await prisma.project.create({
 			data: {
 				workspaceId,
@@ -797,7 +804,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			},
 			randomUUID(),
 		);
-		const { run, lifecycle, attempt } = await assignedExportRun(project.id, [
+		const { run, lifecycle, attempt } = await acceptedExportRun(project.id, [
 			first.export.id,
 			second.export.id,
 		]);
@@ -859,7 +866,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				},
 				randomUUID(),
 			);
-			const { run, lifecycle, attempt } = await assignedExportRun(project.id, [
+			const { run, lifecycle, attempt } = await acceptedExportRun(project.id, [
 				accepted.export.id,
 			]);
 			const render = await prisma.clipRender.findFirstOrThrow({
