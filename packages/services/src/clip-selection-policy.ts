@@ -128,8 +128,8 @@ B-roll cue guidance:
 - reason is a one-line explanation of why a cutaway helps at that moment.
 
 Important constraints:
-- Each returned clip must be between 15 and 90 seconds long.
-- Prefer complete clips between 30 and 60 seconds unless a longer story arc is clearly stronger.
+- Each returned clip must stay within the request's required duration window.
+- Prefer complete clips within the request's preferred duration window unless a longer story arc within the required window is clearly stronger.
 - Use the transcript's start_sec and end_sec values as absolute seconds.
 - Clips should have natural start and end points (complete thoughts).
 - Avoid starting mid-sentence.
