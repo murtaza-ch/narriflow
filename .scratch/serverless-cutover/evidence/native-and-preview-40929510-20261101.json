@@ -1,0 +1,418 @@
+{
+  "recordedAtUtc": "2026-11-01T08:10:02.108437+00:00",
+  "qualifiedSourceCommit": "4092951013b16582f0ba039b9926b1a58a0cd30f",
+  "status": "component passes retained; preparation resource gate failed; corrections require fresh qualification",
+  "localChecks": {
+    "allRequiredChecksPassed": true,
+    "checkCount": 22,
+    "checks": {
+      "lint": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 3.506,
+        "sha256": "6be46873be17f6195876c3b2b06b0537468166a3c7e19fe813f4829be27793c7",
+        "bytes": 13507
+      },
+      "inventory": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 1.026,
+        "sha256": "c8defca3edb484fcc9c1daa4a7b11421d6b3e99a91e6bf421bdc34126c4d8c25",
+        "bytes": 138
+      },
+      "openapi": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 0.464,
+        "sha256": "be692bcd1f036588ed56837637dfdbad9b4364e3579755e698459b5e0f0800ef",
+        "bytes": 97
+      },
+      "web-split": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 0.692,
+        "sha256": "7a12cb4cad80d7bf7853d1f06eed2f58868751a0d0a527b05419061b32f189f2",
+        "bytes": 148
+      },
+      "env": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 0.212,
+        "sha256": "c1f041dd6ce63f959b6326e772a4ae5555b44451ed546dbe3d68d28e8e3da8f5",
+        "bytes": 133
+      },
+      "worker-build": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 4.425,
+        "sha256": "014a0bac0cb7b8d76d2984887eb15735f929dc98286dc3b37c842efc8a949efa",
+        "bytes": 1933
+      },
+      "typecheck": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 24.154,
+        "sha256": "35d671f1337c4cbb8496b107fb3f52f402123b4437359115b170dcc9d20a904e",
+        "bytes": 3298
+      },
+      "fast": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 132.828,
+        "sha256": "9cdf5892feb6cf3a176fc33cb0939b46b96169aaa2b736025116bf3414dd0ec4",
+        "bytes": 1218500
+      },
+      "web-build": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 21.156,
+        "sha256": "b1b7f006a279bc20b05e593a0a2385250fd4549d5b95a48da8780ae880ce936e",
+        "bytes": 2818
+      },
+      "web-bundle-split": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 0.532,
+        "sha256": "15718ab28c6e317125ef9da0fc66db7295eab4803169cd04b7d0813ac702f0b2",
+        "bytes": 157
+      },
+      "full-execution-db": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 199.544,
+        "sha256": "148e9e03e3eeb063cb7721eee542b8cc02db2fa0e2ca859805b06766aba2ad0c",
+        "bytes": 251286
+      },
+      "db-workflow": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 41.894,
+        "sha256": "569eb6f541c155f3d4b48095bb5029cd475e4d29cca23b86a560b03e0e1f43d3",
+        "bytes": 50319
+      },
+      "db-upload-session": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 4.753,
+        "sha256": "b05887d94c2df830cc458a3de463672305f71860bc9685c3b55676c74047d231",
+        "bytes": 28778
+      },
+      "db-processing-usage": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 4.422,
+        "sha256": "0bbdfd9a61496116617c6145017c3652a83b4e59a75f3ba9e0b03865c6e9e980",
+        "bytes": 57590
+      },
+      "db-workspace-billing": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 3.705,
+        "sha256": "ddbbf25b480af79645ca5c2f4cc80d169a8e93adfe0a5e429dff54f34f511213",
+        "bytes": 28009
+      },
+      "db-social-publication": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 11.842,
+        "sha256": "65ad4724697478bf5749a838c508dc72ae17690d8945848f44afba65674b234e",
+        "bytes": 61072
+      },
+      "db-clip-editor-persistence": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 4.656,
+        "sha256": "e5443c90a4683375139223da24e46ac9b376000191332fd82bf3589ebc0c9cb8",
+        "bytes": 31646
+      },
+      "db-authenticated-request-policy": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 1.886,
+        "sha256": "d8fd95148721a8fe07b94e29f5f2a103cf826db9df26aa285f01c4ca3f3d7ea3",
+        "bytes": 3042
+      },
+      "db-brand-profiles": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 2.824,
+        "sha256": "23f1a0fee5a96a50bf29b8b2e334647230813fb0500a8790b3d255c087391f48",
+        "bytes": 10493
+      },
+      "db-vizard-expansion": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 34.046,
+        "sha256": "d7e640173a54cd269820e044e771bb23373b7176e7b28c59d0a72a43615dea7d",
+        "bytes": 27665
+      },
+      "db-integration-api": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 35.31,
+        "sha256": "07c9d780dfdf2a4d8b81efe1761c1bcd74f321227849122773c952e2e87f0dd4",
+        "bytes": 80505
+      },
+      "db-library-search": {
+        "exitCode": 0,
+        "passed": true,
+        "elapsedSeconds": 2.412,
+        "sha256": "b4693c9c9673990aab71c3d02bc808b014dcb84c13e524163c194dc3818de876",
+        "bytes": 2818
+      }
+    },
+    "proof": {
+      "path": "/tmp/narriflow-serverless-control-keys/final-native-correction-40929510-local-check-summary.json",
+      "sha256": "7c3ec65aac95d405fad5c5419cfac72be8b796640e2a0bc3794cdc7e99cc1ca4"
+    }
+  },
+  "closedWorker": {
+    "versionId": "076d6a3c-12be-4776-8223-f5e4c00474ca",
+    "accountId": "5359f28d385b8632c3abee12d1f5b011",
+    "worker": "narriflow-api-candidate",
+    "admissionState": "closed",
+    "verified": true,
+    "secretCount": 79,
+    "mailCredentialPresent": false
+  },
+  "immutableImages": {
+    "status": "passed",
+    "identitiesStable": true,
+    "profiles": {
+      "lean": {
+        "imageId": "im-GdNoaAGBoSUnuJCoyo9p9e",
+        "cpu": 2,
+        "memoryMiB": 4096,
+        "retired": true,
+        "sourceOverlay": false,
+        "nativeResult": {
+          "discoveredTests": 181,
+          "testsRun": 181,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "expectedFailures": 0,
+          "unexpectedSuccesses": 0,
+          "successful": true
+        },
+        "goldenCases": 0,
+        "goldenResult": null,
+        "seekMatrixResult": null
+      },
+      "render": {
+        "imageId": "im-mPQBCFI73ppxkA3Qismheb",
+        "cpu": 4,
+        "memoryMiB": 8192,
+        "retired": true,
+        "sourceOverlay": false,
+        "nativeResult": {
+          "discoveredTests": 196,
+          "testsRun": 196,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "expectedFailures": 0,
+          "unexpectedSuccesses": 0,
+          "successful": true
+        },
+        "goldenCases": 36,
+        "goldenResult": {
+          "ok": true,
+          "summary": {
+            "normal": {
+              "total": 18,
+              "pass": 18,
+              "fail": 0
+            },
+            "knownDefects": {
+              "total": 18,
+              "xfail": 2,
+              "xpass": 0,
+              "changed": 0,
+              "activatedPass": 16,
+              "activatedFail": 0
+            }
+          },
+          "mismatchCount": 0
+        },
+        "seekMatrixResult": {
+          "passed": true,
+          "cases": 4,
+          "pinnedRuntimeVerified": true,
+          "runtimeFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9"
+        }
+      }
+    },
+    "tokenOwnerTests": {
+      "passed": 3,
+      "skipped": 0,
+      "retired": true
+    },
+    "proof": {
+      "path": "/tmp/narriflow-native-exact-native-correction-40929510/qualification.json",
+      "sha256": "66812c2b4ca49a4a17dfc2529a39845d82b0d46822c22d91af0f19eb13e54190"
+    }
+  },
+  "prepareResourceGate": {
+    "status": "failed_or_unconfirmed",
+    "retired": true,
+    "imageIdentitiesStable": true,
+    "sourceOverlay": false,
+    "cpu": 2,
+    "memoryMiB": 4096,
+    "nativeResult": {
+      "discoveredTests": 122,
+      "testsRun": 122,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expectedFailures": 0,
+      "unexpectedSuccesses": 0,
+      "successful": true
+    },
+    "enforcedPreparation": {
+      "kind": "video",
+      "enforcedRuntime": true,
+      "starts": 1,
+      "roles": [
+        "clip_preview",
+        "preview_peaks",
+        "layout_evidence"
+      ],
+      "outputs": [
+        {
+          "role": "clip_preview",
+          "byteLength": 284587,
+          "sha256": "60dd775def4c03e415f148ea0434a7fc2db308ec6ae4c31dae663178f92eb9f2"
+        },
+        {
+          "role": "preview_peaks",
+          "byteLength": 331,
+          "sha256": "57a055b0f35b9511c3a610e5da1d72dc5846f684212fa8f01de77f6ecdfaed64"
+        },
+        {
+          "role": "layout_evidence",
+          "byteLength": 1613,
+          "sha256": "8d63e286b458db0eebc3b1653a165c5b33c0a27fd92ab4eb34056b1466206f19"
+        }
+      ],
+      "measurements": {
+        "bytesTransferred": 164695,
+        "upstreamRequests": 2,
+        "sourceBytes": 164695
+      },
+      "automaticEngine": "shot-layout-v1",
+      "screenObserved": true,
+      "splitObserved": true
+    },
+    "bunSuitesCompletedBeforeFailure": 2,
+    "workerProcessPassed": 70,
+    "workerProcessFailed": 1,
+    "failure": "worker process samples worker and command memory: expected child RSS delta >33554432 bytes; received0",
+    "remainingBunSuitesNotRun": 3,
+    "allAvailableFailureArtifactsCollected": true,
+    "proof": {
+      "path": "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/result.json",
+      "sha256": "815349c5c9db85ea2615f5b6f48ac365b29485314afa050032b3fb770a2a3400"
+    },
+    "diagnosisEvidence": "native-rss-fallback-diagnosis-20261101.json"
+  },
+  "normalHourlyMaintenance": {
+    "sourceCommit": "4092951013b16582f0ba039b9926b1a58a0cd30f",
+    "workerVersion": "076d6a3c-12be-4776-8223-f5e4c00474ca",
+    "observedAtUtc": "2026-11-01T08:08:54.612Z",
+    "hourlyCutoffUtc": "2026-11-01T08:00:00Z",
+    "readOnly": true,
+    "pages": 5,
+    "receipts": 5,
+    "terminalReceipts": 1,
+    "processed": 103,
+    "allPagesAcknowledged": true,
+    "allPagesCommitted": true,
+    "wakeCount": 107,
+    "allWakesAcknowledged": true,
+    "deadLetters": 0,
+    "errors": [],
+    "phases": [
+      "dispatches",
+      "dispatches",
+      "dispatches",
+      "deadlines",
+      "callback_wakes"
+    ],
+    "epoch": 10,
+    "databaseAdmissionOpen": false,
+    "firstPageCreatedUtc": "2026-11-01 08:00:41.928",
+    "latestPageCreatedUtc": "2026-11-01 08:01:42.721",
+    "sharedDatabaseTouched": false
+  },
+  "originalPendingArtifactRetirement": {
+    "sourceCommit": "4092951013b16582f0ba039b9926b1a58a0cd30f",
+    "observedAtUtc": "2026-11-01T08:05:49.700Z",
+    "scope": "42 previously pending, uncommitted first speech journey preparation outputs",
+    "originalInventorySha256": "84349081a7bd9e7322277d9bd1f736a9858581ddbb277d5b0617febe4ea98bff",
+    "databaseReadOnly": true,
+    "epoch": 10,
+    "databaseAdmissionOpen": false,
+    "exactKeys": 42,
+    "cleanupCompleted": 42,
+    "grantHoldsExpired": 42,
+    "head404": 42,
+    "noExactKeyMultipart": 42,
+    "unconfirmed": 0,
+    "noLocalDeletes": true,
+    "historyPreserved": true,
+    "fullJourneyRetirementClaimed": false,
+    "passed": true
+  },
+  "previewOrigin": {
+    "actualDeploymentSourceCommit": "b4b8426cd599c02f7d969b5a7df017ad494d1ea4",
+    "observedWrongMdxOrigin": true,
+    "configuredBranchVariableAndResponseHeaderAlreadyCorrect": true,
+    "cause": "persistent webpack cache reused MDX compiled for old origin",
+    "fixEvidence": "../preview-docs-origin-cache.md",
+    "browserPassAfterFixClaimed": false
+  },
+  "vercelPromotionControl": {
+    "observedAtUtc": "2026-11-01T07:56:11.562Z",
+    "project": "narriflow-dev",
+    "productionBranch": "dev",
+    "autoAssignCustomProductionDomains": false,
+    "verifiedAfterReload": true,
+    "gitPushBuildsStillEnabled": true,
+    "existingStableDomainPromotionPerformed": false
+  },
+  "r2BranchAliasCors": {
+    "sourceCommit": "4092951013b16582f0ba039b9926b1a58a0cd30f",
+    "startedAtUtc": "2026-11-01T07:44:57.061394+00:00",
+    "accountId": "5359f28d385b8632c3abee12d1f5b011",
+    "bucket": "narriflow-dev",
+    "addedExactOrigin": "https://narriflow-dev-git-codex-serverless-cutover-murtazachs-projects.vercel.app",
+    "previousOriginsPreserved": true,
+    "beforeReadbackSha256": "d8fde8b71e6f5004b77b3ef8b4717bf2eb559d9630f636acfc375ac735a87b78",
+    "configurationSha256": "f94347d607d8bf4f539cbda76d0d662e2b4b7bd180c6a93dd1f245f07dc52160",
+    "verified": true,
+    "setExitCode": 0,
+    "afterReadbackSha256": "04e36adeee2737aea9a2a2a4564701755adf6dda7f56d50d4b20bde1fe1d14de",
+    "endedAtUtc": "2026-11-01T07:45:00.200415+00:00"
+  },
+  "candidateBrowserOriginChanges": {
+    "prepared": true,
+    "deployed": false,
+    "onlyKeys": [
+      "CORS_ALLOWED_ORIGINS",
+      "CLERK_AUTHORIZED_PARTIES"
+    ],
+    "proof": {
+      "path": "/tmp/narriflow-serverless-control-keys/native-correction-preview-origin-secrets-preparation.json",
+      "sha256": "50dcc43e3d673d6e2db375015672f6592dbeb364f4826468b93dd9a9a7f3b2d1"
+    }
+  },
+  "limits": [
+    "The RSS and docs fixes are integrated locally and require the full checks and rebuilt-image qualification on the new source.",
+    "HTTP and database candidate admission remain closed; the overdue accepted export has not been replayed.",
+    "No full provider journey, four-minute12-clip, burst, browser, fresh restore or one-hour idle pass follows from these component results.",
+    "No shared database migration, dev merge/push, stable API routing switch or final cutover has occurred.",
+    "Vercel production domains require manual promotion; Git push builds are still enabled."
+  ]
+}
