@@ -22,7 +22,8 @@ export async function issueLocalFetchDevice(actor: ActorScope, bindings: ApiWork
   const database = getPrismaClient();
   if (!database || !environment.DEV_DEVICE_KEY_ID || !environment.API_ORIGIN || !(bindings.LOCAL_FETCH_MAILBOX || bindings.DEV_CLOUD) || !/^[a-f0-9]{64}$/.test(environment.MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT ?? "")) throw new LocalFetchDeviceError("local_fetch_unavailable");
   const epoch = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
-  const issued = await codec().issue({ ...actor, deploymentEpoch: epoch.epoch, apiOrigin: environment.API_ORIGIN }, environment.DEV_DEVICE_KEY_ID);
+  const issued = await codec().issue({ actorUserId: actor.actorUserId, workspaceId: actor.workspaceId,
+    deploymentEpoch: epoch.epoch, apiOrigin: environment.API_ORIGIN }, environment.DEV_DEVICE_KEY_ID);
   await localDeviceMailbox(bindings, actor.workspaceId).register(issued.claims);
   return { version: 1 as const, apiOrigin: environment.API_ORIGIN, sessionToken: issued.token, keyId: issued.claims.sessionId,
     key: Buffer.from(issued.key).toString("base64url"), workspaceId: actor.workspaceId, expiresAt: issued.claims.expiresAt, toolchainFingerprint: environment.MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT! };

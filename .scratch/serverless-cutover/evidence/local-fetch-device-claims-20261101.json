@@ -1,0 +1,125 @@
+{
+  "sourceBase": "3fc2d50b61a57c78aae9b94826962ba418ce52d3",
+  "branch": "codex/local-device-claims",
+  "scope": "Offline runtime regression and local API verification only; rebuilt/deployed source qualification remains pending.",
+  "diagnosis": "The first-party ingest route passes its complete admitted ActorScope into issueLocalFetchDevice. Spreading that object into the strict device-claims codec rejects workspaceName, workspaceOwnerUserId, role, status, pricingTier, isPersonalWorkspace and workspaceSelectionChanged before mailbox registration.",
+  "fix": "Project actorUserId and workspaceId explicitly alongside the current deploymentEpoch and configured apiOrigin. Keep the existing strict claims parser, authorization, signature and two-hour expiry contract.",
+  "regression": {
+    "command": "bun test apps/api/src/domains/execution/local-device-runtime.test.ts",
+    "runtime": "Pinned Bun 1.3.6",
+    "seam": "Actual issueLocalFetchDevice, scoped fake Prisma epoch read, workspace authorization spy, fake mailbox and real signing/verifying codec. Full admitted HTTP ActorScope fixture.",
+    "red": {
+      "passed": 5,
+      "failed": 1,
+      "assertions": 19,
+      "failure": "Zod unrecognized_keys for seven admitted actor fields"
+    },
+    "greenRelated": {
+      "files": 3,
+      "passed": 11,
+      "failed": 0,
+      "assertions": 58
+    },
+    "checks": [
+      "Only the nine strict claim keys are signed/registered",
+      "Exact workspace, actor, API origin and current epoch 10",
+      "Exactly two hours between issuance and expiry",
+      "Real signature verifies and altered workspace payload fails",
+      "Client key equals the real derived session key",
+      "Strict claims still reject injected actor role",
+      "Wrong workspace, production/proxy mode or missing allowlist refuse before auth/database/mailbox",
+      "Failed workspace authorization refuses before database/mailbox"
+    ]
+  },
+  "verification": {
+    "apiTypecheck": {
+      "command": "bun --no-env-file run --cwd apps/api typecheck",
+      "exitCode": 0
+    },
+    "repositoryLint": {
+      "exitCode": 0,
+      "existingWarnings": 11,
+      "existingInfo": 1,
+      "changedFileDiagnostics": 0
+    },
+    "owningApiTests": {
+      "command": "bun --no-env-file run --cwd apps/api test",
+      "passed": 938,
+      "skipped": 57,
+      "failed": 0,
+      "assertions": 5164,
+      "snapshots": 2,
+      "files": 76,
+      "tests": 995,
+      "skipScope": "Existing opt-in disposable-PostgreSQL suites; no database suites were run or claimed."
+    },
+    "changedFilesBiome": {
+      "files": 3,
+      "exitCode": 0
+    }
+  },
+  "retainedSetupFailure": {
+    "command": "bun --no-env-file test apps/api/src",
+    "passed": 937,
+    "skipped": 57,
+    "failed": 1,
+    "cause": "Running from repository-root cwd made the docs Bun.build check fail to resolve @narriflow/api-client/openapi. The exact test passes in the owning API cwd, followed by the complete owning API suite. No source change addressed this unrelated invocation context."
+  },
+  "environment": {
+    "noEnvFile": true,
+    "testEnvironment": "Owning API, typecheck and lint launches retain only unchanged HOME and PATH. Focused runtime tests use explicit fake ports and injected settings, with no live database or provider credentials.",
+    "dependencyLinks": "All @narriflow workspace links target this isolated worktree; external dependencies use existing installed cache. No dependency installation or generated Prisma output.",
+    "rootSourceUntouched": true,
+    "rootDirtyFile": "apps/api/scripts/dev.ts",
+    "rootDirtyFileSha256": "e954c73b6d002318e16e9848645f34e821217649b2944968776f5266b6c73637",
+    "cloudCalls": 0,
+    "databaseConnections": 0,
+    "credentialsOrLiveJournalsRead": false
+  },
+  "rawEvidence": {
+    "/tmp/narriflow-local-device-claims-evidence-20261101/regression-red.log": {
+      "sha256": "3cba28d9f53adca51922a3868e99958606f9151f8ad0140345d65ec03b976a5b",
+      "bytes": 1290
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/regression-green.log": {
+      "sha256": "1d946ba08d2f318f8e643e5eaa4d110f06475f50261718c722e4562d6d4729d8",
+      "bytes": 1586
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/api-typecheck.log": {
+      "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+      "bytes": 32
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/lint.log": {
+      "sha256": "904b805ea7a8cfed80349aefc9c43f9ec76598310ff762dacbea863a97077b91",
+      "bytes": 13507
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/api-tests.log": {
+      "sha256": "9290aac970f05cc91185ede684809fd8e479afdd7ab71334c515e2fc1ed9ecd3",
+      "bytes": 182893
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/openapi-setup-diagnostic.log": {
+      "sha256": "dafd75efa20089466a3223ba313c8e0373c98df4e9dfb03ece745b035fea9d6b",
+      "bytes": 806
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/openapi-setup-fixed.log": {
+      "sha256": "7bb5fac68b2945c4ef49bfbf868db691799824261cf80e461c0ad97b3c9abe47",
+      "bytes": 807
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/openapi-api-cwd.log": {
+      "sha256": "f23cadb1ca28e98eb48631e83312276e02a36588403b93ce73c6a7d6e9ff33f2",
+      "bytes": 513
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/api-owning-tests.log": {
+      "sha256": "61f2bb3a45c57b389aa0bca9abfa5da24c4d8378e37c063fcf2f1b2f067e7644",
+      "bytes": 181788
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/api-typecheck-final.log": {
+      "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+      "bytes": 32
+    },
+    "/tmp/narriflow-local-device-claims-evidence-20261101/changed-files-biome.log": {
+      "sha256": "b2ddb28ad181c03b17e00aa5ab76c8e3fed0c01e07c050a16de223eea9326c27",
+      "bytes": 43
+    }
+  }
+}
