@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { AcceptanceFailure, inspectProgressSocket, runDeployedHttpAcceptance, type AcceptanceInput } from "./deployed-http-acceptance.ts";
@@ -93,6 +96,64 @@ test("missing positive Tasks fixture refuses before making any HTTP request", as
   await assert.rejects(runDeployedHttpAcceptance(f.input, { fetch: f.transport, progress: f.progress }), error => error instanceof AcceptanceFailure && error.code === "positive_tasks_fixture_required");
   assert.equal(f.calls.length, 0);
 });
+test("a truncated HTTP response reports its body stage, status and received bytes without private response data", async () => {
+  const f = fixture(), secret = "private-response-body-url-token";
+  const partial = Buffer.from(`{"private":"${secret}",`);
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json", "Content-Length": partial.length + 100 });
+    response.write(partial);
+    setTimeout(() => response.destroy(), 30);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const transport = (async (target, options) => new URL(String(target)).pathname === "/mcp"
+      ? fetch(`http://127.0.0.1:${port}/private-url-token`, options) : f.transport(target, options)) as typeof fetch;
+    await assert.rejects(runDeployedHttpAcceptance(f.input, { fetch: transport, progress: f.progress }), error => {
+      assert.ok(error instanceof AcceptanceFailure);
+      assert.equal(error.code, "acceptance_transport_failed");
+      assert.equal(error.phase, "mcp_modern_tools_list"); assert.equal(error.requestIndex, 9);
+      assert.deepEqual(error.diagnostics, { stage: "body", errorName: "TypeError", statusCode: 200, receivedBytes: partial.length });
+      assert.ok(!JSON.stringify(error).includes(secret));
+      return true;
+    });
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+test("a request deadline after partial response bytes reports the body timeout and abort names", async context => {
+  const f = fixture(), timeout = AbortSignal.timeout;
+  // Shorten only the clock in this fixture. Production keeps its 15-second
+  // request and 180-second overall deadlines, including response consumption.
+  context.mock.method(AbortSignal, "timeout", (ms: number) => timeout(ms === 15_000 ? 100 : ms));
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.write(Buffer.alloc(65536)); // Deliberately never finish the body.
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const transport = (async (target, options) => new URL(String(target)).pathname === "/mcp"
+      ? fetch(`http://127.0.0.1:${port}/private-url-token`, options) : f.transport(target, options)) as typeof fetch;
+    await assert.rejects(runDeployedHttpAcceptance(f.input, { fetch: transport, progress: f.progress }), error => {
+      assert.ok(error instanceof AcceptanceFailure);
+      assert.equal(error.code, "acceptance_transport_failed");
+      assert.equal(error.phase, "mcp_modern_tools_list"); assert.equal(error.requestIndex, 9);
+      assert.deepEqual(error.diagnostics, { stage: "body", errorName: "TimeoutError", abortName: "TimeoutError", statusCode: 200, receivedBytes: 65536 });
+      return true;
+    });
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+for (const [name, bytes, errorName] of [["malformed JSON", Buffer.from("private-body-token"), "SyntaxError"], ["invalid UTF-8", new Uint8Array([255]), "TypeError"]] as const)
+  test(`${name} reports a decode failure after the complete bounded body`, async () => {
+    const f = fixture();
+    const transport = (async (target, options) => new URL(String(target)).pathname === "/mcp"
+      ? new Response(bytes, { headers: { "Content-Type": "application/json" } }) : f.transport(target, options)) as typeof fetch;
+    await assert.rejects(runDeployedHttpAcceptance(f.input, { fetch: transport, progress: f.progress }), error => {
+      assert.ok(error instanceof AcceptanceFailure);
+      assert.deepEqual(error.diagnostics, { stage: "decode", errorName, statusCode: 200, receivedBytes: bytes.byteLength });
+      assert.ok(!JSON.stringify(error).includes("private-body-token"));
+      return true;
+    });
+  });
 test("oversized response is refused before parsing", async () => {
   const f = fixture();
   await assert.rejects(runDeployedHttpAcceptance(f.input, { fetch: (async () => new Response("a".repeat(2 * 1024 * 1024 + 1))) as typeof fetch, progress: f.progress }), error => error instanceof AcceptanceFailure && error.code === "response_length_limit");
@@ -107,6 +168,25 @@ test("CLI diagnostics omit private arguments and URLs without making HTTP reques
   const result = spawnSync(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../run-deployed-http-acceptance.ts", import.meta.url)), "--api-origin", privateUrl], { encoding: "utf8" });
   assert.equal(result.status, 1); assert.equal(result.stderr, ""); assert.ok(!result.stdout.includes(privateUrl));
   assert.deepEqual(JSON.parse(result.stdout), { status: "failed", code: "required_argument_missing" });
+});
+test("the CLI reports only safe transport observations and never serializes arbitrary error names or messages", () => {
+  const f = fixture(), directory = mkdtempSync(join(tmpdir(), "narriflow-http-failure-"));
+  const credentials = join(directory, "credentials.json"), settings = join(directory, "settings.json");
+  const secret = "private-network-error-url-token";
+  try {
+    writeFileSync(credentials, JSON.stringify({ workspaceId: f.input.workspaceId, apiKey: f.input.apiKey, sessionToken: f.input.sessionToken }), { mode: 0o600 });
+    writeFileSync(settings, JSON.stringify({ WEB_ORIGIN: f.input.webOrigin, ELEVENLABS_WEBHOOK_SECRET: f.input.webhookSecrets.elevenlabs,
+      STRIPE_WEBHOOK_SECRET: f.input.webhookSecrets.stripe, CLERK_WEBHOOK_SECRET: f.input.webhookSecrets.clerk }), { mode: 0o600 });
+    const preload = `data:text/javascript,${encodeURIComponent(`globalThis.fetch=async()=>{const error=new Error(${JSON.stringify(secret)});error.name=${JSON.stringify(secret)};throw error;};`)}`;
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--import", preload,
+      fileURLToPath(new URL("../run-deployed-http-acceptance.ts", import.meta.url)), "--credentials-file", credentials, "--settings-file", settings,
+      "--api-origin", f.input.apiOrigin, "--workspace-id", f.input.workspaceId, "--project-id", f.input.projectId,
+      "--denied-workspace-id", f.input.deniedWorkspaceId, "--task-id", f.input.taskId, "--journal-file", join(directory, "journal.json")], { encoding: "utf8" });
+    assert.equal(result.status, 1); assert.equal(result.stderr, "");
+    assert.deepEqual(JSON.parse(result.stdout), { status: "failed", code: "acceptance_transport_failed", phase: "first_party", requestIndex: 1,
+      diagnostics: { stage: "fetch", errorName: "unknown", receivedBytes: 0 } });
+    for (const privateValue of [secret, f.input.apiKey, f.input.sessionToken, f.input.apiOrigin, credentials]) assert.ok(!result.stdout.includes(privateValue));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 test("Node ws fixture-only transport observes exact upgrade, replay refusal and Origin refusal statuses", async () => {
   const server = createServer(), sockets = new WebSocketServer({ noServer: true });

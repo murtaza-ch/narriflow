@@ -57,6 +57,8 @@ export async function main(args: string[]) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2)).catch(error => {
   const code = error instanceof AcceptanceFailure ? error.code : "acceptance_transport_or_input_failed";
+  // Diagnostics contain only fixed stages/names and numeric observations.
   // Never serialize thrown network errors, response bodies or private inputs.
-  process.stdout.write(`${JSON.stringify({ status: "failed", code, ...(error instanceof AcceptanceFailure && error.phase ? { phase: error.phase, requestIndex: error.requestIndex } : {}) })}\n`); process.exitCode = 1;
+  process.stdout.write(`${JSON.stringify({ status: "failed", code, ...(error instanceof AcceptanceFailure && error.phase ? { phase: error.phase, requestIndex: error.requestIndex } : {}),
+    ...(error instanceof AcceptanceFailure && error.diagnostics ? { diagnostics: error.diagnostics } : {}) })}\n`); process.exitCode = 1;
 });

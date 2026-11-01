@@ -4,10 +4,32 @@ import { WebSocket } from "ws";
 const MODERN = "2026-07-28", LEGACY = "2025-11-25";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024, MAX_REQUESTS = 64;
 const VIEWS = ["upload", "progress", "clip-review", "publication-confirmation"] as const;
+const ERROR_NAMES = ["AbortError", "TimeoutError", "TypeError", "SyntaxError", "Error"] as const;
+type SafeErrorName = typeof ERROR_NAMES[number] | "unknown";
+export interface AcceptanceDiagnostics {
+  stage: "fetch" | "body" | "decode";
+  errorName: SafeErrorName;
+  abortName?: SafeErrorName;
+  statusCode?: number;
+  receivedBytes: number;
+}
+interface ResponseObservation {
+  stage: AcceptanceDiagnostics["stage"];
+  signal: AbortSignal;
+  statusCode?: number;
+  receivedBytes: number;
+}
+function safeErrorName(error: unknown): SafeErrorName {
+  try {
+    const name = error instanceof Error ? error.name : undefined;
+    return ERROR_NAMES.find(allowed => allowed === name) ?? "unknown";
+  } catch { return "unknown"; }
+}
 export class AcceptanceFailure extends Error {
   readonly code: string;
   phase?: string;
   requestIndex?: number;
+  diagnostics?: AcceptanceDiagnostics;
   constructor(code: string) { super(code); this.code = code; }
 }
 function requireFact(value: unknown, code: string): asserts value {
@@ -73,7 +95,7 @@ export function inspectProgressSocket(url: URL, origin: string, input: { expecte
   });
 }
 
-async function boundedJson(response: Response): Promise<Record<string, any>> {
+async function boundedJson(response: Response, observation: ResponseObservation): Promise<Record<string, any>> {
   requireFact(Number(response.headers.get("content-length") ?? 0) <= MAX_RESPONSE_BYTES, "response_length_limit");
   const reader = response.body?.getReader();
   requireFact(reader, "response_body_missing");
@@ -81,11 +103,13 @@ async function boundedJson(response: Response): Promise<Record<string, any>> {
   try {
     for (;;) {
       const part = await reader.read(); if (part.done) break;
-      size += part.value.byteLength; requireFact(size <= MAX_RESPONSE_BYTES, "response_length_limit"); chunks.push(part.value);
+      size += part.value.byteLength; observation.receivedBytes = size;
+      requireFact(size <= MAX_RESPONSE_BYTES, "response_length_limit"); chunks.push(part.value);
     }
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   const bytes = new Uint8Array(size); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  observation.stage = "decode";
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (response.headers.get("content-type")?.includes("text/event-stream")) {
     const records = text.split(/\r?\n\r?\n/).flatMap(frame => {
@@ -108,18 +132,28 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
   requireFact(typeof input.taskId === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.taskId), "positive_tasks_fixture_required");
   const overall = AbortSignal.timeout(180_000);
   let requests = 0, rpcId = 0, phase = "first_party";
+  let observation: ResponseObservation | undefined;
   try {
   const send = async (path: string, options: RequestInit = {}) => {
     requireFact(++requests <= MAX_REQUESTS, "request_count_limit");
     requireFact(path.startsWith("/") && !path.startsWith("//"), "request_target_invalid");
-    return (dependencies.fetch ?? fetch)(new URL(path, input.apiOrigin), { ...options, redirect: "manual", credentials: "omit", signal: AbortSignal.any([overall, AbortSignal.timeout(15_000)]) });
+    const signal = AbortSignal.any([overall, AbortSignal.timeout(15_000)]);
+    observation = { stage: "fetch", signal, receivedBytes: 0 };
+    const response = await (dependencies.fetch ?? fetch)(new URL(path, input.apiOrigin), { ...options, redirect: "manual", credentials: "omit", signal });
+    observation.stage = "body"; observation.statusCode = response.status;
+    return response;
+  };
+  const readJson = async (response: Response) => {
+    const value = await boundedJson(response, observation!);
+    observation = undefined;
+    return value;
   };
   const firstParty = (credential: string, workspaceId = input.workspaceId) => ({ Authorization: `Bearer ${credential}`, "X-Workspace-Id": workspaceId });
   const key = { Authorization: `Bearer ${input.apiKey}` };
   async function expectJson(path: string, status: number, options: RequestInit = {}, error?: string) {
     const response = await send(path, options);
     requireFact(response.status === status, "http_status_mismatch");
-    const body = await boundedJson(response);
+    const body = await readJson(response);
     if (error) requireFact(body.error === error, "http_error_code_mismatch");
     return body;
   }
@@ -158,7 +192,7 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
       ...(modern ? { "MCP-Method": method, ...(typeof name === "string" ? { "MCP-Name": name } : {}) } : {}) },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params: { ...params, ...(modern ? { _meta: meta } : {}) } }) });
     requireFact(response.status === expectedStatus, "mcp_http_status_mismatch");
-    const body = await boundedJson(response);
+    const body = await readJson(response);
     if (expectedStatus === 200) requireFact(body.id === id, "mcp_reply_identity");
     return body;
   }
@@ -235,6 +269,9 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
     scope: "Configured deployed production endpoints and exact supplied identities; product reads, progress protocol and controlled unknown webhook receipts only; no paid source/render/provider/email/social actions" };
   } catch (cause) {
     const failure = cause instanceof AcceptanceFailure ? cause : new AcceptanceFailure("acceptance_transport_failed");
+    if (observation) failure.diagnostics = { stage: observation.stage, errorName: safeErrorName(cause),
+      ...(observation.signal.aborted ? { abortName: safeErrorName(observation.signal.reason) } : {}),
+      ...(observation.statusCode === undefined ? {} : { statusCode: observation.statusCode }), receivedBytes: observation.receivedBytes };
     failure.phase = phase; failure.requestIndex = requests; throw failure;
   }
 }
