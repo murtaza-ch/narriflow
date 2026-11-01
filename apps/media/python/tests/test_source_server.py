@@ -1,4 +1,6 @@
+from contextlib import redirect_stderr
 import http.client
+from io import StringIO
 import json
 import socket
 import threading
@@ -100,6 +102,94 @@ class SourceServerTests(unittest.TestCase):
             self.assertEqual(len(session.grants), 4)
         finally:
             upstream.shutdown();upstream.server_close();thread.join(timeout=1)
+
+    def test_upstream_206_partial_body_eof_retries_after_downstream_headers_open(self):
+        data = bytes(range(256)) * 1024
+        source, session, _ = self.fixture(data)
+        requests, sent = [], {}
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self):
+                requested = self.headers['Range'];requests.append((requested, self.headers['If-Match']))
+                start, end = map(int, requested[6:].split('-'));body = data[start:end + 1]
+                self.send_response(206);self.send_header('ETag', '"source"')
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Content-Range', f'bytes {start}-{end}/{len(data)}')
+                self.end_headers()
+                number = len(requests)
+                body = body[:17] if number == 2 else body
+                self.wfile.write(body);self.wfile.flush();sent[number] = len(body)
+                self.close_connection = True
+        upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True);thread.start()
+        original_transfer = session.transfer
+        def transfer(action, **fields):
+            result = original_transfer(action, **fields)
+            result.disposition['grant']['url'] = f'http://127.0.0.1:{upstream.server_port}/source'
+            return result
+        session.transfer = transfer
+        try:
+            with ScopedSourceServer(session, [source], transport=SignedHttpTransport(allow_loopback_http=True)) as server:
+                server.allow_reads()
+                status, _, body = self.get(server, range=f'bytes=0-{len(data) - 1}')
+                self.assertEqual((status, body), (206, data))
+                self.assertEqual(server.bytes_transferred, len(data))
+                self.assertFalse(session.cancel_event.is_set())
+            self.assertEqual(sent, {1: 65536, 2: 17, 3: 131072, 4: 65536})
+            self.assertEqual(requests[1], requests[2])
+            self.assertTrue(all(etag == '"source"' for _, etag in requests))
+            self.assertEqual(len(session.grants), 4)
+        finally:
+            upstream.shutdown();upstream.server_close();thread.join(timeout=1)
+
+    def test_actual_upstream_eof_exhaustion_cancel_and_invalid_response_bounds(self):
+        for mode, expected_calls in [('truncated', 3), ('cancelled', 1), ('short-declaration', 1),
+                ('long-declaration', 1), ('oversized', 1), ('unbounded-oversized', 1), ('etag', 1), ('range', 1)]:
+            with self.subTest(mode=mode):
+                source, session, _ = self.fixture(b'0123456789abcdef')
+                requests = []
+                class Upstream(BaseHTTPRequestHandler):
+                    def log_message(self, *_): pass
+                    def do_GET(self):
+                        requests.append((self.headers['Range'], self.headers['If-Match']))
+                        self.send_response(206)
+                        self.send_header('ETag', '"changed"' if mode == 'etag' else '"source"')
+                        self.send_header('Content-Range', 'bytes 1-4/16' if mode == 'range' else 'bytes 0-3/16')
+                        length = 3 if mode == 'short-declaration' else 8 if mode == 'long-declaration' else 5 if mode == 'oversized' else 4
+                        if mode != 'unbounded-oversized': self.send_header('Content-Length', str(length))
+                        self.end_headers()
+                        if mode == 'cancelled': session.cancel_event.set()
+                        body = b'01' if mode in {'truncated', 'cancelled', 'long-declaration'} else b'012'
+                        if mode in {'oversized', 'etag', 'range'}: body = b'0123'
+                        if mode in {'oversized', 'unbounded-oversized'}: body = b'01234'
+                        self.wfile.write(body);self.wfile.flush();self.close_connection = True
+                upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+                thread = threading.Thread(target=upstream.serve_forever, daemon=True);thread.start()
+                original_transfer = session.transfer
+                def transfer(action, **fields):
+                    result = original_transfer(action, **fields)
+                    result.disposition['grant']['url'] = f'http://127.0.0.1:{upstream.server_port}/source'
+                    return result
+                session.transfer = transfer
+                logs = StringIO()
+                try:
+                    with redirect_stderr(logs), ScopedSourceServer(session, [source], transport=SignedHttpTransport(allow_loopback_http=True)) as server:
+                        server.allow_reads()
+                        self.assertEqual(self.get(server, range='bytes=0-3')[0], 502)
+                        self.assertEqual(server.bytes_transferred, 0)
+                        self.assertEqual(server.upstream_requests, 0)
+                        if mode == 'cancelled': self.assertEqual(self.get(server, range='bytes=4-7')[0], 503)
+                    self.assertEqual(requests, [('bytes=0-3', '"source"')] * expected_calls)
+                    self.assertEqual(len(session.grants), expected_calls)
+                    if mode == 'truncated':
+                        records = [json.loads(line) for line in logs.getvalue().splitlines()]
+                        self.assertEqual(len(records), 3)
+                        self.assertTrue(all(row['phase'] == 'response_body' and row['status'] == 206
+                            and row['failureKind'] == 'incomplete_body' and row['bufferedResponseBytes'] == 2 for row in records))
+                    if mode in {'short-declaration', 'etag', 'range'}:
+                        self.assertTrue(session.cancel_event.is_set())
+                finally:
+                    upstream.shutdown();upstream.server_close();thread.join(timeout=1)
 
     def test_transport_retries_are_bounded_and_stop_on_owner_loss_or_invalid_grants(self):
         for code, cancel, expected_calls in [('multipart_transport_failed', False, 3),

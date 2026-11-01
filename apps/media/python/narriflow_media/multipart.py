@@ -175,6 +175,7 @@ class SignedHttpTransport:
         watcher = Thread(target=monitor, daemon=True)
         watcher.start()
         phase, status, size = 'request', None, 0
+        response = None
         try:
             if cancelled():
                 raise MultipartTransferError('multipart_cancelled')
@@ -187,6 +188,8 @@ class SignedHttpTransport:
             response = connection.getresponse()
             status = response.status
             phase = 'response_body'
+            if response.length is not None and response.length > max_response_bytes:
+                raise MultipartTransferError('multipart_response_too_large')
             buffer, size = bytearray(max_response_bytes + 1), 0
             while received := response.readinto(memoryview(buffer)[size:]):
                 size += received
@@ -194,12 +197,17 @@ class SignedHttpTransport:
                     raise MultipartTransferError('multipart_response_too_large')
             if cancelled() or time.monotonic() >= deadline or time.time() >= wall_deadline:
                 raise MultipartTransferError('multipart_cancelled')
+            # readinto() can return EOF without raising IncompleteRead while a
+            # declared Content-Length still has bytes outstanding.
+            if response.length is not None and response.length > 0:
+                raise http.client.IncompleteRead(b'', response.length)
             return TransferResponse(response.status, dict(response.getheaders()), memoryview(buffer)[:size])
         except (OSError, http.client.HTTPException) as error:
             if isinstance(error, ssl.SSLCertVerificationError): kind = 'tls_certificate'
             elif isinstance(error, ssl.SSLError): kind = 'tls'
             elif isinstance(error, TimeoutError): kind = 'timeout'
             elif isinstance(error, socket.gaierror): kind = 'dns'
+            elif isinstance(error, http.client.IncompleteRead): kind = 'incomplete_body'
             elif isinstance(error, http.client.RemoteDisconnected): kind = 'disconnected'
             elif isinstance(error, ConnectionError): kind = 'connection'
             elif isinstance(error, http.client.HTTPException): kind = 'http'
@@ -214,6 +222,8 @@ class SignedHttpTransport:
             raise MultipartTransferError('multipart_transport_failed') from None
         finally:
             finished.set()
+            if response is not None:
+                response.close()
             connection.close()
             watcher.join(timeout=0.1)
 
