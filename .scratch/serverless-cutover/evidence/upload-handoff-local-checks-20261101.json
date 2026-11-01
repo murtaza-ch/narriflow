@@ -1,7 +1,7 @@
 {
   "version": 1,
   "recordedAtUtc": "2026-11-01T01:57:01.668310+00:00",
-  "status": "local upload handoff checks passed; HTTP registration failure contract remains open",
+  "status": "PASSED local handoff and registration contract checks; deployed same-upload replay pending",
   "implementationCommit": "cae8e162c75ebd2b51f8ea729fe7060fe76e534b",
   "testIsolationCommit": "5425a489",
   "behavior": [
@@ -63,10 +63,83 @@
   },
   "independentReviews": {
     "standards": "No actionable findings in the committed three-file patch.",
-    "spec": "Registration failure after the domain commit lacks a typed retryable response carrying its receipt at the Worker boundary. Fix required."
+    "spec": "Registration failure after the domain commit lacks a typed retryable response carrying its receipt at the Worker boundary. Fix required.",
+    "followupStandards": "No actionable findings in a2904a21...d3a57e45.",
+    "followupSpec": "No findings; prior P2 registration retry receipt requirement resolved."
   },
-  "cloudDeploymentPerformed": false,
+  "cloudDeploymentPerformed": true,
   "originalSpeechFixtureReplayed": false,
   "originalFourMinuteSmokeResult": "failed; retained unchanged",
-  "releaseAcceptanceComplete": false
+  "releaseAcceptanceComplete": false,
+  "boundaryImplementationCommit": "9c1de0de37156e459aadc8b00c87404e7c2ad276",
+  "boundaryBehavior": [
+    "Actual MCP RPC invocations use independent dispatch collectors, including handlers finishing after an SSE response opens.",
+    "No positive Task result is emitted until scheduler registration is confirmed.",
+    "Postcommit registration failure returns retry guidance and bounded durable reference identifiers for upload, REST and MCP shapes.",
+    "HTTP response rewriting preserves request, CORS and security headers; raw provider content, grants and transcripts are excluded."
+  ],
+  "currentReleaseChecks": {
+    "fullExecutionPostgres": {
+      "tests": 474,
+      "assertions": 3449,
+      "failures": 0,
+      "skips": 0
+    },
+    "fullTypecheck": {
+      "passed": 15,
+      "total": 15
+    },
+    "fullFast": {
+      "passedTasks": 14,
+      "totalTasks": 14
+    },
+    "actualSdkLocalPostgresRegistration": {
+      "tests": 4,
+      "assertions": 42
+    },
+    "receiptAndBodyBounds": {
+      "tests": 10,
+      "assertions": 27
+    },
+    "lint": {
+      "errors": 0,
+      "warnings": 11,
+      "info": 1
+    },
+    "routeInventory": {
+      "routes": 296,
+      "protocolRoutes": 45,
+      "problems": 0
+    },
+    "openapi": {
+      "operations": 32,
+      "matched": true
+    },
+    "webSplit": "passed including existing client bundle scan",
+    "environmentConsistency": "passed",
+    "workerDryBuildImportAudit": "passed"
+  },
+  "closedWorkerDeployment": {
+    "version": "e29427b9-43c7-441c-ac42-6682fc017264",
+    "healthAdmission": "closed",
+    "secretCount": 79,
+    "mailCredentialPresent": false
+  },
+  "cloudDeploymentLimit": "Worker is closed. Paired media deployment and exact immutable-image/native/seek qualification are pending; no original upload replay or provider pipeline pass is claimed.",
+  "currentRawLogSha256": {
+    "worker-registration-red.log": "2dccfc6579156ee6a1cbfac487f8c82c8f1378c255decd2441e7fad0e8c27412",
+    "worker-registration-green.log": "c0c44ccd4ee8ee616b1aceee1cec113564f0be34528fe36b479551cfecf9b1f3",
+    "worker-registration-bounds.log": "2521f4225d974d5492b88e6d6e3c5534c5e39d36861597a486dd656be8171996",
+    "worker-registration-full-pg.log": "d03861f07ce20a157d597c5bfc28136b027ab423b73c36e865648e87d63e8d26",
+    "worker-registration-full-tsc.log": "c9f1dc9a2ea09ff607a666422c02918f0605265229f90aa10f7495d73f1dbd58",
+    "worker-registration-full-fast.log": "98cfcebabf2ad36f15c0396e5f221f29b9076e765ea0c6e98d38f53916f6b768",
+    "worker-registration-biome.log": "20dd499117a64b638285ebeff4156851eced05f7d1ab5ccb054a8f6d99920705",
+    "worker-registration-worker-build.log": "58d850b48a4aaf73ee2e215ecb7c444a17b466180a4ae855cea9d13b297472cc",
+    "handoff-release-lint.log": "602037f6c12502399ca1d45e4cee8eebd2af8a93c7872bd03936b5061fb7a033",
+    "handoff-release-inventory.log": "c8defca3edb484fcc9c1daa4a7b11421d6b3e99a91e6bf421bdc34126c4d8c25",
+    "handoff-release-openapi.log": "be692bcd1f036588ed56837637dfdbad9b4364e3579755e698459b5e0f0800ef",
+    "handoff-release-web-split.log": "7a12cb4cad80d7bf7853d1f06eed2f58868751a0d0a527b05419061b32f189f2",
+    "handoff-release-env-check.log": "c1f041dd6ce63f959b6326e772a4ae5555b44451ed546dbe3d68d28e8e3da8f5"
+  },
+  "updatedAtUtc": "2026-11-01T02:19:52.085233+00:00"
 }
