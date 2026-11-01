@@ -60,7 +60,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured['sourceBytesTransferred'],0)
         self.assertNotIn('private',logs.getvalue())
 
-    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,source_sha256=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1'):
+    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,source_sha256=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1',fixture_document=None,inspect_output=None):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);source=Path(source_path) if source_path is not None else base/'original.mp4';work=base/'work';work.mkdir()
@@ -90,9 +90,12 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     script=script.replace('const value=clipPreparationInputSchema',f'raw.document.studioEdits.music={{assetId:{json.dumps(audio[-1]["id"])}}};const value=clipPreparationInputSchema')
                 if long_source:
                     script=script.replace('const value=clipPreparationInputSchema',"raw.document.clipStartSec+=5400;raw.document.clipEndSec+=5406;for(const utterance of raw.document.transcriptSlice){utterance.startSec+=5400;utterance.endSec+=5400;for(const word of utterance.words??[]){word.startSec+=5400;word.endSec+=5400;}}const value=clipPreparationInputSchema")
+                if fixture_document is not None:
+                    script=script.replace('const value=clipPreparationInputSchema', 'raw.document=raw.fixtureDocument;delete raw.fixtureDocument;const value=clipPreparationInputSchema')
                 raw={'version':1,'kind':'prepare_clip','preparationId':str(uuid4()),'projectId':str(uuid4()),'clipId':str(uuid4()),'sourceRevision':1,'editorRevision':0,
-                    'toolchainFingerprint':fingerprint,'engineHash':'b'*64,'wholeSource':not long_source,'llmModel':'caption-only' if long_source else 'fixture','sourcePath':str(source),
+                    'toolchainFingerprint':fingerprint,'engineHash':'b'*64,'wholeSource':not long_source,'llmModel':'caption-only' if long_source or fixture_document is not None else 'fixture','sourcePath':str(source),
                     'source':{'storageKey':'execution/frozen/original','etag':'"source"','byteLength':source_size,'sha256':source_sha}}
+                if fixture_document is not None:raw['fixtureDocument']=fixture_document
                 prepared=subprocess.run(['bun','-e',script],input=json.dumps(raw).encode(),capture_output=True,cwd=root,timeout=20,check=True)
                 generated=json.loads(prepared.stdout);preparation=generated['preparation'];preview_window=generated['previewWindow']
             else:
@@ -111,7 +114,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
             capsule=json.dumps(command,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
             outputs=[{'artifactId':str(uuid4()),'role':role,'bindingHash':artifact_binding(hash,render_id,role),'contentType':mime,'contentTypes':[mime],'maxBytes':maximum}
                 for role,mime,maximum in [('render_variant','video/mp4',512*1024**2),('render_outcome','application/json',65536)]]
-            uploads={};upload_parts={};calls=[];starts=[]
+            uploads={};upload_parts={};calls=[];starts=[];source_reads=[]
             class Session:
                 fence={'reference':{'inputHash':hash,'subject':{'kind':'render_group','id':group_id}},'attemptToken':str(uuid4()),'owner':str(uuid4())}
                 remaining_seconds=180;cancel_event=threading.Event()
@@ -154,6 +157,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         original=grant.url.endswith('/original');data=payload if original else library_payload
                         etag='"source"' if original else '"library"'
                         assert headers['if-match']==etag;start,end=map(int,headers['range'][6:].split('-'))
+                        if inspect_output is not None and original:source_reads.append({'start':start,'end':end,'ifMatch':headers['if-match']})
                         if original and payload is None:
                             with source.open('rb') as stream:stream.seek(start);body=stream.read(end-start+1)
                             size=source_size
@@ -201,4 +205,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 names=sorted({fields['sourceId'] for action,fields in calls if action=='source-read'})
                 self.assertEqual(names,['audio_199','original'])
                 measured['frozenAssetCount']=len(audio);measured['sourceNamesRead']=names
+            if inspect_output is not None:
+                output_path=base/'uploaded-output.mp4';output_path.write_bytes(uploads[outputs[0]['artifactId']])
+                measured['outputValidation']=inspect_output(output_path,source_reads)
             return measured
