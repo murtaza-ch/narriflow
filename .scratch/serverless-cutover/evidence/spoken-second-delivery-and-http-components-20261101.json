@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T05:09:29.998922+00:00",
+  "sourceCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+  "openWorkerVersionAtChecks": "671c92aa-5051-4577-86c7-830331eff38f",
+  "status": "PARTIAL component results; integrated delivery and HTTP acceptance remain FAILED/open",
+  "export": {
+    "intentAccepted": true,
+    "status": "queued",
+    "pollReads": 60,
+    "requests": 67,
+    "queuedWithoutRunOrDispatch": true,
+    "pollLimitReached": true,
+    "bundleStarted": false,
+    "dubStarted": false,
+    "originalAcceptedAtUtc": "2026-11-01T04:39:22.174Z",
+    "originalFortyFiveMinuteCutoffUtc": "2026-11-01T05:24:22.174Z",
+    "jobDeadlineReset": false
+  },
+  "deployedHttpAttempts": [
+    {
+      "attempt": 1,
+      "status": "failed",
+      "phase": "rest",
+      "requestIndex": 4,
+      "code": "rest_project_identity",
+      "classification": "Verifier incorrectly expected public project.id; production projectView emits projectId."
+    },
+    {
+      "attempt": 2,
+      "status": "failed",
+      "phase": "progress",
+      "requestIndex": 8,
+      "code": "http_status_mismatch",
+      "classification": "Verifier omitted Origin required by the ticket route."
+    },
+    {
+      "attempt": 3,
+      "status": "failed",
+      "phase": "mcp_modern_tools_list",
+      "requestIndex": 9,
+      "code": "acceptance_transport_failed",
+      "classification": "Original failure lacks transport-stage detail. Separate bounded catalog probes are recorded below; they do not prove this exact failure cause."
+    }
+  ],
+  "callerCorrections": {
+    "publicProjectContractCommit": "9deffe6c5abc90e5544d2df4b5268ed5f70facc2",
+    "ticketOriginCommit": "a01603fe8f494a245d03a52f850d8872cd3e6d9f",
+    "eachFixtureRedThenSixTestsPassed": true,
+    "bothIndependentReviewAxesNoFindings": true,
+    "laterSafeFailureDiagnosticsAuthorCommit": "e4a1bf992033be98f9c432411c8ae4bd208c7ca5",
+    "diagnosticTestsPassed": 11,
+    "requestLimitsNotWidened": true
+  },
+  "progressComponent": {
+    "sourceCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+    "workerVersion": "671c92aa-5051-4577-86c7-830331eff38f",
+    "observedAt": "2026-11-01T04:54:01.880Z",
+    "target": "deployed isolated candidate",
+    "checks": [
+      "wrong_origin_403",
+      "wrong_project_403",
+      "valid_ticket_101",
+      "one_use_ticket_replay_409",
+      "hibernation_auto_pong",
+      "subscription_expiry_revokes_and_closes"
+    ],
+    "passed": 6,
+    "closedAt": "2026-11-01T04:54:01.879Z",
+    "subscriptionExpiresAt": "2026-11-01T04:54:01.573Z",
+    "scope": "Real Clerk-authenticated ticket and actual ProjectProgress DO; SQL-idle attribution is a separate gate"
+  },
+  "separateCatalogObservations": {
+    "node": [
+      {
+        "timeoutMs": 15000,
+        "requestBodySha256": "ce706a5dbb224fbc3852c1fd94e83f0f7490476b1c7adc59ba63f4b1fbe69c28",
+        "method": "tools/list",
+        "responseBytes": 65536,
+        "headersMs": 14379,
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "declaredLength": null,
+        "errorClass": "TimeoutError",
+        "elapsedMs": 15005
+      },
+      {
+        "timeoutMs": 60000,
+        "requestBodySha256": "38d4c82cbc99cf2be99953ea9abe3c26e53adc1d880d32ca9af53f299d6a30ae",
+        "method": "tools/list",
+        "responseBytes": 205498,
+        "headersMs": 4798,
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "declaredLength": null,
+        "wholeBody": true,
+        "responseSha256": "4d8cc904606f7a894c32c3aa69a9a0bd2c53dd0903c430d09125075bb4cb7a61",
+        "replyIdentityMatches": true,
+        "hasResult": true,
+        "toolsCount": 41,
+        "hasJsonRpcError": false,
+        "elapsedMs": 5264
+      }
+    ],
+    "bun": [
+      {
+        "timeoutMs": 15000,
+        "requestBodySha256": "27515e59cd51c66047366e296b9d96852136d688afb4babd1634d91bae8624df",
+        "method": "tools/list",
+        "responseBytes": 205498,
+        "headersMs": 1536,
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "declaredLength": null,
+        "wholeBody": true,
+        "responseSha256": "a3e8c4b5a80ff5d939719d6846de5406251d564d05a99c9fee0880584b43d568",
+        "replyIdentityMatches": true,
+        "hasResult": true,
+        "toolsCount": 41,
+        "hasJsonRpcError": false,
+        "elapsedMs": 2015
+      },
+      {
+        "timeoutMs": 60000,
+        "requestBodySha256": "4474a93826880301256e4b2a2089d4cd3c3697b060b674fef2c9374002d009ff",
+        "method": "tools/list",
+        "responseBytes": 205498,
+        "headersMs": 1496,
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "declaredLength": null,
+        "wholeBody": true,
+        "responseSha256": "862e220ad2e354bbdec7b267a7a492febb56c5c2e0173b8fc499bf0da3b45f03",
+        "replyIdentityMatches": true,
+        "hasResult": true,
+        "toolsCount": 41,
+        "hasJsonRpcError": false,
+        "elapsedMs": 1963
+      }
+    ],
+    "qualifiedP95": false,
+    "longer60SecondProbeIsObservationOnly": true,
+    "workerTrace": {
+      "sampleCount": 8,
+      "oneMcpHttp200": {
+        "cpuMs": 208,
+        "wallMs": 3852,
+        "authenticationMs": 3706,
+        "totalRequestMs": 3734
+      },
+      "qualification": "Incidental trace, not a cohort or a proven network root cause. Authentication timing includes body reading and connection acquisition."
+    }
+  },
+  "admissionOnlyCohort20": {
+    "preflightRefused": true,
+    "reasonCode": "burst_empty_capacity_and_credits_required",
+    "prepared": false,
+    "requests": 4,
+    "actualOpenAttempts": 0,
+    "knownSessions": 0,
+    "processingStarted": false,
+    "cohort100Started": false
+  },
+  "rawEvidence": {
+    "spoken-second-delivery-parent.log": {
+      "sha256": "a338cfa791551f4cdc89954ebfb65620cf0a1b0bb0d6ef9541690bb5c37b976c",
+      "bytes": 493
+    },
+    "spoken-second-delivery-poll-export.log": {
+      "sha256": "404461ace371aa4e5538e4a4d38102a096cd12bab5d3477e5f3e6277ea4d1650",
+      "bytes": 52
+    },
+    "spoken-second-http-acceptance-first-returned-stdout.log": {
+      "sha256": "f764749c06a82891b3abd7ed4cf498659e1c4899d8c7df2933ca89127ccb0c18",
+      "bytes": 162
+    },
+    "spoken-second-http-acceptance-retry-2.log": {
+      "sha256": "7639c7c8c380d7d0c114db9c398d2844735b733594c1ba3029ba1eb1af75f066",
+      "bytes": 86
+    },
+    "spoken-second-http-acceptance-retry-3.log": {
+      "sha256": "fa9a737b947c6a141666a5944db09d3d940cc5f13d58864f5277fccf94c180c5",
+      "bytes": 106
+    },
+    "spoken-second-http-public-identity-red.log": {
+      "sha256": "bf0fce4a5b8728669422b7def5ee8cb776bca1e8b2abd2000a6f61404d90565a",
+      "bytes": 1585
+    },
+    "spoken-second-http-public-identity-green.log": {
+      "sha256": "0af53a4e5ce270ef8049a57d2513aae74a0e8480e321298d940452e412a0c269",
+      "bytes": 681
+    },
+    "spoken-second-http-ticket-origin-red.log": {
+      "sha256": "b285a0340f4d2afd178bb004cf9685d1d7281271be90e9e5698bd674f3f1aa55",
+      "bytes": 1717
+    },
+    "spoken-second-http-ticket-origin-green.log": {
+      "sha256": "cd38158fa963bf3febb25ec8495bb3022860bdf2c1ac1877ceccfb16e132b338",
+      "bytes": 682
+    },
+    "spoken-second-live-progress-gate-node-retry-2.log": {
+      "sha256": "ef8d622a956c45dcd2a43b6be5262a76a269ded0342e6d559fe88c01b9b81e30",
+      "bytes": 712
+    },
+    "spoken-second-mcp-catalog-probe.log": {
+      "sha256": "d51a27b48a0039ae1db7ce4938fc34370e6a3b261ea7e9f5fe58071546d284ee",
+      "bytes": 888
+    },
+    "spoken-second-mcp-catalog-probe-node.log": {
+      "sha256": "50cd501387c238d778b2ca09c86340d717ba7e620793472233c55c3f4fb3a7a1",
+      "bytes": 731
+    },
+    "spoken-second-admission-20-prepare.log": {
+      "sha256": "88cb3e0d74f594169805ad8cc96ce6a68f5a81fc13192ec2c43a3bb3703a6986",
+      "bytes": 67
+    }
+  },
+  "limits": [
+    "The generation remains partial with only2 of5 selected clips complete; none of these component observations changes the failed12-clip/four-minute result.",
+    "Export, bundle, dubbing, full HTTP, burst, idle and final-candidate restore acceptance remain open.",
+    "The first standalone socket probe used Bun rather than the required Node ws runtime and failed. Its expired connection ticket was redacted from the readable diagnostic log; the original remains private. The separate successful Node retry is the progress component evidence.",
+    "No accepted intent was resubmitted, and no job, charge, operation deadline or failed history was reset.",
+    "Source180fd7f1 remains the only deployed qualified pair. Later source changes need fresh paired deployment and qualification.",
+    "Shared development resources and dev branch remain unchanged."
+  ]
+}

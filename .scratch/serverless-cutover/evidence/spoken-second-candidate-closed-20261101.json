@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T05:10:34.723666+00:00",
+  "status": "Isolated intake closed; integrated acceptance remains open",
+  "sourceCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+  "observation": {
+    "observedAt": "2026-11-01T05:08:56.007Z",
+    "workerVersion": "f3b9d013-f070-4155-b4c2-4cf4227897c2",
+    "epoch": 10,
+    "httpAdmission": "closed",
+    "databaseAdmission": "closed",
+    "allGenericAttemptsTerminal": true,
+    "bothSpeechHistoriesAndBudgetsPreserved": true,
+    "acceptedQueuedExportPreserved": true,
+    "mailCredentialAbsent": true,
+    "sharedDatabaseTouched": false
+  },
+  "secretNames": 79,
+  "oldOpenVersion": "671c92aa-5051-4577-86c7-830331eff38f",
+  "qualifiedClosedVersion": "f3b9d013-f070-4155-b4c2-4cf4227897c2",
+  "closureCallerReviewedSha256": "282fb19156cca0521b7f12aa30e82fc8e728931593829bbc357e3e098c89017b",
+  "operatorRefusals": {
+    "invalidArgumentsRefusedBeforeDatabase": true,
+    "firstValidAttemptRefusedAndRolledBack": true,
+    "firstIntentAndCallerPreserved": true,
+    "corrections": [
+      "Use exact SQL timestamp text rather than host-timezone Date parsing for the original deadline comparison.",
+      "Accept only terminal failed/superseded original preparations; preserve the same six rows,18 charges and six failed uncharged groups."
+    ],
+    "noDeadlineOrHistoryWrite": true
+  },
+  "rawEvidence": {
+    "spoken-second-close-worker-rollback.log": {
+      "sha256": "850d38a63f1e4a7cf844a2065e2122968e27415a31dc5229f3269bb244a8fe63",
+      "bytes": 1446
+    },
+    "spoken-second-candidate-database-close.log": {
+      "sha256": "e985aba9709ecc293df847fd958b3d84375b66fe183df54aa5c6375269ac5311",
+      "bytes": 60
+    },
+    "spoken-second-candidate-database-close-retry-2.log": {
+      "sha256": "92a8184286625d47b72f8502444df8bde4b029b6dae2b7f51d10544d1cf73a16",
+      "bytes": 337
+    }
+  },
+  "limits": [
+    "This flag closure is not a one-hour idle or complete artifact-retirement proof.",
+    "The accepted queued export remains recorded and unowned; no accepted intent was resubmitted.",
+    "Native images remain the qualified180fd7f1 pair; later source changes are not deployed.",
+    "The original failed and second partial speech results remain unchanged.",
+    "No shared cutover, migration, dev merge/push or infrastructure deletion has occurred."
+  ]
+}
