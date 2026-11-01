@@ -316,6 +316,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       const key = idempotencyKey(c);
       const outcome = await uploads.open(actor, {
         clientIdempotencyKey: key,
+        notifyOnComplete: input.notifyOnComplete,
         title: input.title ?? input.file.name,
         // The shared upload rule replaces this with a fingerprint every transport computes alike.
         source: { fileName: input.file.name, sizeBytes: input.file.sizeBytes, contentType: input.file.contentType, browserFingerprint: "rest" },

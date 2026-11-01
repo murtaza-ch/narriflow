@@ -2293,6 +2293,10 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
           "generation": {
             "$ref": "#/components/schemas/GenerationSettings",
           },
+          "notifyOnComplete": {
+            "description": "Whether the Project sends completion notifications. Defaults to true; frozen when the Upload Session is opened.",
+            "type": "boolean",
+          },
           "recipeId": {
             "description": "A Recipe from the Recipes list. It replaces brandProfileId, generation, and finishing: send it or those, never both. Generating clips for an existing Project uses the Recipe's language, generation settings, and finishing; the Project keeps the Brand Profile it was imported with",
             "format": "uuid",

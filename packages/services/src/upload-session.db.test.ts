@@ -1,3 +1,4 @@
+import { withExecutionDispatches } from "./execution-dispatch-runtime";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
@@ -1273,4 +1274,34 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     expect(await uploadSessionService.hasOwnSessionByClientKey(ownerScope, randomUUID())).toBe(false);
     expect(await uploadSessionService.hasOwnSessionByClientKey(otherScope, key)).toBe(false);
   })));
+  test.each([false, true, undefined])("notification preference %s is frozen before atomic Project/ingest handoff", bindServiceTestEnvironment(prismaGlobal.bind(async (notifyOnComplete) => {
+    const user = await prisma.user.create({ data: { clerkId: `quiet-upload:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { ownerUserId: user.id, name: "Quiet upload", pricingTier: "business" } });
+    let uploaded = false;
+    const object = { sizeBytes: 2048, contentType: "video/mp4", etag: '"quiet-fixture"' };
+    const module = createUploadSessionModule({ config: defaultUploadSessionConfig(), persistence: prismaUploadSessionPersistence,
+      storage: { async grantSinglePut() { return { url: "https://upload.invalid/quiet" }; }, async headExactObjectIfExists() { return uploaded ? object : null; }, async headExactObject() { return object; } } as UploadSessionStorage,
+      admission: { async resolveBrand() { return null; } }, now: () => new Date(), createId: randomUUID });
+    const input = { actorUserId: user.id, workspaceId: workspace.id, clientIdempotencyKey: randomUUID(), title: "Frozen preference", source: { fileName: "quiet.mp4", sizeBytes: 2048, contentType: "video/mp4", browserFingerprint: "quiet-fixture" }, brandTemplateId: null, brandProfileId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK }, ...(notifyOnComplete === undefined ? {} : { notifyOnComplete }) };
+    const opened = await module.open(input);
+    expect(await prisma.project.findUnique({ where: { id: opened.projectId! } })).toBeNull();
+    const stored = await prisma.uploadSession.findUniqueOrThrow({ where: { id: opened.sessionId } });
+    expect((stored.generationSettings as any).contentPack).toEqual(CONTENT_PACK);
+    const expected = notifyOnComplete ?? true;
+    await expect(module.open({ ...input, notifyOnComplete: !expected })).rejects.toBeInstanceOf(UploadSessionIdempotencyConflictError);
+    const replay = await module.open({ ...input, notifyOnComplete: expected }); expect(replay.sessionId).toBe(opened.sessionId);
+    uploaded = true; let delivered = 0;
+    const finalized = await withExecutionDispatches(() => module.finalize({ actorUserId: user.id, workspaceId: workspace.id, sessionId: opened.sessionId, parts: [] }), { database: prisma, deliver: async ids => {
+      const project = await prisma.project.findUniqueOrThrow({ where: { id: opened.projectId! } }); expect(project.notifyOnComplete).toBe(expected);
+      const job = await prisma.ingestJob.findUniqueOrThrow({ where: { uploadSessionId: opened.sessionId } }); expect(job.status).toBe("queued"); expect(job.attemptCount).toBe(0);
+      const dispatch = await prisma.executionDispatch.findFirstOrThrow({ where: { kind: "import_pipeline", subjectId: job.id } }); expect(ids).toContain(dispatch.id); delivered++;
+      expect(await prisma.workflowRun.count({ where: { projectId: project.id } })).toBe(0);
+    } });
+    expect(finalized.outcome).toBe("queued_for_ingest"); expect(delivered).toBe(1);
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: opened.projectId! } })).notifyOnComplete).toBe(expected);
+    await expect(module.open({ ...input, notifyOnComplete: !expected })).rejects.toBeInstanceOf(UploadSessionIdempotencyConflictError);
+    expect((await prisma.uploadSession.findUniqueOrThrow({ where: { id: opened.sessionId } })).immutableInputFingerprint).toBe(stored.immutableInputFingerprint);
+  })));
+
 });

@@ -1,0 +1,155 @@
+{
+  "recordedAtUtc": "2026-11-01T10:57:41.709632+00:00",
+  "baseSourceCommit": "5a09d40c8b04081b3ceb17c6f8b86ae6bf55f0e2",
+  "contract": "Upload Session open optionally accepts top-level notifyOnComplete; omitted/true retain current default, false is frozen before any processing and atomically copied into Project creation",
+  "persistence": "Existing UploadSession.generationSettings JSON envelope already carries intake Recipe/Finishing metadata. Only explicit false adds an intake preference outside ContentPack; no Prisma schema or migration change and no generation policy/settings change. Fingerprint normalizes omitted/true to same current identity and rejects a false/true flip before and after handoff.",
+  "verificationSeams": [
+    "Strict direct/public REST schemas, rejecting nested undeclared generationContext preference",
+    "Production uploadVideo function forwards explicit preference without changing generationContext",
+    "Real REST route forwards preference to production service interface",
+    "Actual Upload Session module + production Prisma persistence commit Project preference before collected Ingest dispatch is delivered; queued job has0attempts and no Workflow Run yet; replay cannot flip; omitted/explicittrue remaintrue"
+  ],
+  "red": {
+    "schema": "0pass1fail strict unrecognized key notifyOnComplete",
+    "database": "15pass3fail before implementation; false Project visible as true at handoff and true/omitted replays accept flipped preference; red-db-atomic.log"
+  },
+  "checks": {
+    "final-db": {
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 228
+    },
+    "related-execution-db": {
+      "pass": 24,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 296
+    },
+    "api-fast": {
+      "pass": 940,
+      "fail": 0,
+      "skip": 58,
+      "assertions": 5168
+    },
+    "services-fast": {
+      "pass": 1417,
+      "fail": 0,
+      "skip": 1444,
+      "assertions": 78616
+    },
+    "mcp-fast": {
+      "pass": 12,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 58
+    },
+    "validators-fast": {
+      "pass": 692,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 3405
+    },
+    "green-contract-tests": {
+      "pass": 7,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 20
+    },
+    "services-typecheck": {
+      "passed": true
+    },
+    "api-typecheck": {
+      "passed": true
+    },
+    "mcp-typecheck": {
+      "passed": true
+    },
+    "validators-typecheck": {
+      "passed": true
+    },
+    "api-client-typecheck": {
+      "passed": true
+    }
+  },
+  "inventory": "296routes45protocolroutes0problems",
+  "openapi": "32operations match generated artifact; only four optional-field lines added to generated JSON and corresponding snapshot",
+  "lint": "passed,11existingwarnings1info",
+  "workerBuild": "dry-run + import audit passed, no deployment",
+  "nativeRuntimeAudit": {
+    "sourceBase": "5a09d40c8b04081b3ceb17c6f8b86ae6bf55f0e2",
+    "mediaSourceCommit": "abed477ce19eddddf2c84a2de45cb79ab2a4464a",
+    "bun": "1.3.6",
+    "method": "Bun.Transpiler.scanImports first-party runtime graph, excluding type-only imports; compare actual files against immutable ABED blobs without importing modules",
+    "entries": 71,
+    "reachable": 204,
+    "reachableChanged": [
+      "packages/validators/src/rest-api.ts",
+      "packages/validators/src/upload.ts"
+    ],
+    "unresolved": [],
+    "nativeByteEquivalence": false,
+    "deploymentOrQualificationClaimed": false
+  },
+  "nativeProvenanceLimit": "Two reachable validator files change; existing ABED native runtime byte equivalence cannot be claimed. Root owns deployment/qualification decision. No image build/deploy/qualification executed here.",
+  "rawFailuresRetained": [
+    "red-schema.log",
+    "red-db.log",
+    "red-db-atomic.log",
+    "green-db.log: one failed preference assertion because first edit changed fingerprint rather than reservation metadata; corrected targeted storage site; final18DBtests pass"
+  ],
+  "liveActions": {
+    "cloud": false,
+    "sharedDB": false,
+    "cloudCredentials": false,
+    "providers": false,
+    "journals": false,
+    "deployment": false,
+    "rootTrackedEdits": false,
+    "authorizedIsolatedLocalDatabaseOnly": true
+  },
+  "sourceSha256": {
+    "apps/api/src/domains/rest/__snapshots__/app.test.ts.snap": "78f0ea03e8543c0fa24623d6a3ba8aae0ec93f3f1b84a720e7af28f2ea1a8163",
+    "apps/api/src/domains/rest/app.test.ts": "ebda30ed62a5b7da7527dd9a6d1bed9cf2860f65fa4fe11f379703914e225511",
+    "apps/api/src/domains/rest/routes.ts": "08be376b3ed0b2b7973720044a4e72436ad5c336a25792dd844707790f32b4b9",
+    "apps/mcp/src/upload.test.ts": "e06131bcabe7f7c60baa4e83faed671e1c56f744f759444351033e0a7c9232bb",
+    "apps/mcp/src/upload.ts": "8e604c23333a47ed6bd9ecd5913c87c3d437b94adf8b6465011e03c545adec8a",
+    "packages/api-client/src/openapi/public-v1.json": "40c5c69e4c653b779d0f8f93214613cb52146c37f58860c1b42a51629ff92c7e",
+    "packages/services/src/upload-session.db.test.ts": "2c41a2f6ede50057831b77b33521fc3ffdfdd88a6b452988ed7a7c21899c0f46",
+    "packages/services/src/upload-session.service.ts": "fe6e010a96640abbbf4d496c60f0fa668ecc515693a6a2efca80f2419abe4071",
+    "packages/validators/src/rest-api.ts": "86458fb4c6082c1babba10305093ba3803099e05665751d2ad43eac0d3e6cdfa",
+    "packages/validators/src/upload.ts": "43771b341ba6f2cac5cddb92319acb67277028bd3034a5caf19a86f1a8224639",
+    "packages/validators/src/upload-notify-preference.test.ts": "e8ea2189bbd5ec6fa6e09b411164f69db7d8a4f275f34ab8b704e11848449bb6"
+  },
+  "privateArtifacts": "/tmp/narriflow-serverless-control-keys/quiet-upload-session-5a09d40c-20261101",
+  "artifactSha256": {
+    "mcp-fast.log": "dc8db5df56fae618b34f6ffd6c6421562a78f4ded70b6212828f54cfd24262e7",
+    "rest-contract.log": "da0480cff0d4a1daf171637910f66ee72d4b2da479d43986c16ba2fdfbbaead2",
+    "validators-fast.log": "ee419487a1189ed9ec8a2eaeb1b210489d3ec7f5475bae33b7c8b9107d1f0d04",
+    "green-contract-tests.log": "59de077d930ce6958e639c7b39abbe7ce24b2d3d0dc15e37acf284935706db4f",
+    "validators-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "related-execution-db.log": "e985fcf8c61a33ae3675cc554900ce4655fa615f2891302a1002c1b1d2408ef4",
+    "red-schema.log": "ee79a2ec6061887ecf75757b17b5ae93ff04c21e7386ab33bb4a62b0b996d373",
+    "green-schema.log": "6a3f58e16b7ec1580ed66b5b99c0300580ac81548c575d4f0741b6893603364c",
+    "api-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "native-runtime-audit.ts": "e11bc6758fd75000944f084aa18df64a9f4c8d21ac05b89565f391a0f26aa2c4",
+    "services-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "lint.log": "278e6a282118bff36bf9fddd720f3deb1f19aa486a535f4aa03d0562f2ec62c6",
+    "native-runtime-audit.json": "d6deb3c8969bf9389d788361b37ff0acbcd8d59157f38b4cb82684dffc48b1b1",
+    "run-local.py": "26fb50904b3c63f55c37ff4ced98f4d802dc4acdb8251b33e5fdbeacfd51d93d",
+    "services-fast.log": "08e362dfd959570cbac0438a97c317f9b3b33fb5214d3ba28d539c0283bf8353",
+    "green-db.log": "7418732c0582d01c1a3780b9cc71a7be7fa723730bf40d33ecd433e3adce4d07",
+    "worker-build.log": "4ae6d803a89708a7a68fc1f6c764b2baadf1a1ef62529a8dd18a98325cfa773e",
+    "api-client-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "lint-final.log": "18ca78b3988657496380c2256e223a7015cf811cc2bcc9e708fe0d75a3f37930",
+    "openapi-generate.log": "7f36f66f01447efcaf98ac7b4d3c745b37571a326c8526170dd9b08191ccf55a",
+    "final-db.log": "8e52f451559af0a4ddab8f15c2007bac490afc1f4a171b358cc330104a6eb80a",
+    "api-fast.log": "b6ae0dea9e58652746d3b71c401247e0f0daef247faa029a7a48b8e3e22f4d06",
+    "mcp-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "openapi-check.log": "be692bcd1f036588ed56837637dfdbad9b4364e3579755e698459b5e0f0800ef",
+    "red-db.log": "1062f28499d4ad8b059e50166e7c2fb7f465e56899a5b7669920cfa6091f5990",
+    "red-db-atomic.log": "477eef0051d1a2ef7910cacf8750cc591f64c55bffa3ddd50bf74bb1757273a7",
+    "inventory.log": "c8defca3edb484fcc9c1daa4a7b11421d6b3e99a91e6bf421bdc34126c4d8c25",
+    "green-db-corrected.log": "f01474047c6c7585ef1668ae9dacd3d3c644c97e4367bf36e6b0b5995a336dcc"
+  }
+}

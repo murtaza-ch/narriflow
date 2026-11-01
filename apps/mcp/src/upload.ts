@@ -19,6 +19,8 @@ export interface UploadVideoOptions {
   recipeId?: string;
   contentType?: UploadMimeType;
   generationContext?: OpenUploadSessionInput["generationContext"];
+  /** Freeze completion notification preference before any processing starts. */
+  notifyOnComplete?: boolean;
   fetch?: typeof fetch;
   signal?: AbortSignal;
   onProgress?: (completedBytes: number, totalBytes: number) => void;
@@ -41,7 +43,7 @@ export async function uploadVideo(options: UploadVideoOptions): Promise<Finalize
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(options.filePath, { signal: options.signal })) digest.update(chunk);
   const fingerprint = `sha256:${digest.digest("hex")}`;
-  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.recipeId ? { recipeId: options.recipeId } : { ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildGenerationContentPack(), languageCode: null } }) });
+  const input = openUploadSessionSchema.parse({ ...(options.notifyOnComplete === undefined ? {} : { notifyOnComplete: options.notifyOnComplete }), clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.recipeId ? { recipeId: options.recipeId } : { ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildGenerationContentPack(), languageCode: null } }) });
   const transport = options.fetch ?? fetch;
   async function request<T>(action: string, body: unknown): Promise<T> {
     const response = await transport(new URL(`/mcp/integrations/${encodeURIComponent(options.workspaceId)}/upload-sessions/${action}`, endpoint), { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` }, body: JSON.stringify(body), signal: options.signal, redirect: "error" });

@@ -49,6 +49,8 @@ export const openUploadSessionSchema = z
     brandProfileId: z.string().uuid().nullable().optional(),
     /** Explicit settings, which browser intake always sends. */
     generationContext: uploadGenerationContextSchema.optional(),
+    /** Frozen onto the Project at handoff; omitted means true. */
+    notifyOnComplete: z.boolean().optional(),
     /** Integrations may name a Recipe instead; admission reads it once. */
     recipeId: z.string().uuid().optional(),
     /** `single` asks for one signed PUT up to 5 GiB. Larger files require

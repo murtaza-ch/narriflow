@@ -734,6 +734,10 @@
       "OpenUploadRequest": {
         "type": "object",
         "properties": {
+          "notifyOnComplete": {
+            "type": "boolean",
+            "description": "Whether the Project sends completion notifications. Defaults to true; frozen when the Upload Session is opened."
+          },
           "title": {
             "type": "string",
             "minLength": 1,

@@ -36,6 +36,18 @@ describe("local Upload Session delivery", () => {
     expect(bodies[0]).toMatchObject({ generationContext: { finishing: { topClips: 2, minScore: 0, copyPlatforms: ["tiktok"], delivery: "ready_to_review" } } });
   });
 
+  test.each([false, true, undefined])("freezes notification preference %s at Upload Session open", async notifyOnComplete => {
+    let opened: Record<string, unknown> | undefined;
+    const path = await source(), generationContext = buildGenerationContext({ clipCountTarget: 12 });
+    await uploadVideo({ endpoint: "https://narriflow.test", apiKey: "nf_fixture", workspaceId, filePath: path, clientIdempotencyKey: key,
+      generationContext, ...(notifyOnComplete === undefined ? {} : { notifyOnComplete }), fetch: async (_target, init) => {
+        opened = JSON.parse(String(init?.body));
+        return Response.json({ outcome: "queued_for_ingest", sessionId, projectId: "project", queuedJobId: "ingest" });
+      } });
+    expect(opened?.notifyOnComplete).toBe(notifyOnComplete);
+    expect(opened?.generationContext).toEqual(generationContext);
+  });
+
   test("resumes server-verified parts and sends credentials only to Narriflow", async () => {
     const calls: Array<{ url: string; authorization: string | null; body: unknown }> = [];
     const fakeFetch: typeof fetch = async (input, init) => {

@@ -544,6 +544,8 @@ export function uploadSessionDiagnosticRecord(
 }
 
 export interface OpenUploadSessionInput {
+  /** Frozen intake preference; omitted means ordinary completion notifications. */
+  notifyOnComplete?: boolean;
   actorUserId: string;
   workspaceId: string;
   clientIdempotencyKey: string;
@@ -788,6 +790,7 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
           useDefaultBrandProfile: input.useDefaultBrandProfile || undefined,
           generation: input.generation,
         }),
+    notifyOnComplete: input.notifyOnComplete === false ? false : undefined,
     declaredDurationSeconds: input.declaredDurationSeconds ?? undefined,
     transfer: input.transfer === "single" ? "single" : undefined,
   });
@@ -1810,7 +1813,8 @@ export function createUploadSessionModule(
         brandSnapshot: brand?.snapshot ?? null,
         brandProfileId: brand?.profileId ?? null,
         brandProfileSnapshot: brand?.profileSnapshot ?? null,
-        generation: input.generation,
+        // The frozen intake envelope also carries Recipe/Finishing metadata; the Content Pack is unchanged.
+        generation: input.notifyOnComplete === false ? { ...(input.generation as Record<string, unknown>), notifyOnComplete: false } : input.generation,
         transferKind: transfer.kind,
         partSizeBytes: transfer.partSizeBytes,
         partCount: transfer.partCount,
@@ -3666,6 +3670,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       return prismaUploadSessionPersistence.replayHandoff({ executionEpoch, sessionId, workspaceId: initial.workspaceId, actorUserId: initial.actorUserId });
     }
     const generation = initial.generationSettings as {
+      notifyOnComplete?: boolean;
       languageCode?: unknown;
       contentPack?: unknown;
       finishing?: FinishingSettings | null;
@@ -3723,6 +3728,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             createdByUserId: creatorUserId,
             updatedByUserId: creatorUserId,
             title: current.title,
+            notifyOnComplete: generation.notifyOnComplete !== false,
             sourceMediaUrl: `r2://${readServiceEnvironment().R2_BUCKET ?? "unknown-bucket"}/${current.storageKey}`,
             sourceType: "upload",
             sourceInput: current.fileName,
@@ -4490,6 +4496,7 @@ export class UploadSessionService {
       // Browser intake always states its choice; only an omitted field means default.
       useDefaultBrandProfile: parsed.brandProfileId === undefined,
       generation: parsed.generationContext ?? null,
+      notifyOnComplete: parsed.notifyOnComplete,
       ...(options.recipe && { recipe: options.recipe }),
       declaredDurationSeconds: parsed.declaredDurationSeconds ?? null,
       transfer: parsed.transfer,

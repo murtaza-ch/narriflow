@@ -57,6 +57,7 @@ export const workspaceResultSchema = z.strictObject({
 export const brandProfilesResultSchema = mcpBrandProfilesResultSchema.meta({ id: "BrandProfilesResult" });
 
 export const openUploadRequestSchema = z.strictObject({
+  notifyOnComplete: z.boolean().optional().describe("Whether the Project sends completion notifications. Defaults to true; frozen when the Upload Session is opened."),
   title: z.string().trim().min(1).max(200).optional().describe("Defaults to the file name"),
   file: z.strictObject({
     name: z.string().trim().min(1).max(500),

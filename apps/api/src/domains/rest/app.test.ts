@@ -456,6 +456,14 @@ describe("REST v1 uploads", () => {
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: USER_ID }), expect.objectContaining({ clientIdempotencyKey: integrationUploadSessionKey(USER_ID, key), transfer: "single", title: "talk.mp4" }));
   }));
 
+  test.each([false, true])("REST upload admission forwards frozen notification preference %s", bindServiceTestEnvironment(async notifyOnComplete => {
+    const open = spy(uploadSessionService, "open").mockResolvedValue(grant as never);
+    const { call } = harness();
+    const response = await call("/uploads", { method: "POST", idempotencyKey: crypto.randomUUID(), json: { file: { name: "quiet.mp4", sizeBytes: 2048, contentType: "video/mp4" }, notifyOnComplete } });
+    expect(response.status).toBe(200);
+    expect(open.mock.calls[0]![1]).toMatchObject({ notifyOnComplete });
+  }));
+
   test("an upload session freezes the finishing it was opened with", bindServiceTestEnvironment(async () => {
     const open = spy(uploadSessionService, "open").mockResolvedValue(grant as never);
     const { call } = harness();
