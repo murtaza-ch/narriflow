@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T01:57:01.668310+00:00",
+  "status": "local upload handoff checks passed; HTTP registration failure contract remains open",
+  "implementationCommit": "cae8e162c75ebd2b51f8ea729fe7060fe76e534b",
+  "testIsolationCommit": "5425a489",
+  "behavior": [
+    "Fresh finalization commits its Ingest Job and initial dispatch atomically.",
+    "Authenticated same-key open, finalize and status replays collect the current canonical obligation.",
+    "Replay preserves the original job, storage verification, attempt count and absolute deadline."
+  ],
+  "checks": {
+    "localDisposablePostgres": {
+      "tests": 20,
+      "assertions": 237,
+      "failures": 0,
+      "noSharedOrCandidateQueries": true
+    },
+    "uploadModuleFast": {
+      "tests": 83,
+      "assertions": 315
+    },
+    "workerUploadHttpMcpAndDispatchScopes": {
+      "tests": 51,
+      "assertions": 207
+    },
+    "fullTypecheck": {
+      "tasksPassed": 15,
+      "tasksTotal": 15
+    },
+    "biome": "passed3files",
+    "workerDryBuildAndImportAudit": "passed",
+    "initialFullFast": {
+      "tasksPassed": 13,
+      "tasksTotal": 14,
+      "mediaFailures": 2,
+      "cause": "gitignored pinned YuNet absent in fresh isolated worktree",
+      "failureLogRetained": true
+    },
+    "targetedMediaAfterFixtureSetup": {
+      "file": "apps/media/scripts/render-golden.test.ts",
+      "tests": 30,
+      "assertions": 359,
+      "failures": 0,
+      "modelSha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "fullFastRerunClaimed": false
+    }
+  },
+  "fullExecutionPostgres": {
+    "tests": 470,
+    "assertions": 3408,
+    "failures": 0,
+    "skips": 0,
+    "bun": "1.3.6",
+    "database": "dedicated local PostgreSQL17.11 with disposable schemas only",
+    "logSha256": "6b3a1799b39a36fca1252020c0e2603b9dd99e814e0b9f80f3aa5f4a4a826329"
+  },
+  "retainedFailedFullPostgres": {
+    "failure": "New restore test scanned earlier suites intentionally superseded source fixtures.",
+    "correction": "Bounded the new ingest recovery assertion to its own newest row and checked the exact rebound.",
+    "logSha256": "00892834782e406aea0de24beec85dc6c17b4753689e8aa74401b360a2f828cb",
+    "productionRestoreGuardWeakened": false
+  },
+  "independentReviews": {
+    "standards": "No actionable findings in the committed three-file patch.",
+    "spec": "Registration failure after the domain commit lacks a typed retryable response carrying its receipt at the Worker boundary. Fix required."
+  },
+  "cloudDeploymentPerformed": false,
+  "originalSpeechFixtureReplayed": false,
+  "originalFourMinuteSmokeResult": "failed; retained unchanged",
+  "releaseAcceptanceComplete": false
+}
