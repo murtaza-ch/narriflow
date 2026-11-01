@@ -1,0 +1,147 @@
+{
+  "purpose": "preparation_query_compaction_and_postsign_project_expiry",
+  "observedAtUtc": "2026-11-01T14:59:46.944831+00:00",
+  "baseCommit": "af605d72a73fedef62a4c1c30615049b134f3f7e",
+  "scope": {
+    "runtimeFiles": [
+      "packages/services/src/clip-preparation.ts",
+      "packages/services/src/clip-preparation-execution.ts",
+      "packages/services/src/project-access.ts"
+    ],
+    "databaseMigration": false,
+    "lockModesOrOrderChanged": false,
+    "newAuthorityCacheOrTier": false,
+    "deadlineLeaseRetryChargeOrNativeResourceBudgetsChanged": false,
+    "sourceEditorMemberExportBindingDerivationRetained": true,
+    "postLockMetadataReadIsSeparateStatement": true,
+    "nativeBigintAndDateColumnsRetained": true,
+    "workspaceAndProjectRestrictionPolicyRetained": true,
+    "sharedProjectAccessSqlPolicyReused": true,
+    "newPermissionExpiryGuard": "Fresh Project.expiresAt forwarded through invocation-local reference to existing post-sign recordGrant check; no TTL policy change"
+  },
+  "queryCounts": {
+    "before": {
+      "acquire": 34,
+      "firstWorkPackage": 45,
+      "replayWorkPackage": 39,
+      "processStart": 32,
+      "sourceRead": 29,
+      "renew": 32
+    },
+    "after": {
+      "acquire": 23,
+      "firstWorkPackage": 33,
+      "replayWorkPackage": 27,
+      "processStart": 20,
+      "sourceRead": 17,
+      "renew": 20
+    },
+    "measurement": "Actual production factories on disposable local PostgreSQL; same Prisma query event observer; commit included as emitted. No deployed latency or provider success claim."
+  },
+  "verification": {
+    "clipPreparationDatabase": {
+      "passed": 52,
+      "failed": 0,
+      "assertions": 558,
+      "log": "green-policy-final-db.log"
+    },
+    "relatedExecutorTransferLedgerDatabase": {
+      "passed": 26,
+      "failed": 0,
+      "assertions": 161,
+      "files": 3,
+      "log": "related-policy-final-db.log"
+    },
+    "servicesTypecheck": {
+      "exitCode": 0,
+      "log": "typecheck-policy-final.log"
+    },
+    "repositoryBiome": {
+      "exitCode": 0,
+      "warnings": 11,
+      "information": 1,
+      "log": "lint-policy-final.log"
+    },
+    "gitDiffCheck": {
+      "exitCode": 0
+    }
+  },
+  "newRegressions": [
+    "Source-read statement budget29\u219217 through actual production factory",
+    "Project expiry during local presigning with live lease refuses and rolls back artifacts, cleanup obligations and grant inbox",
+    "Queued Project lock plus committed source revision change refuses",
+    "Queued Workflow lock plus committed editor revision change refuses",
+    "Queued Workflow lock plus member invalidation refuses",
+    "Queued Workflow lock plus attempt revocation refuses",
+    "Queued Workflow lock plus Workspace restriction refuses"
+  ],
+  "failureHistory": [
+    {
+      "log": "red-db.log",
+      "result": "45pass/1expected red: source-read29 exceeds17 budget"
+    },
+    {
+      "log": "green-initial-db.log",
+      "result": "8pass/38fail: draft varchar subjectId/UUID join; corrected without casting generic subject strings toUUID"
+    },
+    {
+      "log": "green-second-db.log",
+      "result": "45pass/1existing negative failure: malformed generic subject string cast early; corrected with domain UUID guard before SQL"
+    },
+    {
+      "log": "retention-red-db.log",
+      "result": "46pass/1expected red: grant resolved after Project expired during presigning"
+    },
+    {
+      "log": "green-retention-lock-wait-db.log",
+      "result": "52pass/1invalid new test fixture: attempted mutation of committed artifact etag rejected by existing immutable-evidence trigger23514; impossible new fixture removed, source-revision lock-wait case retained"
+    },
+    {
+      "log": "typecheck-final.log",
+      "result": "3 temporary wrapper-return annotation errors; corrected"
+    },
+    {
+      "log": "lint-final.log",
+      "result": "1 unused import introduced by joined reader; corrected by shared access-policy import"
+    }
+  ],
+  "privateEvidenceDirectory": "/tmp/narriflow-serverless-control-keys/preparation-query-compaction-af605d72-20261101",
+  "logSha256": {
+    "typecheck-final.log": "0321187afffdc40e5a898d61b964d0708fa836570b16a3146be306f7c2c0f0b3",
+    "typecheck-initial.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "green-final-db.log": "c5c88b8f0ef9bd85491cf3bb935d4bf6a8328ef0869cf58c6f38321b1162425b",
+    "green-policy-final-db.log": "033f6c203eade2f9db147a3bd7b697ce5c187844407d1d5e07894311d5987bf2",
+    "green-retention-lock-wait-db.log": "9fc5a9eb97d5e509c7e14984e5540abfa5b92ee75396da98e27e03167ac2f46b",
+    "related-policy-final-db.log": "52ec7496aea6e6223253ea1a5aa1d22bcf05cb94466d31b25843680b75769b16",
+    "related-db.log": "2ec90a00a6bd4b2b1730224e98cdf91d6fc259d7ab16401db696041494987037",
+    "retention-red-db.log": "e9096cc24fe9583c269f23703aa39ab23258a2531a1381fd2dd13fbf2eaff9bd",
+    "green-second-db.log": "a101e4d4b459b5e335a780ab0e69934b1b5da391510f01f65e3d31ea9a52db07",
+    "baseline-db.log": "9a3ddaa48e0aada7f16cef700b62007e9d4e899e05e0c4d4163e0ebcf9d922ef",
+    "typecheck-policy-final.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "lint-final.log": "0c04ffe209e9a71781fd0c4fdb1b33fdd0fdd4f84d869ff307e4d92122dbfbc8",
+    "green-initial-db.log": "499b5c24cdf748ae827133380dd7456e1693a7b82eb1d303ca0912d4019574c4",
+    "typecheck-corrected.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "red-db.log": "08095bb4a613edb239f52f474a33f42ff171851a219fa572975df3385595269c",
+    "lint-policy-final.log": "5141ac5acde3a187c93fa3475842279c0cb34b738f20a9c5d2be29ae9ee9a90f"
+  },
+  "runtimeAndTestSha256": {
+    "packages/services/src/clip-preparation.ts": "5ebd0815b599df6792b4f1892a9a99c98e1e063118122246e0570f37ed61254a",
+    "packages/services/src/clip-preparation-execution.ts": "bca1fc9130ecf9d131a5b07e4e777697ca64c5b47e793d3e7d4a027ab6e0129d",
+    "packages/services/src/project-access.ts": "7ee6f704dcdc15e2840031c6e6aa1070d35887aa753b74ef6647397c33adbaff",
+    "packages/services/src/clip-preparation.db.test.ts": "a0e2fcee37b60d7f7e450457eaceb0000e20b536606d3c57e8b29dce5c74c9ed"
+  },
+  "environment": {
+    "bun": "1.3.6",
+    "localDatabaseOnly": true,
+    "targetGuard": "Explicit localhost/127.0.0.1 port55432 and narriflow_serverless_gates_* database, validated disposable serverless_execution_test_* schema; inherited database selectors cleared",
+    "cloudOrSharedDatabaseTouched": false,
+    "providerOrLiveMediaJobs": false,
+    "deploymentOrNewImageQualificationPerformed": false,
+    "rootWorktreeSourceOrUserDevEdited": false
+  },
+  "limitations": [
+    "Statement reduction is measured locally, not a deployed lease reliability or latency pass.",
+    "Root must integrate, run its full source checks and validate deployed behavior/qualification.",
+    "Historical failed speech jobs, clocks, usage and journals are unchanged."
+  ]
+}

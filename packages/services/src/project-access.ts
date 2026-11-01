@@ -9,7 +9,7 @@ export function accessibleProjectWhere(now = new Date()) {
 
 /** The same rule as `accessibleProjectWhere`, for raw SQL over a joined
  * "Project" row aliased `alias`. Keep the two together. */
-export function accessibleProjectSql(alias: string, now = new Date()) {
+export function accessibleProjectSql(alias: string, now: Date | Prisma.Sql = new Date()) {
   const project = Prisma.raw(`"${alias}"`);
   return Prisma.sql`${project}."purgeStartedAt" IS NULL AND (${project}."expiresAt" IS NULL OR ${project}."expiresAt" > ${now})`;
 }

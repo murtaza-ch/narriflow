@@ -33,7 +33,7 @@ export function createClipPreparationExecution(options: {
       if (authority.fence.reference.subject.kind !== "clip_preparation" || authority.fence.reference.kind !== "modal_execution" || authority.functionName !== "prepare_clip" || !authority.input) throw new ExecutorControlError("invalid_reference");
       const work = await options.domain.workInputWithinAuthority(tx, authority, ref);
       if (work.inputHash !== authority.fence.reference.inputHash) throw new ExecutorControlError("authority_lost");
-      return { input: { kind: "object" }, sources: [{ ...work.source, name: "original" }], outputs: work.outputs };
+      return { input: { kind: "object" }, sources: [{ ...work.source, name: "original" }], outputs: work.outputs, permissionExpiresAt: work.permissionExpiresAt };
     },
   });
   return { control, transfer };

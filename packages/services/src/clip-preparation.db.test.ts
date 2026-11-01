@@ -203,7 +203,7 @@ suite("Clip Preparation authority and publication", () => {
         statements: queries.map(query => ({ operation: /^[A-Z]+/.exec(query.trim())?.[0],
           tables: ["ExecutionEpoch", "ExecutionInboxReceipt", "ExecutionDispatch", "ClipPreparation", "Project", "WorkflowRun", "RenderGroup", "RenderGroupMember", "Clip", "ExecutionArtifact", "ClipRender", "ClipExportVariant", "ExecutionAttempt"].filter(table => query.includes('"'+table+'"')),
           rowLock: query.includes("FOR UPDATE"), advisoryLock: query.includes("pg_advisory_xact_lock") })) }));
-      expect(sourceReadQueries).toBeLessThanOrEqual(30);
+      expect(sourceReadQueries).toBeLessThanOrEqual(17);
       queries.length = 0;
       await factory.control.execute({ command: { action: "renew", fence, leaseSeconds: 120 }, verifiedRequest: verified() });
       console.warn(JSON.stringify({ level: "info", message: "preparation_control_query_counts", acquire: acquireQueries,
@@ -247,6 +247,90 @@ suite("Clip Preparation authority and publication", () => {
       expect(domainOutcomes).toEqual([["operation_driver", "clip_preparation"], ["operation_driver", "ingest_job"], ["modal_execution", "clip_preparation"]].map(([kind, subjectKind]) => ({ kind, subjectKind, result: { kind: "superseded", dispatchIds: [] } })));
     } finally { storage.close(); }
   });
+
+  test("preparation Project expiry during local presigning rolls back the grant while its lease remains live", async () => {
+    const f = await fixture(), admitted = await f.service.admitForGroup(f.references[0]!);
+    const prepared = await f.service.prepareExecution((await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference);
+    if (prepared.kind !== "waiting") throw Error("Missing preparation");
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    let signed = 0;
+    const factory = createClipPreparationExecution({ database: db, domain: f.service,
+      storage: { ...storage, signSource: async (...args) => {
+        signed++;
+        await Bun.sleep(Math.max(0, expiresAt.getTime() - Date.now()) + 30);
+        return storage.signSource(...args);
+      } },
+      artifacts: { head: async () => { throw Error("No HEAD under package locks"); }, readJson: async () => { throw Error("No input I/O under package locks"); } }, deliverWakes: async () => {} });
+    const verified = () => ({ requestHash: "a".repeat(64), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const,
+      method: "POST" as const, canonicalTarget: "/api/execution/transfer", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: crypto.randomUUID(), signature: "0".repeat(64) } });
+    const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: crypto.randomUUID() };
+    await factory.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: verified() });
+    const before = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
+    const expiresAt = new Date(Date.now() + 1000);
+    await db.project.update({ where: { id: f.project.id }, data: { expiresAt } });
+    const request = verified();
+    try {
+      await expect(factory.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: request })).rejects.toMatchObject({ code: "authority_lost" });
+      expect(signed).toBe(1);
+      expect(await db.executionArtifact.count({ where: { attemptToken: fence.attemptToken } })).toBe(0);
+      expect(await db.mediaCleanupObligation.count({ where: { origin: "assigned_execution_artifact", objectKey: { startsWith: `execution/${fence.reference.deploymentEpoch}/${fence.attemptToken}/${fence.owner}/` } } })).toBe(0);
+      expect(await db.executionInboxReceipt.count({ where: { audience: "executor-control", deliveryId: request.metadata.deliveryId } })).toBe(0);
+      const after = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
+      expect(after).toEqual(before);
+      expect(after.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
+    } finally { storage.close(); }
+  });
+
+  for (const changed of ["source_revision", "editor", "member", "cancelled", "workspace"] as const)
+    test(`preparation rechecks ${changed} after a queued row-lock wait`, async () => {
+      const f = await fixture(), n = await native(f);
+      const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 5000, maxWait: 1000 } });
+      const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+      const factory = createClipPreparationExecution({ database: single, domain: f.service, storage,
+        artifacts: { head: async () => { throw Error("No HEAD under grant locks"); }, readJson: async () => { throw Error("No input I/O under grant locks"); } }, deliverWakes: async () => {} });
+      const [backend] = await single.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      const before = await db.clipPreparation.findUniqueOrThrow({ where: { id: n.admitted.preparationId } });
+      const artifactCount = await db.executionArtifact.count({ where: { attemptToken: n.fence.attemptToken } });
+      let entered!: () => void, release!: () => void;
+      const locked = new Promise<void>(resolve => { entered = resolve; }), unlock = new Promise<void>(resolve => { release = resolve; });
+      // The blocker deliberately edits while the grant statement is queued.
+      // Its transaction bypasses domain locks only to exercise READ COMMITTED
+      // snapshot freshness; it never runs outside this disposable schema.
+      const blocker = db.$transaction(async tx => {
+        if (changed === "source_revision") await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${f.project.id}::uuid FOR UPDATE`;
+        else await tx.$queryRaw`SELECT id FROM "WorkflowRun" WHERE id = ${f.run.id}::uuid FOR UPDATE`;
+        entered(); await unlock;
+        if (changed === "source_revision") await tx.project.update({ where: { id: f.project.id }, data: { sourceRevision: { increment: 1 } } });
+        if (changed === "editor") await tx.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
+        if (changed === "member") await tx.renderGroupMember.updateMany({ where: { groupId: f.references[0]!.subject.id }, data: { invalidatedAt: new Date() } });
+        if (changed === "cancelled") await tx.executionAttempt.update({ where: { attemptToken: n.fence.attemptToken }, data: { revokedAt: new Date() } });
+        if (changed === "workspace") await tx.workspace.update({ where: { id: f.workspace.id }, data: { status: "restricted" } });
+      });
+      await locked;
+      const request = n.verified();
+      const pending = factory.transfer.execute({ command: { action: "source-read", fence: n.fence, sourceId: "original" }, verifiedRequest: request })
+        .then(value => ({ value }), error => ({ error }));
+      try {
+        let waiting = false;
+        for (let tries = 0; tries < 100; tries++) {
+          const [state] = await db.$queryRaw<Array<{ waiting: boolean }>>`SELECT wait_event_type = 'Lock' AS waiting FROM pg_stat_activity WHERE pid = ${backend!.pid}`;
+          if (state?.waiting) { waiting = true; break; }
+          await Bun.sleep(10);
+        }
+        expect(waiting).toBe(true);
+        release(); await blocker;
+        const result = await pending;
+        expect(result).toHaveProperty("error.code", "authority_lost");
+        expect(await db.executionInboxReceipt.count({ where: { audience: "executor-control", deliveryId: request.metadata.deliveryId } })).toBe(0);
+        expect(await db.executionArtifact.count({ where: { attemptToken: n.fence.attemptToken } })).toBe(artifactCount);
+        const after = await db.clipPreparation.findUniqueOrThrow({ where: { id: n.admitted.preparationId } });
+        expect(after.operationDeadlineAt).toEqual(before.operationDeadlineAt);
+        expect(after.chargedAttempts).toBe(before.chargedAttempts);
+      } finally {
+        release(); await blocker.catch(() => {}); await pending;
+        storage.close(); await single.$disconnect();
+      }
+    });
 
   test("groups over the same source/editor binding share one sealed preparation without acquiring either parent", async () => {
     const f = await fixture();
