@@ -1,0 +1,51 @@
+{
+  "status": "local_regression_passed_deployed_latency_unmeasured",
+  "baseCommit": "a01603fe8f494a245d03a52f850d8872cd3e6d9f",
+  "runtime": "Bun 1.3.6",
+  "scope": "Dedicated localhost:55432 database with fresh disposable schemas; no cloud calls or shared-root edits",
+  "seam": "WorkspaceService.authenticateApiKey with production PrismaPg and real PostgreSQL",
+  "countMethod": "Intercept pg client query calls, including BEGIN and COMMIT; observations contain operation names and counts only, never SQL parameters or credentials",
+  "red": {
+    "implementation": "Unmodified a01603fe source",
+    "result": "15 behavior tests passed; all 4 query-budget cases failed as intended; 53 assertions",
+    "log": "/tmp/narriflow-api-key-auth-wire-red.log"
+  },
+  "sqlStatements": {
+    "sameCreatorRecentUsage": { "before": 2, "after": 1 },
+    "sameCreatorStaleUsage": { "before": 5, "after": 2 },
+    "distinctCreatorRecentUsage": { "before": 3, "after": 1 },
+    "distinctCreatorStaleUsage": { "before": 6, "after": 2 }
+  },
+  "changes": [
+    "One fresh joined read obtains the key, its user deletion state and optional creator identity/deletion state",
+    "Timing-safe SHA256 comparison and nullable creator fallback remain unchanged",
+    "One awaited conditional UPDATE records stale usage and updatedAt, replacing the implicit BEGIN/UPDATE/COMMIT transaction",
+    "findActor, membership, rate limiting, scopes and plan policy remain unchanged; no authority cache"
+  ],
+  "verification": {
+    "databaseTests": "19 passed, 0 failed, 53 assertions",
+    "relatedLocalTests": "90 passed, 0 failed, 530 assertions across Workspace permissions, rate limiting, MCP auth/wire/admission and continuation admission",
+    "servicesTypecheck": "passed",
+    "repositoryBiome": "passed; 2488 files, 11 existing warnings and 1 informational item",
+    "coverage": [
+      "All four actual-driver statement counts",
+      "Unknown/malformed/wrong-hash/revoked/workspace-less keys; deleted key user; deleted or missing creator",
+      "Nullable creator fallback and fresh-request revocation",
+      "Strict cutoff at minus one, zero and plus one millisecond, including updatedAt behavior",
+      "Awaited write failure preserves the original key",
+      "Six blocked concurrent stale authentications perform exactly one row update",
+      "A racing revocation prevents telemetry changes and refuses the next authentication"
+    ],
+    "logs": [
+      "/tmp/narriflow-api-key-auth-release-db.log",
+      "/tmp/narriflow-api-key-auth-local.log",
+      "/tmp/narriflow-api-key-auth-typecheck.log",
+      "/tmp/narriflow-api-key-auth-lint.log"
+    ]
+  },
+  "limits": [
+    "The earlier Prisma event-only counts omitted BEGIN; the counts above are measured at the actual pg driver boundary",
+    "Statement reduction is not a deployed latency result or evidence of the live catalog network cause",
+    "No deployed code, live database, provider, credentials, rate rules or timeout was changed"
+  ]
+}

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { Prisma, PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
+import type { ApiKey, Prisma, PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
 
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -651,22 +651,17 @@ export class WorkspaceService {
     if (!secret.startsWith("nf_") || secret.length < 32) return null;
 
     const prefix = secret.slice(0, 11);
-    const key = await requiredPrisma().apiKey.findUnique({
-      where: { prefix },
-      select: {
-        id: true,
-        userId: true,
-        createdByUserId: true,
-        workspaceId: true,
-        name: true,
-        scopes: true,
-        hashedSecret: true,
-        revokedAt: true,
-        lastUsedAt: true,
-        user: { select: { deletedAt: true } },
-      },
-    });
-    if (!key || key.revokedAt || !key.workspaceId || key.user.deletedAt) return null;
+    const prisma = requiredPrisma();
+    const [key] = await prisma.$queryRaw<Array<Pick<ApiKey,
+      "id" | "userId" | "createdByUserId" | "workspaceId" | "name" | "scopes" | "hashedSecret" | "revokedAt" | "lastUsedAt"
+    > & { userDeletedAt: Date | null; creatorId: string | null; creatorDeletedAt: Date | null }>>`
+      SELECT key.id, key."userId", key."createdByUserId", key."workspaceId", key.name, key.scopes,
+        key."hashedSecret", key."revokedAt", key."lastUsedAt", key_user."deletedAt" AS "userDeletedAt",
+        creator.id AS "creatorId", creator."deletedAt" AS "creatorDeletedAt"
+      FROM "ApiKey" key JOIN "User" key_user ON key_user.id = key."userId"
+      LEFT JOIN "User" creator ON creator.id = key."createdByUserId"
+      WHERE key.prefix = ${prefix}`;
+    if (!key || key.revokedAt || !key.workspaceId || key.userDeletedAt) return null;
 
     const suppliedHash = Buffer.from(createHash("sha256").update(secret).digest("hex"), "hex");
     const storedHash = Buffer.from(key.hashedSecret, "hex");
@@ -679,24 +674,19 @@ export class WorkspaceService {
     const principalUserId = key.createdByUserId ?? key.userId;
     if (
       principalUserId !== key.userId &&
-      !(await requiredPrisma().user.findFirst({
-        where: { id: principalUserId, deletedAt: null },
-        select: { id: true },
-      }))
+      (!key.creatorId || key.creatorDeletedAt)
     ) {
       return null;
     }
 
     const lastUsedCutoff = new Date(Date.now() - 5 * 60 * 1000);
     if (!key.lastUsedAt || key.lastUsedAt < lastUsedCutoff) {
-      await requiredPrisma().apiKey.updateMany({
-        where: {
-          id: key.id,
-          revokedAt: null,
-          OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: lastUsedCutoff } }],
-        },
-        data: { lastUsedAt: new Date() },
-      });
+      const usedAt = new Date();
+      // Preserve Prisma's updatedAt behavior, without an implicit transaction
+      // around this single conditional telemetry write. Failure is still awaited.
+      await prisma.$executeRaw`UPDATE "ApiKey" SET "lastUsedAt" = ${usedAt}, "updatedAt" = ${usedAt}
+        WHERE id = ${key.id}::uuid AND "revokedAt" IS NULL
+          AND ("lastUsedAt" IS NULL OR "lastUsedAt" < ${lastUsedCutoff})`;
     }
 
     return {
