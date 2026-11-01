@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T03:27:31.201892+00:00",
+  "status": "FAILED original speech journey; recovered intake, then preparation exhausted original budgets",
+  "source": {
+    "bytes": 22741661,
+    "sha256": "32b20a20e84d46d17da126689572f9a431d01ddc23880b90240952875b2a3fe8",
+    "durationSeconds": 146.147
+  },
+  "recovery": {
+    "sameUploadSessionProjectJobAndIdempotencyKeys": true,
+    "originalSmokeStillFailed": true,
+    "pinCompleted": true,
+    "scribeAndMomentDetectionCompleted": true,
+    "actualMcpTaskAcceptedAfterRegistration": true,
+    "replacementUploadOrTask": false
+  },
+  "terminalResult": {
+    "status": "failed",
+    "phase": "status",
+    "taskStatus": "completed",
+    "notificationDisabled": true,
+    "requestedClips": 12,
+    "actualClips": 6,
+    "completedItems": 0,
+    "failedItems": 6,
+    "selectionBelowRequested": true,
+    "failureCode": "operation_deadline_exceeded",
+    "progress": 1,
+    "stage": "rendering",
+    "requests": 3
+  },
+  "budgetProof": {
+    "originalOperationDeadlineUtc": "2026-11-01T03:21:11.080Z",
+    "deadlinesUnchanged": true,
+    "chargedCountersNotReset": true,
+    "preparations": 6,
+    "chargedPreparationStarts": 18,
+    "preparationAttemptHistory": [
+      {
+        "functionName": "prepare_clip",
+        "status": "expired",
+        "count": 70,
+        "started": 10,
+        "last_start": "2026-11-01 03:19:38.515",
+        "last_finish": "2026-11-01 03:21:26.177",
+        "failureCode": "clip_preparation_deadline"
+      },
+      {
+        "functionName": "prepare_clip",
+        "status": "failed",
+        "count": 7,
+        "started": 7,
+        "last_start": "2026-11-01 03:17:16.972",
+        "last_finish": "2026-11-01 03:18:06.194",
+        "failureCode": "clip_preparation_failed"
+      },
+      {
+        "functionName": "prepare_clip",
+        "status": "superseded",
+        "count": 1,
+        "started": 1,
+        "last_start": "2026-11-01 03:18:08.189",
+        "last_finish": "2026-11-01 03:21:35.071",
+        "failureCode": "clip_preparation_superseded"
+      }
+    ],
+    "renderGroups": 6,
+    "failedRenderGroups": 6,
+    "chargedRenderStarts": 0,
+    "allAttemptsTerminal": true,
+    "assignedPreparationArtifacts": 192,
+    "committedPreparationArtifacts": 2,
+    "fullyCompletedClips": 0
+  },
+  "terminalJournal": {
+    "sha256": "0a40344717c3851723e73e0bc32b6159db2216ddb1160a52412f3c4f4137d09b",
+    "bytes": 1653,
+    "originalPreserved": true
+  },
+  "artifactRetirement": {
+    "observedAt": "2026-11-01T03:24:05.384Z",
+    "cleanupObligations": 192,
+    "missingObligations": 0,
+    "completedAtObservation": 0,
+    "status": "PENDING. Committed project-backed evidence remains held; no local deletion or retirement pass is claimed."
+  },
+  "workerVersionAtFinalObservation": "9b283da7-f65b-4720-929e-751fcfdf36e9",
+  "nativeSourceCommit": "9c1de0de37156e459aadc8b00c87404e7c2ad276",
+  "rawEvidence": {
+    "spoken-original-upload-replay.log": {
+      "sha256": "145727bfac48dff724496aab22c2af432af30b961274b975e44b97c5213f2121",
+      "bytes": 103
+    },
+    "spoken-original-generate-exact-edge.log": {
+      "sha256": "65bacc8956d672942b0fbf103499e6a6acf91f9cb732b9bc1d3695ab197be68d",
+      "bytes": 94
+    },
+    "spoken-preparation-after-b58-first.log": {
+      "sha256": "44597ff4a465a5032c9ef6119d3ddac76dad01a9af843e2f8ac4fadbfa9663e7",
+      "bytes": 2315
+    },
+    "spoken-preparation-after-b58-settlement.log": {
+      "sha256": "fbc821086beb37b133aa6ade154d3c0f5557a34162d384eed764d7e8e108faa0",
+      "bytes": 2469
+    },
+    "spoken-terminal-artifact-inventory-first.log": {
+      "sha256": "9310411969c6203ada0f9d9059b24bfc7d384876093f3743b559a8edcf9ebbe5",
+      "bytes": 776
+    },
+    "spoken-prepare-after-b58-modal-logs-0318.txt": {
+      "sha256": "0c640338ef38255cd15f6a4c5c44e14d3091ec6d31c45ac0d2521a56f00457bf",
+      "bytes": 8130
+    }
+  },
+  "limits": [
+    "The same original four-minute smoke remains failed. Requested12 clips yielded6 selected clips, all failed.",
+    "The final Task protocol state completed contains a failed generation result; it is not successful media completion.",
+    "Control timeouts and a native source transport exception were observed. The underlying live network failure is not yet identified.",
+    "No original job, deadline, charge or attempt history was reset to retry this gate. Any later live journey requires separately recorded new identities.",
+    "Shared development database, dev branch and final API routing remain unchanged."
+  ]
+}
