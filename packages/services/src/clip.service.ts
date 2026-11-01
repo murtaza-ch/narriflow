@@ -2,7 +2,11 @@ import { createScheduledMediaCleanupAdmissionStore } from "./media-cleanup-admis
 import { seedBrandMusic, runDefaultCaptionPreset } from "./clip-detection-persistence";
 export { seedBrandMusic, resolveClipCaptionPresetForContentPack } from "./clip-detection-persistence";
 import { readServiceEnvironment } from "./runtime-environment";
-import { requireExecutionAdmissionOpen } from "./execution-admission";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { flushWorkspaceEvents } from "./workspace-event";
+import { flushProjectProgressDrains } from "./progress-outbox";
+import { collectExecutionDispatch } from "./execution-dispatch-runtime";
+import { assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 
 export { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "./motion-render-analytics";
 import { randomUUID } from "node:crypto";
@@ -89,7 +93,7 @@ import {
   partitionRenderGroups,
 } from "./render-group-contract";
 import type { RenderGroupAdmission } from "./render-group-lifecycle";
-import { assertClipExportDocumentAllowed } from "./clip-export.service";
+import { assertClipExportDocumentAllowed, resolveClipExportOutput } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 import type { ActorScope } from "./actor-scope";
@@ -205,32 +209,6 @@ function normalizeAspectRatios(
       (aspectRatioOrder.get(left) ?? Number.MAX_SAFE_INTEGER) -
       (aspectRatioOrder.get(right) ?? Number.MAX_SAFE_INTEGER),
   );
-}
-
-/**
- * Resolves what resolution a newly-queued render should actually be created
- * at: a "720p" request is always honored as-is (never "upgraded"), but a
- * "1080p" request is clamped down to "720p" when the owner's tier lacks the
- * `export.1080p` entitlement — freemium UX, so the request never fails, it
- * just gets the best the plan allows. This is the single choke point every
- * ClipRender-creating path (user-triggered renders and the post-detection
- * auto-render) must go through so a free-tier row is never created at
- * "1080p" by omission.
- */
-async function resolveRequestedResolution(
-  requested: ClipRenderResolution,
-  workspaceId: string,
-): Promise<ClipRenderResolution> {
-  if (requested === "720p") return "720p";
-  const tier = resolvePricingTier(
-    (
-      await requirePrisma().workspace.findUnique({
-        where: { id: workspaceId },
-        select: { pricingTier: true },
-      })
-    )?.pricingTier,
-  );
-  return hasFeature(tier, "export.1080p") ? "1080p" : "720p";
 }
 
 export function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
@@ -1945,80 +1923,47 @@ export class ClipService {
     aspectRatios?: ClipAspectRatio[],
     resolution: ClipRenderResolution = "1080p",
   ) {
-    const prisma = requirePrisma();
-    await workspaceService.requireActor(
-      scope.actorUserId,
-      scope.workspaceId,
-      "processing.consume",
-    );
     const requestedAspectRatios = normalizeAspectRatios(aspectRatios);
-    const requestedAspectRatioDbValues = requestedAspectRatios.map(
-      (aspectRatio) => clipAspectRatioToDb[aspectRatio],
-    );
-    // Entitlement clamp (vizard-parity Phase C export options) — every row
-    // this call creates or resets is stamped with the resolution the owner
-    // is actually allowed, not the raw request.
-    const resolvedResolution = await resolveRequestedResolution(
-      resolution,
-      scope.workspaceId,
-    );
-
-    const project = await prisma.project.findFirst({
-      where: {
-        id: projectId,
-        workspaceId: scope.workspaceId,
-        ...accessibleProjectWhere(),
+    // Fingerprint the caller's selector, never a fresh all-clips expansion.
+    const selector = clipIds ? [...new Set(clipIds)].sort() : null;
+    const accepted = await getOperationReceiptExecutor().execute({
+      identity: { workspaceId: scope.workspaceId, actorUserId: scope.actorUserId, command: "render_clips", clientIdempotencyKey: idempotencyKey },
+      input: { projectId, clipIds: selector, aspectRatios: requestedAspectRatios, resolution },
+      authorize: async () => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume"); },
+      mutate: async (tx, receipt) => {
+        const lifecycle = getWorkflowRunLifecycle();
+        const admission = await lifecycle.lockRenderAdmissionWithinTransaction(tx, projectId, scope.workspaceId);
+        // This is fresh root work. Receipt recovery never enters this branch.
+        assertExecutionAdmissionOpen(admission);
+        const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+        if (!clock) throw new ClipActionError("project_not_found");
+        const project = await tx.project.findFirst({ where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere(clock.now), workspace: { status: "active" } },
+          select: { workspace: { select: { pricingTier: true } } } });
+        if (!project) throw new ClipActionError("project_not_found");
+        const clipsToRender = await tx.clip.findMany({ where: { projectId, ...(selector ? { id: { in: selector } } : {}) }, orderBy: { id: "asc" } });
+        if (!clipsToRender.length) throw new ClipActionError("no_clips_available");
+        const tier = resolvePricingTier(project.workspace.pricingTier);
+        for (const clip of clipsToRender) assertClipExportDocumentAllowed(tier, decodeClipEditorDocumentFromStorage(clip, { durationSec: null, wholeSource: clip.wholeSource }));
+        const resolvedResolution = resolveClipExportOutput(tier, resolution).granted.resolution;
+        const admitted = await lifecycle.admitClipRendering({ projectId, idempotencyKey: `render:${receipt.receiptId}`,
+          variants: clipsToRender.flatMap(clip => requestedAspectRatios.map(aspectRatio => ({ clipId: clip.id, aspectRatio: clipAspectRatioToDb[aspectRatio], resolution: resolvedResolution }))),
+        }, tx);
+        // This immutable receipt records accepted IDs, never execution authority.
+        const selection = await tx.clipRender.findMany({ where: { clipId: { in: clipsToRender.map(clip => clip.id) }, exportVariantId: null,
+          aspectRatio: { in: requestedAspectRatios.map(aspectRatio => clipAspectRatioToDb[aspectRatio]) } }, orderBy: { id: "asc" },
+          select: { id: true, clipId: true, aspectRatio: true, resolution: true } });
+        const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: admitted.id }, select: { renderWorkSetFrozenAt: true } });
+        if (!run.renderWorkSetFrozenAt) await tx.clipRender.updateMany({ where: { id: { in: selection.map(render => render.id) }, status: "pending", workflowRunId: null }, data: { workflowRunId: admitted.id } });
+        await flushWorkspaceEvents(tx);
+        for (const id of await flushProjectProgressDrains(tx)) collectExecutionDispatch(tx, id);
+        const current = await tx.project.findUniqueOrThrow({ where: { id: projectId }, select: { workflowEventSeq: true } });
+        return { resourceType: "workflow_run", resourceId: admitted.id, value: { selection, response: {
+          workflowRunId: admitted.id, acceptedAt: clock.now.toISOString(), initialSeq: current.workflowEventSeq,
+          clipCount: clipsToRender.length, variantCount: clipsToRender.length * requestedAspectRatios.length, resolution: resolvedResolution,
+        } } };
       },
-      select: { id: true },
     });
-
-    if (!project) {
-      throw new ClipActionError("project_not_found");
-    }
-
-    const whereClause: Prisma.ClipWhereInput = clipIds
-      ? { projectId, id: { in: clipIds } }
-      : { projectId };
-
-    const clipsToRender = await prisma.clip.findMany({ where: whereClause });
-
-    if (clipsToRender.length === 0) {
-      throw new ClipActionError(
-				"no_clips_available",
-			);
-    }
-
-    const workspaceTier = resolvePricingTier(
-      (
-        await prisma.workspace.findUnique({
-          where: { id: scope.workspaceId },
-          select: { pricingTier: true },
-        })
-      )?.pricingTier,
-    );
-    // The same document admission as a versioned export: no motion below
-    // Creator and no stale Auto Censor segments, checked before any render row.
-    for (const clip of clipsToRender) {
-      assertClipExportDocumentAllowed(
-        workspaceTier,
-        decodeClipEditorDocumentFromStorage(clip, { durationSec: null, wholeSource: clip.wholeSource }),
-      );
-    }
-
-    const clipIdsToRender = clipsToRender.map((clip) => clip.id);
-    const admitted = await getWorkflowRunLifecycle().admitClipRendering({
-      projectId, idempotencyKey,
-      variants: clipIdsToRender.flatMap(clipId => requestedAspectRatioDbValues.map(aspectRatio => ({ clipId, aspectRatio, resolution: resolvedResolution }))),
-    });
-
-    return {
-      workflowRunId: admitted.id,
-      acceptedAt: new Date().toISOString(),
-      initialSeq: await getLastWorkflowSeq(projectId),
-      clipCount: clipsToRender.length,
-      variantCount: clipsToRender.length * requestedAspectRatios.length,
-      resolution: resolvedResolution,
-    };
+    return accepted.value.response;
   }
 
   /**

@@ -996,7 +996,10 @@ export class CampaignOperationService {
       const completedResult = replay.status === "completed" || replay.status === "partial"
         ? replay.items.map((item) => storedRenderResult(item.result)).find((result) => result !== null) ?? null
         : null;
-      if (completedResult) return { ...completedResult, operationId: replay.id, replayed: true };
+      if (completedResult) {
+        await prisma.$transaction(tx => getWorkflowRunLifecycle().recoverClipRenderRunWithinTransaction(tx, completedResult.workflowRunId, input.workspaceId, input.projectId));
+        return { ...completedResult, operationId: replay.id, replayed: true };
+      }
       await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", leaseExpiresAt: { lte: new Date() } }, data: { claimToken: null, leaseExpiresAt: null } });
       const claimToken = randomUUID();
       const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken, leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS) } });

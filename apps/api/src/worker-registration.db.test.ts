@@ -13,6 +13,9 @@ import {NarriflowMcpServer} from '@narriflow/mcp-core/server';
 import {installNarriflowTasks} from '@narriflow/mcp-core/tasks';
 import {createMcpHandler} from '@modelcontextprotocol/server';
 import {z} from 'zod';
+import {clipService} from '@narriflow/services/clip.service';
+import {campaignOperationService} from '@narriflow/services/campaign-operation.service';
+import {createClipsRoutes} from './domains/clips/routes';
 import {RenderFixtureLifecycle} from '@narriflow/services/render-group-test-fixture';
 import {clipExportService} from '@narriflow/services/clip-export.service';
 import {createExportsRoutes} from './domains/exports/routes';
@@ -121,6 +124,31 @@ suite('Worker postcommit registration boundary',()=>{
   const replay=worker.fetch(request(),f.bindings,context).then(async response=>{const body=await response.json();finished=true;return{status:response.status,body};});
   try{expect(await Promise.race([f.entered.promise.then(()=> 'registering'),replay.then(()=> 'premature_result')])).toBe('registering');expect(finished).toBe(false);}finally{confirmed.release();}
   const result=await replay;expect(result.status).toBe(202);expect(result.body.id).toBe(exported.id);expect(await db.clipExport.findUniqueOrThrow({where:{id:exported.id}})).toEqual(exported);expect(await db.workflowRun.findUniqueOrThrow({where:{id:run.id}})).toEqual(run);expect(await db.clipRender.findUniqueOrThrow({where:{id:render.id}})).toEqual(render);
+ });
+
+ function renderWorker(f:Awaited<ReturnType<typeof exportFixture>>){
+  const policyRuntime=createRequestPolicyRuntime({authenticate:async()=>({status:'authenticated',identity:{clerkUserId:f.user.clerkId,sessionId:'fixture'}} as never),loadAppUser:async()=>f.user as never,resolveScopedWorkspace:async()=>({userId:f.user.id,workspaceId:f.workspace.id,workspaceName:'Fixture',workspaceOwnerUserId:f.user.id,role:'owner',status:'active',pricingTier:'creator',isPersonal:false,workspaceSelectionChanged:false}),staffAllowlist:new Set(),policy:{resolveProject:async()=>({kind:'active',projectId:f.opened.projectId}),rateLimit:async()=>({allowed:true,availability:'available',retryAfterSeconds:1,limit:20,remaining:19}),now:()=>1000}});
+  return createApiWorker({createScope:f.createScope,createApp:()=>createInventoryApp({policyRuntime,domains:{clips:createClipsRoutes({clipService,campaignOperationService} as never)}})});
+ }
+ function renderRequest(f:Awaited<ReturnType<typeof exportFixture>>,key:string,selected=false){return new Request(`https://api.test/api/projects/${f.opened.projectId}/clips/render`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer fixture','X-Workspace-Id':f.workspace.id,'Idempotency-Key':key},body:JSON.stringify({aspectRatios:['9:16'],resolution:'720p',...(selected?{clipIds:[f.clip.id]}:{})})});}
+ for(const selected of [false,true])test(`actual ${selected?'selected CampaignOperation':'all-clips'} render route confirms the same receipt after registration failure`,async()=>{
+  const f=await exportFixture(),worker=renderWorker(f),key=crypto.randomUUID();
+  const first=await worker.fetch(renderRequest(f,key,selected),f.bindings,context),body=await first.json();expect(first.status).toBe(503);expect(JSON.stringify(body)).not.toContain('PRIVATE_');
+  const receipt=await db.operationReceipt.findFirstOrThrow({where:{workspaceId:f.workspace.id,command:'render_clips',clientIdempotencyKey:key}}),run=await db.workflowRun.findUniqueOrThrow({where:{id:receipt.resourceId}}),native=selected?await db.campaignOperation.findFirstOrThrow({where:{workspaceId:f.workspace.id,action:'render_selected'}}):null;
+  expect(body).toMatchObject({error:'scheduler_registration_pending',details:{receipt:{workflowRunId:run.id}}});if(native)expect(native.status).toBe('completed');
+  const dispatch=await db.executionDispatch.findFirstOrThrow({where:{kind:'render_run',subjectId:run.id}});await Bun.sleep(Math.max(0,+dispatch.nextDeliveryAt-Date.now())+10);f.succeed();const confirmed=barrier();f.confirm(confirmed.promise);let finished=false;
+  const replay=worker.fetch(renderRequest(f,key,selected),f.bindings,context).then(async response=>{const body=await response.json();finished=true;return{status:response.status,body};});
+  try{expect(await Promise.race([f.entered.promise.then(()=> 'registering'),replay.then(()=> 'premature_result')])).toBe('registering');expect(finished).toBe(false);}finally{confirmed.release();}
+  const result=await replay;expect(result.status).toBe(202);expect(result.body.workflowRunId).toBe(run.id);expect(await db.workflowRun.findUniqueOrThrow({where:{id:run.id}})).toEqual(run);expect(await db.operationReceipt.count({where:{workspaceId:f.workspace.id,command:'render_clips'}})).toBe(1);if(native)expect(await db.campaignOperation.findUniqueOrThrow({where:{id:native.id}})).toEqual(native);
+ });
+ test('actual unwrapped all-clips HTTP alias replay after terminal retains one charged start',async()=>{
+  const f=await exportFixture(),worker=renderWorker(f),initial=crypto.randomUUID(),alias=crypto.randomUUID();f.succeed();
+  const first=await worker.fetch(renderRequest(f,initial),f.bindings,context);expect(first.status).toBe(202);const original=await first.json();
+  const sharedResponse=await worker.fetch(renderRequest(f,alias),f.bindings,context);expect(sharedResponse.status).toBe(202);const shared=await sharedResponse.json();expect(shared.workflowRunId).toBe(original.workflowRunId);
+  const lifecycle=new RenderFixtureLifecycle({prisma:db});await scope(async()=>{const parent=await lifecycle.renderParent(original.workflowRunId),member=await db.clipRender.findFirstOrThrow({where:{clipId:f.clip.id}});await lifecycle.markClipRenderVariantRendering(parent,member.id);await lifecycle.completeClipRenderVariant(parent,member.id,{storageKey:'fixture/completed',sizeBytes:1000,durationSec:10});await lifecycle.settleRenderWorkSet(parent);});
+  const completed=await db.clipRender.findFirstOrThrow({where:{clipId:f.clip.id}});expect(completed.status).toBe('completed');expect(completed.storageKey).toBeTruthy();
+  const replay=await worker.fetch(renderRequest(f,alias),f.bindings,context);expect(replay.status).toBe(202);expect(await replay.json()).toEqual(shared);
+  expect(await db.workflowRun.count({where:{projectId:f.opened.projectId,stage:'clip_rendering'}})).toBe(1);expect((await db.renderGroup.findMany({where:{workflowRunId:original.workflowRunId}})).reduce((sum,group)=>sum+group.chargedAttemptCount,0)).toBe(1);expect(await db.clipRender.findFirstOrThrow({where:{clipId:f.clip.id}})).toEqual(completed);
  });
 
 });

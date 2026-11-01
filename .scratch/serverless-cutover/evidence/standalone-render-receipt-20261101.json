@@ -1,0 +1,41 @@
+{
+  "implementationBase": "642e4f7528579fbf86345e080610a6d86d1d29fa",
+  "scope": "Local disposable PostgreSQL, production services/control/lifecycle and actual in-process Worker routes/SDK with injected authentication, scheduler and storage boundaries. No deployed requests, providers, billing consumption or live history changes.",
+  "problem": "A new render key absorbed by another active Project run had no durable key alias. After that run completed, replay of the absorbed key could reset completed ordinary render cache rows, admit another run and record another charged start.",
+  "red": {
+    "base": "164b4fbfbbb04aa4318b2b88a35a3171c0687432",
+    "privateLog": "/tmp/narriflow-clip-render-native-alias-red.log",
+    "privateTest": "/tmp/narriflow-clip-render-native-alias.db.test.ts",
+    "expectedChargedAttemptCount": 1,
+    "observedChargedAttemptCount": 2
+  },
+  "implementation": [
+    "Reuse existing actor/workspace-scoped OperationReceipt with render_clips command and receipt-derived native run key; no new table, migration, generic receipt model or compatibility path",
+    "Fingerprint canonical caller selector, normalized requested ratios and requested resolution; omitted clipIds remains all-clips selector rather than a fresh derived clip list",
+    "Authorize every invocation; replay resolves before any mutable membership or entitlement derivation",
+    "Original transaction records exact selected IDs and public response with pending work, unfrozen run membership and initial dispatch; internal selection records identity only, never execution authority",
+    "Keep public response shape unchanged; frozen work sets retain normal drain behavior",
+    "Recover only the exact scoped current-epoch live run from receipt or native CampaignOperation result, without new admission or changed deadline/charge history",
+    "CampaignOperation result replay recollects its exact dispatch; caller loss before result persistence resumes the underlying immutable receipt"
+  ],
+  "callerInventory": {
+    "publicRoute": "apps/api/src/domains/clips/routes.ts:192-223, POST /api/projects/:id/clips/render",
+    "withoutClipIds": "Direct ClipService.triggerClipRendering call; previously no OperationReceipt or CampaignOperation wrapper",
+    "withClipIds": "CampaignOperationService.renderSelected native receipt; existing completed result guards ordinary successful replay, but prior crash window depended on lost native alias",
+    "onlyProductionLifecycleCaller": "packages/services/src/clip.service.ts -> WorkflowRunLifecycle.admitClipRendering",
+    "mcpRestBackground": "No production caller of triggerClipRendering/admitClipRendering in MCP, public REST integration commands or background modules; integrations generation uses its separate existing generation receipt path",
+    "web": ["render-clips-button.tsx:267", "clip-row.tsx:365", "edit-clip-length-dialog.tsx:658", "render-status.ts:115"],
+    "unusedHelper": "ClipService.queueFollowUpRenderRun has no production caller; normal drain admission stays in workflow lifecycle"
+  },
+  "verification": {
+    "pgAndActualWorkerSdkPlusCampaignCompatibility": { "tests": 65, "assertions": 481, "failures": 0, "privateLog": "/tmp/narriflow-render-receipt-final-db.log" },
+    "editorPersistenceCompatibility": { "tests": 36, "assertions": 182, "failures": 0, "suites": 3, "privateLog": "/tmp/narriflow-render-receipt-editor-db.log" },
+    "focusedFast": { "tests": 59, "assertions": 224, "failures": 0, "privateLog": "/tmp/narriflow-render-receipt-fast.log" },
+    "newReceiptSuiteDatabasePoolMax": 1,
+    "servicesTypecheck": "pass",
+    "apiTypecheck": "pass",
+    "changedFilesBiome": "pass",
+    "cases": ["one charged start through actual service/lifecycle and unwrapped HTTP after terminal replay", "late clip creation preserves original all-clips result/selection", "changed input conflicts", "concurrent distinct aliases share one run", "receipt failure rolls back work/run/dispatch", "closed accepted replay with fresh admission refusal", "caller loss before CampaignOperation result persistence", "all-clips and selected HTTP registration failure and confirmation wait", "frozen work-set late drain"]
+  },
+  "remaining": "Root review, full release checks/build/import audit and paired deployed qualification remain required; local fixtures are not platform success. No deadline or historical task reset."
+}

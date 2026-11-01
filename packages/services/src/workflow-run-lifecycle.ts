@@ -599,6 +599,18 @@ export class WorkflowRunLifecycle {
     return dispatch;
   }
 
+  /** A stored receipt can recollect its exact live run; it never admits work. */
+  async recoverClipRenderRunWithinTransaction(tx: TransactionClient, runId: string, workspaceId: string, projectId?: string) {
+    const initial = await tx.workflowRun.findFirst({ where: { id: runId, ...(projectId ? { projectId } : {}), stage: "clip_rendering", project: { workspaceId } }, select: { projectId: true } });
+    if (!initial) return;
+    const admission = await this.lockRenderAdmissionWithinTransaction(tx, initial.projectId, workspaceId);
+    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${runId}::uuid FOR UPDATE`;
+    const now = await this.databaseNow(tx);
+    const current = await tx.workflowRun.findFirst({ where: { id: runId, projectId: initial.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
+      status: { in: ["queued", "running", "waiting"] }, project: { workspaceId, ...accessibleProjectWhere(now), workspace: { status: "active" } } }, select: { id: true } });
+    if (current) await this.dispatchRunWithinTransaction(tx, current.id);
+  }
+
   /** New export admission and receipt recovery share the normal render ledger.
    * Call before taking a Clip lock; selection completion already holds these locks. */
   async lockRenderAdmissionWithinTransaction(tx: TransactionClient, projectId: string, workspaceId: string) {
@@ -765,15 +777,14 @@ export class WorkflowRunLifecycle {
    * one admission transaction, including when an active run absorbs them. */
   async admitClipRendering(input: { projectId: string; idempotencyKey: string; variants: readonly {
     clipId: string; aspectRatio: Prisma.ClipRenderCreateManyInput["aspectRatio"]; resolution: Prisma.ClipRenderCreateManyInput["resolution"];
-  }[] }): Promise<{ id: string; created: boolean }> {
-    return this.admitRoot({ projectId: input.projectId, idempotencyKey: input.idempotencyKey, stage: "clip_rendering" }, input.variants);
+  }[] }, transactionClient?: TransactionClient): Promise<{ id: string; created: boolean }> {
+    return this.admitRoot({ projectId: input.projectId, idempotencyKey: input.idempotencyKey, stage: "clip_rendering" }, input.variants, transactionClient);
   }
 
   private async admitRoot(input: AdmitWorkflowRunInput, variants?: readonly {
     clipId: string; aspectRatio: Prisma.ClipRenderCreateManyInput["aspectRatio"]; resolution: Prisma.ClipRenderCreateManyInput["resolution"];
-  }[]): Promise<{ id: string; created: boolean }> {
-    try {
-      return await this.transaction(async (tx) => {
+  }[], transactionClient?: TransactionClient): Promise<{ id: string; created: boolean }> {
+    const admit = async (tx: TransactionClient) => {
         const admission = await readExecutionAdmission(tx);
         await this.lockAdmissionProject(tx, input.projectId);
         const existing = await tx.workflowRun.findUnique({
@@ -847,10 +858,10 @@ export class WorkflowRunLifecycle {
         });
         await this.dispatchRunWithinTransaction(tx, admitted.id);
         return admitted;
-      });
-    } catch (error) {
-      return this.recoverAdmissionConflict(input, error);
-    }
+    };
+    if (transactionClient) return admit(transactionClient);
+    try { return await this.transaction(admit); }
+    catch (error) { return this.recoverAdmissionConflict(input, error); }
   }
 
   /** Manual retries share admission serialization with rescue and settlement.

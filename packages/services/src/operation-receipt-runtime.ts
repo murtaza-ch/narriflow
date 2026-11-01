@@ -22,6 +22,7 @@ export function prismaOperationReceiptPersistence(
   if(!tx)return prisma.$transaction(tx=>recover(receipt,tx));
   await readExecutionAdmission(tx);
   if(receipt.resourceType==="clip_export"&&receipt.command==="create_clip_export")await new WorkflowRunLifecycle({prisma}).handoffClipExportWithinTransaction(tx,receipt.resourceId,receipt.workspaceId,{id:receipt.id,actorUserId:receipt.actorUserId});
+  if(receipt.resourceType==="workflow_run"&&receipt.command==="render_clips")await new WorkflowRunLifecycle({prisma}).recoverClipRenderRunWithinTransaction(tx,receipt.resourceId,receipt.workspaceId);
   await recoverReceiptNotificationDispatches(tx,receipt);
   if(receipt.resourceType==="review"&&receipt.result&&typeof receipt.result==="object"&&!Array.isArray(receipt.result))await recoverNotificationDispatchIds(tx,(receipt.result as Record<string,unknown>).notificationDispatchIds);
   if(receipt.resourceType==="social_post"&&["recheck_social_publication","publish_social_publication_again"].includes(receipt.command))await recoverPublicationDispatches(tx,receipt.resourceId,receipt.workspaceId);
