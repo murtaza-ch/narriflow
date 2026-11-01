@@ -22,7 +22,7 @@ testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 let tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "project-retention-execution", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "executor-transfer-gate", "source-audio-admission",
+  "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "project-retention-execution", "media-cleanup-control", "media-cleanup-recovery", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "executor-transfer-gate", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
   "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "grant-notification", "webhook-notification", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh", "export-bundle-execution", "dubbing-execution", "autopilot-finishing-authority", "autopilot-execution", "zoom-execution", "zoom-refresh", "autopilot-maintenance", "workspace-api-key-auth", "clip-export-handoff", "clip-render-receipt",
 ].map(name => `packages/services/src/${name}.db.test.ts`).concat("apps/api/src/workflows/maintenance-runtime.db.test.ts", "apps/api/src/worker-registration.db.test.ts");
@@ -44,7 +44,7 @@ async function run(args: string[], env: Record<string, string>) {
 // Mail restore and the empty production-factory pass observe the whole schema.
 // Their epoch changes and global assertions require separate disposable schemas,
 // not deletion of other suites' accepted fixture obligations.
-for(const emptyFactory of ["packages/services/src/grant-notification.db.test.ts","packages/services/src/webhook-notification.db.test.ts","packages/services/src/execution-maintenance-runtime.db.test.ts",apiFactory]){
+for(const emptyFactory of ["packages/services/src/grant-notification.db.test.ts","packages/services/src/webhook-notification.db.test.ts","packages/services/src/execution-maintenance-runtime.db.test.ts","packages/services/src/media-cleanup-recovery.db.test.ts",apiFactory]){
  if(tests.length>1&&tests.includes(emptyFactory)){
   await run(["bun","packages/services/scripts/run-execution-db-tests.ts",emptyFactory],{});
   tests=tests.filter(path=>path!==emptyFactory);

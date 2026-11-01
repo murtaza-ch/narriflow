@@ -1,0 +1,42 @@
+{
+  "status": "local_regression_passed_deployed_recovery_unverified",
+  "baseCommit": "8664b667c099d88063208c552c6f15cfde61db24",
+  "scope": "Approved localhost PostgreSQL only, full migration chain in runner-owned disposable schemas; production Maintenance factory, scheduler and cleanup hold/control with injected cloud registration and storage boundaries",
+  "problem": "Daily cleanup repair returns an already acknowledged base dispatch. Its delivery short-circuits without checking the errored Workflow, and cleanup had no independent hourly safety wake.",
+  "red": {
+    "factoryRegression": "The actual hourly Worker Maintenance factory produced no media_cleanup continuation; wake was undefined",
+    "log": "/tmp/narriflow-cleanup-recovery-factory-red.log"
+  },
+  "implementation": [
+    "Add a cleanup_wakes hourly phase using the existing hourly_<cutoff> dispatch identity and independent Maintenance continuation path",
+    "Select bounded due-intent pages by nextAttemptAt and id using existing cleanup and dispatch indexes; require the latest current-epoch base and matching due time",
+    "Exclude completed, future and live-claimed intents from the observation; the targeted control rereads current epoch, immutable input, ownership, grants and references before storage",
+    "Retain the daily missing-base registration path and existing acknowledgement, domain generation, attempts, claims, deadlines and execution history",
+    "Reuse committed Maintenance page receipts on lost registration responses; the same cutoff/page recollects the same wake and continuation IDs"
+  ],
+  "verification": {
+    "postgresAndFactoryCompatibility": { "tests": 39, "assertions": 267, "failures": 0, "log": "/tmp/narriflow-cleanup-recovery-compatibility.log" },
+    "finalClosedAdmissionDomainGate": { "tests": 5, "assertions": 45, "failures": 0, "log": "/tmp/narriflow-cleanup-recovery-domain-final.log" },
+    "schedulerAndScheduledBoundary": { "tests": 12, "assertions": 136, "failures": 0, "log": "/tmp/narriflow-cleanup-recovery-fast.log" },
+    "servicesTypecheck": "pass",
+    "apiTypecheck": "pass",
+    "changedFilesBiome": "pass",
+    "repositoryBiome": "pass; 2495 files, 11 existing warnings and 1 informational item",
+    "newDomainSuitePoolMax": 1,
+    "cases": [
+      "Acknowledged original base remains unchanged while a distinct wake cleans an expired uncommitted assigned artifact exactly once",
+      "Actual Worker Maintenance composition and scheduler register an independent Maintenance command despite the errored original event target",
+      "Same-cutoff replay, bounded cursor pagination, exact-object scope and registration-loss recovery",
+      "Future, completed, live-claimed, missing-base and old-epoch intents are not granted new cleanup authority",
+      "Daily repair still creates missing bases; production holds retain outstanding grants and a claim acquired after observation still blocks deletion",
+      "Malformed references and mismatched stored input hashes cannot reach storage; native attempt deadlines and history remain unchanged"
+    ],
+    "runtime": "Bun 1.3.6; dedicated localhost:55432 database and fresh serverless_execution_test_* schemas, dropped by the runner"
+  },
+  "diagnosisLimits": [
+    "A separate production-hold pool-max-one probe completed in 17 ms with 27 SQL statements and no root-client delegate calls; the proposed held-transaction/root-client deadlock was not reproduced",
+    "The historical Workflow timeout, pool-slot timeout and Worker memory failures remain causally unproven and are not fixed by this patch",
+    "No Workflow restart, scheduler status reinterpretation, timeout increase, global Prisma cache, migration, cloud call or live-history mutation was performed",
+    "Candidate build, deployment qualification and ordinary bounded recovery of the original cleanup obligations remain Root responsibilities"
+  ]
+}

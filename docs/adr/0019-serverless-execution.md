@@ -14,6 +14,8 @@ After commit, delivery confirms registration using an instance ID derived from e
 
 A Workflow orchestrates dispatch, waits and deadlines. Every step rereads the domain ledger. A completed step, external call result or Workflow instance is never mutation authority and never creates another charged attempt. Selection windows persist results by reference, with one global finalization; frozen Render Work Set membership still determines parent settlement. The parent has no lease while awaiting children; child commits never settle the parent.
 
+Cleanup safety observations use due-intent pages and cutoff-specific hourly wakes. A base dispatch may already be acknowledged while its Workflow has errored; replaying that acknowledgement cannot repair execution. The wake registers an independent Maintenance continuation that rereads the same epoch, generation, immutable input and cleanup holds. Daily cleanup pages continue to register missing base obligations. Neither path resets ownership, attempts or deadlines.
+
 ## Fencing and lock order
 
 An admission transaction first locks the singleton Execution Epoch `FOR SHARE`.

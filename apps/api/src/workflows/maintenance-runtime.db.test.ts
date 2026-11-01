@@ -6,6 +6,11 @@ import { withServiceEnvironment } from "@narriflow/services/runtime-environment"
 import { withExecutionDispatchScheduler } from "@narriflow/services/execution-dispatch-runtime";
 import { assertExecutionDatabaseTestTarget } from "@narriflow/services/execution-db-test-support";
 import { readExecutionDispatch } from "@narriflow/services/execution-dispatch";
+import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "@narriflow/services/media-cleanup-control";
+import { mediaCleanupObjectRetainUntil } from "@narriflow/services/media-cleanup-holds";
+import { createWorkerExecutionScheduler } from "./scheduler";
+import { dispatchContinuationInstanceId } from "./protocol";
+import type { ApiWorkerBindings } from "../worker-bindings";
 import { getWorkerMaintenanceRuntime } from "./maintenance-runtime";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -38,5 +43,34 @@ suite("Production API Maintenance composition", () => {
       expect(await database.mediaCleanupObligation.count()).toBe(0);
       expect(http).not.toHaveBeenCalled();
     } finally { http.mockRestore(); }
+  });
+
+  test("hourly cleanup recovery reaches an independent Maintenance command after its acknowledged driver errored", async () => {
+    const intent = await database.mediaCleanupObligation.create({ data: { origin: "clip_editor_document_persistence", cleanupClass: "mutable_render", objectKey: `fixture/${crypto.randomUUID()}.mp4`, nextAttemptAt: new Date(0) } });
+    const base = (await database.$transaction(tx => queueMediaCleanupWithinTransaction(tx, intent.id)))!;
+    await database.executionDispatch.update({ where: { id: base.dispatchId }, data: { acknowledgedAt: new Date(), destinationId: "errored-cleanup-driver" } });
+    const before = await database.executionDispatch.findUniqueOrThrow({ where: { id: base.dispatchId } });
+    const commands: Array<{ id: string; params: unknown }> = [];
+    const bindings = { OPERATION_DRIVER: { get: async () => ({ sendEvent: async () => { throw Error("Errored original driver"); } }) },
+      MAINTENANCE: { create: async (input: { id: string; params: unknown }) => { commands.push(input); return { id: input.id }; } } } as unknown as ApiWorkerBindings;
+    const environment = { R2_ACCOUNT_ID: "a".repeat(32), R2_BUCKET: "synthetic-cleanup-maintenance", R2_ACCESS_KEY_ID: "synthetic", R2_SECRET_ACCESS_KEY: "synthetic", MEDIA_RENDER_TOOLCHAIN_FINGERPRINT: "b".repeat(64) };
+    const invoke = <T>(operation: () => Promise<T>) => withServiceEnvironment(environment, () => withExecutionDispatchScheduler(createWorkerExecutionScheduler(bindings), () =>
+      withDatabaseScope(createDatabaseScope({ createClient: () => { const db = client(); return { client: db, dispose: () => db.$disconnect() }; } }), operation)));
+    await invoke(async () => (await getWorkerMaintenanceRuntime()).scheduled({ cadence: "hourly", scheduledAt: new Date(), admissionState: "closed" }));
+    for (let index = 0; index < commands.length; index++) {
+      const command = commands[index]!;
+      if ((command.params as typeof base).subject.kind === "maintenance") await invoke(async () => (await getWorkerMaintenanceRuntime()).run(command.params as typeof base));
+    }
+    const wake = commands.map(command => command.params as typeof base).find(reference => reference.subject.kind === "media_cleanup");
+    expect(wake).toBeDefined();
+    expect(commands.find(command => command.params === wake)?.id).toBe(dispatchContinuationInstanceId(wake!));
+    expect(await database.executionDispatch.findUniqueOrThrow({ where: { id: base.dispatchId } })).toEqual(before);
+    let deletes = 0;
+    const cleanup = createMediaCleanupControl({ database, register: async () => {}, hold: mediaCleanupObjectRetainUntil, storage: { deleteExact: async key => { expect(key).toBe(intent.objectKey); deletes++; } } });
+    expect(await cleanup.run(wake!)).toMatchObject({ kind: "complete" });
+    expect(deletes).toBe(1);
+    expect((await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: intent.id } })).completedAt).not.toBeNull();
+    expect(await cleanup.run(wake!)).toMatchObject({ kind: "complete" });
+    expect(deletes).toBe(1);
   });
 });

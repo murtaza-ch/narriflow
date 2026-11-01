@@ -59,8 +59,11 @@ suite("Production retention pages", () => {
     await db.outboundProbe.delete({ where: { id: row.id } }); await db.workspace.delete({ where: { id: workspace.id } });
   });
 
-  test("every fixed domain safety selector terminates on an empty cutoff and has valid PostgreSQL predicates", async () => {
-    for (const handler of Object.values(safety)) {
+  test("creation-based domain safety selectors terminate on an empty cutoff and have valid PostgreSQL predicates", async () => {
+    // Cleanup deliberately selects by due time; earlier cleanup fixtures use
+    // epoch-zero due dates. Its due cursor and empty ranges have their own gate.
+    for (const [name, handler] of Object.entries(safety)) {
+      if (name === "recoverMediaCleanupWakePage") continue;
       const empty = { ...(await page()), cutoff: new Date(0) };
       expect(await db.$transaction(tx => handler(tx, empty))).toEqual({ processed: 0, next: null, dispatchIds: [] });
     }

@@ -42,3 +42,29 @@ export const recoverThumbnailWakePage = recovery("ThumbnailFrameOperation", "thu
 export const recoverGeneratedMediaWakePage = recovery("GeneratedMediaJob", "generated_media", Prisma.sql`status IN ('queued','running','waiting') AND NOT "outcomeUnknown"`);
 export const recoverOutboundProbeWakePage = recovery("OutboundProbe", "outbound_probe", Prisma.sql`status IN ('queued','processing')`);
 export const recoverOutboundDeliveryWakePage = recovery("OutboundDelivery", "outbound_delivery", Prisma.sql`status IN ('queued','processing')`);
+
+/** Cleanup registration can be acknowledged before its Workflow fails. Observe
+ * only due, unclaimed intents with a current base; daily repair owns missing
+ * bases. A distinct wake re-enters the exact authority through Maintenance. */
+export const recoverMediaCleanupWakePage: MaintenancePhaseHandler = async (tx, page) => {
+  if (page.after?.tie) throw new Error("maintenance_cursor_invalid");
+  const after = page.after ? Prisma.sql`AND (intent."nextAttemptAt", intent.id) > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
+  const rows = await tx.$queryRaw<Array<{ id: string; at: Date; dispatchId: string; generation: number; inputHash: string }>>(Prisma.sql`
+    SELECT intent.id, intent."nextAttemptAt" AS at, registration.id AS "dispatchId", registration.generation, registration."inputHash"
+    FROM "MediaCleanupObligation" intent
+    JOIN LATERAL (SELECT id, generation, "inputHash", "dueAt" FROM "ExecutionDispatch"
+      WHERE "deploymentEpoch" = ${page.deploymentEpoch} AND kind = 'operation_driver' AND "subjectKind" = 'media_cleanup'
+        AND "subjectId" = intent.id::text AND "wakeKind" IS NULL AND "deadlineKind" IS NULL
+      ORDER BY generation DESC LIMIT 1) registration ON registration."dueAt" = intent."nextAttemptAt"
+    WHERE intent."completedAt" IS NULL AND intent."nextAttemptAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+      AND (intent."claimExpiresAt" IS NULL OR intent."claimExpiresAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')) ${after}
+    ORDER BY intent."nextAttemptAt", intent.id LIMIT ${page.limit + 1}`);
+  const selected = rows.slice(0, page.limit);
+  const dispatches = await appendExecutionDispatches(tx, selected.map(row => ({
+    ...executionDispatchReferenceSchema.parse({ dispatchId: row.dispatchId, kind: "operation_driver", subject: { kind: "media_cleanup", id: row.id },
+      generation: row.generation, deploymentEpoch: page.deploymentEpoch, inputHash: row.inputHash }),
+    dueAt: page.cutoff, wakeKind: `hourly_${page.cutoff.getTime()}`,
+  })));
+  const last = selected.at(-1);
+  return { processed: selected.length, next: rows.length > page.limit && last ? { at: last.at, id: last.id } : null, dispatchIds: dispatches.map(row => row.reference.dispatchId) };
+};
