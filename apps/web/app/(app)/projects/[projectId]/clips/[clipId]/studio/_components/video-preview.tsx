@@ -1350,19 +1350,24 @@ export function VideoPreview() {
       : { backgroundColor: plannedBackgroundLayer.color }
     : {};
 
-  const handleRetry = useCallback(() => {
-    setRetryNonce((n) => n + 1);
-    reloadPlayback();
-  }, [reloadPlayback]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: source changes and explicit retries intentionally reset presentation-only load indicators.
-  useEffect(() => {
+  const resetLoadIndicators = useCallback(() => {
     setVideoLoaded(false);
     setLoadError(false);
     setIsStalled(false);
     setBufferedFraction(0);
     setSlowLoadHint(false);
-  }, [activeVideoUrl, retryNonce]);
+  }, []);
+
+  const handleRetry = useCallback(async () => {
+    resetLoadIndicators();
+    setRetryNonce((n) => n + 1);
+    if ((await reloadPlayback()) === "failed") setLoadError(true);
+  }, [reloadPlayback, resetLoadIndicators]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new source resets presentation-only load indicators.
+  useEffect(() => {
+    resetLoadIndicators();
+  }, [activeVideoUrl, resetLoadIndicators]);
 
   const handleLoadedMetadata = useCallback(
     (event: React.SyntheticEvent<HTMLVideoElement>) => {

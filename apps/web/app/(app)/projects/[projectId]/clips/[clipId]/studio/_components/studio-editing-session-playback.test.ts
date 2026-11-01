@@ -12,6 +12,7 @@ import {
   type StudioMediaAdapter,
   type StudioMediaCommand,
   type StudioMediaEvent,
+  type StudioSessionDependencies,
 } from "./studio-editing-session";
 
 test("projects source lanes around an intro and a mid-roll scene", () => {
@@ -97,6 +98,7 @@ function makeSession(
   ownership: "writer" | "reader" = "writer",
   runtime = new ManualRuntime(),
   document = makeDocument(),
+  preview?: StudioSessionDependencies["preview"],
 ) {
   return createStudioEditingSession(
     {
@@ -133,6 +135,7 @@ function makeSession(
       },
       runtime,
       media,
+      preview,
     },
   );
 }
@@ -152,6 +155,129 @@ function insertedSceneDocument(): EditorDocument {
 }
 
 describe("StudioEditingSession playback seam", () => {
+  test("Retry refreshes an eligible proxy grant without resetting edits, history or the playhead", async () => {
+    const media = new InMemoryMediaAdapter();
+    let reads = 0;
+    const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), {
+      fetchProxyStatus: async () => {
+        reads++;
+        return { previewUrl: "https://cdn.example.com/proxy-fresh.mp4", previewStartSec: 6, previewDurationSec: 38, waveformPeaksUrl: null };
+      },
+    });
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    session.dispatch({ type: "document.edit", action: { type: "setStudioEdits", studioEdits: { ...makeDocument().studioEdits, sourceAudio: { muted: false, volume: 60 } } } });
+    session.dispatch({ type: "playback.seek", editedTimeSec: 7 });
+    session.dispatch({ type: "playback.play" });
+    const before = session.getSnapshot();
+    expect(await session.perform({ type: "reload-playback" })).toEqual({ kind: "playback-reloaded", outcome: "refreshed" });
+    expect(reads).toBe(1);
+    expect(media.commands.at(-1)).toMatchObject({ type: "load", url: "https://cdn.example.com/proxy-fresh.mp4", mediaTimeSec: 11, playing: true });
+    expect(session.getSnapshot().document).toEqual(before.document);
+    expect(session.getSnapshot().history).toEqual(before.history);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(7);
+    expect(session.getSnapshot().playback.state).toBe(before.playback.state);
+  });
+
+  test("Retry refreshes the selected original source without changing the unsaved trim", async () => {
+    const media = new InMemoryMediaAdapter();
+    let reads = 0;
+    const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), {
+      fetchSourceUrl: async () => { reads++; return { url: "https://cdn.example.com/source-fresh.mp4" }; },
+      fetchProxyStatus: async () => { throw Error("Source retry must not switch to the stored proxy"); },
+    });
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    await session.perform({ type: "trim", startSec: 12, endSec: 38, transcriptSlice: [], segments: [] });
+    session.dispatch({ type: "playback.seek", editedTimeSec: 4 });
+    const before = session.getSnapshot();
+    expect(before.preview.activeAsset.kind).toBe("source");
+    expect(await session.perform({ type: "reload-playback" })).toEqual({ kind: "playback-reloaded", outcome: "refreshed" });
+    expect(reads).toBe(1);
+    expect(media.commands.at(-1)).toMatchObject({ type: "load", url: "https://cdn.example.com/source-fresh.mp4", mediaTimeSec: 16 });
+    expect(session.getSnapshot().document).toEqual(before.document);
+    expect(session.getSnapshot().history).toEqual(before.history);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(4);
+  });
+
+  for (const change of ["trim", "close", "trim-undo"] as const) {
+    test(`a pending playback grant cannot replace the active asset after ${change}`, async () => {
+      const media = new InMemoryMediaAdapter();
+      let resolve!: (value: { previewUrl: string; previewStartSec: number; previewDurationSec: number; waveformPeaksUrl: null }) => void;
+      const pending = new Promise<Parameters<typeof resolve>[0]>(done => { resolve = done; });
+      const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), { fetchProxyStatus: () => pending });
+      while (session.getSnapshot().status !== "ready") await Promise.resolve();
+      const retry = session.perform({ type: "reload-playback" });
+      if (change === "trim" || change === "trim-undo") await session.perform({ type: "trim", startSec: 12, endSec: 38, transcriptSlice: [], segments: [] });
+      if (change === "trim-undo") session.dispatch({ type: "history.undo" });
+      if (change === "close") await session.perform({ type: "close", reason: "unmount" });
+      const commands = media.commands.length;
+      resolve({ previewUrl: "https://cdn.example.com/obsolete.mp4", previewStartSec: 6, previewDurationSec: 38, waveformPeaksUrl: null });
+      expect(await retry).toEqual({ kind: "playback-reloaded", outcome: "superseded" });
+      expect(media.commands).toHaveLength(commands);
+      expect(session.getSnapshot().preview.activeAsset.url).not.toBe("https://cdn.example.com/obsolete.mp4");
+    });
+  }
+
+  test("a pending source grant cannot replace the proxy selected by undo", async () => {
+    const media = new InMemoryMediaAdapter();
+    let resolve!: (value: { url: string }) => void;
+    const pending = new Promise<Parameters<typeof resolve>[0]>(done => { resolve = done; });
+    const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), { fetchSourceUrl: () => pending });
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    await session.perform({ type: "trim", startSec: 12, endSec: 38, transcriptSlice: [], segments: [] });
+    expect(session.getSnapshot().preview.activeAsset.kind).toBe("source");
+    const retry = session.perform({ type: "reload-playback" });
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().preview.activeAsset.kind).toBe("proxy");
+    const commands = media.commands.length;
+    resolve({ url: "https://cdn.example.com/obsolete-source.mp4" });
+    expect(await retry).toEqual({ kind: "playback-reloaded", outcome: "superseded" });
+    expect(media.commands).toHaveLength(commands);
+    expect(session.getSnapshot().preview.activeAsset.kind).toBe("proxy");
+  });
+
+  test("failed or missing proxy grants remain failed without reloading an expired URL or selecting source", async () => {
+    for (const unavailable of [false, true]) {
+      const media = new InMemoryMediaAdapter();
+      const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), { fetchProxyStatus: async () => {
+        if (unavailable) throw Error("offline");
+        return { previewUrl: null, previewStartSec: 0, previewDurationSec: null, waveformPeaksUrl: null };
+      } });
+      while (session.getSnapshot().status !== "ready") await Promise.resolve();
+      const commands = media.commands.length;
+      expect(await session.perform({ type: "reload-playback" })).toEqual({ kind: "playback-reloaded", outcome: "failed" });
+      expect(media.commands).toHaveLength(commands);
+      expect(session.getSnapshot().preview.activeAsset).toMatchObject({ kind: "proxy", url: "https://cdn.example.com/proxy.mp4" });
+    }
+  });
+
+  test("a missing original source grant cannot reuse the old source or select a proxy", async () => {
+    const media = new InMemoryMediaAdapter();
+    const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), { fetchSourceUrl: async () => ({ url: null }) });
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    await session.perform({ type: "trim", startSec: 12, endSec: 38, transcriptSlice: [], segments: [] });
+    const commands = media.commands.length;
+    expect(await session.perform({ type: "reload-playback" })).toEqual({ kind: "playback-reloaded", outcome: "failed" });
+    expect(media.commands).toHaveLength(commands);
+    expect(session.getSnapshot().preview.activeAsset).toMatchObject({ kind: "source", url: "https://cdn.example.com/source.mp4" });
+  });
+
+  test("a slower earlier retry cannot overwrite the latest refreshed grant", async () => {
+    const media = new InMemoryMediaAdapter();
+    type Status = { previewUrl: string; previewStartSec: number; previewDurationSec: number; waveformPeaksUrl: null };
+    const replies: Array<(status: Status) => void> = [];
+    const session = makeSession(media, "writer", new ManualRuntime(), makeDocument(), {
+      fetchProxyStatus: () => new Promise<Status>(resolve => { replies.push(resolve); }),
+    });
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    const first = session.perform({ type: "reload-playback" }), second = session.perform({ type: "reload-playback" });
+    replies[1]!({ previewUrl: "https://cdn.example.com/latest.mp4", previewStartSec: 6, previewDurationSec: 38, waveformPeaksUrl: null });
+    expect(await second).toEqual({ kind: "playback-reloaded", outcome: "refreshed" });
+    const commands = media.commands.length;
+    replies[0]!({ previewUrl: "https://cdn.example.com/obsolete.mp4", previewStartSec: 6, previewDurationSec: 38, waveformPeaksUrl: null });
+    expect(await first).toEqual({ kind: "playback-reloaded", outcome: "superseded" });
+    expect(media.commands).toHaveLength(commands);
+    expect(session.getSnapshot().preview.activeAsset.url).toBe("https://cdn.example.com/latest.mp4");
+  });
   test("applies the planner-owned output envelope through the session audio command", async () => {
     const media = new InMemoryMediaAdapter();
     const session = makeSession(media);

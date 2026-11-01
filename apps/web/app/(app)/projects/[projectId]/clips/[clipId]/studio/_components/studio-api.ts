@@ -7,7 +7,7 @@ import {
   createStudioClient,
   studioQueries as domainStudioQueries,
 } from "@narriflow/api-client/studio";
-import { createProjectsClient } from "@narriflow/api-client/projects";
+import { createProjectsClient, projectQueries } from "@narriflow/api-client/projects";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 import { projectGateDestination } from "../../../../project-load-error";
@@ -170,6 +170,13 @@ export function studioPollers(api: StudioApi, target: ClipTarget) {
   const { queryClient } = api.runtime;
   return {
     fetchPreviewStatus: () => queryClient.fetchQuery(queries.previewSource(target)),
+    fetchSourceUrl: async () => {
+      const grant = await queryClient.fetchQuery({
+        ...projectQueries.sourceUrl(createProjectsClient(api.runtime.transport.scoped(api.scope)), api.scope, target.projectId),
+        staleTime: 0,
+      });
+      return { url: "url" in grant ? grant.url : null };
+    },
     fetchAutoLayoutAnalysis: async () => (await queryClient.fetchQuery(queries.autoLayout(target))).analysis,
     fetchSplitLayoutAnalysis: async () => (await queryClient.fetchQuery(queries.splitLayout(target))).outcome,
     fetchScreenLayoutAnalysis: async () => (await queryClient.fetchQuery(queries.screenLayout(target))).outcome,

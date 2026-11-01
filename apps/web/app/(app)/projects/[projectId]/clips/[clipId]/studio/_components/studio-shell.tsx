@@ -526,7 +526,7 @@ interface StudioFields extends StudioState {
    *  boundary-invalidated proxy is being replaced. */
   useOriginalSourceFallback: boolean;
   setUseOriginalSourceFallback: (v: boolean) => void;
-  reloadPlayback: () => void;
+  reloadPlayback: () => Promise<"refreshed" | "failed" | "superseded">;
   /** Whichever URL the session selected for the `<video>` element: an
    *  eligible proxy, the source during explicit/automatic fallback, or null.
    *  Also what the timeline scrubs
@@ -795,6 +795,7 @@ interface StudioShellProps {
     previewDurationSec: number | null;
     waveformPeaksUrl: string | null;
   }>;
+  fetchSourceUrl?: () => Promise<{ url: string | null }>;
   /** Used while worker-derived shot analysis is still pending. The client
    *  accepts only a plan matching its live clip window and deleted ranges. */
   fetchAutoLayoutAnalysis?: () => Promise<ClipAutoLayoutAnalysis | null>;
@@ -854,6 +855,7 @@ export function StudioShell({
   waveformPeaksUrl: initialWaveformPeaksUrl = null,
   sourcePurged = false,
   fetchPreviewStatus,
+  fetchSourceUrl,
   fetchAutoLayoutAnalysis,
   fetchSplitLayoutAnalysis,
   fetchScreenLayoutAnalysis,
@@ -971,6 +973,7 @@ export function StudioShell({
       cloud: transport.cloud,
       preview: {
         ...(fetchPreviewStatus ? { fetchProxyStatus: fetchPreviewStatus } : {}),
+        ...(fetchSourceUrl ? { fetchSourceUrl } : {}),
         ...(fetchAutoLayoutAnalysis ? { fetchAutomaticLayout: fetchAutoLayoutAnalysis } : {}),
       },
     },
@@ -1181,8 +1184,9 @@ export function StudioShell({
     },
     [studioSession],
   );
-  const reloadPlayback = useCallback(() => {
-    studioSession.dispatch({ type: "playback.reload" });
+  const reloadPlayback = useCallback(async () => {
+    const result = await studioSession.perform({ type: "reload-playback" });
+    return result.kind === "playback-reloaded" ? result.outcome : "superseded";
   }, [studioSession]);
 
   // Named `doc` (not `document`) to avoid shadowing the global DOM object.

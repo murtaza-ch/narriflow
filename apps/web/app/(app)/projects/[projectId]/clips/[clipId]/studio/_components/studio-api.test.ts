@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError, createApiRuntime } from "@narriflow/api-client/core";
+import { createProjectsClient, projectQueries } from "@narriflow/api-client/projects";
 import {
   apiFailureBody,
   createClipFromStudioSelection,
@@ -61,6 +62,7 @@ describe("studio queries", () => {
       "layout/screen": { outcome: { state: "failed" } },
     };
     const { api, calls } = setup((url) => {
+      if (url.endsWith("source-url")) return Response.json({ url: "https://cdn.test/source-fresh.mp4", expiresAt: "2026-11-01T12:00:00Z" });
       const key = Object.keys(outcomes).find((name) => url.includes(name));
       if (key) return Response.json(outcomes[key]);
       return Response.json({ previewUrl: null, previewStartSec: 0, previewDurationSec: null, waveformPeaksUrl: null });
@@ -71,9 +73,30 @@ describe("studio queries", () => {
     expect(await pollers.fetchScreenLayoutAnalysis()).toEqual({ state: "failed" });
     await pollers.fetchPreviewStatus();
     await pollers.fetchPreviewStatus();
+    expect((await pollers.fetchSourceUrl()).url).toBe("https://cdn.test/source-fresh.mp4");
+    await pollers.fetchSourceUrl();
     expect(calls.filter((call) => call.url.endsWith("preview-source"))).toHaveLength(2);
+    expect(calls.filter((call) => call.url.endsWith("source-url"))).toHaveLength(2);
     expect(calls.every((call) => call.authorization === "Bearer token" && call.workspace === "ws_1")).toBe(true);
     expect(calls.every((call) => call.credentials === "omit")).toBe(true);
+  });
+
+  test("playback grant reads replace cached expired descriptors without refetching bootstrap", async () => {
+    const { api, calls } = setup((url) => Response.json(url.endsWith("source-url")
+      ? { url: "https://cdn.test/source-fresh.mp4", expiresAt: "2026-11-01T12:00:00Z" }
+      : { previewUrl: "https://cdn.test/proxy-fresh.mp4", previewStartSec: 6, previewDurationSec: 38, waveformPeaksUrl: null }));
+    const queries = studioQueries(api);
+    api.runtime.queryClient.setQueryData(queries.previewSource(target).queryKey, {
+      previewUrl: "https://cdn.test/proxy-expired.mp4", previewStartSec: 6, previewDurationSec: 38, waveformPeaksUrl: null,
+    });
+    const source = projectQueries.sourceUrl(createProjectsClient(api.runtime.transport.scoped(api.scope)), api.scope, PROJECT);
+    api.runtime.queryClient.setQueryData(source.queryKey, { url: "https://cdn.test/source-expired.mp4", expiresAt: "2026-11-01T10:00:00Z" });
+    const pollers = studioPollers(api, target);
+    expect((await pollers.fetchPreviewStatus()).previewUrl).toBe("https://cdn.test/proxy-fresh.mp4");
+    expect((await pollers.fetchSourceUrl()).url).toBe("https://cdn.test/source-fresh.mp4");
+    expect(calls.map(call => new URL(call.url).pathname)).toEqual([
+      `/api/projects/${PROJECT}/clips/${CLIP}/preview-source`, `/api/projects/${PROJECT}/source-url`,
+    ]);
   });
 });
 

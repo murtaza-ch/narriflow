@@ -154,6 +154,7 @@ function StudioData({
         // studio shows a terminal message instead of polling/spinning forever.
         sourcePurged={seed.source.purged}
         fetchPreviewStatus={pollers.fetchPreviewStatus}
+        fetchSourceUrl={pollers.fetchSourceUrl}
         fetchAutoLayoutAnalysis={pollers.fetchAutoLayoutAnalysis}
         fetchSplitLayoutAnalysis={pollers.fetchSplitLayoutAnalysis}
         fetchScreenLayoutAnalysis={pollers.fetchScreenLayoutAnalysis}

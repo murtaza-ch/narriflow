@@ -181,8 +181,7 @@ export type StudioSessionIntent =
   | { type: "playback.play" }
   | { type: "playback.pause" }
   | { type: "playback.toggle" }
-  | { type: "playback.set-rate"; rate: number }
-  | { type: "playback.reload" };
+  | { type: "playback.set-rate"; rate: number };
 
 export type IntentReceipt =
   | { accepted: true }
@@ -192,6 +191,7 @@ export type IntentReceipt =
 export type StudioSessionOperation =
   | { type: "start" }
   | { type: "resume" }
+  | { type: "reload-playback" }
   | {
       type: "trim";
       startSec: number;
@@ -216,6 +216,7 @@ export type StudioOperationResult =
   | { kind: "unavailable"; reason: "not-implemented" | "invalid-state" }
   | { kind: "started" }
   | { kind: "trimmed" }
+  | { kind: "playback-reloaded"; outcome: "refreshed" | "failed" | "superseded" }
   | { kind: "closed" }
   | { kind: "conflict-resolved"; choice: "device" | "cloud" }
   | {
@@ -482,6 +483,7 @@ export interface StudioSessionDependencies {
   };
   preview?: {
     fetchProxyStatus?(): Promise<StudioProxyStatus>;
+    fetchSourceUrl?(): Promise<{ url: string | null }>;
     fetchAutomaticLayout?(): Promise<ClipAutoLayoutAnalysis | null>;
   };
   media?: StudioMediaAdapter;
@@ -688,7 +690,8 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private unsubscribeOnline: (() => void) | null = null;
   private resetInProgress = false;
   private cloudRefreshGeneration = 0;
-  private readonly sourceUrl: string | null;
+  private sourceUrl: string | null;
+  private playbackRefreshGeneration = 0;
   private readonly sourcePurged: boolean;
   private readonly automaticLayoutSourceIdentity: string | null;
   private retainedProxy: StudioProxyDescriptor | null;
@@ -851,9 +854,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           }
           break;
         }
-        case "playback.reload":
-          this.mediaAssetKey = null;
-          break;
       }
       this.publish();
       return { accepted: true };
@@ -995,6 +995,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (operation.type === "take-over") {
       return this.takeOver();
     }
+    if (operation.type === "reload-playback") return this.reloadPlayback();
     if (operation.type === "trim") {
       if (!this.snapshot.capabilities.mutate) {
         return { kind: "unavailable", reason: "invalid-state" };
@@ -2104,6 +2105,53 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       });
     }
     if (wasPlayingInsertedScene && !pauseForEndRelocation) this.play();
+  }
+
+  private async reloadPlayback(): Promise<StudioOperationResult> {
+    const asset = this.previewSnapshot().activeAsset;
+    const generation = ++this.playbackRefreshGeneration;
+    const sessionGeneration = this.sessionGeneration;
+    const mediaGeneration = this.mediaGeneration;
+    const target = documentWindowFingerprint(this.unified.doc.present);
+    const current = () => {
+      const selected = this.previewSnapshot().activeAsset;
+      return this.projection.status === "ready" &&
+        generation === this.playbackRefreshGeneration &&
+        sessionGeneration === this.sessionGeneration &&
+        mediaGeneration === this.mediaGeneration &&
+        target === documentWindowFingerprint(this.unified.doc.present) &&
+        (asset.kind !== "proxy" || target === documentWindowFingerprint(this.cloudDocument)) &&
+        selected.kind === asset.kind && selected.url === asset.url;
+    };
+    const result = (outcome: "refreshed" | "failed" | "superseded"): StudioOperationResult => ({
+      kind: "playback-reloaded", outcome,
+    });
+    if (!current()) return result("superseded");
+    try {
+      if (asset.kind === "proxy" && this.dependencies?.preview?.fetchProxyStatus) {
+        const status = await this.dependencies.preview.fetchProxyStatus();
+        if (!current()) return result("superseded");
+        if (!status.previewUrl) return result("failed");
+        this.retainedProxy = deepFreeze({
+          url: status.previewUrl,
+          startSec: status.previewStartSec,
+          durationSec: status.previewDurationSec,
+          waveformPeaksUrl: status.waveformPeaksUrl,
+          windowFingerprint: target,
+        });
+      } else if (asset.kind === "source" && this.dependencies?.preview?.fetchSourceUrl) {
+        const source = await this.dependencies.preview.fetchSourceUrl();
+        if (!current()) return result("superseded");
+        if (!source.url) return result("failed");
+        this.sourceUrl = source.url;
+      } else return result("failed");
+    } catch {
+      return result(current() ? "failed" : "superseded");
+    }
+    // Refresh only playback access. The document, history and source-time anchor stay owned by the session.
+    this.mediaAssetKey = null;
+    this.publish();
+    return result("refreshed");
   }
 
   private bindMediaToActiveAsset(preview: StudioPreviewSnapshot): void {
