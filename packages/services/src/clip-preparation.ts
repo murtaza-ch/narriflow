@@ -2,7 +2,7 @@ import {ExecutionDispatchPendingError} from "./execution-dispatch";
 import { assertExecutionRestorePage } from "./execution-restore-pages";
 import type { ExecutionRestorePage } from "./execution-restore";
 import { createHash } from "node:crypto";
-import { Prisma, type PrismaClient, type ClipPreparation, type ExecutionArtifact } from "@prisma/client";
+import { Prisma, type PrismaClient, type ClipPreparation, type ExecutionArtifact, type RenderGroup } from "@prisma/client";
 import { executionDispatchReferenceSchema, sourceVideoBindingSchema, type ExecutionDispatchReference, type ExecutionDeadline } from "@narriflow/validators/execution";
 import { clipPreparationInputSchema, clipPreparationResultSchema, clipPreparationReadyObjectsSchema, type ClipPreparationInput, type ClipPreparationResult, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
 import { buildEditedTimeMap, clipAutoLayoutMatchesInputs, CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION } from "@narriflow/validators";
@@ -111,13 +111,16 @@ export class ClipPreparationService {
     return this.inputForGroupIdentity(tx, { id: reference.subject.id, generation: reference.generation, deploymentEpoch: epoch.epoch });
   }
 
-  private async inputForGroupIdentity(tx: Tx, identity: { id: string; generation: number; deploymentEpoch: number }) {
+  private async inputForGroupIdentity(tx: Tx, identity: { id: string; generation: number; deploymentEpoch: number }, locked?: { group: RenderGroup; projectId: string }) {
     const epoch = { epoch: identity.deploymentEpoch }, reference = { subject: { id: identity.id }, generation: identity.generation };
-    const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, include: { workflowRun: { include: { project: true } } } });
+    const initial = locked?.group ?? await tx.renderGroup.findUnique({ where: { id: reference.subject.id } });
     if (!initial) throw new ClipPreparationError("clip_preparation_input_invalid");
-    await lockWorkspaceUsage(tx, initial.workflowRun.project.workspaceId);
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.workflowRun.projectId}, 0)) IS NULL AS locked`;
-    await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${initial.workflowRun.projectId}::uuid FOR UPDATE`;
+    if (!locked) {
+      const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: initial.workflowRunId }, include: { project: true } });
+      await lockWorkspaceUsage(tx, run.project.workspaceId);
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${run.projectId}, 0)) IS NULL AS locked`;
+      await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${run.projectId}::uuid FOR UPDATE`;
+    }
     await tx.$queryRaw`SELECT id FROM "WorkflowRun" WHERE id = ${initial.workflowRunId}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "RenderGroup" WHERE id = ${initial.id}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "Clip" WHERE id = ${initial.clipId}::uuid FOR UPDATE`;
@@ -125,7 +128,7 @@ export class ClipPreparationService {
     const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: initial.id }, include: { workflowRun: true, members: { orderBy: { clipRenderId: "asc" } } } });
     const project = await tx.project.findFirst({ where: { id: group.workflowRun.projectId, ...accessibleProjectWhere(clock), workspace: { status: "active" } } });
     const clip = await tx.clip.findFirst({ where: { id: group.clipId, projectId: group.workflowRun.projectId } });
-    if (!project || !clip || project.ingestStatus !== "ready" || !project.sourceStorageKey || group.deploymentEpoch !== epoch.epoch || group.generation !== reference.generation ||
+    if (!project || !clip || (locked && project.id !== locked.projectId) || project.ingestStatus !== "ready" || !project.sourceStorageKey || group.deploymentEpoch !== epoch.epoch || group.generation !== reference.generation ||
       group.workflowRun.deploymentEpoch !== epoch.epoch || group.workflowRun.stage !== "clip_rendering" || !["waiting", "queued"].includes(group.workflowRun.status) ||
       group.workflowRun.leaseOwner || group.workflowRun.attemptId || !["queued", "running"].includes(group.status) ||
       group.members.length === 0 || group.members.some(member => member.invalidatedAt !== null)) throw new ClipPreparationError("clip_preparation_input_invalid");
@@ -226,32 +229,38 @@ export class ClipPreparationService {
 
   private async lockPreparation(tx: Tx, reference: ExecutionDispatchReference) {
     const record = await readExecutionDispatch(tx, reference.dispatchId);
-    const epoch = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
-    if (reference.subject.kind !== "clip_preparation" || !["operation_driver", "modal_execution"].includes(reference.kind) || reference.deploymentEpoch !== epoch.epoch ||
+    const [initial] = await tx.$queryRaw<Array<Pick<ClipPreparation, "id" | "projectId" | "inputHash" | "generation" | "deploymentEpoch"> & { workspaceId: string; currentEpoch: number }>>`
+      SELECT preparation.id, preparation."projectId", preparation."inputHash", preparation.generation, preparation."deploymentEpoch", project."workspaceId", epoch.epoch AS "currentEpoch"
+      FROM "ClipPreparation" preparation JOIN "Project" project ON project.id = preparation."projectId"
+      CROSS JOIN "ExecutionEpoch" epoch WHERE preparation.id = ${reference.subject.id}::uuid AND epoch.id = 1`;
+    if (reference.subject.kind !== "clip_preparation" || !["operation_driver", "modal_execution"].includes(reference.kind) || !initial || reference.deploymentEpoch !== initial.currentEpoch ||
       !record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
-    const initial = await tx.clipPreparation.findUnique({ where: { id: reference.subject.id }, include: { project: true } });
-    if (!initial || initial.inputHash !== reference.inputHash || initial.generation !== reference.generation || initial.deploymentEpoch !== reference.deploymentEpoch) return null;
-    await lockWorkspaceUsage(tx, initial.project.workspaceId);
+    if (initial.inputHash !== reference.inputHash || initial.generation !== reference.generation || initial.deploymentEpoch !== reference.deploymentEpoch) return null;
+    await lockWorkspaceUsage(tx, initial.workspaceId);
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.projectId}, 0)) IS NULL AS locked`;
     await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${initial.projectId}::uuid FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "ClipPreparation" WHERE id = ${initial.id}::uuid FOR UPDATE`;
-    const job = await tx.clipPreparation.findUnique({ where: { id: initial.id } });
+    const [job] = await tx.$queryRaw<ClipPreparation[]>`SELECT * FROM "ClipPreparation" WHERE id = ${initial.id}::uuid FOR UPDATE`;
     if (!job || job.inputHash !== reference.inputHash || job.generation !== reference.generation || job.deploymentEpoch !== reference.deploymentEpoch) return null;
-    return { job, record, clock: await now(tx) };
+    return { job, record };
   }
 
   private async currentInput(tx: Tx, job: ClipPreparation): Promise<ClipPreparationInput | null> {
     // Exports retain their snapshot while ordinary groups follow the live Clip.
     // Prefer an export when a later edit made an ordinary group obsolete.
     const groups = await tx.renderGroup.findMany({ where: { preparationId: job.id, deploymentEpoch: job.deploymentEpoch, status: { in: ["queued", "running"] },
-      workflowRun: { status: { in: ["queued", "waiting"] } }, members: { some: { invalidatedAt: null } } }, orderBy: [{ exportIdentity: "desc" }, { id: "asc" }], take: 100 });
+      workflowRun: { projectId: job.projectId, status: { in: ["queued", "waiting"] } }, members: { some: { invalidatedAt: null } } }, orderBy: [{ exportIdentity: "desc" }, { id: "asc" }], take: 100 });
     for (const group of groups) {
       const base = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: job.deploymentEpoch, kind: "operation_driver", subjectKind: "render_group", subjectId: group.id,
         generation: group.generation, wakeKind: null, deadlineKind: null }, select: { id: true } });
       if (!base) throw new ClipPreparationError("clip_preparation_unavailable", job.id);
       const record = await readExecutionDispatch(tx, base.id);
       try {
-        const state = record ? await this.inputForGroup(tx, record.reference) : null;
+        if (record && (record.reference.kind !== "operation_driver" || record.reference.subject.kind !== "render_group" || record.reference.subject.id !== group.id ||
+          record.reference.generation !== group.generation || record.reference.deploymentEpoch !== job.deploymentEpoch)) throw new ClipPreparationError("clip_preparation_input_invalid");
+        // lockPreparation already holds the current epoch, Workspace and
+        // Project authority. Keep this candidate's fresh row locks and reads,
+        // without recursively rereading the same dispatch and parent locks.
+        const state = record ? await this.inputForGroupIdentity(tx, { id: group.id, generation: group.generation, deploymentEpoch: job.deploymentEpoch }, { group, projectId: job.projectId }) : null;
         if (state?.input.preparationId === job.id && state.input.bindingHash === job.bindingHash && state.input.engineHash === job.engineHash) return state.input;
       } catch (error) {
         if (!(error instanceof ClipPreparationError && error.code === "clip_preparation_input_invalid")) throw error;
@@ -329,8 +338,9 @@ export class ClipPreparationService {
     const { job } = state;
     if (["completed", "failed", "superseded"].includes(job.status)) return { kind: "terminal", disposition: job.status === "failed" ? { disposition: "failed", failureCode: job.errorCode ?? "clip_preparation_failed" }
       : { disposition: job.status === "completed" ? "completed" : "superseded" }, dispatchIds: await this.wakeGroups(tx, job) };
-    const input = await this.currentInput(tx, job), clock = await now(tx);
+    const input = await this.currentInput(tx, job);
     if (!input) {
+      const clock = await now(tx);
       await this.revoke(tx, job, clock, "clip_preparation_superseded");
       const ended = await tx.clipPreparation.update({ where: { id: job.id }, data: { status: "superseded", executorOwner: null, leaseExpiresAt: null, completedAt: clock, errorCode: "clip_preparation_superseded" } });
       return { kind: "terminal", disposition: { disposition: "superseded" }, dispatchIds: await this.wakeGroups(tx, ended) };
@@ -338,7 +348,7 @@ export class ClipPreparationService {
     return { kind: "current", ref: { id: job.id, attemptToken, input } };
   }
 
-  private async owned(tx: Tx, ref: ClipPreparationExecutionReference, context: ExecutorMutationContext) {
+  private async owned(tx: Tx, ref: ClipPreparationExecutionReference, context: Omit<ExecutorMutationContext, "now">) {
     const clock = await now(tx);
     const job = await tx.clipPreparation.findFirst({ where: { id: ref.id, status: "running", attemptToken: context.attemptToken, executorOwner: context.owner,
       generation: context.reference.generation, deploymentEpoch: context.reference.deploymentEpoch, inputHash: context.reference.inputHash, leaseExpiresAt: { gt: clock }, operationDeadlineAt: { gt: clock } } });
@@ -470,7 +480,7 @@ export class ClipPreparationService {
    * authority transaction. No capsule/provider I/O or second authority lookup. */
   async workInputWithinAuthority(tx: Tx, authority: ExecutorLiveAuthority, ref: ClipPreparationExecutionReference) {
     const fence = authority.fence;
-    await this.owned(tx, ref, { ...fence, reference: fence.reference, now: await now(tx), leaseExpiresAt: authority.leaseExpiresAt,
+    await this.owned(tx, ref, { ...fence, reference: fence.reference, leaseExpiresAt: authority.leaseExpiresAt,
       operationDeadlineAt: authority.operationDeadlineAt, functionName: authority.functionName });
     return { inputHash: fence.reference.inputHash, source: ref.input.source, outputs: [
       { role: "clip_preview" as const, bindingHash: ref.input.bindingHash, contentType: "video/mp4", maxBytes: 512 * 1024 ** 2 },

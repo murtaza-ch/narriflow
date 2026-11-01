@@ -145,7 +145,9 @@ suite("Clip Preparation authority and publication", () => {
     const admitted = await f.service.admitForGroup(f.references[0]!);
     const prepared = await f.service.prepareExecution((await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference);
     if (prepared.kind !== "waiting") throw Error("Missing preparation");
-    const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 3000, maxWait: 1000 } });
+    const queries: string[] = [];
+    const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 3000, maxWait: 1000 }, log: [{ emit: "event", level: "query" }] });
+    single.$on("query", event => queries.push(event.query));
     const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
     try {
       const service = new ClipPreparationService(single, { toolchainFingerprint: "e".repeat(64), engineHash: await clipPreparationEngineHash("e".repeat(64)),
@@ -155,10 +157,24 @@ suite("Clip Preparation authority and publication", () => {
       const verified = () => ({ requestHash: "a".repeat(64), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const, method: "POST" as const,
         canonicalTarget: "/api/execution/transfer", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: crypto.randomUUID(), signature: "0".repeat(64) } });
       const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: crypto.randomUUID() };
+      queries.length = 0;
       await factory.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: verified() });
+      const acquireQueries = queries.length;
       const before = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
       const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } });
       const requests = Array.from({ length: 6 }, verified), request = requests[0]!, command = { action: "work-package", fence };
+      queries.length = 0;
+      await factory.transfer.execute({ command, verifiedRequest: request });
+      const startupQueries = queries.length;
+      console.warn(JSON.stringify({ level: "info", message: "preparation_work_package_queries", count: startupQueries,
+        dispatchReads: queries.filter(query => query.startsWith("SELECT") && query.includes('"ExecutionDispatch"')).length,
+        epochReads: queries.filter(query => query.startsWith("SELECT") && query.includes('"ExecutionEpoch"')).length }));
+      // This startup path previously issued 64 statements. Keep its serial
+      // database work bounded without relaxing any authority or expiry check.
+      expect(startupQueries).toBeLessThanOrEqual(52);
+      queries.length = 0;
+      await factory.transfer.execute({ command, verifiedRequest: request });
+      const replayQueries = queries.length;
       const results = await Promise.all(requests.map(verifiedRequest => factory.transfer.execute({ command, verifiedRequest })));
       const first = results[0];
       if (first?.disposition !== "work_package" || first.input.kind !== "object") throw Error("Missing sealed package grant");
@@ -172,8 +188,17 @@ suite("Clip Preparation authority and publication", () => {
       expect(await db.executionArtifact.count({ where: { attemptToken: fence.attemptToken } })).toBe(3);
       const sourceRead = { action: "source-read", fence, sourceId: "original" };
       await expect(factory.transfer.execute({ command: sourceRead, verifiedRequest: verified() })).rejects.toMatchObject({ code: "authority_lost" });
+      queries.length = 0;
       await factory.control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() });
+      const processStartQueries = queries.length;
+      queries.length = 0;
       expect((await factory.transfer.execute({ command: sourceRead, verifiedRequest: verified() })).disposition).toBe("source_read");
+      const sourceReadQueries = queries.length;
+      expect(sourceReadQueries).toBeLessThanOrEqual(36);
+      queries.length = 0;
+      await factory.control.execute({ command: { action: "renew", fence, leaseSeconds: 120 }, verifiedRequest: verified() });
+      console.warn(JSON.stringify({ level: "info", message: "preparation_control_query_counts", acquire: acquireQueries,
+        firstWorkPackage: startupQueries, replayWorkPackage: replayQueries, processStart: processStartQueries, sourceRead: sourceReadQueries, renew: queries.length }));
       await db.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
       await expect(factory.transfer.execute({ command, verifiedRequest: request })).rejects.toMatchObject({ code: "authority_lost" });
       expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).operationDeadlineAt).toEqual(before.operationDeadlineAt);

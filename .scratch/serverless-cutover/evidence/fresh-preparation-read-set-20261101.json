@@ -1,0 +1,48 @@
+{
+  "status": "local_regression_passed_deployed_latency_unmeasured",
+  "baseCommit": "b58f35996f83b9dc11228fd8d62876bf439305f5",
+  "runtime": "Bun 1.3.6",
+  "target": "Disposable schemas in the dedicated localhost:55432 test database; no cloud calls",
+  "seam": "Production createClipPreparationExecution control and transfer, PrismaPg max:1",
+  "red": {
+    "code": "Unmodified base implementation",
+    "firstWorkPackageSqlStatements": 64,
+    "assertedMaximum": 52,
+    "result": "22 pass, 1 expected query-budget failure",
+    "log": "/tmp/narriflow-fresh-preparation-final-red.log"
+  },
+  "optimizedSqlStatements": {
+    "acquire": 39,
+    "firstWorkPackage": 50,
+    "exactReplayWorkPackage": 44,
+    "processStart": 37,
+    "sourceReadAfterProcessStart": 34,
+    "renew": 37
+  },
+  "changes": [
+    "Current input validation retains candidate order, export preference and the 100-candidate bound without recursively rereading the stored dispatch and parent locks",
+    "Preparation, Workspace identity and current epoch are located in one query; the preparation row lock returns the fresh row",
+    "Unused database-clock reads are removed; fresh accessibility, ownership and final grant-expiry clocks remain",
+    "Source, editor, export, membership, retention, active Workspace and canonical binding checks remain inside the current transaction"
+  ],
+  "verification": {
+    "relatedDatabaseSuites": "Final code: 49 pass, 0 fail, 392 assertions across clip-preparation, clip-preparation-ledger, execution-transfer and executor-control",
+    "finalProductionSeam": "23 pass, 0 fail, including exact replay after edit, frozen export, source replacement, expiry and one-connection concurrent grants",
+    "servicesTypecheck": "passed",
+    "repositoryBiome": "passed with existing warnings",
+    "logs": [
+      "/tmp/narriflow-fresh-preparation-green.log",
+      "/tmp/narriflow-fresh-preparation-final-green.log",
+      "/tmp/narriflow-fresh-preparation-counts-green.log",
+      "/tmp/narriflow-fresh-preparation-release-green.log",
+      "/tmp/narriflow-fresh-preparation-typecheck.log",
+      "/tmp/narriflow-fresh-preparation-lint.log"
+    ]
+  },
+  "limits": [
+    "SQL counts include BEGIN, COMMIT and cleanup work; they are not measured network milliseconds",
+    "The first-package reduction is 64 to 50 statements, about 22 percent; no deployed latency improvement is claimed",
+    "Source reads still require 34 statements per fresh grant, and ScopedSourceServer requests one grant per uncached range",
+    "No authority, lease, deadline, retry budget, charged history or timeout was widened or reset"
+  ]
+}
