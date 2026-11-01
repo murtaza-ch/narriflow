@@ -30,7 +30,7 @@ import {
 } from "./media-cleanup";
 import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { collectExecutionDispatch, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
+import { collectExecutionDispatch, hasExecutionDispatchCollector, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { finalizeGenerationUsage, releaseFailedDubUsage, lockGenerationUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
@@ -354,7 +354,7 @@ export class WorkflowRunLifecycle {
           progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)];
           return result;
         });
-        if (progressDeliveryPort()) await deliverExecutionDispatches(progressDispatchIds);
+        if (progressDeliveryPort() && !hasExecutionDispatchCollector()) await deliverExecutionDispatches(progressDispatchIds);
         if (result !== null && typeof result === "object" && "dispatchIds" in result && Array.isArray(result.dispatchIds)) {
           return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...progressDispatchIds])] };
         }
@@ -608,7 +608,15 @@ export class WorkflowRunLifecycle {
     return admission;
   }
 
-  async handoffClipExportWithinTransaction(tx: TransactionClient, exportId: string, workspaceId: string) {
+  async handoffClipExportWithinTransaction(tx: TransactionClient, exportId: string, workspaceId: string,
+    acceptedReceipt?: { id: string; actorUserId: string }) {
+    // Recovery authority is the committed, authenticated receipt's exact tuple,
+    // not an admission bypass flag or the mere existence of a pending export.
+    const receipt = acceptedReceipt ? await tx.operationReceipt.findFirst({ where: {
+      id: acceptedReceipt.id, actorUserId: acceptedReceipt.actorUserId, workspaceId,
+      command: "create_clip_export", resourceType: "clip_export", resourceId: exportId,
+    }, select: { id: true } }) : null;
+    if (acceptedReceipt && !receipt) throw new Error("render_receipt_recovery_invalid");
     const initial = await tx.clipExport.findFirst({ where: { id: exportId, workspaceId, project: { ...accessibleProjectWhere(), workspace: { status: "active" } } }, select: { projectId: true } });
     if (!initial) throw new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "Project not found" });
     const admission = await this.lockRenderAdmissionWithinTransaction(tx, initial.projectId, workspaceId);
@@ -633,11 +641,17 @@ export class WorkflowRunLifecycle {
     }
     const epoch = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
     if (exported.retryCount === 0 && exported.createdAt < epoch.changedAt) throw new Error("render_admission_epoch_superseded");
+    // An explicit retry's recorded parent owns its budget. Another live run
+    // for this Project is not proof that the missing retry handoff survived.
+    if (exported.retryCount !== 0 && (!exported.workflowRunId || !await tx.workflowRun.findFirst({ where: {
+      id: exported.workflowRunId, projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
+      status: { in: ["queued", "running", "waiting"] },
+    }, select: { id: true } }))) throw new Error("render_retry_handoff_missing");
     const active = await tx.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } } });
     if (active && active.deploymentEpoch !== admission.epoch) throw new Error("render_admission_epoch_superseded");
     let run = active;
     if (!run) {
-      assertExecutionAdmissionOpen(admission);
+      if (!receipt) assertExecutionAdmissionOpen(admission);
       // Explicit retry admission owns its own budget. A missing retry parent
       // cannot be reconstructed from the original export acceptance timestamp.
       if (exported.retryCount !== 0) throw new Error("render_retry_handoff_missing");

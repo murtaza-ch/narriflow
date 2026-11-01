@@ -8,6 +8,9 @@ type Tx = Prisma.TransactionClient;
 const invocation = new AsyncLocalStorage<Set<string>>();
 const transactionIds = new WeakMap<Tx, Set<string>>();
 
+/** An invocation owns its aftercommit flush and the resulting safe receipt. */
+export function hasExecutionDispatchCollector(): boolean { return invocation.getStore() !== undefined; }
+
 export function collectExecutionDispatch(tx: Tx, id: string): void {
   let ids = transactionIds.get(tx);
   if (!ids) { ids = new Set(); transactionIds.set(tx, ids); }
@@ -53,6 +56,11 @@ export function executionRegistrationReceipt(value: unknown): ExecutionRegistrat
   for (const key of ["sessionId", "uploadId", "projectId", "queuedJobId", "ingestJobId", "workflowRunId", "taskId", "receiptId", "exportId"] as const) {
     const id = [root[key], httpData[key], upload[key], data[key], key === "projectId" ? lineage.projectId : key === "exportId" ? record(root.export).id ?? record(httpData.export).id ?? record(data.export).id : undefined].find(uuid);
     if (id) receipt[key] = id;
+  }
+  if (!receipt.exportId) {
+    const snapshot = [root, httpData, data].find(item => uuid(item.id) && uuid(item.clipId) && uuid(item.projectId) &&
+      Number.isSafeInteger(item.editorRevision) && Array.isArray(item.variants) && ["queued", "rendering", "partial_ready", "ready", "failed"].includes(String(item.status)));
+    if (snapshot) receipt.exportId = snapshot.id as string;
   }
   const operationId = [root.operationId, httpData.operationId, data.operationId, record(root.operation).operationId, record(upload.operation).operationId].find(id => uuid(id) || typeof id === "string" && id.length === 26 && /^op_[A-Za-z0-9_-]{23}$/.test(id));
   if (typeof operationId === "string") receipt.operationId = operationId;

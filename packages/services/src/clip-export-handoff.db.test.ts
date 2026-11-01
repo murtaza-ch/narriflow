@@ -150,4 +150,35 @@ suite("Clip Export atomic scheduler handoff", () => {
     expect(await db.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(0);
   }));
 
+  test("closed admission recovers only the exact already accepted receipt and preserves its original budget", () => scoped(async () => {
+    const f = await fixture(), old = await orphan(f), fresh = await fixture();
+    await db.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+    try {
+      let deliveries = 0;
+      const replay = await withExecutionDispatches(f.create, { database: db, deliver: async ids => { expect(ids.length).toBeGreaterThan(0); deliveries++; } });
+      expect(replay).toMatchObject({ replayed: true, receiptId: old.accepted.receiptId, export: { id: old.exported.id } });
+      const exported = await db.clipExport.findUniqueOrThrow({ where: { id: old.exported.id } });
+      const run = await db.workflowRun.findUniqueOrThrow({ where: { id: exported.workflowRunId! } });
+      expect(run.operationDeadlineAt?.getTime()).toBe(old.exported.createdAt.getTime() + 45 * 60_000);
+      expect(run.attemptCount).toBe(0);
+      await expect(db.$transaction(tx => f.lifecycle.handoffClipExportWithinTransaction(tx, old.exported.id, f.workspace.id, { id: old.accepted.receiptId, actorUserId: fresh.user.id }))).rejects.toThrow("render_receipt_recovery_invalid");
+      await withExecutionDispatches(f.create, { database: db, deliver: async ids => { expect(ids.length).toBeGreaterThan(0); deliveries++; } });
+      expect(deliveries).toBe(2);
+      expect(await db.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toEqual(run);
+      await expect(fresh.create()).rejects.toMatchObject({ code: "execution_admission_closed" });
+      expect(await db.clipExport.count({ where: { clipId: fresh.clip.id } })).toBe(0);
+    } finally { await db.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } }); }
+  }));
+
+  test("a lost explicit-retry parent cannot borrow an unrelated active run or its budget", () => scoped(async () => {
+    const f = await fixture(), old = await orphan(f);
+    await db.clipExport.update({ where: { id: old.exported.id }, data: { retryCount: 1 } });
+    const unrelated = await f.lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "unrelated" });
+    const before = await db.workflowRun.findUniqueOrThrow({ where: { id: unrelated.id } });
+    await expect(f.create()).rejects.toThrow("render_retry_handoff_missing");
+    expect(await db.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id } })).toMatchObject({ workflowRunId: null, status: "pending" });
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: unrelated.id } })).toEqual(before);
+    expect(await db.renderGroup.count({ where: { workflowRunId: unrelated.id } })).toBe(0);
+  }));
+
 });

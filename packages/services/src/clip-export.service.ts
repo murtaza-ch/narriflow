@@ -939,6 +939,10 @@ export class ClipExportService {
     if (!owned) throw new ClipExportError("export_not_found", "Export not found");
     const failed = owned.variants.filter((variant) => variant.status === "failed");
     if (failed.length === 0) {
+      // The prior retry may have committed before scheduler confirmation failed.
+      await new WorkflowRunLifecycle({ prisma }).retryFailedClipExport({
+        beforeMutation, projectId, exportId, expectedRetryCount: owned.retryCount, variantIds: [],
+      });
       return this.getOwned(scope, projectId, clipId, exportId);
     }
     const frozenSnapshot = failed.find((variant) => variant.render)?.render?.clipSnapshot;

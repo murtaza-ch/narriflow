@@ -13,6 +13,7 @@ import {NarriflowMcpServer} from '@narriflow/mcp-core/server';
 import {installNarriflowTasks} from '@narriflow/mcp-core/tasks';
 import {createMcpHandler} from '@modelcontextprotocol/server';
 import {z} from 'zod';
+import {RenderFixtureLifecycle} from '@narriflow/services/render-group-test-fixture';
 import {clipExportService} from '@narriflow/services/clip-export.service';
 import {createExportsRoutes} from './domains/exports/routes';
 import {createRequestPolicyRuntime} from './http/request-policy-runtime';
@@ -106,6 +107,20 @@ suite('Worker postcommit registration boundary',()=>{
   await f.due();f.succeed();const confirmed=barrier();f.confirm(confirmed.promise);let finished=false;
   const replay=worker.fetch(request(),f.bindings,context).then(async response=>{const body=await response.text();finished=true;return wire(body);});
   expect(await Promise.race([f.entered.promise.then(()=> 'registering'),replay.then(()=> 'premature_result')])).toBe('registering');expect(finished).toBe(false);confirmed.release();const replayed=await replay;expect(replayed.error).toBeUndefined();expect(replayed.result.taskId).toBe(task.id);expect(await db.mcpTask.count({where:{domainId:exported.id}})).toBe(1);expect(await db.clipExport.findUniqueOrThrow({where:{id:exported.id}})).toEqual(exported);
+ });
+
+ test('actual retry route sequential replay recollects the committed retry run before a positive response',async()=>{
+  const f=await exportFixture(),accepted=await scope(f.create),lifecycle=new RenderFixtureLifecycle({prisma:db});
+  await scope(async()=>{const exported=await db.clipExport.findUniqueOrThrow({where:{id:accepted.export.id}}),parent=await lifecycle.renderParent(exported.workflowRunId!),member=await db.clipRender.findFirstOrThrow({where:{clipId:f.clip.id}});await lifecycle.failClipRenderVariant(parent,member.id,'render_output_invalid','permanent');await lifecycle.settleRenderWorkSet(parent);});
+  const policyRuntime=createRequestPolicyRuntime({authenticate:async()=>({status:'authenticated',identity:{clerkUserId:f.user.clerkId,sessionId:'fixture'}} as never),loadAppUser:async()=>f.user as never,resolveScopedWorkspace:async()=>({userId:f.user.id,workspaceId:f.workspace.id,workspaceName:'Fixture',workspaceOwnerUserId:f.user.id,role:'owner',status:'active',pricingTier:'creator',isPersonal:false,workspaceSelectionChanged:false}),staffAllowlist:new Set(),policy:{resolveProject:async()=>({kind:'active',projectId:f.opened.projectId}),rateLimit:async()=>({allowed:true,availability:'available',retryAfterSeconds:1,limit:12,remaining:11}),now:()=>1000}});
+  const worker=createApiWorker({createScope:f.createScope,createApp:()=>createInventoryApp({policyRuntime,domains:{exports:createExportsRoutes({clipExportService} as never)}})});
+  const request=()=>new Request(`https://api.test/api/projects/${f.opened.projectId}/clips/${f.clip.id}/exports/${accepted.export.id}/retry`,{method:'POST',headers:{'Authorization':'Bearer fixture','X-Workspace-Id':f.workspace.id}});
+  const failed=await worker.fetch(request(),f.bindings,context);expect(failed.status).toBe(503);expect(await failed.json()).toMatchObject({error:'scheduler_registration_pending',details:{receipt:{exportId:accepted.export.id,operation:{kind:'export',id:accepted.export.id}}}});
+  const exported=await db.clipExport.findUniqueOrThrow({where:{id:accepted.export.id}}),run=await db.workflowRun.findUniqueOrThrow({where:{id:exported.workflowRunId!}}),render=await db.clipRender.findFirstOrThrow({where:{clipId:f.clip.id}});
+  expect(exported.retryCount).toBe(1);await f.due();f.succeed();const confirmed=barrier();f.confirm(confirmed.promise);let finished=false;
+  const replay=worker.fetch(request(),f.bindings,context).then(async response=>{const body=await response.json();finished=true;return{status:response.status,body};});
+  try{expect(await Promise.race([f.entered.promise.then(()=> 'registering'),replay.then(()=> 'premature_result')])).toBe('registering');expect(finished).toBe(false);}finally{confirmed.release();}
+  const result=await replay;expect(result.status).toBe(202);expect(result.body.id).toBe(exported.id);expect(await db.clipExport.findUniqueOrThrow({where:{id:exported.id}})).toEqual(exported);expect(await db.workflowRun.findUniqueOrThrow({where:{id:run.id}})).toEqual(run);expect(await db.clipRender.findUniqueOrThrow({where:{id:render.id}})).toEqual(render);
  });
 
 });

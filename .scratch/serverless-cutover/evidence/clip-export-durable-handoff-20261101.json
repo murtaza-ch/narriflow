@@ -12,11 +12,36 @@
     "Registration failure retains only export/receipt or MCP Task references; confirmed replay gates positive HTTP/SDK completion"
   ],
   "verification": {
-    "red": { "tests": 1, "failure": "Create resolved without calling aftercommit registration", "privateLog": "/tmp/narriflow-export-handoff-red.log" },
-    "latestHandoffAndActualTransport": { "tests": 15, "assertions": 118, "failures": 0, "privateLog": "/tmp/narriflow-export-handoff-latest-db.log" },
-    "preparationSelectionAndWorkflowCompatibility": { "tests": 85, "assertions": 810, "failures": 0, "privateLog": "/tmp/narriflow-export-handoff-final-db.log" },
-    "existingRetryLifecycleAndFinishing": { "tests": 92, "assertions": 581, "failures": 0, "privateLog": "/tmp/narriflow-export-handoff-workflow-green.log" },
-    "receiptAllowlist": { "tests": 7, "assertions": 16, "failures": 0, "redPrivateLog": "/tmp/narriflow-export-receipt-red.log", "privateLog": "/tmp/narriflow-export-receipt-green.log" },
+    "red": {
+      "tests": 1,
+      "failure": "Create resolved without calling aftercommit registration",
+      "privateLog": "/tmp/narriflow-export-handoff-red.log"
+    },
+    "latestHandoffAndActualTransport": {
+      "tests": 15,
+      "assertions": 118,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-export-handoff-latest-db.log"
+    },
+    "preparationSelectionAndWorkflowCompatibility": {
+      "tests": 85,
+      "assertions": 810,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-export-handoff-final-db.log"
+    },
+    "existingRetryLifecycleAndFinishing": {
+      "tests": 92,
+      "assertions": 581,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-export-handoff-workflow-green.log"
+    },
+    "receiptAllowlist": {
+      "tests": 7,
+      "assertions": 16,
+      "failures": 0,
+      "redPrivateLog": "/tmp/narriflow-export-receipt-red.log",
+      "privateLog": "/tmp/narriflow-export-receipt-green.log"
+    },
     "servicesTypecheck": "pass",
     "apiTypecheck": "pass",
     "changedFilesBiome": "pass",
@@ -35,5 +60,22 @@
   "remaining": [
     "No claim of live platform success: reviewed integration, full local gates, build/import audit and paired qualification remain Root responsibilities",
     "Separate pre-existing standalone native-key alias gap: sharing an active run does not persist the alternative key; a replay after terminal can create another run. Reported to Root as a production-readiness blocker requiring separate caller/receipt mapping"
-  ]
+  ],
+  "reviewCorrections": {
+    "base": "164b4fbfbbb04aa4318b2b88a35a3171c0687432",
+    "closedRecovery": "Exact committed OperationReceipt id/actor/workspace/command/resource tuple permits already-admitted recovery while closed; fresh export admission still refuses; same deadline and zero new charge",
+    "lostRetryParent": "Exact explicit-retry parent must be live in current epoch before selecting any active Project run; unrelated active run cannot supply a new budget",
+    "sequentialRetry": "Service early-return path recollects the exact accepted retry run; active invocation collector owns aftercommit delivery so HTTP can retain its safe receipt rather than turning registration failure into HTTP500",
+    "latestRealPgAndWorkerSdk": {
+      "tests": 18,
+      "assertions": 142,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-export-handoff-all-corrections-green.log"
+    },
+    "redPrivateLogs": [
+      "/tmp/narriflow-export-handoff-closed-red.log",
+      "/tmp/narriflow-export-handoff-retry-parent-red.log",
+      "/tmp/narriflow-export-handoff-retry-route-red.log"
+    ]
+  }
 }
