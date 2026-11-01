@@ -609,6 +609,15 @@ export class WorkflowRunLifecycle {
     return admission;
   }
 
+  /** Caller holds Project admission serialization; successors have exact native lineage. */
+  private async liveRenderParentOrDrain(tx: TransactionClient, projectId: string, parentId: string | null, epoch: number): Promise<WorkflowRun | null> {
+    const parent = parentId ? await tx.workflowRun.findFirst({ where: { id: parentId, projectId, stage: "clip_rendering", deploymentEpoch: epoch } }) : null;
+    if (!parent) return null;
+    if (["queued", "running", "waiting"].includes(parent.status)) return parent;
+    return tx.workflowRun.findFirst({ where: { projectId, stage: "clip_rendering", deploymentEpoch: epoch,
+      idempotencyKey: `drain-${parent.id}`, status: { in: ["queued", "running", "waiting"] } } });
+  }
+
   async handoffClipExportWithinTransaction(tx: TransactionClient, exportId: string, workspaceId: string,
     acceptedReceipt?: { id: string; actorUserId: string }) {
     // Recovery authority is the committed, authenticated receipt's exact tuple,
@@ -646,13 +655,7 @@ export class WorkflowRunLifecycle {
     // proves that this retry handoff survived. Another active run is unrelated.
     let run: WorkflowRun | null;
     if (exported.retryCount !== 0) {
-      const parent = exported.workflowRunId ? await tx.workflowRun.findFirst({ where: {
-        id: exported.workflowRunId, projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
-      } }) : null;
-      run = parent && ["queued", "running", "waiting"].includes(parent.status) ? parent : parent ? await tx.workflowRun.findFirst({ where: {
-        projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
-        idempotencyKey: `drain-${parent.id}`, status: { in: ["queued", "running", "waiting"] },
-      } }) : null;
+      run = await this.liveRenderParentOrDrain(tx, exported.projectId, exported.workflowRunId, admission.epoch);
       if (!run) throw new Error("render_retry_handoff_missing");
     } else run = await tx.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } } });
     if (run && run.deploymentEpoch !== admission.epoch) throw new Error("render_admission_epoch_superseded");
@@ -876,10 +879,11 @@ export class WorkflowRunLifecycle {
         select: { id: true },
       });
       if (failed.length === 0) {
-        const exported = await tx.clipExport.findFirst({ where: { id: input.exportId, projectId: input.projectId }, select: { workflowRunId: true } });
-        if (exported?.workflowRunId) {
-          const run = await tx.workflowRun.findFirst({ where: { id: exported.workflowRunId, deploymentEpoch: admission.epoch, status: { in: ["queued", "running", "waiting"] } }, select: { id: true } });
+        const exported = await tx.clipExport.findFirst({ where: { id: input.exportId, projectId: input.projectId }, select: { workflowRunId: true, variants: { select: { status: true } } } });
+        if (exported) {
+          const run = await this.liveRenderParentOrDrain(tx, input.projectId, exported.workflowRunId, admission.epoch);
           if (run) await this.dispatchRunWithinTransaction(tx, run.id);
+          else if (exported.variants.some(variant => variant.status === "pending" || variant.status === "rendering")) throw new Error("render_retry_handoff_missing");
         }
         return false;
       }

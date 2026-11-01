@@ -91,5 +91,16 @@
     "failures": 0,
     "servicesTypecheck": "pass",
     "changedFilesBiome": "pass"
+  },
+  "retryRouteDrainCorrection": {
+    "base": "0b7fb4379fb62018040d10270545ae95abe059e7",
+    "behavior": "Share the exact current-epoch parent/drain resolver between original receipt recovery and sequential retry-route recovery; invoke retry route first in the queued/unfrozen drain test so pointer rebinding cannot mask missing delivery. Missing/unrelated pending lineage refuses.",
+    "redPrivateLog": "/tmp/narriflow-export-retry-drain-red.log",
+    "greenPrivateLog": "/tmp/narriflow-export-retry-drain-green.log",
+    "tests": 20,
+    "assertions": 158,
+    "failures": 0,
+    "servicesTypecheck": "pass",
+    "changedFilesBiome": "pass"
   }
 }

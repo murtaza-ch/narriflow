@@ -178,6 +178,7 @@ suite("Clip Export atomic scheduler handoff", () => {
     const unrelated = await f.lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "unrelated" });
     const before = await db.workflowRun.findUniqueOrThrow({ where: { id: unrelated.id } });
     await expect(f.create()).rejects.toThrow("render_retry_handoff_missing");
+    await expect(clipExportService.retryFailed({ workspaceId: f.workspace.id, actorUserId: f.user.id }, f.project.id, f.clip.id, old.exported.id)).rejects.toThrow("render_retry_handoff_missing");
     expect(await db.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id } })).toMatchObject({ workflowRunId: null, status: "pending" });
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: unrelated.id } })).toEqual(before);
     expect(await db.renderGroup.count({ where: { workflowRunId: unrelated.id } })).toBe(0);
@@ -211,6 +212,10 @@ suite("Clip Export atomic scheduler handoff", () => {
     const drain = await db.workflowRun.findUniqueOrThrow({ where: { id: settled.followUpWorkflowRunId! } });
     expect(drain.idempotencyKey).toBe(`drain-${active.id}`);
     expect(drain.renderWorkSetFrozenAt).toBeNull();
+    let retryDelivered: readonly string[] = [];
+    await withExecutionDispatches(() => clipExportService.retryFailed({ workspaceId: f.workspace.id, actorUserId: f.user.id }, f.project.id, f.clip.id, accepted.export.id), { database: db, deliver: async ids => { retryDelivered = ids; } });
+    expect(retryDelivered).toContain((await db.executionDispatch.findFirstOrThrow({ where: { kind: "render_run", subjectId: drain.id } })).id);
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: drain.id } })).toEqual(drain);
     let delivered: readonly string[] = [];
     const replay = await withExecutionDispatches(f.create, { database: db, deliver: async ids => { delivered = ids; } });
     expect(replay).toMatchObject({ receiptId: accepted.receiptId, replayed: true, export: { id: accepted.export.id } });
