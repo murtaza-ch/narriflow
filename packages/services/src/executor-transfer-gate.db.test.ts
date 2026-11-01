@@ -4,18 +4,64 @@ import {PrismaPg} from '@prisma/adapter-pg';
 import {DatabaseScope} from '@narriflow/db/client';
 import {withServiceEnvironment} from './runtime-environment';
 import {assertExecutionDatabaseTestTarget} from './execution-db-test-support';
-import {bindVerifiedPinGateFixture} from '../scripts/executor-r2-transfer-gate';
+import {bindVerifiedPinGateFixture,knownTransferGateArtifacts} from '../scripts/executor-r2-transfer-gate';
 import {getIngestJobLifecycle} from './ingest-job-lifecycle-runtime';
 import {prepareIngestSourceExecution} from './ingest-source-execution';
 import {resolveIngestSourceDefinition} from './ingest-source-definition';
+import {appendExecutionDispatch} from './execution-dispatch';
 const url=process.env.SERVERLESS_TEST_DATABASE_URL,suite=process.env.ALLOW_SERVERLESS_DB_TESTS==='1'?describe:describe.skip;
 suite('Regional transfer operator pin binding',()=>{
- let db:PrismaClient;
+ let db:PrismaClient;const users:string[]=[];
  beforeAll(()=>{const schema=process.env.SERVERLESS_TEST_DATABASE_SCHEMA!;assertExecutionDatabaseTestTarget(url,schema);db=new PrismaClient({adapter:new PrismaPg({connectionString:url,max:4},{schema})});});
- afterAll(async()=>{await db.$disconnect();});
+ afterAll(async()=>{
+  const workspaces=await db.workspace.findMany({where:{ownerUserId:{in:users}},select:{id:true}}),workspaceIds=workspaces.map(row=>row.id);
+  const projects=await db.project.findMany({where:{workspaceId:{in:workspaceIds}},select:{id:true}}),projectIds=projects.map(row=>row.id);
+  const jobs=await db.ingestJob.findMany({where:{projectId:{in:projectIds}},select:{id:true}}),jobIds=jobs.map(row=>row.id);
+  const events=await db.workspaceEvent.findMany({where:{workspaceId:{in:workspaceIds}},select:{id:true}});
+  const progress=await db.workflowEvent.findMany({where:{projectId:{in:projectIds}},select:{id:true}});
+  const sessions=await db.uploadSession.findMany({where:{workspaceId:{in:workspaceIds}},select:{id:true}});
+  const subjectIds=[...workspaceIds,...projectIds,...jobIds,...events.map(row=>row.id),...progress.map(row=>row.id),...sessions.map(row=>row.id)];
+  const dispatches=await db.executionDispatch.findMany({where:{subjectId:{in:subjectIds}},select:{id:true}}),ids=dispatches.map(row=>row.id);
+  await db.executionArtifact.deleteMany({where:{attempt:{dispatchId:{in:ids}}}});
+  await db.executionAttempt.deleteMany({where:{dispatchId:{in:ids}}});
+  await db.executionDispatch.deleteMany({where:{id:{in:ids}}});
+  await db.processingUsageReservation.deleteMany({where:{workspaceId:{in:workspaceIds}}});
+  await db.workspace.deleteMany({where:{id:{in:workspaceIds}}});await db.user.deleteMany({where:{id:{in:users}}});
+  expect(await db.ingestJob.count({where:{projectId:{in:projectIds}}})).toBe(0);
+  await db.$disconnect();
+ });
+ test('all exact known producer generations include six assignments and exclude a foreign job',async()=>{
+  const epoch=(await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).epoch,user=await db.user.create({data:{clerkId:crypto.randomUUID()}});users.push(user.id);
+  const workspace=await db.workspace.create({data:{name:'Producer enumeration',ownerUserId:user.id}});
+  const project=async()=>db.project.create({data:{workspaceId:workspace.id,createdByUserId:user.id,title:'Exact producer',sourceMediaUrl:'r2://fixture/source'}});
+  const uploadProject=await project(),pinProject=await project(),foreignProject=await project();
+  const job=async(projectId:string,generation=1)=>db.ingestJob.create({data:{projectId,jobType:'upload_finalize',payload:{},deploymentEpoch:epoch,generation,status:'failed',attemptCount:generation}});
+  const upload=await job(uploadProject.id),pin=await job(pinProject.id,2),foreign=await job(foreignProject.id);
+  const producer=async(subject:typeof upload,generation:number)=>{
+   const appended=await db.$transaction(tx=>appendExecutionDispatch(tx,{deploymentEpoch:epoch,generation,kind:'modal_execution',subject:{kind:'ingest_job',id:subject.id},inputHash:'a'.repeat(64),dueAt:new Date()}));
+   const attemptToken=crypto.randomUUID(),owner=crypto.randomUUID(),now=new Date();
+   await db.executionAttempt.create({data:{attemptToken,dispatchId:appended.reference.dispatchId,deploymentEpoch:epoch,generation,inputHash:appended.reference.inputHash,functionName:'pin_source',status:'failed',owner,
+    operationDeadlineAt:new Date(now.getTime()+600000),leaseExpiresAt:new Date(now.getTime()+120000),processStartedAt:now,finishedAt:now}});
+   for(const role of ['source_video','source_audio'] as const)await db.executionArtifact.create({data:{id:crypto.randomUUID(),attemptToken,owner,role,bindingHash:(role==='source_video'?'b':'c').repeat(64),storageKey:`execution/${epoch}/${attemptToken}/${owner}/${role}`,contentType:role==='source_video'?'application/octet-stream':'audio/mp4',maxBytes:10737418240n,grantExpiresAt:new Date(now.getTime()+60000)}});
+   return {reference:appended.reference,attemptToken};
+  };
+  const firstUpload=await producer(upload,1),firstPin=await producer(pin,1),retryPin=await producer(pin,2);await producer(foreign,1);
+  const journal={version:1 as const,epoch,expectedHost:'fixture.aws.neon.tech',expectedDatabase:'fixture',userId:user.id,workspaceId:workspace.id,uploadSessionId:crypto.randomUUID(),upload:{jobId:upload.id,projectId:uploadProject.id,invocation:firstUpload},pin:{jobId:pin.id,projectId:pinProject.id,invocation:firstPin}};
+  const artifacts=await knownTransferGateArtifacts(db,journal);
+  expect(artifacts).toHaveLength(6);
+  expect(artifacts.filter(row=>row.attemptToken===retryPin.attemptToken)).toHaveLength(2);
+  expect(artifacts.every(row=>row.attempt.dispatch.subjectId===upload.id||row.attempt.dispatch.subjectId===pin.id)).toBe(true);
+  expect(artifacts.filter(row=>row.attempt.dispatch.subjectId===pin.id).every(row=>row.projectId===pinProject.id)).toBe(true);
+  await expect(knownTransferGateArtifacts(db,{...journal,userId:crypto.randomUUID()})).rejects.toThrow('gate_assignment_scope_invalid');
+  await expect(knownTransferGateArtifacts(db,{...journal,epoch:epoch+1})).rejects.toThrow('gate_assignment_scope_invalid');
+  await expect(knownTransferGateArtifacts(db,{...journal,pin:{...journal.pin,projectId:foreignProject.id}})).rejects.toThrow('gate_assignment_scope_invalid');
+  for(let generation=3;generation<=16;generation++)await producer(pin,generation);
+  await expect(knownTransferGateArtifacts(db,journal)).rejects.toThrow('gate_assignment_scope_invalid');
+ });
  test('the real Upload Session handoff freezes its verified source and prepares one uncharged pin attempt on replay',async()=>{
   const id=()=>crypto.randomUUID(),epoch=await db.executionEpoch.findUniqueOrThrow({where:{id:1}}),user=await db.user.create({data:{clerkId:id()}}),workspace=await db.workspace.create({data:{name:'Pin binding fixture',ownerUserId:user.id,pricingTier:'business',members:{create:{userId:user.id,role:'owner'}}}});
   const journal={version:1 as const,epoch:epoch.epoch,expectedHost:'fixture.aws.neon.tech',expectedDatabase:'fixture',userId:user.id,workspaceId:workspace.id,uploadSessionId:id(),upload:{projectId:id(),jobId:id()},pin:{projectId:id(),jobId:id()}};
+  users.push(user.id);
   const source={id:id(),storageKey:`execution/${epoch.epoch}/${id()}/${id()}/${id()}`,etag:'"measured-source"',contentType:'application/octet-stream',multipartUploadId:'closed-source-fixture-mpu'};
   await withServiceEnvironment({MEDIA_FETCH_TOOLCHAIN_FINGERPRINT:'f'.repeat(64),R2_BUCKET:'narriflow-dev'},()=>new DatabaseScope({createClient:()=>({client:db,dispose:async()=>{}})}).run(async()=>{
    const [clock]=await db.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;

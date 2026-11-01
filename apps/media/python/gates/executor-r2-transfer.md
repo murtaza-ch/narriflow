@@ -118,6 +118,15 @@ failed test fixtures and no committed source-video artifact. Record each phase's
 RSS and traced allocation peak. Cgroup memory metrics are container-lifetime
 upper bounds and can include a previous invocation in a reused container.
 
+Status and cleanup enumerate every bounded producer attempt for the journal's
+exact two job/project IDs, actor, workspace and epoch, including automatic retry
+generations. The original invocation token is not a complete producer inventory.
+Cleanup derives each artifact's Project from its attempt's subject ID. More than
+16 attempts or16 assigned outputs per attempt is a refusal requiring inspection;
+no result page is silently truncated and no unknown storage key is discovered.
+All discovered owners must be terminal and every grant/deadline hold must drain
+before the existing exact-key production cleanup path runs.
+
 An uncommitted assigned artifact from another Project is not a normal browser
 upload source. Its cleanup hold does not become longer solely because this
 test creates an Upload Session for it. The combined deadline keeps this fixture

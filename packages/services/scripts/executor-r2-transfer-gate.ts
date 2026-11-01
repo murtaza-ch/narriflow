@@ -138,6 +138,29 @@ export async function bindVerifiedPinGateFixture(db:PrismaClient,journal:Journal
 }
 
 
+export async function knownTransferGateArtifacts(db: PrismaClient, journal: Journal) {
+  validateJournal(journal);
+  const phases = [journal.upload, journal.pin], maximumAttempts = 16, maximumArtifacts = maximumAttempts * 16;
+  const workspace = await db.workspace.findUnique({ where: { id: journal.workspaceId }, select: { ownerUserId: true } });
+  if (workspace?.ownerUserId !== journal.userId || phases.some(phase => phase.invocation &&
+      (phase.invocation.reference.subject.kind !== "ingest_job" || phase.invocation.reference.subject.id !== phase.jobId || phase.invocation.reference.deploymentEpoch !== journal.epoch))) code("gate_assignment_scope_invalid");
+  const jobs = await db.ingestJob.findMany({ where: { id: { in: phases.map(phase => phase.jobId) } }, take: 3,
+    include: { project: { select: { workspaceId: true, createdByUserId: true } } } });
+  if (jobs.length > 2 || jobs.some(job => job.projectId !== phases.find(phase => phase.jobId === job.id)?.projectId || job.deploymentEpoch !== journal.epoch ||
+      job.project.workspaceId !== journal.workspaceId || job.project.createdByUserId !== journal.userId)) code("gate_assignment_scope_invalid");
+  const producers = await db.executionAttempt.findMany({ where: { deploymentEpoch: journal.epoch,
+    dispatch: { subjectKind: "ingest_job", subjectId: { in: jobs.map(job => job.id) }, deploymentEpoch: journal.epoch } }, take: maximumAttempts + 1,
+    include: { dispatch: true } });
+  if (producers.length > maximumAttempts || producers.some(attempt => attempt.dispatch.generation !== attempt.generation || attempt.generation > jobs.find(job => job.id === attempt.dispatch.subjectId)!.generation)) code("gate_assignment_scope_invalid");
+  const rows = await db.executionArtifact.findMany({ where: { attemptToken: { in: producers.map(attempt => attempt.attemptToken) } }, take: maximumArtifacts + 1,
+    include: { attempt: { include: { dispatch: true } } } });
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.attemptToken, (counts.get(row.attemptToken) ?? 0) + 1);
+  if (rows.length > maximumArtifacts || [...counts.values()].some(count => count > 16) || rows.some(row => row.owner !== row.attempt.owner ||
+      !row.storageKey.startsWith(`execution/${journal.epoch}/${row.attemptToken}/${row.owner}/`))) code("gate_assignment_scope_invalid");
+  return rows.map(row => ({ ...row, projectId: jobs.find(job => job.id === row.attempt.dispatch.subjectId)!.projectId }));
+}
+
 export async function main() {
   const options = argumentsForGate(), rawUrl = process.env.DIRECT_URL ?? "";
   if (!rawUrl || process.env.DATABASE_URL !== rawUrl) code("gate_direct_urls_must_match");
@@ -229,9 +252,8 @@ export async function main() {
         await save(`${options.journalPath}.pin-arguments.json`, { invocation: journal.pin.invocation, budget, source: receipt });
         return;
       }
-      const phases = [journal.upload, journal.pin].filter(phase => phase.invocation), tokens = phases.map(phase => phase.invocation!.attemptToken);
-      const artifacts = await db.executionArtifact.findMany({ where: { attemptToken: { in: tokens } }, take: 10, include: { attempt: true } });
-      if (artifacts.length >= 10 || artifacts.some(row => !row.storageKey.startsWith(`execution/${journal.epoch}/${row.attemptToken}/`))) code("gate_assignment_scope_invalid");
+      const phases = [journal.upload, journal.pin];
+      const artifacts = await knownTransferGateArtifacts(db, journal);
       if (options.phase === "status") {
         const jobs = await db.ingestJob.findMany({ where: { id: { in: phases.map(phase => phase.jobId) } },
           select: { id: true, status: true, attemptCount: true, operationDeadlineAt: true, lastError: true } });
@@ -252,7 +274,7 @@ export async function main() {
       // cleanup intents created between this fixture's rows.
       for (const row of artifacts) registrationIds.push(...await db.$transaction(async tx => {
         await admitMediaCleanupObligations(tx, [{ origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact", objectKey: row.storageKey,
-          projectId: phases.find(phase => phase.invocation!.attemptToken === row.attemptToken)!.projectId, notBefore: new Date(notBefore) }]);
+          projectId: row.projectId, notBefore: new Date(notBefore) }]);
         return takeExecutionDispatchIds(tx);
       }));
       const intents = await db.mediaCleanupObligation.findMany({ where: { origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact",
