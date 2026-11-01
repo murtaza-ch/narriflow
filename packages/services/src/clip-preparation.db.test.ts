@@ -206,6 +206,39 @@ suite("Clip Preparation authority and publication", () => {
     } finally { storage.close(); await single.$disconnect(); }
   }, 30_000);
 
+  test("mismatched preparation references are refused before interpreting their subject as a UUID", async () => {
+    const f = await fixture(), admitted = await f.service.admitForGroup(f.references[0]!);
+    const preparationReference = (await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference;
+    const prepared = await f.service.prepareExecution(preparationReference);
+    if (prepared.kind !== "waiting") throw Error("Missing preparation");
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    try {
+      const factory = createClipPreparationExecution({ database: db, domain: f.service, storage,
+        artifacts: { head: async () => { throw Error("Refused references cannot HEAD storage"); }, readJson: async () => { throw Error("Refused references cannot read storage"); } }, deliverWakes: async () => {} });
+      const verified = () => ({ requestHash: "a".repeat(64), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const, method: "POST" as const,
+        canonicalTarget: "/api/execution/transfer", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: crypto.randomUUID(), signature: "0".repeat(64) } });
+      const outcomes: unknown[] = [];
+      for (const subjectKind of ["clip_preparation", "ingest_job"] as const) {
+        const reference = { ...prepared.deadline.reference, subject: { kind: subjectKind, id: "not-a-uuid" } };
+        for (const action of ["work-package", "source-read"] as const) {
+          try {
+            await factory.transfer.execute({ command: { action, fence: { reference, attemptToken: prepared.deadline.attemptToken, owner: crypto.randomUUID() }, ...(action === "source-read" ? { sourceId: "original" } : {}) }, verifiedRequest: verified() });
+            outcomes.push({ subjectKind, action, code: "unexpected_success" });
+          } catch (error) { outcomes.push({ subjectKind, action, code: error && typeof error === "object" && "code" in error ? error.code : "unclassified" }); }
+        }
+      }
+      const domainOutcomes: unknown[] = [];
+      for (const [kind, subjectKind] of [["operation_driver", "clip_preparation"], ["operation_driver", "ingest_job"], ["modal_execution", "clip_preparation"]] as const) {
+        try {
+          domainOutcomes.push({ kind, subjectKind, result: await f.service.prepareExecution({ ...preparationReference, kind, subject: { kind: subjectKind, id: "not-a-uuid" } }) });
+        } catch (error) { domainOutcomes.push({ kind, subjectKind, code: error && typeof error === "object" && "code" in error ? error.code : "unclassified" }); }
+      }
+      console.warn(JSON.stringify({ level: "info", message: "malformed_preparation_reference_outcomes", outcomes, domainOutcomes }));
+      expect(outcomes).toEqual(["clip_preparation", "ingest_job"].flatMap(subjectKind => ["work-package", "source-read"].map(action => ({ subjectKind, action, code: "invalid_reference" }))));
+      expect(domainOutcomes).toEqual([["operation_driver", "clip_preparation"], ["operation_driver", "ingest_job"], ["modal_execution", "clip_preparation"]].map(([kind, subjectKind]) => ({ kind, subjectKind, result: { kind: "superseded", dispatchIds: [] } })));
+    } finally { storage.close(); }
+  });
+
   test("groups over the same source/editor binding share one sealed preparation without acquiring either parent", async () => {
     const f = await fixture();
     const [a, b] = await Promise.all(f.references.map(reference => f.service.admitForGroup(reference)));

@@ -26,7 +26,7 @@
     "Source, editor, export, membership, retention, active Workspace and canonical binding checks remain inside the current transaction"
   ],
   "verification": {
-    "relatedDatabaseSuites": "Final code: 49 pass, 0 fail, 392 assertions across clip-preparation, clip-preparation-ledger, execution-transfer and executor-control",
+    "relatedDatabaseSuites": "Final corrected code: 50 pass, 0 fail, 399 assertions across clip-preparation, clip-preparation-ledger, execution-transfer and executor-control",
     "finalProductionSeam": "23 pass, 0 fail, including exact replay after edit, frozen export, source replacement, expiry and one-connection concurrent grants",
     "servicesTypecheck": "passed",
     "repositoryBiome": "passed with existing warnings",
@@ -44,5 +44,15 @@
     "The first-package reduction is 64 to 50 statements, about 22 percent; no deployed latency improvement is claimed",
     "Source reads still require 34 statements per fresh grant, and ScopedSourceServer requests one grant per uncached range",
     "No authority, lease, deadline, retry budget, charged history or timeout was widened or reset"
-  ]
+  ],
+  "reviewCorrection": {
+    "problem": "The joined locator cast a mismatched subject ID to UUID before rejecting its stored-reference mismatch",
+    "red": "Four production work-package/source-read cases and two ordinary operation-driver cases returned Prisma P2010 for not-a-uuid; the wrong-kind domain case already returned superseded",
+    "fix": "Reject wrong kinds and unequal stored references before the locator query; keep the current-epoch comparison after that query",
+    "green": "All four transfer cases return invalid_reference; both malformed operation-driver cases and the wrong-kind case return superseded with no dispatches",
+    "additionalSqlStatements": 0,
+    "verification": "50 database tests passed, 399 assertions; services typecheck and changed-file Biome passed",
+    "queryCounts": "Unchanged: acquire39, first package50, replay44, process-start37, source-read34, renew37",
+    "logs": ["/tmp/narriflow-preparation-reference-all-red.log", "/tmp/narriflow-preparation-reference-green.log", "/tmp/narriflow-preparation-reference-typecheck.log", "/tmp/narriflow-preparation-reference-biome.log"]
+  }
 }

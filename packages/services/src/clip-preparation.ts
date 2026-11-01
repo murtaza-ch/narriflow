@@ -228,13 +228,14 @@ export class ClipPreparationService {
   }
 
   private async lockPreparation(tx: Tx, reference: ExecutionDispatchReference) {
+    if (reference.subject.kind !== "clip_preparation" || !["operation_driver", "modal_execution"].includes(reference.kind)) return null;
     const record = await readExecutionDispatch(tx, reference.dispatchId);
+    if (!record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
     const [initial] = await tx.$queryRaw<Array<Pick<ClipPreparation, "id" | "projectId" | "inputHash" | "generation" | "deploymentEpoch"> & { workspaceId: string; currentEpoch: number }>>`
       SELECT preparation.id, preparation."projectId", preparation."inputHash", preparation.generation, preparation."deploymentEpoch", project."workspaceId", epoch.epoch AS "currentEpoch"
       FROM "ClipPreparation" preparation JOIN "Project" project ON project.id = preparation."projectId"
       CROSS JOIN "ExecutionEpoch" epoch WHERE preparation.id = ${reference.subject.id}::uuid AND epoch.id = 1`;
-    if (reference.subject.kind !== "clip_preparation" || !["operation_driver", "modal_execution"].includes(reference.kind) || !initial || reference.deploymentEpoch !== initial.currentEpoch ||
-      !record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
+    if (!initial || reference.deploymentEpoch !== initial.currentEpoch) return null;
     if (initial.inputHash !== reference.inputHash || initial.generation !== reference.generation || initial.deploymentEpoch !== reference.deploymentEpoch) return null;
     await lockWorkspaceUsage(tx, initial.workspaceId);
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.projectId}, 0)) IS NULL AS locked`;
