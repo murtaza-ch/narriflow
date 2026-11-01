@@ -997,9 +997,16 @@ export class CampaignOperationService {
         ? replay.items.map((item) => storedRenderResult(item.result)).find((result) => result !== null) ?? null
         : null;
       if (completedResult) {
-        await prisma.$transaction(tx => getWorkflowRunLifecycle().recoverClipRenderRunWithinTransaction(tx, completedResult.workflowRunId, input.workspaceId, input.projectId));
+        await prisma.$transaction(async tx => {
+          const receipt = await tx.operationReceipt.findUnique({ where: { workspaceId_actorUserId_command_clientIdempotencyKey: {
+            workspaceId: input.workspaceId, actorUserId: replay.actorUserId, command: "render_clips", clientIdempotencyKey: input.idempotencyKey,
+          } } });
+          if (receipt && (receipt.resourceType !== "workflow_run" || receipt.resourceId !== completedResult.workflowRunId)) throw new CampaignOperationError("campaign_operation_idempotency_conflict", "Stored render receipt does not match the accepted operation");
+          await getWorkflowRunLifecycle().recoverClipRenderRunWithinTransaction(tx, completedResult.workflowRunId, input.workspaceId, { projectId: input.projectId, result: receipt?.result });
+        });
         return { ...completedResult, operationId: replay.id, replayed: true };
       }
+      if (replay.status === "running" && replay.actorUserId !== input.actorUserId) throw new CampaignOperationError("campaign_operation_forbidden", "Only the original actor can resume this pending operation");
       await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", leaseExpiresAt: { lte: new Date() } }, data: { claimToken: null, leaseExpiresAt: null } });
       const claimToken = randomUUID();
       const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken, leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS) } });

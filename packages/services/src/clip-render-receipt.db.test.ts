@@ -5,6 +5,7 @@ import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { clipService } from "./clip.service";
+import { workspaceService } from "./workspace.service";
 import { campaignOperationService } from "./campaign-operation.service";
 import { withExecutionDispatches } from "./execution-dispatch-runtime";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
@@ -107,6 +108,15 @@ suite("Standalone render command receipts", () => {
     await f.lifecycle.markClipRenderVariantRendering(parent, member);
     await f.lifecycle.completeClipRenderVariant(parent, member, { storageKey: "fixture/completed", sizeBytes: 1000, durationSec: 10 });await f.lifecycle.settleRenderWorkSet(parent);
     await db.campaignOperation.update({ where: { id: operation.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
+    const other = await db.user.create({ data: { clerkId: `render-receipt-other:${crypto.randomUUID()}` } });
+    await db.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: other.id, role: "editor" } });
+    await workspaceService.requireActor(other.id, f.workspace.id, "processing.consume");
+    const pending = await db.campaignOperation.findUniqueOrThrow({ where: { id: operation.id } });
+    await expect(campaignOperationService.renderSelected({ workspaceId: f.workspace.id, actorUserId: other.id, projectId: f.project.id, pricingTier: "creator", idempotencyKey: key, clipIds: [f.clip.id], resolution: "720p", aspectRatios: ["9:16"],
+      execute: ids => clipService.triggerClipRendering({ workspaceId: f.workspace.id, actorUserId: other.id }, f.project.id, key, ids, ["9:16"], "720p"),
+    })).rejects.toMatchObject({ code: "campaign_operation_forbidden", kind: "forbidden" });
+    expect(await db.campaignOperation.findUniqueOrThrow({ where: { id: operation.id } })).toEqual(pending);
+    expect(await db.operationReceipt.count({ where: { workspaceId: f.workspace.id, actorUserId: other.id } })).toBe(0);
     expect(await selected()).toMatchObject({ workflowRunId: first.workflowRunId, operationId: operation.id, replayed: true });
     expect(await db.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(1);
     expect((await db.renderGroup.findMany({ where: { workflowRunId: first.workflowRunId } })).reduce((sum, group) => sum + group.chargedAttemptCount, 0)).toBe(1);
@@ -122,9 +132,34 @@ suite("Standalone render command receipts", () => {
     expect((await db.clipRender.findUniqueOrThrow({ where: { id: selection[0]!.id } })).workflowRunId).toBeNull();
     expect((await f.lifecycle.beginRenderWorkSet(parent)).variantIds).toEqual([]);
     const settled = await f.lifecycle.settleRenderWorkSet(parent), follow = await f.lifecycle.renderParent(settled.followUpWorkflowRunId!);
+    let delivered: readonly string[] = [];
+    expect(await withExecutionDispatches(() => f.trigger("late-alias"), { database: db, deliver: async ids => { delivered = ids; } })).toEqual(accepted);
+    expect(delivered).toContain((await db.executionDispatch.findFirstOrThrow({ where: { kind: "render_run", subjectId: follow.workflowRunId } })).id);
     expect((await f.lifecycle.beginRenderWorkSet(follow)).variantIds).toEqual(selection.map(item => item.id));
     expect(await f.trigger("late-alias")).toEqual(accepted);
     expect(await db.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(2);
+  }));
+
+  test("reused ordinary cache IDs never redirect an old receipt to later accepted work", () => scoped(async () => {
+    const f = await fixture(), original = await f.trigger("original"), parent = await f.lifecycle.renderParent(original.workflowRunId);
+    await f.lifecycle.beginRenderWorkSet(parent);
+    const late = await f.addClip(1);await f.trigger("late", [late.id]);
+    const originalMember = await db.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id } });
+    await f.lifecycle.completeClipRenderVariant(parent, originalMember.id, { storageKey: "fixture/completed", sizeBytes: 1000, durationSec: 10 });
+    const settled = await f.lifecycle.settleRenderWorkSet(parent), drain = await f.lifecycle.renderParent(settled.followUpWorkflowRunId!);
+    await f.trigger("reset-original", [f.clip.id]);
+    let collected: readonly string[] = [];
+    expect(await withExecutionDispatches(() => f.trigger("original"), { database: db, deliver: async ids => { collected = ids; } })).toEqual(original);
+    expect(collected).toEqual([]);
+    await f.lifecycle.beginRenderWorkSet(drain);
+    const lateMember = await db.clipRender.findFirstOrThrow({ where: { clipId: late.id } });
+    await f.lifecycle.completeClipRenderVariant(drain, lateMember.id, { storageKey: "fixture/late-completed", sizeBytes: 1000, durationSec: 10 });
+    // A newer request resets this same cache ID while another drain member is unfinished.
+    await f.trigger("reset-late", [late.id]);
+    collected = [];
+    await withExecutionDispatches(() => f.trigger("late", [late.id]), { database: db, deliver: async ids => { collected = ids; } });
+    expect(collected).toEqual([]);
+    expect((await db.workflowRun.findUniqueOrThrow({ where: { id: drain.workflowRunId } })).status).toBe("waiting");
   }));
 
 });

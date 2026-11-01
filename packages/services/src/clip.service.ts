@@ -1951,13 +1951,15 @@ export class ClipService {
         // This immutable receipt records accepted IDs, never execution authority.
         const selection = await tx.clipRender.findMany({ where: { clipId: { in: clipsToRender.map(clip => clip.id) }, exportVariantId: null,
           aspectRatio: { in: requestedAspectRatios.map(aspectRatio => clipAspectRatioToDb[aspectRatio]) } }, orderBy: { id: "asc" },
-          select: { id: true, clipId: true, aspectRatio: true, resolution: true } });
+          select: { id: true, clipId: true, aspectRatio: true, resolution: true, workflowRunId: true, status: true } });
         const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: admitted.id }, select: { renderWorkSetFrozenAt: true } });
         if (!run.renderWorkSetFrozenAt) await tx.clipRender.updateMany({ where: { id: { in: selection.map(render => render.id) }, status: "pending", workflowRunId: null }, data: { workflowRunId: admitted.id } });
         await flushWorkspaceEvents(tx);
         for (const id of await flushProjectProgressDrains(tx)) collectExecutionDispatch(tx, id);
         const current = await tx.project.findUniqueOrThrow({ where: { id: projectId }, select: { workflowEventSeq: true } });
-        return { resourceType: "workflow_run", resourceId: admitted.id, value: { selection, response: {
+        return { resourceType: "workflow_run", resourceId: admitted.id, value: { selection: selection.map(({ workflowRunId, status, ...render }) => ({ ...render,
+          deferredToDrain: !!run.renderWorkSetFrozenAt && workflowRunId === null && status === "pending",
+        })), response: {
           workflowRunId: admitted.id, acceptedAt: clock.now.toISOString(), initialSeq: current.workflowEventSeq,
           clipCount: clipsToRender.length, variantCount: clipsToRender.length * requestedAspectRatios.length, resolution: resolvedResolution,
         } } };

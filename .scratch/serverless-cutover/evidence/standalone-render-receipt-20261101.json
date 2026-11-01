@@ -24,18 +24,87 @@
     "withClipIds": "CampaignOperationService.renderSelected native receipt; existing completed result guards ordinary successful replay, but prior crash window depended on lost native alias",
     "onlyProductionLifecycleCaller": "packages/services/src/clip.service.ts -> WorkflowRunLifecycle.admitClipRendering",
     "mcpRestBackground": "No production caller of triggerClipRendering/admitClipRendering in MCP, public REST integration commands or background modules; integrations generation uses its separate existing generation receipt path",
-    "web": ["render-clips-button.tsx:267", "clip-row.tsx:365", "edit-clip-length-dialog.tsx:658", "render-status.ts:115"],
+    "web": [
+      "render-clips-button.tsx:267",
+      "clip-row.tsx:365",
+      "edit-clip-length-dialog.tsx:658",
+      "render-status.ts:115"
+    ],
     "unusedHelper": "ClipService.queueFollowUpRenderRun has no production caller; normal drain admission stays in workflow lifecycle"
   },
   "verification": {
-    "pgAndActualWorkerSdkPlusCampaignCompatibility": { "tests": 65, "assertions": 481, "failures": 0, "privateLog": "/tmp/narriflow-render-receipt-final-db.log" },
-    "editorPersistenceCompatibility": { "tests": 36, "assertions": 182, "failures": 0, "suites": 3, "privateLog": "/tmp/narriflow-render-receipt-editor-db.log" },
-    "focusedFast": { "tests": 59, "assertions": 224, "failures": 0, "privateLog": "/tmp/narriflow-render-receipt-fast.log" },
+    "pgAndActualWorkerSdkPlusCampaignCompatibility": {
+      "tests": 65,
+      "assertions": 481,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-render-receipt-final-db.log"
+    },
+    "editorPersistenceCompatibility": {
+      "tests": 36,
+      "assertions": 182,
+      "failures": 0,
+      "suites": 3,
+      "privateLog": "/tmp/narriflow-render-receipt-editor-db.log"
+    },
+    "focusedFast": {
+      "tests": 59,
+      "assertions": 224,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-render-receipt-fast.log"
+    },
     "newReceiptSuiteDatabasePoolMax": 1,
     "servicesTypecheck": "pass",
     "apiTypecheck": "pass",
     "changedFilesBiome": "pass",
-    "cases": ["one charged start through actual service/lifecycle and unwrapped HTTP after terminal replay", "late clip creation preserves original all-clips result/selection", "changed input conflicts", "concurrent distinct aliases share one run", "receipt failure rolls back work/run/dispatch", "closed accepted replay with fresh admission refusal", "caller loss before CampaignOperation result persistence", "all-clips and selected HTTP registration failure and confirmation wait", "frozen work-set late drain"]
+    "cases": [
+      "one charged start through actual service/lifecycle and unwrapped HTTP after terminal replay",
+      "late clip creation preserves original all-clips result/selection",
+      "changed input conflicts",
+      "concurrent distinct aliases share one run",
+      "receipt failure rolls back work/run/dispatch",
+      "closed accepted replay with fresh admission refusal",
+      "caller loss before CampaignOperation result persistence",
+      "all-clips and selected HTTP registration failure and confirmation wait",
+      "frozen work-set late drain"
+    ]
   },
-  "remaining": "Root review, full release checks/build/import audit and paired deployed qualification remain required; local fixtures are not platform success. No deadline or historical task reset."
+  "remaining": "Root review, full release checks/build/import audit and paired deployed qualification remain required; local fixtures are not platform success. No deadline or historical task reset.",
+  "reviewCorrection": {
+    "base": "88e5443acdf3aac8495fcc9ce4d0f93bec3c7af3",
+    "deferredSelection": "Record which exact accepted pending IDs were deferred by the frozen parent in the existing internal receipt; those facts are identity data, not execution authority.",
+    "exactDrainRecovery": "Read fresh scoped current-epoch parent and only its one exact drain successor. Register deferred accepted work before positive response while drain is queued/unfrozen; after freeze require exact current membership with no terminal historical outcome. Never redirect through mutable cache IDs to unrelated/later work or walk a run graph.",
+    "campaignRecovery": "Completed CampaignOperation repair reads its original actor's exact matching render_clips receipt, without executing as that actor. Pending continuation by another currently authorized actor returns existing typed campaign_operation_forbidden before claim/execute. Completed workspace-visible replay policy remains.",
+    "red": {
+      "tests": 22,
+      "failed": 5,
+      "privateLog": "/tmp/narriflow-render-receipt-review-red.log"
+    },
+    "focusedGreen": {
+      "tests": 22,
+      "assertions": 198,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-render-receipt-review-green.log"
+    },
+    "compatibilityGreen": {
+      "tests": 69,
+      "assertions": 534,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-render-review-final-db.log"
+    },
+    "fast": {
+      "tests": 59,
+      "assertions": 224,
+      "failures": 0,
+      "privateLog": "/tmp/narriflow-render-review-fast.log"
+    },
+    "servicesTypecheck": "pass",
+    "apiTypecheck": "pass",
+    "changedFilesBiome": "pass",
+    "negativeCases": [
+      "both all-clips and selected actual HTTP fail delayed drain registration then block identical replay until confirmation before drain freeze",
+      "two authorized members: pending cross-actor service and HTTP refusal after original receipt/caller loss/terminal render, no other-actor receipt or claim mutation, one charged start, original actor recovery, completed workspace replay retained",
+      "ordinary IDs reused by later accepted work do not redirect old receipts; completed late member reset while exact drain remains live is also a no-op",
+      "same original selector/fingerprint, response, receipt rollback, frozen membership, run deadlines, attempts and charges retained"
+    ]
+  }
 }

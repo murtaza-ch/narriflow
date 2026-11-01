@@ -599,16 +599,43 @@ export class WorkflowRunLifecycle {
     return dispatch;
   }
 
-  /** A stored receipt can recollect its exact live run; it never admits work. */
-  async recoverClipRenderRunWithinTransaction(tx: TransactionClient, runId: string, workspaceId: string, projectId?: string) {
-    const initial = await tx.workflowRun.findFirst({ where: { id: runId, ...(projectId ? { projectId } : {}), stage: "clip_rendering", project: { workspaceId } }, select: { projectId: true } });
+  /** A stored receipt can recollect its exact parent/drain; it never admits work. */
+  async recoverClipRenderRunWithinTransaction(tx: TransactionClient, runId: string, workspaceId: string,
+    receipt?: { projectId?: string; result?: unknown }) {
+    const initial = await tx.workflowRun.findFirst({ where: { id: runId, ...(receipt?.projectId ? { projectId: receipt.projectId } : {}), stage: "clip_rendering", project: { workspaceId } }, select: { projectId: true } });
     if (!initial) return;
     const admission = await this.lockRenderAdmissionWithinTransaction(tx, initial.projectId, workspaceId);
     await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${runId}::uuid FOR UPDATE`;
     const now = await this.databaseNow(tx);
-    const current = await tx.workflowRun.findFirst({ where: { id: runId, projectId: initial.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
-      status: { in: ["queued", "running", "waiting"] }, project: { workspaceId, ...accessibleProjectWhere(now), workspace: { status: "active" } } }, select: { id: true } });
-    if (current) await this.dispatchRunWithinTransaction(tx, current.id);
+    const parent = await tx.workflowRun.findFirst({ where: { id: runId, projectId: initial.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
+      project: { workspaceId, ...accessibleProjectWhere(now), workspace: { status: "active" } } } });
+    if (!parent) return;
+    if (["queued", "running", "waiting"].includes(parent.status)) { await this.dispatchRunWithinTransaction(tx, parent.id); return; }
+    if (!receipt?.result || typeof receipt.result !== "object" || Array.isArray(receipt.result)) return;
+    const result = receipt.result as Record<string, unknown>, response = result.response as { workflowRunId?: unknown } | null;
+    if (response?.workflowRunId !== parent.id || !Array.isArray(result.selection)) throw new Error("render_receipt_selection_invalid");
+    const deferred: string[] = [];
+    for (const value of result.selection) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("render_receipt_selection_invalid");
+      const item = value as Record<string, unknown>;
+      if (typeof item.id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.id) || typeof item.deferredToDrain !== "boolean") throw new Error("render_receipt_selection_invalid");
+      if (item.deferredToDrain) deferred.push(item.id);
+    }
+    if (!deferred.length) return;
+    // All members accepted before this first drain froze belong to this one
+    // successor. Never follow arbitrary current cache ownership or a run graph.
+    const drain = await tx.workflowRun.findFirst({ where: { projectId: parent.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
+      idempotencyKey: `drain-${parent.id}`, status: { in: ["queued", "running", "waiting"] } } });
+    if (!drain) return;
+    const pending = await tx.clipRender.findMany({ where: { id: { in: deferred }, clip: { projectId: parent.projectId }, status: { in: ["pending", "rendering"] },
+      OR: [{ workflowRunId: null }, { workflowRunId: drain.id }] }, select: { id: true, workflowRunId: true } });
+    if (!pending.length) return;
+    if (drain.renderWorkSetFrozenAt) {
+      const members = await tx.renderGroupMember.findMany({ where: { workflowRunId: drain.id, clipRenderId: { in: pending.filter(row => row.workflowRunId === drain.id).map(row => row.id) },
+        invalidatedAt: null, outcomes: { none: { result: { in: ["completed", "permanent", "superseded"] } } } }, select: { clipRenderId: true } });
+      if (!members.length) return;
+    }
+    await this.dispatchRunWithinTransaction(tx, drain.id);
   }
 
   /** New export admission and receipt recovery share the normal render ledger.
