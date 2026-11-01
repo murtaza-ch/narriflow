@@ -27,7 +27,7 @@ The non-execution AGENTS PostgreSQL matrix passed715 test executions and4726 ass
 
 The complete deployed Worker passed the real one/two/one concurrent16MiB publication payload sequence in one isolate with1082 constructed production routes and zero SQL. The absent synthetic object was recreated before that successful sequence. The temporary CutoverVerification export and implementation have been removed from release source. See [the deployed result](../evidence/publication-full-worker-memory-20261101.json).
 
-The owner's database choice is Neon Free. The second deployed 10 GiB upload/pin gate failed, as recorded below. The isolated qualified restore gate has passed. Final local-device, deployed HTTP/MCP, real provider pipeline, quota/burst, latency and exact-candidate one-hour idle gates remain open. No shared cutover, dev push, infrastructure deletion or reopening has occurred.
+The owner's database choice is Neon Free. The third deployed 10 GiB upload/pin gate passed, after the two retained failed attempts recorded below. The isolated qualified restore gate has passed. The first real speech upload exposed a missing ingest dispatch and failed its four-minute smoke target; its original session and job remain retained. Final local-device, deployed HTTP/MCP, real provider pipeline, quota/burst, latency and exact-candidate one-hour idle gates remain open. No shared cutover, dev push, infrastructure deletion or reopening has occurred.
 
 
 ## Qualified restore acceptance, 2026-11-01
@@ -44,7 +44,7 @@ The fixture passed the combined cutoff to the native pin operation but allowed t
 
 All six exact assigned artifacts have now passed deployed cleanup after the unchanged deadline/grant holds. Each returned HEAD 404, had zero exact-key multipart uploads, and had a production lease timer acknowledged before cleanup completion. Eight exact stopped MC1/base driver instances were restarted without resetting SQL acknowledgements or deleting objects locally. Audit rows and failed transfer evidence remain retained. This retirement does not change the failed transfer result.
 
-The transfer authorization change on commit `6a497662` reduces each pure upload-part or source-range authorization from four transactions to one in local tests. It retains fresh epoch, inbox, domain and attempt checks, bounded grants and cleanup holds. This is not a measured deployed latency gain. A fixture deadline correction and a fresh deployed combined transfer pass are still required.
+The transfer authorization change on commit `6a497662` reduces each pure upload-part or source-range authorization from four transactions to one in local tests. It retains fresh epoch, inbox, domain and attempt checks, bounded grants and cleanup holds. The corrected third attempt below supplies the deployed combined transfer acceptance result. The failed second attempt remains failed.
 
 ## Exact deployed image qualification, 2026-11-01
 
@@ -52,4 +52,14 @@ The paired `b7fdecf3` images passed [exact deployed-image qualification](../evid
 
 The frozen 36-case golden comparison passed with zero mismatches: 18 ordinary cases and 16 activated cases passed; the two documented known defects remained unchanged. Both temporary Sandboxes were terminated, and the six selected Function identities remained stable. This does not establish live provider behavior, cold-start p95, or clip preparation under its smaller 2 CPU/4 GiB Function limits; those remain separate acceptance work.
 
-The fresh transfer upload passed with 10,737,418,240 bytes in 843.888 seconds. Conditional pinning is running under the same original 01:27:05.590 UTC deadline. No combined pass is claimed while that phase remains pending.
+## Third deployed transfer attempt, 2026-11-01
+
+The [third combined transfer attempt passed](../evidence/atomic-transfer-third-attempt-passed-20261101.json) on source `b7fdecf3`. Its 10,737,418,240-byte upload used 640 parts and completed in 843.888 seconds. Conditional pinning read and wrote the same complete byte count in 1332.845 seconds. The combined elapsed time was 2232.554 seconds, leaving 467.446 seconds before the original 01:27:05.590 UTC SQL deadline. Both jobs and generic attempts retained that deadline, with exactly two actual starts and charges, generation one each, four assigned artifacts and zero published artifacts.
+
+All four exact artifacts passed deployed retirement after the unchanged deadline plus the 120-second grant hold. Each returned HEAD 404, had zero exact-key multipart uploads, and had a production lease timer acknowledged before cleanup completion. Audit rows remain retained. No local object deletion or deadline extension was used.
+
+## First real speech upload, 2026-11-01
+
+The [first real speech smoke failed](../evidence/spoken-first-attempt-handoff-failed-20261101.json). The production uploader accepted the 146.147-second source and created its ingest job, but finalization did not commit an initial ingest dispatch. A scoped observation found zero dispatches, execution attempts and native charges. No MCP generation Task had been submitted. The original four-minute target remains failed.
+
+The original upload session, project, job and idempotency keys remain retained for an ordinary authenticated uploader replay after the handoff fix. No manual dispatch insertion, job reset or replacement fixture has occurred. Candidate HTTP and database admission are closed while the fix is verified. This ticket remains claimed.

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T01:35:59.346549+00:00",
+  "status": "FAILED first real speech-video latency smoke; accepted source retained pending transactional handoff fix",
+  "candidateSourceCommit": "b7fdecf32d5ad92a756af83c9e07934013105ece",
+  "workerVersionDuringJourney": "0ea24e74-6bc7-4375-8826-30e01859fac5",
+  "epoch": 10,
+  "upload": {
+    "status": "accepted",
+    "sourceBytes": 22741661,
+    "sourceSha256": "32b20a20e84d46d17da126689572f9a431d01ddc23880b90240952875b2a3fe8",
+    "notificationDisabledAt": "2026-11-01T01:25:26.106Z",
+    "requests": 5
+  },
+  "actualObservation": {
+    "observedAt": "2026-11-01T01:28:09.031Z",
+    "job": {
+      "status": "queued",
+      "generation": 1,
+      "attemptCount": 0,
+      "lease": null,
+      "deadline": null,
+      "lastErrorCode": null
+    },
+    "executionAttempts": 0,
+    "ingestDispatches": 0
+  },
+  "confirmedCause": "Production Upload Session handoff created the IngestJob through enqueue without admitting its canonical import_pipeline dispatch. The job remained queued with no attempt or charged native start.",
+  "smokeTarget": {
+    "seconds": 240,
+    "passed": false,
+    "reason": "Processing never began before the four-minute window elapsed."
+  },
+  "response": {
+    "ownedReadinessPollStopped": true,
+    "newGenerationSubmitted": false,
+    "acceptedUploadAndRequestKeysRetained": true,
+    "candidateIntakeClosed": true,
+    "noManualJobQueueOrStateReset": true,
+    "fixStatus": "TDD in isolated worktree; not deployed"
+  },
+  "coverageLimit": "This attempt establishes actual uploader/auth/notification preference behavior and exposes the handoff liveness failure. It is not Scribe, selection, rendering or MCP Task acceptance.",
+  "rawObservation": {
+    "localPath": "/tmp/narriflow-serverless-gates/spoken-ingest-observation-0128.log",
+    "sha256": "45d908c6f37fa9cc0dbbaf7cdcb4cbd9e34648e9d4546273db37af7f331b8ab6"
+  },
+  "sharedDevelopmentDatabaseChanged": false
+}
