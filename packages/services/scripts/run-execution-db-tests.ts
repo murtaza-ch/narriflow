@@ -95,7 +95,8 @@ try {
     await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
     // Epoch-fencing tests deliberately invalidate every old reference. Run
     // them after suites whose fixtures freeze the initial deployment epoch.
-    const fences = remaining.filter(path => ["billing-reconciliation", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime"].some(name => path === `packages/services/src/${name}.db.test.ts`));
+    // Clip Preparation's capsule-I/O epoch test commits its fence deliberately.
+    const fences = remaining.filter(path => ["billing-reconciliation", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime", "clip-preparation"].some(name => path === `packages/services/src/${name}.db.test.ts`));
     // This suite deliberately reconciles the whole disposable outbox. Run it
     // before domain fixtures create their own pending durable obligations.
     const dispatch = "packages/services/src/execution-dispatch.db.test.ts";
