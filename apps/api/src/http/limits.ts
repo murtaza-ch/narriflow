@@ -76,10 +76,10 @@ export function limitBody(limitClass: BodyLimitClass): MiddlewareHandler<ApiEnv>
     } finally {
       reader.releaseLock();
     }
-    // Preserve the exact bytes for signature verification and subsequent parsing.
+    // Preserve nonempty bytes exactly; runtimes can expose an empty POST as a stream.
     if (!c.get("ingressRequest")) c.set("ingressRequest", request);
     c.req.raw = new Request(request, {
-      body: new ReadableStream<Uint8Array>({
+      body: size === 0 ? null : new ReadableStream<Uint8Array>({
         start(controller) {
           for (const chunk of chunks) controller.enqueue(chunk);
           controller.close();

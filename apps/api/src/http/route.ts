@@ -51,7 +51,7 @@ export function validate<
 export function requireJsonContentType(): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
     const method = c.req.method;
-    // Bun hands handlers a null body for bodiless requests, chunked or not.
+    // The ingress body limiter normalizes a measured empty stream to null.
     const hasBody = c.req.raw.body !== null;
     if (
       hasBody &&
