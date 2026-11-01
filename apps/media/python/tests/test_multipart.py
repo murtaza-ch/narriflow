@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from contextlib import redirect_stderr
+from io import StringIO
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tracemalloc
@@ -11,11 +13,39 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
+import ssl
 
 from narriflow_media.multipart import CompletedObject, MultipartDestination, MultipartTransferError, SignedGrant, SignedHttpTransport, TransferResponse, pin_source, upload_file
 
 
 class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transport_diagnostics_preserve_only_fixed_failure_facts(self):
+        secret = 'private-signed-url-and-token'
+        class Connection:
+            sock = None
+            def request(self, *args, **kwargs):
+                raise ssl.SSLCertVerificationError(secret)
+            def close(self): pass
+        logs = StringIO()
+        with patch('narriflow_media.multipart.http.client.HTTPSConnection', return_value=Connection()), redirect_stderr(logs):
+            with self.assertRaisesRegex(MultipartTransferError, 'multipart_transport_failed'):
+                await SignedHttpTransport().request(SignedGrant('https://storage.invalid/'+secret, {'If-Match': secret}),
+                    'GET', None, {'Range': 'bytes=0-2'}, 3, lambda: False)
+        record = json.loads(logs.getvalue())
+        self.assertEqual(record['message'], 'native_storage_transport_failed')
+        self.assertEqual(record['phase'], 'request')
+        self.assertEqual(record['failureKind'], 'tls_certificate')
+        self.assertEqual(record['method'], 'GET')
+        self.assertEqual(record['maxResponseBytes'], 3)
+        self.assertEqual(record['bufferedResponseBytes'], 0)
+        self.assertIsNone(record['status'])
+        self.assertIsNone(record['abortReason'])
+        self.assertIsNone(record['errno'])
+        self.assertGreaterEqual(record['elapsedMs'], 0)
+        self.assertNotIn(secret, logs.getvalue())
+        self.assertNotIn('storage.invalid', logs.getvalue())
+
     async def test_signed_headers_merge_case_insensitively_on_the_actual_http_request(self):
         received = []
         class Storage(BaseHTTPRequestHandler):

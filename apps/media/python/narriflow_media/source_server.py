@@ -10,7 +10,7 @@ import socket
 from threading import BoundedSemaphore, Event, Lock, Thread
 
 from .control import ExecutionControlError
-from .multipart import SignedGrant, SignedHttpTransport
+from .multipart import MultipartTransferError, SignedGrant, SignedHttpTransport
 
 CHUNK_BYTES = 1024 * 1024
 INITIAL_CHUNK_BYTES = 64 * 1024
@@ -149,8 +149,14 @@ class ScopedSourceServer:
             if result.get('object')!=expected:
                 self._session.cancel_event.set();raise ExecutionControlError('execution_source_changed')
             grant=result['grant'];headers={'range':f'bytes={start}-{end}','if-match':source['etag'],'accept-encoding':'identity'}
-            response=asyncio.run(self._transport.request(SignedGrant(grant['url'],grant['headers']),'GET',None,headers,
-                end-start+1,lambda:self._stopped.is_set() or self._session.cancel_event.is_set()))
+            try:
+                response=asyncio.run(self._transport.request(SignedGrant(grant['url'],grant['headers']),'GET',None,headers,
+                    end-start+1,lambda:self._stopped.is_set() or self._session.cancel_event.is_set()))
+            except MultipartTransferError as error:
+                self._assert_readable()
+                if error.code!='multipart_transport_failed':raise
+                if attempt<2:continue
+                raise ExecutionControlError('execution_source_unavailable') from None
             self._assert_readable();facts={key.lower():value for key,value in response.headers.items()}
             if response.status in {403,408,429,500,502,503,504} and attempt<2:continue
             if (response.status!=206 or facts.get('etag')!=source['etag'] or facts.get('content-length')!=str(end-start+1)

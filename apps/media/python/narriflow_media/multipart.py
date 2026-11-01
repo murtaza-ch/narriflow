@@ -7,11 +7,13 @@ from collections import deque
 from dataclasses import dataclass, field
 import hashlib
 import http.client
+import json
 import os
 from pathlib import Path
 import re
 import socket
 import ssl
+import sys
 from threading import Event, Thread
 import time
 from typing import Awaitable, Callable, Mapping, Protocol
@@ -149,12 +151,17 @@ class SignedHttpTransport:
                       http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=self._timeout,
                                                   context=ssl.create_default_context()))
         finished = Event()
-        deadline = time.monotonic() + self._timeout
+        started = time.monotonic()
+        deadline = started + self._timeout
         wall_deadline = time.time() + self._timeout
         active_socket = None
+        abort_reason = None
         def monitor():
+            nonlocal abort_reason
             while not finished.wait(0.05):
-                if cancelled() or time.monotonic() >= deadline or time.time() >= wall_deadline:
+                is_cancelled = cancelled()
+                if is_cancelled or time.monotonic() >= deadline or time.time() >= wall_deadline:
+                    abort_reason = 'cancelled' if is_cancelled else 'deadline'
                     # HTTPResponse owns the socket after Connection:close.
                     # connection.close() alone cannot interrupt that read.
                     sock = connection.sock or active_socket
@@ -167,6 +174,7 @@ class SignedHttpTransport:
                     return
         watcher = Thread(target=monitor, daemon=True)
         watcher.start()
+        phase, status, size = 'request', None, 0
         try:
             if cancelled():
                 raise MultipartTransferError('multipart_cancelled')
@@ -175,7 +183,10 @@ class SignedHttpTransport:
                 target += '?' + parsed.query
             connection.request(method, target, body=body, headers=combined)
             active_socket = connection.sock
+            phase = 'response_headers'
             response = connection.getresponse()
+            status = response.status
+            phase = 'response_body'
             buffer, size = bytearray(max_response_bytes + 1), 0
             while received := response.readinto(memoryview(buffer)[size:]):
                 size += received
@@ -184,7 +195,22 @@ class SignedHttpTransport:
             if cancelled() or time.monotonic() >= deadline or time.time() >= wall_deadline:
                 raise MultipartTransferError('multipart_cancelled')
             return TransferResponse(response.status, dict(response.getheaders()), memoryview(buffer)[:size])
-        except (OSError, http.client.HTTPException):
+        except (OSError, http.client.HTTPException) as error:
+            if isinstance(error, ssl.SSLCertVerificationError): kind = 'tls_certificate'
+            elif isinstance(error, ssl.SSLError): kind = 'tls'
+            elif isinstance(error, TimeoutError): kind = 'timeout'
+            elif isinstance(error, socket.gaierror): kind = 'dns'
+            elif isinstance(error, http.client.RemoteDisconnected): kind = 'disconnected'
+            elif isinstance(error, ConnectionError): kind = 'connection'
+            elif isinstance(error, http.client.HTTPException): kind = 'http'
+            else: kind = 'os'
+            # Do not log exception text, URLs, keys or headers. These fixed
+            # facts distinguish network failures from owner/deadline shutdown.
+            print(json.dumps({'level': 'warn', 'message': 'native_storage_transport_failed', 'method': method,
+                'phase': phase, 'failureKind': kind, 'status': status, 'abortReason': abort_reason,
+                'errno': error.errno if isinstance(error, OSError) and type(error.errno) is int else None,
+                'bufferedResponseBytes': size, 'maxResponseBytes': max_response_bytes,
+                'elapsedMs': round((time.monotonic() - started) * 1000)}), file=sys.stderr, flush=True)
             raise MultipartTransferError('multipart_transport_failed') from None
         finally:
             finished.set()

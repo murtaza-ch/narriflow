@@ -1,11 +1,13 @@
 import http.client
 import json
+import socket
 import threading
 import time
 import tracemalloc
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from narriflow_media.multipart import TransferResponse
+from narriflow_media.multipart import MultipartTransferError, SignedHttpTransport, TransferResponse
 from narriflow_media.source_server import ScopedSourceServer
 
 
@@ -61,6 +63,79 @@ class SourceServerTests(unittest.TestCase):
             before=len(transport.requests)
             self.assertEqual(self.get(server,range='bytes=4-7')[0],503)
             self.assertEqual(len(transport.requests),before)
+
+    def test_a_midstream_upstream_disconnect_retries_the_exact_range_with_fresh_authority(self):
+        data = bytes(range(256)) * 1024
+        source, session, _ = self.fixture(data)
+        requests = []
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self):
+                requested = self.headers['Range'];requests.append((requested, self.headers['If-Match']))
+                if len(requests) == 2:
+                    self.connection.shutdown(socket.SHUT_RDWR);self.connection.close();return
+                start, end = map(int, requested[6:].split('-'));body = data[start:end + 1]
+                self.send_response(206);self.send_header('ETag', '"source"')
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Content-Range', f'bytes {start}-{end}/{len(data)}')
+                self.end_headers();self.wfile.write(body)
+        upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True);thread.start()
+        original_transfer = session.transfer
+        def transfer(action, **fields):
+            result = original_transfer(action, **fields)
+            result.disposition['grant']['url'] = f'http://127.0.0.1:{upstream.server_port}/source'
+            return result
+        session.transfer = transfer
+        try:
+            with ScopedSourceServer(session, [source], transport=SignedHttpTransport(allow_loopback_http=True)) as server:
+                server.allow_reads()
+                status, _, body = self.get(server, range=f'bytes=0-{len(data) - 1}')
+                self.assertEqual((status, body), (206, data))
+                self.assertEqual(server.bytes_transferred, len(data))
+                self.assertFalse(session.cancel_event.is_set())
+            self.assertEqual(len(requests), 4)
+            self.assertEqual(requests[1], requests[2])
+            self.assertTrue(all(etag == '"source"' for _, etag in requests))
+            self.assertEqual(len(session.grants), 4)
+        finally:
+            upstream.shutdown();upstream.server_close();thread.join(timeout=1)
+
+    def test_transport_retries_are_bounded_and_stop_on_owner_loss_or_invalid_grants(self):
+        for code, cancel, expected_calls in [('multipart_transport_failed', False, 3),
+                ('multipart_transport_failed', True, 1), ('multipart_grant_invalid', False, 1),
+                ('multipart_response_too_large', False, 1)]:
+            with self.subTest(code=code, cancel=cancel):
+                source, session, _ = self.fixture(b'0123456789abcdef')
+                requests = []
+                class FailedTransport:
+                    async def request(self, *args):
+                        requests.append(args)
+                        if cancel: session.cancel_event.set()
+                        raise MultipartTransferError(code)
+                with ScopedSourceServer(session, [source], transport=FailedTransport()) as server:
+                    server.allow_reads()
+                    self.assertEqual(self.get(server, range='bytes=0-3')[0], 502)
+                    self.assertEqual(server.bytes_transferred, 0)
+                    if cancel: self.assertEqual(self.get(server, range='bytes=4-7')[0], 503)
+                self.assertEqual(len(requests), expected_calls)
+                self.assertEqual(len(session.grants), expected_calls)
+
+    def test_transport_recovery_rechecks_the_frozen_source_before_another_request(self):
+        source, session, _ = self.fixture(b'0123456789abcdef')
+        requests = []
+        class FailedTransport:
+            async def request(self, *args):
+                requests.append(args)
+                session.source = {**source, 'etag': '"changed"'}
+                raise MultipartTransferError('multipart_transport_failed')
+        with ScopedSourceServer(session, [source], transport=FailedTransport()) as server:
+            server.allow_reads()
+            self.assertEqual(self.get(server, range='bytes=0-3')[0], 502)
+            self.assertTrue(session.cancel_event.is_set())
+            self.assertEqual(server.bytes_transferred, 0)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(session.grants), 2)
 
     def test_overlapping_reads_reuse_only_verified_immutable_bytes_and_still_require_a_live_owner(self):
         data=bytes(range(64));source,session,transport=self.fixture(data)
