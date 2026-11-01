@@ -25,12 +25,59 @@ export function takeExecutionDispatchIds(tx: Tx): string[] {
 export interface ExecutionDispatchScopeOptions {
   database: PrismaClient;
   deliver(ids: readonly string[]): Promise<void>;
+  /** An actual RPC can outlive its outer HTTP response and must flush its own work. */
+  independent?: boolean;
+}
+
+export interface ExecutionRegistrationReceipt {
+  sessionId?: string;
+  uploadId?: string;
+  projectId?: string;
+  queuedJobId?: string;
+  ingestJobId?: string;
+  workflowRunId?: string;
+  operationId?: string;
+  taskId?: string;
+  operation?: { kind: "intake" | "generation" | "export"; id: string };
+}
+
+/** The error transport retains only durable identifiers, never tool content,
+ * grants, provider text or an arbitrary successful response body. */
+export function executionRegistrationReceipt(value: unknown): ExecutionRegistrationReceipt {
+  const record = (raw: unknown): Record<string, unknown> => raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const uuid = (raw: unknown): raw is string => typeof raw === "string" && raw.length === 36 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(raw);
+  const root = record(value), httpData = record(root.data), upload = record(root.upload), data = record(record(root.structuredContent).data), lineage = record(record(root._meta)["narriflow/operation"]);
+  const receipt: ExecutionRegistrationReceipt = {};
+  for (const key of ["sessionId", "uploadId", "projectId", "queuedJobId", "ingestJobId", "workflowRunId", "taskId"] as const) {
+    const id = [root[key], httpData[key], upload[key], data[key], key === "projectId" ? lineage.projectId : undefined].find(uuid);
+    if (id) receipt[key] = id;
+  }
+  const operationId = [root.operationId, httpData.operationId, data.operationId, record(root.operation).operationId, record(upload.operation).operationId].find(id => uuid(id) || typeof id === "string" && id.length === 26 && /^op_[A-Za-z0-9_-]{23}$/.test(id));
+  if (typeof operationId === "string") receipt.operationId = operationId;
+  const operation = [record(root.operation), record(httpData.operation), record(data.operation), { kind: lineage.domainKind, id: lineage.domainId }]
+    .find(item => ["intake", "generation", "export"].includes(String(item.kind)) && uuid(item.id));
+  if (operation) receipt.operation = { kind: operation.kind as "intake" | "generation" | "export", id: operation.id as string };
+  return receipt;
+}
+
+/** Only HTTP/RPC boundaries construct this after the handler has returned.
+ * The ordinary service/Workflow collector preserves its original failure. */
+export class ExecutionRegistrationPendingError extends Error {
+  readonly code = "scheduler_registration_pending";
+  readonly receipt: ExecutionRegistrationReceipt;
+  readonly retryAfterSeconds: number;
+  constructor(receipt: ExecutionRegistrationReceipt, cause: unknown) {
+    super("The request was saved, but scheduling is not confirmed. Retry the same request.", { cause });
+    this.name = "ExecutionRegistrationPendingError";
+    this.receipt = receipt;
+    this.retryAfterSeconds = cause instanceof ExecutionDispatchPendingError ? Math.min(86400, Math.max(1, Math.ceil((cause.retryAt.getTime() - Date.now()) / 1000))) : 1;
+  }
 }
 
 /** Must run inside the invocation's DB scope. Only explicitly collected,
  * committed obligations are read, never the global outbox. */
-export async function withExecutionDispatches<T>(operation: () => Promise<T>, options?: ExecutionDispatchScopeOptions): Promise<T> {
-  if (invocation.getStore()) return operation();
+export async function withExecutionDispatches<T>(operation: () => Promise<T>, options?: Partial<ExecutionDispatchScopeOptions>): Promise<T> {
+  if (invocation.getStore() && !options?.independent) return operation();
   const deliver = options?.deliver ?? deliverExecutionDispatches;
   return invocation.run(new Set(), async () => {
     let result: T | undefined;

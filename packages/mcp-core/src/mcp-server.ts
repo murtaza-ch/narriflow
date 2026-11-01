@@ -1,4 +1,5 @@
-import { McpServer, Server, type Implementation, type ServerOptions, type Transport, type JSONRPCRequest, type Result, type ServerContext } from "@modelcontextprotocol/server";
+import { ExecutionRegistrationPendingError } from "@narriflow/services/execution-dispatch-runtime";
+import { McpServer, Server, type Implementation, type ServerOptions, type Transport, type JSONRPCRequest, type Result, type ServerContext, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 
 /** A new invocation for an actual RPC, independent of the HTTP stream lifetime. */
 export type McpRequestScope = <T>(operation: () => Promise<T>) => Promise<T>;
@@ -18,9 +19,15 @@ export class NarriflowTaskServer extends Server {
    * including handlers installed by the SDK while connecting an exchange. */
   protected override _wrapHandler(method: string, handler: (request: JSONRPCRequest, context: ServerContext) => Promise<Result>) {
     const wrapped = super._wrapHandler(method, handler);
-    return (request: JSONRPCRequest, context: ServerContext) => this.requestScope
-      ? this.requestScope(() => wrapped(request, context))
-      : wrapped(request, context);
+    return async (request: JSONRPCRequest, context: ServerContext) => {
+      try { return this.requestScope ? await this.requestScope(() => wrapped(request, context)) : await wrapped(request, context); }
+      catch (error) {
+        if (error instanceof ExecutionRegistrationPendingError) throw new ProtocolError(ProtocolErrorCode.InternalError, error.message, {
+          error: error.code, kind: "unavailable", retryable: true, retryAfterSeconds: error.retryAfterSeconds, receipt: error.receipt,
+        });
+        throw error;
+      }
+    };
   }
 
   override async connect(wire: Transport) {
