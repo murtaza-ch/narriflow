@@ -50,7 +50,7 @@ The transfer authorization change on commit `6a497662` reduces each pure upload-
 
 The paired `b7fdecf3` images passed [exact deployed-image qualification](../evidence/exact-deployed-images-native-golden-b7fdecf3-20261101.json). Refreshed product and verifier metadata selected the actual immutable image IDs. Credential-free, network-blocked Sandboxes ran 168 applicable lean tests at 2 CPU/4 GiB and all 183 render tests at 4 CPU/8 GiB, with zero skips, failures or expected failures. Three source audits per profile matched 1,512 lean and 1,578 render baked files, including the sealed private Modal module. No application source was overlaid.
 
-The frozen 36-case golden comparison passed with zero mismatches: 18 ordinary cases and 16 activated cases passed; the two documented known defects remained unchanged. Both temporary Sandboxes were terminated, and the six selected Function identities remained stable. This does not establish live provider behavior, cold-start p95, or clip preparation under its smaller 2 CPU/4 GiB Function limits; those remain separate acceptance work.
+The frozen 36-case golden comparison passed with zero mismatches: 18 ordinary cases and 16 activated cases passed. The summary retains its historical `xfail` label for `rot180` and `mirror-h`, but both per-case verdicts are `guard-pass`, with rendering and orientation assertions passing. Both temporary Sandboxes were terminated, and the six selected Function identities remained stable. This does not establish live provider behavior, cold-start p95, or clip preparation under its smaller 2 CPU/4 GiB Function limits; those remain separate acceptance work.
 
 ## Third deployed transfer attempt, 2026-11-01
 
@@ -65,3 +65,7 @@ The [first real speech smoke failed](../evidence/spoken-first-attempt-handoff-fa
 The original upload session, project, job and idempotency keys remain retained for an ordinary authenticated uploader replay after the handoff fix. No manual dispatch insertion, job reset or replacement fixture has occurred. Candidate HTTP and database admission are closed while the fix is verified. This ticket remains claimed.
 
 The [local handoff fix checks](../evidence/upload-handoff-local-checks-20261101.json) pass on `cae8e162` plus the test isolation correction. Fresh finalization queues the initial dispatch atomically; authenticated queued replays collect the same current obligation without changing job or storage budgets. Independent spec review found a remaining Worker-boundary gap: post-commit registration failure must return a typed retryable response carrying the accepted receipt. That correction and deployed same-upload replay remain pending. The first four-minute smoke is still failed.
+
+## Media coverage audit, 2026-11-01
+
+The exact-image golden evidence now distinguishes its historical summary labels from the two actual passing orientation guards. Its raw reports and hashes remain unchanged. The earlier long-source report overstated moov/GOP coverage; an explicit asserted head/tail moov and short/long GOP seek matrix remains open. The twelve-window three-hour representative-source fixture measured18.01% source reads, while the compact-source357.55% failure remains retained. Actual deployed Mac acquisition, successful upstream proxy/token parity and broader live provider media acceptance remain pending.

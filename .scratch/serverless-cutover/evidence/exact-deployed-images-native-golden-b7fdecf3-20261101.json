@@ -78,7 +78,49 @@
             "activatedFail": 0
           }
         },
-        "mismatchCount": 0
+        "mismatchCount": 0,
+        "guardPassCases": [
+          {
+            "id": "rot180",
+            "class": "known-defect",
+            "verdict": "guard-pass",
+            "mismatches": [],
+            "assertions": [
+              {
+                "targetId": "vertical",
+                "id": "renders",
+                "pass": true,
+                "actual": true
+              },
+              {
+                "targetId": "vertical",
+                "id": "subject-orientation",
+                "pass": true,
+                "actual": "YBGR"
+              }
+            ]
+          },
+          {
+            "id": "mirror-h",
+            "class": "known-defect",
+            "verdict": "guard-pass",
+            "mismatches": [],
+            "assertions": [
+              {
+                "targetId": "vertical",
+                "id": "renders",
+                "pass": true,
+                "actual": true
+              },
+              {
+                "targetId": "vertical",
+                "id": "subject-orientation",
+                "pass": true,
+                "actual": "GRYB"
+              }
+            ]
+          }
+        ]
       },
       "goldenCases": 36
     }
@@ -96,7 +138,7 @@
     "Fixture-controlled native/provider/control/storage behavior; no live domain/Postgres/R2 or paid provider acceptance claim.",
     "Sandbox scheduling differs from Functions; these are not cold-start p95 samples.",
     "prepare_clip shares the render image but has 2CPU/4GiB Function limits. The render Sandbox used4CPU/8GiB; actual prepare_clip under2CPU/4GiB remains part of the spoken journey.",
-    "Native tests had zero skips and expected failures. The golden suite preserved its separately documented two unchanged known defects."
+    "Native tests had zero skips and expected failures. The golden summary retains its historical xfail count of two for rot180 and mirror-h; both per-case verdicts are guard-pass, and their rendering and orientation assertions pass."
   ],
   "rawEvidence": {
     "directory": "/tmp/narriflow-native-exact-b7fdecf3",
@@ -259,5 +301,9 @@
     ]
   },
   "productionOrSharedChangesPerformed": false,
-  "temporarySandboxesRetired": true
+  "temporarySandboxesRetired": true,
+  "interpretationCorrection": {
+    "recordedAtUtc": "2026-11-01T01:59:15.863405+00:00",
+    "reason": "The historical summary label xfail was incorrectly described as two unresolved defects. The retained raw per-case verdicts and assertions show two orientation guards passing. Raw evidence and hashes remain unchanged."
+  }
 }

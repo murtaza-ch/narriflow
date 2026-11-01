@@ -169,7 +169,7 @@
     },
     "accounting": "Execution source-read bytes only, including native probes, scans and encode. Excludes initial fixture creation, local fixture hash and acquisition. File-backed upstream fixture reads each requested conditional range; it does not load the whole source in memory. The completed preparation is a fixture with typed unavailable layout. Native prepare_clip preview/peaks/layout/detector original reads and the12-clip aggregate are NOT included; this does not close spec7.6.",
     "rssAccounting": "25ms sampled sum across the native invocation process tree. Shared pages may be counted per process. This is not a platform cgroup peak; Modal memory limit was8192MiB. Per-command values are per-process maxima.",
-    "fixture": "A four-second synthetic audiovisual fixture repeated by stream-copy to exactly3h. The frozen golden matrix separately covers moov/GOP/VFR/orientation/HDR/A-V offsets and multilingual caption cases."
+    "fixture": "A four-second synthetic audiovisual fixture repeated by stream-copy to exactly3h. The frozen golden matrix separately covers VFR/orientation/HDR/A-V offsets and multilingual caption cases. An explicit moov-position/GOP permutation matrix was not established by this evidence and remains pending."
   },
   "detectors": {
     "runtime": "CPython3.13.5 pinned render image",
@@ -298,7 +298,12 @@
   },
   "open": [
     "Explicit decoder/filter4 and x264encoder6 policy now passes full36 exact comparisons; see render-thread-policy-20261031.json. Final candidate image refresh is still required.",
-    "Live Worker-domain fault combinations, paid provider/proxy egress and performance cohorts remain separate22 work."
+    "Live Worker-domain fault combinations, paid provider/proxy egress and performance cohorts remain separate22 work.",
+    "Explicit asserted head/tail moov and short/long GOP seek permutation acceptance remains pending; the previous long-source fixture description overstated frozen golden coverage."
   ],
-  "threadGateResolvedBy": "render-thread-policy-20261031.json"
+  "threadGateResolvedBy": "render-thread-policy-20261031.json",
+  "interpretationCorrection": {
+    "recordedAtUtc": "2026-11-01T01:59:15.864632+00:00",
+    "reason": "No explicit asserted moov-position/GOP variation matrix supported the previous coverage statement. Native raw results and hashes remain unchanged."
+  }
 }
