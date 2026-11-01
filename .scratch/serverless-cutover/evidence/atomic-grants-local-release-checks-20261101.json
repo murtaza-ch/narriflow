@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T00:25:44.435770+00:00",
+  "productionChangeCommit": "6a497662",
+  "fixtureCorrectionCommit": "090f1729",
+  "productionRuntimeFilesUnchangedBetweenThoseCommits": true,
+  "toolchain": {
+    "bun": "1.3.6",
+    "localPostgres": "17.11",
+    "pgvector": "0.8.7",
+    "wrangler": "4.156.0"
+  },
+  "checks": {
+    "executionPostgres": {
+      "passed": true,
+      "tests": 463,
+      "failures": 0,
+      "skips": 0,
+      "assertions": 3334,
+      "target": "disposable local schemas only"
+    },
+    "typecheck": {
+      "passed": true,
+      "tasks": 15
+    },
+    "lint": {
+      "passed": true,
+      "errors": 0,
+      "warnings": 11,
+      "info": 1
+    },
+    "workerDryBuildAndImportAudit": {
+      "passed": true,
+      "cloudDeploymentPerformed": false
+    },
+    "fastSuite": {
+      "passed": true,
+      "tasks": 14,
+      "elapsedSeconds": 142.465,
+      "startedAtCommit": "6a497662",
+      "headAtCompletion": "090f1729",
+      "scopeNote": "The later commit changes gate fixtures/callers/tests only. Its affected Bun and Python tests were separately run below."
+    },
+    "fixtureBun": {
+      "passed": true,
+      "tests": 11,
+      "assertions": 64
+    },
+    "fixturePython": {
+      "passed": true,
+      "tests": 10
+    }
+  },
+  "agentFixtureValidation": {
+    "deadlineCommit": "c71c924c, cherry-picked as090f1729",
+    "postgresTests": 26,
+    "postgresAssertions": 199,
+    "pythonTests": 11,
+    "coreAcquireOrExpiryCodeChanged": false
+  },
+  "independentReview": {
+    "model": "Sol High",
+    "commit": "6a497662",
+    "actionableFindings": 0,
+    "method": "Read-only review of three production files, focused tests and concrete signing wiring. No live performance claims."
+  },
+  "priorDiagnosticRun": {
+    "bun": "1.4.2",
+    "tests": 463,
+    "failures": 0,
+    "assertions": 3335,
+    "qualifiedReleaseResult": false,
+    "reason": "Nested runner used host Bun; the full suite was repeated with Bun1.3.6 pinned in PATH."
+  },
+  "hostedCI": "Blocked before execution by GitHub account billing lock; see github-ci-billing-blocked-20261101.json. No hosted pass claimed.",
+  "deployedCombinedTransfer": "Failed previous attempt; fresh corrected paired candidate still required. No live latency improvement claimed.",
+  "rawLogs": [
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-execution-db-pinned-6a497662.log",
+      "sha256": "fd35a33e4e4305227f8f97a98b47ad1c7c5726c90febef3c563b2b7e288111b9",
+      "byteLength": 198934
+    },
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-typecheck-6a497662.log",
+      "sha256": "043d44ee0d2c668b7dcdefddb77f9450d02e0c65fe5a5087071c0d06a6626a0b",
+      "byteLength": 3275
+    },
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-lint-6a497662.log",
+      "sha256": "62d21dd7176939a8feea41c97f75d08e213548082722873978c1d587daf96abf",
+      "byteLength": 13511
+    },
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-worker-build-6a497662.log",
+      "sha256": "6f3275b22948d375d851ce6494aba966dc9393adc41518db390ae7c6e7a080ba",
+      "byteLength": 1933
+    },
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-fast-6a497662.log",
+      "sha256": "ba50857e2e01374bcb5f652fc692eaee0e0213565a0abab6deb2c7ebd449720a",
+      "byteLength": 1196201
+    },
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-transfer-fixtures-090f1729.log",
+      "sha256": "bbac05c5c07649663a40181883d2e3f0e5a12a43dee881c8179c705f9e858bbd",
+      "byteLength": 1516
+    },
+    {
+      "localPath": "/tmp/narriflow-serverless-gates/release-transfer-python-090f1729.log",
+      "sha256": "2d6603fa9f5000144e76e400c77dd7540642ffd9e3ba07e69618a92fee4d406c",
+      "byteLength": 109
+    }
+  ],
+  "sharedDevelopmentDatabaseTouched": false,
+  "cutoverComplete": false
+}

@@ -27,11 +27,19 @@ The non-execution AGENTS PostgreSQL matrix passed715 test executions and4726 ass
 
 The complete deployed Worker passed the real one/two/one concurrent16MiB publication payload sequence in one isolate with1082 constructed production routes and zero SQL. The absent synthetic object was recreated before that successful sequence. The temporary CutoverVerification export and implementation have been removed from release source. See [the deployed result](../evidence/publication-full-worker-memory-20261101.json).
 
-The owner's database choice is Neon Free. The actual signed10GiB upload/pin gate is running against the isolated candidate. The isolated qualified restore gate has now passed. Final local-device, deployed HTTP/MCP, real provider pipeline, quota/burst, latency and exact-candidate one-hour idle gates remain open. No shared cutover, dev push, infrastructure deletion or reopening has occurred.
+The owner's database choice is Neon Free. The second deployed 10 GiB upload/pin gate failed, as recorded below. The isolated qualified restore gate has passed. Final local-device, deployed HTTP/MCP, real provider pipeline, quota/burst, latency and exact-candidate one-hour idle gates remain open. No shared cutover, dev push, infrastructure deletion or reopening has occurred.
 
 
 ## Qualified restore acceptance, 2026-11-01
 
 The fourth isolated source-8 / snapshot-9 / target-10 gate passed [its actual verifier](../evidence/qualified-restore-fourth-attempt-passed-20261101.json). The 1,297,895-byte snapshot was captured, attested and restored. Typed stale Superseded proof preceded ordinary redispatch and left the current job queued/unowned, result SQL NULL, charge 1 and assets 0. The ordinary generation-2 successor completed at 23:16:55.450 UTC, 73.744 seconds before the unchanged original deadline, with two actual starts/charges, one published asset and an uncommitted old probe. The exact privileged operator Sandbox was terminated and retired.
 
-All three earlier attempts remain failed and retain their evidence. The candidate remains at epoch 10 with HTTP and database admission closed. The coalesced 10 GiB gate is separately running against the fixed closed Worker; its result is not claimed here. No shared cutover, reopening, deployment change, dev merge/push or ticket completion follows from the qualified restore pass. Ticket 22 remains claimed until all acceptance gates pass.
+All three earlier attempts remain failed and retain their evidence. The candidate remains at epoch 10 with HTTP and database admission closed. No shared cutover, reopening, dev merge/push or ticket completion follows from the qualified restore pass. Ticket 22 remains claimed until all acceptance gates pass.
+
+## Second deployed transfer attempt, 2026-11-01
+
+The [coalesced transfer attempt failed](../evidence/coalesced-transfer-second-attempt-failed-20261101.json). Its complete 10 GiB upload passed in 1264.087 seconds with 640 parts. Conditional pinning timed out after 1324.068 seconds, at 2625.519 seconds combined. This is not a combined transfer acceptance pass.
+
+The fixture passed the combined cutoff to the native pin operation but allowed the durable pin job and attempt to receive a fresh later deadline. A lease expiry therefore allowed an unintended second charged pin start. All three attempts became terminal, with six assigned artifacts and zero published artifacts. Their existing deadlines, attempt history and raw reports remain unchanged. The candidate Workflows and Modal gate app were stopped. Exact cleanup remains pending until the stored deadline/grant holds expire, followed by deployed cleanup and storage-absence proofs.
+
+The transfer authorization change on commit `6a497662` reduces each pure upload-part or source-range authorization from four transactions to one in local tests. It retains fresh epoch, inbox, domain and attempt checks, bounded grants and cleanup holds. This is not a measured deployed latency gain. A fixture deadline correction and a fresh deployed combined transfer pass are still required.

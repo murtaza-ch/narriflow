@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "observedAtUtc": "2026-11-01 00:20:18 UTC",
+  "commit": "fbaf31870efc7107e6b409bb7e4588160e5b5c5b",
+  "workflowRunId": 41254101931,
+  "url": "https://github.com/murtaza-ch/narriflow/actions/runs/41254101931",
+  "status": "BLOCKED before runner execution by GitHub account billing lock",
+  "jobCount": 16,
+  "jobs": [
+    {
+      "id": 124693495122,
+      "name": "check",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495143,
+      "name": "Zapier app",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495192,
+      "name": "Make app",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495223,
+      "name": "Pinned Linux media runtime",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495232,
+      "name": "PostgreSQL / Upload Session",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495261,
+      "name": "PostgreSQL / Integration API receipts, callbacks, and Tasks",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495291,
+      "name": "PostgreSQL / Brand Profiles",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495300,
+      "name": "PostgreSQL / Clip Editor Document Persistence",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495323,
+      "name": "PostgreSQL / Workflow Run",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495338,
+      "name": "PostgreSQL / Social Publication Attempt",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495339,
+      "name": "PostgreSQL / Vizard Expansion",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495340,
+      "name": "PostgreSQL / Workspace Billing",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495344,
+      "name": "PostgreSQL / Authenticated Request Policy",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495346,
+      "name": "PostgreSQL / Processing Usage",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495352,
+      "name": "PostgreSQL / Library Search",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    },
+    {
+      "id": 124693495411,
+      "name": "PostgreSQL / Serverless Execution",
+      "status": "completed",
+      "conclusion": "failure",
+      "recordedSteps": 0
+    }
+  ],
+  "exactAnnotation": "The job was not started because your account is locked due to a billing issue.",
+  "meaning": "No hosted checks executed. These are not test failures and no hosted CI success is claimed.",
+  "billingChangesPerformed": false,
+  "localEquivalents": "Local release checks and integration suites are recorded separately. They do not change the hosted CI result."
+}
