@@ -315,25 +315,29 @@ async function glyphRenderFingerprint(ffmpegPath: string | null, fontsDirectory:
   }
 }
 
-/** Draw every specimen alone through libass with its pinned face (`\\fn`, as the export does) and hash each frame. A frame equal to an empty render means nothing was drawn. */
-async function scriptSpecimenFingerprint(ffmpegPath: string | null, fontsDirectory: string | null): Promise<Record<string, string | null>> {
-  const result: Record<string, string | null> = {};
-  if (!ffmpegPath || !fontsDirectory) return Object.fromEntries(SCRIPT_SPECIMENS.map((specimen) => [specimen.id, null]));
+/** Draw the blank control and each specimen on separate frames through one
+ * libass instance. Static events retain the original one-frame pixels. */
+export async function scriptSpecimenFingerprint(ffmpegPath: string | null, fontsDirectory: string | null): Promise<Record<string, string | null>> {
+  const result: Record<string, string | null> = Object.fromEntries(SCRIPT_SPECIMENS.map(specimen => [specimen.id, null]));
+  if (!ffmpegPath || !fontsDirectory) return result;
   const directory = await mkdtemp(join(tmpdir(), "narriflow-specimen-"));
   try {
-    const render = async (name: string, text: string, face: string): Promise<string | null> => {
-      const ass = ["[Script Info]", "ScriptType: v4.00+", "PlayResX: 960", "PlayResY: 160", "", "[V4+ Styles]", "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding", "Style: Default,Inter,56,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,10,10,10,1", "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", `Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\pos(40,30)\\fn${face}}${text}`, ""].join("\n");
-      const assPath = join(directory, `${name}.ass`);
-      await writeFile(assPath, ass, "utf8");
-      const filter = `ass='${escaped(assPath)}':fontsdir='${escaped(fontsDirectory)}'`;
-      const output = await run(ffmpegPath, ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=960x160:r=1:d=1", "-vf", filter, "-frames:v", "1", "-f", "md5", "-"]);
-      return /MD5=([0-9a-f]{32})/.exec(output.stdout)?.[1] ?? null;
-    };
-    const empty = await render("empty", "", "Noto Sans Regular");
-    for (const specimen of SCRIPT_SPECIMENS) {
-      const hash = await render(specimen.id, specimen.text, specimen.face);
-      result[specimen.id] = hash && hash !== empty ? hash : null;
-    }
+    const frames = [{ text: "", face: "Noto Sans Regular" }, ...SCRIPT_SPECIMENS];
+    const instant = (frame: number) => `0:${String(Math.floor(frame / 60)).padStart(2, "0")}:${String(frame % 60).padStart(2, "0")}.00`;
+    const lines = frames.map((specimen, frame) => `Dialogue: 0,${instant(frame)},${instant(frame + 1)},Default,,0,0,0,,{\\pos(40,30)\\fn${specimen.face}}${specimen.text}`);
+    const ass = ["[Script Info]", "ScriptType: v4.00+", "PlayResX: 960", "PlayResY: 160", "", "[V4+ Styles]", "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding", "Style: Default,Inter,56,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,10,10,10,1", "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", ...lines, ""].join("\n");
+    const assPath = join(directory, "probe.ass");
+    await writeFile(assPath, ass, "utf8");
+    const filter = `ass='${escaped(assPath)}':fontsdir='${escaped(fontsDirectory)}'`;
+    const output = await run(ffmpegPath, ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=black:s=960x160:r=1:d=${frames.length}`, "-vf", filter, "-frames:v", String(frames.length), "-f", "framemd5", "-"]);
+    const rows = output.stdout.split(/\r?\n/).filter(line => line.trim() && !line.startsWith("#"));
+    if (output.code !== 0 || rows.length !== frames.length) return result;
+    const hashes = rows.map((line, frame) => {
+      const match = /^\s*0,\s*(\d+),\s*(\d+),\s*1,\s*230400,\s*([0-9a-f]{32})\s*$/.exec(line);
+      return match && Number(match[1]) === frame && Number(match[2]) === frame ? match[3]! : null;
+    });
+    if (hashes.some(hash => hash === null)) return result;
+    SCRIPT_SPECIMENS.forEach((specimen, index) => { result[specimen.id] = hashes[index + 1] !== hashes[0] ? hashes[index + 1]! : null; });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
