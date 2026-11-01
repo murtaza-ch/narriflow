@@ -3,6 +3,7 @@ import {
   defaultUploadSessionConfig,
   UploadSessionAdmissionClaimLostError,
   UploadSessionInvalidStateError,
+  UploadSessionNotFoundError,
   UploadSessionReconciliationClaimLostError,
   UploadSessionStorageProbeError,
   type UploadSessionModuleDependencies,
@@ -271,6 +272,12 @@ export function createInMemoryUploadSessionHarness() {
       session.reconcileAt = reconcileAt;
       session.updatedAt = updatedAt;
       return { claimed: true, session };
+    },
+    async replayHandoff({ sessionId, workspaceId, actorUserId }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId && candidate.workspaceId === workspaceId && candidate.actorUserId === actorUserId);
+      if (!session) throw new UploadSessionNotFoundError();
+      if (session.status !== "queued_for_ingest" || !session.queuedJobId) throw new UploadSessionInvalidStateError();
+      return session;
     },
     async handoff({
       sessionId,

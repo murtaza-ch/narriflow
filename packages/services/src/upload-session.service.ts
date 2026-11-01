@@ -308,6 +308,14 @@ export interface UploadSessionPersistence {
     workspaceId: string;
     callback: CallbackRegistration;
   }): Promise<void>;
+  /** Replays an accepted handoff and collects its current initial obligation,
+   * without repeating storage verification or admitting another Ingest Job. */
+  replayHandoff(input: {
+    executionEpoch?: number;
+    sessionId: string;
+    workspaceId: string;
+    actorUserId: string;
+  }): Promise<UploadSessionRecord>;
   handoff(input: {
     executionEpoch?:number;
     sessionId: string;
@@ -1265,14 +1273,23 @@ export function createUploadSessionModule(
     };
   }
 
-  function settledFinalizationOutcome(settled: UploadSessionRecord) {
+  async function queuedHandoffOutcome(session: UploadSessionRecord) {
+    const queued = await dependencies.persistence.replayHandoff({
+      sessionId: session.id,
+      workspaceId: session.workspaceId,
+      actorUserId: session.actorUserId,
+    });
+    return {
+      outcome: "queued_for_ingest" as const,
+      sessionId: queued.id,
+      projectId: queued.preallocatedProjectId,
+      queuedJobId: queued.queuedJobId!,
+    };
+  }
+
+  async function settledFinalizationOutcome(settled: UploadSessionRecord) {
     if (settled.status === "queued_for_ingest" && settled.queuedJobId) {
-      return {
-        outcome: "queued_for_ingest" as const,
-        sessionId: settled.id,
-        projectId: settled.preallocatedProjectId,
-        queuedJobId: settled.queuedJobId,
-      };
+      return queuedHandoffOutcome(settled);
     }
     if (
       settled.status === "finalizing" ||
@@ -1653,12 +1670,7 @@ export function createUploadSessionModule(
           throw new UploadSessionIdempotencyConflictError();
         }
         if (existing.status === "queued_for_ingest" && existing.queuedJobId) {
-          return {
-            outcome: "queued_for_ingest" as const,
-            sessionId: existing.id,
-            projectId: existing.preallocatedProjectId,
-            queuedJobId: existing.queuedJobId,
-          };
+          return queuedHandoffOutcome(existing);
         }
         if (
           existing.status === "finalizing" ||
@@ -1738,7 +1750,7 @@ export function createUploadSessionModule(
                 updatedAt: dependencies.now(),
               });
             if (!finalization.claimed) {
-              const handoff = settledFinalizationOutcome(finalization.session);
+              const handoff = await settledFinalizationOutcome(finalization.session);
               return handoff.outcome === "reconciling"
                 ? { ...handoff, projectId: active.preallocatedProjectId }
                 : handoff;
@@ -2028,12 +2040,7 @@ export function createUploadSessionModule(
         throw new UploadSessionNotFoundError();
       }
       if (session.status === "queued_for_ingest" && session.queuedJobId) {
-        return {
-          outcome: "queued_for_ingest",
-          sessionId: session.id,
-          projectId: session.preallocatedProjectId,
-          queuedJobId: session.queuedJobId,
-        };
+        return queuedHandoffOutcome(session);
       }
       if (
         session.status === "finalizing" ||
@@ -2339,12 +2346,7 @@ export function createUploadSessionModule(
       };
       if (current.status === "queued_for_ingest" && current.queuedJobId) {
         await registerAccepted(current.id);
-        return {
-          outcome: "queued_for_ingest",
-          sessionId: current.id,
-          projectId: current.preallocatedProjectId,
-          queuedJobId: current.queuedJobId,
-        };
+        return queuedHandoffOutcome(current);
       }
       if (current.status === "finalizing") {
         await registerAccepted(current.id);
@@ -3281,6 +3283,7 @@ function fencedUploadPersistence(executionEpoch:number):UploadSessionPersistence
  bindMultipartProvider:(input)=>prismaUploadSessionPersistence.bindMultipartProvider({...input,executionEpoch}),
  markSingleReady:(input)=>prismaUploadSessionPersistence.markSingleReady({...input,executionEpoch}),
  releaseAdmissionClaim:(input)=>prismaUploadSessionPersistence.releaseAdmissionClaim({...input,executionEpoch}),
+ replayHandoff:(input)=>prismaUploadSessionPersistence.replayHandoff({...input,executionEpoch}),
  handoff:(input)=>prismaUploadSessionPersistence.handoff({...input,executionEpoch}),
  recordFailure:(input)=>prismaUploadSessionPersistence.recordFailure({...input,executionEpoch}),
  recordCleanupRetry:(input)=>prismaUploadSessionPersistence.recordCleanupRetry({...input,executionEpoch}),
@@ -3636,6 +3639,16 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
   async registerUploadCallback({ sessionId, workspaceId, callback }) {
     await ensureUploadCallback({ workspaceId, sessionId, registration: callback });
   },
+  async replayHandoff({ executionEpoch, sessionId, workspaceId, actorUserId }) {
+    return requiredPrisma().$transaction(async (tx) => {
+      await guardUploadEpoch(tx, executionEpoch);
+      const row = await tx.uploadSession.findFirst({ where: { id: sessionId, workspaceId, actorUserId } });
+      if (!row) throw new UploadSessionNotFoundError();
+      if (row.status !== "queued_for_ingest" || !row.queuedJobId) throw new UploadSessionInvalidStateError();
+      await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, row.queuedJobId);
+      return fromPrismaUploadSession(row);
+    });
+  },
   async handoff({executionEpoch,
     sessionId,
     queuedJobId,
@@ -3650,7 +3663,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     });
     if (!initial) throw new Error("Upload Session not found");
     if (initial.status === "queued_for_ingest") {
-      return fromPrismaUploadSession(initial);
+      return prismaUploadSessionPersistence.replayHandoff({ executionEpoch, sessionId, workspaceId: initial.workspaceId, actorUserId: initial.actorUserId });
     }
     const generation = initial.generationSettings as {
       languageCode?: unknown;
@@ -3680,7 +3693,11 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           where: { id: sessionId },
         });
         if (!current) throw new Error("Upload Session not found");
-        if (current.status === "queued_for_ingest") return current;
+        if (current.status === "queued_for_ingest") {
+          if (!current.queuedJobId) throw new UploadSessionInvalidStateError();
+          await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, current.queuedJobId);
+          return current;
+        }
         if (
           (current.status !== "finalizing" && current.status !== "reconciling") ||
           (reconciliationAttemptId &&
@@ -3756,7 +3773,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             ...recipeColumn(generation),
           },
         });
-        await getIngestJobLifecycle().enqueue(tx, {
+        const ingest = getIngestJobLifecycle();
+        await ingest.enqueue(tx, {
             id: queuedJobId,
             projectId: current.preallocatedProjectId,
             uploadSessionId: current.id,
@@ -3770,6 +3788,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
               uploadSessionId: current.id,
             },
         });
+        await ingest.queueExecutionWithinTransaction(tx, queuedJobId);
         const handoff = await tx.uploadSession.updateMany({
           where: {
             id: current.id,
@@ -3805,7 +3824,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           where: { id: sessionId },
         });
         if (replay?.status === "queued_for_ingest") {
-          return fromPrismaUploadSession(replay);
+          return prismaUploadSessionPersistence.replayHandoff({ executionEpoch, sessionId, workspaceId: replay.workspaceId, actorUserId: replay.actorUserId });
         }
       }
       throw error;
