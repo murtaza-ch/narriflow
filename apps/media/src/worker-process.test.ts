@@ -7,7 +7,7 @@ import { sourceProbeSchema } from "@narriflow/validators";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WORKFLOW_LEASE_DURATION_MS, WorkflowAttemptLost } from "@narriflow/services";
+import { WORKFLOW_LEASE_DURATION_MS, WorkflowAttemptLost } from "@narriflow/services/workflow-attempt-contract";
 import {
   activeScratchDirectories,
   createWorkerProcessModule,
