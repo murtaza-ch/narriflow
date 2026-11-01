@@ -163,3 +163,40 @@ PYTHONPATH=apps/media/python python3 -m unittest discover \
 ```
 
 These checks use no candidate database, R2 object or Modal invocation.
+
+## One-shot coalesced caller configuration
+
+`executor-r2-batched-acceptance.ts run --config /absolute/private/config.json`
+requires version 2 only. Choose a fresh explicit directory matching
+`/tmp/narriflow-executor-r2-<slug>` (1–64 lowercase letters, digits or hyphens,
+with an alphanumeric first and last character). The directory must be owned by
+the caller, private 0700, empty and not a symlink. Its 0600 `run.lock` is exclusive;
+any existing entry prevents reuse. Keep every failed directory unchanged.
+
+```json
+{
+  "version": 2,
+  "outputDirectory": "/tmp/narriflow-executor-r2-fresh-20261102",
+  "expectedEpoch": 10,
+  "expectedWorkerVersion": "REPLACE_WITH_EXACT_WORKER_VERSION",
+  "apiOrigin": "https://narriflow-api-candidate.murtazach275.workers.dev",
+  "qualifiedRestoreProofPath": "/absolute/private/actual-8-9-10-proof.json",
+  "expectedFunctionId": "REPLACE_WITH_EXACT_FUNCTION_ID",
+  "modalSourceWitness": "REPLACE_WITH_EXACT_40_HEX_COMMIT"
+}
+```
+
+Root supplies the source archive/proof and exact hydrated Function ID after
+review. The source witness is a full 40-character lowercase commit hash, without
+a hardcoded commit prefix. The exact Worker/Function guards and passed 8/9/10
+restore proof remain required. Store the filled config 0600. There is no version 1
+fallback or automatic relocation of an occupied output directory.
+
+The private acceptance wrapper must append `sourceCommit` containing the exact
+archived source commit to every native report, alongside `runtime`. Root injects
+that static constant while preparing the untracked private wrapper after
+`git archive`; it does not change product functions or the public Modal app.
+Both passed phase reports must contain exactly the configured source witness.
+A missing or different witness refuses acceptance even when the hydrated Modal
+Function ID remains stable across deployments. The verified witness is retained
+in the private phase summary. Never rewrite an old report to add this field.

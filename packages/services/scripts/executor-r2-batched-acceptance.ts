@@ -1,6 +1,6 @@
 /** One-shot private coalesced transfer acceptance. No cleanup or redeployment. */
 import {spawn} from "node:child_process";
-import {readFile,writeFile,rename,mkdir,open,stat} from "node:fs/promises";
+import {readFile,writeFile,rename,mkdir,open,stat,lstat,readdir} from "node:fs/promises";
 import {isAbsolute} from "node:path";
 import {fileURLToPath} from "node:url";
 import {createHash,randomUUID} from "node:crypto";
@@ -8,13 +8,23 @@ import {Pool} from "pg";
 import {candidateRestoreTarget} from "./gates/qualified-restore-candidate";
 import {readRestoreResumeWorker} from "../src/execution-snapshot";
 import {sourceReceipt} from "./executor-r2-transfer-gate";
-const folder="/tmp/narriflow-executor-r2-batched",settingsPath="/tmp/narriflow-serverless-control-keys/candidate-worker-secrets.json";
+const settingsPath="/tmp/narriflow-serverless-control-keys/candidate-worker-secrets.json";
 const repo=fileURLToPath(new URL("../../../",import.meta.url));
 const fail=()=>Error("batched_acceptance_refused");
-interface Config{version:1;expectedEpoch:10;expectedWorkerVersion:string;apiOrigin:string;qualifiedRestoreProofPath:string;expectedFunctionId:string;modalSourceWitness:string}
+const outputDirectoryPattern=/^\/tmp\/narriflow-executor-r2-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+interface Config{version:2;outputDirectory:string;expectedEpoch:10;expectedWorkerVersion:string;apiOrigin:string;qualifiedRestoreProofPath:string;expectedFunctionId:string;modalSourceWitness:string}
 export function batchedAcceptanceConfig(raw:unknown):Config{
  if(!raw||typeof raw!=="object"||Array.isArray(raw))throw fail();const c=raw as Config;
- if(Object.keys(c).sort().join(",")!==["version","expectedEpoch","expectedWorkerVersion","apiOrigin","qualifiedRestoreProofPath","expectedFunctionId","modalSourceWitness"].sort().join(",")||c.version!==1||c.expectedEpoch!==10||typeof c.expectedWorkerVersion!=="string"||!/^[-a-zA-Z0-9_]{1,160}$/.test(c.expectedWorkerVersion)||typeof c.apiOrigin!=="string"||new URL(c.apiOrigin).origin!==c.apiOrigin||new URL(c.apiOrigin).protocol!=="https:"||!isAbsolute(c.qualifiedRestoreProofPath)||!/^fu-[A-Za-z0-9]{10,40}$/.test(c.expectedFunctionId)||typeof c.modalSourceWitness!=="string"||!/^35ca[A-Za-z0-9._-]{0,156}$/.test(c.modalSourceWitness))throw fail();return c;
+ if(Object.keys(c).sort().join(",")!==["version","outputDirectory","expectedEpoch","expectedWorkerVersion","apiOrigin","qualifiedRestoreProofPath","expectedFunctionId","modalSourceWitness"].sort().join(",")||c.version!==2||typeof c.outputDirectory!=="string"||!outputDirectoryPattern.test(c.outputDirectory)||c.expectedEpoch!==10||typeof c.expectedWorkerVersion!=="string"||!/^[-a-zA-Z0-9_]{1,160}$/.test(c.expectedWorkerVersion)||typeof c.apiOrigin!=="string"||new URL(c.apiOrigin).origin!==c.apiOrigin||new URL(c.apiOrigin).protocol!=="https:"||!isAbsolute(c.qualifiedRestoreProofPath)||!/^fu-[A-Za-z0-9]{10,40}$/.test(c.expectedFunctionId)||typeof c.modalSourceWitness!=="string"||!/^[a-f0-9]{40}$/.test(c.modalSourceWitness))throw fail();return c;
+}
+/** An existing run is evidence, never a destination to repair or overwrite. */
+export async function prepareBatchedOutputDirectory(folder:string){
+ if(!outputDirectoryPattern.test(folder))throw fail();
+ await mkdir(folder,{recursive:true,mode:0o700});
+ const info=await lstat(folder),uid=process.getuid?.();
+ if(!info.isDirectory()||info.isSymbolicLink()||info.mode&0o077||uid!==undefined&&info.uid!==uid)throw fail();
+ if((await readdir(folder)).length)throw fail();
+ await(await open(folder+"/run.lock","wx",0o600)).close();
 }
 export function batchedRestoreProof(raw:unknown){
  const p=raw as Record<string,unknown>;
@@ -28,6 +38,10 @@ export function batchedTimings(raw:unknown){
   if(!Number.isInteger(out.calls)||!Number.isInteger(out.failures)||!Number.isInteger(out.maxConcurrentCalls)||out.unfinishedCalls!==0||(out.failures??0)>(out.calls??0))throw fail();result[label]=out;
  }return result;
 }
+export function batchedNativeReport(raw:unknown,phase:"upload"|"pin",sourceCommit:string){
+ if(!raw||typeof raw!=="object"||Array.isArray(raw))throw fail();const report=raw as Record<string,unknown>;
+ if(report.status!=="passed"||report.phase!==phase||!/^[a-f0-9]{40}$/.test(sourceCommit)||report.sourceCommit!==sourceCommit)throw fail();return report;
+}
 export function batchedDeadline(sqlDeadline:number,reportDeadline?:number){
  if(!Number.isSafeInteger(sqlDeadline)||reportDeadline!==undefined&&(!Number.isSafeInteger(reportDeadline)||reportDeadline!==sqlDeadline))throw fail();return sqlDeadline;
 }
@@ -35,7 +49,7 @@ async function privateJson<T>(path:string):Promise<T>{const info=await stat(path
 async function save(path:string,value:unknown){const temp=`${path}.${randomUUID()}.tmp`;await writeFile(temp,`${JSON.stringify(value,null,2)}\n`,{mode:0o600,flag:"wx"});await rename(temp,path);}
 async function main(){
  if(process.argv.length!==5||process.argv[2]!=="run"||process.argv[3]!=="--config"||process.versions.bun!=="1.3.6")throw fail();
- const config=batchedAcceptanceConfig(await privateJson(process.argv[4]!));
+ const config=batchedAcceptanceConfig(await privateJson(process.argv[4]!)),folder=config.outputDirectory;
  const proof=await privateJson(config.qualifiedRestoreProofPath);batchedRestoreProof(proof);
  const restoreProofSha256=createHash("sha256").update(await readFile(config.qualifiedRestoreProofPath)).digest("hex");
  const direct=process.env.DIRECT_URL;if(!direct||process.env.DATABASE_URL!==direct)throw fail();const target=candidateRestoreTarget(direct);
@@ -71,15 +85,14 @@ async function main(){
   phases.push({phase:"native_"+phase,startedAt:new Date().toISOString(),deadlineUnixMs:combinedDeadline,callState:"submitted_once_result_may_be_unknown_on_caller_loss"});await save(folder+"/notebook.json",notebook);
   const argumentsPath=folder+`/fixture.json.${phase==="upload"?"upload-invocation":"pin-arguments"}.json`;
   await run(["/Users/murtaza/.local/share/uv/tools/modal/bin/python","apps/media/python/gates/run_executor_r2_transfer.py","--app","narriflow-media-gates","--phase",phase,"--arguments",argumentsPath,"--output",folder+`/${phase}.json`,"--expected-function-id",config.expectedFunctionId],{PATH:process.env.PATH,HOME:process.env.HOME,TMPDIR:process.env.TMPDIR,MODAL_PROFILE:"murtazach275",MODAL_ENVIRONMENT:"main"},combinedDeadline-Date.now());
-  const report=await privateJson<Record<string,unknown>>(folder+`/${phase}.json`);if(report.status!=="passed"||report.phase!==phase)throw fail();
-  const summary:Record<string,unknown>={status:"passed",timings:batchedTimings(report.timings)};
+  const report=batchedNativeReport(await privateJson(folder+`/${phase}.json`),phase,config.modalSourceWitness);
+  const summary:Record<string,unknown>={status:"passed",sourceCommit:report.sourceCommit,timings:batchedTimings(report.timings)};
   for(const key of ["elapsedSeconds","combinedElapsedSeconds","requestedBytes","uploadedBytes","downloadedBytes","peakRssBytes","tracedPeakBytes"]){if(!(key in report))continue;const value=report[key];if(typeof value!=="number"||!Number.isFinite(value)||value<0)throw fail();summary[key]=value;}
   phases.at(-1)!.finishedAt=new Date().toISOString();phases.at(-1)!.summary=summary;await save(folder+"/notebook.json",notebook);
  }
  try{
-  await guard();await mkdir(folder,{recursive:true,mode:0o700});
-  for(const name of ["fixture.json","upload.json","pin.json","notebook.json"]){try{await stat(folder+"/"+name);throw fail();}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}}
-  await(await open(folder+"/run.lock","wx",0o600)).close();started=true;await save(folder+"/notebook.json",notebook);
+  await guard();await prepareBatchedOutputDirectory(folder);
+  started=true;await save(folder+"/notebook.json",notebook);
   await fixturePhase("seed-upload");
   const fixture=await privateJson<{upload:{invocation:{attemptToken:string}}}>(folder+"/fixture.json");
   const original=await pool.query('SELECT "operationDeadlineAt" AT TIME ZONE \'UTC\' AS "operationDeadlineAt" FROM "ExecutionAttempt" WHERE "attemptToken"=$1::uuid',[fixture.upload.invocation.attemptToken]);
