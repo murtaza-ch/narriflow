@@ -31,6 +31,14 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["@chakra-ui/react"],
   },
+  webpack(config) {
+    // MDX replaces API-origin placeholders inside the loader. Webpack cannot
+    // track that environment read, so restored builds must key it explicitly.
+    if (config.cache && config.cache.type === "filesystem") {
+      config.cache.version = `${config.cache.version ?? ""}|docs-api-origin=${API_ORIGIN}`;
+    }
+    return config;
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "i.ytimg.com" },
