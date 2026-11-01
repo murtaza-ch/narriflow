@@ -48,3 +48,8 @@ test('registration receipts retain REST upload and accepted-operation references
  const accepted=acceptedProjectSchema.parse({projectId,operation,reviewUrl:'https://web.test/PRIVATE_REVIEW',callback:null});
  expect(executionRegistrationReceipt(accepted)).toEqual({projectId,operationId});
 });
+
+test('first-party export registration failure retains the same export and operation receipt only', () => {
+ const exportId='66666666-6666-4666-8666-666666666666',receiptId='77777777-7777-4777-8777-777777777777';
+ expect(executionRegistrationReceipt({export:{id:exportId,downloadUrl:'PRIVATE_GRANT',variants:[{transcript:'PRIVATE_TEXT'}]},receiptId,private:'PRIVATE_PROVIDER'})).toEqual({exportId,receiptId,operation:{kind:'export',id:exportId}});
+});

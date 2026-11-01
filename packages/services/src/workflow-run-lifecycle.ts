@@ -22,6 +22,7 @@ import type {
   WorkflowStage,
   WorkflowStatus,
 } from "@narriflow/validators";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { accessibleProjectWhere } from "./project-access";
 import { syncClipExportAggregates } from "./clip-export-aggregates";
 import {
@@ -29,7 +30,7 @@ import {
 } from "./media-cleanup";
 import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
+import { collectExecutionDispatch, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { finalizeGenerationUsage, releaseFailedDubUsage, lockGenerationUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
@@ -592,7 +593,64 @@ export class WorkflowRunLifecycle {
 
   /** Registers the frozen run in the caller's domain transaction. Safe to replay. */
   async dispatchRunWithinTransaction(tx: TransactionClient, runId: string): Promise<ExecutionDispatchRecord> {
-    return appendWorkflowRunDispatch(tx, runId);
+    const dispatch = await appendWorkflowRunDispatch(tx, runId);
+    if (dispatch.reference.kind === "render_run") collectExecutionDispatch(tx, dispatch.reference.dispatchId);
+    return dispatch;
+  }
+
+  /** New export admission and receipt recovery share the normal render ledger.
+   * Call before taking a Clip lock; selection completion already holds these locks. */
+  async lockRenderAdmissionWithinTransaction(tx: TransactionClient, projectId: string, workspaceId: string) {
+    const admission = await readExecutionAdmission(tx);
+    await lockWorkspaceUsage(tx, workspaceId);
+    await this.lockAdmissionProject(tx, projectId);
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId}::uuid FOR UPDATE`;
+    return admission;
+  }
+
+  async handoffClipExportWithinTransaction(tx: TransactionClient, exportId: string, workspaceId: string) {
+    const initial = await tx.clipExport.findFirst({ where: { id: exportId, workspaceId, project: { ...accessibleProjectWhere(), workspace: { status: "active" } } }, select: { projectId: true } });
+    if (!initial) throw new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "Project not found" });
+    const admission = await this.lockRenderAdmissionWithinTransaction(tx, initial.projectId, workspaceId);
+    const now = await this.databaseNow(tx);
+    const exported = await tx.clipExport.findFirst({ where: { id: exportId, workspaceId, project: { ...accessibleProjectWhere(now), workspace: { status: "active" } } }, include: { variants: { include: { render: true } } } });
+    if (!exported) throw new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "Project not found" });
+    const pending = exported.variants.flatMap(variant => variant.render?.status === "pending" && !variant.render.workflowRunId ? [variant.render] : []);
+    const assigned = [...new Set(exported.variants.flatMap(variant => variant.render?.workflowRunId ? [variant.render.workflowRunId] : []))];
+    for (const run of await tx.workflowRun.findMany({ where: { id: { in: assigned }, projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch, status: { in: ["queued", "running", "waiting"] } } })) {
+      await this.dispatchRunWithinTransaction(tx, run.id);
+    }
+    if (!pending.length) return;
+    // A missing handoff is still the original accepted operation, never a new budget.
+    const deadline = new Date(exported.createdAt.getTime() + 45 * 60_000);
+    if (deadline <= now && exported.retryCount === 0) {
+      const ids = pending.map(render => render.id), variantIds = pending.map(render => render.exportVariantId!);
+      await tx.clipRender.updateMany({ where: { id: { in: ids }, status: "pending", workflowRunId: null }, data: { status: "failed", failureDisposition: "permanent", errorCode: "operation_deadline_exceeded", completedAt: now } });
+      await tx.clipExportVariant.updateMany({ where: { id: { in: variantIds } }, data: { status: "failed", errorCode: "operation_deadline_exceeded", completedAt: now } });
+      await syncClipExportAggregates(tx, variantIds);
+      await flushWorkspaceEvents(tx);
+      return;
+    }
+    const epoch = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+    if (exported.retryCount === 0 && exported.createdAt < epoch.changedAt) throw new Error("render_admission_epoch_superseded");
+    const active = await tx.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } } });
+    if (active && active.deploymentEpoch !== admission.epoch) throw new Error("render_admission_epoch_superseded");
+    let run = active;
+    if (!run) {
+      assertExecutionAdmissionOpen(admission);
+      // Explicit retry admission owns its own budget. A missing retry parent
+      // cannot be reconstructed from the original export acceptance timestamp.
+      if (exported.retryCount !== 0) throw new Error("render_retry_handoff_missing");
+      const admitted = await this.admitWithinTransaction(tx, { projectId: exported.projectId, stage: "clip_rendering", idempotencyKey: `export:${exportId}:${exported.retryCount}` });
+      run = await tx.workflowRun.update({ where: { id: admitted.id }, data: { operationDeadlineAt: deadline } });
+    }
+    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${run.id}::uuid FOR UPDATE`;
+    if (!run.renderWorkSetFrozenAt) {
+      await tx.clipRender.updateMany({ where: { id: { in: pending.map(render => render.id) }, workflowRunId: null, status: "pending" }, data: { workflowRunId: run.id } });
+    }
+    // Frozen work sets are immutable. Their existing settlement admits the late-work drain.
+    await tx.clipExport.update({ where: { id: exportId }, data: { workflowRunId: run.id } });
+    await this.dispatchRunWithinTransaction(tx, run.id);
   }
 
   private async admitWithinTransaction(
@@ -704,8 +762,13 @@ export class WorkflowRunLifecycle {
           },
           select: { id: true },
         });
+        if (variants && existing) {
+          // The native run key is this command's receipt. A completed replay
+          // cannot reset its terminal cache into unowned pending work.
+          if (await tx.workflowRun.count({ where: { id: existing.id, status: { in: ["queued", "running", "waiting"] } } })) await this.dispatchRunWithinTransaction(tx, existing.id);
+          return { id: existing.id, created: false };
+        }
         if (variants) {
-          if (!admission.admissionOpen && existing) return { id: existing.id, created: false };
           assertExecutionAdmissionOpen(admission);
           const clipIds = [...new Set(variants.map(variant => variant.clipId))];
           if (await tx.clip.count({ where: { id: { in: clipIds }, projectId: input.projectId } }) !== clipIds.length) throw new Error("clip_render_admission_invalid");
@@ -735,7 +798,7 @@ export class WorkflowRunLifecycle {
           },
           select: { id: true },
         });
-        if (active) return { id: active.id, created: false };
+        if (active) { if (variants) await this.dispatchRunWithinTransaction(tx, active.id); return { id: active.id, created: false }; }
         assertExecutionAdmissionOpen(admission);
 
         let contentPackId = input.contentPackId ?? null;
@@ -792,7 +855,14 @@ export class WorkflowRunLifecycle {
         },
         select: { id: true },
       });
-      if (failed.length === 0) return false;
+      if (failed.length === 0) {
+        const exported = await tx.clipExport.findFirst({ where: { id: input.exportId, projectId: input.projectId }, select: { workflowRunId: true } });
+        if (exported?.workflowRunId) {
+          const run = await tx.workflowRun.findFirst({ where: { id: exported.workflowRunId, deploymentEpoch: admission.epoch, status: { in: ["queued", "running", "waiting"] } }, select: { id: true } });
+          if (run) await this.dispatchRunWithinTransaction(tx, run.id);
+        }
+        return false;
+      }
       assertExecutionAdmissionOpen(admission);
       const ids = failed.map((variant) => variant.id);
       const reset = { status: "pending" as const, errorCode: null, startedAt: null,
@@ -1294,6 +1364,7 @@ export class WorkflowRunLifecycle {
             data: { workflowRunId: attempt.workflowRunId },
           });
         }
+        await tx.clipExport.updateMany({ where: { projectId: attempt.projectId, variants: { some: { render: { workflowRunId: attempt.workflowRunId } } } }, data: { workflowRunId: attempt.workflowRunId } });
         frozenAt = await this.databaseNow(tx);
         const assignedCount = await tx.clipRender.count({ where: { workflowRunId: attempt.workflowRunId } });
         await tx.workflowRun.update({
@@ -2233,6 +2304,7 @@ export class WorkflowRunLifecycle {
           renders = clips.map(clip => ({ clipId: clip.id, aspectRatio: clipAspectRatioToDb[pack.defaultAspectRatio], resolution, status: "pending" }));
         }
         const render = await this.admitAutoRenderWorkWithinTransaction(tx, origin, { idempotencyKey: `auto-render-${run.id}`, renders });
+        if (generationExport) await tx.clipExport.update({ where: { id: generationExport.exportId }, data: { workflowRunId: render.id } });
         dispatchIds.push((await this.dispatchRunWithinTransaction(tx, render.id)).reference.dispatchId);
       }
       const status = failed || failureCode ? "failed" : "completed";
@@ -2324,7 +2396,8 @@ export class WorkflowRunLifecycle {
           inputHash: await renderGroupExecutionInputHash({ ...ref, parentInputHash: parent.reference.inputHash, exportIdentity: group.exportIdentity,
             memberIds: group.members.map(member => member.clipRenderId), configuration }),
           dueAt: existing?.dueAt ?? group.nextAttemptAt ?? group.createdAt });
-        const dueAt = group.operationDeadlineAt ?? new Date(now.getTime() + 45 * 60_000);
+        const acceptedExports = await tx.clipExport.findMany({ where: { retryCount: 0, variants: { some: { render: { id: { in: group.members.map(member => member.clipRenderId) } } } } }, select: { createdAt: true } });
+        const dueAt = group.operationDeadlineAt ?? new Date(Math.min(now.getTime() + 45 * 60_000, run.operationDeadlineAt?.getTime() ?? Infinity, ...acceptedExports.map(row => row.createdAt.getTime() + 45 * 60_000)));
         if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: dueAt } });
         const watchdog = await appendExecutionDispatch(tx, { ...identity, inputHash: dispatch.reference.inputHash, dueAt, deadlineKind: "operation", observedDeadlineAt: dueAt });
         dispatchIds.push(watchdog.reference.dispatchId, dispatch.reference.dispatchId);

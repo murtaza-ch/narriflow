@@ -13,6 +13,10 @@ import {NarriflowMcpServer} from '@narriflow/mcp-core/server';
 import {installNarriflowTasks} from '@narriflow/mcp-core/tasks';
 import {createMcpHandler} from '@modelcontextprotocol/server';
 import {z} from 'zod';
+import {clipExportService} from '@narriflow/services/clip-export.service';
+import {createExportsRoutes} from './domains/exports/routes';
+import {createRequestPolicyRuntime} from './http/request-policy-runtime';
+import {createInventoryApp} from './test-app';
 import {createApiWorker} from './worker';
 import {createUploadSessionHttpRoutes} from './domains/ingest/upload-session-http';
 import type {ApiWorkerBindings} from './worker-bindings';
@@ -68,6 +72,40 @@ suite('Worker postcommit registration boundary',()=>{
   const response=await worker.fetch(request(),f.bindings,context);expect(response.headers.get('Content-Type')).toContain('text/event-stream');let finished=false;const body=response.text().then(text=>{finished=true;return text;});produce.release();
   try{expect(await Promise.race([f.entered.promise.then(()=> 'registering'),body.then(()=> 'premature_result')])).toBe('registering');expect(finished).toBe(false);const job=await db.ingestJob.findUniqueOrThrow({where:{uploadSessionId:f.opened.sessionId}});expect((await db.executionDispatch.findFirstOrThrow({where:{subjectKind:'ingest_job',subjectId:job.id,kind:'import_pipeline'}})).acknowledgedAt).toBeNull();confirmed.release();const result=wire(await body);expect(result.error).toBeUndefined();expect(result.result.resultType).toBe('task');expect(result.result.taskId).toBe((await db.mcpTask.findFirstOrThrow({where:{domainId:job.id}})).id);expect((await db.executionDispatch.findFirstOrThrow({where:{subjectKind:'ingest_job',subjectId:job.id,kind:'import_pipeline'}})).acknowledgedAt).not.toBeNull();expect(f.registrations()).toBe(1);expect(await db.ingestJob.findUniqueOrThrow({where:{id:job.id}})).toEqual(job);
   }finally{confirmed.release();await body;}
+ });
+
+ async function exportFixture(){
+  const f=await fixture();
+  await db.workspaceMember.create({data:{workspaceId:f.workspace.id,userId:f.user.id,role:'owner'}});
+  await db.workspace.update({where:{id:f.workspace.id},data:{pricingTier:'creator'}});
+  await db.project.create({data:{id:f.opened.projectId,workspaceId:f.workspace.id,createdByUserId:f.user.id,title:'Export source',sourceMediaUrl:'r2://fixture/source',sourceDurationSeconds:120,ingestStatus:'ready'}});
+  const origin=await db.workflowRun.create({data:{projectId:f.opened.projectId,stage:'moment_detection',status:'completed',idempotencyKey:crypto.randomUUID()}});
+  const clip=await db.clip.create({data:{projectId:f.opened.projectId,workflowRunId:origin.id,index:0,startSec:0,endSec:10,hookText:'Export',reasoning:'Fixture',category:'hook',transcriptSlice:[],viralityScore:50,hookStrengthScore:50,emotionalIntensityScore:50,pacingScore:50,durationOptimalityScore:50,tiktokScore:50,youtubeScore:50,instagramScore:50,llmProvider:'fixture',llmModel:'fixture'}});
+  const key=crypto.randomUUID(),input={expectedRevision:0,aspectRatios:['9:16' as const],resolution:'720p' as const};
+  let fail=true,registrations=0;let entered=barrier();let confirmation:Promise<void>|undefined;
+  const bindings={...f.bindings,DEV_CLOUD:{async dispatch(reference:any){if(reference.kind==='render_run'){registrations++;entered.release();if(confirmation)await confirmation;if(fail)throw Error('PRIVATE_EXPORT_PROVIDER_FAILURE');}const row=await db.executionDispatch.findUniqueOrThrow({where:{id:reference.dispatchId}});return{status:row.wakeKind!==null||row.deadlineKind!==null?'confirmed_notified':'confirmed_created',destinationId:(await executionDispatchIdentity(reference)).instanceId};}}} as unknown as ApiWorkerBindings;
+  const create=()=>clipExportService.create(f.actor,f.opened.projectId,clip.id,input,key);
+  return{...f,clip,key,input,create,bindings,get entered(){return entered;},registrations:()=>registrations,succeed:()=>{fail=false;},confirm:(promise:Promise<void>)=>{confirmation=promise;entered=barrier();},async due(){const exported=await db.clipExport.findFirstOrThrow({where:{clipId:clip.id}}),row=await db.executionDispatch.findFirstOrThrow({where:{kind:'render_run',subjectId:exported.workflowRunId!}});await Bun.sleep(Math.max(0,+row.nextDeliveryAt-Date.now())+10);}};
+ }
+ test('actual first-party export route retains its receipt on registration failure and confirms identical replay',async()=>{
+  const f=await exportFixture();
+  const policyRuntime=createRequestPolicyRuntime({authenticate:async()=>({status:'authenticated',identity:{clerkUserId:f.user.clerkId,sessionId:'fixture'}} as never),loadAppUser:async()=>f.user as never,resolveScopedWorkspace:async()=>({userId:f.user.id,workspaceId:f.workspace.id,workspaceName:'Fixture',workspaceOwnerUserId:f.user.id,role:'owner',status:'active',pricingTier:'creator',isPersonal:false,workspaceSelectionChanged:false}),staffAllowlist:new Set(),policy:{resolveProject:async()=>({kind:'active',projectId:f.opened.projectId}),rateLimit:async()=>({allowed:true,availability:'available',retryAfterSeconds:1,limit:12,remaining:11}),now:()=>1000}});
+  const worker=createApiWorker({createScope:f.createScope,createApp:()=>createInventoryApp({policyRuntime,domains:{exports:createExportsRoutes({clipExportService} as never)}})});
+  const request=()=>new Request(`https://api.test/api/projects/${f.opened.projectId}/clips/${f.clip.id}/exports`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer fixture','X-Workspace-Id':f.workspace.id,'Idempotency-Key':f.key},body:JSON.stringify(f.input)});
+  const response=await worker.fetch(request(),f.bindings,context),body=await response.json(),receipt=await db.operationReceipt.findFirstOrThrow({where:{clientIdempotencyKey:f.key}}),exported=await db.clipExport.findUniqueOrThrow({where:{id:receipt.resourceId}});
+  expect(response.status).toBe(503);expect(body).toMatchObject({error:'scheduler_registration_pending',details:{receipt:{exportId:exported.id,receiptId:receipt.id,operation:{kind:'export',id:exported.id}}}});expect(JSON.stringify(body)).not.toContain('PRIVATE_');
+  await f.due();f.succeed();const retried=await worker.fetch(request(),f.bindings,context);expect(retried.status).toBe(202);expect(await retried.json()).toMatchObject({receiptId:receipt.id,replayed:true,export:{id:exported.id}});expect(await db.clipExport.findUniqueOrThrow({where:{id:exported.id}})).toEqual(exported);expect(await db.workflowRun.count({where:{projectId:exported.projectId,stage:'clip_rendering'}})).toBe(1);
+ });
+ for(const mode of ['json','sse'] as const)test(`actual SDK ${mode} export Task preserves receipt on registration failure and waits for confirmed replay`,async()=>{
+  const f=await exportFixture(),produce=barrier();if(mode==='json')produce.release();
+  const worker=createApiWorker({createScope:f.createScope,createApp:(_environment,run)=>{const handler=createMcpHandler(()=>{const server=new NarriflowMcpServer({name:'export-registration-gate',version:'1'},undefined,run);installNarriflowTasks(server,{principal:{kind:'oauth',userId:f.user.id,clientId:'fixture',scopes:['processing:write']},registry:()=>createMcpTaskRegistry({persistence:getMcpTaskPersistence(),authorize:async()=>{},resolve:async()=>({status:'working'}),cancel:async()=>{}})});server.registerTool('narriflow_create_clip_export',{inputSchema:z.strictObject({clientIdempotencyKey:z.string().uuid()})},async()=>{await produce.promise;const accepted=await f.create();return{content:[{type:'text',text:'PRIVATE_TRANSCRIPT'}],structuredContent:{data:accepted},_meta:{'narriflow/operation':{workspaceId:f.workspace.id,domainKind:'export',domainId:accepted.export.id,projectId:f.opened.projectId},privateGrant:'PRIVATE_GRANT'}};});return server;},{responseMode:mode});return{fetch:request=>handler.fetch(request)};}});
+  const request=()=>new Request('https://api.test/mcp',{method:'POST',headers:{'Content-Type':'application/json','MCP-Protocol-Version':'2026-07-28','MCP-Method':'tools/call','MCP-Name':'narriflow_create_clip_export'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'narriflow_create_clip_export',arguments:{clientIdempotencyKey:f.key},_meta:meta}})});
+  const response=await worker.fetch(request(),f.bindings,context);if(mode==='sse'){expect(response.headers.get('Content-Type')).toContain('text/event-stream');expect(f.registrations()).toBe(0);produce.release();}
+  const text=await response.text(),result=wire(text),exported=await db.clipExport.findFirstOrThrow({where:{clipId:f.clip.id}}),task=await db.mcpTask.findFirstOrThrow({where:{domainId:exported.id}});
+  expect(result.result).toBeUndefined();expect(result.error.data).toMatchObject({error:'scheduler_registration_pending',receipt:{taskId:task.id,operation:{kind:'export',id:exported.id}}});expect(text).not.toContain('PRIVATE_');
+  await f.due();f.succeed();const confirmed=barrier();f.confirm(confirmed.promise);let finished=false;
+  const replay=worker.fetch(request(),f.bindings,context).then(async response=>{const body=await response.text();finished=true;return wire(body);});
+  expect(await Promise.race([f.entered.promise.then(()=> 'registering'),replay.then(()=> 'premature_result')])).toBe('registering');expect(finished).toBe(false);confirmed.release();const replayed=await replay;expect(replayed.error).toBeUndefined();expect(replayed.result.taskId).toBe(task.id);expect(await db.mcpTask.count({where:{domainId:exported.id}})).toBe(1);expect(await db.clipExport.findUniqueOrThrow({where:{id:exported.id}})).toEqual(exported);
  });
 
 });

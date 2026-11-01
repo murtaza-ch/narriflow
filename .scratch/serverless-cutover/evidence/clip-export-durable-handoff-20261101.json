@@ -1,0 +1,39 @@
+{
+  "base": "85396f73cff56af41e77713d0cebe5184a3921c7",
+  "scope": "Local disposable PostgreSQL and actual Worker/MCP SDK transport with injected scheduler boundary; no deployed calls, providers or live fixture changes",
+  "problem": "ClipExport acceptance committed pending renders without a render run or initial dispatch; OperationReceipt replay returned the accepted snapshot without recovering the missing obligation",
+  "behavior": [
+    "Create commits exact pending export render membership, one live render run, initial dispatch and OperationReceipt atomically",
+    "Same-key authorized receipt replay recollects only exact current-epoch accepted run obligations",
+    "An unowned initial acceptance derives its first deadline from ClipExport.createdAt plus 45 minutes; overdue recovery fails the exact pending variants without creating a run or charge",
+    "A frozen live work set remains immutable; normal settlement admits a drain follow-up, which rebinds adopted export lineage and bounds new group deadlines by original acceptance",
+    "Existing group and run deadlines and charged execution history are preserved",
+    "A missing explicit-retry parent is refused rather than inventing its lost budget",
+    "Registration failure retains only export/receipt or MCP Task references; confirmed replay gates positive HTTP/SDK completion"
+  ],
+  "verification": {
+    "red": { "tests": 1, "failure": "Create resolved without calling aftercommit registration", "privateLog": "/tmp/narriflow-export-handoff-red.log" },
+    "latestHandoffAndActualTransport": { "tests": 15, "assertions": 118, "failures": 0, "privateLog": "/tmp/narriflow-export-handoff-latest-db.log" },
+    "preparationSelectionAndWorkflowCompatibility": { "tests": 85, "assertions": 810, "failures": 0, "privateLog": "/tmp/narriflow-export-handoff-final-db.log" },
+    "existingRetryLifecycleAndFinishing": { "tests": 92, "assertions": 581, "failures": 0, "privateLog": "/tmp/narriflow-export-handoff-workflow-green.log" },
+    "receiptAllowlist": { "tests": 7, "assertions": 16, "failures": 0, "redPrivateLog": "/tmp/narriflow-export-receipt-red.log", "privateLog": "/tmp/narriflow-export-receipt-green.log" },
+    "servicesTypecheck": "pass",
+    "apiTypecheck": "pass",
+    "changedFilesBiome": "pass",
+    "database": "Authorized localhost target; runner-owned fresh disposable schema, dropped after each run"
+  },
+  "callers": {
+    "firstParty": "exports route -> ClipExportService.create",
+    "restMcp": "integration-commands -> ClipExportService.create",
+    "scheduledPublication": "social-publication-scheduling-runtime -> ClipExportService.create",
+    "generationFinishing": "generation-finishing-runtime -> ClipExportService.create",
+    "captionOnly": "selection finalization creates export then atomically admits automatic render run and records export lineage",
+    "campaign": "campaign bundle collects existing export variants; it does not directly create pending ClipRender rows",
+    "standalone": "ClipService.requestRender -> lifecycle.admitClipRendering; new/shared/replayed pending obligations now collected",
+    "duplicate": "ClipService.duplicate copies completed media only"
+  },
+  "remaining": [
+    "No claim of live platform success: reviewed integration, full local gates, build/import audit and paired qualification remain Root responsibilities",
+    "Separate pre-existing standalone native-key alias gap: sharing an active run does not persist the alternative key; a replay after terminal can create another run. Reported to Root as a production-readiness blocker requiring separate caller/receipt mapping"
+  ]
+}

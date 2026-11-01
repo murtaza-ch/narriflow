@@ -281,9 +281,8 @@ function frozenClipSnapshot(clip: {
 
 /** Inserts the Clip Export for one exact revision and output configuration,
  * or finds the identical one: the output fingerprint also reuses matching
- * exports requested under distinct keys. ClipRender rows are the durable work queue; the
- * poller attaches a one-live-per-project WorkflowRun, avoiding several
- * high-latency DB and Redis round trips on the caller's path. */
+ * exports requested under distinct keys. The caller commits their render-run
+ * handoff in this same transaction before the export can be accepted. */
 async function upsertClipExport(
   tx: Prisma.TransactionClient,
   input: {
@@ -693,6 +692,7 @@ export class ClipExportService {
       prepare,
       mutate: async (tx) => {
         await requireExecutionAdmissionOpen(tx);
+        await new WorkflowRunLifecycle().lockRenderAdmissionWithinTransaction(tx, projectId, scope.workspaceId);
         // Fence the prepared document against an edit that races admission.
         await tx.$queryRaw`SELECT "id" FROM "Clip" WHERE "id" = ${clipId}::uuid FOR UPDATE`;
         const current = await tx.clip.findFirst({
@@ -721,16 +721,19 @@ export class ClipExportService {
           watermark,
           aspectRatios,
         });
+        await new WorkflowRunLifecycle().handoffClipExportWithinTransaction(tx, row.id, scope.workspaceId);
+        const currentExport = await tx.clipExport.findUniqueOrThrow({ where: { id: row.id }, include: exportInclude });
         return {
           resourceType: "clip_export",
           resourceId: row.id,
           // The receipt records the granted output; the idempotency fingerprint
           // above covers the requested input.
-          value: { export: await toExportSnapshot(row, false), reused, output },
+          value: { export: await toExportSnapshot(currentExport, false), reused, output },
         };
       },
     });
-    return { ...accepted.value, replayed: accepted.replayed, receiptId: accepted.receiptId };
+    const current = accepted.replayed ? await prisma.clipExport.findUnique({ where: { id: accepted.value.export.id }, include: exportInclude }) : null;
+    return { ...accepted.value, ...(current ? { export: await toExportSnapshot(current, false) } : {}), replayed: accepted.replayed, receiptId: accepted.receiptId };
   }
 
   /**
@@ -738,7 +741,7 @@ export class ClipExportService {
    * completes its moment detection (`completeMomentDetection`'s `admit`): the
    * whole-source clip at the formats frozen when the video was accepted. The
    * acceptance already authorized the work for an actor, so no actor is checked
-   * here (the poller renders it like any export). The detection attempt that
+   * here (the completion atomically admits its render handoff). The detection attempt that
    * owns the clip is the only one whose completion commits, and the export
    * exists only with that completion.
    */

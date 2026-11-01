@@ -30,6 +30,8 @@ export interface ExecutionDispatchScopeOptions {
 }
 
 export interface ExecutionRegistrationReceipt {
+  exportId?: string;
+  receiptId?: string;
   sessionId?: string;
   uploadId?: string;
   projectId?: string;
@@ -48,13 +50,13 @@ export function executionRegistrationReceipt(value: unknown): ExecutionRegistrat
   const uuid = (raw: unknown): raw is string => typeof raw === "string" && raw.length === 36 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(raw);
   const root = record(value), httpData = record(root.data), upload = record(root.upload), data = record(record(root.structuredContent).data), lineage = record(record(root._meta)["narriflow/operation"]);
   const receipt: ExecutionRegistrationReceipt = {};
-  for (const key of ["sessionId", "uploadId", "projectId", "queuedJobId", "ingestJobId", "workflowRunId", "taskId"] as const) {
-    const id = [root[key], httpData[key], upload[key], data[key], key === "projectId" ? lineage.projectId : undefined].find(uuid);
+  for (const key of ["sessionId", "uploadId", "projectId", "queuedJobId", "ingestJobId", "workflowRunId", "taskId", "receiptId", "exportId"] as const) {
+    const id = [root[key], httpData[key], upload[key], data[key], key === "projectId" ? lineage.projectId : key === "exportId" ? record(root.export).id ?? record(httpData.export).id ?? record(data.export).id : undefined].find(uuid);
     if (id) receipt[key] = id;
   }
   const operationId = [root.operationId, httpData.operationId, data.operationId, record(root.operation).operationId, record(upload.operation).operationId].find(id => uuid(id) || typeof id === "string" && id.length === 26 && /^op_[A-Za-z0-9_-]{23}$/.test(id));
   if (typeof operationId === "string") receipt.operationId = operationId;
-  const operation = [record(root.operation), record(httpData.operation), record(data.operation), { kind: lineage.domainKind, id: lineage.domainId }]
+  const operation = [record(root.operation), record(httpData.operation), record(data.operation), { kind: lineage.domainKind, id: lineage.domainId }, { kind: "export", id: receipt.exportId }]
     .find(item => ["intake", "generation", "export"].includes(String(item.kind)) && uuid(item.id));
   if (operation) receipt.operation = { kind: operation.kind as "intake" | "generation" | "export", id: operation.id as string };
   return receipt;
