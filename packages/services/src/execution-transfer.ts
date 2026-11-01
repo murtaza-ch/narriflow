@@ -23,8 +23,11 @@ export interface ExecutionPreparedPackage {
    * remain available through source-read after actual process start. */
   initialSourceNames?: readonly string[];
   outputs: readonly ExecutionOutputDescriptor[];
+  /** Fresh domain accessibility bound, not an operation deadline. Local
+   * signing must finish before it expires; never serialized or extended. */
+  permissionExpiresAt?: Date;
 }
-interface Options<TRef> {
+interface Options<TRef, TPrepared> {
   database: PrismaClient;
   authority: Authority<TRef>;
   storage: ReturnType<typeof createExecutionStorage>;
@@ -33,7 +36,10 @@ interface Options<TRef> {
   resolvePackage?(authority: ExecutorLiveAuthority): Promise<ExecutionPreparedPackage>;
   /** Only frozen local inputs; use this transaction and its freshly locked
    * domain reference. No provider or storage I/O may run under these locks. */
-  resolvePackageWithinAuthority?(tx: Tx, authority: ExecutorLiveAuthority, ref: TRef): Promise<ExecutionPreparedPackage>;
+  resolvePackageWithinAuthority?(tx: Tx, authority: ExecutorLiveAuthority, ref: TRef, prepared: TPrepared | undefined): Promise<ExecutionPreparedPackage>;
+  /** Bounded immutable input I/O only, before locks. This data grants no
+   * permission: the local resolver must rebind it to the fresh locked rows. */
+  preparePackage?(command: Extract<ExecutionTransferCommand, { action: "work-package" | "source-read" }>, verified: VerifiedExecutionRequest): Promise<TPrepared>;
   /** Local frozen-source resolution only; use this transaction and perform no provider I/O. */
   resolvePinSource?(row: Readonly<ExecutionArtifact>, authority: ExecutorLiveAuthority, tx: Tx): Promise<ExecutionPinSource>;
 }
@@ -64,7 +70,7 @@ function partBytes(row: ExecutionArtifact, number: number) {
 }
 
 /** Only assigned outputs and exact frozen reads. Never accepts a storage key or URL. */
-export function createExecutionTransfer<TRef>(options: Options<TRef>) {
+export function createExecutionTransfer<TRef, TPrepared = undefined>(options: Options<TRef, TPrepared>) {
   const db = options.database;
   async function row(tx: Tx, id: string, authority: ExecutorLiveAuthority) {
     await tx.$queryRaw`SELECT "id" FROM "ExecutionArtifact" WHERE "id"=${id}::uuid FOR UPDATE`;
@@ -179,7 +185,7 @@ export function createExecutionTransfer<TRef>(options: Options<TRef>) {
       return value;
     }, verified);
   }
-  async function recordGrant(tx: Tx, verified: VerifiedExecutionRequest, authority: ExecutorLiveAuthority, expires: readonly number[]) {
+  async function recordGrant(tx: Tx, verified: VerifiedExecutionRequest, authority: ExecutorLiveAuthority, expires: readonly number[], permissionExpiresAt?: Date) {
     const [recordClock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
     if (!recordClock) throw new ExecutorControlError("authority_lost");
     await tx.executionInboxReceipt.upsert({ where: { audience_deliveryId: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId } },
@@ -191,6 +197,7 @@ export function createExecutionTransfer<TRef>(options: Options<TRef>) {
     // while it runs must roll back the plan, retention and inbox together.
     const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
     if (!clock || authority.leaseExpiresAt <= clock.now || authority.operationDeadlineAt <= clock.now) throw new ExecutorControlError("authority_lost");
+    if (permissionExpiresAt && (!Number.isFinite(permissionExpiresAt.getTime()) || permissionExpiresAt <= clock.now)) throw new ExecutorControlError("authority_lost");
     if (expires.some(expiry => expiry <= clock.now.getTime() || expiry > authority.leaseExpiresAt.getTime() || expiry > authority.operationDeadlineAt.getTime() || expiry > clock.now.getTime() + 120_000)) {
       throw new ExecutionStorageError("storage_grant_expired");
     }
@@ -288,9 +295,10 @@ export function createExecutionTransfer<TRef>(options: Options<TRef>) {
     return executionTransferDispositionSchema.parse({ disposition: "work_package", functionName: executionMediaFunctionSchema.parse(authority.functionName), inputHash: authority.fence.reference.inputHash, input, sources, outputs, ...(publication ? {publication} : {}) });
   }
   async function localPackageGrant(command: Extract<ExecutionTransferCommand, { action: "work-package" | "source-read" }>, verified: VerifiedExecutionRequest) {
+    const preparedInput = await options.preparePackage?.(command, verified);
     return options.authority.withAuthority(command.fence, command.action !== "work-package", async (tx, live, ref) => {
       if (!options.resolvePackageWithinAuthority) return invalid();
-      const prepared = await options.resolvePackageWithinAuthority(tx, live, ref);
+      const prepared = await options.resolvePackageWithinAuthority(tx, live, ref, preparedInput);
       if (prepared.outputs.length > 16 || prepared.sources.length > 4096 || (live.functionName === "publication") !== (prepared.publication !== undefined)) return invalid();
       let value: ExecutionTransferDisposition;
       const expires: number[] = [];
@@ -310,7 +318,7 @@ export function createExecutionTransfer<TRef>(options: Options<TRef>) {
         value = executionTransferDispositionSchema.parse({ disposition: "source_read", sourceId: command.sourceId, object, grant });
       }
       if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 64 * 1024) return invalid();
-      await recordGrant(tx, verified, live, expires);
+      await recordGrant(tx, verified, live, expires, prepared.permissionExpiresAt);
       return value;
     }, verified);
   }

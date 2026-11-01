@@ -1,0 +1,56 @@
+{
+  "status": "local_regression_passed_deployed_latency_unmeasured",
+  "baseCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+  "runtime": "Bun 1.3.6",
+  "target": "Dedicated localhost:55432 gate database; fresh disposable schema created and dropped by the guarded execution runner",
+  "seam": "Production createRenderGroupExecution control/transfer and PrismaPg max:1; immutable storage port injected",
+  "red": {
+    "firstWorkPackageSqlStatements": 104,
+    "assertedMaximum": 80,
+    "result": "24 passed; new production-seam query-budget test failed",
+    "log": "/tmp/narriflow-render-package-red.log"
+  },
+  "retentionRed": {
+    "result": "45 passed; new expiry-during-signing test failed because the grant returned after Project retention expiry",
+    "log": "/tmp/narriflow-render-retention-red.log"
+  },
+  "optimizedSqlStatements": {
+    "firstWorkPackage": 46,
+    "exactReplayWorkPackage": 43,
+    "sourceReadAfterProcessStart": 34
+  },
+  "changes": [
+    "Read only a DB-owned, bounded conditional capsule outside transaction locks after cheap reference, owner, epoch, lease, started-state and canonical request-digest rejection",
+    "Treat decoded capsule bytes as data only; one final epoch/inbox/domain/attempt transaction rebinds exact key, ETag, byte length and raw SHA256 to fresh attempt and group facts",
+    "Use the freshly locked pending-member snapshot and current source/editor/export/retention/Workspace facts to choose role-bound outputs",
+    "Commit assignments, cleanup obligations and the canonical grant receipt atomically; local fixed-credential presigning retains final database-clock and grant-expiry checks",
+    "Carry the freshly read Project retention timestamp to the final clock check without changing its value or any operation deadline",
+    "Keep external provider-backed domain protocols unchanged; no authority or capsule cache survives a command"
+  ],
+  "verification": {
+    "databaseTests": "72 passed, 0 failed, 666 assertions across clip-preparation, clip-preparation-ledger, execution-transfer and executor-control",
+    "servicesTypecheck": "passed",
+    "changedFileBiome": "passed",
+    "logs": [
+      "/tmp/narriflow-render-package-release-final.log",
+      "/tmp/narriflow-render-package-typecheck.log",
+      "/tmp/narriflow-render-package-biome.log",
+      "/tmp/narriflow-render-package-repository-biome.log"
+    ],
+    "repositoryBiome": "passed; 2482 files, 11 warnings and 1 informational item"
+  },
+  "coverage": [
+    "One-connection concurrent package grants and exact replay; wrong canonical digest and pre-start source-read refused before capsule I/O",
+    "Revocation, lease expiry, actual absolute-deadline expiry, epoch change, source revision/key, editor, retention and Workspace restriction during capsule I/O",
+    "Existing database triggers refuse immutable deadline, attempt digest and group tuple rewrite attempts; no constraint was disabled",
+    "Corrupt capsule bytes, typed malformed references, preserved frozen export after live edit, and a sibling completion during the capsule read",
+    "Lease and Project retention expiry during signing roll back assignments, cleanup and inbox receipt; original deadline and charge history remain",
+    "Existing SIGKILL/sibling recovery and final RenderGroup acknowledgement remain green"
+  ],
+  "limits": [
+    "SQL counts include BEGIN/COMMIT, cleanup and one SELECT used by the outside-I/O probe; they are not cloud timings",
+    "The observed live Task2 network/lock cause remains unproven",
+    "No root-worktree, live job/history, deployment, cloud DB, R2 or provider mutation was performed",
+    "Integration with the separately reviewed generic attempt read optimization and fresh deployed qualification remain Root work"
+  ]
+}

@@ -40,6 +40,20 @@ export interface RenderGroupExecutionReference extends RenderGroupRef {
   generation: number;
   deploymentEpoch: number;
   attemptToken: string;
+  /** Invocation-only facts freshly read under the domain locks. Never a
+   * capsule or a permission that can survive this transaction. */
+  work?: {
+    input: ClipPreparationObject | null;
+    preparationId: string | null;
+    clipId: string;
+    editorRevision: number;
+    bindingHash: string | null;
+    sourceRevision: number;
+    sourceStorageKey: string | null;
+    retentionExpiresAt: Date | null;
+    exportIdentity: string;
+    pending: Array<Pick<ClipRender, "id" | "aspectRatio" | "resolution" | "exportVariantId">>;
+  };
 }
 export type RenderGroupArtifactCommit = ExecutorArtifactCommit & ({
   role: "render_variant";
@@ -455,7 +469,7 @@ export class RenderGroupLifecycle {
   }
   /** Root executor control holds the epoch lock before entering this domain. */
   private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
-    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; now: Date; clipExists: boolean } |
+    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; now: Date; clip: { id: string; editorRevision: number } | null; clipExists: boolean; members: MemberSnapshot[] } |
     { kind: "terminal"; disposition: ExecutionDisposition }
   > {
     if (reference.subject.kind !== "render_group") return { kind: "terminal", disposition: { disposition: "superseded" } };
@@ -475,10 +489,10 @@ export class RenderGroupLifecycle {
     if (group.status === "superseded") return { kind: "terminal", disposition: { disposition: "superseded" } };
     if (group.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "render_group_failed" } };
     if (group.status === "running" && group.attemptToken !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
-    const clips = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "Clip" WHERE id = ${group.clipId}::uuid AND "projectId" = ${parent.projectId}::uuid FOR KEY SHARE`;
-    await memberSnapshot(tx, groupRef);
+    const clips = await tx.$queryRaw<Array<{ id: string; editorRevision: number }>>`SELECT id, "editorRevision" FROM "Clip" WHERE id = ${group.clipId}::uuid AND "projectId" = ${parent.projectId}::uuid FOR KEY SHARE`;
+    const members = await memberSnapshot(tx, groupRef);
     const now = await renderGroupDatabaseNow(tx);
-    return { kind: "current", clipExists: clips.length === 1, ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, now };
+    return { kind: "current", clip: clips[0] ?? null, clipExists: clips.length === 1, ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, now, members };
   }
 
   async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<RenderGroupExecutionReference>> {
@@ -501,13 +515,21 @@ export class RenderGroupLifecycle {
         data: { status: "superseded", revokedAt: now, finishedAt: now, failureCode: "render_clip_deleted" } });
       return { kind: "terminal", disposition: { disposition: "superseded" }, ...(await this.executionWakes(tx, state.ref, reference.inputHash, false)) };
     }
-    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true, sourceRevision: true } });
-    const preparation = state.group.preparationId ? await tx.clipPreparation.findUnique({ where: { id: state.group.preparationId }, select: { sourceRevision: true, projectId: true, clipId: true, deploymentEpoch: true } }) : null;
+    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true, sourceRevision: true, sourceStorageKey: true, expiresAt: true } });
+    const preparation = state.group.preparationId ? await tx.clipPreparation.findUnique({ where: { id: state.group.preparationId }, select: { sourceRevision: true, projectId: true, clipId: true, deploymentEpoch: true, bindingHash: true } }) : null;
     if (project && preparation && (preparation.sourceRevision !== project.sourceRevision || preparation.projectId !== project.id || preparation.clipId !== state.group.clipId || preparation.deploymentEpoch !== state.group.deploymentEpoch)) {
       await cancelRenderGroupsWithinTransaction(tx, state.parent.id);
       return { kind: "terminal", disposition: { disposition: "superseded" }, ...(await this.executionWakes(tx, state.ref, reference.inputHash, false)) };
     }
-    return project ? { kind: "current", ref: state.ref } : { kind: "terminal", disposition: { disposition: "cancelled" } };
+    const group = state.group;
+    return project ? { kind: "current", ref: { ...state.ref, work: {
+      input: group.inputStorageKey && group.inputEtag && group.inputByteLength && group.inputChecksumSha256
+        ? { storageKey: group.inputStorageKey, etag: group.inputEtag, byteLength: Number(group.inputByteLength), sha256: group.inputChecksumSha256 } : null,
+      preparationId: group.preparationId, clipId: group.clipId, editorRevision: state.clip!.editorRevision, bindingHash: preparation?.bindingHash ?? null,
+      sourceRevision: project.sourceRevision, sourceStorageKey: project.sourceStorageKey, retentionExpiresAt: project.expiresAt, exportIdentity: group.exportIdentity,
+      pending: state.members.flatMap(member => member.variant && ["pending", "rendering"].includes(member.status)
+        ? [{ id: member.variant.id, aspectRatio: member.variant.aspectRatio, resolution: member.variant.resolution, exportVariantId: member.variant.exportVariantId }] : []),
+    } } } : { kind: "terminal", disposition: { disposition: "cancelled" } };
   }
 
   private executionAttempt(ref: RenderGroupExecutionReference, context: ExecutorMutationContext): RenderGroupAttemptRef {

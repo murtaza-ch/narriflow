@@ -453,14 +453,15 @@ suite("Clip Preparation authority and publication", () => {
     expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "completed", chargedAttempts: 1 });
   });
 
-  function renderService(f: Awaited<ReturnType<typeof fixture>>) {
+  function renderService(f: Awaited<ReturnType<typeof fixture>>, database = db, beforeRead?: () => Promise<void>) {
     const storage = { read: async (reference: { storageKey: string }) => {
+      await beforeRead?.();
       const bytes = f.objects.get(reference.storageKey); if (!bytes) throw new Error("Missing immutable fixture input"); return bytes.slice();
     }, write: async (key: string, bytes: Uint8Array) => {
       f.objects.set(key, bytes.slice()); return { etag: '"render-input"', byteLength: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
     } };
-    return new RenderGroupExecutionService(db, { toolchainFingerprint: "e".repeat(64), preparation: f.service, inputStorage: storage,
-      snapshot: createRenderInputSnapshot(db, { object: async () => { throw new Error("No media assets requested"); }, pexelsConfigured: false, searchStock: async () => { throw new Error("Stock search disabled"); } }),
+    return new RenderGroupExecutionService(database, { toolchainFingerprint: "e".repeat(64), preparation: f.service, inputStorage: storage,
+      snapshot: createRenderInputSnapshot(database, { object: async () => { throw new Error("No media assets requested"); }, pexelsConfigured: false, searchStock: async () => { throw new Error("Stock search disabled"); } }),
       register: async ids => { expect(await db.executionDispatch.count({ where: { id: { in: [...ids] } } })).toBe(ids.length); } });
   }
 
@@ -656,6 +657,207 @@ console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{}
       expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ attemptCount: 0, attemptId: null, leaseOwner: null });
     } finally { server.stop(true);for (const child of children) { if (child.exitCode === null) child.kill("SIGKILL");await child.exited; } }
   }, 60_000);
+
+  async function renderPackageFixture(frozenExport = false, siblings = false, shortDeadline = false) {
+    const f = await fixture(frozenExport, undefined, siblings);
+    if (shortDeadline) await db.renderGroup.update({ where: { id: f.references[0]!.subject.id }, data: { operationDeadlineAt: new Date(Date.now() + 4000) } });
+    const preparation = await native(f);
+    await preparation.send(preparation.commit(preparation.preview)); await preparation.send(preparation.commit(preparation.peaks)); await preparation.send(preparation.commit(preparation.manifest));
+    let duringRead: (() => Promise<void>) | undefined, reads = 0;
+    const service = renderService(f, db, async () => { reads++; const action = duringRead; duringRead = undefined; await action?.(); });
+    const admitted = await service.prepareExecution(f.references[0]!); if (admitted.kind !== "waiting") throw Error("Missing render admission");
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "fixture-render", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    const execution = createRenderGroupExecution({ database: db, service, storage, artifacts: { head: async () => ({ etag: '"render"', contentType: "video/mp4", byteLength: 1024n, sha256: "b".repeat(64) }), readJson: async () => { throw Error("No result JSON requested"); } }, deliverWakes: async () => {} });
+    const fence = { reference: admitted.deadline.reference, attemptToken: admitted.deadline.attemptToken, owner: crypto.randomUUID() };
+    const send = (command: unknown) => execution.control.execute({ command, verifiedRequest: preparation.verified() });
+    await send({ action: "acquire", ...fence, leaseSeconds: 120 }); reads = 0;
+    return { f, preparation, service, execution, storage, fence, send, reads: () => reads,
+      duringRead: (action: () => Promise<void>) => { duringRead = action; },
+      package: (request = preparation.verified()) => execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: request }) };
+  }
+
+  for (const changed of ["cancelled", "lease", "deadline", "source", "source_key", "editor", "retention", "workspace", "attempt_sha", "group_sha", "group_etag", "group_size", "group_key", "epoch"] as const)
+    test(`RenderGroup fences refuse ${changed} during capsule I/O without assigning outputs or extending history`, async () => {
+      const r = await renderPackageFixture(), token = r.fence.attemptToken, groupId = r.fence.reference.subject.id;
+      try {
+        const original = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: token } });
+        const cleanupBefore = await db.mediaCleanupObligation.count(), request = r.preparation.verified();
+        r.duringRead(async () => {
+          if (changed === "cancelled") await db.executionAttempt.update({ where: { attemptToken: token }, data: { revokedAt: new Date() } });
+          if (changed === "lease") await db.executionAttempt.update({ where: { attemptToken: token }, data: { leaseExpiresAt: new Date(0) } });
+          if (changed === "deadline") await db.executionAttempt.update({ where: { attemptToken: token }, data: { operationDeadlineAt: new Date(0) } });
+          if (changed === "source") await db.project.update({ where: { id: r.f.project.id }, data: { sourceRevision: { increment: 1 } } });
+          if (changed === "source_key") await db.project.update({ where: { id: r.f.project.id }, data: { sourceStorageKey: "execution/replaced-source" } });
+          if (changed === "editor") await db.clip.update({ where: { id: r.f.clip.id }, data: { editorRevision: { increment: 1 } } });
+          if (changed === "retention") await db.project.update({ where: { id: r.f.project.id }, data: { expiresAt: new Date(0) } });
+          if (changed === "workspace") await db.workspace.update({ where: { id: r.f.workspace.id }, data: { status: "restricted" } });
+          if (changed === "attempt_sha") await db.executionAttempt.update({ where: { attemptToken: token }, data: { inputChecksumSha256: "b".repeat(64) } });
+          if (changed.startsWith("group_")) await db.renderGroup.update({ where: { id: groupId }, data: changed === "group_sha" ? { inputChecksumSha256: "b".repeat(64) } : changed === "group_etag" ? { inputEtag: '"changed"' } : changed === "group_size" ? { inputByteLength: 1n } : { inputStorageKey: "projects/replaced.json" } });
+          if (changed === "epoch") await db.executionEpoch.update({ where: { id: 1 }, data: { epoch: { increment: 1 } } });
+        });
+        if (changed === "deadline" || changed === "attempt_sha" || changed.startsWith("group_"))
+          await expect(r.package(request)).rejects.toThrow(/immutable/);
+        else await expect(r.package(request)).rejects.toMatchObject({ code: "authority_lost" });
+        expect(await db.executionArtifact.count({ where: { attemptToken: token } })).toBe(0);
+        expect(await db.mediaCleanupObligation.count()).toBe(cleanupBefore);
+        expect(await db.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "executor-control", deliveryId: request.metadata.deliveryId } } })).toBeNull();
+        const after = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: token } });
+        expect(after.processStartedAt).toBeNull(); expect(after.owner).toBe(original.owner);
+        expect(after.operationDeadlineAt).toEqual(original.operationDeadlineAt);
+        expect((await db.renderGroup.findUniqueOrThrow({ where: { id: groupId } })).chargedAttemptCount).toBe(0);
+      } finally { r.storage.close(); }
+    });
+
+  test("RenderGroup preload rejects wrong fences before I/O and the database refuses rewriting sealed tuples", async () => {
+    const r = await renderPackageFixture();
+    try {
+      for (const [fence, code] of [[{ ...r.fence, owner: crypto.randomUUID() }, "authority_lost"], [{ ...r.fence, attemptToken: crypto.randomUUID() }, "invalid_reference"],
+        [{ ...r.fence, reference: { ...r.fence.reference, subject: { kind: "render_group", id: "not-a-uuid" } } }, "invalid_reference"],
+        [{ ...r.fence, reference: { ...r.fence.reference, kind: "operation_driver" } }, "invalid_reference"]] as const)
+        await expect(r.execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: r.preparation.verified() })).rejects.toMatchObject({ code });
+      await expect(r.execution.transfer.execute({ command: { action: "source-read", fence: r.fence, sourceId: "original" }, verifiedRequest: r.preparation.verified() })).rejects.toMatchObject({ code: "authority_lost" });
+      await expect(Promise.resolve(db.executionAttempt.update({ where: { attemptToken: r.fence.attemptToken }, data: { inputByteLength: 16_777_217n } }))).rejects.toThrow(/immutable/);
+      expect(r.reads()).toBe(0);
+    } finally { r.storage.close(); }
+  });
+
+  test("RenderGroup refuses corrupt capsule bytes before a grant or assignment", async () => {
+    const r = await renderPackageFixture();
+    try {
+      const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } });
+      r.f.objects.set(attempt.inputStorageKey!, new Uint8Array([1, 2, 3]));
+      await expect(r.package()).rejects.toThrow("render_input_invalid");
+      expect(await db.executionArtifact.count({ where: { attemptToken: r.fence.attemptToken } })).toBe(0);
+    } finally { r.storage.close(); }
+  });
+
+  test("a frozen RenderGroup export remains valid after a live edit during capsule I/O", async () => {
+    const r = await renderPackageFixture(true);
+    try {
+      r.duringRead(async () => { await db.clip.update({ where: { id: r.f.clip.id }, data: { editorRevision: { increment: 1 } } }); });
+      expect((await r.package()).disposition).toBe("work_package");
+      expect((await db.renderGroup.findUniqueOrThrow({ where: { id: r.fence.reference.subject.id } })).chargedAttemptCount).toBe(0);
+    } finally { r.storage.close(); }
+  });
+
+  test("RenderGroup rebinds the pending member set after a sibling commits during capsule I/O", async () => {
+    const r = await renderPackageFixture(false, true);
+    try {
+      const first = await r.package(); if (first.disposition !== "work_package") throw Error("Missing package");
+      const output = first.outputs.find(value => value.role === "render_variant")!;
+      const input = await r.service.loadInput(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } }));
+      let renderId = "";
+      for (const variant of input.variants) if (await renderArtifactBindingHash({ inputHash: r.fence.reference.inputHash, renderId: variant.renderId, role: "render_variant" }) === output.bindingHash) renderId = variant.renderId;
+      await r.send({ action: "process-start", fence: r.fence });
+      r.duringRead(async () => { await r.send({ action: "commit-artifact", fence: r.fence, artifact: { artifactId: output.artifactId, role: output.role, bindingHash: output.bindingHash, contentType: "video/mp4", byteLength: 1024, etag: '"render"', sha256: "b".repeat(64), renderVariant: { renderId, durationSec: 10, usedStockIds: [] } } }); });
+      const remaining = await r.package(); if (remaining.disposition !== "work_package") throw Error("Missing remaining package");
+      expect(remaining.outputs.filter(value => value.role === "render_variant")).toHaveLength(1);
+      expect(remaining.outputs.some(value => value.artifactId === output.artifactId)).toBe(false);
+      expect((await db.clipRender.findUniqueOrThrow({ where: { id: renderId } })).status).toBe("completed");
+      expect((await db.renderGroup.findUniqueOrThrow({ where: { id: r.fence.reference.subject.id } })).chargedAttemptCount).toBe(1);
+    } finally { r.storage.close(); }
+  });
+
+  test("RenderGroup absolute deadline can expire during capsule I/O without being extended", async () => {
+    const r = await renderPackageFixture(false, false, true);
+    try {
+      const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } });
+      r.duringRead(async () => { await Bun.sleep(Math.max(0, before.operationDeadlineAt.getTime() - Date.now()) + 25); });
+      await expect(r.package()).rejects.toMatchObject({ code: "authority_lost" });
+      expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } })).toEqual(before);
+      expect(await db.executionArtifact.count({ where: { attemptToken: r.fence.attemptToken } })).toBe(0);
+    } finally { r.storage.close(); }
+  });
+
+  test("RenderGroup retention expiry during signing refuses the grant without another authority pass", async () => {
+    const r = await renderPackageFixture();
+    try {
+      const expires = new Date(Date.now() + 2000);
+      r.duringRead(async () => { await db.project.update({ where: { id: r.f.project.id }, data: { expiresAt: expires } }); });
+      const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } });
+      const cleanupBefore = await db.mediaCleanupObligation.count(), request = r.preparation.verified();
+      const signSource = r.storage.signSource;
+      r.storage.signSource = async (...args) => { const grant = await signSource(...args); await Bun.sleep(Math.max(0, expires.getTime() - Date.now()) + 25); return grant; };
+      await expect(r.package(request)).rejects.toMatchObject({ code: "authority_lost" });
+      expect(await db.executionArtifact.count({ where: { attemptToken: r.fence.attemptToken } })).toBe(0);
+      expect(await db.mediaCleanupObligation.count()).toBe(cleanupBefore);
+      expect(await db.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "executor-control", deliveryId: request.metadata.deliveryId } } })).toBeNull();
+      expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } })).toEqual(before);
+    } finally { r.storage.close(); }
+  });
+
+  test("RenderGroup expiry during local signing rolls back assignments, cleanup and grant receipt", async () => {
+    const r = await renderPackageFixture();
+    try {
+      const expires = new Date(Date.now() + 2000);
+      await db.executionAttempt.update({ where: { attemptToken: r.fence.attemptToken }, data: { leaseExpiresAt: expires } });
+      const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } });
+      const cleanupBefore = await db.mediaCleanupObligation.count(), request = r.preparation.verified();
+      const signSource = r.storage.signSource;
+      r.storage.signSource = async (...args) => { const grant = await signSource(...args); await Bun.sleep(Math.max(0, expires.getTime() - Date.now()) + 25); return grant; };
+      await expect(r.package(request)).rejects.toMatchObject({ code: "authority_lost" });
+      expect(await db.executionArtifact.count({ where: { attemptToken: r.fence.attemptToken } })).toBe(0);
+      expect(await db.mediaCleanupObligation.count()).toBe(cleanupBefore);
+      expect(await db.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "executor-control", deliveryId: request.metadata.deliveryId } } })).toBeNull();
+      expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } })).toEqual(before);
+    } finally { r.storage.close(); }
+  });
+
+  test("RenderGroup package grants use one final authority on one connection without holding locks across capsule reads", async () => {
+    const f = await fixture(), preparation = await native(f);
+    await preparation.send(preparation.commit(preparation.preview)); await preparation.send(preparation.commit(preparation.peaks)); await preparation.send(preparation.commit(preparation.manifest));
+    const queries: string[] = [];
+    const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { maxWait: 1000, timeout: 3000 }, log: [{ emit: "event", level: "query" }] });
+    single.$on("query", event => queries.push(event.query));
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "fixture-render", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    let inspectRead = false, readCount = 0;
+    const service = renderService(f, single, async () => {
+      if (inspectRead) { readCount++; await single.$queryRaw`SELECT 1 AS outside_transaction`; }
+    });
+    try {
+      const admitted = await service.prepareExecution(f.references[0]!); if (admitted.kind !== "waiting") throw Error("Missing render admission");
+      const execution = createRenderGroupExecution({ database: single, service, storage, artifacts: { head: async () => { throw Error("Package grants cannot HEAD outputs"); }, readJson: async () => { throw Error("Package grants cannot read results"); } }, deliverWakes: async () => {} });
+      const fence = { reference: admitted.deadline.reference, attemptToken: admitted.deadline.attemptToken, owner: crypto.randomUUID() };
+      await execution.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: preparation.verified() });
+      const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } });
+      inspectRead = true; queries.length = 0;
+      const command = { action: "work-package", fence };
+      const request = preparation.verified();
+      const first = await execution.transfer.execute({ command, verifiedRequest: request });
+      const firstQueries = queries.length;
+      // Count statements only: one inbox and two domain advisory locks.
+      // Private query parameters never enter this observation.
+      const advisoryLocks = queries.filter(query => query.includes("pg_advisory_xact_lock")).length;
+      console.warn(JSON.stringify({ level: "info", message: "render_package_query_counts", total: firstQueries, advisoryLocks }));
+      expect(firstQueries).toBeLessThanOrEqual(50);
+      expect(queries.filter(query => query.includes('FROM "ExecutionEpoch"') && query.includes("FOR SHARE"))).toHaveLength(1);
+      await expect(execution.transfer.execute({ command, verifiedRequest: { ...request, requestHash: "f".repeat(64) } })).rejects.toMatchObject({ code: "replay_conflict" });
+      expect(readCount).toBe(1);
+      queries.length = 0;
+      const replay = await execution.transfer.execute({ command, verifiedRequest: request });
+      const replayQueries = queries.length;
+      expect(replay.disposition).toBe("work_package");
+      if (first.disposition !== "work_package" || replay.disposition !== "work_package") throw Error("Missing replayed package");
+      expect(replay.outputs).toEqual(first.outputs);
+      const results = await Promise.all(Array.from({ length: 6 }, () => execution.transfer.execute({ command, verifiedRequest: preparation.verified() })));
+      if (first.disposition !== "work_package") throw Error("Missing package");
+      expect(results.every(result => result.disposition === "work_package" && JSON.stringify(result.outputs) === JSON.stringify(first.outputs))).toBe(true);
+      expect(readCount).toBe(8);
+      expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } })).toEqual(before);
+      expect((await db.renderGroup.findUniqueOrThrow({ where: { id: fence.reference.subject.id } })).chargedAttemptCount).toBe(0);
+      const sourceRead = { action: "source-read", fence, sourceId: "original" };
+      await expect(execution.transfer.execute({ command: sourceRead, verifiedRequest: preparation.verified() })).rejects.toMatchObject({ code: "authority_lost" });
+      expect(readCount).toBe(8);
+      await execution.control.execute({ command: { action: "process-start", fence }, verifiedRequest: preparation.verified() });
+      queries.length = 0;
+      expect((await execution.transfer.execute({ command: sourceRead, verifiedRequest: preparation.verified() })).disposition).toBe("source_read");
+      console.warn(JSON.stringify({ level: "info", message: "render_package_query_counts", firstWorkPackage: firstQueries, exactReplay: replayQueries, sourceRead: queries.length }));
+      expect(queries.length).toBeLessThanOrEqual(36);
+      expect(queries.filter(query => query.includes('FROM "ExecutionEpoch"') && query.includes("FOR SHARE"))).toHaveLength(1);
+      expect((await db.renderGroup.findUniqueOrThrow({ where: { id: fence.reference.subject.id } })).chargedAttemptCount).toBe(1);
+      expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } })).operationDeadlineAt).toEqual(before.operationDeadlineAt);
+    } finally { storage.close(); await single.$disconnect(); }
+  }, 30_000);
 
   test("the RenderGroup factory serves its frozen input and role-bound grants then commits the actual final group acknowledgement", async () => {
     const f = await fixture(), preparation = await native(f);
