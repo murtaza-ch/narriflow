@@ -253,8 +253,9 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
   }
   /** Read fresh ownership before preparing a work package or scoped storage
    * grant. The caller rechecks after external I/O and never caches this result.
-   * A verified grant request takes its inbox lock before domain authority. */
-  async function withAuthority<T>(fenceInput: unknown, requireStarted: boolean, operation: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>, verifiedRequest?: VerifiedExecutionRequest): Promise<T> {
+   * A verified grant request takes its inbox lock before domain authority.
+   * Local builders may consume ref only within this transaction callback. */
+  async function withAuthority<T>(fenceInput: unknown, requireStarted: boolean, operation: (tx: Tx, authority: ExecutorLiveAuthority, ref: TRef) => Promise<T>, verifiedRequest?: VerifiedExecutionRequest): Promise<T> {
     const fence = executorFenceSchema.parse(fenceInput);
     return db.$transaction(async tx => {
       const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
@@ -279,7 +280,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         (requireStarted && (!attempt.processStartedAt || attempt.status !== "running"))) throw new ExecutorControlError("authority_lost");
       return operation(tx, { fence, functionName: attempt.functionName, leaseExpiresAt: attempt.leaseExpiresAt, operationDeadlineAt: attempt.operationDeadlineAt,
         input: attempt.inputStorageKey && attempt.inputEtag && attempt.inputByteLength !== null && attempt.inputChecksumSha256
-          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength, sha256: attempt.inputChecksumSha256 } : null });
+          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength, sha256: attempt.inputChecksumSha256 } : null }, locked.ref);
     });
   }
 

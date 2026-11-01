@@ -18,7 +18,7 @@ import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import { clipPreparationTiming, clipPreparationPreviewWindow, resolveDisplayGeometry } from "./clip-preparation-policy";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 import { derivePeaksStorageKey } from "./clip-preview-storage";
-import { ExecutorControlError, type ExecutorLiveAuthority } from "./executor-control";
+import type { ExecutorLiveAuthority } from "./executor-control";
 
 type Tx = Prisma.TransactionClient;
 const namespace = "7d4f8579-d68c-5240-bd5e-05411d012f22";
@@ -466,22 +466,16 @@ export class ClipPreparationService {
     });
   }
 
-  /** Revalidated typed inputs for a live owner's work package. This is not a
-   * grant and exposes no database client to the executor. Transfer rechecks
-   * authority again after signing its scoped URLs. */
-  async workInput(authority: ExecutorLiveAuthority) {
-    return this.database.$transaction(async tx => {
-      await tx.$queryRaw`SELECT epoch FROM "ExecutionEpoch" WHERE id = 1 FOR SHARE`;
-      const fence = authority.fence;
-      const locked = await this.lockExecution(tx, fence.reference, fence.attemptToken);
-      if (locked.kind !== "current") throw new ExecutorControlError("authority_lost");
-      await this.owned(tx, locked.ref, { ...fence, reference: fence.reference, now: await now(tx), leaseExpiresAt: authority.leaseExpiresAt,
-        operationDeadlineAt: authority.operationDeadlineAt, functionName: authority.functionName });
-      return { inputHash: fence.reference.inputHash, source: locked.ref.input.source, outputs: [
-        { role: "clip_preview" as const, bindingHash: locked.ref.input.bindingHash, contentType: "video/mp4", maxBytes: 512 * 1024 ** 2 },
-        { role: "preview_peaks" as const, bindingHash: locked.ref.input.bindingHash, contentType: "application/json", maxBytes: 256 * 1024 },
-        { role: "layout_evidence" as const, bindingHash: locked.ref.input.bindingHash, contentType: "application/json", maxBytes: 1024 ** 2 },
-      ] };
-    });
+  /** Consume only the input freshly validated by lockExecution in this same
+   * authority transaction. No capsule/provider I/O or second authority lookup. */
+  async workInputWithinAuthority(tx: Tx, authority: ExecutorLiveAuthority, ref: ClipPreparationExecutionReference) {
+    const fence = authority.fence;
+    await this.owned(tx, ref, { ...fence, reference: fence.reference, now: await now(tx), leaseExpiresAt: authority.leaseExpiresAt,
+      operationDeadlineAt: authority.operationDeadlineAt, functionName: authority.functionName });
+    return { inputHash: fence.reference.inputHash, source: ref.input.source, outputs: [
+      { role: "clip_preview" as const, bindingHash: ref.input.bindingHash, contentType: "video/mp4", maxBytes: 512 * 1024 ** 2 },
+      { role: "preview_peaks" as const, bindingHash: ref.input.bindingHash, contentType: "application/json", maxBytes: 256 * 1024 },
+      { role: "layout_evidence" as const, bindingHash: ref.input.bindingHash, contentType: "application/json", maxBytes: 1024 ** 2 },
+    ] };
   }
 }

@@ -10,9 +10,9 @@ import type { VerifiedExecutionRequest } from "./execution-signature";
 import { ExecutionStorageError, type createExecutionStorage, type ExecutionPinSource, type ExecutionMultipartAssignment } from "./execution-storage";
 
 type Tx = Prisma.TransactionClient;
-type Authority = {
+type Authority<TRef> = {
   authorize(fence: unknown, requireStarted?: boolean): Promise<ExecutorLiveAuthority>;
-  withAuthority<T>(fence: unknown, requireStarted: boolean, work: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>, verifiedRequest?: VerifiedExecutionRequest): Promise<T>;
+  withAuthority<T>(fence: unknown, requireStarted: boolean, work: (tx: Tx, authority: ExecutorLiveAuthority, ref: TRef) => Promise<T>, verifiedRequest?: VerifiedExecutionRequest): Promise<T>;
 };
 export interface ExecutionPreparedPackage {
   /** Fresh invocation-only provider access. Never serialized into an inbox or private input object. */
@@ -24,13 +24,16 @@ export interface ExecutionPreparedPackage {
   initialSourceNames?: readonly string[];
   outputs: readonly ExecutionOutputDescriptor[];
 }
-interface Options {
+interface Options<TRef> {
   database: PrismaClient;
-  authority: Authority;
+  authority: Authority<TRef>;
   storage: ReturnType<typeof createExecutionStorage>;
   /** Domain-specific resolvers validate their immutable command schema. No SQL
    * client, transaction, grant or permission escapes this request. */
-  resolvePackage(authority: ExecutorLiveAuthority): Promise<ExecutionPreparedPackage>;
+  resolvePackage?(authority: ExecutorLiveAuthority): Promise<ExecutionPreparedPackage>;
+  /** Only frozen local inputs; use this transaction and its freshly locked
+   * domain reference. No provider or storage I/O may run under these locks. */
+  resolvePackageWithinAuthority?(tx: Tx, authority: ExecutorLiveAuthority, ref: TRef): Promise<ExecutionPreparedPackage>;
   /** Local frozen-source resolution only; use this transaction and perform no provider I/O. */
   resolvePinSource?(row: Readonly<ExecutionArtifact>, authority: ExecutorLiveAuthority, tx: Tx): Promise<ExecutionPinSource>;
 }
@@ -61,7 +64,7 @@ function partBytes(row: ExecutionArtifact, number: number) {
 }
 
 /** Only assigned outputs and exact frozen reads. Never accepts a storage key or URL. */
-export function createExecutionTransfer(options: Options) {
+export function createExecutionTransfer<TRef>(options: Options<TRef>) {
   const db = options.database;
   async function row(tx: Tx, id: string, authority: ExecutorLiveAuthority) {
     await tx.$queryRaw`SELECT "id" FROM "ExecutionArtifact" WHERE "id"=${id}::uuid FOR UPDATE`;
@@ -172,22 +175,25 @@ export function createExecutionTransfer(options: Options) {
         ...(parts ? { multipartPartChecksums: parts } : {}),
         grantExpiresAt: new Date(Math.max(found.grantExpiresAt.getTime(), ...expires)),
       } });
-      const [recordClock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-      if (!recordClock) throw new ExecutorControlError("authority_lost");
-      await tx.executionInboxReceipt.upsert({ where: { audience_deliveryId: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId } },
-        create: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId, requestHash: verified.requestHash,
-          keyId: verified.metadata.keyId, disposition: granted, committedAt: recordClock.now, expiresAt: new Date(recordClock.now.getTime() + 7 * 24 * 60 * 60_000) },
-        update: { disposition: granted },
-      });
-      // Signing is asynchronous local work. A lease or deadline that expires
-      // while it runs must roll back the plan, retention and inbox together.
-      const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-      if (!clock || authority.leaseExpiresAt <= clock.now || authority.operationDeadlineAt <= clock.now) throw new ExecutorControlError("authority_lost");
-      if (expires.some(expiry => expiry <= clock.now.getTime() || expiry > authority.leaseExpiresAt.getTime() || expiry > authority.operationDeadlineAt.getTime() || expiry > clock.now.getTime() + 120_000)) {
-        throw new ExecutionStorageError("storage_grant_expired");
-      }
+      await recordGrant(tx, verified, authority, expires);
       return value;
     }, verified);
+  }
+  async function recordGrant(tx: Tx, verified: VerifiedExecutionRequest, authority: ExecutorLiveAuthority, expires: readonly number[]) {
+    const [recordClock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+    if (!recordClock) throw new ExecutorControlError("authority_lost");
+    await tx.executionInboxReceipt.upsert({ where: { audience_deliveryId: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId } },
+      create: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId, requestHash: verified.requestHash,
+        keyId: verified.metadata.keyId, disposition: granted, committedAt: recordClock.now, expiresAt: new Date(recordClock.now.getTime() + 7 * 24 * 60 * 60_000) },
+      update: { disposition: granted },
+    });
+    // Signing is asynchronous local work. A lease or deadline that expires
+    // while it runs must roll back the plan, retention and inbox together.
+    const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+    if (!clock || authority.leaseExpiresAt <= clock.now || authority.operationDeadlineAt <= clock.now) throw new ExecutorControlError("authority_lost");
+    if (expires.some(expiry => expiry <= clock.now.getTime() || expiry > authority.leaseExpiresAt.getTime() || expiry > authority.operationDeadlineAt.getTime() || expiry > clock.now.getTime() + 120_000)) {
+      throw new ExecutionStorageError("storage_grant_expired");
+    }
   }
   async function complete(command: Extract<ExecutionTransferCommand, { action: "upload-complete" }>) {
     const record = await options.authority.withAuthority(command.fence, true, async (tx, authority) => {
@@ -226,42 +232,48 @@ export function createExecutionTransfer(options: Options) {
     return { disposition: "upload_completed" as const, artifactId: record.id,
       object: { key: sealed.key, etag: sealed.etag, byteLength: sealed.byteLength, contentType: sealed.contentType, sha256: command.sha256 } };
   }
+  async function assignOutputs(tx: Tx, live: ExecutorLiveAuthority, descriptors: readonly ExecutionOutputDescriptor[]) {
+    const values = [], cleanupKeys: string[] = [];
+    for (const descriptor of descriptors) {
+      if (!contentTypes[descriptor.role]?.includes(descriptor.contentType) || (descriptor.sourceEtag === undefined) !== (descriptor.sourceByteLength === undefined)) return invalid();
+      const identity = { attemptToken: live.fence.attemptToken, owner: live.fence.owner, role: descriptor.role, bindingHash: descriptor.bindingHash };
+      let found = await tx.executionArtifact.findUnique({ where: { attemptToken_owner_role_bindingHash: identity } });
+      if (!found) {
+        const id = crypto.randomUUID();
+        let storageKey = `execution/${live.fence.reference.deploymentEpoch}/${live.fence.attemptToken}/${live.fence.owner}/${id}`;
+        if (descriptor.role === "clip_preview") storageKey += ".mp4";
+        if (descriptor.role === "preview_peaks") {
+          const preview = await tx.executionArtifact.findUnique({ where: { attemptToken_owner_role_bindingHash: { ...identity, role: "clip_preview" } } });
+          if (!preview || !preview.storageKey.endsWith(".mp4")) return invalid();
+          storageKey = preview.storageKey.slice(0, -4) + ".peaks.json";
+        }
+        const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+        if (!clock) throw new ExecutorControlError("epoch_unavailable");
+        found = await tx.executionArtifact.create({ data: { ...identity, id, storageKey,
+          contentType: descriptor.contentType, maxBytes: BigInt(descriptor.maxBytes), sourceEtag: descriptor.sourceEtag ?? null,
+          sourceByteLength: descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength), createdAt: clock.now, grantExpiresAt: new Date(clock.now.getTime() + 1000) } });
+      }
+      if (found.maxBytes !== BigInt(descriptor.maxBytes) || found.sourceEtag !== (descriptor.sourceEtag ?? null) || found.sourceByteLength !== (descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength))) return invalid();
+      cleanupKeys.push(found.storageKey);
+      values.push({ ...descriptor, artifactId: found.id, contentTypes: [...contentTypes[descriptor.role]!] });
+    }
+    await admitMediaCleanupObligations(tx, cleanupKeys.map(objectKey => ({ origin: "assigned_execution_artifact" as const, cleanupClass: "assigned_artifact" as const, objectKey,
+      notBefore: new Date(live.operationDeadlineAt.getTime() + 120_000) })));
+    return values;
+  }
   async function workPackage(command: Extract<ExecutionTransferCommand, { action: "work-package" }>) {
     const authority = await options.authority.authorize(command.fence, false);
+    if (!options.resolvePackage) return invalid();
     const prepared = await options.resolvePackage(authority);
     if (prepared.outputs.length > 16 || prepared.sources.length > 4096) return invalid();
     if ((authority.functionName === "publication") !== (prepared.publication !== undefined)) return invalid();
-    const publication = prepared.publication === undefined ? undefined : publicationEphemeralSchema.parse(prepared.publication);
+    if (prepared.publication !== undefined) publicationEphemeralSchema.parse(prepared.publication);
     const descriptors = prepared.outputs.map(value => executionOutputDescriptorSchema.parse(value));
-    const outputs = await options.authority.withAuthority(command.fence, false, async (tx, live) => {
-      const values = [], cleanupKeys: string[] = [];
-      for (const descriptor of descriptors) {
-        if (!contentTypes[descriptor.role]?.includes(descriptor.contentType) || (descriptor.sourceEtag === undefined) !== (descriptor.sourceByteLength === undefined)) return invalid();
-        const identity = { attemptToken: live.fence.attemptToken, owner: live.fence.owner, role: descriptor.role, bindingHash: descriptor.bindingHash };
-        let found = await tx.executionArtifact.findUnique({ where: { attemptToken_owner_role_bindingHash: identity } });
-        if (!found) {
-          const id = crypto.randomUUID();
-          let storageKey = `execution/${live.fence.reference.deploymentEpoch}/${live.fence.attemptToken}/${live.fence.owner}/${id}`;
-          if (descriptor.role === "clip_preview") storageKey += ".mp4";
-          if (descriptor.role === "preview_peaks") {
-            const preview = await tx.executionArtifact.findUnique({ where: { attemptToken_owner_role_bindingHash: { ...identity, role: "clip_preview" } } });
-            if (!preview || !preview.storageKey.endsWith(".mp4")) return invalid();
-            storageKey = preview.storageKey.slice(0, -4) + ".peaks.json";
-          }
-          const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-          if (!clock) throw new ExecutorControlError("epoch_unavailable");
-          found = await tx.executionArtifact.create({ data: { ...identity, id, storageKey,
-            contentType: descriptor.contentType, maxBytes: BigInt(descriptor.maxBytes), sourceEtag: descriptor.sourceEtag ?? null,
-            sourceByteLength: descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength), createdAt: clock.now, grantExpiresAt: new Date(clock.now.getTime() + 1000) } });
-        }
-        if (found.maxBytes !== BigInt(descriptor.maxBytes) || found.sourceEtag !== (descriptor.sourceEtag ?? null) || found.sourceByteLength !== (descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength))) return invalid();
-        cleanupKeys.push(found.storageKey);
-        values.push({ ...descriptor, artifactId: found.id, contentTypes: [...contentTypes[descriptor.role]!] });
-      }
-      await admitMediaCleanupObligations(tx, cleanupKeys.map(objectKey => ({ origin: "assigned_execution_artifact" as const, cleanupClass: "assigned_artifact" as const, objectKey,
-        notBefore: new Date(live.operationDeadlineAt.getTime() + 120_000) })));
-      return values;
-    });
+    const outputs = await options.authority.withAuthority(command.fence, false, (tx, live) => assignOutputs(tx, live, descriptors));
+    return signWorkPackage(prepared, authority, outputs);
+  }
+  async function signWorkPackage(prepared: ExecutionPreparedPackage, authority: ExecutorLiveAuthority, outputs: Awaited<ReturnType<typeof assignOutputs>>) {
+    const publication = prepared.publication === undefined ? undefined : publicationEphemeralSchema.parse(prepared.publication);
     const input = prepared.input.kind === "inline" ? prepared.input : await (async () => {
       if (!authority.input) throw new ExecutorControlError("storage_unavailable");
       const frozen = { storageKey: authority.input.storageKey, etag: authority.input.etag, byteLength: Number(authority.input.byteLength) };
@@ -275,10 +287,38 @@ export function createExecutionTransfer(options: Options) {
     }));
     return executionTransferDispositionSchema.parse({ disposition: "work_package", functionName: executionMediaFunctionSchema.parse(authority.functionName), inputHash: authority.fence.reference.inputHash, input, sources, outputs, ...(publication ? {publication} : {}) });
   }
+  async function localPackageGrant(command: Extract<ExecutionTransferCommand, { action: "work-package" | "source-read" }>, verified: VerifiedExecutionRequest) {
+    return options.authority.withAuthority(command.fence, command.action !== "work-package", async (tx, live, ref) => {
+      if (!options.resolvePackageWithinAuthority) return invalid();
+      const prepared = await options.resolvePackageWithinAuthority(tx, live, ref);
+      if (prepared.outputs.length > 16 || prepared.sources.length > 4096 || (live.functionName === "publication") !== (prepared.publication !== undefined)) return invalid();
+      let value: ExecutionTransferDisposition;
+      const expires: number[] = [];
+      if (command.action === "work-package") {
+        const outputs = await assignOutputs(tx, live, prepared.outputs.map(value => executionOutputDescriptorSchema.parse(value)));
+        const result = await signWorkPackage(prepared, live, outputs);
+        if (result.disposition !== "work_package") return invalid();
+        expires.push(...result.sources.map(source => Date.parse(source.expiresAt)));
+        if (result.input.kind === "object") expires.push(Date.parse(result.input.expiresAt));
+        value = result;
+      } else {
+        const source = prepared.sources.find(value => value.name === command.sourceId);
+        if (!source) return invalid();
+        const { name: _name, ...object } = source;
+        const grant = wireGrant(await options.storage.signSource(source, live));
+        expires.push(Date.parse(grant.expiresAt));
+        value = executionTransferDispositionSchema.parse({ disposition: "source_read", sourceId: command.sourceId, object, grant });
+      }
+      if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 64 * 1024) return invalid();
+      await recordGrant(tx, verified, live, expires);
+      return value;
+    }, verified);
+  }
   async function execute(input: { command: unknown; verifiedRequest: VerifiedExecutionRequest }): Promise<ExecutionTransferDisposition> {
     const command = executionTransferCommandSchema.parse(input.command), verified = input.verifiedRequest;
     if (!["executor-control", "dev-device"].includes(verified.metadata.audience)) throw new ExecutorControlError("invalid_audience");
     if (command.action === "upload-parts" || command.action === "source-range") return grant(command, verified);
+    if ((command.action === "work-package" || command.action === "source-read") && options.resolvePackageWithinAuthority) return localPackageGrant(command, verified);
     const replay = await readReceipt(verified);
     if (replay) return replay;
     const recorded = await begin(verified, command);
@@ -287,6 +327,7 @@ export function createExecutionTransfer(options: Options) {
     if (command.action === "work-package") result = await workPackage(command);
     else if (command.action === "source-read") {
       const authority = await options.authority.authorize(command.fence);
+      if (!options.resolvePackage) return invalid();
       const prepared = await options.resolvePackage(authority);
       const source = prepared.sources.find(value => value.name === command.sourceId);
       if (!source) return invalid();

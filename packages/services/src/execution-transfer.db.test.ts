@@ -6,7 +6,7 @@ import { createExecutorControl } from "./executor-control";
 import type { ExecutorDomainControl } from "./executor-domain-control";
 import { appendExecutionDispatch } from "./execution-dispatch";
 import { createExecutionTransfer } from "./execution-transfer";
-import { ExecutionStorageError, type ExecutionStorageObject } from "./execution-storage";
+import { createExecutionStorage, ExecutionStorageError, type ExecutionStorageObject } from "./execution-storage";
 import { signExecutionRequest, verifyExecutionRequest } from "./execution-signature";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -47,7 +47,7 @@ suite("Scoped executor transfer authority", () => {
     const signature = await signExecutionRequest({ keyId: "public", key, audience: "executor-control", method: "POST", target, body, timestamp, deliveryId });
     return verifyExecutionRequest({ signature, keyRing: new Map([["public", key]]), audience: "executor-control", method: "POST", target, body, nowSeconds: timestamp });
   }
-  async function fixture(outputs: import("@narriflow/validators/execution-transfer").ExecutionOutputDescriptor[] = [{ role: "source_audio", contentType: "audio/webm", maxBytes: 10 * 1024 ** 3, bindingHash: "b".repeat(64) }], sourcePlan?: Pick<import("./execution-transfer").ExecutionPreparedPackage, "sources" | "initialSourceNames">, pinSource?: import("./execution-storage").ExecutionPinSource) {
+  async function fixture(outputs: import("@narriflow/validators/execution-transfer").ExecutionOutputDescriptor[] = [{ role: "source_audio", contentType: "audio/webm", maxBytes: 10 * 1024 ** 3, bindingHash: "b".repeat(64) }], sourcePlan?: Pick<import("./execution-transfer").ExecutionPreparedPackage, "sources" | "initialSourceNames">, pinSource?: import("./execution-storage").ExecutionPinSource, startProcess = true) {
     const user = await db.user.create({ data: { clerkId: `transfer-gate:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Transfer gate" } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Transfer gate", sourceMediaUrl: "r2://gate/source" } });
@@ -63,7 +63,7 @@ suite("Scoped executor transfer authority", () => {
     await control.execute({ command: acquire, verifiedRequest: await verified(acquire, "/api/execution/command") });
     const fence = { reference: dispatch.reference, attemptToken, owner };
     const start = { action: "process-start", fence };
-    await control.execute({ command: start, verifiedRequest: await verified(start, "/api/execution/command") });
+    if (startProcess) await control.execute({ command: start, verifiedRequest: await verified(start, "/api/execution/command") });
     const provider = { creates: 0, grants: 0, completes: 0, aborts: 0, loseCompleteAck: false, sourceKeys: [] as string[], beforeGrant: undefined as (() => Promise<void>) | undefined, rangeGrants: 0, grantUrlLength: 0, grantExpiryForPart: undefined as ((number: number) => Date) | undefined, rangeExpiry: undefined as Date | undefined };
     let created: ExecutionStorageObject | null = null, sealed = false;
     const storage = {
@@ -105,6 +105,72 @@ suite("Scoped executor transfer authority", () => {
     if (work.disposition !== "work_package" || !work.outputs[0]) throw new Error("Expected assigned work package");
     return { fence, call, provider, control, artifactId: work.outputs[0].artifactId, job, work };
   }
+  test("local work packages resolve and replay before charged start on one connection", async () => {
+    const f = await fixture(undefined, undefined, undefined, false);
+    const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { maxWait: 1000, timeout: 3000 } });
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    try {
+      const control = createExecutorControl({ database: single, domain, subjectKind: "ingest_job" });
+      const transfer = createExecutionTransfer({ database: single, authority: control, storage,
+        resolvePackage: async () => { throw new Error("Local input must resolve in the live transaction"); },
+        resolvePackageWithinAuthority: async (tx, authority, ref) => {
+          expect(ref.id).toBe(f.job.id);
+          // Reenter the held row lock on the exact same connection. Opening a
+          // second authority/resolver transaction here would deadlock itself.
+          await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id"=${authority.fence.reference.subject.id}::uuid FOR UPDATE`;
+          return { input: { kind: "inline", command: { kind: "local_fixture" } },
+            sources: [{ name: "original", storageKey: "projects/frozen/source", etag: '"original"', byteLength: 1000 }],
+            outputs: [{ role: "clip_preview", contentType: "video/mp4", maxBytes: 1024, bindingHash: "c".repeat(64) },
+              { role: "preview_peaks", contentType: "application/json", maxBytes: 1024, bindingHash: "c".repeat(64) }] };
+        } });
+      const command = { action: "work-package", fence: f.fence }, deliveryId = crypto.randomUUID();
+      const request = await verified(command, "/api/execution/transfer", deliveryId);
+      const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.fence.attemptToken } });
+      const requests = [request, ...await Promise.all(Array.from({ length: 5 }, () => verified(command)))];
+      const results = await Promise.all(requests.map(verifiedRequest => transfer.execute({ command, verifiedRequest })));
+      expect(results.every(value => value.disposition === "work_package")).toBe(true);
+      const first = results[0];
+      if (first?.disposition !== "work_package") throw Error("Missing local package");
+      expect(results.every(value => value.disposition === "work_package" && JSON.stringify(value.outputs) === JSON.stringify(first.outputs))).toBe(true);
+      expect(first.sources[0]?.headers).toEqual({ "If-Match": '"original"' });
+      expect(await db.executionArtifact.count({ where: { attemptToken: f.fence.attemptToken, role: { in: ["clip_preview", "preview_peaks"] } } })).toBe(2);
+      expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.fence.attemptToken } }))).toEqual(before);
+      expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
+      expect((await db.executionInboxReceipt.findUniqueOrThrow({ where: { audience_deliveryId: { audience: "executor-control", deliveryId } } })).disposition).toEqual({ disposition: "transfer_granted" });
+      const changed = { ...command, fence: { ...f.fence, owner: crypto.randomUUID() } };
+      await expect(transfer.execute({ command: changed, verifiedRequest: await verified(changed, "/api/execution/transfer", deliveryId) })).rejects.toMatchObject({ code: "replay_conflict" });
+    } finally { storage.close(); await single.$disconnect(); }
+  }, 30_000);
+  test("expiry during local package signing rolls back assignments, cleanup and inbox together", async () => {
+    const f = await fixture(undefined, undefined, undefined, false);
+    await db.$executeRaw`UPDATE "ExecutionAttempt" SET "leaseExpiresAt"=(clock_timestamp() AT TIME ZONE 'UTC') + interval '2 seconds' WHERE "attemptToken"=${f.fence.attemptToken}::uuid`;
+    const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.fence.attemptToken } });
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    const signSource = storage.signSource;
+    let invalidExpiry = true;
+    storage.signSource = async (...args) => {
+      const value = await signSource(...args);
+      if (invalidExpiry) return { ...value, expiresAt: new Date(before.operationDeadlineAt.getTime() + 1000) };
+      await Bun.sleep(2100);
+      return value;
+    };
+    try {
+      const transfer = createExecutionTransfer({ database: db, authority: f.control, storage,
+        resolvePackageWithinAuthority: async () => ({ input: { kind: "inline", command: {} },
+          sources: [{ name: "original", storageKey: "projects/frozen/source", etag: '"original"', byteLength: 1000 }],
+          outputs: [{ role: "clip_preview", contentType: "video/mp4", maxBytes: 1024, bindingHash: "c".repeat(64) }] }) });
+      const command = { action: "work-package", fence: f.fence }, request = await verified(command);
+      const cleanupBefore = await db.mediaCleanupObligation.count();
+      await expect(transfer.execute({ command, verifiedRequest: request })).rejects.toMatchObject({ code: "storage_grant_expired" });
+      invalidExpiry = false;
+      await expect(transfer.execute({ command, verifiedRequest: request })).rejects.toMatchObject({ code: "authority_lost" });
+      expect(await db.executionArtifact.count({ where: { attemptToken: f.fence.attemptToken, role: "clip_preview" } })).toBe(0);
+      expect(await db.mediaCleanupObligation.count()).toBe(cleanupBefore);
+      expect(await db.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "executor-control", deliveryId: request.metadata.deliveryId } } })).toBeNull();
+      expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.fence.attemptToken } })).toEqual(before);
+      expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
+    } finally { storage.close(); }
+  }, 30_000);
   test("large frozen asset inventories fit the envelope with one initial grant and exact on-demand reads", async () => {
     const sources = Array.from({ length: 200 }, (_, index) => ({ name: `source_${index}`, storageKey: `projects/frozen/assets/${index}`, etag: '"source"', byteLength: 1000, sha256: "a".repeat(64) }));
     const f = await fixture(undefined, { sources, initialSourceNames: ["source_0"] });

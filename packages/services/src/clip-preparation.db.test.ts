@@ -19,6 +19,7 @@ import { RenderGroupExecutionService, createRenderGroupExecution } from "./rende
 import { createRenderInputSnapshot } from "./render-input-snapshot";
 import { renderArtifactBindingHash } from "./render-artifact";
 import { createExecutionStorage } from "./execution-storage";
+import { createClipPreparationExecution } from "./clip-preparation-execution";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -139,6 +140,47 @@ suite("Clip Preparation authority and publication", () => {
     return { admitted, fence, control, send, verified, preview: preview!, peaks: peaks!, manifest: manifest!, result, manifests, commit, wakes, loseAck: (value: boolean) => { loseAck = value; } };
   }
 
+  test("production work-package replay uses one connection before start and revalidates an edited Clip", async () => {
+    const f = await fixture();
+    const admitted = await f.service.admitForGroup(f.references[0]!);
+    const prepared = await f.service.prepareExecution((await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference);
+    if (prepared.kind !== "waiting") throw Error("Missing preparation");
+    const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 3000, maxWait: 1000 } });
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    try {
+      const service = new ClipPreparationService(single, { toolchainFingerprint: "e".repeat(64), engineHash: await clipPreparationEngineHash("e".repeat(64)),
+        storage: { write: async () => { throw Error("Package grants cannot write capsules"); } }, register: async () => { throw Error("Package grants cannot register scheduling"); } });
+      const factory = createClipPreparationExecution({ database: single, domain: service, storage,
+        artifacts: { head: async () => { throw Error("Package grants cannot HEAD storage"); }, readJson: async () => { throw Error("Package grants cannot read storage"); } }, deliverWakes: async () => {} });
+      const verified = () => ({ requestHash: "a".repeat(64), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const, method: "POST" as const,
+        canonicalTarget: "/api/execution/transfer", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: crypto.randomUUID(), signature: "0".repeat(64) } });
+      const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: crypto.randomUUID() };
+      await factory.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: verified() });
+      const before = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
+      const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } });
+      const requests = Array.from({ length: 6 }, verified), request = requests[0]!, command = { action: "work-package", fence };
+      const results = await Promise.all(requests.map(verifiedRequest => factory.transfer.execute({ command, verifiedRequest })));
+      const first = results[0];
+      if (first?.disposition !== "work_package" || first.input.kind !== "object") throw Error("Missing sealed package grant");
+      expect(first.input).toMatchObject({ storageKey: before.inputStorageKey, etag: before.inputEtag, sha256: before.inputChecksumSha256 });
+      expect(results.every(value => value.disposition === "work_package" && JSON.stringify(value.outputs) === JSON.stringify(first.outputs))).toBe(true);
+      expect(first.outputs.map(value => [value.role, value.bindingHash])).toEqual([["clip_preview", admitted.bindingHash], ["preview_peaks", admitted.bindingHash], ["layout_evidence", admitted.bindingHash]]);
+      expect(first.sources[0]).toMatchObject({ name: "original", storageKey: f.source.storageKey, headers: { "If-Match": '"source"' } });
+      expect(Date.parse(first.input.expiresAt)).toBeLessThanOrEqual(attempt.leaseExpiresAt!.getTime());
+      expect(await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).toEqual(before);
+      expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } })).toEqual(attempt);
+      expect(await db.executionArtifact.count({ where: { attemptToken: fence.attemptToken } })).toBe(3);
+      const sourceRead = { action: "source-read", fence, sourceId: "original" };
+      await expect(factory.transfer.execute({ command: sourceRead, verifiedRequest: verified() })).rejects.toMatchObject({ code: "authority_lost" });
+      await factory.control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() });
+      expect((await factory.transfer.execute({ command: sourceRead, verifiedRequest: verified() })).disposition).toBe("source_read");
+      await db.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
+      await expect(factory.transfer.execute({ command, verifiedRequest: request })).rejects.toMatchObject({ code: "authority_lost" });
+      expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).operationDeadlineAt).toEqual(before.operationDeadlineAt);
+      expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).chargedAttempts).toBe(1);
+    } finally { storage.close(); await single.$disconnect(); }
+  }, 30_000);
+
   test("groups over the same source/editor binding share one sealed preparation without acquiring either parent", async () => {
     const f = await fixture();
     const [a, b] = await Promise.all(f.references.map(reference => f.service.admitForGroup(reference)));
@@ -220,7 +262,7 @@ suite("Clip Preparation authority and publication", () => {
     expect(wakes).toHaveLength(1);
     expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).chargedAttempts).toBe(0);
     const fence = { reference: prepared.deadline.reference, attemptToken: attempt.attemptToken, owner: owners[results.findIndex(result => result.disposition === "acquired")]! };
-    const work = await f.service.workInput(await control.authorize(fence, false));
+    const work = await control.withAuthority(fence, false, (tx, authority, ref) => f.service.workInputWithinAuthority(tx, authority, ref));
     expect(work.source).toEqual({ storageKey: f.source.storageKey, etag: '"source"', byteLength: 1000, sha256: "c".repeat(64) });
     expect(work.outputs.map(output => [output.role, output.bindingHash])).toEqual([["clip_preview", admitted.bindingHash], ["preview_peaks", admitted.bindingHash], ["layout_evidence", admitted.bindingHash]]);
     await control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() });
