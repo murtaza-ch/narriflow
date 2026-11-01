@@ -136,6 +136,74 @@ class SignedControlTests(unittest.TestCase):
             finally:
                 session.close()
 
+    def test_clock_lease_and_operation_cutoffs_log_distinct_causes_before_another_spawn(self):
+        for reason, elapsed, wall_extra in [('clock',0,2),('lease',120,0),('deadline',2700,0)]:
+            with self.subTest(reason=reason):
+                wall, mono, actions = [2_000_000_000.0], [1000.0], []
+                def instant(seconds):
+                    return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00','Z')
+                def transport(origin,target,body,headers,timeout):
+                    command=json.loads(body);actions.append(command['action'])
+                    result={'disposition':'acquired','fence':{key:command[key] for key in ('reference','attemptToken','owner')},
+                        'serverTime':instant(wall[0]),'leaseExpiresAt':instant(wall[0]+120),'operationDeadlineAt':instant(wall[0]+2700)}
+                    return ControlResponse(200,{'X-Execution-Server-Time':instant(wall[0])},json.dumps(result).encode())
+                client=ExecutionControlClient(origin='https://api.example',key_id='dev',key=b'k'*32,transport=transport,clock=lambda:wall[0])
+                with patch('narriflow_media.control.time.monotonic',side_effect=lambda:mono[0]):
+                    with self.assertLogs('narriflow_media.control',level='WARNING') as logs, ExecutorSession.acquire(client,reference={'dispatchId':'fixture'},attempt_token='fixture') as session:
+                        wall[0]+=elapsed+wall_extra;mono[0]+=elapsed
+                        with self.assertRaisesRegex(MediaProcessError,'media_execution_cancelled'):
+                            run_owned_process([sys.executable,'-c','raise SystemExit(99)'],timeout_seconds=2,
+                                on_start=session.on_process_start,cancel_event=session.cancel_event)
+                        with self.assertRaises(ExecutionControlError):session.assert_live()
+                self.assertEqual(actions,['acquire'])
+                self.assertEqual(len(logs.records),1)
+                record=json.loads(logs.records[0].getMessage())
+                self.assertEqual((record['action'],record['stage']),('permission','permission_'+reason))
+                self.assertEqual(record['clockDriftMs'],2000 if reason=='clock' else 0)
+                self.assertIsNone(record['rpcElapsedMs'])
+
+    def test_failed_source_grant_stops_the_child_and_logs_only_the_first_safe_cause(self):
+        actions, workers = [], []
+        secret = 'private-token-url-header-body'
+        def instant(seconds):
+            return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+        def transport(origin, target, body, headers, timeout):
+            command, now = json.loads(body), time.time();actions.append(command['action'])
+            if command['action'] == 'source-read': raise TimeoutError(secret)
+            result = {'disposition':'started'}
+            if command['action'] == 'acquire':
+                result = {'disposition':'acquired', 'fence':{key:command[key] for key in ('reference','attemptToken','owner')},
+                    'serverTime':instant(now),'leaseExpiresAt':instant(now+120),'operationDeadlineAt':instant(now+2700)}
+            return ControlResponse(200, {'X-Execution-Server-Time':instant(now)}, json.dumps(result).encode())
+        client = ExecutionControlClient(origin='https://api.example',key_id='dev',key=b'k'*32,transport=transport,retry_delay_seconds=0)
+        with self.assertLogs('narriflow_media.control',level='WARNING') as logs:
+            with ExecutorSession.acquire(client,reference={'dispatchId':secret},attempt_token=secret) as session:
+                failures = []
+                def grant():
+                    try: session.transfer('source-read',sourceId='original')
+                    except ExecutionControlError as error: failures.append(error.code)
+                def started(pid):
+                    session.on_process_start(pid)
+                    thread=threading.Thread(target=grant);workers.append(thread);thread.start()
+                with self.assertRaises(MediaProcessError) as stopped:
+                    run_owned_process([sys.executable,'-c','import time;time.sleep(60)'],timeout_seconds=3,
+                        kill_grace_seconds=.1,on_start=started,cancel_event=session.cancel_event)
+                for thread in workers: thread.join(1)
+                self.assertEqual(stopped.exception.code,'media_execution_cancelled')
+                self.assertEqual(failures,['execution_transport_unavailable'])
+                with self.assertRaises(ExecutionControlError): session.assert_live()
+        self.assertEqual(actions,['acquire','process-start','source-read','source-read','source-read'])
+        self.assertEqual(len(logs.records),1)
+        record=json.loads(logs.records[0].getMessage())
+        self.assertEqual((record['message'],record['action'],record['stage'],record['errorCode']),
+            ('native_execution_cancelled','source-read','transfer_rpc','execution_transport_unavailable'))
+        self.assertIsNone(record['status'])
+        self.assertGreater(record['leaseRemainingMs'],0)
+        self.assertGreater(record['operationRemainingMs'],record['leaseRemainingMs'])
+        self.assertGreaterEqual(record['rpcElapsedMs'],0)
+        self.assertNotIn(secret,logs.output[0])
+        self.assertNotIn(session.fence['owner'],logs.output[0])
+
     def test_actual_native_start_is_acknowledged_once_and_loss_cancels_the_session(self):
         actions = []
         def instant(seconds):
@@ -168,40 +236,52 @@ class SignedControlTests(unittest.TestCase):
                 session.assert_live()
 
     def test_a_running_renewal_loss_stops_the_actual_native_child(self):
-        actions, children = [], []
-        def instant(seconds):
-            return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
-        def transport(origin, target, body, headers, timeout):
-            command, now = json.loads(body), time.time()
-            actions.append(command['action'])
-            if command['action'] == 'acquire':
-                response = {'disposition': 'acquired',
-                            'fence': {'reference': command['reference'], 'attemptToken': command['attemptToken'], 'owner': command['owner']},
-                            'serverTime': instant(now), 'leaseExpiresAt': instant(now + 120), 'operationDeadlineAt': instant(now + 2700)}
-            else:
-                response = {'disposition': 'started' if command['action'] == 'process-start' else 'superseded'}
-            return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(response).encode())
-        client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32, transport=transport)
-        with ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture') as session:
-            def started(pid):
-                children.append(pid)
-                session.on_process_start(pid)
-            began = time.monotonic()
-            with self.assertRaises(MediaProcessError) as stopped:
-                run_owned_process([sys.executable, '-c', 'import time;time.sleep(60)'],
-                                  timeout_seconds=40, kill_grace_seconds=0.1,
-                                  on_start=started, cancel_event=session.cancel_event)
-            self.assertEqual(stopped.exception.code, 'media_execution_cancelled')
-            self.assertLess(time.monotonic() - began, 35)
-        self.assertEqual(actions, ['acquire', 'process-start', 'renew'])
-        if sys.platform == 'linux':
-            try:
-                state = Path(f'/proc/{children[0]}/stat').read_bytes().rsplit(b')', 1)[1].split()[0]
-            except FileNotFoundError:
-                state = b''
-        else:
-            state = subprocess.run(['ps', '-p', str(children[0]), '-o', 'stat='], capture_output=True).stdout.strip()
-        self.assertTrue(not state or state.startswith(b'Z'))
+        for mode in ('disposition','transport'):
+            with self.subTest(mode=mode):
+                actions, children = [], []
+                def instant(seconds):
+                    return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+                def transport(origin, target, body, headers, timeout):
+                    command, now = json.loads(body), time.time()
+                    actions.append(command['action'])
+                    if command['action'] == 'acquire':
+                        response = {'disposition': 'acquired',
+                                    'fence': {'reference': command['reference'], 'attemptToken': command['attemptToken'], 'owner': command['owner']},
+                                    'serverTime': instant(now), 'leaseExpiresAt': instant(now + 120), 'operationDeadlineAt': instant(now + 2700)}
+                    elif command['action'] == 'renew' and mode == 'transport':
+                        raise TimeoutError('private renewal URL and credential')
+                    else:
+                        response = {'disposition': 'started' if command['action'] == 'process-start' else 'superseded'}
+                    return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(response).encode())
+                client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32, transport=transport)
+                with self.assertLogs('narriflow_media.control',level='WARNING') as logs, ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture') as session:
+                    def started(pid):
+                        children.append(pid)
+                        session.on_process_start(pid)
+                    began = time.monotonic()
+                    with self.assertRaises(MediaProcessError) as stopped:
+                        run_owned_process([sys.executable, '-c', 'import time;time.sleep(60)'],
+                                          timeout_seconds=40, kill_grace_seconds=0.1,
+                                          on_start=started, cancel_event=session.cancel_event)
+                    self.assertEqual(stopped.exception.code, 'media_execution_cancelled')
+                    self.assertLess(time.monotonic() - began, 35)
+                self.assertEqual(actions, ['acquire', 'process-start'] + ['renew'] * (3 if mode == 'transport' else 1))
+                self.assertEqual(len(logs.records),1)
+                record=json.loads(logs.records[0].getMessage())
+                self.assertEqual((record['action'],record['stage'],record['failureKind']),
+                    ('renew','renew_rpc','transport') if mode == 'transport' else ('renew','renew_disposition','authority'))
+                self.assertEqual(record['errorCode'],'execution_transport_unavailable' if mode == 'transport' else 'execution_authority_lost')
+                self.assertNotIn('private',logs.output[0])
+                self.assertGreater(record['leaseRemainingMs'],0)
+                self.assertGreaterEqual(record['rpcElapsedMs'],0)
+                if sys.platform == 'linux':
+                    try:
+                        state = Path(f'/proc/{children[0]}/stat').read_bytes().rsplit(b')', 1)[1].split()[0]
+                    except FileNotFoundError:
+                        state = b''
+                else:
+                    state = subprocess.run(['ps', '-p', str(children[0]), '-o', 'stat='], capture_output=True).stdout.strip()
+                self.assertTrue(not state or state.startswith(b'Z'))
 
     def test_duplicate_invocations_get_distinct_owners_and_neither_busy_response_starts_work(self):
         owners = []

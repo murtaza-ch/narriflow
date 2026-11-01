@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import http.client
 import json
+import logging
 import math
 import re
 import socket
@@ -23,6 +24,13 @@ from .signing import COMMAND_MAX_BYTES, sign_execution_request
 
 TARGET = '/api/execution/command'
 MAX_RESPONSE_BYTES = 64 * 1024
+_logger = logging.getLogger(__name__)
+_CANCELLATION_ERRORS = {
+    'execution_transport_unavailable': 'transport', 'execution_command_deadline': 'deadline',
+    'execution_clock_changed': 'clock', 'execution_response_invalid': 'response',
+    'execution_response_too_large': 'response', 'execution_command_refused': 'refused',
+    'execution_authority_lost': 'authority',
+}
 
 
 class ExecutionControlError(RuntimeError):
@@ -296,6 +304,7 @@ class ExecutorSession:
         self._anchor_wall, self._anchor_mono = anchor_wall, anchor_mono
         self._stop = Event()
         self._state_lock, self._start_lock = Lock(), Lock()
+        self._diagnostic_lock, self._cancel_logged = Lock(), False
         self.cancel_event = _PermissionEvent(self._permission_live)
         self._started = False
         self._renewal: Thread | None = None
@@ -313,9 +322,40 @@ class ExecutorSession:
     def _permission_live(self):
         with self._state_lock:
             mono, wall = time.monotonic(), self._client._clock()
-            return (not self._stop.is_set() and mono < min(self._lease, self._deadline)
+            stopped = self._stop.is_set()
+            permitted = (not stopped and mono < min(self._lease, self._deadline)
                     and wall < min(self._lease_wall, self._deadline_wall)
                     and abs((wall - self._anchor_wall) - (mono - self._anchor_mono)) <= 1)
+            reason = ('deadline' if mono >= self._deadline or wall >= self._deadline_wall else
+                      'lease' if mono >= self._lease or wall >= self._lease_wall else 'clock')
+        if not permitted and not stopped:
+            self._cancel('permission', 'permission_'+reason,
+                ExecutionControlError('execution_clock_changed' if reason == 'clock' else 'execution_authority_lost'))
+        return permitted
+
+    def _cancel(self, action, stage, error, started=None):
+        # Cancel first. Diagnostics must never delay permission loss or change
+        # the original exception, even if a logging handler fails.
+        already_cancelled = Event.is_set(self.cancel_event)
+        self.cancel_event.set()
+        if already_cancelled: return
+        try:
+            with self._diagnostic_lock:
+                if self._cancel_logged: return
+                self._cancel_logged = True
+            code = error.code if isinstance(error, ExecutionControlError) and error.code in _CANCELLATION_ERRORS else 'execution_control_unexpected'
+            status = error.status if isinstance(error, ExecutionControlError) and type(error.status) is int and 100 <= error.status <= 599 else None
+            with self._state_lock:
+                mono, wall = time.monotonic(), self._client._clock()
+                bounded_ms = lambda seconds: round(max(-86400, min(86400, seconds)) * 1000)
+                metrics = {'leaseRemainingMs': bounded_ms(min(self._lease-mono, self._lease_wall-wall)),
+                    'operationRemainingMs': bounded_ms(min(self._deadline-mono, self._deadline_wall-wall)),
+                    'clockDriftMs': bounded_ms((wall-self._anchor_wall)-(mono-self._anchor_mono)),
+                    'rpcElapsedMs': bounded_ms(max(0, mono-started)) if started is not None else None}
+            _logger.warning(json.dumps({'level':'warn','message':'native_execution_cancelled','action':action,'stage':stage,
+                'errorCode':code,'failureKind':_CANCELLATION_ERRORS.get(code,'unexpected'),'status':status,**metrics}, separators=(',',':')))
+        except Exception:
+            pass
 
     def assert_live(self):
         if self.cancel_event.is_set():
@@ -345,10 +385,13 @@ class ExecutorSession:
             raise ExecutionControlError('execution_transfer_invalid')
         command = {'action': action, 'fence': self.fence, **fields}
         validate_transfer_command(command)
+        stage, started = 'transfer_rpc', time.monotonic()
         try:
             result = self._client._post(TRANSFER_TARGET, command, parse_transfer_disposition,
                                        deadline_monotonic=min(self._deadline, self._lease))
+            stage = 'transfer_permission'
             self.assert_live()
+            stage = 'transfer_response'
             check_transfer_response(command, result)
             return result
         except ExecutionControlError as error:
@@ -356,7 +399,7 @@ class ExecutorSession:
             # live. Refused authority or an unconfirmed control exchange stops
             # all native siblings through the same permission event.
             if error.code != 'execution_grant_expired':
-                self.cancel_event.set()
+                self._cancel('source-read' if action == 'source-read' else 'transfer', stage, error, started)
             raise
 
     def on_process_start(self, pid: int):
@@ -386,18 +429,26 @@ class ExecutorSession:
         while True:
             with self._state_lock:
                 remaining = min(self._lease, self._deadline) - time.monotonic()
-            if remaining <= 0 or self.cancel_event.is_set():
+            if remaining <= 0:
+                self._cancel('renew', 'renew_permission', ExecutionControlError('execution_authority_lost'))
+                return
+            if self.cancel_event.is_set():
                 self.cancel_event.set()
                 return
             if self._stop.wait(min(30, remaining)):
                 return
+            stage, started = 'renew_permission', time.monotonic()
             try:
                 self.assert_live()
+                stage = 'renew_rpc'
                 result = self._client.command({'action': 'renew', 'fence': self._fence, 'leaseSeconds': 120},
                                               deadline_monotonic=min(self._deadline, self._lease))
+                stage = 'renew_disposition'
                 if result.disposition['disposition'] != 'renewed':
                     raise ExecutionControlError('execution_authority_lost')
+                stage = 'renew_permission'
                 self.assert_live()
+                stage = 'renew_lease'
                 lease = result.received_monotonic + _instant(result.disposition['leaseExpiresAt']) - result.server_time_upper
                 if lease <= time.monotonic():
                     raise ExecutionControlError('execution_authority_lost')
@@ -405,8 +456,8 @@ class ExecutorSession:
                     self._lease = min(lease, self._deadline)
                     self._anchor_mono, self._anchor_wall = time.monotonic(), self._client._clock()
                     self._lease_wall = min(result.received_wall + lease - result.received_monotonic, self._deadline_wall)
-            except BaseException:
-                self.cancel_event.set()
+            except BaseException as error:
+                self._cancel('renew', stage, error, started)
                 return
 
     def close(self):
