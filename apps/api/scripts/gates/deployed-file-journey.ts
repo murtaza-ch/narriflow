@@ -179,7 +179,8 @@ export async function runFileJourney(phase: "upload" | "generate" | "status", in
     if (current.ingestStatus !== "ready") {
       const report = { status: "pending", phase, reason: "source_not_ready", requests }; journal.lastReport = report; save("waiting_source"); return report;
     }
-    fact(typeof current.sourceDurationSeconds === "number" && Math.abs(current.sourceDurationSeconds - journal.source.durationSeconds) <= 0.1, "measured_source_duration_changed");
+    // The display duration is rounded up; sourceEdgeSec preserves the exact probed source boundary.
+    fact(typeof current.sourceEdgeSec === "number" && Math.abs(current.sourceEdgeSec - journal.source.durationSeconds) <= 0.1, "measured_source_duration_changed");
     save("generation_acceptance_pending");
     const result = await rpc("tools/call", { name: "narriflow_generate_clips", arguments: { workspaceId: journal.workspaceId,
       projectId: journal.projectId, clientIdempotencyKey: journal.generationKey, generation: journal.generation, forceRegenerate: false } }, `${journal.runId}:generate`);

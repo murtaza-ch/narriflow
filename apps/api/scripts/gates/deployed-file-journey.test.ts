@@ -20,6 +20,7 @@ async function fixture() {
   const storageUrl = "https://storage.fixture.invalid/assigned?private=fixture_grant_secret";
   const saved: FileJourneyJournal[] = [], calls: { path: string; method: string; body: any }[] = [];
   let finalized = false, notify = true, failNotify = false, loseGenerationReply = false, ready = true, wrongTaskBinding = false;
+  let sourceEdgeSec: number | undefined = 146.147;
   const accepted = new Set<string>(), generationBodies: string[] = [];
   const persist = (value: FileJourneyJournal) => { saved.push(structuredClone(value)); };
   const fetcher = (async (target, init = {}) => {
@@ -55,7 +56,7 @@ async function fixture() {
         if (failNotify) return Response.json({ error: "controlled" }, { status: 503 });
         notify = false; return Response.json({ ok: true });
       }
-      return Response.json({ project: { id: projectId, notifyOnComplete: notify, ingestStatus: ready ? "ready" : "queued", sourceDurationSeconds: 146.147 } });
+      return Response.json({ project: { id: projectId, notifyOnComplete: notify, ingestStatus: ready ? "ready" : "queued", sourceDurationSeconds: 147, sourceEdgeSec } });
     }
     expect(url.pathname).toBe("/mcp"); expect(headers.get("Authorization")).toBe(`Bearer ${apiKey}`); expect(notify).toBe(false);
     expect(headers.get("MCP-Protocol-Version")).toBe("2026-07-28");
@@ -81,6 +82,7 @@ async function fixture() {
   const run = (phase: "upload" | "generate" | "status", options: { sessionToken?: () => string | Promise<string>; delay?: (ms: number) => Promise<void> } = {}) => runFileJourney(phase, { apiOrigin, apiKey, sessionToken: options.sessionToken ?? sessionToken, journal, persist }, { fetch: fetcher, delay: options.delay ?? (async () => {}) });
   return { directory, journal, calls, saved, run, accepted, generationBodies, taskId,
     setFailNotify: (value: boolean) => { failNotify = value; }, setLostGeneration: () => { loseGenerationReply = true; }, setReady: (value: boolean) => { ready = value; },
+    setSourceEdge: (value: number | undefined) => { sourceEdgeSec = value; },
     setWrongTaskBinding: () => { wrongTaskBinding = true; }, setSessionToken: (value: string) => { sessionToken = value; } };
 }
 
@@ -176,4 +178,15 @@ test("credential refresh refuses a changed API key, Workspace or Clerk session i
     expect(() => provider.sessionToken()).toThrow(code);
   }
   expect(f.calls).toEqual([]);
+});
+
+
+test("generation checks the exact public source edge and refuses missing or changed measurement", async () => {
+  for (const edge of [undefined, 147, 145.9]) {
+    const f = await fixture();
+    await f.run("upload"); f.setSourceEdge(edge);
+    await expect(f.run("generate")).rejects.toMatchObject({ code: "measured_source_duration_changed" });
+    expect(f.generationBodies).toHaveLength(0);
+    expect(f.journal.taskId).toBeUndefined();
+  }
 });
