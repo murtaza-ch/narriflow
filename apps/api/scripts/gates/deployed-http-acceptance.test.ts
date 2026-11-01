@@ -24,7 +24,8 @@ function fixture(task = true) {
       if (headers.get("X-Workspace-Id") !== input.workspaceId) return json({ error: "workspace_selection_changed" }, 409);
       return json({ project: { id: input.projectId } });
     }
-    if (path === `/api/v1/projects/${input.projectId}`) return bearer === `Bearer ${input.apiKey}` ? json({ project: { id: input.projectId } }) : json({ error: "authentication_required" }, 401);
+    // Public REST/MCP use projectView.projectId; the first-party snapshot uses id.
+    if (path === `/api/v1/projects/${input.projectId}`) return bearer === `Bearer ${input.apiKey}` ? json({ project: { projectId: input.projectId } }) : json({ error: "authentication_required" }, 401);
     if (path === "/api/v1/social-accounts") return json({ error: "scope_required", details: { scope: "publishing:read" } }, 403);
     if (path.endsWith("/progress-ticket")) return json({ ticket: "private-fixture-ticket", ticketExpiresAt: Date.now() + 30_000, subscriptionExpiresAt: Date.now() + 60_000 });
     if (path === "/mcp") {
@@ -41,7 +42,7 @@ function fixture(task = true) {
         assert.ok(["narriflow_get_project", "narriflow_list_social_accounts"].includes(params.name));
         if (params.name === "narriflow_list_social_accounts") return json({ error: "insufficient_scope" }, 403);
         assert.equal(params.arguments.workspaceId, input.workspaceId); assert.equal(params.arguments.projectId, input.projectId);
-        result = { resultType: "complete", cacheScope: "private", ttlMs: 0, structuredContent: { data: { project: { id: input.projectId } } } };
+        result = { resultType: "complete", cacheScope: "private", ttlMs: 0, structuredContent: { data: { project: { projectId: input.projectId } } } };
       } else if (method === "tasks/get") {
         assert.equal(headers.get("MCP-Name"), params.taskId);
         if (params.taskId === input.fixtures.missingTaskId) return json({ jsonrpc: "2.0", id: request.id, error: { code: -32602, message: "Task not found" } });

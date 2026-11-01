@@ -129,9 +129,9 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
   await expectJson(`/api/projects/${input.projectId}`, 401, { headers: firstParty(input.apiKey) }, "authentication_required"); checks.push("api_key_cannot_enter_first_party");
   phase = "rest";
   const rest = await expectJson(`/api/v1/projects/${input.projectId}`, 200, { headers: key });
-  requireFact(rest.project?.id === input.projectId, "rest_project_identity"); checks.push("scoped_api_key_owned_project_read");
+  requireFact(rest.project?.projectId === input.projectId, "rest_project_identity"); checks.push("scoped_api_key_owned_project_read");
   const hinted = await expectJson(`/api/v1/projects/${input.projectId}`, 200, { headers: { ...key, "X-Workspace-Id": input.deniedWorkspaceId } });
-  requireFact(hinted.project?.id === input.projectId, "rest_key_workspace_binding"); checks.push("rest_key_workspace_ignores_foreign_hint");
+  requireFact(hinted.project?.projectId === input.projectId, "rest_key_workspace_binding"); checks.push("rest_key_workspace_ignores_foreign_hint");
   await expectJson(`/api/v1/projects/${input.projectId}`, 401, { headers: { Authorization: `Bearer ${input.sessionToken}` } }, "authentication_required"); checks.push("clerk_session_cannot_enter_rest");
   const missingScope = await expectJson("/api/v1/social-accounts", 403, { headers: key }, "scope_required");
   requireFact(missingScope.details?.scope === "publishing:read", "rest_missing_scope_identity"); checks.push("rest_missing_publishing_scope_refused");
@@ -173,7 +173,7 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
     const resources = await rpc("resources/list", {}, modern);
     requireFact(Array.isArray(resources.result?.resources) && VIEWS.every(view => resources.result.resources.some((resource: any) => resource.uri === `ui://narriflow/v2/${view}.html`)), "mcp_resource_catalog");
     const read = await rpc("tools/call", { name: "narriflow_get_project", arguments: { workspaceId: input.workspaceId, projectId: input.projectId } }, modern);
-    requireFact(!read.result?.isError && read.result?.structuredContent?.data?.project?.id === input.projectId, "mcp_owned_project_identity");
+    requireFact(!read.result?.isError && read.result?.structuredContent?.data?.project?.projectId === input.projectId, "mcp_owned_project_identity");
     if (modern) requireFact(read.result.cacheScope === "private" && read.result.ttlMs === 0, "mcp_private_zero_ttl");
     checks.push(`mcp_${era}_catalog_resources_and_owned_tool_read`);
     for (const view of VIEWS) {
