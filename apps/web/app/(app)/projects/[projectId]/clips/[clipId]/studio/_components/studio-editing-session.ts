@@ -2123,9 +2123,25 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         (asset.kind !== "proxy" || target === documentWindowFingerprint(this.cloudDocument)) &&
         selected.kind === asset.kind && selected.url === asset.url;
     };
-    const result = (outcome: "refreshed" | "failed" | "superseded"): StudioOperationResult => ({
-      kind: "playback-reloaded", outcome,
-    });
+    const probe = (phase: "entry" | "refreshed" | "failed" | "superseded") => {
+      console.warn(JSON.stringify({
+        level: "warn",
+        message: "studio_playback_retry_probe",
+        phase,
+        status: this.projection.status,
+        assetKind: asset.kind,
+        hasProxyPort: Boolean(this.dependencies?.preview?.fetchProxyStatus),
+        hasSourcePort: Boolean(this.dependencies?.preview?.fetchSourceUrl),
+        localWindow: target,
+        cloudWindow: documentWindowFingerprint(this.cloudDocument),
+        guardCurrent: current(),
+      }));
+    };
+    probe("entry");
+    const result = (outcome: "refreshed" | "failed" | "superseded"): StudioOperationResult => {
+      probe(outcome);
+      return { kind: "playback-reloaded", outcome };
+    };
     if (!current()) return result("superseded");
     try {
       if (asset.kind === "proxy" && this.dependencies?.preview?.fetchProxyStatus) {
