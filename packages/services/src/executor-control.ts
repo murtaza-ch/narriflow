@@ -10,7 +10,19 @@ import { flushWorkspaceEvents } from "./workspace-event";
 import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult, ExecutorExpiryResult } from "./executor-domain-control";
 
 type Tx = Prisma.TransactionClient;
-type Attempt = AttemptRow & { dispatch: DispatchRow };
+type Attempt = AttemptRow & { dispatch: Pick<DispatchRow, "kind" | "subjectKind" | "subjectId"> };
+
+/** Read the locked owner and its immutable dispatch identity together. Native
+ * timestamp/bigint columns keep the same values as ordinary Prisma reads. */
+async function lockAttempt(tx: Tx, attemptToken: string): Promise<Attempt | null> {
+  const [row] = await tx.$queryRaw<Array<AttemptRow & { dispatchKind: string; dispatchSubjectKind: string; dispatchSubjectId: string }>>`
+    SELECT attempt.*, dispatch.kind AS "dispatchKind", dispatch."subjectKind" AS "dispatchSubjectKind", dispatch."subjectId" AS "dispatchSubjectId"
+    FROM "ExecutionAttempt" attempt JOIN "ExecutionDispatch" dispatch ON dispatch.id = attempt."dispatchId"
+    WHERE attempt."attemptToken" = ${attemptToken}::uuid FOR UPDATE OF attempt`;
+  if (!row) return null;
+  const { dispatchKind, dispatchSubjectKind, dispatchSubjectId, ...attempt } = row;
+  return { ...attempt, dispatch: { kind: dispatchKind, subjectKind: dispatchSubjectKind, subjectId: dispatchSubjectId } };
+}
 type FailureCode = "invalid_reference" | "replay_conflict" | "authority_lost" | "artifact_invalid" | "storage_unavailable" | "scheduler_unavailable" | "epoch_unavailable" | "keys_unavailable" | "invalid_audience";
 export class ExecutorControlError extends Error {
   constructor(readonly code: FailureCode) { super(code); this.name = "ExecutorControlError"; }
@@ -157,8 +169,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       };
       if (epoch.epoch !== reference.deploymentEpoch) return record({ disposition: "superseded" }, await clock(tx));
       const locked = await options.domain.lockExecution(tx, reference, attemptToken);
-      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${attemptToken}::uuid FOR UPDATE`;
-      const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken }, include: { dispatch: true } });
+      const attempt = await lockAttempt(tx, attemptToken);
       assertReference(attempt, reference, options.subjectKind);
       const now = await clock(tx);
       if (locked.kind === "terminal") {
@@ -271,8 +282,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       }
       if (!epoch || epoch.epoch !== fence.reference.deploymentEpoch) throw new ExecutorControlError("authority_lost");
       const locked = await options.domain.lockExecution(tx, fence.reference, fence.attemptToken);
-      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${fence.attemptToken}::uuid FOR UPDATE`;
-      const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken: fence.attemptToken }, include: { dispatch: true } });
+      const attempt = await lockAttempt(tx, fence.attemptToken);
       assertReference(attempt, fence.reference, options.subjectKind);
       const now = await clock(tx);
       if (locked.kind === "terminal" || ended(attempt) || attempt.revokedAt || attempt.owner !== fence.owner ||
@@ -322,8 +332,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       const reference = deadline.reference;
       if (epoch.epoch !== reference.deploymentEpoch) return record({ kind: "superseded" }, await clock(tx));
       const locked = await options.domain.lockExecution(tx, reference, deadline.attemptToken);
-      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${deadline.attemptToken}::uuid FOR UPDATE`;
-      const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken: deadline.attemptToken }, include: { dispatch: true } });
+      const attempt = await lockAttempt(tx, deadline.attemptToken);
       assertReference(attempt, reference, options.subjectKind);
       const now = await clock(tx);
       if (ended(attempt)) return record({ kind: "terminal", ...(locked.kind === "terminal" ? { dispatchIds: locked.dispatchIds } : {}) }, now);

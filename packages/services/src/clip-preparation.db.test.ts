@@ -162,6 +162,11 @@ suite("Clip Preparation authority and publication", () => {
       const acquireQueries = queries.length;
       const before = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
       const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } });
+      const authority = await factory.control.authorize(fence, false);
+      expect(typeof authority.input?.byteLength).toBe("bigint");
+      expect(authority.input?.byteLength).toBe(before.inputByteLength);
+      expect(authority.leaseExpiresAt).toEqual(attempt.leaseExpiresAt);
+      expect(authority.operationDeadlineAt).toEqual(attempt.operationDeadlineAt);
       const requests = Array.from({ length: 6 }, verified), request = requests[0]!, command = { action: "work-package", fence };
       queries.length = 0;
       await factory.transfer.execute({ command, verifiedRequest: request });
@@ -171,7 +176,7 @@ suite("Clip Preparation authority and publication", () => {
         epochReads: queries.filter(query => query.startsWith("SELECT") && query.includes('"ExecutionEpoch"')).length }));
       // This startup path previously issued 64 statements. Keep its serial
       // database work bounded without relaxing any authority or expiry check.
-      expect(startupQueries).toBeLessThanOrEqual(52);
+      expect(startupQueries).toBeLessThanOrEqual(46);
       queries.length = 0;
       await factory.transfer.execute({ command, verifiedRequest: request });
       const replayQueries = queries.length;
@@ -194,7 +199,11 @@ suite("Clip Preparation authority and publication", () => {
       queries.length = 0;
       expect((await factory.transfer.execute({ command: sourceRead, verifiedRequest: verified() })).disposition).toBe("source_read");
       const sourceReadQueries = queries.length;
-      expect(sourceReadQueries).toBeLessThanOrEqual(36);
+      console.warn(JSON.stringify({ level: "info", message: "preparation_source_read_statement_trace", count: sourceReadQueries,
+        statements: queries.map(query => ({ operation: /^[A-Z]+/.exec(query.trim())?.[0],
+          tables: ["ExecutionEpoch", "ExecutionInboxReceipt", "ExecutionDispatch", "ClipPreparation", "Project", "WorkflowRun", "RenderGroup", "RenderGroupMember", "Clip", "ExecutionArtifact", "ClipRender", "ClipExportVariant", "ExecutionAttempt"].filter(table => query.includes('"'+table+'"')),
+          rowLock: query.includes("FOR UPDATE"), advisoryLock: query.includes("pg_advisory_xact_lock") })) }));
+      expect(sourceReadQueries).toBeLessThanOrEqual(30);
       queries.length = 0;
       await factory.control.execute({ command: { action: "renew", fence, leaseSeconds: 120 }, verifiedRequest: verified() });
       console.warn(JSON.stringify({ level: "info", message: "preparation_control_query_counts", acquire: acquireQueries,

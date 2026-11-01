@@ -1,0 +1,50 @@
+{
+  "status": "local_regression_passed_deployed_latency_unmeasured",
+  "baseCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+  "scope": "Isolated worktree and disposable localhost PostgreSQL schemas only",
+  "runtime": "Bun 1.3.6",
+  "seam": "Production createClipPreparationExecution control/transfer with one database connection",
+  "baseline": {
+    "sourceReadSqlStatements": 34,
+    "sourceReadRegressionMaximum": 30,
+    "regression": "Failed on the unmodified base",
+    "trace": "/tmp/narriflow-locked-read-set-red.log"
+  },
+  "sqlStatements": {
+    "acquire": { "before": 39, "after": 34 },
+    "firstWorkPackage": { "before": 50, "after": 45 },
+    "exactReplayWorkPackage": { "before": 44, "after": 39 },
+    "processStart": { "before": 37, "after": 32 },
+    "sourceRead": { "before": 34, "after": 29 },
+    "renew": { "before": 37, "after": 32 }
+  },
+  "consolidation": [
+    "RenderGroup, WorkflowRun and ordered member identity/invalidation facts are read in one statement after the same row locks",
+    "Render variants and optional export identity are read with one left join",
+    "The generic executor attempt row lock returns its native columns and dispatch identity in one statement"
+  ],
+  "authorityPreserved": [
+    "Epoch, inbox, Workspace, Project, domain and attempt lock order is unchanged",
+    "Database clocks remain after possible lock waits; final expiry rollback is unchanged",
+    "Every source/editor/export/member/retention/Workspace check and canonical binding hash remains",
+    "The 100-candidate bound, candidate order and export preference are unchanged",
+    "No whole-row JSON conversion: dates and bigint byte counts remain native SQL columns; member IDs use an ordered UUID array",
+    "No authority cache, changed lease/deadline/timeout, budget reset or live action"
+  ],
+  "verification": {
+    "databaseTests": "50 passed, 0 failed, 403 assertions across clip-preparation, clip-preparation-ledger, execution-transfer and executor-control",
+    "coverage": "Frozen export after edit, source replacement, malformed reference refusal, one-connection grants, native bigint/date equality, expiry rollback, watchdog replay and SIGKILL publication recovery",
+    "servicesTypecheck": "passed",
+    "repositoryBiome": "passed with existing warnings",
+    "logs": [
+      "/tmp/narriflow-locked-read-set-final-green.log",
+      "/tmp/narriflow-locked-read-set-final-typecheck.log",
+      "/tmp/narriflow-locked-read-set-lint.log"
+    ]
+  },
+  "limits": [
+    "Five fewer SQL statements per action is a measured local round-trip reduction, not a measured cloud latency improvement",
+    "Source reads still perform 29 statements and retain complete fresh authority validation for every grant",
+    "No cloud/SDK call, Root edit, deployment, runtime artifact change or live history mutation was performed"
+  ]
+}

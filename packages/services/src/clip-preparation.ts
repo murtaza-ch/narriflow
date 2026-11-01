@@ -2,7 +2,7 @@ import {ExecutionDispatchPendingError} from "./execution-dispatch";
 import { assertExecutionRestorePage } from "./execution-restore-pages";
 import type { ExecutionRestorePage } from "./execution-restore";
 import { createHash } from "node:crypto";
-import { Prisma, type PrismaClient, type ClipPreparation, type ExecutionArtifact, type RenderGroup } from "@prisma/client";
+import { Prisma, type PrismaClient, type ClipPreparation, type ExecutionArtifact, type RenderGroup, type ClipRender } from "@prisma/client";
 import { executionDispatchReferenceSchema, sourceVideoBindingSchema, type ExecutionDispatchReference, type ExecutionDeadline } from "@narriflow/validators/execution";
 import { clipPreparationInputSchema, clipPreparationResultSchema, clipPreparationReadyObjectsSchema, type ClipPreparationInput, type ClipPreparationResult, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
 import { buildEditedTimeMap, clipAutoLayoutMatchesInputs, CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION } from "@narriflow/validators";
@@ -21,6 +21,11 @@ import { derivePeaksStorageKey } from "./clip-preview-storage";
 import type { ExecutorLiveAuthority } from "./executor-control";
 
 type Tx = Prisma.TransactionClient;
+type GroupInputRead = Pick<RenderGroup, "id" | "workflowRunId" | "clipId" | "exportIdentity" | "status" | "deploymentEpoch" | "generation" | "preparationId" | "operationDeadlineAt"> & {
+  runProjectId: string; runDeploymentEpoch: number; runStage: string; runStatus: string; runLeaseOwner: string | null; runAttemptId: string | null;
+  memberIds: string[]; invalidatedMemberCount: number;
+};
+type VariantInputRead = Pick<ClipRender, "id" | "clipId" | "workflowRunId" | "resolution" | "editorRevision" | "clipSnapshot"> & { exportId: string | null };
 const namespace = "7d4f8579-d68c-5240-bd5e-05411d012f22";
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const clipPreparationIdentity = (epoch:number,clipId:string,bindingHash:string)=>uuidV5(namespace,JSON.stringify([epoch,clipId,bindingHash]));
@@ -125,13 +130,23 @@ export class ClipPreparationService {
     await tx.$queryRaw`SELECT id FROM "RenderGroup" WHERE id = ${initial.id}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "Clip" WHERE id = ${initial.clipId}::uuid FOR UPDATE`;
     const clock = await now(tx);
-    const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: initial.id }, include: { workflowRun: true, members: { orderBy: { clipRenderId: "asc" } } } });
-    const project = await tx.project.findFirst({ where: { id: group.workflowRun.projectId, ...accessibleProjectWhere(clock), workspace: { status: "active" } } });
-    const clip = await tx.clip.findFirst({ where: { id: group.clipId, projectId: group.workflowRun.projectId } });
+    // Gather fresh group/run/member facts after the existing row locks.
+    // Do not serialize dates or byte counts via JSON.
+    const [group] = await tx.$queryRaw<GroupInputRead[]>`
+      SELECT g.id, g."workflowRunId", g."clipId", g."exportIdentity", g.status, g."deploymentEpoch", g.generation, g."preparationId", g."operationDeadlineAt",
+        r."projectId" AS "runProjectId", r."deploymentEpoch" AS "runDeploymentEpoch", r.stage AS "runStage", r.status AS "runStatus", r."leaseOwner" AS "runLeaseOwner", r."attemptId" AS "runAttemptId",
+        members.ids AS "memberIds", members.invalidated AS "invalidatedMemberCount"
+      FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id = g."workflowRunId"
+      CROSS JOIN LATERAL (SELECT COALESCE(array_agg(m."clipRenderId" ORDER BY m."clipRenderId"), ARRAY[]::uuid[]) AS ids,
+        count(*) FILTER (WHERE m."invalidatedAt" IS NOT NULL)::int AS invalidated FROM "RenderGroupMember" m WHERE m."groupId" = g.id) members
+      WHERE g.id = ${initial.id}::uuid`;
+    if (!group) throw new ClipPreparationError("clip_preparation_input_invalid");
+    const project = await tx.project.findFirst({ where: { id: group.runProjectId, ...accessibleProjectWhere(clock), workspace: { status: "active" } } });
+    const clip = await tx.clip.findFirst({ where: { id: group.clipId, projectId: group.runProjectId } });
     if (!project || !clip || (locked && project.id !== locked.projectId) || project.ingestStatus !== "ready" || !project.sourceStorageKey || group.deploymentEpoch !== epoch.epoch || group.generation !== reference.generation ||
-      group.workflowRun.deploymentEpoch !== epoch.epoch || group.workflowRun.stage !== "clip_rendering" || !["waiting", "queued"].includes(group.workflowRun.status) ||
-      group.workflowRun.leaseOwner || group.workflowRun.attemptId || !["queued", "running"].includes(group.status) ||
-      group.members.length === 0 || group.members.some(member => member.invalidatedAt !== null)) throw new ClipPreparationError("clip_preparation_input_invalid");
+      group.runDeploymentEpoch !== epoch.epoch || group.runStage !== "clip_rendering" || !["waiting", "queued"].includes(group.runStatus) ||
+      group.runLeaseOwner || group.runAttemptId || !["queued", "running"].includes(group.status) ||
+      group.memberIds.length === 0 || group.invalidatedMemberCount !== 0) throw new ClipPreparationError("clip_preparation_input_invalid");
     const source = await tx.executionArtifact.findUnique({ where: { storageKey: project.sourceStorageKey } });
     if (!source || source.role !== "source_video" || !source.committedAt || source.byteLength === null || !source.etag || !source.checksumSha256 ||
       source.byteLength !== project.sourceSizeBytes) throw new ClipPreparationError("clip_preparation_input_invalid");
@@ -143,9 +158,12 @@ export class ClipPreparationService {
       !Number.isSafeInteger(configuration[2]) || configuration[2] < 0 || typeof configuration[3] !== "string" || typeof configuration[4] !== "boolean") throw new ClipPreparationError("clip_preparation_input_invalid");
     const frozen = configuration[0] === "export";
     if ((configuration[1] === null) === frozen || (!frozen && clip.editorRevision !== configuration[2])) throw new ClipPreparationError("clip_preparation_input_invalid");
-    const variants = await tx.clipRender.findMany({ where: { id: { in: group.members.map(member => member.clipRenderId) } }, include: { exportVariant: true }, orderBy: { id: "asc" } });
-    if (variants.length !== group.members.length || variants.some(variant => variant.clipId !== clip.id || variant.workflowRunId !== group.workflowRunId ||
-      variant.resolution !== configuration[3] || (variant.editorRevision ?? clip.editorRevision) !== configuration[2] || (variant.exportVariant?.exportId ?? null) !== configuration[1])) throw new ClipPreparationError("clip_preparation_input_invalid");
+    const variants = await tx.$queryRaw<VariantInputRead[]>`
+      SELECT variant.id, variant."clipId", variant."workflowRunId", variant.resolution, variant."editorRevision", variant."clipSnapshot", exported."exportId"
+      FROM "ClipRender" variant LEFT JOIN "ClipExportVariant" exported ON exported.id = variant."exportVariantId"
+      WHERE variant.id = ANY(${group.memberIds}::uuid[]) ORDER BY variant.id`;
+    if (variants.length !== group.memberIds.length || variants.some(variant => variant.clipId !== clip.id || variant.workflowRunId !== group.workflowRunId ||
+      variant.resolution !== configuration[3] || (variant.editorRevision ?? clip.editorRevision) !== configuration[2] || variant.exportId !== configuration[1])) throw new ClipPreparationError("clip_preparation_input_invalid");
     const document = frozen ? decodeFrozenClipEditorDocument(variants[0]!.clipSnapshot, probe.durationSec) : decodeClipEditorDocumentFromStorage(clip, { durationSec: probe.durationSec, wholeSource: clip.wholeSource });
     const first = frozen ? variants[0]!.clipSnapshot as Record<string, unknown> : clip;
     const wholeSource = first.wholeSource, llmModel = first.llmModel;
