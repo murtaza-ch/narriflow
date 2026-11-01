@@ -1,0 +1,56 @@
+{
+  "sourceBase": "5a09d40c8b04081b3ceb17c6f8b86ae6bf55f0e2",
+  "scope": "Pinned Bun laptop CLI startup; isolated subprocess diagnosis and regression only",
+  "reportedLiveSymptom": "After a successful native runtime verification, the host agent exited 0 with empty logs before local_fetch_connected. No actual device session or credential file was read for this diagnosis.",
+  "feedbackLoop": {
+    "privateHarness": "/tmp/narriflow-local-agent-silent-exit-offline-20261101/reproduce.py",
+    "actualEntryPoint": "apps/media/src/local-fetch-agent.ts",
+    "bun": "1.3.6 d530ed99 darwin arm64",
+    "ports": "Private invalid fixture session, short-lived fake native verifier, preload replacing fetch with an in-memory response; retained tests never construct a WebSocket",
+    "red": "Actual unchanged CLI exits 0, stdout empty, stderr empty, fake native verifier ran, session chmod completed, mocked fetch never entered",
+    "regressionRed": { "passed": 1, "failed": 2, "assertions": 7 },
+    "regressionGreen": { "passed": 3, "failed": 0, "assertions": 11 },
+    "greenStartupRepeats": { "runs": 5, "passed": 5, "failed": 0 }
+  },
+  "hypotheses": [
+    {
+      "hypothesis": "The unawaited CLI promise loses lifecycle ownership after native verifier exit",
+      "prediction": "Awaiting the existing main promise reaches the first signed request without a keepalive timer",
+      "result": "Confirmed in both the actual entrypoint regression and private source-copy probe. The only runtime change is top-level await."
+    },
+    {
+      "hypothesis": "The short-lived native verifier exit participates in the stop boundary",
+      "prediction": "Removing only that verifier await avoids the silent exit",
+      "result": "Confirmed in the private minimized probe. Tagged private instrumentation reached verifier-resolved and signing-entered, then exited before signing-resolved. No tagged instrumentation remains in product source."
+    },
+    {
+      "hypothesis": "WebCrypto cannot complete by itself on this runtime",
+      "prediction": "A minimal standalone digest also exits without its completion marker",
+      "result": "Refuted. Five unawaited-main digest probes and five awaited-main probes all completed. The diagnosis does not claim an independently proved Bun internal root cause."
+    },
+    {
+      "hypothesis": "Expired session or invalid runtime configuration skips connection startup",
+      "prediction": "A future-expiry valid fixture and matching native fingerprint reach transport without changing lifetime ownership",
+      "result": "Refuted as the cause of this silent exit. Those fixtures still exit silently before the fix; after the fix, real signing verifies at the offline transport."
+    }
+  ],
+  "change": "Await the existing main().catch(...) at the CLI entrypoint. Existing sanitized startup failure logging, signature generation, session rules, native command, process groups, concurrency, reconnect policy and shutdown handling remain unchanged.",
+  "coverage": [
+    "Actual CLI native verifier exit followed by production HMAC signing and real signature verification at the mocked first control request",
+    "Bad native fingerprint exits 1 with local_fetch_start_failed and sends no request",
+    "Retryable offline control failure logs the existing sanitized reconnect message, stays alive and honors SIGTERM"
+  ],
+  "verification": {
+    "focusedCommand": "pinned Bun 1.3.6 --no-env-file test apps/media/src/local-fetch-agent.test.ts",
+    "mediaTypecheck": { "exitCode": 0 },
+    "repositoryLint": { "exitCode": 0, "existingWarnings": 11, "existingInfo": 1, "changedFileDiagnostics": 0 },
+    "fullMediaSuiteOrNativeImageQualificationClaimed": false
+  },
+  "retainedDiagnosticLimit": "A proposed socket-mock extension failed to replace Bun's WebSocket import and did not reach the connected event for its reserved offline.invalid fixture. It was removed. Retained regression coverage ends at the real signed first request; a live authorized mailbox connection and actual Docker acquisition remain Root-owned acceptance work.",
+  "rawEvidenceDirectory": "/tmp/narriflow-local-agent-lifecycle-evidence-20261101",
+  "rootTrackedEdits": false,
+  "actualDeviceSessionRead": false,
+  "actualCloudOrProviderRequest": false,
+  "databaseConnection": false,
+  "nativeImageChangedOrRequalified": false
+}

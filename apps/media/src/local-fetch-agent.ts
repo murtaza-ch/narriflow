@@ -121,4 +121,5 @@ async function main() {
   stop();
 }
 
-main().catch(() => { console.error("local_fetch_start_failed"); process.exitCode = 1; });
+// Keep the CLI alive through asynchronous signing after the native verifier exits.
+await main().catch(() => { console.error("local_fetch_start_failed"); process.exitCode = 1; });
