@@ -1,0 +1,768 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T04:30:54.471875+00:00",
+  "status": "PASSED exact immutable deployed-image native, golden, seek and token-owner qualification",
+  "sourceCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+  "workerVersions": {
+    "closed": "f3b9d013-f070-4155-b4c2-4cf4227897c2",
+    "open": "671c92aa-5051-4577-86c7-830331eff38f"
+  },
+  "imageIdentitiesStable": true,
+  "profiles": {
+    "lean": {
+      "imageId": "im-XythggzJLRC710ABmGyi7h",
+      "cpu": 2,
+      "memoryMiB": 4096,
+      "sandboxId": "sb-01M6AKG8TB6F1JYR2VN955B858",
+      "terminated": true,
+      "networkBlocked": true,
+      "sourceOverlay": false,
+      "credentialEnvironmentAbsent": true,
+      "nativeResult": {
+        "discoveredTests": 176,
+        "testsRun": 176,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "expectedFailures": 0,
+        "unexpectedSuccesses": 0,
+        "successful": true
+      },
+      "runtimeFingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+      "runtimeCheckerSeconds": 0.524,
+      "sourceAudits": {
+        "source-audit-before.json": {
+          "checkedFiles": 1515,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after.json": {
+          "checkedFiles": 1515,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after-native.json": {
+          "checkedFiles": 1515,
+          "mismatchedOrMissingPaths": []
+        }
+      }
+    },
+    "render": {
+      "imageId": "im-QYA7zv7EqdHhtjctNhzIIY",
+      "cpu": 4,
+      "memoryMiB": 8192,
+      "sandboxId": "sb-01M6AKKSVY9GYPY4YD9H56RAEE",
+      "terminated": true,
+      "networkBlocked": true,
+      "sourceOverlay": false,
+      "credentialEnvironmentAbsent": true,
+      "nativeResult": {
+        "discoveredTests": 191,
+        "testsRun": 191,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "expectedFailures": 0,
+        "unexpectedSuccesses": 0,
+        "successful": true
+      },
+      "runtimeFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+      "runtimeCheckerSeconds": 11.383,
+      "sourceAudits": {
+        "source-audit-after-golden.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-before.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after-native.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        }
+      },
+      "golden": {
+        "ok": true,
+        "summary": {
+          "normal": {
+            "total": 18,
+            "pass": 18,
+            "fail": 0
+          },
+          "knownDefects": {
+            "total": 18,
+            "xfail": 2,
+            "xpass": 0,
+            "changed": 0,
+            "activatedPass": 16,
+            "activatedFail": 0
+          }
+        },
+        "orientationGuards": [
+          {
+            "id": "rot180",
+            "verdict": "guard-pass",
+            "mismatches": []
+          },
+          {
+            "id": "mirror-h",
+            "verdict": "guard-pass",
+            "mismatches": []
+          }
+        ]
+      },
+      "seekMatrix": {
+        "status": "passed",
+        "scope": "actual native render and conditional source server; fixture control/storage, no DB/providers",
+        "pinnedRuntimeVerified": true,
+        "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+        "seekStartSeconds": 2.3,
+        "durationSeconds": 3,
+        "ffmpegVersion": "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026 the FFmpeg developers",
+        "bunVersion": "1.3.6",
+        "pythonVersion": "3.13.5",
+        "cases": [
+          {
+            "gopFrames": 15,
+            "moov": "head",
+            "fixture": {
+              "atoms": [
+                {
+                  "type": "ftyp",
+                  "offset": 0,
+                  "bytes": 32
+                },
+                {
+                  "type": "moov",
+                  "offset": 32,
+                  "bytes": 10243
+                },
+                {
+                  "type": "free",
+                  "offset": 10275,
+                  "bytes": 8
+                },
+                {
+                  "type": "mdat",
+                  "offset": 10283,
+                  "bytes": 711662
+                }
+              ],
+              "frameCount": 240,
+              "keyframeIndices": [
+                0,
+                15,
+                30,
+                45,
+                60,
+                75,
+                90,
+                105,
+                120,
+                135,
+                150,
+                165,
+                180,
+                195,
+                210,
+                225
+              ],
+              "seekFrame": 69,
+              "precedingKeyframe": 60,
+              "sha256": "dc69d240fb5d3a0cc89a45855d848771ce21b666bf8a1345d9a8bdd08b91f2dd",
+              "byteLength": 721945
+            },
+            "operation": {
+              "outcome": {
+                "status": "completed",
+                "requested": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "superseded": 0
+              },
+              "bytesTransferred": 721945,
+              "upstreamRequests": 4,
+              "detectorExecutions": 0,
+              "starts": 1,
+              "artifacts": [
+                {
+                  "role": "render_variant",
+                  "byteLength": 438944,
+                  "sha256": "ec19ad85f2b041c4930c1fa5847bad6554ce39971e5947f4d88efc8383460a1d"
+                }
+              ],
+              "outputValidation": {
+                "fullDecode": true,
+                "videoFrames": 90,
+                "dimensions": [
+                  720,
+                  720
+                ],
+                "videoDuration": 3.0,
+                "audioDuration": 3.0,
+                "firstFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "expectedFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "lumaTolerance": 2,
+                "audioOnset": 0.215,
+                "decodedAudioSamples": 144384,
+                "decodedAudioDuration": 3.008,
+                "expectedAudioOnset": 0.2150000000000003,
+                "audioToleranceSeconds": 0.03333333333333333,
+                "conditionalSourceReads": [
+                  {
+                    "start": 0,
+                    "end": 65535,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 65536,
+                    "end": 196607,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 196608,
+                    "end": 458751,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 458752,
+                    "end": 721944,
+                    "ifMatch": "\"source\""
+                  }
+                ],
+                "byteLength": 438944,
+                "sha256": "ec19ad85f2b041c4930c1fa5847bad6554ce39971e5947f4d88efc8383460a1d"
+              }
+            }
+          },
+          {
+            "gopFrames": 15,
+            "moov": "tail",
+            "fixture": {
+              "atoms": [
+                {
+                  "type": "ftyp",
+                  "offset": 0,
+                  "bytes": 32
+                },
+                {
+                  "type": "free",
+                  "offset": 32,
+                  "bytes": 8
+                },
+                {
+                  "type": "mdat",
+                  "offset": 40,
+                  "bytes": 711662
+                },
+                {
+                  "type": "moov",
+                  "offset": 711702,
+                  "bytes": 10243
+                }
+              ],
+              "frameCount": 240,
+              "keyframeIndices": [
+                0,
+                15,
+                30,
+                45,
+                60,
+                75,
+                90,
+                105,
+                120,
+                135,
+                150,
+                165,
+                180,
+                195,
+                210,
+                225
+              ],
+              "seekFrame": 69,
+              "precedingKeyframe": 60,
+              "sha256": "b474a4844100deef0b4b4cf047d28408690c1aa455e2a6276fdd00894df84a34",
+              "byteLength": 721945
+            },
+            "operation": {
+              "outcome": {
+                "status": "completed",
+                "requested": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "superseded": 0
+              },
+              "bytesTransferred": 721945,
+              "upstreamRequests": 4,
+              "detectorExecutions": 0,
+              "starts": 1,
+              "artifacts": [
+                {
+                  "role": "render_variant",
+                  "byteLength": 438944,
+                  "sha256": "ec19ad85f2b041c4930c1fa5847bad6554ce39971e5947f4d88efc8383460a1d"
+                }
+              ],
+              "outputValidation": {
+                "fullDecode": true,
+                "videoFrames": 90,
+                "dimensions": [
+                  720,
+                  720
+                ],
+                "videoDuration": 3.0,
+                "audioDuration": 3.0,
+                "firstFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "expectedFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "lumaTolerance": 2,
+                "audioOnset": 0.215,
+                "decodedAudioSamples": 144384,
+                "decodedAudioDuration": 3.008,
+                "expectedAudioOnset": 0.2150000000000003,
+                "audioToleranceSeconds": 0.03333333333333333,
+                "conditionalSourceReads": [
+                  {
+                    "start": 0,
+                    "end": 65535,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 65536,
+                    "end": 196607,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 196608,
+                    "end": 458751,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 458752,
+                    "end": 721944,
+                    "ifMatch": "\"source\""
+                  }
+                ],
+                "byteLength": 438944,
+                "sha256": "ec19ad85f2b041c4930c1fa5847bad6554ce39971e5947f4d88efc8383460a1d"
+              }
+            }
+          },
+          {
+            "gopFrames": 120,
+            "moov": "head",
+            "fixture": {
+              "atoms": [
+                {
+                  "type": "ftyp",
+                  "offset": 0,
+                  "bytes": 32
+                },
+                {
+                  "type": "moov",
+                  "offset": 32,
+                  "bytes": 10179
+                },
+                {
+                  "type": "free",
+                  "offset": 10211,
+                  "bytes": 8
+                },
+                {
+                  "type": "mdat",
+                  "offset": 10219,
+                  "bytes": 264718
+                }
+              ],
+              "frameCount": 240,
+              "keyframeIndices": [
+                0,
+                120
+              ],
+              "seekFrame": 69,
+              "precedingKeyframe": 0,
+              "sha256": "1b423021f65a465e824a8f15c1054276faac033523d84c582419ce8a3d361cee",
+              "byteLength": 274937
+            },
+            "operation": {
+              "outcome": {
+                "status": "completed",
+                "requested": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "superseded": 0
+              },
+              "bytesTransferred": 274937,
+              "upstreamRequests": 3,
+              "detectorExecutions": 0,
+              "starts": 1,
+              "artifacts": [
+                {
+                  "role": "render_variant",
+                  "byteLength": 411297,
+                  "sha256": "9298af3ad5f8ece284196d5021fa0072cd512ed4c610535629858a8fbccb2142"
+                }
+              ],
+              "outputValidation": {
+                "fullDecode": true,
+                "videoFrames": 90,
+                "dimensions": [
+                  720,
+                  720
+                ],
+                "videoDuration": 3.0,
+                "audioDuration": 3.0,
+                "firstFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "expectedFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "lumaTolerance": 2,
+                "audioOnset": 0.215,
+                "decodedAudioSamples": 144384,
+                "decodedAudioDuration": 3.008,
+                "expectedAudioOnset": 0.2150000000000003,
+                "audioToleranceSeconds": 0.03333333333333333,
+                "conditionalSourceReads": [
+                  {
+                    "start": 0,
+                    "end": 65535,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 65536,
+                    "end": 196607,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 196608,
+                    "end": 274936,
+                    "ifMatch": "\"source\""
+                  }
+                ],
+                "byteLength": 411297,
+                "sha256": "9298af3ad5f8ece284196d5021fa0072cd512ed4c610535629858a8fbccb2142"
+              }
+            }
+          },
+          {
+            "gopFrames": 120,
+            "moov": "tail",
+            "fixture": {
+              "atoms": [
+                {
+                  "type": "ftyp",
+                  "offset": 0,
+                  "bytes": 32
+                },
+                {
+                  "type": "free",
+                  "offset": 32,
+                  "bytes": 8
+                },
+                {
+                  "type": "mdat",
+                  "offset": 40,
+                  "bytes": 264718
+                },
+                {
+                  "type": "moov",
+                  "offset": 264758,
+                  "bytes": 10179
+                }
+              ],
+              "frameCount": 240,
+              "keyframeIndices": [
+                0,
+                120
+              ],
+              "seekFrame": 69,
+              "precedingKeyframe": 0,
+              "sha256": "c02b3cbb81b0b837a5b00592e09b524213c93d07cfd41173eb78439284e5ae89",
+              "byteLength": 274937
+            },
+            "operation": {
+              "outcome": {
+                "status": "completed",
+                "requested": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "superseded": 0
+              },
+              "bytesTransferred": 274937,
+              "upstreamRequests": 3,
+              "detectorExecutions": 0,
+              "starts": 1,
+              "artifacts": [
+                {
+                  "role": "render_variant",
+                  "byteLength": 411297,
+                  "sha256": "9298af3ad5f8ece284196d5021fa0072cd512ed4c610535629858a8fbccb2142"
+                }
+              ],
+              "outputValidation": {
+                "fullDecode": true,
+                "videoFrames": 90,
+                "dimensions": [
+                  720,
+                  720
+                ],
+                "videoDuration": 3.0,
+                "audioDuration": 3.0,
+                "firstFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "expectedFrameLuma": [
+                  155.0,
+                  162.0,
+                  169.0
+                ],
+                "lumaTolerance": 2,
+                "audioOnset": 0.215,
+                "decodedAudioSamples": 144384,
+                "decodedAudioDuration": 3.008,
+                "expectedAudioOnset": 0.2150000000000003,
+                "audioToleranceSeconds": 0.03333333333333333,
+                "conditionalSourceReads": [
+                  {
+                    "start": 0,
+                    "end": 65535,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 65536,
+                    "end": 196607,
+                    "ifMatch": "\"source\""
+                  },
+                  {
+                    "start": 196608,
+                    "end": 274936,
+                    "ifMatch": "\"source\""
+                  }
+                ],
+                "byteLength": 411297,
+                "sha256": "9298af3ad5f8ece284196d5021fa0072cd512ed4c610535629858a8fbccb2142"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "tokenOwnerSupplement": {
+    "sourceCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+    "imageId": "im-XythggzJLRC710ABmGyi7h",
+    "profile": "lean",
+    "cpu": 2,
+    "memoryMiB": 4096,
+    "sourceOverlay": false,
+    "networkBlocked": true,
+    "secrets": [],
+    "terminated": true,
+    "status": "passed",
+    "startedAtUtc": "2026-11-01T03:57:38.890759+00:00",
+    "sandboxId": "sb-01M6AM2ZKGW7AXW5TYCNA32V0S",
+    "testExitCode": 0,
+    "testsPassed": 3,
+    "testsSkipped": 0,
+    "imageIdentityStable": true,
+    "endedAtUtc": "2026-11-01T03:57:46.770392+00:00"
+  },
+  "rawEvidence": {
+    "identities-after.json": {
+      "sha256": "642b64eaa1734057901c2249cb7857ac84c1c89ed447fcc7d4945811a2bc29a3",
+      "bytes": 1683
+    },
+    "identities-before.json": {
+      "sha256": "642b64eaa1734057901c2249cb7857ac84c1c89ed447fcc7d4945811a2bc29a3",
+      "bytes": 1683
+    },
+    "lean/expected-source.json": {
+      "sha256": "d204d0bcf8a4595918b6900f8e58f9879681d6b8f78bedfacc8fae660fa9f394",
+      "bytes": 190566
+    },
+    "lean/native-result.json": {
+      "sha256": "b051b93d0cffcb9c10792624842971e869c7bba9bc6174ed222563f0be8a4089",
+      "bytes": 171
+    },
+    "lean/native-tests.log": {
+      "sha256": "d6504555f2e7675cc7c711593336552201e2670ac8a6ef5e4ed4dd67c26efcea",
+      "bytes": 44652
+    },
+    "lean/provenance.json": {
+      "sha256": "6c08fb554a9e8665eeefbebcc00afe0b9571133fef02e526e98852aa001719f2",
+      "bytes": 2933
+    },
+    "lean/runner.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "lean/runner.stdout.log": {
+      "sha256": "2eced00c80f9ecb9ea98d9673803967311928ac9ba4f21f4c6f9262dc7459fb7",
+      "bytes": 81
+    },
+    "lean/runtime.log": {
+      "sha256": "8a6a777814cb93e622aed7605e910bc00c82e1e6f7e61d38954eafdc4f984e0a",
+      "bytes": 824
+    },
+    "lean/source-audit-after-native.json": {
+      "sha256": "eded1ce2c977df444de3856a4fa2eb15be325bad93cd000ff45b2024d3397cff",
+      "bytes": 61
+    },
+    "lean/source-audit-after.json": {
+      "sha256": "eded1ce2c977df444de3856a4fa2eb15be325bad93cd000ff45b2024d3397cff",
+      "bytes": 61
+    },
+    "lean/source-audit-before.json": {
+      "sha256": "eded1ce2c977df444de3856a4fa2eb15be325bad93cd000ff45b2024d3397cff",
+      "bytes": 61
+    },
+    "lean/status.json": {
+      "sha256": "f9f442b1e2a8389fb990267ba396ef6384e486e2f95c2540b257e9234c1584fe",
+      "bytes": 709
+    },
+    "plan.json": {
+      "sha256": "11dcfac10d38195c91d098380337ce7a2c6d12e0347222084830be8c1e98f693",
+      "bytes": 545
+    },
+    "qualification.json": {
+      "sha256": "6b46d51933969f84a29339d7786a0db89126e5215e63a7aaecf4f33ff5673c5c",
+      "bytes": 7288
+    },
+    "render/expected-source.json": {
+      "sha256": "8432020356c7cfcad5e2d3dc7958dc1711fe0ea16030729d28deedc8a41b6345",
+      "bytes": 199339
+    },
+    "render/golden-capture.json": {
+      "sha256": "edfda6b905b21ecaef680c16e52d99e8ca39105818d86b5430e0f10a61e7d3bc",
+      "bytes": 1845292
+    },
+    "render/golden-report.json": {
+      "sha256": "415cd6637b67d40f383139441bc562408d286548dd63fda47a36c9a8305c4172",
+      "bytes": 15274
+    },
+    "render/golden-report.md": {
+      "sha256": "ef5584fcb4a831a8f757bfb2b4c77ddfaccc96076b958bc3ae1e9cfcd29c89fa",
+      "bytes": 2097
+    },
+    "render/golden.log": {
+      "sha256": "ba417b9d753b07bd3134bb678b398712d943310c8ee5b7ca7e5661e8678a8fed",
+      "bytes": 10450
+    },
+    "render/native-result.json": {
+      "sha256": "477f21f24faeda7728144633dd904e29c8f0a89e4b02b28bc3554956f4fa6871",
+      "bytes": 171
+    },
+    "render/native-tests.log": {
+      "sha256": "4852c2ffd7aadb742d6d714050b96a2cf89c93829e58e756ab2191f0bac4a2cd",
+      "bytes": 54868
+    },
+    "render/provenance.json": {
+      "sha256": "77b36ebeab214b07da2f389c4e56941cc2610e088f72eb832762535964aae2fe",
+      "bytes": 3247
+    },
+    "render/runner.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "render/runner.stdout.log": {
+      "sha256": "b5651cc22994e2437fe3a9c0ccc97537f1f3b89988d222d5cb6b73687132dfc2",
+      "bytes": 84
+    },
+    "render/runtime.log": {
+      "sha256": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "bytes": 17949
+    },
+    "render/seek-matrix.json": {
+      "sha256": "ec0cf1675c259c7f8e46613025f9c3f08cff39f8ecf7c458338694ed307595e4",
+      "bytes": 11409
+    },
+    "render/seek-matrix.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "render/source-audit-after-golden.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "bytes": 61
+    },
+    "render/source-audit-after-native.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "bytes": 61
+    },
+    "render/source-audit-after.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "bytes": 61
+    },
+    "render/source-audit-before.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "bytes": 61
+    },
+    "render/status.json": {
+      "sha256": "34ebddac7a0829aa08fbc8d346582d1db25ae6251ac12943682da8ea49ef1c5b",
+      "bytes": 1445
+    },
+    "run.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "token-owner/audit-after.json": {
+      "sha256": "92cd81fd803293e84182f21ac011a29314d646827f4e1d68f7751a2f4d490a3c",
+      "bytes": 41
+    },
+    "token-owner/audit-before.json": {
+      "sha256": "92cd81fd803293e84182f21ac011a29314d646827f4e1d68f7751a2f4d490a3c",
+      "bytes": 41
+    },
+    "token-owner/expected-source.json": {
+      "sha256": "d204d0bcf8a4595918b6900f8e58f9879681d6b8f78bedfacc8fae660fa9f394",
+      "bytes": 190566
+    },
+    "token-owner/result.json": {
+      "sha256": "85791831b94cedc0b8c0a13f40a8774c360ceb532f783e82e945586d70dc1df9",
+      "bytes": 521
+    },
+    "token-owner/tests.stderr.log": {
+      "sha256": "394034039e5ec7b90c1f4b50d2a2b921013b788ec0a2fa8b1f2b79b9cad090dc",
+      "bytes": 392
+    },
+    "token-owner/tests.stdout.log": {
+      "sha256": "4a72610786701488a891b0769233f5990ad0c24effe97c5a3a8caa4956989716",
+      "bytes": 27
+    }
+  },
+  "limits": [
+    "Credential-free, network-blocked Sandboxes use controlled native provider/control/storage ports. This does not establish a successful live provider pipeline.",
+    "The render Sandbox has4CPU/8GiB. Actual prepare_clip is configured at2CPU/4GiB, and its live capacity/latency remains a separate gate.",
+    "Checker times0.524slean/11.383srender are exact-Sandbox component measurements, not Modal cold-ready p50/p95.",
+    "The frozen summary labels rot180/mirror-h as xfail, but both per-case verdicts are guard-pass with zero mismatches.",
+    "The token supplement executes all3 existing TypeScript tests with the image-pinned token server, covering the case skipped when its local test path was unset.",
+    "Both speech attempts missed the four-minute target. The original failed Task is preserved; the new run has live retry/control-latency failures and is not a pipeline acceptance pass.",
+    "These observations qualify source180fd7f1. Later branch work is not qualified by this record."
+  ]
+}

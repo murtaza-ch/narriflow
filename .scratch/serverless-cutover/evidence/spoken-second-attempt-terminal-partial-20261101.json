@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T04:40:19.221229+00:00",
+  "status": "PARTIAL generation result; FAILED four-minute12-clip acceptance gate",
+  "sourceCommit": "180fd7f196f35fdf6e68ecc59b585a89f8b3beb0",
+  "workerVersion": "671c92aa-5051-4577-86c7-830331eff38f",
+  "distinctJourney": true,
+  "originalFailedJourneyPreserved": true,
+  "originalTerminalJournalSha256": "0a40344717c3851723e73e0bc32b6159db2216ddb1160a52412f3c4f4137d09b",
+  "source": {
+    "bytes": 22741661,
+    "sha256": "32b20a20e84d46d17da126689572f9a431d01ddc23880b90240952875b2a3fe8",
+    "durationSeconds": 146.147
+  },
+  "uploadSeconds": 32.269,
+  "positiveMcpTask": true,
+  "terminalResult": {
+    "status": "partial",
+    "phase": "status",
+    "taskStatus": "completed",
+    "notificationDisabled": true,
+    "requestedClips": 12,
+    "actualClips": 5,
+    "completedItems": 2,
+    "failedItems": 3,
+    "selectionBelowRequested": true,
+    "failureCode": "clip_preparation_failed",
+    "progress": 1,
+    "stage": "rendering",
+    "requests": 3
+  },
+  "pipeline": {
+    "pinStartedAtUtc": "2026-11-01T04:05:06.670Z",
+    "pinFinishedAtUtc": "2026-11-01T04:06:09.754Z",
+    "pinStartsAndCharges": 1,
+    "scribeCompleted": true,
+    "selectionCompleted": true,
+    "generationSettledAtUtc": "2026-11-01T04:31:05.734Z",
+    "preparationsCompleted": 2,
+    "preparationsFailed": 3,
+    "chargedPreparationStarts": 12,
+    "renderGroupsCompleted": 2,
+    "renderGroupsFailed": 3,
+    "chargedRenderStarts": 5,
+    "completed1080pClips": 2,
+    "failedClips": 3,
+    "allKnownGenerationAttemptsTerminal": true,
+    "originalPreparationAndGroupDeadlineUtc": "2026-11-01T04:52:36.412Z",
+    "deadlineUnchanged": true,
+    "chargedCountersNotReset": true
+  },
+  "controlObservation": {
+    "incidentalTraceRequests": 14,
+    "successfulResponsesBeyondNative10SecondLimitMs": [
+      11540,
+      13754,
+      10353
+    ],
+    "qualifiedP95": false,
+    "nativeOuterAuthorityLostCannotDistinguishRenewFromSourceGrantFailure": true,
+    "renderWorkPackageTransportFailuresObserved": 4
+  },
+  "terminalJournal": {
+    "sha256": "053addd4a8f9fb9dd40192ef5c1dda74aac1c9add083fcd02cedf609965578ef",
+    "bytes": 1650,
+    "preservedPrivately": true
+  },
+  "rawEvidence": {
+    "spoken-second-attempt-upload.log": {
+      "sha256": "482ff0350b0f749cd3b1f668e2f727245c4f17613079331cb01c7279826f20a1",
+      "bytes": 103
+    },
+    "spoken-second-attempt-generate.log": {
+      "sha256": "0698c045a5b028aa17004e626d46bc0422db6bd811be995500bdc8365cb4e698",
+      "bytes": 94
+    },
+    "spoken-second-attempt-parent.log": {
+      "sha256": "40f934699ed525b7d5e1ab4b4662b1e148617c86e16b59c827b2371e5175cafe",
+      "bytes": 328
+    },
+    "spoken-second-task-status-first.log": {
+      "sha256": "dc78d0a6782901a20e72ec0fde51ee41e232ac198ac1f8dc219f0aed72affc07",
+      "bytes": 56
+    },
+    "spoken-second-task-status-second.log": {
+      "sha256": "cf43b51886e7eec7e372411d2b3e7fe0d58e5c734a2ac455964e38d47da21c35",
+      "bytes": 259
+    },
+    "spoken-second-task-status-third.log": {
+      "sha256": "fc67c5105d526792ea997f77fac0656128e5a02e9b51504bdf2a9d6feb080952",
+      "bytes": 279
+    },
+    "spoken-second-pipeline-observation-sixth.log": {
+      "sha256": "e65bad6c8a26abcb60027fc4d12c2ca82b0af73a6aca2edf7ea6dce64c6d351d",
+      "bytes": 3704
+    },
+    "spoken-second-render-startup-modal-logs.txt": {
+      "sha256": "55b73e34724680d19a030a92d26b4936c70191d5ff637816efc6f02c62605309",
+      "bytes": 1545
+    }
+  },
+  "limits": [
+    "Requested12 clips yielded5 selected clips. Only2 completed; this is not a12-clip or all-selected-clips-ready pass.",
+    "The four-minute smoke failed; jobs continued under their unchanged original45-minute budgets.",
+    "No task/job/attempt/charge/deadline reset or manual completion was used.",
+    "One first-party status read failed; a later exact-project probe returnedHTTP200 in5512ms and the ordinary status caller returned the real partial result. The initial failure cause is unproven.",
+    "Export/bundle/dubbing checks use a separately journaled ready clip after batch settlement and do not change this partial result.",
+    "Artifact retirement, browser, quota/fairness, cold cohorts, idle and current-release restore remain separate acceptance work."
+  ]
+}
