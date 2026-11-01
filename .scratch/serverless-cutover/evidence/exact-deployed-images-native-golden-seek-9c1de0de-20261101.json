@@ -1,0 +1,437 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T02:57:42.388047+00:00",
+  "status": "PASSED exact immutable deployed-image native, golden and moov/GOP seek qualification",
+  "sourceCommit": "9c1de0de37156e459aadc8b00c87404e7c2ad276",
+  "workerVersions": {
+    "closed": "e29427b9-43c7-441c-ac42-6682fc017264",
+    "open": "32488dfe-3db7-4a4d-bde8-1dc430027be4"
+  },
+  "imageIdentitiesStable": true,
+  "profiles": {
+    "lean": {
+      "imageId": "im-gNMYExUF1WRBJHoKEizoru",
+      "cpu": 2,
+      "memoryMiB": 4096,
+      "sandboxId": "sb-01M6AERCWBF4JE28ZX2FVQAMTZ",
+      "terminated": true,
+      "sourceOverlay": false,
+      "networkBlocked": true,
+      "credentialEnvironmentAbsent": true,
+      "nativeResult": {
+        "discoveredTests": 170,
+        "testsRun": 170,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "expectedFailures": 0,
+        "unexpectedSuccesses": 0,
+        "successful": true
+      },
+      "runtimeFingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+      "sourceAudits": {
+        "source-audit-after-native.json": {
+          "checkedFiles": 1515,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after.json": {
+          "checkedFiles": 1515,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-before.json": {
+          "checkedFiles": 1515,
+          "mismatchedOrMissingPaths": []
+        }
+      }
+    },
+    "render": {
+      "imageId": "im-7K6juU5McVRm8vkVgcfwmp",
+      "cpu": 4,
+      "memoryMiB": 8192,
+      "sandboxId": "sb-01M6AEVFMX0FHC8PTXSMCSECFY",
+      "terminated": true,
+      "sourceOverlay": false,
+      "networkBlocked": true,
+      "credentialEnvironmentAbsent": true,
+      "nativeResult": {
+        "discoveredTests": 185,
+        "testsRun": 185,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "expectedFailures": 0,
+        "unexpectedSuccesses": 0,
+        "successful": true
+      },
+      "runtimeFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+      "sourceAudits": {
+        "source-audit-after-golden.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after-native.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-after.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        },
+        "source-audit-before.json": {
+          "checkedFiles": 1581,
+          "mismatchedOrMissingPaths": []
+        }
+      },
+      "golden": {
+        "ok": true,
+        "summary": {
+          "normal": {
+            "total": 18,
+            "pass": 18,
+            "fail": 0
+          },
+          "knownDefects": {
+            "total": 18,
+            "xfail": 2,
+            "xpass": 0,
+            "changed": 0,
+            "activatedPass": 16,
+            "activatedFail": 0
+          }
+        },
+        "guardPassCases": [
+          {
+            "id": "rot180",
+            "class": "known-defect",
+            "verdict": "guard-pass",
+            "mismatches": [],
+            "assertions": [
+              {
+                "targetId": "vertical",
+                "id": "renders",
+                "pass": true,
+                "actual": true
+              },
+              {
+                "targetId": "vertical",
+                "id": "subject-orientation",
+                "pass": true,
+                "actual": "YBGR"
+              }
+            ]
+          },
+          {
+            "id": "mirror-h",
+            "class": "known-defect",
+            "verdict": "guard-pass",
+            "mismatches": [],
+            "assertions": [
+              {
+                "targetId": "vertical",
+                "id": "renders",
+                "pass": true,
+                "actual": true
+              },
+              {
+                "targetId": "vertical",
+                "id": "subject-orientation",
+                "pass": true,
+                "actual": "GRYB"
+              }
+            ]
+          }
+        ]
+      },
+      "seekMatrix": {
+        "status": "passed",
+        "pinnedRuntimeVerified": true,
+        "cases": [
+          {
+            "gopFrames": 15,
+            "moov": "head",
+            "fixtureSha256": "dc69d240fb5d3a0cc89a45855d848771ce21b666bf8a1345d9a8bdd08b91f2dd",
+            "nativeStarts": 1,
+            "output": {
+              "fullDecode": true,
+              "videoFrames": 90,
+              "dimensions": [
+                720,
+                720
+              ],
+              "videoDuration": 3.0,
+              "audioDuration": 3.0,
+              "firstFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "expectedFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "lumaTolerance": 2,
+              "audioOnset": 0.215,
+              "decodedAudioSamples": 144384,
+              "decodedAudioDuration": 3.008,
+              "expectedAudioOnset": 0.2150000000000003,
+              "audioToleranceSeconds": 0.03333333333333333,
+              "byteLength": 438944,
+              "sha256": "ec19ad85f2b041c4930c1fa5847bad6554ce39971e5947f4d88efc8383460a1d"
+            },
+            "conditionalReadCount": 4
+          },
+          {
+            "gopFrames": 15,
+            "moov": "tail",
+            "fixtureSha256": "b474a4844100deef0b4b4cf047d28408690c1aa455e2a6276fdd00894df84a34",
+            "nativeStarts": 1,
+            "output": {
+              "fullDecode": true,
+              "videoFrames": 90,
+              "dimensions": [
+                720,
+                720
+              ],
+              "videoDuration": 3.0,
+              "audioDuration": 3.0,
+              "firstFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "expectedFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "lumaTolerance": 2,
+              "audioOnset": 0.215,
+              "decodedAudioSamples": 144384,
+              "decodedAudioDuration": 3.008,
+              "expectedAudioOnset": 0.2150000000000003,
+              "audioToleranceSeconds": 0.03333333333333333,
+              "byteLength": 438944,
+              "sha256": "ec19ad85f2b041c4930c1fa5847bad6554ce39971e5947f4d88efc8383460a1d"
+            },
+            "conditionalReadCount": 4
+          },
+          {
+            "gopFrames": 120,
+            "moov": "head",
+            "fixtureSha256": "1b423021f65a465e824a8f15c1054276faac033523d84c582419ce8a3d361cee",
+            "nativeStarts": 1,
+            "output": {
+              "fullDecode": true,
+              "videoFrames": 90,
+              "dimensions": [
+                720,
+                720
+              ],
+              "videoDuration": 3.0,
+              "audioDuration": 3.0,
+              "firstFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "expectedFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "lumaTolerance": 2,
+              "audioOnset": 0.215,
+              "decodedAudioSamples": 144384,
+              "decodedAudioDuration": 3.008,
+              "expectedAudioOnset": 0.2150000000000003,
+              "audioToleranceSeconds": 0.03333333333333333,
+              "byteLength": 411297,
+              "sha256": "9298af3ad5f8ece284196d5021fa0072cd512ed4c610535629858a8fbccb2142"
+            },
+            "conditionalReadCount": 3
+          },
+          {
+            "gopFrames": 120,
+            "moov": "tail",
+            "fixtureSha256": "c02b3cbb81b0b837a5b00592e09b524213c93d07cfd41173eb78439284e5ae89",
+            "nativeStarts": 1,
+            "output": {
+              "fullDecode": true,
+              "videoFrames": 90,
+              "dimensions": [
+                720,
+                720
+              ],
+              "videoDuration": 3.0,
+              "audioDuration": 3.0,
+              "firstFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "expectedFrameLuma": [
+                155.0,
+                162.0,
+                169.0
+              ],
+              "lumaTolerance": 2,
+              "audioOnset": 0.215,
+              "decodedAudioSamples": 144384,
+              "decodedAudioDuration": 3.008,
+              "expectedAudioOnset": 0.2150000000000003,
+              "audioToleranceSeconds": 0.03333333333333333,
+              "byteLength": 411297,
+              "sha256": "9298af3ad5f8ece284196d5021fa0072cd512ed4c610535629858a8fbccb2142"
+            },
+            "conditionalReadCount": 3
+          }
+        ]
+      }
+    }
+  },
+  "rawEvidence": {
+    "identities-after.json": {
+      "sha256": "7f160d15b7fb92100650ec2cb1cbe3d50a6f05619ac3dd9ac2a46bb59f3e93b4",
+      "byteLength": 1683
+    },
+    "identities-before.json": {
+      "sha256": "7f160d15b7fb92100650ec2cb1cbe3d50a6f05619ac3dd9ac2a46bb59f3e93b4",
+      "byteLength": 1683
+    },
+    "lean/expected-source.json": {
+      "sha256": "6a513ec93bf97b9b7b010c3a7438c5f048c466415d78a0a9d63f13c8019c8b2c",
+      "byteLength": 190566
+    },
+    "lean/native-result.json": {
+      "sha256": "4b93bfc18e1a7da0d576ff39e62b7d51c199ad1bc7e2b3eabc3928294cef4884",
+      "byteLength": 171
+    },
+    "lean/native-tests.log": {
+      "sha256": "f36448141bb90be2eaa7d8c0080077adf504361d965bcb181ff31ea95bf6a782",
+      "byteLength": 41566
+    },
+    "lean/provenance.json": {
+      "sha256": "a37393295c743a29587d5daf8f2f8bcdf97da4b63be13d1444fab0a35f37d3be",
+      "byteLength": 2932
+    },
+    "lean/runner.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "byteLength": 0
+    },
+    "lean/runner.stdout.log": {
+      "sha256": "f0f53693c0f73dae2a2a1e701a3498767ba1f73da75c536aa41b3f6ca7c14361",
+      "byteLength": 81
+    },
+    "lean/runtime.log": {
+      "sha256": "8a6a777814cb93e622aed7605e910bc00c82e1e6f7e61d38954eafdc4f984e0a",
+      "byteLength": 824
+    },
+    "lean/source-audit-after-native.json": {
+      "sha256": "eded1ce2c977df444de3856a4fa2eb15be325bad93cd000ff45b2024d3397cff",
+      "byteLength": 61
+    },
+    "lean/source-audit-after.json": {
+      "sha256": "eded1ce2c977df444de3856a4fa2eb15be325bad93cd000ff45b2024d3397cff",
+      "byteLength": 61
+    },
+    "lean/source-audit-before.json": {
+      "sha256": "eded1ce2c977df444de3856a4fa2eb15be325bad93cd000ff45b2024d3397cff",
+      "byteLength": 61
+    },
+    "lean/status.json": {
+      "sha256": "f68bae9e8b62dcfcbb21ce5f1d6ef638e251de01db0008dabd9f0341760a42e3",
+      "byteLength": 708
+    },
+    "plan.json": {
+      "sha256": "c8473e91f902eeea8a0e96949cbc4b21c6142b5a7393bf5e389dc5a991ac7157",
+      "byteLength": 545
+    },
+    "qualification.json": {
+      "sha256": "09f1f68145d2f22401355242544d42f5369a09bfd2a227a993712e0da4f77d22",
+      "byteLength": 7287
+    },
+    "render/expected-source.json": {
+      "sha256": "f617975b97efd572710073cea15edf38c2cecc8b0b85355770e95ab83076f534",
+      "byteLength": 199339
+    },
+    "render/golden-capture.json": {
+      "sha256": "f9c4532fd19ef1a0cba2bdd9510502e579b9a81a8fe9cc8756fe6d2c293a4708",
+      "byteLength": 1845292
+    },
+    "render/golden-report.json": {
+      "sha256": "415cd6637b67d40f383139441bc562408d286548dd63fda47a36c9a8305c4172",
+      "byteLength": 15274
+    },
+    "render/golden-report.md": {
+      "sha256": "ef5584fcb4a831a8f757bfb2b4c77ddfaccc96076b958bc3ae1e9cfcd29c89fa",
+      "byteLength": 2097
+    },
+    "render/golden.log": {
+      "sha256": "c040c0a981f70662d379b8b6ce3e3f63beb2a2d7780c2a6c02800b9cf818f3b1",
+      "byteLength": 10450
+    },
+    "render/native-result.json": {
+      "sha256": "38215fe21b23de9526b029b90b78f0a4e0f5b14e124c566199acf1a57830e049",
+      "byteLength": 171
+    },
+    "render/native-tests.log": {
+      "sha256": "8f3702623e32fe1a026257e99828f7a3ce37a5e63de1992dd21602c706334cc7",
+      "byteLength": 53458
+    },
+    "render/provenance.json": {
+      "sha256": "c820fbad8230229c50fc70519625e47f4c96bde67b8d17fdaa2d903a346f5a04",
+      "byteLength": 3247
+    },
+    "render/runner.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "byteLength": 0
+    },
+    "render/runner.stdout.log": {
+      "sha256": "1db7ba12f097d3c3ff648ca3bb8c2c5359069c7cdd74eae7ea14286472e40c41",
+      "byteLength": 84
+    },
+    "render/runtime.log": {
+      "sha256": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "byteLength": 17949
+    },
+    "render/seek-matrix.json": {
+      "sha256": "ec0cf1675c259c7f8e46613025f9c3f08cff39f8ecf7c458338694ed307595e4",
+      "byteLength": 11409
+    },
+    "render/seek-matrix.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "byteLength": 0
+    },
+    "render/source-audit-after-golden.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "byteLength": 61
+    },
+    "render/source-audit-after-native.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "byteLength": 61
+    },
+    "render/source-audit-after.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "byteLength": 61
+    },
+    "render/source-audit-before.json": {
+      "sha256": "ea2b82fbc88c93a2a01bada497f1465562125f85e77fe9f6fd046a61bd3e781c",
+      "byteLength": 61
+    },
+    "render/status.json": {
+      "sha256": "a17f9e89da0d91227345c83a1508e00329b6f5f13e2e8ab7c4ec8dfcd787cdde",
+      "byteLength": 1445
+    },
+    "run.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "byteLength": 0
+    }
+  },
+  "limits": [
+    "Credential-free and network-blocked Sandboxes with controlled native provider/control/storage ports; no live Worker/R2/provider pipeline acceptance claim.",
+    "prepare_clip shares the render image but has2CPU/4GiB Function limits; the render Sandbox uses4CPU/8GiB. Actual preparation startup is failing before process-start in the spoken journey and remains a release blocker.",
+    "These checks are not cold-start p95 samples or a four-minute spoken smoke pass. The original speech smoke remains failed.",
+    "The later f494c939 fix changes only the operator caller and its fixture to use the exact public sourceEdgeSec field. Neither the deployed Worker source nor image-retained source changes."
+  ]
+}

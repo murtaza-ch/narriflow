@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T03:21:29.468953+00:00",
+  "sourceCommit": "b58f35996f83b9dc11228fd8d62876bf439305f5",
+  "status": "PASSED local authority checks; deployed speech acceptance remains blocked",
+  "change": "Clip preparation work-package and source-read use one fresh authority transaction and its typed domain reference. No cached authority, lease/deadline extension, retry increase or charge reset.",
+  "checks": {
+    "full-execution-db": {
+      "sha256": "3bb587066afe12ae58b1d8b2f0fc1003269592f89d1ed593b7b40fe23d6fe4eb",
+      "bytes": 204420,
+      "exitCode": 0,
+      "tests": 477,
+      "assertions": 3486,
+      "failures": 0,
+      "skips": 0
+    },
+    "full-typecheck": {
+      "sha256": "5d03774521a78f9d3884a5b8fc370b8a9a015ef2ef8baeb6202e1a021af8a19b",
+      "bytes": 3275,
+      "exitCode": 0,
+      "successfulTasks": 15,
+      "totalTasks": 15
+    },
+    "full-fast": {
+      "sha256": "2bb97131a6f0fcf8b32e885e2395e5abf54c84a18b40f95a090d20bc020324b1",
+      "bytes": 1200703,
+      "exitCode": 0,
+      "successfulTasks": 14,
+      "totalTasks": 14,
+      "mediaTestsPassed": 793,
+      "mediaTestsSkipped": 1,
+      "mediaSkip": "occupied loopback port cannot be borrowed as the owned daemon",
+      "failures": 0
+    },
+    "worker-build": {
+      "sha256": "ef2882bc0f51133af80a71168337cf829de9b6c30caad840442d9addb3b83c1e",
+      "bytes": 1933,
+      "exitCode": 0,
+      "dryBuild": true,
+      "forbiddenPackages": [],
+      "nativeServiceModules": [],
+      "obsoleteModules": []
+    }
+  },
+  "reviews": {
+    "standards": "No actionable findings, separate Sol High review.",
+    "spec": "No findings, separate Sol High review."
+  },
+  "candidateObservation": {
+    "workerVersion": "9b283da7-f65b-4720-929e-751fcfdf36e9",
+    "health": "ok",
+    "httpAdmission": "open",
+    "secretCount": 79,
+    "mailCredentialAbsent": true,
+    "scope": "isolated candidate database, not shared cutover"
+  },
+  "liveLimits": [
+    "Original speech run remains failed against its four-minute target.",
+    "Original six preparation and group deadlines remain 2026-11-01T03:21:11.080Z; charged counters were not reset.",
+    "Actual starts now occur, but native source transport failures and repeated authority latency remain blockers.",
+    "A 45-second incidental trace observed two successful executor-control responses above the unchanged 10-second native client timeout. This is not a qualified latency cohort.",
+    "Modal native images remain source9c1de0de. The changed backend code has not yet received a new exact paired-image qualification.",
+    "No dev merge/push, shared migration or cutover follows from these local results."
+  ]
+}
