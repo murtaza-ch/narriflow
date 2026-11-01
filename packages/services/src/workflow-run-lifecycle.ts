@@ -351,7 +351,8 @@ export class WorkflowRunLifecycle {
         const result = await this.prisma.$transaction(async (tx) => {
           const result = await operation(tx);
           await flushWorkspaceEvents(tx);
-          progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)];
+          for (const id of await flushProjectProgressDrains(tx)) collectExecutionDispatch(tx, id);
+          progressDispatchIds = takeExecutionDispatchIds(tx);
           return result;
         });
         if (progressDeliveryPort() && !hasExecutionDispatchCollector()) await deliverExecutionDispatches(progressDispatchIds);
@@ -641,15 +642,20 @@ export class WorkflowRunLifecycle {
     }
     const epoch = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
     if (exported.retryCount === 0 && exported.createdAt < epoch.changedAt) throw new Error("render_admission_epoch_superseded");
-    // An explicit retry's recorded parent owns its budget. Another live run
-    // for this Project is not proof that the missing retry handoff survived.
-    if (exported.retryCount !== 0 && (!exported.workflowRunId || !await tx.workflowRun.findFirst({ where: {
-      id: exported.workflowRunId, projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
-      status: { in: ["queued", "running", "waiting"] },
-    }, select: { id: true } }))) throw new Error("render_retry_handoff_missing");
-    const active = await tx.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } } });
-    if (active && active.deploymentEpoch !== admission.epoch) throw new Error("render_admission_epoch_superseded");
-    let run = active;
+    // Only the recorded retry parent, or its exact durable drain successor,
+    // proves that this retry handoff survived. Another active run is unrelated.
+    let run: WorkflowRun | null;
+    if (exported.retryCount !== 0) {
+      const parent = exported.workflowRunId ? await tx.workflowRun.findFirst({ where: {
+        id: exported.workflowRunId, projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
+      } }) : null;
+      run = parent && ["queued", "running", "waiting"].includes(parent.status) ? parent : parent ? await tx.workflowRun.findFirst({ where: {
+        projectId: exported.projectId, stage: "clip_rendering", deploymentEpoch: admission.epoch,
+        idempotencyKey: `drain-${parent.id}`, status: { in: ["queued", "running", "waiting"] },
+      } }) : null;
+      if (!run) throw new Error("render_retry_handoff_missing");
+    } else run = await tx.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } } });
+    if (run && run.deploymentEpoch !== admission.epoch) throw new Error("render_admission_epoch_superseded");
     if (!run) {
       if (!receipt) assertExecutionAdmissionOpen(admission);
       // Explicit retry admission owns its own budget. A missing retry parent

@@ -6,6 +6,8 @@ import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { clipExportService } from "./clip-export.service";
 import { withExecutionDispatches } from "./execution-dispatch-runtime";
+import { queueProjectProgressCatchup } from "./progress-outbox";
+import { withProgressDelivery } from "./progress-delivery";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -179,6 +181,43 @@ suite("Clip Export atomic scheduler handoff", () => {
     expect(await db.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id } })).toMatchObject({ workflowRunId: null, status: "pending" });
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: unrelated.id } })).toEqual(before);
     expect(await db.renderGroup.count({ where: { workflowRunId: unrelated.id } })).toBe(0);
+  }));
+
+  test("an invocation collector receives both render and flushed progress-drain references after commit", () => scoped(async () => {
+    const f = await fixture(), accepted = await f.create(), foreign = await fixture();await foreign.create();
+    const events = await db.workflowEvent.count({ where: { projectId: f.project.id } });
+    let delivered: readonly string[] = [];
+    const forbidden = async () => { throw Error("invocation owns postcommit delivery"); };
+    const result = await withExecutionDispatches(() => withProgressDelivery({ publish: forbidden, revoke: forbidden, registerContinuations: forbidden }, () => f.lifecycle.retryFailedClipExport({
+      projectId: f.project.id, exportId: accepted.export.id, expectedRetryCount: 0, variantIds: [], beforeMutation: async tx => { queueProjectProgressCatchup(tx, f.project.id); },
+    })), { database: db, deliver: async ids => { delivered = ids; } });
+    expect(result).toBe(false);
+    const rows = await db.executionDispatch.findMany({ where: { id: { in: [...delivered] } } });
+    expect(rows.some(row => row.kind === "render_run")).toBe(true);
+    expect(rows.some(row => row.kind === "project_progress" && row.subjectKind === "maintenance" && row.subjectId.startsWith("pe1."))).toBe(true);
+    expect(await db.workflowEvent.count({ where: { projectId: f.project.id } })).toBe(events);
+    const foreignRun = await db.workflowRun.findFirstOrThrow({ where: { projectId: foreign.project.id, stage: "clip_rendering" } });
+    expect(rows.some(row => row.subjectId === foreignRun.id || row.subjectId.includes(foreign.project.id.replaceAll("-", "")))).toBe(false);
+  }));
+  test("accepted create-receipt replay follows the exact queued retry drain before it freezes", () => scoped(async () => {
+    const f = await fixture(), accepted = await f.create();
+    const firstExport = await db.clipExport.findUniqueOrThrow({ where: { id: accepted.export.id } }), original = await f.lifecycle.renderParent(firstExport.workflowRunId!);
+    const member = await db.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id } });
+    await f.lifecycle.failClipRenderVariant(original, member.id, "render_output_invalid", "permanent");await f.lifecycle.settleRenderWorkSet(original);
+    const active = await f.lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "frozen-before-retry" }), parent = await f.lifecycle.renderParent(active.id);
+    expect((await f.lifecycle.beginRenderWorkSet(parent)).variantIds).toEqual([]);
+    await clipExportService.retryFailed({ workspaceId: f.workspace.id, actorUserId: f.user.id }, f.project.id, f.clip.id, accepted.export.id);
+    const settled = await f.lifecycle.settleRenderWorkSet(parent);
+    const drain = await db.workflowRun.findUniqueOrThrow({ where: { id: settled.followUpWorkflowRunId! } });
+    expect(drain.idempotencyKey).toBe(`drain-${active.id}`);
+    expect(drain.renderWorkSetFrozenAt).toBeNull();
+    let delivered: readonly string[] = [];
+    const replay = await withExecutionDispatches(f.create, { database: db, deliver: async ids => { delivered = ids; } });
+    expect(replay).toMatchObject({ receiptId: accepted.receiptId, replayed: true, export: { id: accepted.export.id } });
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: drain.id } })).toEqual(drain);
+    expect(delivered).toContain((await db.executionDispatch.findFirstOrThrow({ where: { kind: "render_run", subjectId: drain.id } })).id);
+    expect(await db.clipRender.count({ where: { workflowRunId: active.id } })).toBe(0);
+    expect(await db.clipExport.findUniqueOrThrow({ where: { id: accepted.export.id } })).toMatchObject({ workflowRunId: drain.id, retryCount: 1 });
   }));
 
 });

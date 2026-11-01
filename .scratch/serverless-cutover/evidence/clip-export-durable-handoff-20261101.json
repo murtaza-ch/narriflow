@@ -77,5 +77,19 @@
       "/tmp/narriflow-export-handoff-retry-parent-red.log",
       "/tmp/narriflow-export-handoff-retry-route-red.log"
     ]
+  },
+  "drainReviewCorrection": {
+    "base": "859804dde1cafea8bed6658d7dd865b9c56b48ec",
+    "behavior": [
+      "Collect every flushed Project progress range into the invocation before deferring aftercommit delivery",
+      "Recover retry work only through its recorded current-epoch parent or exact current-epoch drain successor, including the queued/unfrozen replay interval"
+    ],
+    "redPrivateLog": "/tmp/narriflow-export-handoff-drain-red.log",
+    "greenPrivateLog": "/tmp/narriflow-export-handoff-drain-green.log",
+    "tests": 20,
+    "assertions": 155,
+    "failures": 0,
+    "servicesTypecheck": "pass",
+    "changedFilesBiome": "pass"
   }
 }
