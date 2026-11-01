@@ -3794,7 +3794,6 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
               uploadSessionId: current.id,
             },
         });
-        await ingest.queueExecutionWithinTransaction(tx, queuedJobId);
         const handoff = await tx.uploadSession.updateMany({
           where: {
             id: current.id,

@@ -217,6 +217,7 @@ function toTranscriptSnapshot(row: PrismaTranscript): TranscriptSnapshot {
 
 export const projectFailureCatalog = {
 	idempotency_key_required: "invalid",
+	ingest_job_missing: "unavailable",
 	generation_settings_conflict: "conflict",
 	link_unsupported_source: "unprocessable",
 	project_access_denied: "forbidden",
@@ -1599,6 +1600,13 @@ export class ProjectService {
 		if (options.recipe && (!options.mutation || options.generationContext || parsed.brandProfileId !== undefined)) {
 			throw new Error("A Recipe replaces the generation context and Brand Profile of an integration request");
 		}
+		const replayExisting = async (existing: Project & { ingestJobs: Array<{ id: string }> }) => {
+			if (existing.workspaceId !== actor.workspaceId) throw new ProjectNotFoundError();
+			const job = existing.ingestJobs[0];
+			if (!job) throw new ProjectServiceError("ingest_job_missing", "The ingest job is unavailable.");
+			await prisma.$transaction(tx => getIngestJobLifecycle().queueExecutionWithinTransaction(tx, job.id));
+			return { project: toProjectSnapshot(existing), queuedJobId: job.id };
+		};
 
 		// Idempotent replay: the same commit token returns the already-created
 		// project instead of importing twice (double-click, retried request).
@@ -1608,13 +1616,7 @@ export class ProjectService {
 				include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
 			});
 			if (existing) {
-				if (existing.workspaceId !== actor.workspaceId) {
-					throw new ProjectNotFoundError();
-				}
-				return {
-					project: toProjectSnapshot(existing),
-					queuedJobId: existing.ingestJobs[0]?.id ?? null,
-				};
+				return replayExisting(existing);
 			}
 		}
 
@@ -1775,11 +1777,7 @@ export class ProjectService {
 					where: { commitToken: parsed.commitToken },
 					include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
 				});
-				if (winner && winner.workspaceId === actor.workspaceId)
-					return {
-						project: toProjectSnapshot(winner),
-						queuedJobId: winner.ingestJobs[0]?.id ?? null,
-					};
+				if (winner) return replayExisting(winner);
 			}
 			throw error;
 		}
@@ -2081,7 +2079,6 @@ export class ProjectService {
 						acquisition,
 					});
 
-          const dispatch = await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, createdJob.id);
 					if (options.autopilotSource?.ruleId) {
 						await tx.autopilotEpisode.update({
 							where: {
@@ -2105,7 +2102,7 @@ export class ProjectService {
 						});
 					}
 
-					return { project: createdProject, jobId: createdJob.id, dispatchIds: dispatch ? [dispatch.dispatchId] : [] };
+					return { project: createdProject, jobId: createdJob.id, dispatchIds: [createdJob.dispatchId] };
 				}, PROCESSING_USAGE_TRANSACTION);
         await options.confirmIngest?.(created.dispatchIds);
 				project = created.project;

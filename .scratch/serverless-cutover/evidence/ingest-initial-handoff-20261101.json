@@ -1,0 +1,205 @@
+{
+  "baseSourceCommit": "5a09d40c8b04081b3ceb17c6f8b86ae6bf55f0e2",
+  "scope": "Initial durable Ingest Job handoff and exact replay; isolated author branch before integration with the five other reviewed fixes",
+  "cause": "Canonical IngestJobLifecycle.enqueue created the job/progress event without its initial Import Pipeline dispatch. Upload/RSS/Zoom/retry callers patched around this; link and Drive omitted it. Native commit-token and integration receipt replay also omitted recollection.",
+  "red": {
+    "command": "Pinned Bun execution DB runner with packages/services/src/ingest-handoff.db.test.ts on baseline production modules",
+    "seam": "Actual production queueLinkIngest with actual Prisma persistence; only local-device presence is injected. No scheduler or provider runs in the transaction.",
+    "result": "0pass2fail2assertions: initial import dispatch count0 rather than1; same-token replay delivery count0 rather than1 despite a real seeded existing dispatch",
+    "raw": {
+      "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/red-db-canonical.log",
+      "sha256": "fe06ad5c897519d3d0969697d82ed63a2108ed959c129ba05c1cabc7ee753568"
+    }
+  },
+  "changes": [
+    "Canonical enqueue now creates and collects its initial outbox obligation atomically and returns its ID for existing RSS/Zoom postcommit confirmation. Upload/retry explicit second queue calls removed.",
+    "Native commit-token and integration Operation Receipt replay recollect the existing accepted job. Current epoch/source revision and stored input hash are checked; missing/tampered identity refuses without replacement work.",
+    "Existing completed-source reference remains readable for generation handoff, while only queued/running jobs recollect registration. Terminal replay creates no obligation.",
+    "HTTP registration failure preserves only validated nested Project ID and queued Job ID; same-token202 waits for actual postcommit registration acknowledgement. No job/generation/reservation/charge/deadline reset."
+  ],
+  "productionAudit": "Only non-test ingestJob.create is canonical lifecycle.enqueue. Link, Drive, RSS, Zoom, Upload Session and retry call it. Remaining explicit queue calls are replay recovery; RSS/Zoom retain their existing confirmIngest port with the same dispatch ID.",
+  "coverage": [
+    "All five job types at the canonical boundary",
+    "Actual local YouTube link service initial handoff and exact native replay",
+    "Integration receipt lost acknowledgement and same-key replay",
+    "Actual Worker first-party503 bounded receipt then confirmed202 replay",
+    "No second job, reservation or attempt on replay",
+    "Wrong Workspace, missing job, tampered input hash, terminal/noncurrent source/epoch",
+    "Whole transaction rollback never delivers tentative dispatch IDs"
+  ],
+  "verification": {
+    "bun": "1.3.6 d530ed99",
+    "database": "Only explicit localhost/loopback55432 narriflow_serverless_gates_20261031_a18f; selectors scrubbed and bound; original runners create/migrate/drop disposable schemas",
+    "fullExecutionFinal": {
+      "pass": 581,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 4347,
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/full-execution-db-final.log",
+        "sha256": "acb4ddd89333a189db9a6eab5ddafc7c2b5f6ff0a82baa38137e0e41d929c93e"
+      }
+    },
+    "workflow": {
+      "pass": 166,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 990,
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/workflow-db.log",
+        "sha256": "8af6c3c4a61fe6a5bcc1481c3dc4b63f6396856ae80642e4062c052e23ee5025"
+      }
+    },
+    "processingUsage": {
+      "pass": 31,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 278,
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/processing-usage-verified.log",
+        "sha256": "6fd750230b1345cee3a61d5ad4eb3d264b4ee1243832aba56dc5359773f7b1f0"
+      }
+    },
+    "integrationApi": {
+      "pass": 125,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 1110,
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/integration-api-db.log",
+        "sha256": "1b1c887a9869a754dcd6933c69023ce759f826d972f1531440634539f91cacba"
+      }
+    },
+    "servicesFast": {
+      "pass": 1417,
+      "fail": 0,
+      "skip": 1457,
+      "assertions": 78616,
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/services-fast-final.log",
+        "sha256": "d06eb45060580819c9a2a68e5fd22eb753949051faa8b69a55d0f231425e5601"
+      }
+    },
+    "apiFast": {
+      "pass": 938,
+      "fail": 0,
+      "skip": 59,
+      "assertions": 0,
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/api-fast-final.log",
+        "sha256": "e45b4a687c8ba2e35bd0e64a444b6395a21360a08a8d575d29335b9ca7514da2"
+      }
+    },
+    "servicesTypecheck": {
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/services-typecheck-final.log",
+        "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630"
+      }
+    },
+    "apiTypecheck": {
+      "exitCode": 0,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/api-typecheck-final.log",
+        "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630"
+      }
+    },
+    "repositoryLint": {
+      "exitCode": 0,
+      "warnings": 11,
+      "info": 1,
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/lint-final.log",
+        "sha256": "773f17241a4287acc19e6ff0335dbfe27196f31a46c88357354826b749469536"
+      }
+    }
+  },
+  "retainedIntermediateRuns": [
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/red-db.log",
+        "sha256": "73d773d0d0a529f81db8f0346d6eea150c749a40c435729893a4bba1065084fb"
+      },
+      "reason": "Initial local-device fixture computed the allowlist before creating its Workspace. Corrected only the test scope before the tight baseline RED."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/green-handoff-db.log",
+        "sha256": "77d788afdc992e5582cc573fa276fa7caec51084396c5555042da79fdafcd6c7"
+      },
+      "reason": "Epoch-mismatch fixture used zero, rejected by the existing positive-epoch SQL constraint. Replaced by a positive noncurrent epoch; no production constraint change."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/worker-receipt-red.log",
+        "sha256": "dd09e90f425aa964422275389e98bc6cc070fbe2fb6fdc2c1348bb967184ddee"
+      },
+      "reason": "Actual Worker exposed missing nested Project ID. Expanded fixture cleanup also reached unrelated source fixture attempts; restored prior primary-fixture cleanup scope and included only the new link Project."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/worker-green.log",
+        "sha256": "99663f803e3ad57cffa184904e82780c17078de266d603b3846839c3fba85dc6"
+      },
+      "reason": "Retained cleanup narrowing intermediate run; no production change was made to bypass these fixture errors."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/services-typecheck.log",
+        "sha256": "eec44cce120a13f073acf69f8389cf769db64964df5489b416e9e97b0faa3552"
+      },
+      "reason": "New typed missing-job code initially lacked its project failure-catalog entry; added unavailable classification."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/api-typecheck.log",
+        "sha256": "21693bf856943cdf7735832a96e44d75f3309bffad15143b416114dae5a22474"
+      },
+      "reason": "Same missing catalog entry, corrected before final typechecks."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/processing-usage-db.log",
+        "sha256": "124fac3ad32b7c0a245e64b78a9dfb6d4ac14dcd592d1c32a07b9eabd42adf04"
+      },
+      "reason": "Stricter replay guard initially hid the completed-source reference needed by existing measured-credit handoff tests. Preserved the read-only reference contract; unchanged tests pass."
+    },
+    {
+      "raw": {
+        "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/full-execution-db.log",
+        "sha256": "2b1bbc93c03a5ccafd00aec25112a513b35911e3c2e887cd8025193ec6021afd"
+      },
+      "reason": "Provisional581pass result before completed-source reference adjustment; superseded by full-execution-db-final.log on final runtime."
+    }
+  ],
+  "runtimePatch": {
+    "path": "/tmp/narriflow-serverless-control-keys/ingest-initial-handoff-5a09-20261101/implementation.diff",
+    "sha256": "ca15ffcd269a02bdb562b2bfb38ead12a0d5d29165209b09cb94d05515d63f8a"
+  },
+  "sourceFilesSha256": {
+    "apps/api/src/worker-registration.db.test.ts": "5b6498055c6f6695f3498346a1744eba0c1bdd97c225d77a2237a66af23209d5",
+    "packages/services/scripts/run-execution-db-tests.ts": "27700ccf201b7ce263ebea5af39e3b11fa660bc7afabe79b236b1eeac4d055f7",
+    "packages/services/src/execution-dispatch-runtime.ts": "99e6ce22aee7f20a22f93af3a59857081cea70ebb8a4c12cf0cdea2ce25b8fa8",
+    "packages/services/src/ingest-handoff.db.test.ts": "b674e13c383fd23c018d661309c5bd29ee702ec0c59f3364cd2177fafb31507f",
+    "packages/services/src/ingest-job-lifecycle.ts": "c88dc1738d6f3fd49cc0e043a1e068c26a660608aba74433531d227508569260",
+    "packages/services/src/operation-receipt-runtime.ts": "346a8d9d0b6e2ac63e74b84856aeafae5ea9186a7b60e3fceb6b5c551c0b8355",
+    "packages/services/src/project.service.ts": "f4c71569f9c49b77f04302126f738e66391e09c2895289ce378107822bbe66b2",
+    "packages/services/src/upload-session.service.ts": "a423ccf96a9c44b003a470a5c5045bdef9c12364408b5a7d0fcb81968734a2ac"
+  },
+  "rootPreservation": {
+    "observedHead": "6af48f398d179f1c6327d21bd59d405d2f9fb8e7",
+    "onlyDirtyPath": "apps/api/scripts/dev.ts",
+    "userFileSha256": "e954c73b6d002318e16e9848645f34e821217649b2944968776f5266b6c73637"
+  },
+  "limits": [
+    "No Root source edits, live API/cloud/provider/credential access, shared DB, live job repair, deployment or image qualification. Only the explicitly allowed local database selector file was consumed in memory without dumping its values.",
+    "Local proofs belong to the isolated author branch. Fresh combined-source22checks, actual Worker deployment and new image qualification remain Root-owned and pending. Fast conditional DB skips are recorded separately; final DB gates have zero skips.",
+    "No dependency, native protocol, resource, deadline, assertion threshold or test timeout changed. Reported live job age was not inferred from local pg Date parsing."
+  ]
+}

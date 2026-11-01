@@ -133,7 +133,7 @@ export interface IngestJobLifecycleDependencies {
   sourceBucket?: string;
   /** Required for video publication. Performs only typed validation/DB facts, never R2 I/O under locks. */
   validateVideo?: IngestVideoValidator;
-  /** Recomputes semantic identity after a retry advances the exact source generation. */
+  /** Freezes initial admission identity and verifies the exact replay/retry subject. */
   executionInputHash?: (job: IngestJob) => Promise<string>;
   now?: () => Date;
 
@@ -233,7 +233,7 @@ export class IngestJobLifecycle {
       sourceCredential?: string;
       uploadSessionId?: string;
     },
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; dispatchId: string }> {
     const { epoch } = await readExecutionAdmission(tx);
     const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
     const {acquisition,...data}=input;
@@ -252,7 +252,9 @@ export class IngestJobLifecycle {
       },
       await this.now(tx),
     );
-    return { id: job.id };
+    const dispatch = await this.queueExecutionWithinTransaction(tx, job.id);
+    if (!dispatch) throw Error("ingest_initial_dispatch_missing");
+    return { id: job.id, dispatchId: dispatch.dispatchId };
   }
   /** Initial source admission and an honest replay use one canonical subject.
    * The caller confirms the collected obligation only after its intake commits. */
@@ -260,16 +262,22 @@ export class IngestJobLifecycle {
     const { epoch } = await readExecutionAdmission(tx);
     const job = await tx.ingestJob.findUnique({ where: { id } });
     if (!job || job.deploymentEpoch !== epoch) return null;
-    const known = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: epoch, generation: job.generation, kind: "import_pipeline", subjectKind: "ingest_job", subjectId: job.id, deadlineKind: null }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true } });
+    const active = ["queued","running"].includes(job.status);
+    const project = await tx.project.findUnique({ where: { id: job.projectId }, select: { sourceRevision: true } });
+    if (!project || project.sourceRevision !== job.sourceRevision) return null;
+    if (!this.deps.executionInputHash) throw Error("ingest_execution_hash_unavailable");
+    const inputHash = await this.deps.executionInputHash(job);
+    const known = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: epoch, generation: job.generation, kind: "import_pipeline", subjectKind: "ingest_job", subjectId: job.id, wakeKind: null, deadlineKind: null }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true } });
     if (known) {
       const registered = await readExecutionDispatch(tx,known.id);
       if (!registered) throw Error("ingest_initial_dispatch_missing");
-      collectExecutionDispatch(tx,registered.reference.dispatchId);
+      if (registered.reference.inputHash !== inputHash) throw Error("ingest_initial_dispatch_invalid");
+      // Completed-source generation handoff still reads this frozen reference.
+      if (active) collectExecutionDispatch(tx,registered.reference.dispatchId);
       return registered.reference;
     }
-    if (!["queued","running"].includes(job.status)) return null;
-    if (!this.deps.executionInputHash) throw Error("ingest_execution_hash_unavailable");
-    const dispatch = await appendExecutionDispatch(tx,{ deploymentEpoch: epoch, generation: job.generation, kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash: await this.deps.executionInputHash(job), dueAt: job.createdAt });
+    if (!active) return null;
+    const dispatch = await appendExecutionDispatch(tx,{ deploymentEpoch: epoch, generation: job.generation, kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash, dueAt: job.createdAt });
     collectExecutionDispatch(tx,dispatch.reference.dispatchId);
     return dispatch.reference;
   }
@@ -792,7 +800,6 @@ export class IngestJobLifecycle {
         payload: last.payload as Prisma.InputJsonValue,
         acquisition: ingestAcquisitionSchema.parse(last.payload && typeof last.payload==="object" && !Array.isArray(last.payload)?last.payload.acquisition:null),
       });
-      await this.queueExecutionWithinTransaction(tx, job.id);
       await flushProjectProgressDrains(tx);
       return {
         queuedJobId: job.id,

@@ -10,6 +10,7 @@ import {
 } from "./operation-receipt";
 import { recoverReceiptNotificationDispatches } from "./notification-dispatch";
 import { readExecutionAdmission } from "./execution-admission";
+import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 
 function unique(identity: OperationReceiptIdentity) {
 	return { workspaceId_actorUserId_command_clientIdempotencyKey: identity };
@@ -21,6 +22,11 @@ export function prismaOperationReceiptPersistence(
  const recover:NonNullable<OperationReceiptPersistence<Prisma.TransactionClient>["recover"]>=async(receipt,tx)=>{
   if(!tx)return prisma.$transaction(tx=>recover(receipt,tx));
   await readExecutionAdmission(tx);
+  if(receipt.resourceType==="ingest_job"&&["submit_video","create_captioned_video"].includes(receipt.command)){
+   const job=await tx.ingestJob.findFirst({where:{id:receipt.resourceId,project:{workspaceId:receipt.workspaceId}}});
+   if(!job)throw Error("ingest_receipt_job_missing");
+   await getIngestJobLifecycle().queueExecutionWithinTransaction(tx,job.id);
+  }
   if(receipt.resourceType==="clip_export"&&receipt.command==="create_clip_export")await new WorkflowRunLifecycle({prisma}).handoffClipExportWithinTransaction(tx,receipt.resourceId,receipt.workspaceId,{id:receipt.id,actorUserId:receipt.actorUserId});
   if(receipt.resourceType==="workflow_run"&&receipt.command==="render_clips")await new WorkflowRunLifecycle({prisma}).recoverClipRenderRunWithinTransaction(tx,receipt.resourceId,receipt.workspaceId,{result:receipt.result});
   await recoverReceiptNotificationDispatches(tx,receipt);

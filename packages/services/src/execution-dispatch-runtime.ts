@@ -54,7 +54,9 @@ export function executionRegistrationReceipt(value: unknown): ExecutionRegistrat
   const root = record(value), httpData = record(root.data), upload = record(root.upload), data = record(record(root.structuredContent).data), lineage = record(record(root._meta)["narriflow/operation"]);
   const receipt: ExecutionRegistrationReceipt = {};
   for (const key of ["sessionId", "uploadId", "projectId", "queuedJobId", "ingestJobId", "workflowRunId", "taskId", "receiptId", "exportId"] as const) {
-    const id = [root[key], httpData[key], upload[key], data[key], key === "projectId" ? lineage.projectId : key === "exportId" ? record(root.export).id ?? record(httpData.export).id ?? record(data.export).id : undefined].find(uuid);
+    const id = [root[key], httpData[key], upload[key], data[key],
+      ...(key === "projectId" ? [record(root.project).id, record(httpData.project).id, record(data.project).id] : []),
+      key === "projectId" ? lineage.projectId : key === "exportId" ? record(root.export).id ?? record(httpData.export).id ?? record(data.export).id : undefined].find(uuid);
     if (id) receipt[key] = id;
   }
   if (!receipt.exportId) {
