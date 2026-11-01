@@ -108,6 +108,8 @@ request. Run the same four commands locally before pushing a change to the app.
 
 `zapier-platform-core` and the CLI are pinned to one exact version, which Zapier
 requires. Bump both together, then run the tests and `validate`.
+See [the dependency audit](dependency-audit.md) for the production audit and
+remaining upstream CLI advisories.
 
 ## Owner steps: push it as a private integration
 

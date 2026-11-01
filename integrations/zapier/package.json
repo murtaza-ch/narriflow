@@ -15,13 +15,13 @@
     "node": ">=22"
   },
   "dependencies": {
-    "zapier-platform-core": "19.2.1"
+    "zapier-platform-core": "19.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "nock": "^15.0.3",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "zapier-platform-cli": "19.2.1"
+    "zapier-platform-cli": "19.3.0"
   }
 }
