@@ -506,20 +506,44 @@ function safeDiagnose(
   }
 }
 
-async function processTreeRssBytes(childPid: number | undefined): Promise<number> {
-  if (process.platform === "linux") {
+export async function processTreeRssBytes(
+  childPid: number | undefined,
+  dependencies: {
+    platform?: NodeJS.Platform;
+    readTextFile?: (path: string) => Promise<string>;
+    spawn?: typeof spawn;
+    workerRssBytes?: () => number;
+  } = {},
+): Promise<number> {
+  const platform = dependencies.platform ?? process.platform;
+  const workerRssBytes = dependencies.workerRssBytes ?? (() => process.memoryUsage().rss);
+  const readTextFile = dependencies.readTextFile ?? ((path: string) => readFile(path, "utf8"));
+  if (platform === "linux") {
     try {
-      const cgroupBytes = Number((await readFile("/sys/fs/cgroup/memory.current", "utf8")).trim());
+      const cgroupBytes = Number((await readTextFile("/sys/fs/cgroup/memory.current")).trim());
       if (Number.isFinite(cgroupBytes) && cgroupBytes > 0) return cgroupBytes;
     } catch {
       // Non-cgroup Linux hosts fall through to process accounting.
     }
   }
-  if (!childPid || process.platform === "win32") {
-    return process.memoryUsage().rss;
+  if (!childPid || platform === "win32") {
+    return workerRssBytes();
+  }
+  if (platform === "linux") {
+    try {
+      // Minimal containers may expose procfs without cgroup memory files or ps.
+      // VmRSS reports KiB directly, so this does not assume a native page size.
+      const status = await readTextFile(`/proc/${childPid}/status`);
+      const childRssBytes = Number(/^VmRSS:[ \t]+(\d+)[ \t]+kB$/m.exec(status)?.[1]) * 1024;
+      if (Number.isFinite(childRssBytes) && childRssBytes > 0) {
+        return workerRssBytes() + childRssBytes;
+      }
+    } catch {
+      // The child may exit between spawning and sampling, or procfs may be restricted.
+    }
   }
   return new Promise((resolve) => {
-    const sampler = spawn("ps", ["-o", "rss=", "-p", `${process.pid},${childPid}`], {
+    const sampler = (dependencies.spawn ?? spawn)("ps", ["-o", "rss=", "-p", `${process.pid},${childPid}`], {
       stdio: ["ignore", "pipe", "ignore"],
     });
     let stdout = "";
@@ -532,10 +556,10 @@ async function processTreeRssBytes(childPid: number | undefined): Promise<number
     sampler.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
     });
-    sampler.once("error", () => finish(process.memoryUsage().rss));
+    sampler.once("error", () => finish(workerRssBytes()));
     sampler.once("close", (code) => {
       if (code !== 0) {
-        finish(process.memoryUsage().rss);
+        finish(workerRssBytes());
         return;
       }
       const rssBytes = stdout
@@ -544,7 +568,7 @@ async function processTreeRssBytes(childPid: number | undefined): Promise<number
         .map(Number)
         .filter((value) => Number.isFinite(value) && value > 0)
         .reduce((total, rssKiB) => total + rssKiB * 1024, 0);
-      finish(rssBytes > 0 ? rssBytes : process.memoryUsage().rss);
+      finish(rssBytes > 0 ? rssBytes : workerRssBytes());
     });
   });
 }

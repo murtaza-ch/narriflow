@@ -11,6 +11,7 @@ import { WORKFLOW_LEASE_DURATION_MS, WorkflowAttemptLost } from "@narriflow/serv
 import {
   activeScratchDirectories,
   createWorkerProcessModule,
+  processTreeRssBytes,
   sweepAbandonedScratch,
   WorkerProcessFailure,
   type WorkerProcessDiagnostic,
@@ -368,6 +369,90 @@ test("worker process terminates captured output that exceeds the caller limit", 
       failureCode: "worker_command_output_too_large",
     }),
   );
+});
+
+test("Linux RSS includes the command when cgroup files and ps are absent", async () => {
+  const paths: string[] = [];
+  let psCalls = 0;
+  const rssBytes = await processTreeRssBytes(12345, {
+    platform: "linux",
+    workerRssBytes: () => 32 * 1024 * 1024,
+    readTextFile: async (path) => {
+      paths.push(path);
+      if (path === "/proc/12345/status") {
+        return "Name:\tbun\nVmSize:\t999999 kB\nVmRSS:\t65536 kB\nRssAnon:\t60000 kB\n";
+      }
+      throw Object.assign(new Error("missing cgroup file"), { code: "ENOENT" });
+    },
+    spawn: ((...args: Parameters<typeof spawn>) => {
+      psCalls++;
+      const sampler = new EventEmitter() as ReturnType<typeof spawn>;
+      sampler.stdout = new PassThrough();
+      queueMicrotask(() => sampler.emit("error", Object.assign(new Error("ps missing"), { code: "ENOENT" })));
+      expect(args[0]).toBe("ps");
+      return sampler;
+    }) as typeof spawn,
+  });
+  expect(rssBytes).toBe(96 * 1024 * 1024);
+  expect(paths).toEqual(["/sys/fs/cgroup/memory.current", "/proc/12345/status"]);
+  expect(psCalls).toBe(0);
+});
+
+test("cgroup memory remains the first Linux RSS source", async () => {
+  const paths: string[] = [];
+  const rssBytes = await processTreeRssBytes(12345, {
+    platform: "linux",
+    readTextFile: async (path) => {
+      paths.push(path);
+      return "134217728\n";
+    },
+    spawn: (() => { throw new Error("cgroup accounting must not spawn ps"); }) as typeof spawn,
+  });
+  expect(rssBytes).toBe(128 * 1024 * 1024);
+  expect(paths).toEqual(["/sys/fs/cgroup/memory.current"]);
+});
+
+test.each([null, "Name:\tbun\n", "VmRSS:\tnan kB\n", "VmRSS:\t65536 MB\n"])(
+  "an exited or unreadable Linux command RSS falls back safely: %s",
+  async (status) => {
+    let psCalls = 0;
+    const rssBytes = await processTreeRssBytes(12345, {
+      platform: "linux",
+      workerRssBytes: () => 32 * 1024 * 1024,
+      readTextFile: async (path) => {
+        if (path === "/proc/12345/status" && status !== null) return status;
+        throw Object.assign(new Error("process or cgroup file gone"), { code: "ENOENT" });
+      },
+      spawn: (() => {
+        psCalls++;
+        const sampler = new EventEmitter() as ReturnType<typeof spawn>;
+        sampler.stdout = new PassThrough();
+        queueMicrotask(() => sampler.emit("error", Object.assign(new Error("ps missing"), { code: "ENOENT" })));
+        return sampler;
+      }) as typeof spawn,
+    });
+    expect(psCalls).toBe(1);
+    expect(rssBytes).toBe(32 * 1024 * 1024);
+  },
+);
+
+test("macOS RSS still sums worker and command KiB from ps", async () => {
+  const rssBytes = await processTreeRssBytes(12345, {
+    platform: "darwin",
+    readTextFile: async () => { throw new Error("macOS must not read Linux accounting files"); },
+    spawn: ((command: string, args: readonly string[]) => {
+      expect(command).toBe("ps");
+      expect(args).toEqual(["-o", "rss=", "-p", `${process.pid},12345`]);
+      const sampler = new EventEmitter() as ReturnType<typeof spawn>;
+      sampler.stdout = new PassThrough();
+      queueMicrotask(() => {
+        sampler.stdout!.emit("data", Buffer.from("  32768\n65536\n"));
+        sampler.emit("close", 0);
+      });
+      return sampler;
+    }) as typeof spawn,
+  });
+  expect(rssBytes).toBe(96 * 1024 * 1024);
 });
 
 test("worker process samples worker and command memory", async () => {

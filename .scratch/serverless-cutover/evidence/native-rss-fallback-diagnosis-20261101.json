@@ -1,0 +1,383 @@
+{
+  "date": "2026-11-01",
+  "status": "diagnosed and fixed locally; rebuilt native image qualification pending",
+  "sourceCommit": "4092951013b16582f0ba039b9926b1a58a0cd30f",
+  "finding": "The immutable render image exposes child VmRSS through procfs but lacks both cgroup memory files and ps. The previous sampler therefore returns only worker RSS, producing a zero child delta.",
+  "originalFailure": {
+    "privateDirectory": "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101",
+    "test": "worker process samples worker and command memory",
+    "passed": 70,
+    "failed": 1,
+    "expectedChildDeltaBytesGreaterThan": 33554432,
+    "receivedChildDeltaBytes": 0
+  },
+  "diagnostic": {
+    "sourceCommit": "4092951013b16582f0ba039b9926b1a58a0cd30f",
+    "imageId": "im-mPQBCFI73ppxkA3Qismheb",
+    "sourceOverlay": false,
+    "networkBlocked": true,
+    "secrets": [],
+    "oidc": false,
+    "cpu": [
+      2,
+      2
+    ],
+    "memoryMiB": [
+      4096,
+      4096
+    ],
+    "timeoutSeconds": 300,
+    "terminated": true,
+    "startedAtUtc": "2026-11-01T07:59:49.761001+00:00",
+    "sandboxId": "sb-01M6B1YDZJ59ECG7Q9EJ94PTFJ",
+    "diagnosticExitCode": 0,
+    "pollAfterTerminate": 137,
+    "functionIdentityStable": true,
+    "endedAtUtc": "2026-11-01T08:00:00.929141+00:00"
+  },
+  "functionBefore": {
+    "functionId": "fu-waLRAeMpw7okH5NG5MnqpC",
+    "imageId": "im-mPQBCFI73ppxkA3Qismheb",
+    "cpu": [
+      2.0,
+      2.0
+    ],
+    "memoryLimitMiB": 4096
+  },
+  "functionAfter": {
+    "functionId": "fu-waLRAeMpw7okH5NG5MnqpC",
+    "imageId": "im-mPQBCFI73ppxkA3Qismheb",
+    "cpu": [
+      2.0,
+      2.0
+    ],
+    "memoryLimitMiB": 4096
+  },
+  "sourceAuditBefore": {
+    "checkedFiles": 1585,
+    "mismatches": []
+  },
+  "sourceAuditAfter": {
+    "checkedFiles": 1585,
+    "mismatches": []
+  },
+  "observations": {
+    "sourceOverlay": false,
+    "platform": {
+      "affinityCount": 2
+    },
+    "tests": [
+      {
+        "exitCode": 1,
+        "seconds": 0.758
+      },
+      {
+        "exitCode": 1,
+        "seconds": 0.595
+      }
+    ],
+    "cgroup": {
+      "memory.current": {
+        "error": "FileNotFoundError",
+        "errno": 2
+      },
+      "memory.max": {
+        "error": "FileNotFoundError",
+        "errno": 2
+      }
+    },
+    "psPath": null,
+    "children": [
+      {
+        "durationMs": 350,
+        "procfs": [
+          {
+            "rssLines": [
+              "VmRSS:\t198804 kB"
+            ]
+          },
+          {
+            "rssLines": [
+              "VmRSS:\t198804 kB"
+            ]
+          },
+          {
+            "rssLines": [
+              "VmRSS:\t198804 kB"
+            ]
+          },
+          {
+            "rssLines": [
+              "VmRSS:\t198804 kB"
+            ]
+          }
+        ],
+        "ps": {
+          "error": "FileNotFoundError",
+          "errno": 2
+        },
+        "childExitCode": 0
+      },
+      {
+        "durationMs": 1500,
+        "procfs": [
+          {
+            "rssLines": [
+              "VmRSS:\t198996 kB"
+            ]
+          },
+          {
+            "rssLines": [
+              "VmRSS:\t198996 kB"
+            ]
+          },
+          {
+            "rssLines": [
+              "VmRSS:\t198996 kB"
+            ]
+          },
+          {
+            "rssLines": [
+              "VmRSS:\t198996 kB"
+            ]
+          }
+        ],
+        "ps": {
+          "error": "FileNotFoundError",
+          "errno": 2
+        },
+        "childExitCode": 0
+      }
+    ]
+  },
+  "reproduction": {
+    "command": "bun test apps/media/src/worker-process.test.ts -t \"worker process samples worker and command memory\"",
+    "runtime": "Bun 1.3.6, Linux x64, immutable render image at 2 CPU / 4096 MiB",
+    "runs": 2,
+    "failed": 2,
+    "expectedChildDeltaBytesGreaterThan": 33554432,
+    "receivedChildDeltaBytes": 0
+  },
+  "hypotheses": [
+    {
+      "hypothesis": "missing ps and cgroup accounting",
+      "verdict": "confirmed",
+      "evidence": "Both cgroup memory files and exact ps invocation return ENOENT."
+    },
+    {
+      "hypothesis": "restricted process visibility",
+      "verdict": "refuted",
+      "evidence": "Child /proc/PID/status VmRSS remains readable in every bounded sample."
+    },
+    {
+      "hypothesis": "350 ms allocation lifetime misses sampling",
+      "verdict": "refuted",
+      "evidence": "VmRSS is visible across four samples within the original lifetime, and a 1500 ms child encounters the same missing ps executable."
+    }
+  ],
+  "fix": {
+    "policy": "Preserve cgroup memory.current priority. On Linux without cgroup accounting, add the child status VmRSS in KiB to current worker RSS. Keep ps fallback for other platforms or unavailable procfs.",
+    "dependenciesAdded": [],
+    "resourcesChanged": false,
+    "deadlinesChanged": false,
+    "originalIntegrationTestChanged": false,
+    "goldenOrRuntimeFingerprintRefreshed": false,
+    "sourceOverlay": false
+  },
+  "regression": {
+    "seam": "processTreeRssBytes, the sampler called by execute, with injected OS readers and worker RSS",
+    "redWithoutProcfsFallback": {
+      "runtime": "Bun 1.3.6, darwin arm64",
+      "exitCode": 1,
+      "expectedBytes": 100663296,
+      "receivedBytes": 33554432
+    },
+    "casesAdded": 7,
+    "coverage": [
+      "missing cgroup and ps includes exactly one child plus worker with KiB conversion",
+      "cgroup priority",
+      "exited child",
+      "absent VmRSS",
+      "malformed VmRSS",
+      "incorrect VmRSS unit",
+      "macOS ps arguments and KiB conversion"
+    ]
+  },
+  "verification": {
+    "pinnedWorkerProcess": {
+      "runtime": "Bun 1.3.6, darwin arm64",
+      "command": "bun test apps/media/src/worker-process.test.ts",
+      "passed": 78,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 3.37
+    },
+    "pinnedMediaTypecheck": {
+      "command": "bun run --cwd apps/media typecheck",
+      "exitCode": 0
+    },
+    "repositoryLint": {
+      "command": "bun run lint",
+      "exitCode": 0,
+      "checkedFiles": 2502,
+      "existingWarnings": 11,
+      "existingInfo": 1,
+      "changedFileDiagnostics": 0
+    },
+    "earlierHostWorkerProcess": {
+      "runtime": "Bun 1.4.2, darwin arm64",
+      "passed": 78,
+      "failed": 0
+    },
+    "earlierHostMediaSuite": {
+      "runtime": "Bun 1.4.2, darwin arm64",
+      "command": "bun run --cwd apps/media test",
+      "passed": 801,
+      "skipped": 1,
+      "failed": 4,
+      "errors": 1,
+      "seconds": 111.51,
+      "failureCause": "Ignored face_yunet.onnx and the web/Next dependency link were absent from the isolated worktree.",
+      "status": "not a passing full-suite qualification"
+    },
+    "pinnedFixtureReruns": {
+      "runtime": "Bun 1.3.6, darwin arm64",
+      "modelTestsPassed": 2,
+      "fontTestsPassed": 10,
+      "failed": 0,
+      "setup": "Local ignored dependency links and model link only. Model SHA256 matches the committed runtime lock. No generated Prisma client or credentials added."
+    }
+  },
+  "scope": "Credential-free, network-blocked diagnostic Sandbox only. No product Function invocation, domain control API, DB, provider or R2 mutations. This is immutable-image diagnosis and host regression evidence, not qualification of a patched native image.",
+  "remaining": "Rebuild immutable images from the committed fix, then independently qualify the patched native sampler and existing media/runtime/golden gates at their unchanged resources.",
+  "references": [
+    {
+      "url": "https://kernel.org/doc/html/v6.10/filesystems/proc.html",
+      "comparison": "The kernel documents VmRSS in /proc/PID/status; statm is expressed in pages."
+    },
+    {
+      "url": "https://github.com/giampaolo/psutil/blob/master/psutil/_pslinux.py",
+      "comparison": "Reviewed the open-source Linux process accounting approach. Using status avoids introducing a library or assuming a page size."
+    }
+  ],
+  "rawEvidence": {
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/diagnostic.json": {
+      "sha256": "6ffe4ac1c58e71ce6f6a9fce61003d644e0db01faf0b7ac8cca38a829910a3a1",
+      "byteLength": 1475
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/expected-source.json": {
+      "sha256": "243111a2c1c01aadc6163eb5f58b382e2088c9e13afdfb06d4327f378de77f41",
+      "byteLength": 199857
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/function-after.json": {
+      "sha256": "ba3c34888ee98fb13a55c1f816932be1e825dcbf648aa35f22f8632ff8c651c3",
+      "byteLength": 149
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/function-before.json": {
+      "sha256": "ba3c34888ee98fb13a55c1f816932be1e825dcbf648aa35f22f8632ff8c651c3",
+      "byteLength": 149
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/host-lint.log": {
+      "sha256": "b41af83b7eeb9dd760024060fe5fda71a9519bfaa4f733543cf5c7de6bbf7174",
+      "byteLength": 13511
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/host-media.log": {
+      "sha256": "3bc3a033d2782b46f531d21421de09487789c91037d463c6f6feb9f4b47cfecf",
+      "byteLength": 101562
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/host-typecheck.log": {
+      "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+      "byteLength": 32
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/host-worker-process.log": {
+      "sha256": "c0b29d0502808b75b133c69bfb5854247bbb27e3f62cd4414faa5d6ed49a84c8",
+      "byteLength": 8774
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/memory-test-0.log": {
+      "sha256": "75514c0f940772e0e595332a5cfbcda3a6fddab033853c25a10332bf429af467",
+      "byteLength": 764
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/memory-test-1.log": {
+      "sha256": "ca5062a2d33240ff9a7587950b5a1911c0a7058fcccd0af21ea1838a4effb4c5",
+      "byteLength": 764
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/pinned-font-fixtures.log": {
+      "sha256": "13929467637b5f666994115f28262fea4457d7ac09efdc263d041230dc602fd0",
+      "byteLength": 1648
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/pinned-model-fixture.log": {
+      "sha256": "60ab71df65675bd1e8770393b9d5ade99fc3ce3ab7091218d03846471ee4fffd",
+      "byteLength": 405
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/pinned-regression-red.log": {
+      "sha256": "58f555fc8e8321d4277fc8bbb9a97bc0934577a878ada1c3cd6a79b2355345af",
+      "byteLength": 734
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/pinned-typecheck.log": {
+      "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+      "byteLength": 32
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/pinned-worker-process.log": {
+      "sha256": "f5626e2f8cd80753b2dc2fe6db50c19c2e740e51676cd9d2177f158e89f087a9",
+      "byteLength": 8621
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/remote.py": {
+      "sha256": "b70ae105fc1f73a0e325a6c8fa65f7ee481b712b3c0448fd28078b9ff8899a3f",
+      "byteLength": 2605
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/result.json": {
+      "sha256": "fdf6e9b74fa9f9841cfe1146433122d8f4a09c488e4df86b2c9bc3e0087eca9f",
+      "byteLength": 554
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/runner.py": {
+      "sha256": "80e490e5c5a56f222a67321f1e46de1e42246c72fc35ba2f5f2d525784794e12",
+      "byteLength": 2953
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/runner.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "byteLength": 0
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/runner.stdout.log": {
+      "sha256": "f3f001db71452cef989d8f1f72f432c402f14dc3a6e911dc206c9fc7b0c1899a",
+      "byteLength": 124
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/source-audit-after.json": {
+      "sha256": "ffe1037a8b0fb7f544e8a162e9f3caac0c678eea1dafa513dbd1a2a5ae20ebb1",
+      "byteLength": 47
+    },
+    "/tmp/narriflow-rss-diagnostic-40929510-20261101/source-audit-before.json": {
+      "sha256": "ffe1037a8b0fb7f544e8a162e9f3caac0c678eea1dafa513dbd1a2a5ae20ebb1",
+      "byteLength": 47
+    }
+  },
+  "retainedOriginalFailure": {
+    "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/status.json": {
+      "sha256": "661c9d4352f528b31683e61f3ea7b3b3d8329bc6317f4fe11994449dc34b3ae1",
+      "byteLength": 1869
+    },
+    "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/bun-2.log": {
+      "sha256": "f85e1115306539cf9f2840d7d02730c4164809ef90e2faaf8078ba911ad1f887",
+      "byteLength": 8824
+    },
+    "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/bun-2.xml": {
+      "sha256": "b1e88db610020f9f47dd901e41afae339dd977b0ed344de9bb18de74994db22f",
+      "byteLength": 15916
+    },
+    "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/result.json": {
+      "sha256": "815349c5c9db85ea2615f5b6f48ac365b29485314afa050032b3fb770a2a3400",
+      "byteLength": 4181
+    },
+    "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/source-audit-before.json": {
+      "sha256": "6e6fdfc994e077117f305f7f3c10919c4b3360d6933c66ed91b3b6ba9382dc8d",
+      "byteLength": 61
+    },
+    "/tmp/narriflow-prepare-2cpu-native-correction-40929510-20261101/source-audit-after.json": {
+      "sha256": "6e6fdfc994e077117f305f7f3c10919c4b3360d6933c66ed91b3b6ba9382dc8d",
+      "byteLength": 61
+    }
+  },
+  "changedSourceSha256": {
+    "apps/media/src/worker-process.ts": "cae79caaf168862c422281dceca3295935b1ea5fbddeba4cc4c792902bed7034",
+    "apps/media/src/worker-process.test.ts": "cd4ad094e0b1c1f4f75b079be8a188a51cc98dde6da27d124aa226e1b5d03f13"
+  }
+}
