@@ -198,14 +198,25 @@ async def run_executor_r2_transfer(invocation, *, phase, client, source=None, by
     elif source is not None:
         raise ValueError('gate_configuration_invalid')
     function = 'fetch_source' if phase == 'upload' else 'pin_source'
-    value = invocation_reference(invocation, function)
+    if (type(invocation) is not dict or set(invocation) != {'invocation','budget'} or
+            type(invocation['budget']) is not dict or set(invocation['budget']) != {'startedAtUnixMs','combinedDeadlineUnixMs'}):
+        raise ValueError('gate_budget_invalid')
+    budget = invocation['budget']
+    if (any(type(budget[name]) is not int for name in budget) or
+            not 0 < budget['combinedDeadlineUnixMs']-budget['startedAtUnixMs'] <= GATE_SECONDS*1000 or
+            source is not None and budget != {name:source[name] for name in budget}):
+        raise ValueError('gate_budget_invalid')
+    if budget['combinedDeadlineUnixMs'] <= int(time.time()*1000)+60000:
+        raise ValueError('gate_combined_deadline_expired')
+    value = invocation_reference(invocation['invocation'], function)
     session = await asyncio.to_thread(ExecutorSession.acquire, client, reference=value['reference'],
                                       attempt_token=value['attemptToken'], max_operation_seconds=GATE_SECONDS)
     started, mono = int(time.time()*1000), time.monotonic()
-    cutoff = min(started+int(session.remaining_seconds*1000), source['combinedDeadlineUnixMs'] if source else started+GATE_SECONDS*1000)
+    cutoff = min(started+int(session.remaining_seconds*1000), budget['combinedDeadlineUnixMs'])
     report = {'version':1, 'phase':phase, 'status':'failed', 'scope':'actual deployed Core authority and transfer only; no synthetic media commit',
               'runId':source['runId'] if source else str(UUID(value['attemptToken'])),
-              'startedAtUnixMs':source['startedAtUnixMs'] if source else started, 'combinedDeadlineUnixMs':cutoff,
+              'startedAtUnixMs':budget['startedAtUnixMs'], 'combinedDeadlineUnixMs':budget['combinedDeadlineUnixMs'],
+              'localCutoffUnixMs':cutoff,
               'phaseStartedAtUnixMs':started, 'operationDeadlineSeconds':GATE_SECONDS, 'requestedBytes':byte_length,
               'qualifies10GiBUpload':phase == 'upload' and byte_length == MAX_BYTES,
               'qualifiesGreaterThan5GiBPin':phase == 'pin' and byte_length > 5*1024**3, 'stage':'work_package'}

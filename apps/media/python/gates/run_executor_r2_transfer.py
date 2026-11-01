@@ -28,11 +28,17 @@ def main():
         raise RuntimeError('gate_private_arguments_required')
     value=json.loads(args.arguments.read_text())
     if args.phase=='upload':
-        if set(value)!={'reference','attemptToken'}:raise RuntimeError('gate_arguments_invalid')
-        invocation,source=value,None
+        if set(value)!={'invocation','budget'}:raise RuntimeError('gate_arguments_invalid')
+        invocation,source={'invocation':value['invocation'],'budget':value['budget']},None
     else:
-        if set(value)!={'invocation','source'}:raise RuntimeError('gate_arguments_invalid')
-        invocation,source=value['invocation'],value['source']
+        if set(value)!={'invocation','source','budget'}:raise RuntimeError('gate_arguments_invalid')
+        invocation,source={'invocation':value['invocation'],'budget':value['budget']},value['source']
+        if value['budget']!={name:source.get(name) for name in ('startedAtUnixMs','combinedDeadlineUnixMs')}:raise RuntimeError('gate_arguments_invalid')
+    budget=invocation['budget']
+    if (type(budget) is not dict or set(budget)!={'startedAtUnixMs','combinedDeadlineUnixMs'} or
+            any(type(budget[name]) is not int for name in budget) or
+            not 0<budget['combinedDeadlineUnixMs']-budget['startedAtUnixMs']<=2700000):
+        raise RuntimeError('gate_arguments_invalid')
     import modal
     function=modal.Function.from_name(args.app,args.function,environment_name='main')
     if args.expected_function_id is not None:

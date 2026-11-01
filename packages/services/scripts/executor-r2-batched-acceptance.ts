@@ -29,7 +29,7 @@ export function batchedTimings(raw:unknown){
  }return result;
 }
 export function batchedDeadline(sqlDeadline:number,reportDeadline?:number){
- if(!Number.isSafeInteger(sqlDeadline)||reportDeadline!==undefined&&!Number.isSafeInteger(reportDeadline))throw fail();return Math.min(sqlDeadline,reportDeadline??sqlDeadline);
+ if(!Number.isSafeInteger(sqlDeadline)||reportDeadline!==undefined&&(!Number.isSafeInteger(reportDeadline)||reportDeadline!==sqlDeadline))throw fail();return sqlDeadline;
 }
 async function privateJson<T>(path:string):Promise<T>{const info=await stat(path);if(!isAbsolute(path)||info.mode&0o077||info.size>131072)throw fail();return JSON.parse(await readFile(path,"utf8"));}
 async function save(path:string,value:unknown){const temp=`${path}.${randomUUID()}.tmp`;await writeFile(temp,`${JSON.stringify(value,null,2)}\n`,{mode:0o600,flag:"wx"});await rename(temp,path);}
@@ -83,12 +83,15 @@ async function main(){
   await fixturePhase("seed-upload");
   const fixture=await privateJson<{upload:{invocation:{attemptToken:string}}}>(folder+"/fixture.json");
   const original=await pool.query('SELECT "operationDeadlineAt" AT TIME ZONE \'UTC\' AS "operationDeadlineAt" FROM "ExecutionAttempt" WHERE "attemptToken"=$1::uuid',[fixture.upload.invocation.attemptToken]);
-  combinedDeadline=batchedDeadline(original.rows[0]?.operationDeadlineAt?.getTime());notebook.combinedDeadlineUnixMs=combinedDeadline;await save(folder+"/notebook.json",notebook);
+  combinedDeadline=batchedDeadline(original.rows[0]?.operationDeadlineAt?.getTime());
+  const argumentsFile=await privateJson<{budget:{startedAtUnixMs:number;combinedDeadlineUnixMs:number}}>(folder+"/fixture.json.upload-invocation.json");
+  if(argumentsFile.budget.combinedDeadlineUnixMs!==combinedDeadline||argumentsFile.budget.startedAtUnixMs!==combinedDeadline-2700000)throw fail();
+  notebook.combinedDeadlineUnixMs=combinedDeadline;notebook.startedAtUnixMs=argumentsFile.budget.startedAtUnixMs;await save(folder+"/notebook.json",notebook);
   await native("upload");
   const report=await privateJson(folder+"/upload.json"),receipt=sourceReceipt(report as never,fixture as never);
   combinedDeadline=batchedDeadline(combinedDeadline,receipt.combinedDeadlineUnixMs);notebook.combinedDeadlineUnixMs=combinedDeadline;await save(folder+"/notebook.json",notebook);
   await fixturePhase("bind-pin");await native("pin");await guard();
-  const pin=await privateJson<Record<string,unknown>>(folder+"/pin.json");if(typeof pin.combinedDeadlineUnixMs!=="number"||pin.combinedDeadlineUnixMs>combinedDeadline||typeof pin.combinedElapsedSeconds!=="number"||pin.combinedElapsedSeconds>=2700||pin.stalePartStatus!==404||![403,409,410].includes(pin.revokedGrantStatus as number))throw fail();
+  const pin=await privateJson<Record<string,unknown>>(folder+"/pin.json");if(typeof pin.combinedDeadlineUnixMs!=="number"||pin.combinedDeadlineUnixMs!==combinedDeadline||typeof pin.combinedElapsedSeconds!=="number"||pin.combinedElapsedSeconds>=2700||pin.stalePartStatus!==404||![403,409,410].includes(pin.revokedGrantStatus as number))throw fail();
   combinedDeadline=batchedDeadline(combinedDeadline,pin.combinedDeadlineUnixMs);notebook.combinedDeadlineUnixMs=combinedDeadline;
   notebook.status="passed";notebook.completedAt=new Date().toISOString();await save(folder+"/notebook.json",notebook);
   console.log(JSON.stringify({mode:"coalesced_transfer_gate_passed",epoch:config.expectedEpoch,workerVersion:config.expectedWorkerVersion,combinedDeadlineUnixMs:combinedDeadline,combinedElapsedSeconds:pin.combinedElapsedSeconds}));

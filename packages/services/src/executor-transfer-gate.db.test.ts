@@ -18,10 +18,13 @@ suite('Regional transfer operator pin binding',()=>{
   const journal={version:1 as const,epoch:epoch.epoch,expectedHost:'fixture.aws.neon.tech',expectedDatabase:'fixture',userId:user.id,workspaceId:workspace.id,uploadSessionId:id(),upload:{projectId:id(),jobId:id()},pin:{projectId:id(),jobId:id()}};
   const source={id:id(),storageKey:`execution/${epoch.epoch}/${id()}/${id()}/${id()}`,etag:'"measured-source"',contentType:'application/octet-stream',multipartUploadId:'closed-source-fixture-mpu'};
   await withServiceEnvironment({MEDIA_FETCH_TOOLCHAIN_FINGERPRINT:'f'.repeat(64),R2_BUCKET:'narriflow-dev'},()=>new DatabaseScope({createClient:()=>({client:db,dispose:async()=>{}})}).run(async()=>{
-   await bindVerifiedPinGateFixture(db,journal,source);await bindVerifiedPinGateFixture(db,journal,source);
+   const [clock]=await db.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+   const originalDeadline=new Date(clock!.now.getTime()+10*60_000);
+   await bindVerifiedPinGateFixture(db,journal,source,originalDeadline);await bindVerifiedPinGateFixture(db,journal,source,originalDeadline);
    const session=await db.uploadSession.findUniqueOrThrow({where:{id:journal.uploadSessionId}}),job=await db.ingestJob.findUniqueOrThrow({where:{id:journal.pin.jobId}});
    expect(session).toMatchObject({status:'queued_for_ingest',queuedJobId:job.id,preallocatedProjectId:journal.pin.projectId,storageKey:source.storageKey,verifiedSizeBytes:10737418240n,verifiedContentType:'application/octet-stream'});
    expect(job).toMatchObject({jobType:'upload_finalize',projectId:journal.pin.projectId,uploadSessionId:session.id,status:'queued',attemptCount:0,payload:{storageKey:source.storageKey,verifiedEtag:source.etag,verifiedSizeBytes:10737418240,verifiedContentType:'application/octet-stream',uploadSessionId:session.id}});
+   expect(job.operationDeadlineAt).toEqual(originalDeadline);
    expect(await resolveIngestSourceDefinition(job,{})).toMatchObject({kind:'upload_source',mediaIdentity:{provider:'upload',mediaId:session.id},source:{storageKey:source.storageKey,etag:source.etag,byteLength:10737418240}});
    expect(await db.project.count({where:{id:journal.pin.projectId}})).toBe(1);expect(await db.ingestJob.count({where:{uploadSessionId:session.id}})).toBe(1);
    const lifecycle=getIngestJobLifecycle(),reference=await db.$transaction(tx=>lifecycle.queueExecutionWithinTransaction(tx,job.id));
@@ -29,6 +32,8 @@ suite('Regional transfer operator pin binding',()=>{
    const options={database:db,domain:lifecycle,reference,toolchainFingerprint:'f'.repeat(64),executionKind:'modal_execution' as const},first=await prepareIngestSourceExecution(options),replay=await prepareIngestSourceExecution(options);
    expect(first.kind).toBe('waiting');expect(replay).toEqual(first);
    const attempts=await db.executionAttempt.findMany({where:{dispatch:{subjectKind:'ingest_job',subjectId:job.id}}});expect(attempts).toHaveLength(1);expect(attempts[0]).toMatchObject({functionName:'pin_source',processStartedAt:null,status:'admitted'});
+   expect(attempts[0]!.operationDeadlineAt).toEqual(originalDeadline);
+   await expect(bindVerifiedPinGateFixture(db,journal,source,new Date(originalDeadline.getTime()+1))).rejects.toThrow('gate_fixture_deadline_conflict');
    expect(await db.executionArtifact.count({where:{attemptToken:attempts[0]!.attemptToken}})).toBe(0);
    expect(await db.workflowRun.count({where:{projectId:journal.pin.projectId}})).toBe(0);
    await expect(Promise.resolve(db.ingestJob.update({where:{id:job.id},data:{payload:{...(job.payload as object),verifiedEtag:'"foreign"'}}}))).rejects.toThrow();

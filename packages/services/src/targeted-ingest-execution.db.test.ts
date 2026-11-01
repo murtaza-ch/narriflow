@@ -101,6 +101,39 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await prepareIngestSourceExecution({database:db,domain:f.lifecycle,reference:{...driver.reference,inputHash:"f".repeat(64)},toolchainFingerprint:"d".repeat(64),executionKind:"modal_execution"})).toEqual({kind:"superseded"});
   });
 
+  test("first acquire preserves a prepared deadline and expiry cannot admit a second charged generation", async () => {
+    const f = await fixture();
+    await db.executionAttempt.delete({ where: { attemptToken: f.token } });
+    await db.executionDispatch.delete({ where: { id: f.reference.dispatchId } });
+    const [clock] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+    const deadline = new Date(clock!.now.getTime() + 3000);
+    await db.ingestJob.update({ where: { id: f.job.id }, data: { operationDeadlineAt: deadline } });
+    const driver = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: f.epoch, generation: 1, kind: "operation_driver",
+      subject: { kind: "ingest_job", id: f.job.id }, inputHash: f.reference.inputHash, dueAt: f.job.createdAt }));
+    const options = { database: db, domain: f.lifecycle, reference: driver.reference, toolchainFingerprint: "d".repeat(64), executionKind: "modal_execution" as const };
+    const prepared = await prepareIngestSourceExecution(options);
+    if (prepared.kind !== "waiting") throw new Error("No prepared attempt");
+    const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: crypto.randomUUID() };
+    const acquired = await f.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: f.verified() });
+    expect(acquired).toMatchObject({ disposition: "acquired", operationDeadlineAt: deadline.toISOString(), leaseExpiresAt: deadline.toISOString() });
+    await f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() });
+    expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).operationDeadlineAt).toEqual(deadline);
+    expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } })).operationDeadlineAt).toEqual(deadline);
+    while (true) {
+      const [actual] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+      if (actual!.now >= deadline) break;
+      await Bun.sleep(25);
+    }
+    receipts.push(prepared.deliveryId);
+    expect(await f.control.expireDeadline({ deadline: prepared.deadline, deliveryId: prepared.deliveryId })).toEqual({ kind: "expired" });
+    const job = await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    expect(job).toMatchObject({ status: "failed", generation: 1, attemptCount: 1, claimId: null, executorOwner: null, operationDeadlineAt: deadline });
+    expect(job.lastError).toStartWith("operation_deadline_exceeded:");
+    expect(await db.executionDispatch.count({ where: { subjectId: job.id, generation: { gt: 1 } } })).toBe(0);
+    expect(await prepareIngestSourceExecution(options)).toEqual({ kind: "terminal" });
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: job.id } } })).toBe(1);
+  }, 30_000);
+
   test("a charged transient retry wakes the next exact source generation without extending its deadline",async()=>{
     const f=await fixture();const fence={reference:f.reference,attemptToken:f.token,owner:f.owner};
     await f.control.execute({command:{action:"acquire",...fence,leaseSeconds:120},verifiedRequest:f.verified()});

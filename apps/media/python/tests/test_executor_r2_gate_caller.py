@@ -19,7 +19,7 @@ _spec.loader.exec_module(caller)
 
 
 class GateCallerTests(unittest.TestCase):
-    def invoke(self, function_id, *, expected='fu-12345678901234567890', status='passed'):
+    def invoke(self, function_id, *, expected='fu-12345678901234567890', status='passed', phase='upload'):
         calls = []
 
         class Function:
@@ -36,16 +36,20 @@ class GateCallerTests(unittest.TestCase):
 
             def remote(self, invocation, **options):
                 calls.append(('remote', invocation, options))
-                return {'version': 1, 'phase': 'upload', 'status': status,
+                return {'version': 1, 'phase': phase, 'status': status,
                         'failureCode': 'gate_fixture_failure' if status == 'failed' else None}
 
         with tempfile.TemporaryDirectory() as directory:
             arguments = Path(directory) / 'arguments.json'
             output = Path(directory) / 'report.json'
             invocation = {'reference': {'dispatchId': 'bounded-reference'}, 'attemptToken': 'actual-token'}
-            arguments.write_text(json.dumps(invocation))
+            budget = {'startedAtUnixMs':1000,'combinedDeadlineUnixMs':2701000}
+            payload = {'invocation':invocation,'budget':budget}
+            if phase == 'pin':
+                payload['source'] = {**budget,'runId':'known-upload','object':{'key':'known-object'}}
+            arguments.write_text(json.dumps(payload))
             arguments.chmod(0o600)
-            argv = ['caller', '--app', 'narriflow-media-gates', '--phase', 'upload',
+            argv = ['caller', '--app', 'narriflow-media-gates', '--phase', phase,
                     '--arguments', str(arguments), '--output', str(output),
                     '--expected-function-id', expected]
             error = None
@@ -68,6 +72,17 @@ class GateCallerTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ['lookup', 'hydrate', 'remote'])
         self.assertEqual(report['status'], 'passed')
         self.assertEqual(mode, 0o600)
+
+    def test_each_phase_forwards_the_same_original_budget_without_resetting_it(self):
+        for phase in ('upload','pin'):
+            error,calls,_report,_mode = self.invoke('fu-12345678901234567890',phase=phase)
+            self.assertIsNone(error)
+            remote = next(call for call in calls if call[0]=='remote')
+            self.assertEqual(remote[1]['budget'],{'startedAtUnixMs':1000,'combinedDeadlineUnixMs':2701000})
+            self.assertEqual(set(remote[1]['invocation']),{'reference','attemptToken'})
+            self.assertEqual(remote[2]['phase'],phase)
+            if phase=='pin':
+                self.assertEqual(remote[2]['source']['combinedDeadlineUnixMs'],2701000)
 
     def test_changed_function_is_refused_before_remote_submission(self):
         error, calls, report, _ = self.invoke('fu-different1234567890')

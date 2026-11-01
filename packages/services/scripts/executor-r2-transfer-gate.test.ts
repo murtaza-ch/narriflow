@@ -1,5 +1,5 @@
 import {describe,expect,test} from "bun:test";
-import {sourceReceipt,validateGateTarget} from "./executor-r2-transfer-gate";
+import {sourceReceipt,validateGateTarget,transferGateBudget} from "./executor-r2-transfer-gate";
 
 describe("regional Executor transfer gate guards",()=>{
  test("only the explicitly selected private candidate database is accepted",()=>{
@@ -9,6 +9,11 @@ describe("regional Executor transfer gate guards",()=>{
   const shared="ep-rough-hill-b57kvyah.c-7.us-east-2.aws.neon.tech";
   expect(()=>validateGateTarget(`postgresql://fixture@${shared}/serverless_pipeline_gates`,shared,"serverless_pipeline_gates")).toThrow("gate_private_database_required");
   expect(()=>validateGateTarget(`postgresql://fixture@${host}/serverless_pipeline_gates`,"different.aws.neon.tech","serverless_pipeline_gates")).toThrow("gate_private_database_required");
+ });
+ test("native arguments retain the original SQL budget and contain no fresh phase lifetime",()=>{
+  const deadline=new Date("2026-11-01T00:03:04.026Z");
+  expect(transferGateBudget(deadline)).toEqual({startedAtUnixMs:deadline.getTime()-2700000,combinedDeadlineUnixMs:deadline.getTime()});
+  expect(()=>transferGateBudget(new Date(Number.NaN))).toThrow("gate_budget_invalid");
  });
  test("a pin receipt must prove the known ten-GiB upload, closed MPU and revoked owner within the combined deadline",()=>{
   const token="00f63941-0d85-42c0-ac38-9654c8a3ba02",journal={upload:{invocation:{attemptToken:token}}} as never;

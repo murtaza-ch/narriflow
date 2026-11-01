@@ -88,12 +88,22 @@ function argumentsForGate() {
     reportPath: args.get("--report") ? resolve(args.get("--report")!) : undefined };
 }
 
-export async function bindVerifiedPinGateFixture(db:PrismaClient,journal:Journal,source:{id:string;storageKey:string;etag:string;contentType:string;multipartUploadId:string|null}) {
-        const now = new Date(), pack = contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3,
+export function transferGateBudget(deadline: Date) {
+  const combinedDeadlineUnixMs = deadline.getTime();
+  if (!Number.isSafeInteger(combinedDeadlineUnixMs) || combinedDeadlineUnixMs <= 2700_000) code("gate_budget_invalid");
+  return { startedAtUnixMs: combinedDeadlineUnixMs - 2700_000, combinedDeadlineUnixMs };
+}
+
+export async function bindVerifiedPinGateFixture(db:PrismaClient,journal:Journal,source:{id:string;storageKey:string;etag:string;contentType:string;multipartUploadId:string|null}, originalDeadline: Date) {
+        transferGateBudget(originalDeadline);
+        const pack = contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3,
           clipDurationSecTarget: 45, platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION });
-        await db.$transaction(async tx => {
+        const now = await db.$transaction(async tx => {
           const admission = await readExecutionAdmission(tx); assertExecutionAdmissionOpen(admission);
           if (admission.epoch !== journal.epoch) code("gate_epoch_changed");
+          const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+          if (!clock || clock.now.getTime() + 60_000 >= originalDeadline.getTime()) return code("gate_combined_deadline_expired");
+          const now = clock.now;
           await tx.uploadSession.upsert({ where: { id: journal.uploadSessionId }, update: {}, create: {
             id: journal.uploadSessionId, workspaceId: journal.workspaceId, actorUserId: journal.userId, clientIdempotencyKey: journal.uploadSessionId,
             immutableInputFingerprint: `executor-transfer-gate:${source.id}`, preallocatedProjectId: journal.pin.projectId,
@@ -101,14 +111,32 @@ export async function bindVerifiedPinGateFixture(db:PrismaClient,journal:Journal
             browserFingerprint: "private-executor-transfer-gate", generationSettings: { contentPack: pack }, transferKind: "multipart",
             partSizeBytes: PART_BYTES, partCount: BYTES / PART_BYTES, storageKey: source.storageKey, providerUploadId: source.multipartUploadId,
             status: "finalizing", expiresAt: new Date(now.getTime() + 3600_000), hardExpiresAt: new Date(now.getTime() + 3600_000) } });
+          return now;
         });
         // The actual handoff transaction owns Project/ContentPack creation,
         // the UploadSession FK and the immutable verified upload payload.
         await prismaUploadSessionPersistence.handoff({ executionEpoch: journal.epoch, sessionId: journal.uploadSessionId,
           queuedJobId: journal.pin.jobId, verifiedSizeBytes: BYTES, verifiedContentType: source.contentType,
           verifiedEtag: source.etag, updatedAt: now });
-
+        // Bind only this fresh, unowned fixture before generic preparation.
+        // An existing attempt's absolute deadline is immutable; never repair
+        // an old/started fixture by resetting its deadline or charged budget.
+        await db.$transaction(async tx => {
+          const admission = await readExecutionAdmission(tx); assertExecutionAdmissionOpen(admission);
+          if (admission.epoch !== journal.epoch) code("gate_epoch_changed");
+          await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id"=${journal.pin.jobId}::uuid FOR UPDATE`;
+          const job = await tx.ingestJob.findUniqueOrThrow({ where: { id: journal.pin.jobId } });
+          const attempts = await tx.executionAttempt.findMany({ where: { dispatch: { subjectKind: "ingest_job", subjectId: job.id } }, take: 2 });
+          if (job.projectId !== journal.pin.projectId || job.uploadSessionId !== journal.uploadSessionId || job.deploymentEpoch !== journal.epoch || job.generation !== 1 ||
+              job.status !== "queued" || job.attemptCount !== 0 || job.claimId || job.executorOwner || attempts.length > 1 ||
+              attempts.some(attempt => attempt.owner || attempt.processStartedAt || attempt.status !== "admitted" || attempt.operationDeadlineAt.getTime() !== originalDeadline.getTime()) ||
+              job.operationDeadlineAt && job.operationDeadlineAt.getTime() !== originalDeadline.getTime() || !job.operationDeadlineAt && attempts.length) code("gate_fixture_deadline_conflict");
+          const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+          if (!clock || clock.now.getTime() + 60_000 >= originalDeadline.getTime()) return code("gate_combined_deadline_expired");
+          if (!job.operationDeadlineAt) await tx.ingestJob.update({ where: { id: job.id }, data: { operationDeadlineAt: originalDeadline } });
+        });
 }
+
 
 export async function main() {
   const options = argumentsForGate(), rawUrl = process.env.DIRECT_URL ?? "";
@@ -153,6 +181,11 @@ export async function main() {
           toolchainFingerprint: settings.MEDIA_FETCH_TOOLCHAIN_FINGERPRINT!, executionKind: "modal_execution" });
         if (prepared.kind === "waiting") phase.invocation = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken };
         else code("gate_fixture_not_prepared");
+        const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: phase.invocation!.attemptToken } });
+        const job = await db.ingestJob.findUniqueOrThrow({ where: { id: phase.jobId } });
+        if (job.status !== "queued" || job.attemptCount !== 0 || job.claimId || job.executorOwner || attempt.owner || attempt.processStartedAt || attempt.status !== "admitted" ||
+            job.operationDeadlineAt?.getTime() !== attempt.operationDeadlineAt.getTime()) code("gate_fixture_deadline_conflict");
+        return transferGateBudget(attempt.operationDeadlineAt);
       }
       if (options.phase === "seed-upload") {
         await db.$transaction(async tx => {
@@ -169,8 +202,8 @@ export async function main() {
             acquisition: { audioPolicy: "pending_pack" }, payload: { rssUrl: "https://media.example.invalid/feed",
               episode: { id: journal.upload.jobId, enclosureUrl: "https://media.example.invalid/executor-transfer-gate" } } });
         });
-        await prepare(journal.upload); await save(options.journalPath, journal);
-        await save(`${options.journalPath}.upload-invocation.json`, journal.upload.invocation);
+        const budget = await prepare(journal.upload); await save(options.journalPath, journal);
+        await save(`${options.journalPath}.upload-invocation.json`, { invocation: journal.upload.invocation, budget });
         return;
       }
       if (options.phase === "bind-pin") {
@@ -182,16 +215,18 @@ export async function main() {
             artifact.attempt.status !== "failed" || !artifact.multipartCompleteIntentAt || artifact.multipartAbortIntentAt ||
             artifact.storageKey !== receipt.object.key || artifact.etag !== receipt.object.etag || artifact.byteLength !== BigInt(BYTES) ||
             artifact.checksumSha256 !== receipt.object.sha256 || artifact.contentType !== "application/octet-stream") code("gate_completed_source_not_verified");
-        // Native clocks can differ slightly across hosts. The real SQL
-        // operation deadline caps the second phase without extending either.
-        receipt.combinedDeadlineUnixMs=Math.min(receipt.combinedDeadlineUnixMs,artifact.attempt.operationDeadlineAt.getTime());
+        // Reports carry the original SQL budget, never the client's shorter
+        // conservative permission timer. Neither phase may invent a new one.
+        if (receipt.combinedDeadlineUnixMs !== artifact.attempt.operationDeadlineAt.getTime()) code("gate_fixture_deadline_conflict");
         if(Date.now()+60_000>=receipt.combinedDeadlineUnixMs)code("gate_combined_deadline_expired");
         const head = await createExecutionStorage(config).head({ artifactId: artifact.id, storageKey: artifact.storageKey,
           bindingHash: artifact.bindingHash, contentType: artifact.contentType, byteLength: BYTES });
         if (!head || head.etag !== artifact.etag || head.byteLength !== BYTES) code("gate_completed_source_head_changed");
-        await bindVerifiedPinGateFixture(db,journal,{...artifact,etag:artifact.etag!});
-        await prepare(journal.pin); await save(options.journalPath, journal);
-        await save(`${options.journalPath}.pin-arguments.json`, { invocation: journal.pin.invocation, source: receipt });
+        await bindVerifiedPinGateFixture(db,journal,{...artifact,etag:artifact.etag!},new Date(receipt.combinedDeadlineUnixMs));
+        const budget = await prepare(journal.pin);
+        if (budget.combinedDeadlineUnixMs !== receipt.combinedDeadlineUnixMs) code("gate_fixture_deadline_conflict");
+        await save(options.journalPath, journal);
+        await save(`${options.journalPath}.pin-arguments.json`, { invocation: journal.pin.invocation, budget, source: receipt });
         return;
       }
       const phases = [journal.upload, journal.pin].filter(phase => phase.invocation), tokens = phases.map(phase => phase.invocation!.attemptToken);

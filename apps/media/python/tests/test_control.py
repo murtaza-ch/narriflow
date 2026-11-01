@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 from datetime import datetime, timezone
 import unittest
 import tempfile
@@ -114,6 +115,26 @@ class SignedControlTests(unittest.TestCase):
         with self.assertRaises(ExecutionControlError) as refused:
             ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture')
         self.assertEqual(refused.exception.code, 'execution_authority_lost')
+
+    def test_acquire_round_trip_margin_shortens_local_cutoff_without_changing_server_deadline(self):
+        wall, mono = [2_000_000_000.0], [1000.0]
+        deadline = wall[0] + 2700
+        def instant(seconds):
+            return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+        def transport(_origin, _target, body, _headers, _timeout):
+            command = json.loads(body)
+            wall[0] += 3.074
+            mono[0] += 3.074
+            response = {'disposition':'acquired', 'fence':{'reference':command['reference'],'attemptToken':command['attemptToken'],'owner':command['owner']},
+                        'serverTime':instant(wall[0]), 'leaseExpiresAt':instant(wall[0]+120), 'operationDeadlineAt':instant(deadline)}
+            return ControlResponse(200, {'X-Execution-Server-Time':instant(wall[0])}, json.dumps(response).encode())
+        client = ExecutionControlClient(origin='https://api.example',key_id='dev',key=b'k'*32,transport=transport,clock=lambda:wall[0])
+        with patch('narriflow_media.control.time.monotonic',side_effect=lambda:mono[0]):
+            session = ExecutorSession.acquire(client,reference={'dispatchId':'fixture'},attempt_token='fixture')
+            try:
+                self.assertAlmostEqual(deadline-(wall[0]+session.remaining_seconds),4.074,places=5)
+            finally:
+                session.close()
 
     def test_actual_native_start_is_acknowledged_once_and_loss_cancels_the_session(self):
         actions = []

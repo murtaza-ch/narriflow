@@ -65,6 +65,23 @@ bun --env-file="$GATE_DB_ENV" packages/services/scripts/executor-r2-transfer-gat
   --output /tmp/narriflow-executor-r2-final/upload.json
 ```
 
+The upload argument file carries `{invocation, budget}`; the pin file carries
+`{invocation, budget, source}`. The budget is frozen from the upload's prepared
+SQL deadline and its original 2700-second start. Both Ingest Jobs and generic
+attempts must retain that same deadline. Pin binding sets it only on a fresh,
+queued, unowned, uncharged job before generic preparation; a differently bound
+or already owned fixture is refused. It never edits an existing attempt deadline.
+
+The native report's `combinedDeadlineUnixMs` is that nominal SQL deadline.
+`localCutoffUnixMs` records the earlier conservative session cutoff, including
+the existing RTT and timestamp margin. The native timeout still reserves60seconds
+for terminal acknowledgement. A shorter local permission timer cannot silently
+become a different nominal budget or give the pin another45minutes. After the
+shared SQL deadline, ordinary watchdog expiry is permanent and cannot admit
+another charged generation. Existing retry policy within the original budget
+is unchanged. New argument files require the matching gate Python image and
+caller; never resubmit a failed run with rewritten arguments.
+
 The journal records all intended fixture IDs before SQL mutation. A local seed
 retry repairs those same IDs. Native invocation retries remain explicit. If
 the Modal result is lost, inspect the known attempt and object first.

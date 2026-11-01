@@ -8,10 +8,11 @@ test("the coalesced gate requires epoch10 and a passed fresh8/9/10 qualified res
  expect(()=>batchedRestoreProof(proof)).not.toThrow();
  for(const change of [{sourceEpoch:3,snapshotEpoch:4,targetEpoch:5},{sourceEpoch:5,snapshotEpoch:6,targetEpoch:7},{sourceEpoch:6,snapshotEpoch:7,targetEpoch:8},{targetEpoch:9},{chargedStarts:1},{staleCommit:"committed"},{mode:"pending"},{operationDeadlineAt:"invalid"},{completedAt:"2026-11-01T22:11:00.000Z"}])expect(()=>batchedRestoreProof({...proof,...change})).toThrow();
 });
-test("the combined upload/pin deadline only tightens and never grants another2700seconds",()=>{
+test("both phases keep one nominal SQL deadline rather than confusing a conservative local cutoff with a new budget",()=>{
  expect(batchedDeadline(2700000)).toBe(2700000);
- expect(batchedDeadline(2700000,2600000)).toBe(2600000);
- expect(batchedDeadline(2700000,5400000)).toBe(2700000);
+ expect(batchedDeadline(2700000,2700000)).toBe(2700000);
+ expect(()=>batchedDeadline(2700000,2600000)).toThrow();
+ expect(()=>batchedDeadline(2700000,5400000)).toThrow();
  expect(()=>batchedDeadline(Number.NaN)).toThrow();
 });
 test("only fixed numeric timing summaries leave the private native report",()=>{
