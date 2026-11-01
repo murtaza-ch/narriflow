@@ -1,4 +1,5 @@
 import { readServiceEnvironment } from "./runtime-environment";
+import { collectExistingWorkflowRunDispatch } from "./workflow-dispatch";
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import type { ClipDub } from "@prisma/client";
@@ -208,7 +209,10 @@ export class DubbingService {
         orderBy: { createdAt: "desc" },
         select: { id: true },
       });
-      if (run) return replay(existing, run.id);
+      if (run) {
+        await prisma.$transaction(tx => collectExistingWorkflowRunDispatch(tx, run.id));
+        return replay(existing, run.id);
+      }
       throw new DubbingFailureError("dubbing_in_progress", "The accepted dubbing request is being reconciled.");
     }
 

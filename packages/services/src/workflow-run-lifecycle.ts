@@ -595,7 +595,7 @@ export class WorkflowRunLifecycle {
   /** Registers the frozen run in the caller's domain transaction. Safe to replay. */
   async dispatchRunWithinTransaction(tx: TransactionClient, runId: string): Promise<ExecutionDispatchRecord> {
     const dispatch = await appendWorkflowRunDispatch(tx, runId);
-    if (dispatch.reference.kind === "render_run") collectExecutionDispatch(tx, dispatch.reference.dispatchId);
+    collectExecutionDispatch(tx, dispatch.reference.dispatchId);
     return dispatch;
   }
 
@@ -1764,7 +1764,7 @@ export class WorkflowRunLifecycle {
       { provider: plan.kind === "supplied" ? "supplied_captions" : "none", providerModel: null, providerJobId: null, languageCode,
         languageConfidence: null, text: utterances.map(utterance => utterance.text).join(" "), utterances, speakerCount: utterances.length ? 1 : 0, durationSeconds, rawStorageKey: null },
       { id: run.id, status: "waiting", attemptId: ref.attemptToken });
-    const reference = (await this.dispatchRunWithinTransaction(tx, run.id)).reference;
+    const reference = (await appendWorkflowRunDispatch(tx, run.id)).reference;
     const wake = await this.appendStableExecutionWake(tx, reference, "execution_finished", await this.databaseNow(tx));
     return { kind: "completed", dispatchIds: [childDispatchId, wake.reference.dispatchId] };
   }
@@ -1867,7 +1867,7 @@ export class WorkflowRunLifecycle {
         transition: "provider-waiting",
       });
       const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: key.workflowRunId } });
-      const reference = (await this.dispatchRunWithinTransaction(tx, run.id)).reference;
+      const reference = (await appendWorkflowRunDispatch(tx, run.id)).reference;
       const deadline = await appendExecutionDispatch(tx, { deploymentEpoch: run.deploymentEpoch, kind: "operation_driver", subject: reference.subject,
         generation: run.generation, inputHash: reference.inputHash, dueAt: resultDeadlineAt, deadlineKind: "provider_result", observedDeadlineAt: resultDeadlineAt });
       const wake = await this.appendStableExecutionWake(tx, reference, "provider_accepted", await this.databaseNow(tx));
@@ -1938,7 +1938,7 @@ export class WorkflowRunLifecycle {
       }
       const dueAt = run.nextPollAt.getTime() !== input.observedCheckAt.getTime() || run.nextPollAt > now ? run.nextPollAt : new Date(Math.min(now.getTime() + input.intervalMs, lookup.resultDeadlineAt.getTime()));
       if (dueAt.getTime() !== run.nextPollAt.getTime()) await tx.workflowRun.update({ where: { id: run.id }, data: { nextPollAt: dueAt } });
-      const reference = (await this.dispatchRunWithinTransaction(tx, run.id)).reference;
+      const reference = (await appendWorkflowRunDispatch(tx, run.id)).reference;
       const wake = await appendExecutionDispatch(tx, { deploymentEpoch: run.deploymentEpoch, kind: "operation_driver", subject: reference.subject,
         generation: run.generation, inputHash: reference.inputHash, dueAt, wakeKind: "provider_check", deadlineKind: "retry", observedDeadlineAt: dueAt });
       return { kind: "sleep", dueAt, dispatchIds: [wake.reference.dispatchId] };

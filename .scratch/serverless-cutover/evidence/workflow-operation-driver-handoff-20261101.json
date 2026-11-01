@@ -1,0 +1,150 @@
+{
+  "recordedAt": "2026-11-01T09:58:19.397875+00:00",
+  "baseSourceCommit": "3fc2d50b61a57c78aae9b94826962ba418ce52d3",
+  "scope": "Initial Workflow Run dispatch collection and exact accepted bundle/dub replay registration only",
+  "cause": "dispatchRunWithinTransaction collected render_run only, dropping operation_driver; accepted bundle and dub fast paths returned without recollecting their existing driver",
+  "changes": [
+    "Collect every dispatch returned by appendWorkflowRunDispatch, whose supported kinds are render_run and operation_driver; import_pipeline remains owned by Ingest Job lifecycle",
+    "Read-only replay recollects existing base dispatch by current run epoch/generation deterministic key only for live runs; no append, admission, deadline, generation, usage, attempt or provider mutation",
+    "Bundle and dub accepted fast paths call that collector; same invocation Set deduplicates references",
+    "Register new DB regression suite in existing isolated execution gate",
+    "Keep three STT terminal/provider identity-only derivations on existing appendWorkflowRunDispatch, preserving their explicit wake sets and exact replay receipts"
+  ],
+  "validation": {
+    "bun": "1.3.6 d530ed99",
+    "database": "Validated localhost:55432 narriflow_serverless_gates_*; existing runner creates and drops independent disposable schemas",
+    "redActualServices": "5 failures/1 pass proves initial bundle, accepted replay, stt/moment/dub missing dispatch; separate dub replay RED1/6pass",
+    "relatedDB": "56 pass/0fail/683 assertions across workflow handoff, clip export handoff, bundle execution, dub execution and actual Worker registration",
+    "strengthenedWorkerAndHandoffDB": "24 pass/0fail/284 assertions; actual Worker bundle route 503 safe receipt, replay waits for ack, then202; rollback proves run/driver/handoff changes all absent",
+    "servicesFast": "1417 pass/1441 conditional PostgreSQL skips/0fail; 78616 assertions; canonical package includes scripts tests; all relevant DB suites executed separately with zero skips",
+    "apiFast": "932 pass/58 conditional PostgreSQL skips/0fail; 5128 assertions; canonical apps/api package cwd; Worker DB suite executes separately",
+    "typecheck": [
+      "packages/services passed",
+      "apps/api passed"
+    ],
+    "lint": "repository check passed, 11 existing warnings/1info",
+    "workerBuild": "dry run + import audit passed; no deployment",
+    "nativeRuntimeGraph": {
+      "sourceBase": "3fc2d50b61a57c78aae9b94826962ba418ce52d3",
+      "method": "Bun.Transpiler.scanImports runtime imports only; every production apps/media/src TypeScript file is an entrypoint superset",
+      "bun": "1.3.6",
+      "typeOnlyExcluded": true,
+      "productionMediaRoots": 70,
+      "firstPartyModules": 203,
+      "runtimeEdges": 482,
+      "changedModules": [
+        "packages/services/src/workflow-run-lifecycle.ts",
+        "packages/services/src/workflow-dispatch.ts",
+        "packages/services/src/campaign-operation.service.ts",
+        "packages/services/src/dubbing.service.ts"
+      ],
+      "changedModulesExcluded": [
+        "packages/services/src/workflow-run-lifecycle.ts",
+        "packages/services/src/workflow-dispatch.ts",
+        "packages/services/src/campaign-operation.service.ts",
+        "packages/services/src/dubbing.service.ts"
+      ],
+      "unresolved": [],
+      "passed": true
+    },
+    "fullExecutionDB": {
+      "passed": true,
+      "exitCode": 0,
+      "aggregateBunSummaries": {
+        "pass": 566,
+        "fail": 0,
+        "skip": 0
+      },
+      "childSummaries": [
+        "Ran 12 tests across 1 file. [2.61s]",
+        "Ran 12 tests across 1 file. [2.25s]",
+        "Ran 5 tests across 1 file. [1114.00ms]",
+        "Ran 5 tests across 1 file. [733.00ms]",
+        "Ran 2 tests across 1 file. [1334.00ms]",
+        "Ran 10 tests across 1 file. [95.00ms]",
+        "Ran 15 tests across 1 file. [1.64s]",
+        "Ran 428 tests across 44 files. [132.49s]",
+        "Ran 3 tests across 1 file. [1354.00ms]",
+        "Ran 2 tests across 1 file. [2.50s]",
+        "Ran 2 tests across 1 file. [1.56s]",
+        "Ran 5 tests across 1 file. [1309.00ms]",
+        "Ran 46 tests across 1 file. [58.23s]",
+        "Ran 8 tests across 1 file. [1225.00ms]",
+        "Ran 11 tests across 1 file. [6.66s]"
+      ],
+      "assertions": 4275,
+      "log": "/tmp/narriflow-serverless-control-keys/operation-driver-handoff-3fc2d50b-20261101/full-execution-db-reference-only.log",
+      "sha256": "a8c2120245d2b884c1e03c030a2bcd509d7a5d0636d8cb9a22eb2f55e9d165a0",
+      "isolatedSchemasCleanedByExistingRunner": true
+    },
+    "noAudioAndProviderReceiptRegression": "37pass/0fail/373assertions across targeted-workflow execution, new handoff and actual Worker registration; unchanged no-audio exact replay equality restored"
+  },
+  "retainedFailures": [
+    "red.log setup missing projectId fixed in fixture only",
+    "red-2.log stt fixture missing settled processing usage, fixed fixture only",
+    "red-3.log actual missing-handoff regression RED",
+    "dub-replay-red.log actual live-tuple replay RED",
+    "green-related.log 54pass/2fail due new fixture bundles contaminating existing global recovery-page tests; corrected new test per-fixture owned cleanup, no product/baseline change",
+    "api-fast.log and api-fast-resolved.log existing docs Bun.build resolution fails with noncanonical repository-root test cwd; canonical apps/api package test passes unchanged source",
+    "full-execution-db.log first broad ordinary group425pass2fail1error. Real no-audio receipt mismatch corrected in three reference-only production sites, unchanged assertions pass. One180s finishing test timeout/P2028 retained; isolated unchanged suite37pass34.68s and full corrected rerun passes same test1.67s. No timeout/baseline/test-skip changes."
+  ],
+  "liveActions": {
+    "cloud": false,
+    "sharedDB": false,
+    "providers": false,
+    "journals": false,
+    "rootTrackedEdits": false,
+    "deployment": false,
+    "cloudCredentialsRead": false,
+    "authorizedLocalTestEnvironmentLoaded": true
+  },
+  "changedSourceSha256": {
+    "packages/services/src/workflow-run-lifecycle.ts": "9e1f366e28eaac6e965ad05e146d343fdade4d0818da4b0cc0512ba6095e9f6c",
+    "packages/services/src/workflow-dispatch.ts": "fa48b1ca8f70a91d00dec8371e42a113eaa3ada6e2fd54ee55b1c265e6412d5c",
+    "packages/services/src/campaign-operation.service.ts": "6f6733bf5235e7fe5b807395bf459ce35ce9ed516301e1d265e08e406879f975",
+    "packages/services/src/dubbing.service.ts": "118a73c80a23a8fadd6964582fe159ecedd040bfcc5d5137a5f46d9b34e25dd6",
+    "packages/services/src/workflow-handoff.db.test.ts": "6225e3e8435f8ad67dbf501394082a8b3a713acb810ee13d2ac82d00dd911439",
+    "packages/services/scripts/run-execution-db-tests.ts": "b50ed2e68078d22c71bd79d2b3458fdd5401fd92050696a88cc3b23ddfdd5805",
+    "apps/api/src/worker-registration.db.test.ts": "638167803432c243558dc1c8abbc8007fd962ae4f362b181072ca763143289c9"
+  },
+  "privateArtifacts": "/tmp/narriflow-serverless-control-keys/operation-driver-handoff-3fc2d50b-20261101",
+  "artifactSha256": {
+    "red-2.log": "f11a7c54696b113795d85494827347929e76a5df0c179b4202745ab140c9d38a",
+    "green-related.log": "5c10b335c433571c05ffcb82d49f2507d61c32e1a69730769f9ffb0e7106bfa5",
+    "typecheck-reference-only.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "red-3.log": "a9d6030af74502f12946ed0f8db2c4ee92d6f962c60206cf6f32f272a9dc2904",
+    "worker-bundle-boundary.log": "fcc7ef0c3161eef2fec2ceef3f4651c3d986a994111a3b1f031061eb7ca41aeb",
+    "services-package-reference-only.log": "51623986bc2b927b275076d57188b15dc6039915cfa1e5906428b0189343fdfe",
+    "api-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "native-runtime-audit.ts": "4ae214494aad3a57ad2de0bc4af0af133e0a8e85424531a351ea484254e6aa61",
+    "red.log": "2c91d487717bdb5257e4d6401ba44fc494879aec110effaade947c1d9688ef6c",
+    "lint.log": "904b805ea7a8cfed80349aefc9c43f9ec76598310ff762dacbea863a97077b91",
+    "native-runtime-audit.json": "7069036edd267859ec93c2ba15611bcc698c238dfc3396671bcbc493e0f2825f",
+    "run-local.py": "10d482ab464cfef95c592b75253c70e48d7df464d5a0fe8ecddd0d27ab84b17d",
+    "lint-reference-only.log": "cc01790dfa6ceca45c10c5abad293f3f1e7d4b84935ce8f788e57b753d6186c9",
+    "green.log": "364aded53a47c12cd1e786910f1ea46498ebf4bf8e39c5f026285f2d677a3da7",
+    "services-fast.log": "33874814195f5c3d2d05471337755acb64a8bec3f04e281aaa34bdb7e23b9a0a",
+    "green-related-cleanup.log": "f68f0276f64b199e761b423145f1be2ccbe5e42c07ceedf36589e47f055008f6",
+    "typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630",
+    "no-audio-receipt-green.log": "19d731d9f16cebd30239a05207ff5d3ce7b4991bc089aedb11904c3a6c5ece67",
+    "worker-build.log": "a27644bed73bdb1d8bacb1eb445c9be1aa81a9926410d4934d66e908b45709de",
+    "finishing-isolation.log": "4750d01406926527d6e1b147990fed75c44940abf0c91a61f237095d4b4ebea3",
+    "README.md": "114c04c37dc85620d38fd09b288e561f685a6165f24945e3b82fc5d08b93d6af",
+    "full-execution-db.log": "e040ac85a14bb1a809e76840b606cae085f9ac268982469bb338a80c527b98de",
+    "full-execution-db-reference-only.log": "a8c2120245d2b884c1e03c030a2bcd509d7a5d0636d8cb9a22eb2f55e9d165a0",
+    "lint-final.log": "1994a13c19ed37b704a483f5f2b2fe71a35130956943afb666f1500d4b47b19c",
+    "dub-replay-red.log": "cafbcb9e0c555c00465e5a831bec11a833905892a68b4e6d752cde4437997835",
+    "api-fast.log": "2f9f1577df286a645e84e0ae15cda814133a0a608f1b3e521b113a3cfa3b65d8",
+    "api-fast-resolved.log": "df8652d379b52811cad2082196f051a123ac15bee1e79913164e5d87bf7e8153",
+    "native-runtime-audit-reference-only.json": "7069036edd267859ec93c2ba15611bcc698c238dfc3396671bcbc493e0f2825f",
+    "api-fast-package-cwd.log": "fcc75a2ba25c91ccf6d2ad3ef19e901e5ec28c6910b4244ebf596246f2ebaef4"
+  },
+  "rootPreservation": {
+    "head": "3fc2d50b61a57c78aae9b94826962ba418ce52d3",
+    "status": [
+      " M apps/api/scripts/dev.ts"
+    ],
+    "developerFileSha256": "e954c73b6d002318e16e9848645f34e821217649b2944968776f5266b6c73637",
+    "liveJournalsTouched": false
+  }
+}

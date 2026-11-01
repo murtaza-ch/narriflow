@@ -49,6 +49,7 @@ import { requirePlanFeature } from "./plan-features";
 import { presignDownloadUrl } from "./r2-storage";
 import { sceneTemplateService, SceneTemplateError } from "./scene-template.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { collectExistingWorkflowRunDispatch } from "./workflow-dispatch";
 import { analyticsService } from "./analytics.service";
 import {
   ExpectedDomainFailureError,
@@ -1268,12 +1269,15 @@ export class CampaignOperationService {
     });
     if (replay) {
       if (replay.requestFingerprint !== requestFingerprint) throw new CampaignOperationError("campaign_operation_idempotency_conflict", "Idempotency key was reused with different input");
-      if (replay.bundle && replay.workflowRunId) return {
+      if (replay.bundle && replay.workflowRunId) {
+        if (["queued", "building"].includes(replay.bundle.status)) await prisma.$transaction(tx => collectExistingWorkflowRunDispatch(tx, replay.workflowRunId!));
+        return {
           operationId: replay.id,
           workflowRunId: replay.workflowRunId,
           manifest: exportBundleManifestSchema.parse(replay.bundle.manifest),
           replayed: true,
         };
+      }
     }
     const operationClaimToken = randomUUID();
     if (replay) {
