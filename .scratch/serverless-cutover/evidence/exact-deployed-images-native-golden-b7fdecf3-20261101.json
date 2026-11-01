@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T01:04:29.548556+00:00",
+  "status": "PASSED exact deployed image native and golden qualification",
+  "sourceCommit": "b7fdecf32d5ad92a756af83c9e07934013105ece",
+  "imageIdentitiesStable": true,
+  "profiles": {
+    "lean": {
+      "imageId": "im-UocerGht9m3naiLE1iF3VZ",
+      "sandboxId": "sb-01M6A9P6SNFSEVFNBJ716C3RMP",
+      "cpu": 2,
+      "memoryMiB": 4096,
+      "terminated": true,
+      "credentialEnvironmentAbsent": true,
+      "networkBlocked": true,
+      "sourceOverlay": false,
+      "sourceAudits": {
+        "source-audit-before.json": 1512,
+        "source-audit-after-native.json": 1512,
+        "source-audit-after.json": 1512
+      },
+      "nativeResult": {
+        "discoveredTests": 168,
+        "testsRun": 168,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "expectedFailures": 0,
+        "unexpectedSuccesses": 0,
+        "successful": true
+      },
+      "nativeElapsedSeconds": 89.738,
+      "runtimeFingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+      "affinityCount": 2
+    },
+    "render": {
+      "imageId": "im-sKXYsa68H7PTmCNGf30YIf",
+      "sandboxId": "sb-01M6A9S9KECNH9A8CSDKZ5HR4T",
+      "cpu": 4,
+      "memoryMiB": 8192,
+      "terminated": true,
+      "credentialEnvironmentAbsent": true,
+      "networkBlocked": true,
+      "sourceOverlay": false,
+      "sourceAudits": {
+        "source-audit-before.json": 1578,
+        "source-audit-after-native.json": 1578,
+        "source-audit-after.json": 1578
+      },
+      "nativeResult": {
+        "discoveredTests": 183,
+        "testsRun": 183,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "expectedFailures": 0,
+        "unexpectedSuccesses": 0,
+        "successful": true
+      },
+      "nativeElapsedSeconds": 132.064,
+      "runtimeFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+      "affinityCount": 4,
+      "goldenElapsedSeconds": 201.396,
+      "goldenResult": {
+        "ok": true,
+        "summary": {
+          "normal": {
+            "total": 18,
+            "pass": 18,
+            "fail": 0
+          },
+          "knownDefects": {
+            "total": 18,
+            "xfail": 2,
+            "xpass": 0,
+            "changed": 0,
+            "activatedPass": 16,
+            "activatedFail": 0
+          }
+        },
+        "mismatchCount": 0
+      },
+      "goldenCases": 36
+    }
+  },
+  "leanOmissions": {
+    "files": [
+      "test_clip_preparation_runtime.py",
+      "test_native_runtime.py",
+      "test_render_runtime.py"
+    ],
+    "methods": 15,
+    "reason": "Lean intentionally omits render fixtures, fonts, emoji assets and YuNet/OpenCV dependencies. Full render suite was separately run on the actual render image."
+  },
+  "limits": [
+    "Fixture-controlled native/provider/control/storage behavior; no live domain/Postgres/R2 or paid provider acceptance claim.",
+    "Sandbox scheduling differs from Functions; these are not cold-start p95 samples.",
+    "prepare_clip shares the render image but has 2CPU/4GiB Function limits. The render Sandbox used4CPU/8GiB; actual prepare_clip under2CPU/4GiB remains part of the spoken journey.",
+    "Native tests had zero skips and expected failures. The golden suite preserved its separately documented two unchanged known defects."
+  ],
+  "rawEvidence": {
+    "directory": "/tmp/narriflow-native-exact-b7fdecf3",
+    "files": [
+      {
+        "name": "identities-after.json",
+        "sha256": "84a4cdef89207d37f8866ad9ea1cf640d4586a9bd3fadcf08b6d1b50f24eb5e1",
+        "byteLength": 1683
+      },
+      {
+        "name": "identities-before.json",
+        "sha256": "84a4cdef89207d37f8866ad9ea1cf640d4586a9bd3fadcf08b6d1b50f24eb5e1",
+        "byteLength": 1683
+      },
+      {
+        "name": "lean/expected-source.json",
+        "sha256": "e5c0528727d4aeedcc17221b3a4dfdfa14835fa81374d785a0e1c4f563b5e484",
+        "byteLength": 190168
+      },
+      {
+        "name": "lean/native-result.json",
+        "sha256": "584b9edd9a76ed4ad7625d99f04703999b08ea697914fe0cf256f3da98e0f393",
+        "byteLength": 171
+      },
+      {
+        "name": "lean/native-tests.log",
+        "sha256": "57c08267f8dc7d826e0a4c7dd0528006165f2ee087d2538c121be0046c8c61a7",
+        "byteLength": 42011
+      },
+      {
+        "name": "lean/provenance.json",
+        "sha256": "6fd0eef67fb28f3dbccb9fee705ba251d027962eafbe9731b01d1f3087437fc2",
+        "byteLength": 2622
+      },
+      {
+        "name": "lean/runner.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0
+      },
+      {
+        "name": "lean/runner.stdout.log",
+        "sha256": "3db232dbaced535cac7e828b77e56661f12c83e9e9aa687ce75aabdc146b2c83",
+        "byteLength": 81
+      },
+      {
+        "name": "lean/runtime.log",
+        "sha256": "8a6a777814cb93e622aed7605e910bc00c82e1e6f7e61d38954eafdc4f984e0a",
+        "byteLength": 824
+      },
+      {
+        "name": "lean/source-audit-after-native.json",
+        "sha256": "13851f4382ab047eadbc3b1525e9421bd290f9a4ac8c9123d8e7b553cdbe226b",
+        "byteLength": 61
+      },
+      {
+        "name": "lean/source-audit-after.json",
+        "sha256": "13851f4382ab047eadbc3b1525e9421bd290f9a4ac8c9123d8e7b553cdbe226b",
+        "byteLength": 61
+      },
+      {
+        "name": "lean/source-audit-before.json",
+        "sha256": "13851f4382ab047eadbc3b1525e9421bd290f9a4ac8c9123d8e7b553cdbe226b",
+        "byteLength": 61
+      },
+      {
+        "name": "lean/status.json",
+        "sha256": "9d3374cb861d4f79cf5df0dd9945f5e2ba722d1c7b955326d018e33a6f67d85f",
+        "byteLength": 708
+      },
+      {
+        "name": "plan.json",
+        "sha256": "c489dd2d7c267058ae151d90e8f3b71682b120b9176af7f5b2dfc5db149e1916",
+        "byteLength": 545
+      },
+      {
+        "name": "qualification.json",
+        "sha256": "610864911651fb55070a88d800073d9f4bf32956cf7bb3a3d81ac71375a90138",
+        "byteLength": 6611
+      },
+      {
+        "name": "render/expected-source.json",
+        "sha256": "247857a49c048a9cec2d789d842d5aa64ec7cf510096cba3b1acabbe3ae7eeb8",
+        "byteLength": 198941
+      },
+      {
+        "name": "render/golden-capture.json",
+        "sha256": "88fc76cfcbc1b5e14b4240ecd9e4da72753f807ff5df9b571a86861c28d68dfd",
+        "byteLength": 1845292
+      },
+      {
+        "name": "render/golden-report.json",
+        "sha256": "415cd6637b67d40f383139441bc562408d286548dd63fda47a36c9a8305c4172",
+        "byteLength": 15274
+      },
+      {
+        "name": "render/golden-report.md",
+        "sha256": "ef5584fcb4a831a8f757bfb2b4c77ddfaccc96076b958bc3ae1e9cfcd29c89fa",
+        "byteLength": 2097
+      },
+      {
+        "name": "render/golden.log",
+        "sha256": "5e5fd98888400077d9892db0523b0d755ee5bd7c06d4dff906a73614a41e6c47",
+        "byteLength": 10450
+      },
+      {
+        "name": "render/native-result.json",
+        "sha256": "1e75507464e9f6a1624d3fb87701e0777c8bb5f05608376d85dfb38483d290d3",
+        "byteLength": 171
+      },
+      {
+        "name": "render/native-tests.log",
+        "sha256": "d8a3d39ebab0dc75e77a99d1dbbc8b9fe64c756c337dd2c9c870eb9eb2f0b3ea",
+        "byteLength": 53027
+      },
+      {
+        "name": "render/provenance.json",
+        "sha256": "08ecd6d5cfa7b19d0bb5ca1012208cf0860f5512cf1d90cbb746e6a6309aa14f",
+        "byteLength": 2969
+      },
+      {
+        "name": "render/runner.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0
+      },
+      {
+        "name": "render/runner.stdout.log",
+        "sha256": "49093b052b95f467189e1db3d34f895ccb57b954602cb6804f21a913a571a3bf",
+        "byteLength": 84
+      },
+      {
+        "name": "render/runtime.log",
+        "sha256": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+        "byteLength": 17949
+      },
+      {
+        "name": "render/source-audit-after-native.json",
+        "sha256": "38c0f33ae2e6a3e5aa1f2c9603ac8e24139482e6d97acff75f222b2d7aba4983",
+        "byteLength": 61
+      },
+      {
+        "name": "render/source-audit-after.json",
+        "sha256": "38c0f33ae2e6a3e5aa1f2c9603ac8e24139482e6d97acff75f222b2d7aba4983",
+        "byteLength": 61
+      },
+      {
+        "name": "render/source-audit-before.json",
+        "sha256": "38c0f33ae2e6a3e5aa1f2c9603ac8e24139482e6d97acff75f222b2d7aba4983",
+        "byteLength": 61
+      },
+      {
+        "name": "render/status.json",
+        "sha256": "2121fcb532f9fb6e3b5f672106241da92f3af9a29f2002a66253f73e3a7269a4",
+        "byteLength": 1187
+      },
+      {
+        "name": "run.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0
+      }
+    ]
+  },
+  "productionOrSharedChangesPerformed": false,
+  "temporarySandboxesRetired": true
+}

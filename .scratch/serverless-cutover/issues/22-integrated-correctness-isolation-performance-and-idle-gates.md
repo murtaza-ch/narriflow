@@ -45,3 +45,11 @@ The fixture passed the combined cutoff to the native pin operation but allowed t
 All six exact assigned artifacts have now passed deployed cleanup after the unchanged deadline/grant holds. Each returned HEAD 404, had zero exact-key multipart uploads, and had a production lease timer acknowledged before cleanup completion. Eight exact stopped MC1/base driver instances were restarted without resetting SQL acknowledgements or deleting objects locally. Audit rows and failed transfer evidence remain retained. This retirement does not change the failed transfer result.
 
 The transfer authorization change on commit `6a497662` reduces each pure upload-part or source-range authorization from four transactions to one in local tests. It retains fresh epoch, inbox, domain and attempt checks, bounded grants and cleanup holds. This is not a measured deployed latency gain. A fixture deadline correction and a fresh deployed combined transfer pass are still required.
+
+## Exact deployed image qualification, 2026-11-01
+
+The paired `b7fdecf3` images passed [exact deployed-image qualification](../evidence/exact-deployed-images-native-golden-b7fdecf3-20261101.json). Refreshed product and verifier metadata selected the actual immutable image IDs. Credential-free, network-blocked Sandboxes ran 168 applicable lean tests at 2 CPU/4 GiB and all 183 render tests at 4 CPU/8 GiB, with zero skips, failures or expected failures. Three source audits per profile matched 1,512 lean and 1,578 render baked files, including the sealed private Modal module. No application source was overlaid.
+
+The frozen 36-case golden comparison passed with zero mismatches: 18 ordinary cases and 16 activated cases passed; the two documented known defects remained unchanged. Both temporary Sandboxes were terminated, and the six selected Function identities remained stable. This does not establish live provider behavior, cold-start p95, or clip preparation under its smaller 2 CPU/4 GiB Function limits; those remain separate acceptance work.
+
+The fresh transfer upload passed with 10,737,418,240 bytes in 843.888 seconds. Conditional pinning is running under the same original 01:27:05.590 UTC deadline. No combined pass is claimed while that phase remains pending.
