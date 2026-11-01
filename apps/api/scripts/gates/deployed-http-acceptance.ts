@@ -137,7 +137,7 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
   requireFact(missingScope.details?.scope === "publishing:read", "rest_missing_scope_identity"); checks.push("rest_missing_publishing_scope_refused");
 
   phase = "progress";
-  const ticket = await expectJson(`/api/projects/${input.projectId}/progress-ticket`, 200, { method: "POST", headers: { ...firstParty(input.sessionToken), "Content-Type": "application/json" }, body: "{}" });
+  const ticket = await expectJson(`/api/projects/${input.projectId}/progress-ticket`, 200, { method: "POST", headers: { ...firstParty(input.sessionToken), Origin: input.webOrigin, "Content-Type": "application/json" }, body: "{}" });
   requireFact(typeof ticket.ticket === "string" && ticket.ticket.length <= 4096 && ticket.ticketExpiresAt > Date.now(), "progress_ticket_shape");
   const url = new URL(`/api/progress/${input.projectId}`, input.apiOrigin); url.protocol = "wss:";
   url.searchParams.set("ticket", ticket.ticket); url.searchParams.set("sinceSeq", "0");

@@ -27,7 +27,9 @@ function fixture(task = true) {
     // Public REST/MCP use projectView.projectId; the first-party snapshot uses id.
     if (path === `/api/v1/projects/${input.projectId}`) return bearer === `Bearer ${input.apiKey}` ? json({ project: { projectId: input.projectId } }) : json({ error: "authentication_required" }, 401);
     if (path === "/api/v1/social-accounts") return json({ error: "scope_required", details: { scope: "publishing:read" } }, 403);
-    if (path.endsWith("/progress-ticket")) return json({ ticket: "private-fixture-ticket", ticketExpiresAt: Date.now() + 30_000, subscriptionExpiresAt: Date.now() + 60_000 });
+    if (path.endsWith("/progress-ticket")) return headers.get("Origin") === input.webOrigin
+      ? json({ ticket: "private-fixture-ticket", ticketExpiresAt: Date.now() + 30_000, subscriptionExpiresAt: Date.now() + 60_000 })
+      : json({ error: "progress_origin_not_allowed" }, 403);
     if (path === "/mcp") {
       const request = JSON.parse(body), { method, params } = request, modern = headers.get("MCP-Protocol-Version") === "2026-07-28";
       if (modern) { assert.equal(headers.get("MCP-Method"), method); assert.equal(params._meta["io.modelcontextprotocol/protocolVersion"], "2026-07-28"); }
