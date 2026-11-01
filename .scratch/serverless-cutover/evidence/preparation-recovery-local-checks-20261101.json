@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-11-01T03:40:01.057305+00:00",
+  "status": "PASSED focused local recovery and refusal checks; deployed recovery unproven",
+  "integratedCodeCommit": "2639f0d3e7c5fa15fb995d15482dcfb844d119c7",
+  "nativeAuthorCommits": [
+    "b4c4e5a4c2fcd6cc561014b3b9f2ffda3f1b62a0",
+    "37a825e3255f50599655e40c49271a775ef40521"
+  ],
+  "sqlAuthorCommits": [
+    "7224df8059705dd2982853dfda549cb63c8733db",
+    "c292acaea53ff410922ad87c5e687fddf5773314"
+  ],
+  "testedFilesMatchIntegratedCode": true,
+  "sourceRecovery": {
+    "realTwoServerHttpRegression": true,
+    "upstreamResponse": {
+      "status": 206,
+      "declaredBytes": 131072,
+      "receivedBytesBeforeEof": 17
+    },
+    "downstreamCompleteBytes": 262144,
+    "freshAuthorityOnEveryRetry": true,
+    "rangeAndIfMatchUnchanged": true,
+    "existingAttemptLimit": 3,
+    "focusedSourceAndMultipartTests": 25,
+    "pinnedNativePreparationAndRenderTests": 7,
+    "negativeCases": [
+      "three-attempt transport exhaustion",
+      "owner cancellation after headers stops after one request",
+      "wrong ETag",
+      "wrong Content-Range",
+      "short declaration",
+      "long declaration with partial EOF",
+      "declared body above cap",
+      "undeclared body above cap"
+    ],
+    "diagnostics": "Fixed classifications and numeric fields only; no URLs, headers or exception text.",
+    "responseHandlesClosed": true
+  },
+  "freshSqlReadSet": {
+    "focusedDbTests": 50,
+    "assertions": 399,
+    "firstWorkPackageStatementsBefore": 64,
+    "firstWorkPackageStatementsAfter": 50,
+    "sourceReadStatementsAfter": 34,
+    "exactReplayWorkPackageStatementsAfter": 44,
+    "malformedTransferCases": 4,
+    "ordinaryDomainRefusalCases": 3,
+    "wrongReferenceRefusedBeforeUuidCast": true
+  },
+  "unchanged": [
+    "source/editor/export/member/retention/workspace fences",
+    "candidate ordering and100-candidate bound",
+    "canonical hashes",
+    "timeouts and lease limits",
+    "absolute operation deadlines",
+    "retry and charged-start budgets",
+    "original failed Task and history"
+  ],
+  "rawEvidence": {
+    "narriflow-upstream-eof-red.log": {
+      "sha256": "b015b399bd86262b906c2fa19dfc1396a7e5c9c86e95d02476bd8ef4693e19a5",
+      "bytes": 1667
+    },
+    "narriflow-upstream-eof-transport-final.log": {
+      "sha256": "223df52525ac88186307079b8f9c227bc4723893e485d511c38b1a1c1dd48353",
+      "bytes": 2236
+    },
+    "narriflow-upstream-eof-native-final.log": {
+      "sha256": "bee3e61d4253b8ab40d75b3dd963ff16ecbd3e32a6167b6ab5e700a67b6c9307",
+      "bytes": 5927
+    }
+  },
+  "limits": [
+    "All figures are focused local measurements. They do not establish live latency, throughput or successful speech processing.",
+    "Historical R2 transport cause remains unproven.",
+    "Fresh paired immutable images, full integration checks and a separately identified live journey are still required.",
+    "Candidate HTTP and database intake remain closed at epoch10; shared dev remains unchanged."
+  ]
+}

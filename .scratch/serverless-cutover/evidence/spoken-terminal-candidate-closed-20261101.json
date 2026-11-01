@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "status": "Candidate intake closed after original failed speech journey",
+  "admissionObservation": {
+    "observedAt": "2026-11-01T03:31:33.862Z",
+    "workerVersion": "8825e9d5-256b-4d57-bcff-1e003d50bd51",
+    "epoch": 10,
+    "httpAdmission": "closed",
+    "databaseAdmission": "closed",
+    "mailCredentialAbsent": true,
+    "originalHistoryAndBudgetsUnmodified": true,
+    "sharedDatabaseTouched": false
+  },
+  "secretCount": 79,
+  "mailCredentialAbsent": true,
+  "modalComponent": {
+    "observedAtUtc": "2026-11-01T03:27:04.159650+00:00",
+    "app": "narriflow-media-gates",
+    "imageIdentityUnchanged": true,
+    "functions": [
+      {
+        "function": "asset_validation",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "pin_source",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "prepare_clip",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "render_group",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "dispatch_bridge",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "verify_executor_r2_transfer",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "verify_restore_fault",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "verify_lean_runtime",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      },
+      {
+        "function": "verify_render_runtime",
+        "backlog": 0,
+        "num_total_runners": 0,
+        "num_running_inputs": 0,
+        "input_headroom": 0
+      }
+    ],
+    "scope": "nine selected Functions, one component snapshot, not one-hour idle acceptance"
+  },
+  "placementObservation": {
+    "header": "remote-ORD",
+    "request": "unauthenticated health fetch only",
+    "documentation": "https://developers.cloudflare.com/workers/configuration/placement/",
+    "limits": "A single health-request observation does not locate earlier control requests or Workflow execution."
+  },
+  "nativeImagesStillSource": "9c1de0de37156e459aadc8b00c87404e7c2ad276",
+  "limits": [
+    "No epoch bump, job reset, charged counter reset or deadline extension.",
+    "No shared database change, dev push or final API cutover.",
+    "This is not the complete one-hour idle gate; only nine selected Functions were observed once.",
+    "A new journal was prepared offline for a later attempt with distinct run/upload/generation identities; no upload or generation has been submitted for it."
+  ],
+  "rawEvidence": {
+    "spoken-terminal-closed-observation.json": {
+      "sha256": "7554a95283de1f8f9b4cf413e8e8eceaea185ef7fc42c26f8aa606a81d6f9c8f",
+      "bytes": 296
+    },
+    "post-original-failure-closed-secret-names.json": {
+      "sha256": "1231d2d4b02dc5eed51729fc7f1b6707a045ea1de77ee70a718b2044f2e6935d",
+      "bytes": 5933
+    },
+    "modal-after-spoken-original-terminal-20261101.json": {
+      "sha256": "08940ef5f0f38b23efc3d2cf9f7803de5d4dd1330d0c99519ff6dbdc59b5d391",
+      "bytes": 1669
+    }
+  }
+}
