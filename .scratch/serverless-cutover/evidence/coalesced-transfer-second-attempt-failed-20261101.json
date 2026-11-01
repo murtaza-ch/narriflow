@@ -701,10 +701,99 @@
     "modalAppStopEvidence": "Modal CLI app stop --yes completed with exit 0 in operator session 53570; initial stop observation reported no running containers."
   },
   "retirement": {
-    "status": "pending exact six-artifact cleanup after unchanged stored deadline/grant holds",
+    "status": "PASSED exact six-artifact retirement after unchanged deadline/grant holds",
+    "observedAtUtc": "2026-11-01T00:35:54.116478+00:00",
+    "objectsVerifiedAbsent": 6,
+    "headStatus": 404,
+    "exactKeyMultipartUploads": 0,
+    "productionCleanupRegistrationVerified": true,
+    "latestLeaseTimersAcknowledgedBeforeCompletion": 6,
     "fixtureRowsRetainedForAudit": true,
     "broadBucketScan": false,
-    "localDeletes": 0
+    "localDeletes": 0,
+    "productionProofs": [
+      {
+        "artifactId": "15f24b34-9be4-4cb3-b07d-8a762722d5a0",
+        "intentId": "96e4a186-98a5-4a77-b10f-2f0950b1f8e9",
+        "headStatus": 404,
+        "exactKeyMultipartUploads": 0,
+        "latestLeaseTimerAcknowledgedBeforeCompletion": true,
+        "latestLeaseTimerDispatchId": "54b94254-a290-47c3-91de-55de1f1b7676",
+        "latestLeaseTimerAcknowledgedAt": "2026-11-01T00:05:13.208Z"
+      },
+      {
+        "artifactId": "796673d4-45d1-4c06-b901-e0bee2d71abc",
+        "intentId": "c573ea94-f764-41ce-a467-dc2096025cc2",
+        "headStatus": 404,
+        "exactKeyMultipartUploads": 0,
+        "latestLeaseTimerAcknowledgedBeforeCompletion": true,
+        "latestLeaseTimerDispatchId": "3a38f925-af1e-4dcf-9055-ef3e5e789487",
+        "latestLeaseTimerAcknowledgedAt": "2026-11-01T00:34:09.658Z"
+      },
+      {
+        "artifactId": "b52c91a9-8280-4419-8256-470a0e9aa0e5",
+        "intentId": "f2611cbe-047f-4164-8131-e2055211bafc",
+        "headStatus": 404,
+        "exactKeyMultipartUploads": 0,
+        "latestLeaseTimerAcknowledgedBeforeCompletion": true,
+        "latestLeaseTimerDispatchId": "5a57b848-baea-412b-a0ad-2ea3d3164ae6",
+        "latestLeaseTimerAcknowledgedAt": "2026-11-01T00:34:25.154Z"
+      },
+      {
+        "artifactId": "b9d87c21-517a-479c-a356-5089ce811190",
+        "intentId": "905fca3c-e698-4067-93c0-a34934ed3817",
+        "headStatus": 404,
+        "exactKeyMultipartUploads": 0,
+        "latestLeaseTimerAcknowledgedBeforeCompletion": true,
+        "latestLeaseTimerDispatchId": "42931b65-2c97-4f40-9b81-0281b3fa93d1",
+        "latestLeaseTimerAcknowledgedAt": "2026-11-01T00:33:30.730Z"
+      },
+      {
+        "artifactId": "c9a813f5-fcb1-4db8-bd25-5c326ab01722",
+        "intentId": "2ef3029c-455d-45c7-94c1-df4fb135f052",
+        "headStatus": 404,
+        "exactKeyMultipartUploads": 0,
+        "latestLeaseTimerAcknowledgedBeforeCompletion": true,
+        "latestLeaseTimerDispatchId": "a673dc54-efb2-43df-95fd-6f884d56e42f",
+        "latestLeaseTimerAcknowledgedAt": "2026-11-01T00:05:11.423Z"
+      },
+      {
+        "artifactId": "e7b0db71-49ee-447f-8f6f-025f22a26ee3",
+        "intentId": "9e6bb968-60a9-47df-bdfb-882205061397",
+        "headStatus": 404,
+        "exactKeyMultipartUploads": 0,
+        "latestLeaseTimerAcknowledgedBeforeCompletion": true,
+        "latestLeaseTimerDispatchId": "5c7c4c76-6d9d-452e-ab9f-08d15ec7b7b9",
+        "latestLeaseTimerAcknowledgedAt": "2026-11-01T00:33:50.531Z"
+      }
+    ],
+    "rawProof": {
+      "localPath": "/tmp/narriflow-executor-r2-batched/fixture.json.cleanup.json",
+      "sha256": "f45b60da34409b56efaf2ddb7806cc0868122ce38406cf6b9281c0956995fff3"
+    },
+    "recovery": {
+      "mode": "Exact-instance MC1 and latest base operation-driver restarts, independently of delivery ACKs",
+      "restartedInstances": 8,
+      "sqlAcknowledgementsReset": 0,
+      "localDeletes": 0,
+      "scope": "Known two jobs, three terminal attempts, six assigned artifacts only",
+      "utilitySha256": "712c684edfe162d5b2efef41874c753653f5d056740eb48337e8122b33156e4d",
+      "guardCorrections": [
+        "Explicit schema=public was accepted while preserving verify-full and refusing alternate search paths.",
+        "Generic cleanup intents may omit projectId; their exact assigned artifact/attempt supplies provenance. Foreign explicit project IDs remain refused."
+      ],
+      "earlierGuardRefusals": 2,
+      "rawRecoveryAuditFiles": [
+        {
+          "name": "cleanup-recovery-1793493027799-db5e3d24-d83c-4b65-85aa-53abed286ef7.json",
+          "sha256": "4b1579da5c8e118c0cabbbfd4b1f36c602751f0ff7c78cbc65339bac754b3ff0"
+        },
+        {
+          "name": "cleanup-recovery-1793493093498-d0e94102-a5c6-420c-8318-c215c04ad902.json",
+          "sha256": "25113c28eda8b544eb76264abcfab998c3e0c6f655fd10befdcb17d0251cc5b3"
+        }
+      ]
+    }
   },
   "rawEvidenceManifest": {
     "localPath": "/tmp/narriflow-executor-r2-batched/failure-sealed-manifest.json",

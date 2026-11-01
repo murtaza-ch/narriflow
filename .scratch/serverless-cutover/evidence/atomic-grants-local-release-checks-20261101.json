@@ -112,5 +112,25 @@
     }
   ],
   "sharedDevelopmentDatabaseTouched": false,
-  "cutoverComplete": false
+  "cutoverComplete": false,
+  "expandedFixtureValidation": {
+    "deadlineCommit": "090f1729",
+    "enumerationCommit": "0baf6bf8",
+    "callerV2Commit": "b7fdecf3",
+    "defaultPostgresSuite": {
+      "tests": 466,
+      "assertions": 3366,
+      "failures": 0,
+      "nestedBun": "1.3.6"
+    },
+    "rootCallerTests": {
+      "tests": 14,
+      "assertions": 88,
+      "status": "passed, see retained log"
+    },
+    "defaultSuiteLog": {
+      "localPath": "/tmp/narriflow-serverless-gates/gate-enumeration-default-full-db.log",
+      "sha256": "76b125e9cb94182c83cf548a0801985bccd6386895da37a485bd99e636df62ac"
+    }
+  }
 }
