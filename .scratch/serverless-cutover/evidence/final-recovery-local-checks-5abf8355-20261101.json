@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "sourceCommit": "5abf835504d8a9996fc1e150fea8c11e35d8ee27",
+  "startedAtUtc": "2026-11-01T05:53:54.565841+00:00",
+  "tag": "recovery-5abf8355",
+  "localOnly": true,
+  "recordedAtUtc": "2026-11-01T06:05:48.833544+00:00",
+  "bunVersion": "1.3.6",
+  "allRequiredChecksPassed": false,
+  "checks": {
+    "lint": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 2.472,
+      "sha256": "95967a0ff8cc2ed14580975c53cd1c2d812a5fb1716762ef74922b76ff3bf78e",
+      "bytes": 13507
+    },
+    "inventory": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 0.608,
+      "sha256": "c8defca3edb484fcc9c1daa4a7b11421d6b3e99a91e6bf421bdc34126c4d8c25",
+      "bytes": 138
+    },
+    "openapi": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 0.37,
+      "sha256": "be692bcd1f036588ed56837637dfdbad9b4364e3579755e698459b5e0f0800ef",
+      "bytes": 97
+    },
+    "web-split": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 0.588,
+      "sha256": "7a12cb4cad80d7bf7853d1f06eed2f58868751a0d0a527b05419061b32f189f2",
+      "bytes": 148
+    },
+    "env": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 0.22,
+      "sha256": "c1f041dd6ce63f959b6326e772a4ae5555b44451ed546dbe3d68d28e8e3da8f5",
+      "bytes": 133
+    },
+    "worker-build": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 2.935,
+      "sha256": "014a0bac0cb7b8d76d2984887eb15735f929dc98286dc3b37c842efc8a949efa",
+      "bytes": 1933
+    },
+    "typecheck": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 129.024,
+      "sha256": "1fb06c593650437485e9614d8413aaabb9745370d94b573c21d35b36605d01ae",
+      "bytes": 3274
+    },
+    "fast": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 164.173,
+      "sha256": "4dd35ab19d5d428aed97f99577b9b551b10c21c4c5f6a76dc4cc176c6473da2e",
+      "bytes": 1216835
+    },
+    "web-build": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 46.142,
+      "sha256": "8ff577586d8a0f0b0608bc6b1738d1907dbb3aa5ccd08daa850d637fcfa4a8a1",
+      "bytes": 2820
+    },
+    "web-bundle-split": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 0.579,
+      "sha256": "15718ab28c6e317125ef9da0fc66db7295eab4803169cd04b7d0813ac702f0b2",
+      "bytes": 157
+    },
+    "full-execution-db": {
+      "exitCode": 1,
+      "passed": false,
+      "elapsedSeconds": 228.319,
+      "sha256": "7296c0d3657661fca35aa8e4cd300fa907a42102fa46fdbfca83b5c9e02e14c9",
+      "bytes": 304862
+    },
+    "db-workflow": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 43.777,
+      "sha256": "73997d7c101dd25d782dd72fe3482a503663e016d84f8eb5fb5cca03ad06fc4f",
+      "bytes": 50321
+    },
+    "db-upload-session": {
+      "exitCode": 1,
+      "passed": false,
+      "elapsedSeconds": 3.389,
+      "sha256": "dde7be439a597af8aa4b60f5c3f0c526727f37fdce2dddfa79691d89cceecde5",
+      "bytes": 30977
+    },
+    "db-processing-usage": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 4.193,
+      "sha256": "60f50d7770ceec2c6c009fa2c321a3ed25195901a47f67f0aaf8c14c5ae8d10a",
+      "bytes": 57590
+    },
+    "db-workspace-billing": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 3.767,
+      "sha256": "964592f6b24eac415043e42e26c2c1383efb89923b815bab1cc1c4d9df95fe18",
+      "bytes": 28009
+    },
+    "db-social-publication": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 11.36,
+      "sha256": "32acb857b31659d999e95e859fdad1ae9d94d0199abc597c82654b584a56691f",
+      "bytes": 61070
+    },
+    "db-clip-editor-persistence": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 4.75,
+      "sha256": "0e2b2ef6e4450050255d1c0849527900f5a4135eab01371d828843dd61678ce4",
+      "bytes": 31646
+    },
+    "db-authenticated-request-policy": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 1.921,
+      "sha256": "69a23141550b429ec2af91ff0c52389deff5a6dd3f9117d1490ee73979415642",
+      "bytes": 2872
+    },
+    "db-brand-profiles": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 2.948,
+      "sha256": "c863d1a5f26d447995b6ea1a865fdc953fe537639ce6cb15754539f26e0d6586",
+      "bytes": 10493
+    },
+    "db-vizard-expansion": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 34.135,
+      "sha256": "8b01be95825b86d6af45f67311dfb86a9f7376996c5dab52c16de73e27f2119f",
+      "bytes": 27670
+    },
+    "db-integration-api": {
+      "exitCode": 1,
+      "passed": false,
+      "elapsedSeconds": 3.4,
+      "sha256": "36bbf6233a15d67a50a8dde28d8ad28434411055cbd4aa5a56f09fdb818b5883",
+      "bytes": 34423
+    },
+    "db-library-search": {
+      "exitCode": 0,
+      "passed": true,
+      "elapsedSeconds": 1.859,
+      "sha256": "17c6e23ce71410aa0176f339fb1740feabd67a2a231591d43a732d6a10931399",
+      "bytes": 2821
+    }
+  },
+  "passedChecks": 19,
+  "failedChecks": [
+    "full-execution-db",
+    "db-upload-session",
+    "db-integration-api"
+  ],
+  "databaseTargetAudit": {
+    "suppliedFile": "local-database.env",
+    "host": "localhost",
+    "port": 55432,
+    "database": "narriflow_serverless_gates_20261031_a18f",
+    "checks": {
+      "full-execution-db": {
+        "migrationDatasourceHeaders": 6,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-workflow": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-upload-session": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-processing-usage": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-workspace-billing": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-social-publication": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-clip-editor-persistence": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-authenticated-request-policy": {
+        "migrationDatasourceHeaders": 0,
+        "allEmittedHeadersDedicatedLocal": false
+      },
+      "db-brand-profiles": {
+        "migrationDatasourceHeaders": 0,
+        "allEmittedHeadersDedicatedLocal": false
+      },
+      "db-vizard-expansion": {
+        "migrationDatasourceHeaders": 0,
+        "allEmittedHeadersDedicatedLocal": false
+      },
+      "db-integration-api": {
+        "migrationDatasourceHeaders": 1,
+        "allEmittedHeadersDedicatedLocal": true
+      },
+      "db-library-search": {
+        "migrationDatasourceHeaders": 0,
+        "allEmittedHeadersDedicatedLocal": false
+      }
+    },
+    "inheritedSelectorNamesObservedBeforeCompletion": [],
+    "headerLimit": "Four runners apply migrations directly through pg and emit no datasource header. Their original target evidence is the explicit local env file and empty inherited selector audit. Every emitted datasource header points at the dedicated localhost target."
+  },
+  "orchestrationFailure": {
+    "code": "generated_file_unexpected_change",
+    "description": "Next changed both generated routes and root-params imports; caller allowed only the routes import and refused final summary. Both exact known generated changes were subsequently verified and restored. This record is reconstructed from all22 hashed completed check logs; the original refusal is retained.",
+    "callerSha256": "816655e9a0b0add5b63836c2302d88dbf7cc50c1c2c4d15736f32143985c1b78"
+  },
+  "limits": [
+    "Failed local candidate. No deployment, image qualification, live latency or cutover acceptance is implied.",
+    "The fast-suite token-owner skip still requires an exact-image supplement.",
+    "Known epoch contamination and separate registration/matrix failures are under diagnosis; no original failure log is replaced."
+  ],
+  "privateRecordSha256": "4492cf030d9ab050194134e5a29cd47c337cd2f1c905d625ddaeb3be601e2213"
+}

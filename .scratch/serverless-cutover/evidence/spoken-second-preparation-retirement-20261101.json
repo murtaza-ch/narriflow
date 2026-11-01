@@ -1,0 +1,20 @@
+{
+  "observedAt": "2026-11-01T05:32:19.521Z",
+  "assigned": 36,
+  "committedEvidenceRetained": 7,
+  "uncommittedCleanupCompleted": 29,
+  "exactHeads": 29,
+  "absent": 29,
+  "noExactKeyMultipart": 29,
+  "unconfirmed": 0,
+  "leaseTimersAcknowledged": 12,
+  "leaseTimersTotal": 12,
+  "originalDeadlineUtc": "2026-11-01T04:52:36.412Z",
+  "noLocalDeletes": true,
+  "historyPreserved": true,
+  "fullJourneyRetirementClaimed": false,
+  "version": 1,
+  "privateRecordSha256": "df450df87fef51d71fadc44b8d35a22605eadfca66638a2ae7e4f8bfb616df83",
+  "scope": "Only preparation artifacts from the five preparations in the second speech journey. Render outputs, pinned input, bundles and other journey artifacts are outside this observation.",
+  "originalJourneyRetirementClaimed": false
+}
