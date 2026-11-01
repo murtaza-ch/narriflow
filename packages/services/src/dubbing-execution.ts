@@ -348,7 +348,7 @@ export function createDubbingExecution(options: { database: PrismaClient; domain
       const input = await options.domain.loadInput(attempt);
       if (artifact.role === "dub_mix") return { ...artifact, input };
       if (artifact.role !== "probe" || artifact.byteLength > 1024n ** 2n) throw new ExecutorControlError("artifact_invalid");
-      const evidence = dubbingCheckpointSchema.safeParse(await options.artifacts.readJson(artifact, 1024 ** 2));if (!evidence.success) throw new ExecutorControlError("artifact_invalid");
+      const evidence = dubbingCheckpointSchema.safeParse(await options.artifacts.readJson(artifact, Math.min(Number(assignment.maxBytes), 1024 ** 2)));if (!evidence.success) throw new ExecutorControlError("artifact_invalid");
       return { ...artifact, evidence: evidence.data, input };
     } } });
   const transfer = createExecutionTransfer({ database: options.database, authority: control, storage: options.storage, resolvePackage: async authority => {

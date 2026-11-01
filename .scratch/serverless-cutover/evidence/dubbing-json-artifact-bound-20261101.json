@@ -1,0 +1,105 @@
+{
+  "recordedAt": "2026-11-01T11:03:08.252959+00:00",
+  "baseSourceCommit": "5a09d40c8b04081b3ceb17c6f8b86ae6bf55f0e2",
+  "scope": "Worker assigned artifact JSON bounds and Dubbing factory only; no native protocol, provider, dependency, resource, admission, deadline, generation, quota or baseline changes",
+  "cause": "Dubbing factory requested a one MiB read for every probe, but actual Worker adapter rejected any requested probe cap above64KiB before reading even tiny durable provider intents. Translation_result already has an explicit one MiB assignment.",
+  "changes": [
+    "Worker probe reader absolute ceiling permits the existing one MiB Dubbing translation assignment; all callers retain their explicit limits",
+    "Dubbing factory requests min(trusted assignment.maxBytes, one MiB), retaining64KiB intent, speech intent and final result bounds",
+    "Core assignment byte-length fence remains unchanged, before storage read and again in mutation transaction"
+  ],
+  "diagnosis": {
+    "rankedHypotheses": [
+      "Requested read cap mismatch: predicts artifact_invalid before R2 get, reproduced",
+      "Evidence digest or schema mismatch: predicts R2 read before rejection, contradicted by zero reads on small intent",
+      "Assignment/authority mismatch: predicts rejection before HEAD, contradicted by successful HEAD"
+    ],
+    "actualFactoryAdapterRed": "1pass/2fail5assertions: tiny intent and70KiB translation fail artifact_invalid before R2 read; oversized64KiB assignment refusal already passes",
+    "actualDatabaseBaselineRed": "Pinned baseline runtime with final regression:8pass/1fail223assertions; actual durable intent fails artifact_invalid",
+    "inMemoryGreen": "9pass/0fail37assertions; actual Dubbing factory and Worker adapter, verifies64KiB/1MiB range limits and core assignment refusal before storage/SQL"
+  },
+  "validation": {
+    "bun": "1.3.6 d530ed99; PATH pinned for child runners",
+    "database": "Explicitly authorized local PostgreSQL17 localhost55432 isolated gate database; existing runner creates/migrates/drops disposable schema, no Neon",
+    "databaseFinal": "22pass/0fail/0skip327assertions: dubbing-execution, native-validation, executor-control",
+    "databaseRegression": "Actual domain/factory/Worker adapter reject result-before-intent and oversized64KiB intent; seal intent, accept >64KiB result and seal speech intent, preserving reservation and absolute operation deadline",
+    "apiCanonical": "bun run test:941pass58existingconditionalDBskips0fail5176assertions",
+    "types": [
+      "apps/api passed",
+      "packages/services passed"
+    ],
+    "lint": "repository passed,11 existing warnings/1info; new test unnecessary string escapes corrected",
+    "workerBuild": "Wrangler dry-run/import audit passed; no deployment",
+    "retainedNonAcceptanceRuns": [
+      "First DB run child Bun1.4.2 (PATH not yet pinned), test assertion incorrectly expected artifact_committed instead of actual committed; log retained, test corrected before pinned final run",
+      "Broader bun test accidentally picked Node-only fixture scripts:957pass58skip4fail. Same unchanged Node fixtures pass in intended Node runner; canonical API suite passes."
+    ]
+  },
+  "limits": [
+    "No live/cloud/API/provider/credential access, no actual media function invocation or image qualification",
+    "Provider responses are not exercised; regression proves durable intent publication and stage ordering before provider work",
+    "No native image rebuilt or relabeled; historical ABED image evidence remains separate. Fresh combined release gates remain Root-owned"
+  ],
+  "logs": [
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/artifact-red.log",
+      "sha256": "c6d90c447ff5a5430d0df964992f95042f876b3ab9745df0dfe5ba5fb6debe9d"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/artifact-green.log",
+      "sha256": "3708d68069ce52dea6ca5edb5a5d5191f8518c102ad007e0f802d299ab00f2c6"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/artifact-final.log",
+      "sha256": "829ee03c7412d628ada1e474efb3954bf03ee19c7c607f90de509c9e5b32cd22"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-db.log",
+      "sha256": "a0fc1aba1204353dd3936a716b450e7a5f7e8cb8ba04916cda1328f809af1f31"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-db-red.log",
+      "sha256": "0a00b32be286570514feb2c648b710dfd08cc627e04181e2eef01e79185ab2d8"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-db-green.log",
+      "sha256": "4bf2eded746c564c6414c824c6c0e5965bde0f9c018aab72bcb7f8ceee253f59"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-db-final.log",
+      "sha256": "722aa31094ad68c26d3b0480b170ce70e7a3d225c19133119b99c9e0f2869e59"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-api-typecheck.log",
+      "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-service-typecheck.log",
+      "sha256": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-worker-build.log",
+      "sha256": "f87d0e2f1d1918a0d19727b3ce2cefa27d9330dd6e74e25815d01a1c1c3ea176"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-lint.log",
+      "sha256": "824a43bf6f7bc49250aef2cb6eb1d2344d9bbcd7b90429df5dfefcfe0ed7879e"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-lint-final.log",
+      "sha256": "082f676f1e80ebe8ace65f73b7339337b10c9f510439aea7f76f915f8083dca3"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-api-fast.log",
+      "sha256": "fefaa8e0cc6e3550a4467e0bbc2ea0e7469754a116e06f8ca7dd91eab67a9bfc"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-api-fast-canonical.log",
+      "sha256": "f43a56ad0696268a7e17d3660df5cfac17c3f126e030fe3b27ffe0d4438b90ac"
+    },
+    {
+      "path": "/tmp/narriflow-serverless-control-keys/dubbing-json-artifact-bound-5a09-20261101/storage-api-node-fixtures.log",
+      "sha256": "538e3b0bc7783e47c725ec1943258defc312e450437f9a75c1421372bed2531a"
+    }
+  ]
+}

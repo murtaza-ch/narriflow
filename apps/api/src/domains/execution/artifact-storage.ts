@@ -47,7 +47,9 @@ export function createAssignedArtifactStorage(bucket: R2Bucket) {
       return readBytes(artifact,maxBytes);
     },
     async readJson(artifact:ExecutorArtifactCommit,maxBytes:number):Promise<unknown>{
-      const roleLimit=artifact.role==="outbound_receipt"?4*1024**2:artifact.role==="layout_evidence"?1024**2:65536;
+      // Dubbing translation probes have a one MiB assignment; callers retain
+      // their stage-specific bounds, enforced again by executor control.
+      const roleLimit=artifact.role==="outbound_receipt"?4*1024**2:artifact.role==="layout_evidence"||artifact.role==="probe"?1024**2:65536;
       if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>roleLimit||artifact.byteLength>BigInt(maxBytes)||artifact.contentType!=="application/json")return invalid();
       const bytes=await readBytes(artifact,maxBytes);
       try{return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));}catch{return invalid();}

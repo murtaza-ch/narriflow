@@ -12,6 +12,7 @@ import { DubbingExecution, createDubbingExecution } from "./dubbing-execution";
 import { restoreDubWithinTransaction, restoreDubbingPage, recoverDubbingWakesPage } from "./dubbing-recovery";
 import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { createExecutionStorage } from "./execution-storage";
+import { createAssignedArtifactStorage } from "../../../apps/api/src/domains/execution/artifact-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -53,6 +54,61 @@ suite("Native Dubbing execution", () => {
       } } });
     return { user, workspace, project, run, clip, render, dub, request, reference, domain, objects, registrations };
   }
+  test("Worker assigned storage durably validates intent before a larger translated checkpoint", async () => {
+    const f = await fixture(), receipts: string[] = [], objects = new Map<string, { bytes: Uint8Array; assignment: { id: string; bindingHash: string; storageKey: string } }>();
+    let reads = 0;
+    const metadata = (key: string) => {
+      const object = objects.get(key);if (!object) return null;
+      return { key, httpEtag: '"proof"', size: object.bytes.length, httpMetadata: { contentType: "application/json" },
+        customMetadata: { "execution-artifact-id": object.assignment.id, "execution-binding-hash": object.assignment.bindingHash }, checksums: {} };
+    };
+    const artifacts = createAssignedArtifactStorage({ head: async (key: string) => metadata(key), get: async (key: string) => {
+      reads++;const object = objects.get(key);return object ? { ...metadata(key), body: new Blob([object.bytes]).stream() } : null;
+    } } as unknown as Parameters<typeof createAssignedArtifactStorage>[0]);
+    try {
+      const prepared = await withServiceEnvironment({}, () => f.domain.prepareExecution(f.reference));
+      if (prepared.kind !== "waiting") throw Error("Expected prepared Dub");
+      const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: randomUUID() };
+      const execution = createDubbingExecution({ database: db, domain: f.domain, artifacts, deliverWakes: async () => {},
+        storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "dub-gate", accessKeyId: "fixture", secretAccessKey: "fixture" }) });
+      const verified = () => { const deliveryId = randomUUID();receipts.push(deliveryId);return { requestHash: createHash("sha256").update(deliveryId).digest("hex"), metadata: { version: 1 as const, keyId: "dub-storage-test", audience: "executor-control" as const, method: "POST" as const, canonicalTarget: "/api/execution/command", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId, signature: "0".repeat(64) } }; };
+      const send = (command: unknown) => withServiceEnvironment({}, () => execution.control.execute({ command, verifiedRequest: verified() }));
+      await send({ action: "acquire", ...fence, leaseSeconds: 120 });await send({ action: "process-start", fence });
+      await withServiceEnvironment({}, () => execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: verified() }));
+      const reservation = await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } });
+      async function checkpoint(stage: "translation_intent" | "translation_result" | "speech_intent", fields: object) {
+        const bindingHash = await dubbingArtifactBindingHash(f.dub.requestHash!, stage);
+        const assignment = await db.executionArtifact.findFirstOrThrow({ where: { attemptToken: fence.attemptToken, bindingHash } });
+        const bytes = new TextEncoder().encode(JSON.stringify({ version: 1, kind: "dubbing_checkpoint", stage, dubId: f.dub.id, requestHash: f.dub.requestHash, ...fields }));
+        objects.set(assignment.storageKey, { bytes, assignment });
+        return { assignment, command: { action: "commit-artifact", fence, artifact: { artifactId: assignment.id, role: "probe", bindingHash, contentType: "application/json", byteLength: bytes.length, etag: '"proof"', sha256: createHash("sha256").update(bytes).digest("hex") } } };
+      }
+      const translated = "La traducción ".repeat(6000);
+      const result = await checkpoint("translation_result", { text: translated, providerRequestId: "resp_offline" });
+      expect(result.command.artifact.byteLength).toBeGreaterThan(65536);expect(result.assignment.maxBytes).toBe(1048576n);
+      await expect(send(result.command)).rejects.toMatchObject({ code: "artifact_invalid" });
+      expect((await db.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).translationResultArtifactId).toBeNull();
+      const intent = await checkpoint("translation_intent", { bodySha256: createHash("sha256").update(JSON.stringify(dubTranslationRequestBody(f.request))).digest("hex") });
+      expect(intent.assignment.maxBytes).toBe(65536n);
+      const beforeReads = reads;
+      await expect(send({ ...intent.command, artifact: { ...intent.command.artifact, byteLength: 65537 } })).rejects.toMatchObject({ code: "artifact_invalid" });
+      expect(reads).toBe(beforeReads);
+      expect((await db.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).translationIntentArtifactId).toBeNull();
+      expect((await send(intent.command)).disposition).toBe("committed");
+      expect((await db.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).translationIntentArtifactId).toBe(intent.assignment.id);
+      expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: intent.assignment.id } })).committedAt).not.toBeNull();
+      expect((await send(result.command)).disposition).toBe("committed");
+      const speech = await checkpoint("speech_intent", { bodySha256: createHash("sha256").update(JSON.stringify(dubSpeechRequestBody(f.request, translated.trim()))).digest("hex") });
+      expect(speech.assignment.maxBytes).toBe(65536n);expect((await send(speech.command)).disposition).toBe("committed");
+      expect(await db.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).toMatchObject({ translationResultArtifactId: result.assignment.id, speechIntentArtifactId: speech.assignment.id, translatedText: translated.trim(), operationDeadlineAt: f.dub.operationDeadlineAt });
+      expect(await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } })).toEqual(reservation);
+    } finally {
+      await db.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
+      await db.executionArtifact.deleteMany({ where: { attempt: { dispatch: { subjectId: f.run.id } } } });
+      await db.executionAttempt.deleteMany({ where: { dispatch: { subjectId: f.run.id } } });await db.executionDispatch.deleteMany({ where: { subjectId: f.run.id } });
+      await db.workspace.delete({ where: { id: f.workspace.id } });await db.user.delete({ where: { id: f.user.id } });
+    }
+  });
   test("a native Dub failure, release, or expiry cannot settle another accepted Dub in the same Project", async () => {
     for (const [ending, paid] of [["failure", false], ["release", false], ["lease", false], ["failure", true], ["release", true], ["lease", true]] as const) {
       const f = await fixture(), receipts: string[] = [], evidence = new Map<string, unknown>();

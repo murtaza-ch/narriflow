@@ -60,7 +60,8 @@ test("layout evidence may carry the bounded one MiB preparation manifest", async
   const manifest = { ...artifact, role: "layout_evidence" as const, byteLength: BigInt(data.length), sha256: digest };
   expect((await port.readJson(manifest, 1048576) as { observations: string }).observations.length).toBe(100000);
   await expect(port.readJson(manifest, 1048577)).rejects.toMatchObject({ code: "artifact_invalid" });
-  await expect(port.readJson({ ...manifest, role: "probe" }, 1048576)).rejects.toMatchObject({ code: "artifact_invalid" });
+  await expect(port.readJson({ ...manifest, role: "probe" }, 65536)).rejects.toMatchObject({ code: "artifact_invalid" });
+  await expect(port.readJson({ ...manifest, role: "probe" }, 1048577)).rejects.toMatchObject({ code: "artifact_invalid" });
 });
 
 test("only assigned encrypted publication instruction blobs receive the sixteen MiB binary reader",async()=>{
