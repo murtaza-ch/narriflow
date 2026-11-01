@@ -12,7 +12,7 @@ import { ExecutionStorageError, type createExecutionStorage, type ExecutionPinSo
 type Tx = Prisma.TransactionClient;
 type Authority = {
   authorize(fence: unknown, requireStarted?: boolean): Promise<ExecutorLiveAuthority>;
-  withAuthority<T>(fence: unknown, requireStarted: boolean, work: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>): Promise<T>;
+  withAuthority<T>(fence: unknown, requireStarted: boolean, work: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>, verifiedRequest?: VerifiedExecutionRequest): Promise<T>;
 };
 export interface ExecutionPreparedPackage {
   /** Fresh invocation-only provider access. Never serialized into an inbox or private input object. */
@@ -31,7 +31,8 @@ interface Options {
   /** Domain-specific resolvers validate their immutable command schema. No SQL
    * client, transaction, grant or permission escapes this request. */
   resolvePackage(authority: ExecutorLiveAuthority): Promise<ExecutionPreparedPackage>;
-  resolvePinSource?(row: Readonly<ExecutionArtifact>, authority: ExecutorLiveAuthority): Promise<ExecutionPinSource>;
+  /** Local frozen-source resolution only; use this transaction and perform no provider I/O. */
+  resolvePinSource?(row: Readonly<ExecutionArtifact>, authority: ExecutorLiveAuthority, tx: Tx): Promise<ExecutionPinSource>;
 }
 
 const contentTypes: Readonly<Record<string, readonly string[]>> = {
@@ -93,15 +94,9 @@ export function createExecutionTransfer(options: Options) {
   async function finish(verified: VerifiedExecutionRequest, command: ExecutionTransferCommand, result: ExecutionTransferDisposition) {
     const value = executionTransferDispositionSchema.parse(result);
     if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 64 * 1024) throw new ExecutorControlError("artifact_invalid");
-    return options.authority.withAuthority(command.fence, command.action !== "work-package", async (tx, authority) => {
-      if (value.disposition === "upload_parts" || value.disposition === "source_range") {
-        const current = await row(tx, value.artifactId, authority);
-        if (current.committedAt || current.multipartCompleteIntentAt || current.multipartAbortIntentAt) return invalid();
-        const expires = value.disposition === "upload_parts" ? value.grants.map(grant => Date.parse(grant.expiresAt)) : [Date.parse(value.grant.expiresAt)];
-        await tx.executionArtifact.update({ where: { id: current.id }, data: { grantExpiresAt: new Date(Math.max(current.grantExpiresAt.getTime(), ...expires)) } });
-      }
+    return options.authority.withAuthority(command.fence, command.action !== "work-package", async tx => {
       const where = { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId, requestHash: verified.requestHash };
-      if (["work_package", "source_read", "upload_parts", "source_range"].includes(value.disposition)) {
+      if (["work_package", "source_read"].includes(value.disposition)) {
         // Only canonical command identity is durable. Replays pass this fresh
         // ownership boundary again and issue new grants; URLs and credentials
         // never become seven-day inbox facts or revive a revoked owner.
@@ -116,9 +111,6 @@ export function createExecutionTransfer(options: Options) {
       if (winner.requestHash !== verified.requestHash) throw new ExecutorControlError("replay_conflict");
       return executionTransferDispositionSchema.parse(winner.disposition);
     });
-  }
-  async function plan(command: Exclude<ExecutionTransferCommand, { action: "work-package" | "source-read" }>) {
-    return options.authority.withAuthority(command.fence, true, async (tx, authority) => row(tx, command.artifactId, authority));
   }
   async function initialize(command: Extract<ExecutionTransferCommand, { action: "upload-initialize" }>) {
     let record = await options.authority.withAuthority(command.fence, true, async (tx, authority) => {
@@ -142,26 +134,60 @@ export function createExecutionTransfer(options: Options) {
     return { disposition: "upload_ready" as const, artifactId: record.id, uploadId: value.uploadId, byteLength: value.byteLength, partSizeBytes: EXECUTION_TRANSFER_PART_BYTES,
       partCount: Math.ceil(value.byteLength / EXECUTION_TRANSFER_PART_BYTES) };
   }
-  async function uploadParts(command: Extract<ExecutionTransferCommand, { action: "upload-parts" }>) {
-    const record = await options.authority.withAuthority(command.fence, true, async (tx, authority) => {
+  async function grant(command: Extract<ExecutionTransferCommand, { action: "upload-parts" | "source-range" }>, verified: VerifiedExecutionRequest) {
+    // Only local presigning runs while these locks are held. Storage mutations
+    // retain their existing persisted-intent phases outside the transaction.
+    return options.authority.withAuthority(command.fence, true, async (tx, authority) => {
       const found = await row(tx, command.artifactId, authority);
       if (found.committedAt || found.multipartCompleteIntentAt || found.multipartAbortIntentAt) return invalid();
-      assignment(found);
-      const parts: ExecutionPartPlan = executionPartPlanSchema.parse(found.multipartPartChecksums ?? []);
-      for (const part of command.parts) {
-        if (part.byteLength !== partBytes(found, part.partNumber)) return invalid();
-        while (parts.length < part.partNumber) parts.push(null);
-        const tuple: [number, string, string] = [part.byteLength, part.checksumMd5, part.checksumSha256];
-        const prior = parts[part.partNumber - 1];
-        if (prior && JSON.stringify(prior) !== JSON.stringify(tuple)) return invalid();
-        parts[part.partNumber - 1] = tuple;
+      const assigned = assignment(found);
+      let parts: ExecutionPartPlan | undefined;
+      let result: ExecutionTransferDisposition;
+      if (command.action === "upload-parts") {
+        parts = executionPartPlanSchema.parse(found.multipartPartChecksums ?? []);
+        for (const part of command.parts) {
+          if (part.byteLength !== partBytes(found, part.partNumber)) return invalid();
+          while (parts.length < part.partNumber) parts.push(null);
+          const tuple: [number, string, string] = [part.byteLength, part.checksumMd5, part.checksumSha256];
+          const prior = parts[part.partNumber - 1];
+          if (prior && JSON.stringify(prior) !== JSON.stringify(tuple)) return invalid();
+          parts[part.partNumber - 1] = tuple;
+        }
+        const grants = await Promise.all(command.parts.map(async part => ({ partNumber: part.partNumber,
+          ...wireGrant(await options.storage.signPart(assigned, { ...part, leaseExpiresAt: authority.leaseExpiresAt, operationDeadlineAt: authority.operationDeadlineAt })) })));
+        result = { disposition: "upload_parts", artifactId: found.id, grants };
+      } else {
+        if (!options.resolvePinSource) return invalid();
+        const frozen = await options.resolvePinSource(found, authority, tx);
+        if (frozen.etag !== found.sourceEtag || BigInt(frozen.byteLength) !== found.sourceByteLength) return invalid();
+        const start = (command.partNumber - 1) * EXECUTION_TRANSFER_PART_BYTES;
+        result = { disposition: "source_range", artifactId: found.id, partNumber: command.partNumber,
+          grant: wireGrant(await options.storage.signSourceRange(assigned, frozen, { start, end: start + partBytes(found, command.partNumber), ...authority })) };
       }
-      return tx.executionArtifact.update({ where: { id: found.id }, data: { multipartPartChecksums: parts } });
-    });
-    const authority = await options.authority.authorize(command.fence);
-    const grants = await Promise.all(command.parts.map(async part => ({ partNumber: part.partNumber,
-      ...wireGrant(await options.storage.signPart(assignment(record), { ...part, leaseExpiresAt: authority.leaseExpiresAt, operationDeadlineAt: authority.operationDeadlineAt })) })));
-    return { disposition: "upload_parts" as const, artifactId: record.id, grants };
+      const value = executionTransferDispositionSchema.parse(result);
+      if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 64 * 1024) return invalid();
+      const expires = value.disposition === "upload_parts" ? value.grants.map(item => Date.parse(item.expiresAt))
+        : value.disposition === "source_range" ? [Date.parse(value.grant.expiresAt)] : invalid();
+      await tx.executionArtifact.update({ where: { id: found.id }, data: {
+        ...(parts ? { multipartPartChecksums: parts } : {}),
+        grantExpiresAt: new Date(Math.max(found.grantExpiresAt.getTime(), ...expires)),
+      } });
+      const [recordClock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+      if (!recordClock) throw new ExecutorControlError("authority_lost");
+      await tx.executionInboxReceipt.upsert({ where: { audience_deliveryId: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId } },
+        create: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId, requestHash: verified.requestHash,
+          keyId: verified.metadata.keyId, disposition: granted, committedAt: recordClock.now, expiresAt: new Date(recordClock.now.getTime() + 7 * 24 * 60 * 60_000) },
+        update: { disposition: granted },
+      });
+      // Signing is asynchronous local work. A lease or deadline that expires
+      // while it runs must roll back the plan, retention and inbox together.
+      const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+      if (!clock || authority.leaseExpiresAt <= clock.now || authority.operationDeadlineAt <= clock.now) throw new ExecutorControlError("authority_lost");
+      if (expires.some(expiry => expiry <= clock.now.getTime() || expiry > authority.leaseExpiresAt.getTime() || expiry > authority.operationDeadlineAt.getTime() || expiry > clock.now.getTime() + 120_000)) {
+        throw new ExecutionStorageError("storage_grant_expired");
+      }
+      return value;
+    }, verified);
   }
   async function complete(command: Extract<ExecutionTransferCommand, { action: "upload-complete" }>) {
     const record = await options.authority.withAuthority(command.fence, true, async (tx, authority) => {
@@ -252,6 +278,7 @@ export function createExecutionTransfer(options: Options) {
   async function execute(input: { command: unknown; verifiedRequest: VerifiedExecutionRequest }): Promise<ExecutionTransferDisposition> {
     const command = executionTransferCommandSchema.parse(input.command), verified = input.verifiedRequest;
     if (!["executor-control", "dev-device"].includes(verified.metadata.audience)) throw new ExecutorControlError("invalid_audience");
+    if (command.action === "upload-parts" || command.action === "source-range") return grant(command, verified);
     const replay = await readReceipt(verified);
     if (replay) return replay;
     const recorded = await begin(verified, command);
@@ -266,17 +293,8 @@ export function createExecutionTransfer(options: Options) {
       const { name: _name, ...object } = source;
       result = { disposition: "source_read", sourceId: command.sourceId, object, grant: wireGrant(await options.storage.signSource(source, authority)) };
     } else if (command.action === "upload-initialize") result = await initialize(command);
-    else if (command.action === "upload-parts") result = await uploadParts(command);
     else if (command.action === "upload-complete") result = await complete(command);
-    else if (command.action === "source-range") {
-      const found = await plan(command), authority = await options.authority.authorize(command.fence);
-      if (!options.resolvePinSource || found.committedAt || found.multipartCompleteIntentAt || found.multipartAbortIntentAt) return invalid();
-      const frozen = await options.resolvePinSource(found, authority);
-      if (frozen.etag !== found.sourceEtag || BigInt(frozen.byteLength) !== found.sourceByteLength) return invalid();
-      const start = (command.partNumber - 1) * EXECUTION_TRANSFER_PART_BYTES;
-      result = { disposition: "source_range", artifactId: found.id, partNumber: command.partNumber,
-        grant: wireGrant(await options.storage.signSourceRange(assignment(found), frozen, { start, end: start + partBytes(found, command.partNumber), ...authority })) };
-    } else {
+    else {
       const found = await options.authority.withAuthority(command.fence, true, async (tx, authority) => {
         const current = await row(tx, command.artifactId, authority);
         if (current.committedAt || current.multipartCompleteIntentAt) throw new ExecutionStorageError("storage_completion_unconfirmed");

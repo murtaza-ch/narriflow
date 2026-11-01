@@ -105,10 +105,10 @@ export function createIngestSourceExecution(options: {
     if(isYouTube(job))return {provider:"youtube" as const,mediaId:ingestYouTubeMediaId((job.payload as Prisma.JsonObject).url)};
     return ingestSourceMediaIdentity(job);
   }
-  async function current(authority:ExecutorLiveAuthority){
+  async function current(authority:ExecutorLiveAuthority, database: Pick<Prisma.TransactionClient, "ingestJob"> = options.database){
     const {reference}=authority.fence;
     if(!["modal_execution","local_fetch"].includes(reference.kind)||reference.subject.kind!=="ingest_job")throw new ExecutorControlError("invalid_reference");
-    const job=await options.database.ingestJob.findUniqueOrThrow({where:{id:reference.subject.id},include:{project:{select:{sourceRevision:true}}}});
+    const job=await database.ingestJob.findUniqueOrThrow({where:{id:reference.subject.id},include:{project:{select:{sourceRevision:true}}}});
     if(job.deploymentEpoch!==reference.deploymentEpoch||job.generation!==reference.generation||job.sourceRevision!==job.project.sourceRevision||reference.inputHash!==await ingestExecutionInputHash(job,options.toolchainFingerprint))throw new ExecutorControlError("authority_lost");
     if(authority.functionName!==(job.jobType==="upload_finalize"?"pin_source":"fetch_source")||reference.kind==="local_fetch"&&!isYouTube(job))throw new ExecutorControlError("invalid_reference");
     return job;
@@ -173,8 +173,8 @@ export function createIngestSourceExecution(options: {
           byteLength: existingSourceAudio.object.byteLength, sha256: existingSourceAudio.object.sha256 }] : [])],
         outputs: [{...video,...(pin?{sourceEtag:pin.etag,sourceByteLength:pin.byteLength}:{})}, ...(!existingSourceAudio && acquisition.audioPolicy!=="none" ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : [])] };
     },
-    resolvePinSource:async(row,authority)=>{
-      const job=await current(authority),definition=await resolveIngestSourceDefinition(job,{});
+    resolvePinSource:async(row,authority,tx)=>{
+      const job=await current(authority,tx),definition=await resolveIngestSourceDefinition(job,{});
       if(definition.kind!=="upload_source"||row.role!=="source_video"||definition.source.etag!==row.sourceEtag||BigInt(definition.source.byteLength)!==row.sourceByteLength)throw new ExecutorControlError("artifact_invalid");
       return {storageKey:definition.source.storageKey,etag:definition.source.etag,byteLength:definition.source.byteLength};
     },

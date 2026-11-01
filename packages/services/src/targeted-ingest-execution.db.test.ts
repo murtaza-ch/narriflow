@@ -208,6 +208,39 @@ dbDescribe("Targeted Ingest execution", () => {
       contentType:"video/mp4",byteLength:1024,sha256:"c".repeat(64),etag:'"audio-etag"',sourceVideo:binding}},verifiedRequest:f.verified()})).rejects.toThrow("artifact_invalid");
   });
 
+  test("production pin grants resolve frozen source authority on one database connection", async () => {
+    const source = { uploadSessionId: crypto.randomUUID(), storageKey: "uploads/verified/source.mp4", verifiedEtag: '"frozen"', verifiedSizeBytes: 6 * 1024 ** 3, verifiedContentType: "video/mp4" };
+    const f = await fixture(undefined, "none", { jobType: "upload_finalize", payload: source });
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA!;
+    const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema }), transactionOptions: { timeout: 3000, maxWait: 1000 } });
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    try {
+      const factory = createIngestSourceExecution({ database: single, domain: f.lifecycle, workflow: f.workflow, toolchainFingerprint: "d".repeat(64), storage,
+        artifacts: { head: async () => { throw new Error("Range grants never HEAD storage"); } }, deliverWakes: async () => {} });
+      const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+      await factory.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: f.verified() });
+      const work = await factory.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: f.verified() });
+      if (work.disposition !== "work_package" || !work.outputs[0]) throw new Error("No assigned pin output");
+      await factory.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() });
+      const output = work.outputs[0];
+      // Initialize the provider's already-known assignment as fixture state;
+      // the grant itself must use real local SDK signing without provider I/O.
+      await db.executionArtifact.update({ where: { id: output.artifactId }, data: { multipartUploadId: "local-upload", uploadByteLength: BigInt(source.verifiedSizeBytes), multipartPartChecksums: [] } });
+      const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } });
+      const result = await factory.transfer.execute({ command: { action: "source-range", fence, artifactId: output.artifactId, partNumber: 1 }, verifiedRequest: f.verified() });
+      if (result.disposition !== "source_range") throw new Error("No conditional range grant");
+      expect(result.grant.headers).toEqual({ "If-Match": source.verifiedEtag, Range: "bytes=0-16777215" });
+      expect(new URL(result.grant.url).pathname).toEndWith(`/${source.storageKey}`);
+      expect(Date.parse(result.grant.expiresAt)).toBeLessThanOrEqual(before.leaseExpiresAt!.getTime());
+      expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).operationDeadlineAt).toEqual(before.operationDeadlineAt);
+      const assigned = await db.executionArtifact.findUniqueOrThrow({ where: { id: output.artifactId } });
+      expect(assigned.grantExpiresAt.getTime()).toBeGreaterThanOrEqual(Date.parse(result.grant.expiresAt));
+      const cleanup = await db.mediaCleanupObligation.findFirstOrThrow({ where: { objectKey: assigned.storageKey, origin: "assigned_execution_artifact" } });
+      expect(cleanup.nextAttemptAt.getTime()).toBe(before.operationDeadlineAt.getTime() + 120_000);
+      expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(1);
+    } finally { storage.close(); await single.$disconnect(); }
+  }, 30_000);
+
   async function earlyAudio(f: Awaited<ReturnType<typeof fixture>>, draft = false) {
     await db.project.update({ where: { id: f.project.id }, data: { ingestStatus: "downloading", sourceDurationSeconds: null } });
     await db.ingestJob.update({ where: { id: f.job.id }, data: { status: "running", claimId: f.token, executorOwner: f.owner, claimExpiresAt: new Date(Date.now() + 120_000) } });

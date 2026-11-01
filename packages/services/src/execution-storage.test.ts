@@ -62,6 +62,22 @@ const partInventory = `<ListPartsResult><Part><PartNumber>1</PartNumber><ETag>90
 const targetHeaders = { "content-length": "3", "content-type": "video/mp4", etag: "final-etag",
   "x-amz-meta-execution-artifact-id": smallObject.artifactId, "x-amz-meta-execution-binding-hash": smallObject.bindingHash };
 
+test("concurrent part and range presigning stays local with fixed credentials", async () => {
+  let requests = 0;
+  const client = fixtureClient(() => { requests++; throw new Error("Presigning must not send provider HTTP"); });
+  const now = new Date("2026-10-31T00:00:00.000Z"), window = { leaseExpiresAt: new Date(now.getTime() + 120_000), operationDeadlineAt: new Date(now.getTime() + 600_000) };
+  const storage = createExecutionStorage(config, { client, now: () => now });
+  try {
+    const parts = await Promise.all(Array.from({ length: 4 }, (_, index) => storage.signPart(assignment, { ...window, partNumber: index + 1,
+      byteLength: 16 * 1024 ** 2, checksumSha256: partChecksum, checksumMd5: partMd5 })));
+    const range = await storage.signSourceRange(assignment, { storageKey: "uploads/verified/source", etag: '"original"', byteLength: object.byteLength },
+      { ...window, start: 0, end: 16 * 1024 ** 2 });
+    expect(parts).toHaveLength(4);
+    expect(parts.every(grant => grant.expiresAt <= window.leaseExpiresAt)).toBe(true);
+    expect(range.headers).toEqual({ "If-Match": '"original"', Range: "bytes=0-16777215" });
+    expect(requests).toBe(0);
+  } finally { storage.close(); }
+});
 test("concrete S3 control creates checksum MPU, verifies every listed receipt, completes and HEADs exact assigned metadata", async () => {
   const requests: WireRequest[] = [];
   const client = fixtureClient(request => {

@@ -252,11 +252,22 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
     return finish(result);
   }
   /** Read fresh ownership before preparing a work package or scoped storage
-   * grant. The caller rechecks after external I/O and never caches this result. */
-  async function withAuthority<T>(fenceInput: unknown, requireStarted: boolean, operation: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>): Promise<T> {
+   * grant. The caller rechecks after external I/O and never caches this result.
+   * A verified grant request takes its inbox lock before domain authority. */
+  async function withAuthority<T>(fenceInput: unknown, requireStarted: boolean, operation: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>, verifiedRequest?: VerifiedExecutionRequest): Promise<T> {
     const fence = executorFenceSchema.parse(fenceInput);
     return db.$transaction(async tx => {
       const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+      if (verifiedRequest) {
+        // Grant-only commands share the ordinary command lock order. Never
+        // acquire the inbox lock after holding a domain or attempt lock.
+        const inboxKey = `executor-inbox:${verifiedRequest.metadata.audience}:${verifiedRequest.metadata.deliveryId}`;
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${inboxKey},0)) IS NULL AS "locked"`;
+        const prior = await tx.executionInboxReceipt.findUnique({ where: { audience_deliveryId: {
+          audience: verifiedRequest.metadata.audience, deliveryId: verifiedRequest.metadata.deliveryId,
+        } } });
+        if (prior && prior.requestHash !== verifiedRequest.requestHash) throw new ExecutorControlError("replay_conflict");
+      }
       if (!epoch || epoch.epoch !== fence.reference.deploymentEpoch) throw new ExecutorControlError("authority_lost");
       const locked = await options.domain.lockExecution(tx, fence.reference, fence.attemptToken);
       await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${fence.attemptToken}::uuid FOR UPDATE`;
