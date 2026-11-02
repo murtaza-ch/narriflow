@@ -1,6 +1,16 @@
 import { isAbsolute, join } from "node:path";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { link, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { startYoutubeTokenServer, YOUTUBE_TOKEN_SERVER_VERSION } from "./youtube-token-helper";
+
+type ReadyWriter = (path: string, body: string, options: { flag: "wx"; mode: number }) => Promise<void>;
+
+export async function publishTokenHelperReadiness(readyFile: string, owner: string, port: number, write: ReadyWriter = writeFile) {
+  const staged = `${readyFile}.${owner}.pending`;
+  await write(staged, JSON.stringify({ owner, version: YOUTUBE_TOKEN_SERVER_VERSION, url: `http://127.0.0.1:${port}` }), { flag: "wx", mode: 0o600 });
+  // Linking publishes complete bytes atomically and refuses an existing name.
+  try { await link(staged, readyFile); }
+  finally { await unlink(staged); }
+}
 
 async function main() {
   const chunks: Buffer[] = [];
@@ -30,7 +40,7 @@ async function main() {
   try {
     const helper = await startYoutubeTokenServer(serverHome, controller.signal, undefined, { port, proxy });
     try {
-      await writeFile(readyFile, JSON.stringify({ owner, version: YOUTUBE_TOKEN_SERVER_VERSION, url: `http://127.0.0.1:${port}` }), { flag: "wx", mode: 0o600 });
+      await publishTokenHelperReadiness(readyFile, owner, port);
       await helper.exited;
       if (!controller.signal.aborted) throw new Error("source_token_helper_exited");
     } finally { helper.stop(); await helper.exited; }

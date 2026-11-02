@@ -144,18 +144,20 @@ class SignedControlTests(unittest.TestCase):
             def emit(self,record):
                 records.append(record.getMessage());entered.set();release.wait(5)
         logger=logging.getLogger('narriflow_media.control');handler=BlockedHandler();logger.addHandler(handler)
-        wall=[time.time()]
+        # Normal elapsed time advances; only the offset simulates a clock jump.
+        wall_offset_seconds=[0.0]
+        def clock():return time.time()+wall_offset_seconds[0]
         def instant(seconds):return datetime.fromtimestamp(seconds,timezone.utc).isoformat().replace('+00:00','Z')
         def transport(origin,target,body,headers,timeout):
-            command=json.loads(body)
+            command=json.loads(body);now=clock()
             if command['action']=='acquire':
                 result={'disposition':'acquired','fence':{key:command[key] for key in ('reference','attemptToken','owner')},
-                    'serverTime':instant(wall[0]),'leaseExpiresAt':instant(wall[0]+120),'operationDeadlineAt':instant(wall[0]+2700)}
-                return ControlResponse(200,{'X-Execution-Server-Time':instant(wall[0])},json.dumps(result).encode())
+                    'serverTime':instant(now),'leaseExpiresAt':instant(now+120),'operationDeadlineAt':instant(now+2700)}
+                return ControlResponse(200,{'X-Execution-Server-Time':instant(now)},json.dumps(result).encode())
             if command['action']=='process-start':
-                return ControlResponse(200,{'X-Execution-Server-Time':instant(wall[0])},b'{"disposition":"started"}')
+                return ControlResponse(200,{'X-Execution-Server-Time':instant(now)},b'{"disposition":"started"}')
             return ControlResponse(409,{},b'private response')
-        client=ExecutionControlClient(origin='https://api.example',key_id='dev',key=b'k'*32,transport=transport,clock=lambda:wall[0])
+        client=ExecutionControlClient(origin='https://api.example',key_id='dev',key=b'k'*32,transport=transport,clock=clock)
         session=ExecutorSession.acquire(client,reference={'dispatchId':'fixture'},attempt_token='fixture')
         def started(pid):session.on_process_start(pid);children.append(pid);ready.set()
         def own_child():
@@ -166,7 +168,7 @@ class SignedControlTests(unittest.TestCase):
             finally:done.set()
         owner=threading.Thread(target=own_child);owner.start()
         try:
-            self.assertTrue(ready.wait(2));wall[0]+=2
+            self.assertTrue(ready.wait(2));wall_offset_seconds[0]+=2
             self.assertTrue(entered.wait(2));self.assertTrue(session.cancel_event.is_set())
             self.assertTrue(done.wait(1),'owner must reap the child while the diagnostic sink remains blocked')
             self.assertFalse(release.is_set());self.assertEqual(failures,['media_execution_cancelled'])
