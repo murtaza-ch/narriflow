@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+bun_path=$(git config --get narriflow.bunPath || command -v bun)
+exec "$bun_path" --no-env-file scripts/verify-local.ts
