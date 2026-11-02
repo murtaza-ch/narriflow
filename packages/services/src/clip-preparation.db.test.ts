@@ -209,6 +209,15 @@ suite("Clip Preparation authority and publication", () => {
       }
     });
 
+  test("a linked preparation cannot lose its frozen group deadline", async () => {
+    const f = await fixture(), n = await native(f);
+    const group = await db.renderGroup.findUniqueOrThrow({ where: { id: f.references[0]!.subject.id } });
+    expect(group.operationDeadlineAt).not.toBeNull();
+    await expect(Promise.resolve(db.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: null } }))).rejects.toThrow("render group operation deadline is immutable within its epoch");
+    expect((await db.renderGroup.findUniqueOrThrow({ where: { id: group.id } })).operationDeadlineAt).toEqual(group.operationDeadlineAt);
+    expect((await n.control.authorize(n.fence)).fence).toEqual(n.fence);
+  });
+
   test("production work-package replay uses one connection before start and revalidates an edited Clip", async () => {
     const f = await fixture();
     const admitted = await f.service.admitForGroup(f.references[0]!);
@@ -350,7 +359,7 @@ suite("Clip Preparation authority and publication", () => {
     } finally { storage.close(); }
   });
 
-  for (const changed of ["source_revision", "editor", "member", "cancelled", "workspace", "group_deadline"] as const)
+  for (const changed of ["source_revision", "editor", "member", "cancelled", "workspace"] as const)
     test(`preparation rechecks ${changed} after a queued row-lock wait`, async () => {
       const f = await fixture(), n = await native(f);
       const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 5000, maxWait: 1000 } });
@@ -371,7 +380,6 @@ suite("Clip Preparation authority and publication", () => {
         entered(); await unlock;
         if (changed === "source_revision") await tx.project.update({ where: { id: f.project.id }, data: { sourceRevision: { increment: 1 } } });
         if (changed === "editor") await tx.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
-        if (changed === "group_deadline") await tx.renderGroup.update({ where: { id: f.references[0]!.subject.id }, data: { operationDeadlineAt: null } });
         if (changed === "member") await tx.renderGroupMember.updateMany({ where: { groupId: f.references[0]!.subject.id }, data: { invalidatedAt: new Date() } });
         if (changed === "cancelled") await tx.executionAttempt.update({ where: { attemptToken: n.fence.attemptToken }, data: { revokedAt: new Date() } });
         if (changed === "workspace") await tx.workspace.update({ where: { id: f.workspace.id }, data: { status: "restricted" } });
