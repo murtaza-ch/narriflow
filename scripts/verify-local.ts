@@ -1,3 +1,4 @@
+import { DATABASE_CHECKS, assertLocalTestDatabase } from "./local-verification-plan";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,10 +14,7 @@ if (`bun@${Bun.version}` !== requiredBun) throw new Error(`Use ${requiredBun} fo
 // biome-ignore lint/suspicious/noUndeclaredEnvVars: standalone Git hook, outside Turborepo caching.
 const database = process.env.SERVERLESS_TEST_DATABASE_URL || gitConfig("narriflow.testDatabaseUrl");
 if (!database) throw new Error("Set SERVERLESS_TEST_DATABASE_URL or git config --local narriflow.testDatabaseUrl to an isolated local PostgreSQL 17 database with pgvector.");
-const target = new URL(database);
-if (!["postgres:", "postgresql:"].includes(target.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname) || !/^\/narriflow_serverless_gates_[a-z0-9_]+$/.test(target.pathname)) {
-  throw new Error("Local verification requires an isolated local narriflow_serverless_gates_* database. Shared and cloud databases are refused.");
-}
+assertLocalTestDatabase(database);
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) {
   if (value !== undefined && !/^(DATABASE_URL|DIRECT_URL|ALLOW_.*DB_TESTS)$|_TEST_DATABASE_(URL|SCHEMA)$|KEEP.*SCHEMA|SKIP.*MIGRAT/.test(key)) env[key] = value;
@@ -48,7 +46,7 @@ try {
   await run([bun, "run", "lint"]);
   await run([bun, "run", "typecheck", "--", "--force"]);
   await run([bun, "run", "test", "--", "--concurrency=1", "--force"]);
-  for (const name of ["execution", "workflow", "upload-session", "processing-usage", "workspace-billing", "social-publication", "clip-editor-persistence", "authenticated-request-policy", "brand-profiles", "vizard-expansion", "integration-api", "library-search"]) {
+  for (const name of DATABASE_CHECKS) {
     await run([bun, "--no-env-file", "run", `test:${name}:db`]);
   }
   await run([bun, "run", "--cwd", "apps/api", "test:inventory"]);

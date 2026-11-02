@@ -1,3 +1,4 @@
+import { DATABASE_CHECKS, assertLocalTestDatabase } from "../../scripts/local-verification-plan";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -49,45 +50,23 @@ describe("repository verification commands", () => {
   });
 });
 
-describe("critical PostgreSQL CI gates", () => {
-  const workflow = readFileSync(
-    resolve(repositoryRoot, ".github/workflows/ci.yml"),
-    "utf8",
-  );
-  const commands = Object.keys(packageJson("package.json").scripts ?? {}).filter(
-    (command) => command.startsWith("test:") && command.endsWith(":db"),
-  );
-
-  test("runs every disposable-schema database command through a parallel matrix", () => {
-    expect(workflow).toContain("postgres-invariants:");
-    expect(workflow).toContain("strategy:");
-    expect(workflow).toContain("matrix:");
-    for (const command of commands) {
-      expect(workflow.match(new RegExp(`command: ${command}`, "g"))?.length).toBe(1);
-    }
-    expect(workflow).toContain(`run: bun run \${{ matrix.command }}`);
+describe("local pre-push verification", () => {
+  test("every disposable database command is included exactly once", () => {
+    const commands = Object.keys(packageJson("package.json").scripts ?? {}).filter(command => command.startsWith("test:") && command.endsWith(":db")).sort();
+    expect(DATABASE_CHECKS.map(name => `test:${name}:db`).sort()).toEqual(commands);
+    expect(new Set(DATABASE_CHECKS).size).toBe(DATABASE_CHECKS.length);
   });
 
-  test("keeps fast checks database-free and retains lint, audit, and build gates", () => {
-    const checkJob = workflow.slice(
-      workflow.indexOf("  check:"),
-      workflow.indexOf("  postgres-invariants:"),
-    );
-    expect(checkJob).toContain("run: bun run lint");
-    expect(checkJob).toContain("run: bun run typecheck");
-    expect(checkJob).toContain("run: bun run test");
-    expect(checkJob).toContain("run: bun run audit:production");
-    expect(checkJob).toContain("run: bun run build");
-    expect(checkJob).not.toContain("TEST_DATABASE_URL");
-    for (const command of commands) expect(checkJob).not.toContain(command);
+  test("the installed hook runs the local verifier and does not ignore failure", () => {
+    const hook = readFileSync(resolve(repositoryRoot, ".githooks/pre-push"), "utf8");
+    expect(hook).toContain("set -eu");
+    expect(hook).toContain('exec "$bun_path" --no-env-file scripts/verify-local.ts');
+    expect(hook).not.toContain("|| true");
+    expect(packageJson("package.json").scripts?.["verify:local"]).toBe("bun --no-env-file scripts/verify-local.ts");
   });
 
-  test("each database job gets an isolated Postgres service and fails fast", () => {
-    const databaseJob = workflow.slice(workflow.indexOf("  postgres-invariants:"));
-    expect(databaseJob).toContain("fail-fast: false");
-    // pgvector's PostgreSQL 17 image: the library search migration needs the extension.
-    expect(databaseJob).toContain("image: pgvector/pgvector:pg17");
-    expect(databaseJob).toContain("DATABASE_URL:");
-    expect(databaseJob).not.toContain("continue-on-error");
+  test("database gates accept isolated local targets and refuse shared or cloud targets", () => {
+    expect(() => assertLocalTestDatabase("postgresql://localhost:55432/narriflow_serverless_gates_test")).not.toThrow();
+    for (const target of ["postgresql://localhost/neondb", "postgresql://example.neon.tech/narriflow_serverless_gates_test", "https://localhost/narriflow_serverless_gates_test"]) expect(() => assertLocalTestDatabase(target)).toThrow();
   });
 });
