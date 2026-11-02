@@ -1,6 +1,6 @@
 # Serverless cutover record
 
-Status: implementation and isolated verification in progress. Admission remains closed on the candidate. No merge/push to `dev`, shared-database migration, API routing switch, Railway/Upstash deletion or reopening is recorded yet.
+Status as of 2026-11-02: implementation and isolated verification are in progress. Source `5c55f458` was merged and pushed to `dev` at the owner's request, followed by local-verification commits through `6506eb5d`. The isolated candidate is open at execution epoch 10. The original shared development database remains unmigrated; final API routing, resource naming, Railway/Upstash retirement and cutover acceptance remain pending. The latest live speech journey failed the four-minute twelve-clip gate. GitHub CI is disabled at the owner's request; automated verification runs locally before pushes.
 
 The owner authorized account setup, deployments, testing, merge to `dev` and push after verification. On 2026-11-01 the owner explicitly selected **Keep Neon Free**; no Launch upgrade or new payment authorization was submitted. Verify the deployment within Free limits. The release must include the complete replacement and deletion set in one switch. [The spec](../../.scratch/serverless-cutover/spec.md) owns the acceptance gates; [the resource runbook](environments.md) owns resource selection and local setup.
 
@@ -33,6 +33,6 @@ Complete every spec gate against the deletion-inclusive release SHA. In particul
 6. Switch API routing, rebuild Vercel with the matching API/WebSocket origin and update provider callbacks, OAuth redirects, Clerk and MCP audiences.
 7. Run closed-admission smokes and verify single settlement, credits, outbox drain, export/Studio evidence reuse, progress revocation/reconnect and sandbox publication recovery.
 8. Complete the live one-hour idle check, including the connected idle laptop, Neon suspension between declared maintenance wakes and zero Modal containers. Measure the cold first request.
-9. Delete old Railway services/triggers/variables and Upstash after the new smokes pass. Reopen admission once, record acceptance, then merge and push the verified release to `dev` with the old deploy effects disabled.
+9. Delete old Railway services/triggers/variables and Upstash after the new smokes pass. Reopen admission once and record acceptance. The owner requested the code merge and push before final infrastructure acceptance; that code publication does not waive any live acceptance gate or authorize running the old consumers again.
 
 On failure, keep intake closed and fence candidate executions. Fix forward or use only [the proved execution restore procedure](execution-restore.md). An arbitrary backup or PITR cannot authorize replay over later execution history. Never run two scheduler environments against one database.

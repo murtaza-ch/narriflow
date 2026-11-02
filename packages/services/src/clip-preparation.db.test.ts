@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { editorDocumentSchema, CLIP_AUTO_LAYOUT_ENGINE, CLIP_AUTO_LAYOUT_VERSION } from "@narriflow/validators";
 import documents from "../../../apps/media/src/__fixtures__/render-golden/documents.json";
+import { lockWorkspaceUsage } from "./processing-usage";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { renderGroupExportIdentity } from "./render-group-contract";
@@ -33,7 +34,7 @@ suite("Clip Preparation authority and publication", () => {
   });
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture(frozenExport = false, snapshotRevision?: number, siblingGroup = false) {
+  async function fixture(frozenExport = false, snapshotRevision?: number, siblingGroup = false, independentClips = false) {
     const user = await db.user.create({ data: { clerkId: `clip-preparation:${crypto.randomUUID()}` } });
     const workspace = await db.workspace.create({ data: { name: "Clip preparation gate", ownerUserId: user.id } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
@@ -58,9 +59,10 @@ suite("Clip Preparation authority and publication", () => {
     const run = await db.workflowRun.create({ data: { projectId: project.id, stage: "clip_rendering", status: "waiting", idempotencyKey: crypto.randomUUID(), deploymentEpoch: epoch,
       renderWorkSetGeneration: workSetGeneration, renderWorkSetFrozenAt: new Date(), requestedCount: 2 } });
     const document = editorDocumentSchema.parse({ ...documents.cases["solo-auto-vertical"].document, clipEndSec: 10 });
-    const clip = await db.clip.create({ data: { projectId: project.id, workflowRunId: run.id, index: 0, ...encodeClipEditorDocumentForStorage(document, { durationSec: 20, wholeSource: false }),
+    const createClip = (index: number) => db.clip.create({ data: { projectId: project.id, workflowRunId: run.id, index, ...encodeClipEditorDocumentForStorage(document, { durationSec: 20, wholeSource: false }),
       hookText: "fixture", reasoning: "fixture", category: "hook", viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50,
       tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "fixture", llmModel: "fixture" } });
+    const clip = await createClip(0);
     const references = [];
     if (siblingGroup) {
       const members = [];
@@ -69,17 +71,18 @@ suite("Clip Preparation authority and publication", () => {
         exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId: null, editorRevision: clip.editorRevision, resolution: "720p", watermark: true }), members: { create: members.map(member => ({ clipRenderId: member.id })) } } });
       references.push((await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "render_group", id: group.id }, inputHash: "d".repeat(64), dueAt: group.createdAt }))).reference);
     } else for (const resolution of ["720p", "1080p"]) {
+      const memberClip = independentClips && resolution === "1080p" ? await createClip(1) : clip;
       const aspectRatio = resolution === "720p" ? "ratio_9_16" as const : "ratio_16_9" as const;
       let exportId: string | null = null, exportVariantId: string | undefined;
       if (frozenExport && resolution === "720p") {
-        const exported = await db.clipExport.create({ data: { projectId: project.id, clipId: clip.id, editorRevision: clip.editorRevision, fingerprint: "fixed-export", resolution, watermark: true } });
+        const exported = await db.clipExport.create({ data: { projectId: project.id, clipId: memberClip.id, editorRevision: memberClip.editorRevision, fingerprint: "fixed-export", resolution, watermark: true } });
         exportId = exported.id;
         exportVariantId = (await db.clipExportVariant.create({ data: { exportId, aspectRatio, resolution, watermark: true } })).id;
       }
-      const variant = await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, editorRevision: clip.editorRevision, aspectRatio, resolution,
-        ...(exportVariantId ? { exportVariantId, clipSnapshot: JSON.parse(JSON.stringify({ ...clip, editorRevision: snapshotRevision ?? clip.editorRevision })) } : {}) } });
-      const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, deploymentEpoch: epoch,
-        exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId, editorRevision: clip.editorRevision, resolution, watermark: true }), members: { create: { clipRenderId: variant.id } } } });
+      const variant = await db.clipRender.create({ data: { clipId: memberClip.id, workflowRunId: run.id, editorRevision: memberClip.editorRevision, aspectRatio, resolution,
+        ...(exportVariantId ? { exportVariantId, clipSnapshot: JSON.parse(JSON.stringify({ ...memberClip, editorRevision: snapshotRevision ?? memberClip.editorRevision })) } : {}) } });
+      const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: memberClip.id, deploymentEpoch: epoch,
+        exportIdentity: renderGroupExportIdentity({ clipId: memberClip.id, exportId, editorRevision: memberClip.editorRevision, resolution, watermark: true }), members: { create: { clipRenderId: variant.id } } } });
       references.push((await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "render_group", id: group.id }, inputHash: "d".repeat(64), dueAt: group.createdAt }))).reference);
     }
     const objects = new Map<string, Uint8Array>();
@@ -98,8 +101,8 @@ suite("Clip Preparation authority and publication", () => {
     return { user, workspace, project, run, clip, source, references, service, objects, confirmed, writes: () => writes, afterWrite: (action: () => Promise<void>) => { afterWrite = action; } };
   }
 
-  async function native(f: Awaited<ReturnType<typeof fixture>>) {
-    const admitted = await f.service.admitForGroup(f.references[0]!);
+  async function native(f: Awaited<ReturnType<typeof fixture>>, groupIndex = 0) {
+    const admitted = await f.service.admitForGroup(f.references[groupIndex]!);
     const prepared = await f.service.prepareExecution((await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference);
     if (prepared.kind !== "waiting") throw new Error("Expected prepared native job");
     const heads = new Map<string, { etag: string; contentType: string; byteLength: bigint; sha256: string }>();
@@ -139,6 +142,72 @@ suite("Clip Preparation authority and publication", () => {
       role: row.role as "clip_preview" | "preview_peaks" | "layout_evidence", bindingHash: row.bindingHash, contentType: row.contentType, byteLength: 1000, etag: heads.get(row.id)!.etag, sha256: "b".repeat(64) } });
     return { admitted, fence, control, send, verified, preview: preview!, peaks: peaks!, manifest: manifest!, result, manifests, commit, wakes, loseAck: (value: boolean) => { loseAck = value; } };
   }
+
+  test("independent preparations on one Project authorize without waiting for a sibling", async () => {
+    const f = await fixture(false, undefined, false, true);
+    const first = await native(f, 0), second = await native(f, 1);
+    expect(first.admitted.preparationId).not.toBe(second.admitted.preparationId);
+    let entered!: () => void, release!: () => void;
+    const locked = new Promise<void>(resolve => { entered = resolve; });
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const holding = first.control.withAuthority(first.fence, true, async () => { entered(); await unlock; });
+    await locked;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pending = second.control.authorize(second.fence);
+    try {
+      const result = await Promise.race([
+        pending.then(() => "authorized"),
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve("blocked_by_sibling"), 1000); }),
+      ]);
+      expect(result).toBe("authorized");
+    } finally {
+      clearTimeout(timer); release(); await holding; await pending;
+    }
+    for (const artifact of ["preview", "peaks", "manifest"] as const) {
+      await Promise.all([first, second].map(n => n.send(n.commit(n[artifact]))));
+    }
+    expect(await db.clipPreparation.count({ where: { projectId: f.project.id, status: "completed" } })).toBe(2);
+    expect(await db.clip.count({ where: { projectId: f.project.id, previewStorageKey: { not: null } } })).toBe(2);
+  });
+
+  for (const change of ["workspace", "source", "parent", "editor"] as const)
+    test(`preparation authority fences an exclusive ${change} writer until its grant commits`, async () => {
+      const f = await fixture(), n = await native(f);
+      const writer = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 5000, maxWait: 1000 } });
+      const [backend] = await writer.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      let entered!: () => void, release!: () => void;
+      const locked = new Promise<void>(resolve => { entered = resolve; });
+      const unlock = new Promise<void>(resolve => { release = resolve; });
+      const grant = n.control.withAuthority(n.fence, true, async () => { entered(); await unlock; });
+      await locked;
+      const mutation = writer.$transaction(async tx => {
+        if (change === "workspace") {
+          await lockWorkspaceUsage(tx, f.workspace.id);
+          await tx.workspace.update({ where: { id: f.workspace.id }, data: { status: "restricted" } });
+        } else if (change === "source") {
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${f.project.id}, 0)) IS NULL AS locked`;
+          await tx.project.update({ where: { id: f.project.id }, data: { sourceRevision: { increment: 1 } } });
+        } else if (change === "parent") {
+          await tx.workflowRun.update({ where: { id: f.run.id }, data: { status: "failed" } });
+        } else {
+          await tx.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
+        }
+      });
+      try {
+        let waiting = false;
+        for (let tries = 0; tries < 100; tries++) {
+          const [state] = await db.$queryRaw<Array<{ waiting: boolean }>>`SELECT wait_event_type = 'Lock' AS waiting FROM pg_stat_activity WHERE pid = ${backend!.pid}`;
+          if (state?.waiting) { waiting = true; break; }
+          await Bun.sleep(10);
+        }
+        expect(waiting).toBe(true);
+        release(); await grant; await mutation;
+        await expect(n.control.authorize(n.fence)).rejects.toMatchObject({ code: "authority_lost" });
+        expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: n.admitted.preparationId } })).chargedAttempts).toBe(1);
+      } finally {
+        release(); await grant.catch(() => {}); await mutation.catch(() => {}); await writer.$disconnect();
+      }
+    });
 
   test("production work-package replay uses one connection before start and revalidates an edited Clip", async () => {
     const f = await fixture();
@@ -281,7 +350,7 @@ suite("Clip Preparation authority and publication", () => {
     } finally { storage.close(); }
   });
 
-  for (const changed of ["source_revision", "editor", "member", "cancelled", "workspace"] as const)
+  for (const changed of ["source_revision", "editor", "member", "cancelled", "workspace", "group_deadline"] as const)
     test(`preparation rechecks ${changed} after a queued row-lock wait`, async () => {
       const f = await fixture(), n = await native(f);
       const single = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 5000, maxWait: 1000 } });
@@ -302,6 +371,7 @@ suite("Clip Preparation authority and publication", () => {
         entered(); await unlock;
         if (changed === "source_revision") await tx.project.update({ where: { id: f.project.id }, data: { sourceRevision: { increment: 1 } } });
         if (changed === "editor") await tx.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
+        if (changed === "group_deadline") await tx.renderGroup.update({ where: { id: f.references[0]!.subject.id }, data: { operationDeadlineAt: null } });
         if (changed === "member") await tx.renderGroupMember.updateMany({ where: { groupId: f.references[0]!.subject.id }, data: { invalidatedAt: new Date() } });
         if (changed === "cancelled") await tx.executionAttempt.update({ where: { attemptToken: n.fence.attemptToken }, data: { revokedAt: new Date() } });
         if (changed === "workspace") await tx.workspace.update({ where: { id: f.workspace.id }, data: { status: "restricted" } });

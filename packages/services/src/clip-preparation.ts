@@ -144,14 +144,17 @@ export class ClipPreparationService {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${run.projectId}, 0)) IS NULL AS locked`;
       await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${run.projectId}::uuid FOR UPDATE`;
     }
-    // Each LockRows node consumes the prior materialized row before locking
-    // its own row. Preserve WorkflowRun -> RenderGroup -> Clip lock order.
+    // Preparation commands only read the parent and group. Shared locks fence
+    // cancellation while distinct Clips can authorize concurrently. Keep the
+    // Clip exclusive because publishing preparation results updates its preview.
+    // Admission retains exclusive locks. Each materialized lock consumes the
+    // prior row, preserving WorkflowRun -> RenderGroup -> Clip lock order.
     await tx.$queryRaw`
       WITH run_lock AS MATERIALIZED (
-        SELECT id FROM "WorkflowRun" WHERE id = ${initial.workflowRunId}::uuid FOR UPDATE
+        SELECT id FROM "WorkflowRun" WHERE id = ${initial.workflowRunId}::uuid ${locked ? Prisma.sql`FOR SHARE` : Prisma.sql`FOR UPDATE`}
       ), group_lock AS MATERIALIZED (
         SELECT g.id, g."clipId" FROM "RenderGroup" g JOIN run_lock r ON r.id = g."workflowRunId"
-        WHERE g.id = ${initial.id}::uuid FOR UPDATE OF g
+        WHERE g.id = ${initial.id}::uuid ${locked ? Prisma.sql`FOR SHARE OF g` : Prisma.sql`FOR UPDATE OF g`}
       )
       SELECT c.id FROM "Clip" c JOIN group_lock g ON g."clipId" = c.id FOR UPDATE OF c`;
     // READ COMMITTED's statement snapshot precedes any lock wait. This MUST
@@ -230,6 +233,9 @@ export class ClipPreparationService {
     const id = clipPreparationIdentity(epoch.epoch, clip.id, bindingHash);
     if ((group.preparationId !== null && group.preparationId !== id) || (group.status === "running" && group.preparationId === null)) throw new ClipPreparationError("clip_preparation_input_invalid");
     const input: ClipPreparationInput = { ...base, preparationId: id, bindingHash };
+    // A linked preparation must already have the deadline frozen by admission.
+    // Never upgrade its shared group lock to initialize authority during a grant.
+    if (locked && !group.operationDeadlineAt) throw new ClipPreparationError("clip_preparation_input_invalid");
     const groupDeadlineAt = group.operationDeadlineAt ?? new Date(clock.getTime() + deadlineMs);
     if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: groupDeadlineAt } });
     return { input, groupId: group.id, deploymentEpoch: epoch.epoch, clock, groupDeadlineAt, permissionExpiresAt: project.expiresAt ?? undefined };
@@ -312,11 +318,14 @@ export class ClipPreparationService {
       CROSS JOIN "ExecutionEpoch" epoch WHERE preparation.id = ${reference.subject.id}::uuid AND epoch.id = 1`;
     if (!initial || reference.deploymentEpoch !== initial.currentEpoch) return null;
     if (initial.inputHash !== reference.inputHash || initial.generation !== reference.generation || initial.deploymentEpoch !== reference.deploymentEpoch) return null;
-    await lockWorkspaceUsage(tx, initial.workspaceId);
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.projectId}, 0)) IS NULL AS locked`;
+    // No usage, Project or parent mutation occurs in a preparation command.
+    // Shared locks still conflict with billing, admission, source replacement
+    // and cancellation writers; only this preparation and its Clip are mutable.
+    await lockWorkspaceUsage(tx, initial.workspaceId, "shared");
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${initial.projectId}, 0)) IS NULL AS locked`;
     const [job] = await tx.$queryRaw<ClipPreparation[]>`
       WITH project_lock AS MATERIALIZED (
-        SELECT id FROM "Project" WHERE id = ${initial.projectId}::uuid FOR UPDATE
+        SELECT id FROM "Project" WHERE id = ${initial.projectId}::uuid FOR SHARE
       )
       SELECT preparation.* FROM "ClipPreparation" preparation JOIN project_lock project ON project.id = preparation."projectId"
       WHERE preparation.id = ${initial.id}::uuid FOR UPDATE OF preparation`;

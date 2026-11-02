@@ -286,11 +286,13 @@ export interface ProcessingUsageDependencies {
  * projection change, so an admission cannot interleave with a restriction.
  * Lock order: this lock, then any Project generation lock, then row locks.
  */
-export async function lockWorkspaceUsage(tx: Tx, workspaceId: string) {
+export async function lockWorkspaceUsage(tx: Tx, workspaceId: string, mode: "exclusive" | "shared" = "exclusive") {
+  // Shared holders only validate access and must never mutate usage or billing.
   // A distinct key namespace from the Project generation lock, which hashes
   // the bare Project ID.
   const key = `processing_usage:${workspaceId}`;
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`;
+  if (mode === "shared") await tx.$queryRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${key}, 0)) IS NULL AS "locked"`;
+  else await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`;
 }
 
 export class ProcessingUsage {
