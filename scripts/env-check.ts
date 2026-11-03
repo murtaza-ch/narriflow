@@ -136,6 +136,10 @@ export function checkEnvironmentValues({ api, web, db }: EnvironmentFiles): Envi
   required(api, "R2_ACCOUNT_ID", "api", issues);
   required(api, "R2_BUCKET", "api", issues);
   for (const name of Object.keys(api)) {
+    if (name.endsWith("_JSON") && api[name]?.trim()) {
+      try { JSON.parse(api[name]!); }
+      catch { issues.push({ message: `api ${name} must contain valid JSON` }); }
+    }
     if ((name.startsWith("UPSTASH_") || name.startsWith("WORKER_HEALTH_") || name === "WORKER_URL" || name === "WORKER_APP_BASE_URL") && api[name]?.trim()) {
       issues.push({ message: `api still configures obsolete ${name}` });
     }

@@ -6,12 +6,14 @@ import type { LocalFetchDeviceClaims } from "@narriflow/services/local-fetch-dev
 import type { ProgressRevocation } from "@narriflow/services/progress-feed";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators/api/progress";
-import type { DevelopmentCloudPort } from "./development-cloud-port";
+import type { DevelopmentCloudPort, DevelopmentProgressTicketScope } from "./development-cloud-port";
+import { createProgressTicketCodec, loadProgressTicketKeys } from "@narriflow/services/progress-ticket";
+import { PROGRESS_CONNECT_TICKET_MS } from "@narriflow/validators/api/progress";
 import type { ApiWorkerBindings } from "./worker-bindings";
 import { withWorkerServices, workerServiceEnvironment } from "./worker-services";
 import { createWorkerExecutionScheduler, registerProgressContinuations } from "./workflows/scheduler";
 import { createApiWorker } from "./worker";
-import { loadApiConfig } from "./config";
+import { loadApiConfig, loadCorsAllowedOrigins } from "./config";
 import { createProductionApp } from "./runtime";
 
 /** Accessed through a Cloudflare Service binding, never an HTTP RPC endpoint.
@@ -42,6 +44,14 @@ export class DevelopmentBindings extends WorkerEntrypoint<ApiWorkerBindings> imp
   async progressContinuations(ids: readonly string[]) {
     if (ids.length > 100) throw new Error("progress_continuation_limit");
     return this.#database(() => registerProgressContinuations(this.#bindings(), ids));
+  }
+  async issueProgressTicket(scope: DevelopmentProgressTicketScope, authorizedAt: number) {
+    const environment = workerServiceEnvironment(this.#bindings());
+    if (!loadCorsAllowedOrigins(environment).includes(scope.origin)) throw new Error("progress_origin_not_allowed");
+    const now = Date.now();
+    if (!Number.isSafeInteger(authorizedAt) || now < authorizedAt - 5_000 || now >= authorizedAt + PROGRESS_CONNECT_TICKET_MS) throw new Error("progress_authorization_expired");
+    // The shared cloud socket owns its audience, even for localhost callers.
+    return createProgressTicketCodec(loadProgressTicketKeys(environment)).issue({ ...scope, audience: new URL("/api/progress", environment.API_ORIGIN).href }, authorizedAt);
   }
   async publishProgress(scope: { projectId: string; workspaceId: string }, event: WorkflowStageUpdatedEvent) {
     return this.#bindings().PROJECT_PROGRESS.getByName(scope.projectId).publish(scope, event);

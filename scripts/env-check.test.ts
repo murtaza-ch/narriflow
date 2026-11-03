@@ -49,6 +49,13 @@ describe("serverless env check", () => {
   test("accepts three consistent files with pooled and direct URLs of one database", () => {
     expect(checkEnvironmentValues(files())).toEqual([]);
   });
+  test("rejects escaped JSON settings before startup without printing signing keys", () => {
+    const value = '{\\"local\\":\\"private-signing-key\\"}';
+    const issues = checkEnvironmentValues(files({ api: api({ PROGRESS_CONNECT_KEYS_JSON: value }) }));
+    expect(messages(issues)).toContain("api PROGRESS_CONNECT_KEYS_JSON must contain valid JSON");
+    expect(JSON.stringify(issues)).not.toContain("private-signing-key");
+    expect(checkEnvironmentValues(files({ api: api({ PROGRESS_CONNECT_KEYS_JSON: '{"local":"valid-value"}' }) }))).toEqual([]);
+  });
   test("rejects another migration database and hides credentials", () => {
     const issues = checkEnvironmentValues(files({ db: { DATABASE_URL: database, DIRECT_URL: directDatabase.replace("neondb", "other") } }));
     expect(messages(issues)).toContain("api and db PostgreSQL identities do not agree");

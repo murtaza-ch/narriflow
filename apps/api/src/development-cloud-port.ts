@@ -3,7 +3,9 @@ import type { ProgressConnection, ProgressRevocation } from "@narriflow/services
 import type { LocalFetchDeviceClaims } from "@narriflow/services/local-fetch-device";
 import type { RateLimitResult } from "@narriflow/services/rate-limit";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
-import type { WorkflowStageUpdatedEvent } from "@narriflow/validators/api/progress";
+import type { ProgressTicketPayload, WorkflowStageUpdatedEvent } from "@narriflow/validators/api/progress";
+
+export type DevelopmentProgressTicketScope = Pick<ProgressTicketPayload, "actorUserId" | "workspaceId" | "projectId" | "origin">;
 
 /** Finite transport capabilities for the shared development resources. No SQL,
  * provider call or arbitrary service method can be supplied by a caller. */
@@ -11,6 +13,7 @@ export interface DevelopmentCloudPort {
   fetch(request: Request): Promise<Response>;
   dispatch(reference: ExecutionDispatchReference): Promise<ExecutionDispatchConfirmation>;
   progressContinuations(ids: readonly string[]): Promise<void>;
+  issueProgressTicket(scope: DevelopmentProgressTicketScope, authorizedAt: number): Promise<string>;
   publishProgress(scope: { projectId: string; workspaceId: string }, event: WorkflowStageUpdatedEvent): Promise<void>;
   revokeProgress(input: ProgressRevocation): Promise<void>;
   checkRate(name: string, command: { limit: number; windowSeconds: number; consume: boolean }): Promise<RateLimitResult>;

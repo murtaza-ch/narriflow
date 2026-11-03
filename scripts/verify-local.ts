@@ -52,6 +52,8 @@ try {
   await run([bun, "run", "--cwd", "apps/api", "test:inventory"]);
   await run([bun, "run", "--cwd", "apps/api", "openapi:check"]);
   await run([bun, "run", "--cwd", "apps/api", "build:worker"]);
+  await run(["node", "--experimental-strip-types", "apps/api/scripts/run-development-binding-gates.ts"]);
+  await run([bun, "run", "--cwd", "apps/api", "test:development-progress:workerd"]);
   await run([bun, "run", "test:mcp:integration"]);
   await run([bun, "run", "audit:production"]);
   await run([bun, "run", "env:check"]);

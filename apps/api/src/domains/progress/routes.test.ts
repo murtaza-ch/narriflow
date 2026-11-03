@@ -4,6 +4,8 @@ import type { ProgressTicketPayload } from "@narriflow/validators/api/progress";
 import { createRequestPolicyRuntime } from "../../http/request-policy-runtime";
 import { createInventoryApp } from "../../test-app";
 import { createProgressRoutes } from "./routes";
+import { createProgressTicketCodec } from "@narriflow/services/progress-ticket";
+import type { DevelopmentCloudPort } from "../../development-cloud-port";
 
 const PROJECT_ID = "50000000-0000-4000-8000-000000000001";
 const WEB = "http://localhost:3000";
@@ -21,7 +23,7 @@ const context: WorkspaceActorContext = {
 };
 
 
-function build() {
+function build(remote?: Pick<DevelopmentCloudPort, "issueProgressTicket">) {
   const world = { membership: true, project: true, rateAllowed: true, status: "active" as "active" | "restricted" };
   const issues: Array<Pick<ProgressTicketPayload, "actorUserId" | "workspaceId" | "projectId" | "origin" | "audience"> & { authorizedAt: number }> = [];
   const policyRuntime = createRequestPolicyRuntime({
@@ -38,10 +40,31 @@ function build() {
     issue: async (scope, authorizedAt) => { issues.push({ ...scope, authorizedAt }); return "signed-connect-ticket"; },
   }) } });
   const headers = { authorization: "Bearer good", "x-workspace-id": "workspace-a", origin: WEB, "content-type": "application/json" };
-  return { world, issues, open: (over: Record<string, string> = {}) => app.request(`/api/projects/${PROJECT_ID}/progress-ticket`, { method: "POST", headers: { ...headers, ...over }, body: "{}" }) };
+  return { world, issues, open: (over: Record<string, string> = {}) => app.request(`/api/projects/${PROJECT_ID}/progress-ticket`, { method: "POST", headers: { ...headers, ...over }, body: "{}" }, { DEV_CLOUD: remote } as never) };
 }
 
 describe("progress connect-ticket admission", () => {
+  test("local admission obtains a ticket for the cloud socket audience from the shared development signer", async () => {
+    const cloudAudience = "https://api.narriflow.test/api/progress";
+    const codec = createProgressTicketCodec({ activeKeyId: "cloud", keys: { cloud: new Uint8Array(32).fill(7) } });
+    const calls: Array<{ scope: Record<string, unknown>; authorizedAt: number }> = [];
+    const t = build({ issueProgressTicket: async (scope, authorizedAt) => {
+      calls.push({ scope, authorizedAt });
+      return codec.issue({ ...scope, audience: cloudAudience }, authorizedAt);
+    } });
+    const response = await t.open();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const payload = await codec.verify(body.ticket, { origin: WEB, audience: cloudAudience, nowMs: Date.now() });
+    expect(payload).toMatchObject({ actorUserId: user.id, workspaceId: context.workspaceId, projectId: PROJECT_ID });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.scope).not.toHaveProperty("audience");
+    expect(body.ticketExpiresAt).toBe(calls[0]!.authorizedAt + 30000);
+    expect(t.issues).toHaveLength(0);
+    t.world.membership = false;
+    expect((await t.open()).status).toBeGreaterThanOrEqual(400);
+    expect(calls).toHaveLength(1);
+  });
   test("mints a scoped one-use ticket after content.view authorization", async () => {
     const t = build(); const before = Date.now(); const response = await t.open();
     expect(response.status).toBe(200);

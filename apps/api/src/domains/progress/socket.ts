@@ -21,7 +21,12 @@ export function createProgressSocketRoutes(deps: ProgressSocketDeps) {
     if (!origin || !deps.allowedOrigins.includes(origin)) return jsonError(403, "progress_origin_not_allowed", "Progress requires an allowed browser origin.", requestIdOf(c));
     if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") return new Response(null, { status: 426 });
     const remote = (c.env as ApiWorkerBindings).DEV_CLOUD;
-    if (remote) return remote.fetch(c.req.raw);
+    if (remote) {
+      const response = await remote.fetch(c.req.raw);
+      // Middleware adds headers locally. Keep the remote socket while making
+      // its response headers mutable, just as for an ordinary proxied fetch.
+      return new Response(response.body, response);
+    }
     let ticket: ProgressTicketPayload;
     try { ticket = await deps.verify(c.req.query("ticket") ?? "", { origin, audience: deps.audience, nowMs: Date.now() }); }
     catch { return jsonError(401, "invalid_progress_ticket", "Request a fresh progress connection ticket.", requestIdOf(c)); }
