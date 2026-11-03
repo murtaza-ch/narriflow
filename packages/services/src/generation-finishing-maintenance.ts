@@ -16,7 +16,7 @@ async function validate(tx: Tx, page: MaintenancePage) {
   if((await readExecutionAdmission(tx)).epoch!==page.deploymentEpoch)throw Error("finishing_page_superseded");
 }
 function after(page: MaintenancePage) {
-  return page.after ? Prisma.sql`AND ("createdAt",id) > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  return page.after ? Prisma.sql`AND ("createdAt",id) > ((${page.after.at}::timestamp),${page.after.id}::uuid)` : Prisma.empty;
 }
 async function lockRows(tx: Tx, rows: Row[]) {
   for(const id of [...new Set(rows.map(row=>row.workspaceId))].sort())await lockWorkspaceUsage(tx,id);
@@ -34,7 +34,7 @@ export const planFinishingRecoveryPage: MaintenancePhaseHandler = async(tx,page)
   await validate(tx,page);
   const rows=await tx.$queryRaw<Row[]>`SELECT id,"createdAt" AS at,"workspaceId","projectId" FROM "GenerationFinishing"
     WHERE "deploymentEpoch"=${page.deploymentEpoch} AND state IN ('due','running','exporting')
-    AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
+    AND "createdAt"<=(${page.cutoff}::timestamp) ${after(page)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
   const selected=rows.slice(0,page.limit), ids:string[]=[];await lockRows(tx,selected);
   for(const row of selected){
     const base=await queueGenerationFinishing(tx,row.id);if(!base)continue;
@@ -50,7 +50,7 @@ export const planFinishingRestorePage: ExecutionRestorePhaseHandler = async(tx,p
   await assertExecutionRestorePage(tx,page);await validate(tx,page);
   const rows=await tx.$queryRaw<Row[]>`SELECT id,"createdAt" AS at,"workspaceId","projectId" FROM "GenerationFinishing"
     WHERE "deploymentEpoch"<=${page.snapshotEpoch} AND state IN ('waiting','due','running','exporting')
-    AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
+    AND "createdAt"<=(${page.cutoff}::timestamp) ${after(page)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
   const selected=rows.slice(0,page.limit);await lockRows(tx,selected);
   for(const row of selected){
     const current=await tx.generationFinishing.findUnique({where:{id:row.id}});

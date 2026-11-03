@@ -21,10 +21,10 @@ const hash=(value:unknown)=>clipSelectionBytesHash(new TextEncoder().encode(JSON
 function immutable(row:ClipSelectionWindow){return [row.id,row.workflowRunId,row.workflowGeneration,row.deploymentEpoch,row.generation,row.transcriptId,row.transcriptGeneration,row.transcriptAttemptId,row.transcriptContentHash,row.sourceRevision,row.sourceAudioId,row.sourceAudioBindingHash,row.selectionHash,row.windowCount,row.windowIndex,row.startSec,row.endSec,row.inputHash,row.inputStorageKey,row.inputEtag,row.inputChecksumSha256,Number(row.inputByteLength),row.estimatedTokens,row.status,row.attemptToken,row.executorOwner,row.leaseExpiresAt?.toISOString(),row.operationDeadlineAt.toISOString(),row.attemptCount,row.maxAttempts,row.resultStorageKey,row.resultEtag,row.resultHash,row.resultByteLength===null?null:Number(row.resultByteLength),row.tokensUsed,row.providerRequestId,row.completedAt?.toISOString()];}
 async function snapshot(tx:Tx,page:ExecutionRestorePage,lock=false){
   await assertExecutionRestorePage(tx,page);
-  const after=page.after?Prisma.sql`AND (r."createdAt",r.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+  const after=page.after?Prisma.sql`AND (r."createdAt",r.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
   const candidates=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string}>>`SELECT r.id,r."createdAt" AS at,r."projectId",p."workspaceId" FROM "WorkflowRun" r JOIN "Project" p ON p.id=r."projectId"
     WHERE r."deploymentEpoch"=${page.deploymentEpoch} AND r.stage='moment_detection' AND r."errorCode"='execution_restore_selection_pending'
-      AND r."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY r."createdAt",r.id LIMIT 2`;
+      AND r."createdAt"<=(${page.cutoff}::timestamp) ${after} ORDER BY r."createdAt",r.id LIMIT 2`;
   const target=candidates[0];if(!target)return null;
   if(lock){await lockExecutionRecoveryParents(tx,[target]);await tx.$queryRaw`SELECT id FROM "WorkflowRun" WHERE id=${target.id}::uuid FOR UPDATE`;await tx.$queryRaw`SELECT id FROM "Transcript" WHERE "projectId"=${target.projectId}::uuid FOR UPDATE`;}
   const run=await tx.workflowRun.findUniqueOrThrow({where:{id:target.id},include:{project:{include:{transcript:{include:{sourceAudio:true}}}},contentPack:true}});

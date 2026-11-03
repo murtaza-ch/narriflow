@@ -1191,10 +1191,10 @@ export class WorkflowRunLifecycle {
     const rows = await tx.$queryRaw<Array<{ kind: "workflow_run" | "render_group"; id: string }>>`SELECT kind, id FROM (
       SELECT 'workflow_run'::text AS kind, r.id FROM "WorkflowRun" r WHERE r."projectId" = ${input.projectId}::uuid
         AND r."deploymentEpoch" = ${input.deploymentEpoch} AND r.status = 'cancelled' AND r."errorCode" = ${input.errorCode}
-        AND r."updatedAt" = (${input.cancelledAt}::timestamptz AT TIME ZONE 'UTC')
+        AND r."updatedAt" = (${input.cancelledAt}::timestamp)
       UNION ALL SELECT 'render_group'::text AS kind, g.id FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id = g."workflowRunId"
         WHERE r."projectId" = ${input.projectId}::uuid AND g."deploymentEpoch" = ${input.deploymentEpoch} AND g.status = 'superseded' AND g."errorCode" = ${input.errorCode}
-        AND g."updatedAt" = (${input.cancelledAt}::timestamptz AT TIME ZONE 'UTC')
+        AND g."updatedAt" = (${input.cancelledAt}::timestamp)
         AND EXISTS (SELECT 1 FROM "ExecutionDispatch" d WHERE d."subjectKind" = 'render_group' AND d."subjectId" = g.id::text AND d."deploymentEpoch" = g."deploymentEpoch" AND d.generation = g.generation)
       ) cancelled WHERE (${after?.kind ?? null}::text IS NULL OR kind > ${after?.kind ?? null} OR (kind = ${after?.kind ?? null} AND id > ${after?.id ?? null}::uuid))
       ORDER BY kind, id LIMIT ${available + 1}`;

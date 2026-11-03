@@ -145,7 +145,7 @@ async function capacity(tx: Tx, deploymentEpoch: number, now: Date) {
   const current = Prisma.sql`run.status = 'waiting' AND run.generation = w."workflowGeneration" AND run."deploymentEpoch" = w."deploymentEpoch"
     AND run."attemptId" IS NULL AND run."leaseOwner" IS NULL AND run."leaseExpiresAt" IS NULL
     AND p."ingestStatus" <> 'failed' AND p."sourceRevision" = w."sourceRevision" AND p."purgeStartedAt" IS NULL
-    AND (p."expiresAt" IS NULL OR p."expiresAt" > (${now}::timestamptz AT TIME ZONE 'UTC')) AND workspace.status = 'active'
+    AND (p."expiresAt" IS NULL OR p."expiresAt" > (${now}::timestamp)) AND workspace.status = 'active'
     AND transcript.status = 'completed' AND transcript.id = w."transcriptId" AND transcript."selectionGeneration" = w."transcriptGeneration"
     AND transcript."sourceRevision" = w."sourceRevision" AND transcript."workflowAttemptId" IS NOT DISTINCT FROM w."transcriptAttemptId"
     AND transcript."sourceAudioId" IS NOT DISTINCT FROM w."sourceAudioId"`;
@@ -153,7 +153,7 @@ async function capacity(tx: Tx, deploymentEpoch: number, now: Date) {
     SELECT COUNT(*)::integer AS requests, COALESCE(SUM(w."estimatedTokens"), 0)::double precision AS tokens, MIN(w."leaseExpiresAt") AS "dueAt"
     FROM "ClipSelectionWindow" w JOIN "WorkflowRun" run ON run.id = w."workflowRunId" JOIN "Project" p ON p.id = w."projectId"
     JOIN "Transcript" transcript ON transcript."projectId" = p.id JOIN "Workspace" workspace ON workspace.id = p."workspaceId"
-    WHERE w."deploymentEpoch" = ${deploymentEpoch} AND w.status = 'running' AND w."leaseExpiresAt" > (${now}::timestamptz AT TIME ZONE 'UTC')
+    WHERE w."deploymentEpoch" = ${deploymentEpoch} AND w.status = 'running' AND w."leaseExpiresAt" > (${now}::timestamp)
       AND ${current}
   `;
   if (!usage) throw new Error("Selection capacity unavailable");
@@ -163,8 +163,8 @@ async function capacity(tx: Tx, deploymentEpoch: number, now: Date) {
     SELECT w.id, w."operationDeadlineAt" FROM "ClipSelectionWindow" w
     JOIN "WorkflowRun" run ON run.id = w."workflowRunId" JOIN "Project" p ON p.id = w."projectId"
     JOIN "Transcript" transcript ON transcript."projectId" = p.id JOIN "Workspace" workspace ON workspace.id = p."workspaceId"
-    WHERE w."deploymentEpoch" = ${deploymentEpoch} AND w.status = 'queued' AND (w."retryAt" IS NULL OR w."retryAt" <= (${now}::timestamptz AT TIME ZONE 'UTC') OR w."errorCode" = ${CLIP_SELECTION_CAPACITY_WAIT})
-      AND w."operationDeadlineAt" > (${now}::timestamptz AT TIME ZONE 'UTC') AND ${current}
+    WHERE w."deploymentEpoch" = ${deploymentEpoch} AND w.status = 'queued' AND (w."retryAt" IS NULL OR w."retryAt" <= (${now}::timestamp) OR w."errorCode" = ${CLIP_SELECTION_CAPACITY_WAIT})
+      AND w."operationDeadlineAt" > (${now}::timestamp) AND ${current}
     ORDER BY (SELECT MAX(turn."lastProviderStartedAt") FROM "ClipSelectionWindow" turn WHERE turn."projectId" = w."projectId" AND turn."deploymentEpoch" = w."deploymentEpoch") ASC NULLS FIRST,
       w."providerQueuedAt" ASC, w."windowIndex" ASC, w.id ASC LIMIT 1
   `;

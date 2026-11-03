@@ -58,9 +58,9 @@ export async function flushWorkspaceEvents(tx: Tx): Promise<void> {
   if (!pending?.length) return;
   const unique = [...new Map(pending.map((event) => [event.dedupeKey, event])).values()];
   const keyRows = [...unique].sort((a, b) => (a.dedupeKey < b.dedupeKey ? -1 : 1))
-    .map((event) => Prisma.sql`(${event.dedupeKey}, ${event.workspaceId}::uuid, ${event.projectId}::uuid)`);
+    .map((event) => Prisma.sql`(${event.dedupeKey}, ${event.workspaceId}::uuid, ${event.projectId}::uuid, clock_timestamp() AT TIME ZONE 'UTC')`);
   const claimed = new Set((await tx.$queryRaw<Array<{ dedupeKey: string }>>(Prisma.sql`
-    INSERT INTO "WorkspaceEventKey" ("dedupeKey", "workspaceId", "projectId") VALUES ${Prisma.join(keyRows)}
+    INSERT INTO "WorkspaceEventKey" ("dedupeKey", "workspaceId", "projectId", "createdAt") VALUES ${Prisma.join(keyRows)}
     ON CONFLICT ("dedupeKey") DO NOTHING RETURNING "dedupeKey"
   `)).map((row) => row.dedupeKey));
   const fresh = unique.filter((event) => claimed.has(event.dedupeKey));
@@ -81,11 +81,11 @@ export async function flushWorkspaceEvents(tx: Tx): Promise<void> {
     ranges.push({ workspaceId, after: first - 1n, through: counter!.lastSeq });
     for (const [index, event] of batch.entries()) {
       rows.push(Prisma.sql`(${randomUUID()}::uuid, ${workspaceId}::uuid, ${first + BigInt(index)}::bigint, ${event.type},
-        ${EVENT_VERSION}, ${JSON.stringify(event.subject)}::jsonb, (${event.occurredAt!.toISOString()}::timestamptz AT TIME ZONE 'UTC'), ${event.dedupeKey})`);
+        ${EVENT_VERSION}, ${JSON.stringify(event.subject)}::jsonb, (${event.occurredAt!.toISOString()}::timestamp), ${event.dedupeKey}, clock_timestamp() AT TIME ZONE 'UTC')`);
     }
   }
   await tx.$executeRaw(Prisma.sql`
-    INSERT INTO "WorkspaceEvent" ("id", "workspaceId", "seq", "type", "version", "subject", "occurredAt", "dedupeKey")
+    INSERT INTO "WorkspaceEvent" ("id", "workspaceId", "seq", "type", "version", "subject", "occurredAt", "dedupeKey", "createdAt")
     VALUES ${Prisma.join(rows)} ON CONFLICT ("dedupeKey") DO NOTHING
   `);
   for (const range of ranges) await appendWorkspaceNotificationRange(tx, range.workspaceId, range.after, range.through);

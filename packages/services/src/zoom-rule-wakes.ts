@@ -50,7 +50,7 @@ export function createZoomRuleWakes(options:{database:PrismaClient;register(ids:
         await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${workspaceId}::uuid FOR SHARE`;
         const rows=await tx.$queryRaw<Array<Position>>`SELECT j.id,j."createdAt" AS at FROM "ZoomWebhookJob" j WHERE j."deploymentEpoch"=${epoch} AND j.status IN ('queued','running')
           AND j."executionTarget"#>>'{plan,source,ruleId}'=${ruleId} AND j."executionTarget"#>>'{scope,workspaceId}'=${workspaceId}
-          AND j."createdAt"<=(${cutoff}::timestamptz AT TIME ZONE 'UTC') AND (${after===null} OR (j."createdAt",j.id)>((${after?.at??new Date(0)}::timestamptz AT TIME ZONE 'UTC'),${after?.id??"00000000-0000-0000-0000-000000000000"}::uuid))
+          AND j."createdAt"<=(${cutoff}::timestamp) AND (${after===null} OR (j."createdAt",j.id)>((${after?.at??new Date(0)}::timestamp),${after?.id??"00000000-0000-0000-0000-000000000000"}::uuid))
           ORDER BY j."createdAt",j.id LIMIT ${PAGE+1}`;
         const ids:string[]=[];
         for(const row of rows.slice(0,PAGE))ids.push(...await recoverZoomNotification(tx,row.id,`zr_${compact(reference.dispatchId)}`));

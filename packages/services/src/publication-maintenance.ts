@@ -25,7 +25,7 @@ async function validate(tx: Tx, page: MaintenancePage) {
   if ((await readExecutionAdmission(tx)).epoch !== page.deploymentEpoch) throw Error("publication_maintenance_epoch_superseded");
 }
 function after(page: MaintenancePage, at: Prisma.Sql, id: Prisma.Sql) {
-  return page.after ? Prisma.sql`AND (${at}, ${id}) > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
+  return page.after ? Prisma.sql`AND (${at}, ${id}) > ((${page.after.at}::timestamp), ${page.after.id}::uuid)` : Prisma.empty;
 }
 function result(rows: Position[], limit: number, ids: string[]): MaintenancePageResult {
   const dispatchIds = [...new Set(ids)];
@@ -53,7 +53,7 @@ async function lockParents(tx: Tx, rows: Parents[]) {
 export const planPublicationRecoveryPage: MaintenancePhaseHandler = async (tx, page) => {
   await validate(tx, page);
   const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT "id", "createdAt" AS at, "id" AS "postId", "workspaceId", "projectId", "socialAccountId" FROM "SocialPost"
-    WHERE "deploymentEpoch" = ${page.deploymentEpoch} AND "status" IN ('preparing_video','scheduled','publishing','processing','reconciling') AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+    WHERE "deploymentEpoch" = ${page.deploymentEpoch} AND "status" IN ('preparing_video','scheduled','publishing','processing','reconciling') AND "createdAt" <= (${page.cutoff}::timestamp)
     ${after(page, Prisma.sql`"createdAt"`, Prisma.sql`"id"`)} ORDER BY "createdAt", "id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
@@ -74,7 +74,7 @@ async function planGrantPage(tx: Tx, page: MaintenancePage, redispatch: boolean)
   await validate(tx, page);
   const at = redispatch ? Prisma.sql`"createdAt"` : Prisma.sql`"expiresAt"`;
   const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT "id", ${at} AS at, "workspaceId" FROM "StandingGrant"
-    WHERE "status" IN ('active','paused') AND ${at} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+    WHERE "status" IN ('active','paused') AND ${at} <= (${page.cutoff}::timestamp)
     ${after(page,at, Prisma.sql`"id"`)} ORDER BY ${at}, "id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
@@ -94,7 +94,7 @@ async function planReceiptPage(tx: Tx, page: MaintenancePage, redispatch: boolea
   const rows = await tx.$queryRaw<Array<Position & Parents & { attemptId: string }>>`SELECT r."id", ${at} AS at, r."attemptId", p."id" AS "postId", p."workspaceId", p."projectId", p."socialAccountId"
     FROM "ProviderReceipt" r JOIN "SocialPublicationAttempt" a ON a."id"=r."attemptId" JOIN "SocialPost" p ON p."id"=a."socialPostId"
     WHERE p."deploymentEpoch"=${page.deploymentEpoch} AND r."platform"='youtube_shorts' AND r."providerProcessingStatus"='processing' AND r."enrichedAt" IS NULL
-      AND ${at} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page, at, Prisma.sql`r."id"`)}
+      AND ${at} <= (${page.cutoff}::timestamp) ${after(page, at, Prisma.sql`r."id"`)}
     ORDER BY ${at}, r."id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
@@ -115,7 +115,7 @@ async function planCapturePage(tx: Tx, page: MaintenancePage, redispatch: boolea
   const at = redispatch ? Prisma.sql`c."createdAt"` : captureDue;
   const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT c."id", ${at} AS at, v."workspaceId", p."projectId", p."socialAccountId", p."id" AS "postId"
     FROM "PerformanceCapture" c JOIN "TrackedVideo" v ON v."id"=c."trackedVideoId" LEFT JOIN "SocialPost" p ON p."id"=v."socialPostId"
-    WHERE c."state"='scheduled' AND (p."id" IS NULL OR p."deploymentEpoch"=${page.deploymentEpoch}) AND ${at} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+    WHERE c."state"='scheduled' AND (p."id" IS NULL OR p."deploymentEpoch"=${page.deploymentEpoch}) AND ${at} <= (${page.cutoff}::timestamp)
       ${after(page, at, Prisma.sql`c."id"`)} ORDER BY ${at}, c."id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
@@ -133,7 +133,7 @@ export const planPublicationRestorePage: ExecutionRestorePhaseHandler = async (t
   await validate(tx, page);
   if (page.deploymentEpoch !== Math.max(page.snapshotEpoch, page.fenceAboveEpoch) + 1) throw Error("publication_maintenance_page_invalid");
   const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT "id", "createdAt" AS at, "id" AS "postId", "workspaceId", "projectId", "socialAccountId" FROM "SocialPost"
-    WHERE "deploymentEpoch" <= ${page.snapshotEpoch} AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+    WHERE "deploymentEpoch" <= ${page.snapshotEpoch} AND "createdAt" <= (${page.cutoff}::timestamp)
     ${after(page, Prisma.sql`"createdAt"`, Prisma.sql`"id"`)} ORDER BY "createdAt", "id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
@@ -148,7 +148,7 @@ export const planPublicationGuidanceRedispatchPage: ExecutionRestorePhaseHandler
   if (!Number.isSafeInteger(page.snapshotEpoch) || page.snapshotEpoch < 1 || page.snapshotEpoch >= page.deploymentEpoch) throw Error("publication_maintenance_page_invalid");
   const rows = await tx.$queryRaw<Position[]>`SELECT "id", "createdAt" AS at FROM "ExecutionDispatch"
     WHERE "deploymentEpoch"=${page.snapshotEpoch} AND "kind"='maintenance' AND "subjectKind"='maintenance' AND "subjectId" LIKE 'po1.g.%'
-      AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,Prisma.sql`"createdAt"`,Prisma.sql`"id"`)}
+      AND "createdAt" <= (${page.cutoff}::timestamp) ${after(page,Prisma.sql`"createdAt"`,Prisma.sql`"id"`)}
     ORDER BY "createdAt", "id" LIMIT ${page.limit + 1}`;
   const selected: Array<Position & { workspaceId: string; subjectId: string; dueAt: Date }> = [];
   for (const row of rows.slice(0,page.limit)) {
@@ -165,7 +165,7 @@ export const planPublicationGuidanceRedispatchPage: ExecutionRestorePhaseHandler
     if (workspace?.status !== "active") continue;
     const [latest] = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "ExecutionDispatch"
       WHERE "deploymentEpoch"=${page.snapshotEpoch} AND "kind"='maintenance' AND "subjectKind"='maintenance' AND "subjectId" LIKE 'po1.g.%'
-        AND left("subjectId",42)=${`po1.g.${row.workspaceId}`} AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+        AND left("subjectId",42)=${`po1.g.${row.workspaceId}`} AND "createdAt" <= (${page.cutoff}::timestamp)
       ORDER BY "dueAt" DESC,"id" DESC LIMIT 1`;
     if (latest?.id !== row.id) continue;
     ids.push(await appendPerformanceGuidance(tx,row.workspaceId,row.dueAt));
@@ -177,7 +177,7 @@ export const planPublicationGuidanceRedispatchPage: ExecutionRestorePhaseHandler
  * existing grants on upgrade and accepts one notice only on a system pause. */
 export const planStandingGrantAuthorityPage:MaintenancePhaseHandler=async(tx,page)=>{
  await validate(tx,page);
- const rows=await tx.$queryRaw<Array<Position&Parents>>`SELECT "id","createdAt" AS at,"workspaceId" FROM "StandingGrant" WHERE status='active' AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,Prisma.sql`"createdAt"`,Prisma.sql`"id"`)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
+ const rows=await tx.$queryRaw<Array<Position&Parents>>`SELECT "id","createdAt" AS at,"workspaceId" FROM "StandingGrant" WHERE status='active' AND "createdAt"<=(${page.cutoff}::timestamp) ${after(page,Prisma.sql`"createdAt"`,Prisma.sql`"id"`)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
  await lockParents(tx,rows.slice(0,page.limit));
  for(const row of rows.slice(0,page.limit)){
   const grant=await tx.standingGrant.findUnique({where:{id:row.id},include:{workspace:{select:{pricingTier:true}}}});if(!grant||grant.status!=='active')continue;

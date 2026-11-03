@@ -43,9 +43,9 @@ export async function readScribeCapacityWithinTransaction(tx: Tx, excludeRunId: 
     JOIN "Transcript" transcript ON transcript."projectId" = run."projectId" AND transcript."sourceRevision" = project."sourceRevision"
     JOIN "SourceAudio" audio ON audio.id = transcript."sourceAudioId" AND audio."projectId" = transcript."projectId" AND audio."sourceRevision" = transcript."sourceRevision"
     WHERE run.stage = 'stt' AND project."ingestStatus" <> 'failed' AND run.id <> ${excludeRunId}::uuid AND (
-      (run.status = 'running' AND run."leaseExpiresAt" > (${now}::timestamptz AT TIME ZONE 'UTC')) OR
+      (run.status = 'running' AND run."leaseExpiresAt" > (${now}::timestamp)) OR
       (run.status = 'waiting' AND transcript."workflowAttemptId" = run."attemptId" AND
-        COALESCE(transcript."providerResultDeadlineAt", transcript."providerSubmissionDeadlineAt") > (${now}::timestamptz AT TIME ZONE 'UTC'))
+        COALESCE(transcript."providerResultDeadlineAt", transcript."providerSubmissionDeadlineAt") > (${now}::timestamp))
     )
   `;
   if (!usage) throw new Error("Provider capacity unavailable");

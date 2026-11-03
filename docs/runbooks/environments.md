@@ -52,6 +52,8 @@ Every root `test:*:db` command must use an isolated database. Test runners rejec
 
 CI supplies `narriflow_serverless_gates_ci` on PostgreSQL17 with pgvector, separately per domain job. Local gates use the same naming contract. Never run a test reset against `neondb`.
 
+Run the test server in UTC (`timezone = 'UTC'`, as on Neon). Application SQL doesn't depend on the session time zone, but older migrations seed rows from the session clock. In another zone the seeded `ExecutionEpoch.changedAt` lands hours away, and export admission refuses with `render_admission_epoch_superseded`.
+
 Library search requires `vector` in the `public` schema. Its cosine HNSW index lives in the migration because Prisma cannot express its index type. Keep the applied migration history and the extension while disposable schemas exist.
 
 ## Providers and media

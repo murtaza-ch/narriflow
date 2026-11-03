@@ -20,9 +20,9 @@ async function rows(tx:Tx,kind:NotificationTarget['kind'],page:MaintenancePage,r
  const round=kind==='review'?Prisma.sql`,n."reviewRoundId"`:kind==='grant'?Prisma.sql`,n."grantId"`:kind==='webhook'?Prisma.sql`,n."webhookId"`:Prisma.empty;
  const parents=(kind==='grant'||kind==='webhook')?Prisma.sql`NULL::uuid AS "projectId",n."workspaceId"`:Prisma.sql`p.id AS "projectId",p."workspaceId"`;
  const epoch=restore?Prisma.sql`n."deploymentEpoch"<${page.deploymentEpoch}`:Prisma.sql`n."deploymentEpoch"=${page.deploymentEpoch}`;
- const after=page.after?Prisma.sql`AND (n."createdAt",n.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+ const after=page.after?Prisma.sql`AND (n."createdAt",n.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
  return tx.$queryRaw<Row[]>`SELECT n.id,n."createdAt" AS at,${parents} ${round} FROM ${table} n ${join}
-  WHERE ${epoch} AND n.status IN ('pending','claimed') AND n."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+  WHERE ${epoch} AND n.status IN ('pending','claimed') AND n."createdAt"<=(${page.cutoff}::timestamp) ${after}
   ORDER BY n."createdAt",n.id LIMIT ${page.limit+1}`;
 }
 async function lockRows(tx:Tx,kind:NotificationTarget['kind'],selected:Row[]){

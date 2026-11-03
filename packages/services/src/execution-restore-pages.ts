@@ -12,9 +12,9 @@ export async function assertExecutionRestorePage(tx: Prisma.TransactionClient, p
  * every old permission before any domain is requeued under the new epoch. */
 export const revokeRestoredAttemptsPage: ExecutionRestorePhaseHandler = async (tx, page) => {
   await assertExecutionRestorePage(tx,page);
-  const after = page.after ? Prisma.sql`AND ("createdAt", "attemptToken") > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND ("createdAt", "attemptToken") > ((${page.after.at}::timestamp), ${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<Array<{ id: string; at: Date }>>`SELECT "attemptToken" AS id, "createdAt" AS at FROM "ExecutionAttempt"
-    WHERE "deploymentEpoch" < ${page.deploymentEpoch} AND status IN ('admitted','running') AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+    WHERE "deploymentEpoch" < ${page.deploymentEpoch} AND status IN ('admitted','running') AND "createdAt" <= (${page.cutoff}::timestamp) ${after}
     ORDER BY "createdAt", "attemptToken" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), tokens = selected.map(row => row.id).sort();
   if (tokens.length) {

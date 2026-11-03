@@ -29,8 +29,8 @@ export interface ProjectRetentionExecutionDependencies {database:PrismaClient;re
  * executor can choose a parent Workflow ID or deletion namespace. */
 export async function appendProjectPurgeWake(tx:Tx,projectId:string,cause:string,at:Date){const project=await tx.project.findUnique({where:{id:projectId},select:{purgeStartedAt:true}});if(!project?.purgeStartedAt)return [];const {epoch}=await readExecutionAdmission(tx);return [(await append(tx,epoch,projectId,project.purgeStartedAt,at,"await",null,`clean_${cause.replaceAll("-","")}`,at)).dispatchId];}
 export const planProjectRetentionPage:MaintenancePhaseHandler=async(tx,page)=>{
- const before=new Date(page.cutoff.getTime()-60000),after=page.after?Prisma.sql`AND ("expiresAt",id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
- const rows=await tx.$queryRaw<Array<Position&{workspaceId:string;projectId:string}>>`SELECT id,id AS "projectId","expiresAt" AS at,"workspaceId" FROM "Project" WHERE "expiresAt"<=(${before}::timestamptz AT TIME ZONE 'UTC') AND "retentionPolicyKey" IS NOT NULL ${after} ORDER BY "expiresAt",id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);const dispatchIds:string[]=[];
+ const before=new Date(page.cutoff.getTime()-60000),after=page.after?Prisma.sql`AND ("expiresAt",id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
+ const rows=await tx.$queryRaw<Array<Position&{workspaceId:string;projectId:string}>>`SELECT id,id AS "projectId","expiresAt" AS at,"workspaceId" FROM "Project" WHERE "expiresAt"<=(${before}::timestamp) AND "retentionPolicyKey" IS NOT NULL ${after} ORDER BY "expiresAt",id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);const dispatchIds:string[]=[];
  const [clock]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
  for(const row of selected){const project=await tx.project.findUniqueOrThrow({where:{id:row.id}});if(!project.expiresAt||project.expiresAt>before)continue;const at=project.purgeStartedAt??clock!.now;if(!project.purgeStartedAt)await tx.project.update({where:{id:project.id},data:{purgeStartedAt:at,purgeAttemptCount:{increment:1},purgeLeaseExpiresAt:null,purgeRetryAt:null}});dispatchIds.push((await append(tx,page.deploymentEpoch,project.id,at,page.cutoff,"permissions",null)).dispatchId);}
  return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds};
@@ -48,7 +48,7 @@ function projectSubjects(projectId:string){return Prisma.sql`project_subjects AS
  UNION ALL SELECT 'dubbing',id FROM "ClipDub" WHERE "projectId"=${projectId}::uuid
  UNION ALL SELECT 'social_publication',id FROM "SocialPost" WHERE "projectId"=${projectId}::uuid
  UNION ALL SELECT 'export_bundle',b.id FROM "ExportBundle" b JOIN "CampaignOperation" e ON e.id=b."operationId" WHERE e."projectId"=${projectId}::uuid)`;}
-const after=(point:Position|null,alias:string,key="id")=>point?Prisma.sql`AND (${Prisma.raw(`${alias}."createdAt"`)},${Prisma.raw(`${alias}."${key}"`)})>((${point.at}::timestamptz AT TIME ZONE 'UTC'),${point.id}::uuid)`:Prisma.empty;
+const after=(point:Position|null,alias:string,key="id")=>point?Prisma.sql`AND (${Prisma.raw(`${alias}."createdAt"`)},${Prisma.raw(`${alias}."${key}"`)})>((${point.at}::timestamp),${point.id}::uuid)`:Prisma.empty;
 async function pageWork(tx:Tx,epoch:number,page:ReturnType<typeof parse>){
  const {projectId,phase}=page,limit=32;let rows:Position[]=[],dispatchIds:string[]=[];
  if(phase==="permissions"){

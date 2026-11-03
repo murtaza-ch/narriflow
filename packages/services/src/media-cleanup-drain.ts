@@ -50,9 +50,9 @@ export function createMediaCleanupDrain(options: { database: PrismaClient; regis
       const { first, through, after } = parse(reference.subject.id);
       if (reference.inputHash !== await hash(epoch, reference.subject.id)) throw invalid();
       return executeExecutionPage(tx, reference, "maintenance-page", async () => {
-      const start = after ? Prisma.sql`("createdAt", id) > ((${after.at}::timestamptz AT TIME ZONE 'UTC'), ${after.id}::uuid)` : Prisma.sql`("createdAt", id) >= ((${first.at}::timestamptz AT TIME ZONE 'UTC'), ${first.id}::uuid)`;
+      const start = after ? Prisma.sql`("createdAt", id) > ((${after.at}::timestamp), ${after.id}::uuid)` : Prisma.sql`("createdAt", id) >= ((${first.at}::timestamp), ${first.id}::uuid)`;
       const rows = await tx.$queryRaw<Array<{ id: string; at: Date }>>`SELECT id, "createdAt" AS at FROM "MediaCleanupObligation" WHERE ${start}
-        AND ("createdAt", id) <= ((${through.at}::timestamptz AT TIME ZONE 'UTC'), ${through.id}::uuid) ORDER BY "createdAt", id LIMIT ${limit + 1}`;
+        AND ("createdAt", id) <= ((${through.at}::timestamp), ${through.id}::uuid) ORDER BY "createdAt", id LIMIT ${limit + 1}`;
       const selected = rows.slice(0, limit);
       const dispatchIds = (await queueMediaCleanupBatchWithinTransaction(tx, selected.map(row => row.id))).map(reference => reference.dispatchId);
       if (rows.length > limit) dispatchIds.push((await append(tx, epoch, first, through, selected.at(-1)!)).dispatchId);

@@ -167,8 +167,8 @@ export function createLibraryIndex(options: { database: PrismaClient; embeddings
       const state = await owned(tx, reference, prepared.claimId);
       if (!state) return null;
       const rows = prepared.batch.map((draft,index) => Prisma.sql`(${randomUUID()}::uuid, ${prepared.workspaceId}::uuid, ${prepared.projectId}::uuid, ${state.row.id}::uuid,
-        ${draft.startMs}::int, ${draft.endMs}::int, ${draft.text}, ${`[${vectors[index]!.join(",")}]`}::vector, ${embeddings.model}, ${draft.contentHash})`);
-      await tx.$executeRaw`INSERT INTO "TranscriptPassage" (id,"workspaceId","projectId","transcriptId","startMs","endMs",text,embedding,"embeddingModel","contentHash") VALUES ${Prisma.join(rows)}
+        ${draft.startMs}::int, ${draft.endMs}::int, ${draft.text}, ${`[${vectors[index]!.join(",")}]`}::vector, ${embeddings.model}, ${draft.contentHash}, clock_timestamp() AT TIME ZONE 'UTC')`);
+      await tx.$executeRaw`INSERT INTO "TranscriptPassage" (id,"workspaceId","projectId","transcriptId","startMs","endMs",text,embedding,"embeddingModel","contentHash","createdAt") VALUES ${Prisma.join(rows)}
         ON CONFLICT ("transcriptId","contentHash") DO UPDATE SET embedding=EXCLUDED.embedding,"embeddingModel"=EXCLUDED."embeddingModel"`;
       if (prepared.last) await tx.$executeRaw`DELETE FROM "TranscriptPassage" WHERE "transcriptId"=${state.row.id}::uuid AND "contentHash" <> ALL(${prepared.hashes}::text[])`;
       const next = await tx.transcript.update({ where: { id: state.row.id }, data: { passagesGeneration: { increment: 1 }, passagesClaimId: null, passagesLeaseUntil: null,

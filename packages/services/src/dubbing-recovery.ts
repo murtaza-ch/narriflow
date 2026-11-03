@@ -62,10 +62,10 @@ async function lockParents(tx: Tx, rows: readonly Row[]) {
 
 export async function restoreDubbingPage(tx: Tx, page: ExecutionRestorePage) {
   const maximum = limit(page.limit);await requireProof(tx, page);
-  const after = page.after ? Prisma.sql`AND (dub."createdAt",dub.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND (dub."createdAt",dub.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<Row[]>`SELECT dub.id,dub."createdAt" AS at,dub."workflowRunId",dub."projectId",project."workspaceId" FROM "ClipDub" dub
     JOIN "Project" project ON project.id=dub."projectId" WHERE dub.status IN ('queued','processing') AND dub."workflowRunId" IS NOT NULL AND dub."frozenRequest" IS NOT NULL
-      AND dub."deploymentEpoch"<${page.deploymentEpoch} AND dub."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+      AND dub."deploymentEpoch"<${page.deploymentEpoch} AND dub."createdAt"<=(${page.cutoff}::timestamp) ${after}
     ORDER BY dub."createdAt",dub.id LIMIT ${maximum + 1}`;
   const selected = rows.slice(0, maximum);await lockParents(tx, selected);
   for (const row of selected) await restoreDubWithinTransaction(tx, row.id, page);
@@ -77,10 +77,10 @@ export async function restoreDubbingPage(tx: Tx, page: ExecutionRestorePage) {
 export async function recoverDubbingWakesPage(tx: Tx, page: MaintenancePage) {
   const maximum = limit(page.limit);
   if ((await readExecutionAdmission(tx)).epoch !== page.deploymentEpoch || page.after?.tie) throw Error("dubbing_recovery_page_invalid");
-  const after = page.after ? Prisma.sql`AND (dub."createdAt",dub.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND (dub."createdAt",dub.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<Row[]>`SELECT dub.id,dub."createdAt" AS at,dub."workflowRunId",dub."projectId",project."workspaceId" FROM "ClipDub" dub
     JOIN "Project" project ON project.id=dub."projectId" WHERE dub.status IN ('queued','processing') AND dub."workflowRunId" IS NOT NULL AND dub."frozenRequest" IS NOT NULL
-      AND dub."deploymentEpoch"=${page.deploymentEpoch} AND dub."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+      AND dub."deploymentEpoch"=${page.deploymentEpoch} AND dub."createdAt"<=(${page.cutoff}::timestamp) ${after}
     ORDER BY dub."createdAt",dub.id LIMIT ${maximum + 1}`;
   const selected = rows.slice(0, maximum);await lockParents(tx, selected);
   for (const row of selected) {

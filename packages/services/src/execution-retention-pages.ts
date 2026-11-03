@@ -14,9 +14,9 @@ type Table = "WorkflowEvent" | "WorkspaceEvent" | "WebhookDeliveryLog" | "Genera
 function quoted(value: string) { return Prisma.raw(`"${value}"`); }
 async function rows(tx: Tx, page: MaintenancePage, table: Table, clock: string, where: Prisma.Sql, cutoff = page.cutoff) {
   if (page.after?.tie) throw new Error("maintenance_cursor_invalid");
-  const field = quoted(clock), after = page.after ? Prisma.sql`AND (${field}, id) > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
+  const field = quoted(clock), after = page.after ? Prisma.sql`AND (${field}, id) > ((${page.after.at}::timestamp), ${page.after.id}::uuid)` : Prisma.empty;
   return tx.$queryRaw<Array<MaintenancePosition>>(Prisma.sql`SELECT id, ${field} AS at FROM ${quoted(table)} WHERE ${where}
-    AND ${field} <= (${cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY ${field}, id LIMIT ${page.limit + 1}`);
+    AND ${field} <= (${cutoff}::timestamp) ${after} ORDER BY ${field}, id LIMIT ${page.limit + 1}`);
 }
 function result(selected: MaintenancePosition[], all: MaintenancePosition[], page: MaintenancePage, dispatchIds: string[] = []) {
   return { processed: selected.length, next: all.length > page.limit ? selected.at(-1)! : null, dispatchIds };
@@ -62,9 +62,9 @@ export const recoverMediaCleanupPage: MaintenancePhaseHandler = async (tx, page)
 /** Retire only an authoritative current video object. SourceAudio is a separate
  * immutable transcription binding and is not part of video retention. */
 export const retireSourceMediaPage:MaintenancePhaseHandler=async(tx,page)=>{
- const cutoff=old(page.cutoff,EXECUTION_RETENTION_DAYS.sources),after=page.after?Prisma.sql`AND (p."ingestCompletedAt",p.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+ const cutoff=old(page.cutoff,EXECUTION_RETENTION_DAYS.sources),after=page.after?Prisma.sql`AND (p."ingestCompletedAt",p.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
  const all=await tx.$queryRaw<Array<{id:string;at:Date;workspaceId:string;projectId:string}>>`SELECT p.id,p.id AS "projectId",p."ingestCompletedAt" AS at,p."workspaceId" FROM "Project" p
- WHERE p."ingestStatus"='ready' AND p."sourceStorageKey" IS NOT NULL AND p."purgeStartedAt" IS NULL AND p."ingestCompletedAt"<(${cutoff}::timestamptz AT TIME ZONE 'UTC')
+ WHERE p."ingestStatus"='ready' AND p."sourceStorageKey" IS NOT NULL AND p."purgeStartedAt" IS NULL AND p."ingestCompletedAt"<(${cutoff}::timestamp)
  AND NOT EXISTS(SELECT 1 FROM "WorkflowRun" r WHERE r."projectId"=p.id AND r.status IN ('queued','running','waiting'))
  AND NOT EXISTS(SELECT 1 FROM "IngestJob" j WHERE j."projectId"=p.id AND j.status IN ('queued','running'))
  AND NOT EXISTS(SELECT 1 FROM "Clip" c WHERE c."projectId"=p.id AND c."previewStorageKey" IS NULL)
@@ -86,8 +86,8 @@ export const retireSourceMediaPage:MaintenancePhaseHandler=async(tx,page)=>{
 };
 
 export const planProjectExpiryWarningPage:MaintenancePhaseHandler=async(tx,page)=>{
- const at=Prisma.sql`p."expiresAt"-INTERVAL '24 hours'`,after=page.after?Prisma.sql`AND (${at},p.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
- const rows=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string}>>`SELECT p.id,p.id AS "projectId",${at} AS at,p."workspaceId" FROM "Project" p WHERE p."expiresAt">(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') AND ${at}<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') AND p."purgeStartedAt" IS NULL ${after} ORDER BY ${at},p.id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);
+ const at=Prisma.sql`p."expiresAt"-INTERVAL '24 hours'`,after=page.after?Prisma.sql`AND (${at},p.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
+ const rows=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string}>>`SELECT p.id,p.id AS "projectId",${at} AS at,p."workspaceId" FROM "Project" p WHERE p."expiresAt">(${page.cutoff}::timestamp) AND ${at}<=(${page.cutoff}::timestamp) AND p."purgeStartedAt" IS NULL ${after} ORDER BY ${at},p.id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);
  for(const row of selected){const project=await tx.project.findUniqueOrThrow({where:{id:row.id},select:{expiresAt:true,purgeStartedAt:true}});if(project.expiresAt&&project.expiresAt>page.cutoff&&project.expiresAt.getTime()-86400000<=page.cutoff.getTime()&&!project.purgeStartedAt)await appendProjectNotificationIntent(tx,{projectId:row.id,sourceId:row.id,outcome:"project_expiring"});}
  return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds:takeExecutionDispatchIds(tx)};
 };

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
 import { executionDispatchIdentity, createExecutionDispatch, type ExecutionDispatchDatabase } from "./execution-dispatch";
 
 const registration = {
@@ -40,5 +41,15 @@ describe("Execution Dispatch admission boundaries", () => {
     const result = await dispatch.confirmAccepted(["d66ad223-9e95-4cbe-8838-43ec01aa6df0"], receipt);
     expect(result).toEqual({ accepted: false, receipt, retryable: true, code: "scheduler_registration_pending", retryAfterSeconds: 1 });
     expect(result.receipt).toBe(receipt);
+  });
+});
+
+describe("Raw SQL timestamps", () => {
+  // The Prisma pg adapter binds a Date as UTC wall-clock text without an offset,
+  // and `::timestamptz` would read that text in the session time zone.
+  test("bind timestamp columns with ::timestamp, never ::timestamptz", () => {
+    const offenders = readdirSync(import.meta.dir).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+      .filter((file) => readFileSync(`${import.meta.dir}/${file}`, "utf8").includes("::timestamptz"));
+    expect(offenders).toEqual([]);
   });
 });

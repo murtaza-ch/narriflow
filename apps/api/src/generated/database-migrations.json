@@ -161,5 +161,6 @@
   "20261101030000_execution_webhook_notifications",
   "20261101040000_execution_preparation_history",
   "20261101050000_execution_render_charge",
-  "20261101060000_execution_native_restore"
+  "20261101060000_execution_native_restore",
+  "20261104000000_utc_session_independent_time"
 ]

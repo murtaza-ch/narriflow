@@ -10,9 +10,9 @@ type Table="NativeValidationJob"|"OutboundProbe"|"OutboundDelivery"|"GeneratedMe
 async function candidates(tx:Prisma.TransactionClient,page:ExecutionRestorePage,table:Table,active:Prisma.Sql){
  await assertExecutionRestorePage(tx,page);
  const project=["GeneratedMediaJob","ThumbnailFrameOperation"].includes(table)?Prisma.sql`,d."projectId"`:Prisma.empty;
- const after=page.after?Prisma.sql`AND (d."createdAt",d.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+ const after=page.after?Prisma.sql`AND (d."createdAt",d.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
  return tx.$queryRaw<Row[]>(Prisma.sql`SELECT d.id,d."createdAt" AS at,d."workspaceId"${project} FROM ${Prisma.raw(`"${table}"`)} d
- WHERE d."deploymentEpoch"<=${page.snapshotEpoch} AND (${active}) AND d."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+ WHERE d."deploymentEpoch"<=${page.snapshotEpoch} AND (${active}) AND d."createdAt"<=(${page.cutoff}::timestamp) ${after}
  ORDER BY d."createdAt",d.id LIMIT ${page.limit+1}`);
 }
 const outcome=(rows:Row[],page:ExecutionRestorePage)=>({processed:Math.min(rows.length,page.limit),next:rows.length>page.limit?rows[page.limit-1]!:null,dispatchIds:[]});

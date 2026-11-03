@@ -156,8 +156,8 @@ export async function appendExecutionDispatch(tx: Tx, input: AppendExecutionDisp
   const inserted = await tx.$queryRaw<DispatchRow[]>`
     INSERT INTO "ExecutionDispatch" ("id", "kind", "subjectKind", "subjectId", "generation", "deploymentEpoch", "inputHash", "deliveryKey", "dueAt", "nextDeliveryAt", "wakeKind", "deadlineKind", "observedDeadlineAt", "updatedAt")
     VALUES (${id}::uuid, ${value.kind}, ${value.subject.kind}, ${value.subject.id}, ${value.generation}, ${value.deploymentEpoch}, ${value.inputHash}, ${identity.deliveryKey},
-      (${value.dueAt}::timestamptz AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC', ${value.wakeKind}, ${value.deadlineKind},
-      (${value.observedDeadlineAt}::timestamptz AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC')
+      (${value.dueAt}::timestamp), clock_timestamp() AT TIME ZONE 'UTC', ${value.wakeKind}, ${value.deadlineKind},
+      (${value.observedDeadlineAt}::timestamp), clock_timestamp() AT TIME ZONE 'UTC')
     ON CONFLICT ("deliveryKey") DO NOTHING RETURNING *
   `;
   const existing = inserted[0] ?? (await tx.$queryRaw<DispatchRow[]>`SELECT * FROM "ExecutionDispatch" WHERE "deliveryKey" = ${identity.deliveryKey}`)[0];
@@ -186,8 +186,8 @@ export async function appendExecutionDispatches(tx: Tx, inputs: readonly AppendE
   const currentEpoch = await epoch(tx);
   if (values.some(value => value.deploymentEpoch !== currentEpoch)) throw new ExecutionDispatchError("epoch_superseded");
   const rows = values.map(value => Prisma.sql`(${crypto.randomUUID()}::uuid, ${value.kind}, ${value.subject.kind}, ${value.subject.id}, ${value.generation}, ${value.deploymentEpoch},
-    ${value.inputHash}, ${value.identity.deliveryKey}, (${value.dueAt}::timestamptz AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC', ${value.wakeKind}, ${value.deadlineKind},
-    (${value.observedDeadlineAt}::timestamptz AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC')`);
+    ${value.inputHash}, ${value.identity.deliveryKey}, (${value.dueAt}::timestamp), clock_timestamp() AT TIME ZONE 'UTC', ${value.wakeKind}, ${value.deadlineKind},
+    (${value.observedDeadlineAt}::timestamp), clock_timestamp() AT TIME ZONE 'UTC')`);
   await tx.$executeRaw(Prisma.sql`INSERT INTO "ExecutionDispatch" ("id", "kind", "subjectKind", "subjectId", "generation", "deploymentEpoch", "inputHash", "deliveryKey", "dueAt", "nextDeliveryAt", "wakeKind", "deadlineKind", "observedDeadlineAt", "updatedAt")
     VALUES ${Prisma.join(rows)} ON CONFLICT ("deliveryKey") DO NOTHING`);
   const existing = await tx.$queryRaw<DispatchRow[]>(Prisma.sql`SELECT * FROM "ExecutionDispatch" WHERE "deliveryKey" IN (${Prisma.join(values.map(value => value.identity.deliveryKey))})`);
@@ -400,8 +400,8 @@ export function createExecutionDispatch(input: {
     const rows = await database.$queryRaw<Array<{ id: string }>>`
       SELECT "id" FROM "ExecutionDispatch"
       WHERE "deploymentEpoch" = ${currentEpoch} AND "acknowledgedAt" IS NULL AND "deadLetteredAt" IS NULL
-        AND "nextDeliveryAt" <= (${now}::timestamptz AT TIME ZONE 'UTC')
-        AND ("deliveryLeaseExpiresAt" IS NULL OR "deliveryLeaseExpiresAt" <= (${now}::timestamptz AT TIME ZONE 'UTC'))
+        AND "nextDeliveryAt" <= (${now}::timestamp)
+        AND ("deliveryLeaseExpiresAt" IS NULL OR "deliveryLeaseExpiresAt" <= (${now}::timestamp))
       ORDER BY "nextDeliveryAt", "id" LIMIT ${limit}
     `;
     const results = await boundedMap(rows, config.concurrency,

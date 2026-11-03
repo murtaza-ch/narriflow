@@ -10,9 +10,9 @@ function recovery(table: string, subjectKind: SubjectKind, active: Prisma.Sql): 
   const name = Prisma.raw(`"${table}"`);
   return async (tx, page) => {
     if (page.after?.tie) throw new Error("maintenance_cursor_invalid");
-    const after = page.after ? Prisma.sql`AND ("createdAt", id) > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
+    const after = page.after ? Prisma.sql`AND ("createdAt", id) > ((${page.after.at}::timestamp), ${page.after.id}::uuid)` : Prisma.empty;
     const rows = await tx.$queryRaw<Array<{ id: string; at: Date; generation: number }>>(Prisma.sql`SELECT id,"createdAt" AS at,generation FROM ${name}
-      WHERE "deploymentEpoch"=${page.deploymentEpoch} AND (${active}) AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+      WHERE "deploymentEpoch"=${page.deploymentEpoch} AND (${active}) AND "createdAt"<=(${page.cutoff}::timestamp) ${after}
       ORDER BY "createdAt",id LIMIT ${page.limit + 1}`);
     const selected = rows.slice(0, page.limit);
     if (!selected.length) return { processed: 0, next: null, dispatchIds: [] };
@@ -48,7 +48,7 @@ export const recoverOutboundDeliveryWakePage = recovery("OutboundDelivery", "out
  * bases. A distinct wake re-enters the exact authority through Maintenance. */
 export const recoverMediaCleanupWakePage: MaintenancePhaseHandler = async (tx, page) => {
   if (page.after?.tie) throw new Error("maintenance_cursor_invalid");
-  const after = page.after ? Prisma.sql`AND (intent."nextAttemptAt", intent.id) > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND (intent."nextAttemptAt", intent.id) > ((${page.after.at}::timestamp), ${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<Array<{ id: string; at: Date; dispatchId: string; generation: number; inputHash: string }>>(Prisma.sql`
     SELECT intent.id, intent."nextAttemptAt" AS at, registration.id AS "dispatchId", registration.generation, registration."inputHash"
     FROM "MediaCleanupObligation" intent
@@ -56,8 +56,8 @@ export const recoverMediaCleanupWakePage: MaintenancePhaseHandler = async (tx, p
       WHERE "deploymentEpoch" = ${page.deploymentEpoch} AND kind = 'operation_driver' AND "subjectKind" = 'media_cleanup'
         AND "subjectId" = intent.id::text AND "wakeKind" IS NULL AND "deadlineKind" IS NULL
       ORDER BY generation DESC LIMIT 1) registration ON registration."dueAt" = intent."nextAttemptAt"
-    WHERE intent."completedAt" IS NULL AND intent."nextAttemptAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
-      AND (intent."claimExpiresAt" IS NULL OR intent."claimExpiresAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')) ${after}
+    WHERE intent."completedAt" IS NULL AND intent."nextAttemptAt" <= (${page.cutoff}::timestamp)
+      AND (intent."claimExpiresAt" IS NULL OR intent."claimExpiresAt" <= (${page.cutoff}::timestamp)) ${after}
     ORDER BY intent."nextAttemptAt", intent.id LIMIT ${page.limit + 1}`);
   const selected = rows.slice(0, page.limit);
   const dispatches = await appendExecutionDispatches(tx, selected.map(row => ({

@@ -70,9 +70,9 @@ async function lockPageParents(tx: Tx, rows: readonly PageRow[]) {
 export async function expireExportBundlesPage(tx: Tx, page: MaintenancePage) {
   const limit = pageLimit(page.limit);
   if ((await readExecutionAdmission(tx)).epoch !== page.deploymentEpoch || page.after?.tie) throw Error("bundle_recovery_page_invalid");
-  const after = page.after ? Prisma.sql`AND (bundle."expiresAt",bundle.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND (bundle."expiresAt",bundle.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<PageRow[]>`SELECT bundle.id,bundle."expiresAt" AS at,bundle."workflowRunId",operation."workspaceId",operation."projectId" FROM "ExportBundle" bundle
-    JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status='completed' AND bundle."expiresAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}
+    JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status='completed' AND bundle."expiresAt"<=(${page.cutoff}::timestamp) ${after}
     ORDER BY bundle."expiresAt",bundle.id LIMIT ${limit + 1}`;
   const selected = rows.slice(0, limit);
   await lockPageParents(tx, selected);
@@ -83,10 +83,10 @@ export async function expireExportBundlesPage(tx: Tx, page: MaintenancePage) {
 export async function restoreExportBundlesPage(tx: Tx, page: ExecutionRestorePage) {
   const limit = pageLimit(page.limit);
   await requireRestoreProof(tx, page);
-  const after = page.after ? Prisma.sql`AND (bundle."createdAt",bundle.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND (bundle."createdAt",bundle.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<PageRow[]>`SELECT bundle.id,bundle."createdAt" AS at,bundle."workflowRunId",operation."workspaceId",operation."projectId" FROM "ExportBundle" bundle
     JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status IN ('queued','building') AND bundle."deploymentEpoch"<${page.deploymentEpoch}
-      AND bundle."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
+      AND bundle."createdAt"<=(${page.cutoff}::timestamp) ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
   const selected = rows.slice(0, limit);
   await lockPageParents(tx, selected);
   for (const row of selected) await restoreExportBundleWithinTransaction(tx, row.id, page, { deferDispatch: true });
@@ -97,10 +97,10 @@ export async function restoreExportBundlesPage(tx: Tx, page: ExecutionRestorePag
 export async function recoverExportBundleWakesPage(tx: Tx, page: MaintenancePage) {
   const limit = pageLimit(page.limit);
   if ((await readExecutionAdmission(tx)).epoch !== page.deploymentEpoch || page.after?.tie) throw Error("bundle_recovery_page_invalid");
-  const after = page.after ? Prisma.sql`AND (bundle."createdAt",bundle.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)` : Prisma.empty;
+  const after = page.after ? Prisma.sql`AND (bundle."createdAt",bundle.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<PageRow[]>`SELECT bundle.id,bundle."createdAt" AS at,bundle."workflowRunId",operation."workspaceId",operation."projectId" FROM "ExportBundle" bundle
     JOIN "CampaignOperation" operation ON operation.id=bundle."operationId" WHERE bundle.status IN ('queued','building') AND bundle."deploymentEpoch"=${page.deploymentEpoch}
-      AND bundle."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
+      AND bundle."createdAt"<=(${page.cutoff}::timestamp) ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
   const selected = rows.slice(0, limit);
   await lockPageParents(tx, selected);
   for (const row of selected) {

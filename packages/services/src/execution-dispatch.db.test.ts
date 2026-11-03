@@ -75,6 +75,32 @@ dbDescribe("Transactional Execution Dispatch", () => {
     expect((await service().read(first.reference.dispatchId))?.reference.inputHash).toBe(input.inputHash);
   }, 60_000);
 
+  test("due times stay exact UTC instants whatever the session time zone", async () => {
+    const input = command({ dueAt: new Date("2026-10-31T10:15:30.123Z") });
+    const inZone = (zone: string) => database.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL TIME ZONE '${zone}'`);
+      return appendExecutionDispatch(tx, input);
+    });
+    const first = await inZone("Asia/Karachi");
+    fixtureIds.push(first.reference.dispatchId);
+    expect(first.dueAt.toISOString()).toBe(input.dueAt.toISOString());
+    const replay = await inZone("America/St_Johns");
+    expect(replay.reference.dispatchId).toBe(first.reference.dispatchId);
+  }, 60_000);
+
+  test("no column default or function reads the session time zone", async () => {
+    // Prisma Client fills a plain CURRENT_TIMESTAMP (`@default(now())`) itself; raw INSERTs must set those columns.
+    const defaults = await database.$queryRaw<Array<{ column: string; expression: string }>>`
+      SELECT table_name || '.' || column_name AS "column", column_default AS expression FROM information_schema.columns
+      WHERE table_schema = current_schema() AND data_type = 'timestamp without time zone' AND column_default IS NOT NULL`;
+    const functions = await database.$queryRaw<Array<{ name: string; body: string }>>`
+      SELECT p.proname AS name, pg_get_functiondef(p.oid) AS body FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = current_schema() AND p.prokind = 'f'`;
+    const sessionClock = /\b(CURRENT_TIMESTAMP|now\(\)|clock_timestamp\(\)|LOCALTIMESTAMP)(?!\s*\)?\s*AT TIME ZONE 'UTC')|::timestamptz/i;
+    expect(defaults.filter(({ expression }) => expression !== "CURRENT_TIMESTAMP" && sessionClock.test(expression)).map(({ column }) => column)).toEqual([]);
+    expect(functions.filter(({ body }) => sessionClock.test(body)).map(({ name }) => name)).toEqual([]);
+  }, 60_000);
+
   test("bounded fan-out replays exact identities and a conflicting member rolls back the entire new page", async () => {
     const inputs = [command(), command()];
     const first = await database.$transaction(tx => appendExecutionDispatches(tx, inputs));

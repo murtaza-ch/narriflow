@@ -16,10 +16,10 @@ const invalid=()=>Error("restore_preparation_input_unavailable");
 const fingerprint=(job:ClipPreparation)=>clipSelectionBytesHash(new TextEncoder().encode(JSON.stringify([job.id,job.deploymentEpoch,job.generation,job.bindingHash,job.engineHash,job.inputHash,job.inputStorageKey,job.inputEtag,Number(job.inputByteLength),job.inputChecksumSha256,job.status,job.attemptToken,job.executorOwner,job.leaseExpiresAt?.toISOString(),job.operationDeadlineAt.toISOString(),job.retryAt?.toISOString(),job.createdAt.toISOString(),job.chargedAttempts,job.result,job.readyObjects,job.errorCode,job.completedAt?.toISOString()])));
 async function snapshot(tx:Tx,page:ExecutionRestorePage,service:ClipPreparationService,lock=false){
   await assertExecutionRestorePage(tx,page);
-  const after=page.after?Prisma.sql`AND (job."createdAt",job.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+  const after=page.after?Prisma.sql`AND (job."createdAt",job.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
   const candidates=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string}>>`SELECT job.id,job."createdAt" AS at,job."projectId",p."workspaceId" FROM "ClipPreparation" job JOIN "Project" p ON p.id=job."projectId"
     WHERE job."deploymentEpoch"<=${page.snapshotEpoch} AND job.status IN ('queued','running','completed','failed')
-      AND job."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+      AND job."createdAt"<=(${page.cutoff}::timestamp)
       AND NOT EXISTS(SELECT 1 FROM "ClipPreparation" current WHERE current."clipId"=job."clipId" AND current."bindingHash"=job."bindingHash" AND current."deploymentEpoch"=${page.deploymentEpoch})
       AND (job.status IN ('queued','running') OR EXISTS(SELECT 1 FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id=g."workflowRunId" WHERE g."clipId"=job."clipId" AND g."deploymentEpoch"=${page.deploymentEpoch} AND g.status='queued' AND r.status='queued' AND NOT EXISTS(SELECT 1 FROM "RenderGroupMember" m WHERE m."groupId"=g.id AND m."invalidatedAt" IS NOT NULL) AND p."sourceRevision"=job."sourceRevision" AND (g."exportIdentity"::jsonb->>2)=job."editorRevision"::text))
       ${after} ORDER BY job."createdAt",job.id LIMIT 2`;
@@ -28,7 +28,7 @@ async function snapshot(tx:Tx,page:ExecutionRestorePage,service:ClipPreparationS
   const job=await tx.clipPreparation.findUniqueOrThrow({where:{id:target.id}});
   const groups=await tx.$queryRaw<Array<{id:string}>>`SELECT g.id FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id=g."workflowRunId" JOIN "Project" p ON p.id=r."projectId"
     WHERE g."clipId"=${job.clipId}::uuid AND g."deploymentEpoch"=${page.deploymentEpoch} AND g.status='queued' AND r.status='queued'
-      AND NOT EXISTS(SELECT 1 FROM "RenderGroupMember" m WHERE m."groupId"=g.id AND m."invalidatedAt" IS NOT NULL) AND p."sourceRevision"=${job.sourceRevision} AND p."purgeStartedAt" IS NULL AND (p."expiresAt" IS NULL OR p."expiresAt">(${page.cutoff}::timestamptz AT TIME ZONE 'UTC'))
+      AND NOT EXISTS(SELECT 1 FROM "RenderGroupMember" m WHERE m."groupId"=g.id AND m."invalidatedAt" IS NOT NULL) AND p."sourceRevision"=${job.sourceRevision} AND p."purgeStartedAt" IS NULL AND (p."expiresAt" IS NULL OR p."expiresAt">(${page.cutoff}::timestamp))
       AND (g."exportIdentity"::jsonb->>2)=${String(job.editorRevision)} ORDER BY g.id LIMIT 1`;
   const group=groups[0],desired=group?await service.restoreInputForGroup(tx,group.id,page):null;
   if(desired && desired.input.bindingHash!==job.bindingHash)throw invalid();
@@ -102,13 +102,13 @@ export function createPreparationRestorePreparation(options:{database:PrismaClie
 export function createPreparationLinkRestore(service:ClipPreparationService):ExecutionRestorePhaseHandler{
   return async(tx,page)=>{
     await assertExecutionRestorePage(tx,page);
-    const limit=Math.min(page.limit,8),after=page.after?Prisma.sql`AND (g."createdAt",g.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+    const limit=Math.min(page.limit,8),after=page.after?Prisma.sql`AND (g."createdAt",g.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
     const rows=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string;workflowRunId:string}>>`SELECT g.id,g."createdAt" AS at,r."projectId",p."workspaceId",r.id AS "workflowRunId" FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id=g."workflowRunId" JOIN "Project" p ON p.id=r."projectId"
       WHERE g."deploymentEpoch"=${page.deploymentEpoch} AND g.status='queued' AND g."preparationId" IS NULL AND g."attemptToken" IS NULL
         AND p."ingestStatus"='ready' AND p."sourceStorageKey" IS NOT NULL AND p."purgeStartedAt" IS NULL
-        AND (p."expiresAt" IS NULL OR p."expiresAt">(${page.cutoff}::timestamptz AT TIME ZONE 'UTC'))
+        AND (p."expiresAt" IS NULL OR p."expiresAt">(${page.cutoff}::timestamp))
         AND NOT EXISTS(SELECT 1 FROM "RenderGroupMember" m WHERE m."groupId"=g.id AND m."invalidatedAt" IS NOT NULL)
-        AND g."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY g."createdAt",g.id LIMIT ${limit+1}`;
+        AND g."createdAt"<=(${page.cutoff}::timestamp) ${after} ORDER BY g."createdAt",g.id LIMIT ${limit+1}`;
     const selected=rows.slice(0,limit);await lockExecutionRecoveryParents(tx,selected);
     for(const id of [...new Set(selected.map(row=>row.workflowRunId))].sort())await tx.$queryRaw`SELECT id FROM "WorkflowRun" WHERE id=${id}::uuid FOR UPDATE`;
     for(const row of [...selected].sort((a,b)=>a.id.localeCompare(b.id))){

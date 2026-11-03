@@ -7,8 +7,8 @@ import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
 import { appendCompletionCallbackDispatch,appendWebhookSubscriptionDispatch } from "./notification-dispatch";
 type Kind="callback"|"subscription";
 function rows(tx:Prisma.TransactionClient,page:Pick<ExecutionRestorePage,"cutoff"|"after"|"limit">,kind:Kind){
- const table=Prisma.raw(kind==="callback"?'"CompletionCallback"':'"WebhookSubscription"'),active=kind==="callback"?Prisma.sql`state IN ('waiting','pending')`:Prisma.sql`status='active'`,after=page.after?Prisma.sql`AND ("createdAt",id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
- return tx.$queryRaw<Array<{id:string;at:Date;workspaceId:string}>>(Prisma.sql`SELECT id,"createdAt" AS at,"workspaceId" FROM ${table} WHERE ${active} AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY "createdAt",id LIMIT ${page.limit+1}`);
+ const table=Prisma.raw(kind==="callback"?'"CompletionCallback"':'"WebhookSubscription"'),active=kind==="callback"?Prisma.sql`state IN ('waiting','pending')`:Prisma.sql`status='active'`,after=page.after?Prisma.sql`AND ("createdAt",id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
+ return tx.$queryRaw<Array<{id:string;at:Date;workspaceId:string}>>(Prisma.sql`SELECT id,"createdAt" AS at,"workspaceId" FROM ${table} WHERE ${active} AND "createdAt"<=(${page.cutoff}::timestamp) ${after} ORDER BY "createdAt",id LIMIT ${page.limit+1}`);
 }
 function rebind(kind:Kind):ExecutionRestorePhaseHandler{return async(tx,page)=>{
  await assertExecutionRestorePage(tx,page);const found=await rows(tx,page,kind),selected=found.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);

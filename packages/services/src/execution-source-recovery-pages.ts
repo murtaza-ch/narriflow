@@ -4,13 +4,13 @@ import type { ExecutionRestorePage, ExecutionRestorePhaseHandler } from "./execu
 import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
 
 type Tx=Prisma.TransactionClient;
-const cursor=(page:ExecutionRestorePage,alias:string)=>page.after?Prisma.sql`AND (${Prisma.raw(`${alias}."createdAt"`)},${Prisma.raw(`${alias}.id`)})>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+const cursor=(page:ExecutionRestorePage,alias:string)=>page.after?Prisma.sql`AND (${Prisma.raw(`${alias}."createdAt"`)},${Prisma.raw(`${alias}.id`)})>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
 type Row={id:string;at:Date;projectId:string;workspaceId:string};
 async function candidates(tx:Tx,page:ExecutionRestorePage,table:"IngestJob"|"WorkflowRun"|"RenderGroup",active:Prisma.Sql){
   await assertExecutionRestorePage(tx,page);
   const project=table==="RenderGroup"?Prisma.sql`JOIN "WorkflowRun" parent ON parent.id=d."workflowRunId" JOIN "Project" p ON p.id=parent."projectId"`:Prisma.sql`JOIN "Project" p ON p.id=d."projectId"`;
   return tx.$queryRaw<Row[]>(Prisma.sql`SELECT d.id,d."createdAt" AS at,p.id AS "projectId",p."workspaceId" FROM ${Prisma.raw(`"${table}"`)} d ${project}
-    WHERE d."deploymentEpoch"<=${page.snapshotEpoch} AND (${active}) AND d."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${cursor(page,"d")}
+    WHERE d."deploymentEpoch"<=${page.snapshotEpoch} AND (${active}) AND d."createdAt"<=(${page.cutoff}::timestamp) ${cursor(page,"d")}
     ORDER BY d."createdAt",d.id LIMIT ${page.limit+1}`);
 }
 const outcome=(rows:Row[],page:ExecutionRestorePage)=>({processed:Math.min(rows.length,page.limit),next:rows.length>page.limit?rows[page.limit-1]!:null,dispatchIds:[]});

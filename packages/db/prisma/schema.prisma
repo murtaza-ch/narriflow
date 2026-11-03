@@ -805,7 +805,7 @@ model NotificationLedger {
   deploymentEpoch        Int       @default(1)
   generation             Int       @default(1)
   claimToken             String?   @db.Uuid
-  operationDeadlineAt    DateTime  @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+  operationDeadlineAt    DateTime  @default(dbgenerated("((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '23:00:00'::interval)"))
   deliveryInputEncrypted String?
   deliveryInputHash      String?
   submissionStartedAt    DateTime?
@@ -1439,7 +1439,7 @@ model ZoomOAuthState {
 model ZoomWebhookJob {
   deploymentEpoch     Int      @default(1)
   generation          Int      @default(1)
-  operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '30 days'::interval)"))
+  operationDeadlineAt DateTime @default(dbgenerated("((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '30 days'::interval)"))
   ruleCursor          String?  @db.Uuid
   executionTarget     Json?
   skippedTargets      Int      @default(0)
@@ -1965,7 +1965,7 @@ model ExportBundle {
   errorCode         String?
   createdAt         DateTime  @default(now())
   completedAt       DateTime?
-  operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '00:45:00'::interval)"))
+  operationDeadlineAt DateTime @default(dbgenerated("((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '00:45:00'::interval)"))
   /// The Workflow Run owns execution. This binds only the sealed capsule to its restore epoch.
   deploymentEpoch Int @default(1)
   inputBindingHash String?
@@ -2056,7 +2056,7 @@ model ReviewNotificationLedger {
   deploymentEpoch        Int       @default(1)
   generation             Int       @default(1)
   claimToken             String?   @db.Uuid
-  operationDeadlineAt    DateTime  @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+  operationDeadlineAt    DateTime  @default(dbgenerated("((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '23:00:00'::interval)"))
   deliveryInputEncrypted String?
   deliveryInputHash      String?
   submissionStartedAt    DateTime?
@@ -3855,7 +3855,7 @@ model GrantPauseNotificationLedger {
  deploymentEpoch Int @default(1)
  generation Int @default(1)
  claimToken String? @db.Uuid
- operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+ operationDeadlineAt DateTime @default(dbgenerated("((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '23:00:00'::interval)"))
  deliveryInputEncrypted String?
  deliveryInputHash String?
  deliveryContextFingerprint String?
@@ -3888,7 +3888,7 @@ model WebhookDisabledNotificationLedger {
  deploymentEpoch Int @default(1)
  generation Int @default(1)
  claimToken String? @db.Uuid
- operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+ operationDeadlineAt DateTime @default(dbgenerated("((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '23:00:00'::interval)"))
  deliveryInputEncrypted String?
  deliveryInputHash String?
  deliveryContextFingerprint String?

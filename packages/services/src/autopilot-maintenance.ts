@@ -14,7 +14,7 @@ async function validate(tx:Tx,page:MaintenancePage){
   if(!Number.isInteger(page.limit)||page.limit<1||page.limit>32||!date(page.cutoff)||page.after&&(!date(page.after.at)||page.after.at>page.cutoff||!uuid.test(page.after.id)||page.after.tie!==undefined))throw Error("autopilot_recovery_page_invalid");
   if((await readExecutionAdmission(tx)).epoch!==page.deploymentEpoch)throw Error("autopilot_recovery_epoch_superseded");
 }
-function after(page:MaintenancePage,alias:string){return page.after?Prisma.sql`AND (${Prisma.raw(alias)}."createdAt",${Prisma.raw(alias)}.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;}
+function after(page:MaintenancePage,alias:string){return page.after?Prisma.sql`AND (${Prisma.raw(alias)}."createdAt",${Prisma.raw(alias)}.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;}
 async function parents(tx:Tx,rows:Row[]){
   const ids=[...new Set(rows.flatMap(row=>row.workspaceId?[row.workspaceId]:[]))].sort();
   for(const id of ids)await lockWorkspaceUsage(tx,id);
@@ -25,7 +25,7 @@ function result(rows:Row[],limit:number,ids:string[]=[]){const dispatchIds=[...n
  * createdAt cursor before admission reopens. At most4*31 identifiers escape. */
 export const planAutopilotRecoveryPage:MaintenancePhaseHandler=async(tx,page)=>{
   await validate(tx,page);const limit=Math.min(31,page.limit);
-  const rows=await tx.$queryRaw<Row[]>`SELECT r.id,r."createdAt" AS at,r."workspaceId" FROM "AutopilotRule" r WHERE r."deploymentEpoch"=${page.deploymentEpoch} AND r."sourceKind"='rss' AND r.status IN ('active','running') AND r."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,"r")} ORDER BY r."createdAt",r.id LIMIT ${limit+1}`;
+  const rows=await tx.$queryRaw<Row[]>`SELECT r.id,r."createdAt" AS at,r."workspaceId" FROM "AutopilotRule" r WHERE r."deploymentEpoch"=${page.deploymentEpoch} AND r."sourceKind"='rss' AND r.status IN ('active','running') AND r."createdAt"<=(${page.cutoff}::timestamp) ${after(page,"r")} ORDER BY r."createdAt",r.id LIMIT ${limit+1}`;
   const selected=rows.slice(0,limit),ids:string[]=[];await parents(tx,selected);
   for(const row of selected)ids.push(...await recoverAutopilotRule(tx,row.id,`hourly_rss.${page.cutoff.getTime()}`));
   return result(rows,limit,ids);
@@ -34,7 +34,7 @@ export const planZoomNotificationRecoveryPage:MaintenancePhaseHandler=async(tx,p
   await validate(tx,page);const limit=page.limit;
   const rows=await tx.$queryRaw<Row[]>`SELECT j.id,j."createdAt" AS at,CASE WHEN j."executionTarget"->>'kind'='recording' THEN (j."executionTarget"#>>'{scope,workspaceId}')::uuid ELSE c."workspaceId" END AS "workspaceId"
     FROM "ZoomWebhookJob" j LEFT JOIN "ZoomConnection" c ON c.id=CASE WHEN j."executionTarget"->>'kind'='deauthorize' THEN (j."executionTarget"->>'connectionId')::uuid ELSE NULL END
-    WHERE j."deploymentEpoch"=${page.deploymentEpoch} AND j.status IN ('queued','running') AND j."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,"j")} ORDER BY j."createdAt",j.id LIMIT ${limit+1}`;
+    WHERE j."deploymentEpoch"=${page.deploymentEpoch} AND j.status IN ('queued','running') AND j."createdAt"<=(${page.cutoff}::timestamp) ${after(page,"j")} ORDER BY j."createdAt",j.id LIMIT ${limit+1}`;
   const selected=rows.slice(0,limit),ids:string[]=[];await parents(tx,selected);
   for(const row of selected)ids.push(...await recoverZoomNotification(tx,row.id,`hourly_zoom.${page.cutoff.getTime()}`));
   return result(rows,limit,ids);
@@ -43,7 +43,7 @@ export const planZoomNotificationRecoveryPage:MaintenancePhaseHandler=async(tx,p
  * original due/deadline, attempts and probes survive; no product IDs append. */
 export const planAutopilotRestorePage:ExecutionRestorePhaseHandler=async(tx,page)=>{
   await validate(tx,page);await assertExecutionRestorePage(tx,page);
-  const rows=await tx.$queryRaw<Row[]>`SELECT r.id,r."createdAt" AS at,r."workspaceId" FROM "AutopilotRule" r WHERE r."deploymentEpoch"<=${page.snapshotEpoch} AND r."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,"r")} ORDER BY r."createdAt",r.id LIMIT ${page.limit+1}`;
+  const rows=await tx.$queryRaw<Row[]>`SELECT r.id,r."createdAt" AS at,r."workspaceId" FROM "AutopilotRule" r WHERE r."deploymentEpoch"<=${page.snapshotEpoch} AND r."createdAt"<=(${page.cutoff}::timestamp) ${after(page,"r")} ORDER BY r."createdAt",r.id LIMIT ${page.limit+1}`;
   const selected=rows.slice(0,page.limit);await parents(tx,selected);
   for(const item of [...selected].sort((a,b)=>a.id.localeCompare(b.id))){
     await tx.$queryRaw`SELECT id FROM "AutopilotRule" WHERE id=${item.id}::uuid FOR NO KEY UPDATE`;
@@ -57,7 +57,7 @@ export const planZoomNotificationRestorePage:ExecutionRestorePhaseHandler=async(
   await validate(tx,page);await assertExecutionRestorePage(tx,page);
   const rows=await tx.$queryRaw<Row[]>`SELECT j.id,j."createdAt" AS at,CASE WHEN j."executionTarget"->>'kind'='recording' THEN (j."executionTarget"#>>'{scope,workspaceId}')::uuid ELSE c."workspaceId" END AS "workspaceId"
     FROM "ZoomWebhookJob" j LEFT JOIN "ZoomConnection" c ON c.id=CASE WHEN j."executionTarget"->>'kind'='deauthorize' THEN (j."executionTarget"->>'connectionId')::uuid ELSE NULL END
-    WHERE j."deploymentEpoch"<=${page.snapshotEpoch} AND j.status IN ('queued','running') AND j."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,"j")} ORDER BY j."createdAt",j.id LIMIT ${page.limit+1}`;
+    WHERE j."deploymentEpoch"<=${page.snapshotEpoch} AND j.status IN ('queued','running') AND j."createdAt"<=(${page.cutoff}::timestamp) ${after(page,"j")} ORDER BY j."createdAt",j.id LIMIT ${page.limit+1}`;
   const selected=rows.slice(0,page.limit);await parents(tx,selected);
   for(const item of [...selected].sort((a,b)=>a.id.localeCompare(b.id))){
     await tx.$queryRaw`SELECT id FROM "ZoomWebhookJob" WHERE id=${item.id}::uuid FOR NO KEY UPDATE`;
