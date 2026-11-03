@@ -838,6 +838,116 @@ console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{}
       package: (request = preparation.verified()) => execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: request }) };
   }
 
+  test("independent render groups authorize and start while a sibling grant is open", async () => {
+    const f = await fixture(false, undefined, false, true);
+    const preparations = [await native(f, 0), await native(f, 1)];
+    for (const n of preparations) for (const role of ["preview", "peaks", "manifest"] as const) await n.send(n.commit(n[role]));
+    const service = renderService(f);
+    const storage = createExecutionStorage({ accountId: "a".repeat(32), bucket: "fixture-render", accessKeyId: "fixture", secretAccessKey: "fixture" });
+    const execution = createRenderGroupExecution({ database: db, service, storage,
+      artifacts: { head: async () => null, readJson: async () => { throw Error("No render result requested"); } }, deliverWakes: async () => {} });
+    const fences = [];
+    for (const reference of f.references) {
+      const admitted = await service.prepareExecution(reference);
+      if (admitted.kind !== "waiting") throw Error("Missing independent render admission");
+      const fence = { reference: admitted.deadline.reference, attemptToken: admitted.deadline.attemptToken, owner: crypto.randomUUID() };
+      await execution.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: preparations[0]!.verified() });
+      fences.push(fence);
+    }
+    let entered!: () => void, release!: () => void;
+    const locked = new Promise<void>(resolve => { entered = resolve; });
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const holding = execution.control.withAuthority(fences[0]!, false, async () => { entered(); await unlock; });
+    await locked;
+    const pending = (async () => {
+      await execution.control.authorize(fences[1]!, false);
+      await execution.control.execute({ command: { action: "process-start", fence: fences[1]! }, verifiedRequest: preparations[1]!.verified() });
+      return "started";
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      expect(await Promise.race([pending, new Promise<string>(resolve => { timer = setTimeout(() => resolve("blocked_by_sibling"), 1000); })])).toBe("started");
+    } finally {
+      clearTimeout(timer); release(); await holding; await pending; storage.close();
+    }
+    expect((await db.renderGroup.findUniqueOrThrow({ where: { id: f.references[0]!.subject.id } })).chargedAttemptCount).toBe(0);
+    expect((await db.renderGroup.findUniqueOrThrow({ where: { id: f.references[1]!.subject.id } })).chargedAttemptCount).toBe(1);
+  });
+
+  for (const change of ["workspace", "source", "parent", "editor"] as const)
+    test(`render grants fence an exclusive ${change} writer until publication`, async () => {
+      const r = await renderPackageFixture();
+      const writer = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 5000, maxWait: 1000 } });
+      const [backend] = await writer.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      const original = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } });
+      let entered!: () => void, release!: () => void;
+      const locked = new Promise<void>(resolve => { entered = resolve; });
+      const unlock = new Promise<void>(resolve => { release = resolve; });
+      const holding = r.execution.control.withAuthority(r.fence, false, async () => { entered(); await unlock; });
+      await locked;
+      const mutation = writer.$transaction(async tx => {
+        if (change === "workspace") {
+          await lockWorkspaceUsage(tx, r.f.workspace.id);
+          await tx.workspace.update({ where: { id: r.f.workspace.id }, data: { status: "restricted" } });
+        } else if (change === "source") {
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${r.f.project.id}, 0)) IS NULL AS locked`;
+          await tx.project.update({ where: { id: r.f.project.id }, data: { sourceRevision: { increment: 1 } } });
+        } else if (change === "parent") await tx.workflowRun.update({ where: { id: r.f.run.id }, data: { status: "failed" } });
+        else await tx.clip.update({ where: { id: r.f.clip.id }, data: { editorRevision: { increment: 1 } } });
+      });
+      try {
+        let waiting = false;
+        for (let tries = 0; tries < 100; tries++) {
+          const [state] = await db.$queryRaw<Array<{ waiting: boolean }>>`SELECT wait_event_type = 'Lock' AS waiting FROM pg_stat_activity WHERE pid = ${backend!.pid}`;
+          if (state?.waiting) { waiting = true; break; }
+          await Bun.sleep(10);
+        }
+        expect(waiting).toBe(true);
+        release(); await holding; await mutation;
+        await expect(r.package()).rejects.toMatchObject({ code: "authority_lost" });
+        expect(await db.executionArtifact.count({ where: { attemptToken: r.fence.attemptToken } })).toBe(0);
+        expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: r.fence.attemptToken } })).operationDeadlineAt).toEqual(original.operationDeadlineAt);
+        expect((await db.renderGroup.findUniqueOrThrow({ where: { id: r.fence.reference.subject.id } })).chargedAttemptCount).toBe(0);
+      } finally {
+        release(); await holding.catch(() => {}); await mutation.catch(() => {}); await writer.$disconnect(); r.storage.close();
+      }
+    });
+
+  test("a source change before shared fences refuses without upgrading and the next command cancels the stale batch", async () => {
+    const r = await renderPackageFixture();
+    const writer = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 5000, maxWait: 1000 } });
+    const [backend] = await writer.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+    let entered!: () => void, release!: () => void;
+    const locked = new Promise<void>(resolve => { entered = resolve; });
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const holding = writer.$transaction(async tx => { await lockWorkspaceUsage(tx, r.f.workspace.id); entered(); await unlock; });
+    await locked;
+    const pending = r.execution.control.authorize(r.fence, false).then(() => "authorized", (error: { code?: string }) => error.code);
+    try {
+      let waiting = false;
+      for (let tries = 0; tries < 100; tries++) {
+        const [state] = await db.$queryRaw<Array<{ waiting: boolean }>>`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE ${backend!.pid} = ANY(pg_blocking_pids(pid))) AS waiting`;
+        if (state?.waiting) { waiting = true; break; }
+        await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+      await db.$transaction(async tx => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${r.f.project.id}, 0)) IS NULL AS locked`;
+        await tx.project.update({ where: { id: r.f.project.id }, data: { sourceRevision: { increment: 1 } } });
+      });
+      release(); await holding;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { expect(await Promise.race([pending, new Promise<string>(resolve => { timer = setTimeout(() => resolve("parent_lock_upgrade_blocked"), 1000); })])).toBe("authority_lost"); }
+      finally { clearTimeout(timer); }
+      const result = await r.execution.control.execute({ command: { action: "read-disposition", fence: r.fence }, verifiedRequest: r.preparation.verified() });
+      expect(result.disposition).toBe("superseded");
+      expect(await db.renderGroup.count({ where: { workflowRunId: r.f.run.id, status: "superseded" } })).toBe(2);
+      expect(await db.executionArtifact.count({ where: { attemptToken: r.fence.attemptToken } })).toBe(0);
+    } finally {
+      release(); await holding.catch(() => {}); await pending; await writer.$disconnect(); r.storage.close();
+    }
+  });
+
   for (const changed of ["cancelled", "lease", "deadline", "source", "source_key", "editor", "retention", "workspace", "attempt_sha", "group_sha", "group_etag", "group_size", "group_key", "epoch"] as const)
     test(`RenderGroup fences refuse ${changed} during capsule I/O without assigning outputs or extending history`, async () => {
       const r = await renderPackageFixture(), token = r.fence.attemptToken, groupId = r.fence.reference.subject.id;

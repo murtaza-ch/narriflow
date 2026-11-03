@@ -438,8 +438,9 @@ export class RenderGroupLifecycle {
       }
     }
   }
-  private async lockParent(tx: Tx, ref: RenderGroupRef) {
-    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${ref.workflowRunId}::uuid FOR UPDATE`;
+  private async lockParent(tx: Tx, ref: RenderGroupRef, mode: "shared" | "exclusive" = "shared") {
+    if (mode === "exclusive") await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${ref.workflowRunId}::uuid FOR UPDATE`;
+    else await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${ref.workflowRunId}::uuid FOR SHARE`;
     const parent = await tx.workflowRun.findUnique({ where: { id: ref.workflowRunId } });
     return parent?.stage === "clip_rendering" &&
       ["queued", "running", "waiting"].includes(parent.status) &&
@@ -469,16 +470,26 @@ export class RenderGroupLifecycle {
   }
   /** Root executor control holds the epoch lock before entering this domain. */
   private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
-    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; now: Date; clip: { id: string; editorRevision: number } | null; clipExists: boolean; members: MemberSnapshot[] } |
+    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; parentLockMode: "shared" | "exclusive"; now: Date; clip: { id: string; editorRevision: number } | null; clipExists: boolean; members: MemberSnapshot[] } |
     { kind: "terminal"; disposition: ExecutionDisposition }
   > {
     if (reference.subject.kind !== "render_group") return { kind: "terminal", disposition: { disposition: "superseded" } };
-    const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, include: { workflowRun: { include: { project: { select: { workspaceId: true } } } } } });
+    const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, include: {
+      workflowRun: { include: { project: { select: { workspaceId: true, sourceRevision: true } } } },
+      preparation: { select: { projectId: true, clipId: true, deploymentEpoch: true, sourceRevision: true } },
+    } });
     if (!initial) return { kind: "terminal", disposition: { disposition: "superseded" } };
-    await lockWorkspaceUsage(tx, initial.workflowRun.project.workspaceId);
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.workflowRun.projectId}, 0)) IS NULL AS "locked"`;
+    // Child commands mutate their own group, not their shared parent or usage.
+    // A known stale source still takes the exclusive batch-cancellation fence.
+    const staleSource = initial.preparation && (initial.preparation.projectId !== initial.workflowRun.projectId ||
+      initial.preparation.clipId !== initial.clipId || initial.preparation.deploymentEpoch !== initial.deploymentEpoch ||
+      initial.preparation.sourceRevision !== initial.workflowRun.project.sourceRevision);
+    const parentLockMode = staleSource ? "exclusive" as const : "shared" as const;
+    await lockWorkspaceUsage(tx, initial.workflowRun.project.workspaceId, "shared");
+    if (staleSource) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.workflowRun.projectId}, 0)) IS NULL AS "locked"`;
+    else await tx.$queryRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${initial.workflowRun.projectId}, 0)) IS NULL AS "locked"`;
     const groupRef = { groupId: initial.id, workflowRunId: initial.workflowRunId, workSetGeneration: initial.workSetGeneration };
-    const parent = await this.lockParent(tx, groupRef);
+    const parent = await this.lockParent(tx, groupRef, parentLockMode);
     await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${initial.id}::uuid FOR UPDATE`;
     const group = await tx.renderGroup.findUnique({ where: { id: initial.id } });
     if (!parent || !group || group.deploymentEpoch !== reference.deploymentEpoch || parent.deploymentEpoch !== reference.deploymentEpoch ||
@@ -489,10 +500,10 @@ export class RenderGroupLifecycle {
     if (group.status === "superseded") return { kind: "terminal", disposition: { disposition: "superseded" } };
     if (group.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "render_group_failed" } };
     if (group.status === "running" && group.attemptToken !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
-    const clips = await tx.$queryRaw<Array<{ id: string; editorRevision: number }>>`SELECT id, "editorRevision" FROM "Clip" WHERE id = ${group.clipId}::uuid AND "projectId" = ${parent.projectId}::uuid FOR KEY SHARE`;
+    const clips = await tx.$queryRaw<Array<{ id: string; editorRevision: number }>>`SELECT id, "editorRevision" FROM "Clip" WHERE id = ${group.clipId}::uuid AND "projectId" = ${parent.projectId}::uuid FOR SHARE`;
     const members = await memberSnapshot(tx, groupRef);
     const now = await renderGroupDatabaseNow(tx);
-    return { kind: "current", clip: clips[0] ?? null, clipExists: clips.length === 1, ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, now, members };
+    return { kind: "current", clip: clips[0] ?? null, clipExists: clips.length === 1, ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, parentLockMode, now, members };
   }
 
   async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<RenderGroupExecutionReference>> {
@@ -518,6 +529,10 @@ export class RenderGroupLifecycle {
     const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true, sourceRevision: true, sourceStorageKey: true, expiresAt: true } });
     const preparation = state.group.preparationId ? await tx.clipPreparation.findUnique({ where: { id: state.group.preparationId }, select: { sourceRevision: true, projectId: true, clipId: true, deploymentEpoch: true, bindingHash: true } }) : null;
     if (project && preparation && (preparation.sourceRevision !== project.sourceRevision || preparation.projectId !== project.id || preparation.clipId !== state.group.clipId || preparation.deploymentEpoch !== state.group.deploymentEpoch)) {
+      // A source change can win before the shared Project fence is acquired.
+      // Refuse it without upgrading a parent lock beneath sibling readers.
+      // The existing watchdog rechecks the stale source with the batch fence.
+      if (state.parentLockMode !== "exclusive") return { kind: "terminal", disposition: { disposition: "superseded" }, dispatchIds: await this.recordedExecutionWakes(tx, reference) };
       await cancelRenderGroupsWithinTransaction(tx, state.parent.id);
       return { kind: "terminal", disposition: { disposition: "superseded" }, ...(await this.executionWakes(tx, state.ref, reference.inputHash, false)) };
     }
