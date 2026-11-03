@@ -321,11 +321,12 @@ export class ClipPreparationService {
     // No usage, Project or parent mutation occurs in a preparation command.
     // Shared locks still conflict with billing, admission, source replacement
     // and cancellation writers; only this preparation and its Clip are mutable.
+    // Protect Project deletion without blocking its event-counter updates.
     await lockWorkspaceUsage(tx, initial.workspaceId, "shared");
     await tx.$queryRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${initial.projectId}, 0)) IS NULL AS locked`;
     const [job] = await tx.$queryRaw<ClipPreparation[]>`
       WITH project_lock AS MATERIALIZED (
-        SELECT id FROM "Project" WHERE id = ${initial.projectId}::uuid FOR SHARE
+        SELECT id FROM "Project" WHERE id = ${initial.projectId}::uuid FOR KEY SHARE
       )
       SELECT preparation.* FROM "ClipPreparation" preparation JOIN project_lock project ON project.id = preparation."projectId"
       WHERE preparation.id = ${initial.id}::uuid FOR UPDATE OF preparation`;

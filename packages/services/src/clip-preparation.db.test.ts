@@ -948,6 +948,62 @@ console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{}
     }
   });
 
+  test("a frozen export starts while a newer preparation waits for the same Clip", async () => {
+    const r = await renderPackageFixture(true);
+    const clip = await db.clip.update({ where: { id: r.f.clip.id }, data: { editorRevision: { increment: 1 } } });
+    const workSetGeneration = crypto.randomUUID();
+    const run = await db.workflowRun.create({ data: { projectId: r.f.project.id, stage: "clip_rendering", status: "waiting", idempotencyKey: crypto.randomUUID(),
+      deploymentEpoch: r.f.run.deploymentEpoch, renderWorkSetGeneration: workSetGeneration, renderWorkSetFrozenAt: new Date(), requestedCount: 1 } });
+    const variant = await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, editorRevision: clip.editorRevision, aspectRatio: "ratio_9_16", resolution: "720p" } });
+    const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, deploymentEpoch: run.deploymentEpoch,
+      exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId: null, editorRevision: clip.editorRevision, resolution: "720p", watermark: true }), members: { create: { clipRenderId: variant.id } } } });
+    const nextReference = (await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: run.deploymentEpoch, generation: 1, kind: "operation_driver",
+      subject: { kind: "render_group", id: group.id }, inputHash: "d".repeat(64), dueAt: group.createdAt }))).reference;
+    const next = await native({ ...r.f, clip, run, references: [nextReference] });
+    expect(next.admitted.preparationId).not.toBe(r.preparation.admitted.preparationId);
+    const blocker = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }, { schema: process.env.SERVERLESS_TEST_DATABASE_SCHEMA! }), transactionOptions: { timeout: 10000, maxWait: 1000 } });
+    const [backend] = await blocker.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+    let entered!: () => void, release!: () => void;
+    const locked = new Promise<void>(resolve => { entered = resolve; });
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const holding = blocker.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${r.fence.attemptToken}::uuid FOR UPDATE`;
+      entered(); await unlock;
+    });
+    await locked;
+    const observed = (promise: Promise<unknown>) => promise.then(() => "completed", (error: unknown) => error instanceof Error && error.message.includes("deadlock") ? "deadlock_detected" : "command_failed");
+    const rendering = observed(r.execution.control.execute({ command: { action: "process-start", fence: r.fence }, verifiedRequest: r.preparation.verified() }));
+    let preparing: Promise<string> | undefined;
+    try {
+      let renderPid: number | undefined;
+      for (let tries = 0; tries < 100; tries++) {
+        const rows = await db.$queryRaw<Array<{ pid: number }>>`SELECT pid FROM pg_stat_activity WHERE ${backend!.pid}=ANY(pg_blocking_pids(pid))`;
+        if (rows[0]) { renderPid = rows[0].pid; break; }
+        await Bun.sleep(10);
+      }
+      expect(renderPid).toBeDefined();
+      preparing = observed(next.control.authorize(next.fence));
+      let waitingForClip = false;
+      for (let tries = 0; tries < 100; tries++) {
+        const [state] = await db.$queryRaw<Array<{ waiting: boolean }>>`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE ${renderPid!}=ANY(pg_blocking_pids(pid))) AS waiting`;
+        if (state?.waiting) { waitingForClip = true; break; }
+        await Bun.sleep(10);
+      }
+      expect(waitingForClip).toBe(true);
+      release(); await holding;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const result = await Promise.race([Promise.all([rendering, preparing]).then(values => values.join("/")),
+          new Promise<string>(resolve => { timer = setTimeout(() => resolve("cross_domain_lock_cycle"), 2000); })]);
+        expect(result).toBe("completed/completed");
+      } finally { clearTimeout(timer); }
+      expect((await db.renderGroup.findUniqueOrThrow({ where: { id: r.fence.reference.subject.id } })).chargedAttemptCount).toBe(1);
+      expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: next.admitted.preparationId } })).chargedAttempts).toBe(1);
+    } finally {
+      release(); await holding.catch(() => {}); await rendering; await preparing; await blocker.$disconnect(); r.storage.close();
+    }
+  });
+
   for (const changed of ["cancelled", "lease", "deadline", "source", "source_key", "editor", "retention", "workspace", "attempt_sha", "group_sha", "group_etag", "group_size", "group_key", "epoch"] as const)
     test(`RenderGroup fences refuse ${changed} during capsule I/O without assigning outputs or extending history`, async () => {
       const r = await renderPackageFixture(), token = r.fence.attemptToken, groupId = r.fence.reference.subject.id;
