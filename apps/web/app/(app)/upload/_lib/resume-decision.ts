@@ -8,8 +8,8 @@ export type ResumeDecision =
   /** No project in the link: a fresh import. */
   | { kind: "fresh" }
   | { kind: "resume"; data: LinkResumeData }
-  /** Configure finished; wait for its rendered outputs before opening the Project. */
-  | { kind: "processing"; projectId: string }
+  /** Configure already finished; the Project page is where this import lives now. */
+  | { kind: "open_project"; projectId: string }
   /** Nothing to resume (missing, not a link import, no draft): start over at `/upload`. */
   | { kind: "restart" }
   /** The Project belongs to another Workspace; switching is the person's choice, never automatic. */
@@ -21,7 +21,7 @@ export function decideResume(projectId: string, result: LinkResumeResult): Resum
     case "resume":
       return { kind: "resume", data: result.data };
     case "open_project":
-      return { kind: "processing", projectId };
+      return { kind: "open_project", projectId };
     case "restart":
       return { kind: "restart" };
   }

@@ -6,7 +6,7 @@ const failure = (code: string, status: number) => new ApiError({ code, message: 
 
 describe("upload resume decisions", () => {
   test("a finished Configure waits for rendered clips before opening the Project, an empty draft restarts", () => {
-    expect(decideResume("p1", { outcome: "open_project" })).toEqual({ kind: "processing", projectId: "p1" });
+    expect(decideResume("p1", { outcome: "open_project" })).toEqual({ kind: "open_project", projectId: "p1" });
     expect(decideResume("p1", { outcome: "restart" })).toEqual({ kind: "restart" });
   });
 

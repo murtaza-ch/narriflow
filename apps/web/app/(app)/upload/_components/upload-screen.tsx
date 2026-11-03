@@ -14,7 +14,6 @@ import { decideResume, decideResumeFailure, deniedImportDestination, type Resume
 import { type SourcePickerConfig, sourcePickerConfig } from "../_lib/source-pickers";
 import UploadLoading from "../loading";
 import { UploadShell } from "./upload-shell";
-import { ImportProgress } from "./import-progress";
 
 /** Cloud pickers are configured by the deployment's public keys, which never leave web. */
 const SOURCE_PICKERS: SourcePickerConfig = sourcePickerConfig({
@@ -62,9 +61,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
   const [decision, setDecision] = useState<ResumeDecision>(
     openedWith.projectId ? { kind: "pending" } : { kind: "fresh" },
   );
-  const [startedProjectId, setStartedProjectId] = useState<string | null>(null);
   const [deviceSessionState, setDeviceSessionState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-  const processingProjectId = decision.kind === "processing" ? decision.projectId : startedProjectId;
   // Nothing to resume starts over, as the old redirect to /upload did: the link's other settings go too.
   const entry = decision.kind === "restart" ? FRESH_ENTRY : openedWith;
 
@@ -88,6 +85,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
   }, [denied, router]);
 
   useEffect(() => {
+    if (decision.kind === "open_project") router.replace(`/projects/${decision.projectId}`);
     if (decision.kind === "restart") router.replace("/upload");
   }, [decision, router]);
 
@@ -133,7 +131,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
       />
     );
   }
-  if (!configuration.data || decision.kind === "pending") {
+  if (!configuration.data || decision.kind === "pending" || decision.kind === "open_project") {
     return <UploadLoading />;
   }
 
@@ -141,7 +139,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
   return (
     <IntakeProvider scope={scope}>
       <Stack gap={{ base: "6", md: "7" }} maxW="1080px" mx="auto">
-        {youtubeImport.deviceSetupAvailable && !processingProjectId && <Box>
+        {youtubeImport.deviceSetupAvailable && <Box>
           <Button size="sm" variant="subtle" disabled={deviceSessionState === "saving"} onClick={async () => {
             setDeviceSessionState("saving");
             try {
@@ -154,24 +152,19 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
           <Text fontSize="sm" color="fg.muted">{deviceSessionState === "saved" ? "Session file saved. Start the development fetch agent with this file, then refresh this page." : deviceSessionState === "failed" ? "Device session could not be created. Try again." : "A session lasts two hours and replaces the connected development device."}</Text>
         </Box>}
         <Box animation="fade-up" style={{ animationDelay: "60ms" }} animationFillMode="backwards">
-          {processingProjectId ? (
-            <ImportProgress projectId={processingProjectId} />
-          ) : (
-            <UploadShell
-              recipes={recipes}
-              brandTemplates={brandTemplates}
-              brandProfiles={brandProfiles}
-              initialUrl={entry.url}
-              initialSource={entry.source}
-              initialMode={entry.mode}
-              resumeData={decision.kind === "resume" ? decision.data : null}
-              usageSummary={usageSummary}
-              youtubeImportAvailable={youtubeImport.available}
-              youtubeImportUnavailableMessage={youtubeImport.reason === "local_fetch_offline" ? "Your development fetch device is offline. Connect it or upload the video instead." : "YouTube import is unavailable. Upload the video instead."}
-              sourcePickers={SOURCE_PICKERS}
-              onGenerating={setStartedProjectId}
-            />
-          )}
+          <UploadShell
+            recipes={recipes}
+            brandTemplates={brandTemplates}
+            brandProfiles={brandProfiles}
+            initialUrl={entry.url}
+            initialSource={entry.source}
+            initialMode={entry.mode}
+            resumeData={decision.kind === "resume" ? decision.data : null}
+            usageSummary={usageSummary}
+            youtubeImportAvailable={youtubeImport.available}
+            youtubeImportUnavailableMessage={youtubeImport.reason === "local_fetch_offline" ? "Your development fetch device is offline. Connect it or upload the video instead." : "YouTube import is unavailable. Upload the video instead."}
+            sourcePickers={SOURCE_PICKERS}
+          />
         </Box>
       </Stack>
     </IntakeProvider>
