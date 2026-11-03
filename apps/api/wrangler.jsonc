@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "narriflow-api-candidate",
+  "name": "narriflow-api-dev",
   "account_id": "5359f28d385b8632c3abee12d1f5b011",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-30",
@@ -20,20 +20,19 @@
   "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }, { "name": "LOCAL_FETCH_MAILBOX", "class_name": "LocalFetchMailbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress", "LocalFetchMailbox"] }],
   "workflows": [
-    { "binding": "IMPORT_PIPELINE", "name": "narriflow-import-candidate", "class_name": "ImportPipeline" },
-    { "binding": "RENDER_RUN", "name": "narriflow-render-candidate", "class_name": "RenderRun" },
-    { "binding": "OPERATION_DRIVER", "name": "narriflow-operation-candidate", "class_name": "OperationDriver" },
-    { "binding": "MAINTENANCE", "name": "narriflow-maintenance-candidate", "class_name": "Maintenance" }
+    { "binding": "IMPORT_PIPELINE", "name": "narriflow-import-dev", "class_name": "ImportPipeline" },
+    { "binding": "RENDER_RUN", "name": "narriflow-render-dev", "class_name": "RenderRun" },
+    { "binding": "OPERATION_DRIVER", "name": "narriflow-operation-dev", "class_name": "OperationDriver" },
+    { "binding": "MAINTENANCE", "name": "narriflow-maintenance-dev", "class_name": "Maintenance" }
   ],
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "dev": { "port": 4000 },
   "hyperdrive": [
-    { "binding": "HYPERDRIVE", "id": "89ce779c45464717afa3398590d531c5" }
+    { "binding": "HYPERDRIVE", "id": "52c739ac003143d8b1fc07d2603b68ad" }
   ],
   "r2_buckets": [
     { "binding": "MEDIA_BUCKET", "bucket_name": "narriflow-dev" }
   ],
-  // Admission stays closed until the domain handler registry and acceptance
-  // gates integrate. Unknown Workflow subjects fail explicitly.
-  "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "development", "TRUSTED_CLIENT_IP_HEADER": "cf-connecting-ip" }
+  // PostgreSQL admission is reopened only after migrations and runtime wiring.
+  "vars": { "ADMISSION_STATE": "open", "APP_ENV": "development", "TRUSTED_CLIENT_IP_HEADER": "cf-connecting-ip" }
 }

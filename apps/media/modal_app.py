@@ -15,7 +15,7 @@ import modal
 
 MEDIA_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = MEDIA_ROOT.parent.parent
-app = modal.App("narriflow-media")
+app = modal.App("narriflow-media-dev")
 
 
 def image(profile: str) -> modal.Image:
@@ -32,12 +32,12 @@ def image(profile: str) -> modal.Image:
 
 lean_image = image("lean")
 render_image = image("render")
-executor_secret = modal.Secret.from_name("narriflow-executor-control", required_keys=["API_ORIGIN", "EXECUTOR_CONTROL_KEY_ID", "EXECUTOR_CONTROL_KEYS_JSON"])
-bridge_secret = modal.Secret.from_name("narriflow-modal-bridge", required_keys=["MODAL_BRIDGE_KEYS_JSON"])
-youtube_secret = modal.Secret.from_name("narriflow-youtube-fetch", required_keys=["YOUTUBE_FETCH_MODE"])
-image_secret = modal.Secret.from_name("narriflow-image-generation", required_keys=["OPENAI_API_KEY"])
-dubbing_secret = modal.Secret.from_name("narriflow-dubbing", required_keys=["OPENAI_API_KEY"])
-dispatch_receipts = modal.Dict.from_name("narriflow-dispatch-receipts-v1", create_if_missing=True)
+executor_secret = modal.Secret.from_name("narriflow-dev-executor-control", required_keys=["API_ORIGIN", "EXECUTOR_CONTROL_KEY_ID", "EXECUTOR_CONTROL_KEYS_JSON"])
+bridge_secret = modal.Secret.from_name("narriflow-dev-modal-bridge", required_keys=["MODAL_BRIDGE_KEYS_JSON"])
+youtube_secret = modal.Secret.from_name("narriflow-dev-youtube-fetch", required_keys=["YOUTUBE_FETCH_MODE"])
+image_secret = modal.Secret.from_name("narriflow-dev-image-generation", required_keys=["OPENAI_API_KEY"])
+dubbing_secret = modal.Secret.from_name("narriflow-dev-dubbing", required_keys=["OPENAI_API_KEY"])
+dispatch_receipts = modal.Dict.from_name("narriflow-dev-dispatch-receipts-v1", create_if_missing=True)
 
 # One active input per container is Modal's default without @modal.concurrent.
 # CPU requests are physical cores. Tuple limits bound both compute and memory.
@@ -222,7 +222,7 @@ async def generated_image(invocation: dict) -> dict:
 
 
 @app.function(image=lean_image, secrets=[bridge_secret], timeout=30, **BRIDGE_RESOURCES)
-@modal.asgi_app(label="narriflow-media-bridge")
+@modal.asgi_app(label="narriflow-media-dev-bridge")
 def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge
     from narriflow_media.bridge_runtime import ModalBackend, ModalDictStore, parse_bridge_keys

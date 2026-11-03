@@ -2,7 +2,7 @@
 
 The serverless code uses local Next.js, a local Cloudflare API through Wrangler, one deployed Worker/Workflows environment and Modal Functions. The browser calls the API origin directly. Human links use the web origin. See [ADR0019](../adr/0019-serverless-execution.md).
 
-The cutover is still in progress. Candidate resources below are isolated from the shared development database. The shared migration, API routing switch, old-consumer retirement and admission reopening have not been accepted. Follow [the cutover record](serverless-cutover.md) before changing these selections.
+The owner-directed development switch is in progress as of 2026-11-04. The original shared database has all163 migrations applied after backup and a successful local rehearsal. Users, Workspaces, Projects and Clips were preserved. The candidate remains isolated and closed. Full performance and end-to-end acceptance is deferred to owner testing; see [the cutover record](serverless-cutover.md).
 
 ## Resource selections
 
@@ -12,13 +12,13 @@ The cutover is still in progress. Candidate resources below are isolated from th
 | Branch | `production`, `br-twilight-surf-b5rozv0y` | `br-little-tooth-b5mlaj9i` |
 | Database | `neondb` | `serverless_pipeline_gates` |
 | Direct endpoint | `ep-rough-hill-b57kvyah.c-7.us-east-2.aws.neon.tech` | `ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech` |
-| API | Routing switch pending | `https://narriflow-api-candidate.murtazach275.workers.dev` |
-| Hyperdrive | Final selection pending | `89ce779c45464717afa3398590d531c5`, caching off |
-| Modal | Final deployment selection pending | Workspace `murtazach275`, environment `main`, app `narriflow-media-gates` |
+| API | `https://narriflow-api-dev.murtazach275.workers.dev` | `https://narriflow-api-candidate.murtazach275.workers.dev` |
+| Hyperdrive | `52c739ac003143d8b1fc07d2603b68ad`, caching off, origin limit5 | `89ce779c45464717afa3398590d531c5`, caching off |
+| Modal | Workspace `murtazach275`, environment `main`, app `narriflow-media-dev` | Workspace `murtazach275`, environment `main`, app `narriflow-media-gates` |
 | Storage | Private R2 `narriflow-dev` | Same bucket, exact owned fixture namespaces |
 | Web | `https://narriflow-dev.vercel.app` | Local web or explicit candidate origin |
 
-Cloudflare account `5359f28d385b8632c3abee12d1f5b011` belongs to `murtazach275@gmail.com`. Use that account for Wrangler, bindings and R2. The candidate has admission closed. Do not use a shared-database local API with the isolated candidate's scheduler binding.
+Cloudflare account `5359f28d385b8632c3abee12d1f5b011` belongs to `murtazach275@gmail.com`. Use that account for Wrangler, bindings and R2. The candidate has admission closed. Shared Workflows are `narriflow-import-dev`, `narriflow-render-dev`, `narriflow-operation-dev` and `narriflow-maintenance-dev`. Its bridge is `https://murtazach275--narriflow-media-dev-bridge.us-east.modal.run`. Both HTTP and PostgreSQL admission remain closed during migration and deployment wiring; the final versioned configuration reopens HTTP for the owner-directed switch. Do not use a shared-database local API with the isolated candidate's scheduler binding.
 
 The retiring infrastructure is Railway project `3dbc2617-db01-4c86-a3f7-2d5b2ae5bc00`, environment `a7248225-c37b-4054-80a3-045424c006a0`, API `ba6b549f-56b3-4df3-9c24-91f5dfa4ee3b` and worker `194b54c2-54c8-41ff-ac1f-1d496e1611b7`. The prior API origin is `https://narriflowapi-dev.up.railway.app`. Upstash `narriflow-dev-live` has ID `af538fa1-440d-47ed-896e-c78ae9a6a409`. These identifiers are retained for the explicit stop/revoke/delete procedure, not for starting old consumers.
 

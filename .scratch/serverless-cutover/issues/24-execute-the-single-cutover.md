@@ -4,7 +4,7 @@
 
 **Blocked by:** 23 + owner prerequisites
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -22,3 +22,7 @@ Cutover still requires the deployed close/open smokes, merged manual Publish aga
 guard, finishing-driver parking and removal of obsolete scanner admissions before
 relying on this switch. Verify old consumers cannot admit while closed, and reopen
 once only after migration and runtime gates pass. Product code has no test bypass.
+
+## Owner direction, 2026-11-04
+
+The owner requested stopping the large-transfer test and proceeding with the latest migration, development deployment and retirement, with product testing performed by the owner. Run backup/rehearsal and essential resource-wiring checks. Preserve failed and deferred gates; this development switch does not satisfy the full original production acceptance matrix.
