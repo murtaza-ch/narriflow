@@ -5,8 +5,9 @@ export { workerServiceEnvironment } from "./worker-services";
 import { healthResponse } from "./domains/platform/health";
 import type { ApiWorkerBindings } from "./worker-bindings";
 import { executionRegistrationReceipt, ExecutionRegistrationPendingError, withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
-import { failureResponse } from "./http/errors";
-import { continuesAcceptedWork } from "./http/drain";
+import { continuesAcceptedWork, drainingResponse } from "./http/drain";
+import { firstPartyRefusalHeaders } from "./http/cors";
+import { loadCorsAllowedOrigins } from "./config";
 import { readExecutionRegistrationReceipt, executionRegistrationFailureResponse } from "./http/execution-registration";
 
 interface WorkerApiApp {
@@ -27,8 +28,18 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
       if (request.method === "GET" && path === "/api/health") {
         return healthResponse(bindings.CF_VERSION_METADATA?.id ?? "dev", crypto.randomUUID(), bindings.ADMISSION_STATE);
       }
-      if (bindings.ADMISSION_STATE === "fenced" || bindings.ADMISSION_STATE === "closed" && !continuesAcceptedWork(request.method,path)) return failureResponse({ code: "server_draining", category: "unavailable", status: 503,
-        message: "The service is restarting. Try again shortly.", requestId: crypto.randomUUID(), retryAfterSeconds: 5 });
+      if (bindings.ADMISSION_STATE === "fenced" || bindings.ADMISSION_STATE === "closed" && !continuesAcceptedWork(request.method,path)) {
+        let headers: Record<string, string> = {};
+        if (bindings.ADMISSION_STATE === "closed") {
+          try {
+            headers = firstPartyRefusalHeaders(loadCorsAllowedOrigins({
+              CORS_ALLOWED_ORIGINS: typeof bindings.CORS_ALLOWED_ORIGINS === "string" ? bindings.CORS_ALLOWED_ORIGINS : undefined,
+              WEB_ORIGIN: typeof bindings.WEB_ORIGIN === "string" ? bindings.WEB_ORIGIN : undefined,
+            }))(request);
+          } catch { /* Invalid origin settings keep the refusal closed. */ }
+        }
+        return drainingResponse(request, { state: bindings.ADMISSION_STATE, requestId: crypto.randomUUID(), headers });
+      }
       const environment = workerServiceEnvironment(bindings);
       // MCP callbacks can continue after fetch returns an SSE Response. Capture
       // settings and a factory, never a Prisma client or an open socket.

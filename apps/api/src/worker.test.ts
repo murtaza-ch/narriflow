@@ -41,6 +41,58 @@ test("closed cutover admission refuses requests before runtime or database const
   expect((await worker.fetch(new Request("https://api.test/api/health"), closed, context)).status).toBe(200);
 });
 
+test("a closed Worker lets the browser read its typed refusal without constructing the runtime", async () => {
+  const web = "https://web.test";
+  let constructed = 0;
+  const worker = createApiWorker({
+    createApp: () => { constructed++; throw Error("Closed runtime must stay unavailable"); },
+    createScope: () => { constructed++; throw Error("Closed database must stay unavailable"); },
+  });
+  const closed = { ADMISSION_STATE: "closed", CORS_ALLOWED_ORIGINS: web } as unknown as ApiWorkerBindings;
+  const preflight = await worker.fetch(new Request("https://api.test/api/session/bootstrap", {
+    method: "OPTIONS",
+    headers: { Origin: web, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,x-workspace-id" },
+  }), closed, context);
+  expect(preflight.status).toBe(204);
+  expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(web);
+  expect(preflight.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+  expect(preflight.headers.get("Access-Control-Allow-Headers")?.toLowerCase()).toContain("authorization");
+  const response = await worker.fetch(new Request("https://api.test/api/session/bootstrap", {
+    method: "POST", headers: { Origin: web },
+  }), closed, context);
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Access-Control-Allow-Origin")).toBe(web);
+  expect(response.headers.get("Access-Control-Expose-Headers")).toContain("Retry-After");
+  expect(response.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+  expect(await response.json()).toMatchObject({ error: "server_draining" });
+  expect(constructed).toBe(0);
+});
+
+test("closed preflight stays scoped to exact first-party origins and fenced mode stays health-only", async () => {
+  const worker = createApiWorker({ createApp: () => { throw Error("No refused request may construct a runtime"); } });
+  const web = "https://web.test";
+  const closed = { ADMISSION_STATE: "closed", CORS_ALLOWED_ORIGINS: web } as unknown as ApiWorkerBindings;
+  for (const [origin, path, settings] of [
+    ["https://web.test.evil.test", "/api/session/bootstrap", closed],
+    [web, "/api/v1/projects", closed],
+    [web, "/mcp", closed],
+    [web, "/api/webhooks/example", closed],
+    [web, "/api/session/bootstrap", { ...closed, ADMISSION_STATE: "fenced" }],
+    [web, "/api/session/bootstrap", { ...closed, CORS_ALLOWED_ORIGINS: "https://*.test", WEB_ORIGIN: web }],
+  ] as const) {
+    const response = await worker.fetch(new Request(`https://api.test${path}`, {
+      method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
+    }), settings as ApiWorkerBindings, context);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  }
+  const fallback = await worker.fetch(new Request("https://api.test/api/session/bootstrap", {
+    method: "OPTIONS", headers: { Origin: web, "Access-Control-Request-Method": "POST" },
+  }), { ADMISSION_STATE: "closed", WEB_ORIGIN: web } as unknown as ApiWorkerBindings, context);
+  expect(fallback.status).toBe(204);
+  expect(fallback.headers.get("Access-Control-Allow-Origin")).toBe(web);
+});
+
 test("paused intake keeps accepted signed control and provider callbacks reachable without changing their bytes", async () => {
   const worker = createApiWorker({ createApp: () => new Hono().post("*", async c => c.text(await c.req.text())) });
   const closed = { ...bindings("postgresql://unused.test/db"), ADMISSION_STATE: "closed" } as ApiWorkerBindings;

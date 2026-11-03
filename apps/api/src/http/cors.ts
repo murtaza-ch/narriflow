@@ -103,6 +103,11 @@ export function firstPartyRefusalHeaders(allowedOrigins: readonly string[]) {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Expose-Headers": CORS_EXPOSED_HEADERS.join(","),
       Vary: "Origin",
+      ...(request.method === "OPTIONS" ? {
+        "Access-Control-Allow-Methods": CORS_ALLOWED_METHODS.join(","),
+        "Access-Control-Allow-Headers": CORS_ALLOWED_HEADERS.join(","),
+        "Access-Control-Max-Age": "600",
+      } : {}),
     };
   };
 }

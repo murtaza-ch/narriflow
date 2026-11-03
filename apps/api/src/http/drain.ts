@@ -21,6 +21,24 @@ export function continuesAcceptedWork(method: string, path: string): boolean {
 
 export const DRAIN_RETRY_AFTER_SECONDS = 5;
 
+/** An allowed browser can preflight a paused request, then read its typed 503. */
+export function drainingResponse(request: Request, input: {
+  requestId: string;
+  state: "closed" | "fenced";
+  headers: Record<string, string>;
+}): Response {
+  if (input.state === "closed" && request.method === "OPTIONS" && input.headers["Access-Control-Allow-Origin"]) {
+    return new Response(null, { status: 204, headers: input.headers });
+  }
+  const response = failureResponse({
+    code: "server_draining", category: "unavailable", status: 503,
+    message: "The service is restarting. Try again shortly.",
+    requestId: input.requestId, retryAfterSeconds: DRAIN_RETRY_AFTER_SECONDS,
+  });
+  for (const [name, value] of Object.entries(input.headers)) response.headers.set(name, value);
+  return response;
+}
+
 /**
  * New admission stops immediately. Authenticated continuation routes remain
  * reachable so accepted work can settle while intake is paused.
@@ -35,21 +53,15 @@ export function drainGate(options: {
 }): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    if (options.isFenced?.() ? c.req.method === "GET" && path === "/api/health" : !options.isDraining() || continuesAcceptedWork(c.req.method,path)) {
+    const fenced = options.isFenced?.() ?? false;
+    if (fenced ? c.req.method === "GET" && path === "/api/health" : !options.isDraining() || continuesAcceptedWork(c.req.method,path)) {
       await next();
       return;
     }
-    const response = failureResponse({
-      code: "server_draining",
-      category: "unavailable",
-      status: 503,
-      message: "The service is restarting. Try again shortly.",
+    return drainingResponse(c.req.raw, {
+      state: fenced ? "fenced" : "closed",
       requestId: requestIdOf(c),
-      retryAfterSeconds: DRAIN_RETRY_AFTER_SECONDS,
+      headers: options.refusalHeaders?.(c.req.raw) ?? {},
     });
-    for (const [name, value] of Object.entries(options.refusalHeaders?.(c.req.raw) ?? {})) {
-      response.headers.set(name, value);
-    }
-    return response;
   };
 }

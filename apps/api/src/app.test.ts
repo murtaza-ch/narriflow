@@ -299,6 +299,21 @@ describe("server hooks", () => {
 });
 
 describe("draining", () => {
+  test("a paused browser can preflight before receiving the typed maintenance refusal", async () => {
+    const app = createInventoryApp({ health: { isDraining: () => true } });
+    const preflight = await app.request("/api/session/bootstrap", {
+      method: "OPTIONS",
+      headers: { origin: WEB, "access-control-request-method": "POST", "access-control-request-headers": "authorization,x-workspace-id" },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(WEB);
+    expect(preflight.headers.get("Access-Control-Allow-Headers")?.toLowerCase()).toContain("x-workspace-id");
+    const response = await app.request("/api/session/bootstrap", { method: "POST", headers: { origin: WEB } });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(WEB);
+    expect(await response.json()).toMatchObject({ error: "server_draining" });
+  });
+
   test("a closer registered after the drain began runs at once and never waits for a drain that already happened", async () => {
     const lifecycle = createLifecycle();
     const closed: string[] = [];

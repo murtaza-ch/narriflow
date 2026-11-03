@@ -85,6 +85,14 @@ function isLoopback(value: string): boolean {
   }
 }
 
+/** The ingress refusal path needs the same origin selection without loading runtime settings. */
+export function loadCorsAllowedOrigins(env: ApiEnvironment): string[] {
+  const configured = parseOriginList(env.CORS_ALLOWED_ORIGINS, "CORS_ALLOWED_ORIGINS");
+  if (configured.length) return configured;
+  const webOrigin = parseOrigin(env.WEB_ORIGIN?.trim() ?? "");
+  return webOrigin ? [webOrigin] : [];
+}
+
 /**
  * Validates the core and Clerk setting groups the HTTP layer depends on.
  * Optional provider capabilities (Stripe, social, AI, ...) are validated by the
@@ -99,8 +107,9 @@ export function loadApiConfig(env: ApiEnvironment): ApiConfig {
 
   const apiOrigin = origin(env, "API_ORIGIN", problems);
   const webOrigin = origin(env, "WEB_ORIGIN", problems);
-  const corsList = originList(env, "CORS_ALLOWED_ORIGINS", problems);
-  const corsAllowedOrigins = corsList.length > 0 ? corsList : webOrigin ? [webOrigin] : [];
+  let corsAllowedOrigins: string[] = [];
+  try { corsAllowedOrigins = loadCorsAllowedOrigins(env); }
+  catch (error) { problems.push(error instanceof Error ? error.message : "CORS_ALLOWED_ORIGINS is invalid"); }
   const authorizedParties = originList(env, "CLERK_AUTHORIZED_PARTIES", problems);
   if (authorizedParties.length === 0) {
     problems.push("CLERK_AUTHORIZED_PARTIES must list at least one frontend origin");

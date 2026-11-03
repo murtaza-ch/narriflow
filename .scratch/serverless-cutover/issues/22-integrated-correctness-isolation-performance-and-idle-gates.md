@@ -15,6 +15,14 @@
 
 Integrated acceptance remains open. Gate-specific evidence is recorded below.
 
+## Current gate failures and local fixes, 2026-11-03
+
+The `ff7fc072` immutable media component gates passed:181 lean tests,196 render tests, the unchanged36-case golden comparison, four explicit seek cases, token-owner checks and the2CPU/4GiB preparation supplement. The subsequent real speech journey still failed the unchanged twelve-clip/four-minute requirement. It selected eight clips and eventually settled partial with two completed and six failed renders. Candidate HTTP and database intake were closed at epoch10 after zero active executions and known media writers were observed. The shared development database remains unchanged.
+
+The owner retained the current fixture. Its actual53-candidate provider result yields51 timing-valid candidates and a maximum of eight candidates that can be retained together under the existing overlap predicate. This is a bound on that frozen set only. No original failed journal, deadline, charge, quality rule or acceptance threshold was rewritten.
+
+Local PostgreSQL regressions first reproduced sibling render serialization, then a Project/Clip deadlock between an older frozen export and a newer preparation. The corrected owning suite passed65 tests; the related execution/handoff suites passed49 tests. A further browser check found that closed-admission preflight503s hid the maintenance envelope. Worker ingress and real app-composition regressions failed on that symptom, then passed as part of55 focused tests. These local fixes require fresh exact-source deployment and live verification; this ticket remains claimed.
+
 ## Preparation evidence, 2026-10-31
 
 The complete134-migration chain passed on a fresh schema in the isolated Neon gate branch, followed by8ledger checks. The expanded execution database runner now creates and drops a fresh schema for the ledger, dispatch, generic control, transfer, SourceAudio admission, targeted ingest/render/workflow, native validation and progress suites. It passed66tests/311assertions on an isolated local PostgreSQL17.11 database with pgvector0.8.7 and UTC sessions. The test guard refuses the shared development branch and ordinary local application databases before connecting. Local tests require a dedicated `narriflow_serverless_gates_*` database and a disposable `serverless_execution_test_*` schema.
