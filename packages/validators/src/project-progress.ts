@@ -196,7 +196,7 @@ export function deriveProcessingChecklist(
   const detectProgress = activeProgress(detectState, input.detect);
   const renderProgress = activeProgress(renderState, input.render);
 
-  return [
+  return withOneActiveStep([
     {
       id: "import",
       label: "Import",
@@ -237,7 +237,22 @@ export function deriveProcessingChecklist(
       progress: null,
       errorCode: null,
     },
-  ];
+  ]);
+}
+
+/**
+ * Transcription starts from extracted audio while the video is still importing,
+ * so two steps can run at once. The checklist reads as one journey: the furthest
+ * running step is the active one, and running steps before it show as complete.
+ * A failed step stays failed, and Done still requires every step to finish.
+ */
+function withOneActiveStep(nodes: ProcessingNode[]): ProcessingNode[] {
+  const current = nodes.map((node) => node.state).lastIndexOf("active");
+  return nodes.map((node, index) =>
+    node.state === "active" && index < current
+      ? { ...node, state: "done", detail: null, progress: null }
+      : node,
+  );
 }
 
 function activeProgress(state: PipelineStepState, stage: ProcessingStageInput): number | null {

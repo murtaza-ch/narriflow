@@ -191,6 +191,29 @@ describe("project pipeline state", () => {
 
 
 describe("processing checklist workflow states", () => {
+	test("shows one active step while transcription runs before the video finishes importing", () => {
+		const nodes = deriveProcessingChecklist({
+			ingestStatus: "queued",
+			transcribe: { status: "running", progress: 40, errorCode: null },
+			detect: { status: "pending", progress: 0, errorCode: null },
+			render: { status: "pending", progress: 0, errorCode: null },
+			mode: "clip",
+		});
+		expect(nodes.filter((node) => node.state === "active").map((node) => node.id)).toEqual(["transcribe"]);
+		expect(nodes[0]).toMatchObject({ id: "import", state: "done", detail: null, progress: null });
+	});
+
+	test("a failed import stays failed even when a later step has started", () => {
+		const nodes = deriveProcessingChecklist({
+			ingestStatus: "failed",
+			transcribe: { status: "running", progress: 40, errorCode: null },
+			detect: { status: "pending", progress: 0, errorCode: null },
+			render: { status: "pending", progress: 0, errorCode: null },
+			mode: "clip",
+		});
+		expect(nodes[0]?.state).toBe("failed");
+	});
+
   const base = {
     ingestStatus: "ready",
     transcribe: { status: "completed" as const, progress: 100, errorCode: null },

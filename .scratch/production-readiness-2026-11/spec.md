@@ -38,6 +38,6 @@ Not implemented. See `decisions.md`.
 
 All tickets closed. Final tree: lint 0 errors, typecheck 15/15, all unit suites, 13 DB gates, Python suite, route inventory, OpenAPI, web split with bundle scan, Worker audit and `env:check` pass. `render-golden verify` against a baseline captured at b3e3b754 before any edit: 36 of 36, 0 failures.
 
-Not committed, not deployed. The migration `20261105000000_production_readiness` has been applied only to local test databases.
+Deployed to shared development on 2026-11-04 at `4882eb6c`: migration applied, media image and API Worker live, web live on Vercel.
 
-Deploy order: apply the migration, deploy the API Worker straight after, and deploy the media image with it. Older Workers write dropped columns, and the YouTube command gained a required field.
+Deploy order used: media image from a tracked archive, then the migration, then the API Worker straight after. Older Workers write dropped columns, and the YouTube command gained a required field.
