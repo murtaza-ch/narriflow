@@ -506,6 +506,19 @@ export class BillingService {
             { idempotencyKey },
           );
         },
+        cancelSubscriptionAtPeriodEnd: async (input, idempotencyKey) => {
+          const stripe = this.stripe();
+          // Never cancel a subscription another Workspace's metadata claims.
+          const subscription = await stripe.subscriptions.retrieve(input.subscriptionId);
+          if (subscription.metadata.workspaceId !== input.workspaceId) {
+            throw new WorkspaceBillingError("plan_change_conflict");
+          }
+          await stripe.subscriptions.update(
+            input.subscriptionId,
+            { cancel_at_period_end: true },
+            { idempotencyKey },
+          );
+        },
       };
   }
 

@@ -712,8 +712,7 @@
     "usage:operator": "bun scripts/processing-usage-operator.ts",
     "generated-media:operator": "bun scripts/generated-media-operator.ts",
     "social-publication:operator": "bun scripts/social-publication-operator.ts",
-    "clean": "rm -rf dist",
-    "test:integration-api:db": "bun scripts/run-integration-api-db-tests.ts"
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.923.0",

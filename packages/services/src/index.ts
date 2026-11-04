@@ -29,8 +29,6 @@ export {
 	AudioAssetAccessError,
 	AudioAssetError,
 	AudioAssetNotFoundError,
-	audioAssetUploadPrefix,
-	isOwnedAudioUploadKey,
 	extensionForAudioContentType,
 	type AudioAssetListRow,
 	type AudioAssetFailureCode,

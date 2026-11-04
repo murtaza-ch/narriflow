@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   checkoutRequestSchema,
+  contentGenerationRequirement,
+  planCountRequirement,
   creditDebitSeconds,
   creditsForSourceSeconds,
   sourceExceedsLimit,
@@ -195,5 +197,26 @@ describe("planUpgradeHighlight", () => {
     expect(planUpgradeHighlight("business", "workspace.members")).toBe(
       "Team members: Admins and Editors billed per seat, Viewers free",
     );
+  });
+});
+
+describe("audio uploads and the monthly content allowance", () => {
+  test("Free has neither, and every paid limit grows with the plan", () => {
+    expect(planLimits("free")).toMatchObject({ audioAssets: 0, contentGenerationsPerMonth: 0 });
+    const tiers = ["creator", "pro", "business"] as const;
+    expect(tiers.map((tier) => planLimits(tier).audioAssets)).toEqual([10, 30, 100]);
+    expect(tiers.map((tier) => planLimits(tier).contentGenerationsPerMonth)).toEqual([30, 90, 180]);
+  });
+
+  test("a full audio library offers the cheapest plan with more room", () => {
+    expect(planCountRequirement("creator", "audioAssets", 10)).toMatchObject({ code: "plan_limit_reached", requiredTier: "pro", max: 10 });
+    expect(planCountRequirement("free", "audioAssets", 0)).toMatchObject({ code: "plan_feature_required", requiredTier: "creator" });
+    expect(planCountRequirement("creator", "audioAssets", 9)).toBeNull();
+  });
+
+  test("the content allowance refuses only once every call is used", () => {
+    expect(contentGenerationRequirement("creator", 29)).toBeNull();
+    expect(contentGenerationRequirement("creator", 30)).toMatchObject({ requiredTier: "pro", max: 30 });
+    expect(contentGenerationRequirement("business", 180)).toMatchObject({ requiredTier: null, max: 180 });
   });
 });

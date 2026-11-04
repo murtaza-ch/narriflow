@@ -34,6 +34,12 @@ import {
 } from "./expected-domain-failure";
 import { isUniqueConstraintError } from "./generation-sequencing";
 import { requirePrisma } from "./require-prisma";
+import {
+  assertBrandMutationAllowedWithAnalytics,
+  lockBrandOwner,
+  type BrandActorScope,
+} from "./brand-ownership";
+import { requireWithinPlanLimit } from "./plan-features";
 
 function log(
   level: "info" | "error",
@@ -102,21 +108,6 @@ export interface AudioAssetListRow {
   moodTags: string[];
   durationSec: number;
   favorited: boolean;
-}
-
-/**
- * The prefix every user-owned upload key must live under. Mirrors
- * `assertOwnedLogoKey` in brand-template.service.ts: without this check, a
- * user could finalize an upload pointed at another tenant's R2 object (or a
- * totally unrelated key) and have it claimed as their own library row.
- * Exported so the pure ownership check can be unit-tested without a DB.
- */
-export function audioAssetUploadPrefix(userId: string): string {
-  return `audio-assets/${userId}/`;
-}
-
-export function isOwnedAudioUploadKey(userId: string, key: string): boolean {
-  return key.startsWith(audioAssetUploadPrefix(userId));
 }
 
 function workspaceAudioAssetUploadPrefix(workspaceId: string): string {
@@ -214,11 +205,17 @@ export class AudioAssetService {
     };
   }
 
+  /**
+   * Uploading is a brand mutation, like a visual asset: Free has none, and a
+   * paid plan holds a bounded number of files. Presign refuses a full library
+   * up front so nobody uploads 50MB the finalize would turn away; finalize
+   * counts again under the lock.
+   */
   async presignUpload(
-    userId: string,
     input: PresignAudioUploadInput,
-    context?: AudioWorkspaceContext,
+    scope: BrandActorScope,
   ): Promise<{ key: string; uploadUrl: string; contentType: string }> {
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = presignAudioUploadSchema.parse(input);
     if (!this.storage.isR2Configured()) {
       throw new AudioAssetError(
@@ -226,9 +223,11 @@ export class AudioAssetService {
         "Audio asset storage is temporarily unavailable",
       );
     }
+    const used = await this.requirePrisma().audioAsset.count({ where: { workspaceId: scope.workspaceId, deletedAt: null } });
+    requireWithinPlanLimit(scope.pricingTier, "audioAssets", used);
 
     const ext = extensionForAudioContentType(parsed.contentType);
-    const key = `${context ? workspaceAudioAssetUploadPrefix(context.workspaceId) : audioAssetUploadPrefix(userId)}${randomUUID()}.${ext}`;
+    const key = `${workspaceAudioAssetUploadPrefix(scope.workspaceId)}${randomUUID()}.${ext}`;
     const uploadUrl = await this.storage.presignSingleUploadUrl({
       key,
       contentType: parsed.contentType,
@@ -239,13 +238,11 @@ export class AudioAssetService {
   async finalizeUpload(
     userId: string,
     input: FinalizeAudioUploadInput,
-    context?: AudioWorkspaceContext,
+    scope: BrandActorScope,
   ): Promise<AudioAssetListRow> {
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = finalizeAudioUploadSchema.parse(input);
-    const owned = context
-      ? parsed.key.startsWith(workspaceAudioAssetUploadPrefix(context.workspaceId))
-      : isOwnedAudioUploadKey(userId, parsed.key);
-    if (!owned) {
+    if (!parsed.key.startsWith(workspaceAudioAssetUploadPrefix(scope.workspaceId))) {
       throw new AudioAssetError(
         "audio_asset_key_forbidden",
         "The audio upload does not belong to this Workspace",
@@ -253,11 +250,7 @@ export class AudioAssetService {
     }
 
     const prisma = this.requirePrisma();
-    const replayWhere = {
-      storageKey: parsed.key,
-      deletedAt: null,
-      ...(context ? { workspaceId: context.workspaceId } : { userId }),
-    };
+    const replayWhere = { storageKey: parsed.key, deletedAt: null, workspaceId: scope.workspaceId };
     const existing = await prisma.audioAsset.findFirst({ where: replayWhere });
     if (existing) return toListRow(existing);
     let object;
@@ -279,18 +272,28 @@ export class AudioAssetService {
     if (!audioUploadContentTypeSchema.safeParse(object.contentType).success) {
       throw new AudioAssetError("audio_asset_mime_invalid", "The uploaded object must be MP3, WAV, or M4A audio");
     }
-    const created = await prisma.audioAsset.create({
-      data: {
-        kind: parsed.kind,
-        userId,
-        workspaceId: context?.workspaceId ?? null,
-        createdByUserId: context?.actorUserId ?? userId,
-        storageKey: parsed.key,
-        title: parsed.title,
-        durationSec: parsed.durationSec,
-      },
+    const created = await prisma.$transaction(async (tx) => {
+      // The count and the insert are one decision per Workspace. A replay that
+      // lost the race returns the winner's row before it is counted as new.
+      await lockBrandOwner(tx, "audio-assets", { userId: null, workspaceId: scope.workspaceId });
+      const replay = await tx.audioAsset.findFirst({ where: replayWhere });
+      if (replay) return replay;
+      const used = await tx.audioAsset.count({ where: { workspaceId: scope.workspaceId, deletedAt: null } });
+      requireWithinPlanLimit(scope.pricingTier, "audioAssets", used);
+      return tx.audioAsset.create({
+        data: {
+          kind: parsed.kind,
+          userId,
+          workspaceId: scope.workspaceId,
+          createdByUserId: scope.actorUserId,
+          storageKey: parsed.key,
+          title: parsed.title,
+          durationSec: parsed.durationSec,
+        },
+      });
     }).catch(async (error) => {
       if (isUniqueConstraintError(error)) {
+        // A soft-deleted row still owns the key: a replay cannot revive it.
         const replay = await prisma.audioAsset.findFirst({ where: replayWhere });
         if (replay) return replay;
         throw new AudioAssetDuplicateError();

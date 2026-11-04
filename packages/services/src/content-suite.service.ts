@@ -5,6 +5,9 @@ import type { ActorScope } from "./actor-scope";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   ALL_TEXT_OUTPUT_TYPES,
+  contentGenerationRequirement,
+  processingPeriodStart,
+  resolvePricingTier,
   contentSuiteLlmResponseSchemaForTypes,
   TEXT_OUTPUT_TYPE_LABELS,
   type ContentAsset,
@@ -12,7 +15,7 @@ import {
 } from "@narriflow/validators";
 import { OpenAiResponsesError, requestOpenAiText } from "./openai-responses";
 import { workspaceService } from "./workspace.service";
-import { requirePlanFeature } from "./plan-features";
+import { PlanRequirementError, requirePlanFeature } from "./plan-features";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -188,6 +191,40 @@ function toSnapshot(row: {
   };
 }
 
+/**
+ * Takes one of the Workspace's monthly content-suite calls (UTC calendar month,
+ * no credits) or refuses with the upgrade-prompt failure. Counting and the
+ * insert share one advisory lock per Workspace, so concurrent calls cannot both
+ * take the last one.
+ */
+export async function reserveContentGeneration(
+  prisma: NonNullable<ReturnType<typeof getPrismaClient>>,
+  workspaceId: string,
+  pricingTier: string,
+  now: Date,
+): Promise<string> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`content-generations:${workspaceId}`}, 0)) IS NULL AS "locked"`;
+    const used = await tx.contentGeneration.count({
+      where: { workspaceId, createdAt: { gte: processingPeriodStart(now) } },
+    });
+    const requirement = contentGenerationRequirement(pricingTier, used);
+    if (requirement) {
+      throw new PlanRequirementError({
+        code: "plan_limit_reached",
+        message: requirement.message,
+        currentTier: resolvePricingTier(pricingTier),
+        requiredTier: requirement.requiredTier,
+        limit: "contentGenerations",
+        used,
+        max: requirement.max,
+      });
+    }
+    const row = await tx.contentGeneration.create({ data: { workspaceId, createdAt: now }, select: { id: true } });
+    return row.id;
+  });
+}
+
 export class ContentSuiteService {
   async list(scope: ActorScope, projectId: string): Promise<ContentAsset[]> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
@@ -252,6 +289,7 @@ export class ContentSuiteService {
     const model = readServiceEnvironment().OPENAI_CONTENT_MODEL ?? readServiceEnvironment().OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
 
     await prisma.$transaction(requireExecutionAdmissionOpen);
+    const generationId = await reserveContentGeneration(prisma, scope.workspaceId, actor.pricingTier, new Date());
     let content: string;
     try {
       content = await requestOpenAiText({
@@ -283,6 +321,11 @@ export class ContentSuiteService {
         },
       });
     } catch (error) {
+      // A call the provider never answered costs the Workspace nothing; one that
+      // ran out of output budget was billed to us, so it still counts.
+      if (!(error instanceof OpenAiResponsesError && error.code === "openai_incomplete")) {
+        await prisma.contentGeneration.deleteMany({ where: { id: generationId } }).catch(() => undefined);
+      }
       if (!(error instanceof OpenAiResponsesError)) throw error;
       throw new ContentSuiteError(
         error.code === "openai_rate_limited"

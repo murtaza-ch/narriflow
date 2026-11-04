@@ -22,7 +22,7 @@ export function createInMemoryWorkspaceBillingStore(
       | "pricingTier"
       | "status"
       | "providerCustomerId"
-    > & { ownerUserId?: string; desiredAdditionalSeats?: number }
+    > & { ownerUserId?: string; desiredAdditionalSeats?: number; cancelAtPeriodEndRequested?: boolean }
   >,
 ): WorkspaceBillingStore {
   const rows = new Map<string, WorkspaceBillingProjection>(
@@ -37,6 +37,7 @@ export function createInMemoryWorkspaceBillingStore(
         currentPeriodEnd: null,
         trialEnd: null,
         cancelAtPeriodEnd: false,
+        cancelAtPeriodEndRequested: workspace.cancelAtPeriodEndRequested ?? false,
         planChange: null,
         firstPastDueAt: null,
         graceDeadlineAt: null,

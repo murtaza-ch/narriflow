@@ -7,6 +7,7 @@ import threading
 import time
 import tracemalloc
 import unittest
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from narriflow_media.multipart import MultipartTransferError, SignedHttpTransport, TransferResponse
@@ -300,3 +301,69 @@ class SourceServerTests(unittest.TestCase):
             self.assertEqual(len(transport.requests),130)
             self.assertEqual(self.get(server,range='bytes=256-256')[2],b'\0')
             self.assertEqual(len(transport.requests),130)
+
+
+class GrantReuseTests(unittest.TestCase):
+    """A grant is reused across chunks until expiry minus the margin, and refreshed on expiry or 403."""
+    def setUp(self):
+        self.now=[1_000_000.0]
+        self.data=bytes(range(256))*4096
+
+    def fixture_with_expiry(self, lifetime=120):
+        source={'name':'original','storageKey':'execution/1/source','etag':'"source"','byteLength':len(self.data),'sha256':'a'*64}
+        session=Session(source);transport=Transport(self.data);original=session.transfer
+        def transfer(action, **fields):
+            result=original(action,**fields)
+            expires=datetime.fromtimestamp(self.now[0]+lifetime,timezone.utc).isoformat().replace('+00:00','Z')
+            result.disposition['grant']={'url':'https://scoped.invalid/source','headers':{'if-match':source['etag']},'expiresAt':expires}
+            return result
+        session.transfer=transfer
+        return source,session,transport
+
+    def read(self, server, start, end):
+        connection=http.client.HTTPConnection('127.0.0.1',server.port,timeout=3)
+        connection.request('GET',server.path('original'),headers={'Range':f'bytes={start}-{end}'})
+        response=connection.getresponse();result=(response.status,response.read());connection.close();return result
+
+    def test_many_chunks_use_one_source_read_and_identical_bytes(self):
+        source,session,transport=self.fixture_with_expiry()
+        with ScopedSourceServer(session,[source],transport=transport,clock=lambda:self.now[0]) as server:
+            server.allow_reads()
+            status,body=self.read(server,0,4*1024**2-1)
+            self.assertEqual((status,body),(206,self.data[:4*1024**2]))
+            self.assertGreater(len(transport.requests),4)
+            self.assertEqual(len(session.grants),1)
+            self.assertTrue(all(row[2]['if-match']=='"source"' for row in transport.requests))
+
+    def test_local_cancel_still_stops_reads_with_a_cached_grant(self):
+        source,session,transport=self.fixture_with_expiry()
+        with ScopedSourceServer(session,[source],transport=transport,clock=lambda:self.now[0]) as server:
+            server.allow_reads();self.read(server,0,99)
+            session.cancel_event.set();before=len(transport.requests)
+            self.assertEqual(self.read(server,100,199)[0],503)
+            self.assertEqual(len(transport.requests),before)
+
+    def test_grant_is_refreshed_inside_the_safety_margin(self):
+        source,session,transport=self.fixture_with_expiry()
+        with ScopedSourceServer(session,[source],transport=transport,clock=lambda:self.now[0]) as server:
+            server.allow_reads();self.read(server,0,99)
+            self.now[0]+=89;self.read(server,200,299);self.assertEqual(len(session.grants),1)
+            self.now[0]+=2;self.assertEqual(self.read(server,400,499)[1],self.data[400:500])
+            self.assertEqual(len(session.grants),2)
+
+    def test_a_403_refreshes_the_grant_once_and_the_range_is_unchanged(self):
+        source,session,transport=self.fixture_with_expiry();rejected=[]
+        original=transport.request
+        async def request(grant, method, body, headers, maximum, cancelled):
+            if len(transport.requests)==1 and not rejected:
+                rejected.append(grant);transport.requests.append((grant,method,dict(headers),maximum))
+                return TransferResponse(403,{},b'')
+            return await original(grant,method,body,headers,maximum,cancelled)
+        transport.request=request
+        with ScopedSourceServer(session,[source],transport=transport,clock=lambda:self.now[0]) as server:
+            server.allow_reads();self.read(server,0,99)
+            self.assertEqual(self.read(server,200,299)[1],self.data[200:300])
+            self.assertEqual(len(session.grants),2)
+            self.assertEqual(transport.requests[1][2]['range'],transport.requests[2][2]['range'])
+            self.assertEqual(self.read(server,400,499)[1],self.data[400:500])
+            self.assertEqual(len(session.grants),2)

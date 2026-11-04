@@ -131,6 +131,7 @@ const COUNT_LIMITS: readonly PlanCountLimit[] = [
   "brandTemplates",
   "socialDestinations",
   "autopilotRules",
+  "audioAssets",
 ];
 
 function failureDetails(failure: BrowserRequestFailure) {
@@ -262,6 +263,13 @@ export function upgradePromptFromFailure(
         tier: required,
         headline,
         highlight: `${plan.limits.dubs.perMonth} dubs a month`,
+      };
+    }
+    if (limit === "contentGenerations") {
+      return {
+        tier: required,
+        headline,
+        highlight: `${plan.limits.contentGenerationsPerMonth} content generations a month`,
       };
     }
     return null;

@@ -175,6 +175,4 @@ Build web with `NEXT_PUBLIC_API_URL` and run `bun run check:web-split -- --bundl
 
 GitHub Actions CI is disabled. The versioned `.githooks/pre-push` hook runs the checks locally and blocks the push on failure. `bun run prepare` installs the hooks; `bun run verify:local` runs the same verification manually. Use Bun1.3.6 and Node22 or newer.
 
-Configure an isolated local PostgreSQL17 database with pgvector using `SERVERLESS_TEST_DATABASE_URL` or `git config --local narriflow.testDatabaseUrl '<local-test-connection-url>'`. Shared development and cloud database targets are refused by this local runner. Configure `git config --local narriflow.bunPath /absolute/path/to/bun` when the default Bun version differs, and `git config --local narriflow.dockerContext <context>` when Docker uses a named context.
-
-The hook runs lint, uncached types/tests, all disposable database suites, API contracts, MCP checks, dependency audit, environment consistency, Zapier/Make tests, builds and the browser boundary check. It then builds the committed pinned Linux media image and runs its native tests without network access or host mounts. Docker needs4 CPUs and8GiB available. Provider, latency, restore and idle release gates remain separate.
+The hook runs lint, cached types and unit tests, API contracts, the Worker import audit, the browser boundary check and environment consistency. PostgreSQL gates and resource-heavy suites are disabled by owner decision; see `AGENTS.md`.

@@ -5,9 +5,8 @@ The API (`apps/api`, Cloudflare Worker at its own origin) and the web app deploy
 ## Before pushing
 
 1. `bun run lint`, `bun run typecheck`, `bun run test`, `bun run --cwd apps/api test:inventory`, `bun run --cwd apps/api openapi:check`, `bun run --cwd apps/api build:worker`.
-2. `NEXT_PUBLIC_API_URL=http://localhost:4000 bun run --cwd apps/web build`, then `bun run check:web-split -- --bundle`.
-3. Every `bun run test:*:db` gate on a disposable schema (never the shared database).
-4. `bun run env:check` passes for `apps/api/.dev.vars`, `apps/web/.env.local` and `packages/db/.env`.
+2. `bun run check:web-split`.
+3. `bun run env:check` passes for `apps/api/.dev.vars`, `apps/web/.env.local` and `packages/db/.env`.
 
 ## Provider registrations
 

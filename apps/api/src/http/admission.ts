@@ -83,7 +83,9 @@ export type IndependentTrust =
   | "oauth_state"
   | "provider_signature"
   | "executor_signature"
-  | "dev_device_signature";
+  | "dev_device_signature"
+  /** Unauthenticated browser CSP violation reports; bounded, rate limited, logged without the body. */
+  | "public_browser_report";
 
 const REGISTRATION_MARK = Symbol.for("narriflow.api.registration");
 const GUARD_MARK = Symbol.for("narriflow.api.admission-guard");

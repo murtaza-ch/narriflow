@@ -30,7 +30,11 @@ dbDescribe("Audio library PostgreSQL contracts", () => {
     deleteObject: mock(async (key: string) => ({ key })),
   };
   const service = new AudioAssetService(storage);
-  const scope = () => ({ workspaceId, actorUserId: userId });
+  let pricingTier = "creator";
+  const scope = () => ({
+    workspaceId, actorUserId: userId, workspaceOwnerUserId: userId,
+    role: "owner" as const, status: "active" as const, pricingTier, isPersonalWorkspace: true,
+  });
   const upload = () => ({ key: `workspaces/${workspaceId}/audio-assets/${randomUUID()}.mp3`, kind: "music" as const, title: "My track", durationSec: 12 });
 
   beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -56,6 +60,7 @@ dbDescribe("Audio library PostgreSQL contracts", () => {
     storage.headObject.mockImplementation(async () => ({ contentType: "audio/mpeg", sizeBytes: 128, etag: null, metadata: {} }));
     storage.presignDownloadUrl.mockClear();
     const user = await prisma.user.create({ data: { clerkId: `audio-${randomUUID()}`, primaryEmail: `${randomUUID()}@example.test` } });
+    pricingTier = "creator";
     userId = user.id;
     workspaceId = (await prisma.workspace.create({ data: { name: "Audio tests", ownerUserId: userId } })).id;
   })));
@@ -136,14 +141,27 @@ dbDescribe("Audio library PostgreSQL contracts", () => {
     expect(await prisma.audioAsset.count()).toBe(1);
   })));
 
-  test("finalize accepts the 50MB boundary and supports user-owned keys", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("finalize accepts the 50MB boundary", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     storage.headObject.mockResolvedValue({ contentType: "audio/mpeg", sizeBytes: AUDIO_UPLOAD_MAX_BYTES, etag: null, metadata: {} });
-    const input = { ...upload(), key: `audio-assets/${userId}/${randomUUID()}.mp3`, sizeBytes: AUDIO_UPLOAD_MAX_BYTES };
-    const first = await service.finalizeUpload(userId, input);
-    expect(await service.finalizeUpload(userId, input)).toEqual(first);
+    const input = { ...upload(), sizeBytes: AUDIO_UPLOAD_MAX_BYTES };
+    const first = await service.finalizeUpload(userId, input, scope());
+    expect(await service.finalizeUpload(userId, input, scope())).toEqual(first);
     expect(first.scope).toBe("user");
     expect(storage.headObject).toHaveBeenCalledTimes(1);
     expect(storage.presignDownloadUrl).not.toHaveBeenCalled();
+  })));
+
+  test("Free cannot presign or finalize, and a full library refuses before and after the upload", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    pricingTier = "free";
+    expect((await service.presignUpload({ contentType: "audio/mpeg", sizeBytes: 128 }, scope()).catch((error) => error)).code).toBe("plan_feature_required");
+    expect((await service.finalizeUpload(userId, upload(), scope()).catch((error) => error)).code).toBe("plan_feature_required");
+    pricingTier = "creator";
+    for (let index = 0; index < 10; index += 1) await service.finalizeUpload(userId, upload(), scope());
+    const full = await service.finalizeUpload(userId, upload(), scope()).catch((error) => error);
+    expect(full.code).toBe("plan_limit_reached");
+    expect(full.details).toMatchObject({ limit: "audioAssets", used: 10, max: 10 });
+    expect((await service.presignUpload({ contentType: "audio/mpeg", sizeBytes: 128 }, scope()).catch((error) => error)).code).toBe("plan_limit_reached");
+    expect(await prisma.audioAsset.count()).toBe(10);
   })));
 
   test("a deleted upload cannot be revived by replaying finalize", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

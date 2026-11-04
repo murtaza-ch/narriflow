@@ -1165,9 +1165,24 @@ model Workspace {
   reviewerOptOuts            ReviewerOptOut[]
   billingAccount             WorkspaceBillingAccount?
   outboundDeliveries         OutboundDelivery[]
+  contentGenerations         ContentGeneration[]
 
   @@index([ownerUserId])
   @@index([status, pricingTier])
+}
+
+/// One admitted content-suite call, counted against the Workspace's UTC
+/// calendar-month ceiling (`contentGenerationsPerMonth`). `ContentAsset` cannot
+/// serve: regenerating replaces a row, so repeated calls would not add up.
+/// A call the provider failed to answer deletes its row. No credits are charged.
+model ContentGeneration {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  createdAt   DateTime
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
 }
 
 model WorkspaceBillingAccount {
@@ -1181,6 +1196,10 @@ model WorkspaceBillingAccount {
   currentPeriodEndAt          DateTime?
   trialEndAt                  DateTime?
   cancelAtPeriodEnd           Boolean   @default(false)
+  /// Set when the owner's account is deleted and nobody can take over the
+  /// Workspace. Reconciliation sets Stripe `cancel_at_period_end` until the
+  /// provider shows it, then the subscription simply runs out.
+  cancelAtPeriodEndRequestedAt DateTime?
   firstPastDueAt              DateTime?
   graceDeadlineAt             DateTime?
   desiredAdditionalSeats      Int       @default(0)

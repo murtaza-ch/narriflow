@@ -1,4 +1,3 @@
-import { DATABASE_CHECKS, assertLocalTestDatabase } from "../../scripts/local-verification-plan";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -44,17 +43,18 @@ describe("repository verification commands", () => {
 
   test("the fast aggregate names its scope before running every active package suite", () => {
     const command = packageJson("package.json").scripts?.test;
-    expect(command).toContain("Fast tests exclude disposable-schema PostgreSQL invariants");
+    expect(command).toContain("PostgreSQL gates are disabled");
     expect(command).toContain("turbo run test");
     expect(packageJson("apps/web/package.json").scripts?.test).toBe("bun test");
   });
 });
 
 describe("local pre-push verification", () => {
-  test("every disposable database command is included exactly once", () => {
-    const commands = Object.keys(packageJson("package.json").scripts ?? {}).filter(command => command.startsWith("test:") && command.endsWith(":db")).sort();
-    expect(DATABASE_CHECKS.map(name => `test:${name}:db`).sort()).toEqual(commands);
-    expect(new Set(DATABASE_CHECKS).size).toBe(DATABASE_CHECKS.length);
+  test("no PostgreSQL gate or resource-heavy suite can run", () => {
+    const commands = Object.keys(packageJson("package.json").scripts ?? {});
+    expect(commands.filter(command => command.endsWith(":db"))).toEqual([]);
+    const verifier = readFileSync(resolve(repositoryRoot, "scripts/verify-local.ts"), "utf8");
+    for (const heavy of ['"docker"', '"build"]', "test:mcp:integration", "audit:production", "--force"]) expect(verifier).not.toContain(heavy);
   });
 
   test("the installed hook runs the local verifier and does not ignore failure", () => {
@@ -63,10 +63,5 @@ describe("local pre-push verification", () => {
     expect(hook).toContain('exec "$bun_path" --no-env-file scripts/verify-local.ts');
     expect(hook).not.toContain("|| true");
     expect(packageJson("package.json").scripts?.["verify:local"]).toBe("bun --no-env-file scripts/verify-local.ts");
-  });
-
-  test("database gates accept isolated local targets and refuse shared or cloud targets", () => {
-    expect(() => assertLocalTestDatabase("postgresql://localhost:55432/narriflow_serverless_gates_test")).not.toThrow();
-    for (const target of ["postgresql://localhost/neondb", "postgresql://example.neon.tech/narriflow_serverless_gates_test", "https://localhost/narriflow_serverless_gates_test"]) expect(() => assertLocalTestDatabase(target)).toThrow();
   });
 });

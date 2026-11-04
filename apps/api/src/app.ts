@@ -4,6 +4,7 @@ import type { ApiConfig } from "./config";
 import { handleClerkWebhook } from "./domains/platform/clerk/webhook";
 import type { ClerkWebhookDependencies } from "./domains/platform/clerk/webhook";
 import { platformAdmission } from "./domains/platform/admission";
+import { cspReportPreflight, handleCspReport } from "./domains/platform/csp-report";
 import { createHealthRoutes, type HealthDependencies } from "./domains/platform/health";
 import {
   FIRST_PARTY_DOMAINS,
@@ -21,7 +22,7 @@ import {
   apiNotFoundHandler,
   errorEnvelopeMiddleware,
 } from "./http/errors";
-import { ipRateLimit, limitRequestEnvelope, trustedIngressIp } from "./http/limits";
+import { ipRateLimit, limitRequestEnvelope, RATE_TIERS, trustedIngressIp } from "./http/limits";
 import { socketAddress } from "./server-hooks";
 import { apiRequestId, requestLogger } from "./http/logging";
 import { requireJsonContentType } from "./http/route";
@@ -91,6 +92,22 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
     handleClerkWebhook(c.req.raw, deps.clerkWebhook),
   );
   app.route("/api", webhooks);
+
+  // Browser CSP reports: unauthenticated by nature, so per-address limited, tiny, and always 204.
+  app.use("/api/csp-report", async (c, next) => (c.req.method === "OPTIONS" ? cspReportPreflight() : next()));
+  app.route("/api", createRouteApp(platformAdmission).post("/csp-report", (c) => handleCspReport(c.req.raw, {
+    allow: async () => {
+      try {
+        const check = await deps.admin.rateLimit({
+          key: `csp-report:${trustedIngressIp(c.req.raw.headers, { trustedHeader: config.trustedClientIpHeader, socketAddress: socketAddress(c) })}`,
+          ...RATE_TIERS.publicRead,
+        });
+        return check.allowed;
+      } catch {
+        return false;
+      }
+    },
+  })));
   app.route("/api", deps.webhooks.billing);
   app.route("/api", deps.webhooks.publishing);
   app.route("/api", deps.webhooks.automation);

@@ -44,6 +44,33 @@ describe("clip export motion entitlement", () => {
     ).not.toThrow();
   }));
 
+  test("a downgraded Workspace keeps Scenes in the document but cannot export them", bindServiceTestEnvironment(() => {
+    const withScene = editorDocumentSchema.parse({
+      ...motionDocument,
+      studioEdits: {},
+      sceneBlocks: [{
+        id: "8ab9d330-688f-4574-932c-27ac661245c1",
+        schemaVersion: 1,
+        anchorSec: 1,
+        durationSec: 2,
+        content: { kind: "color", color: "#111827" },
+        motion: { entrance: "none", exit: "none" },
+        templateSnapshot: null,
+      }],
+    });
+    expect(withScene.sceneBlocks).toHaveLength(1);
+    expect(() => assertClipExportDocumentAllowed("free", withScene)).toThrow(
+      expect.objectContaining({
+        code: "plan_feature_required",
+        kind: "payment_required",
+        details: expect.objectContaining({ feature: "brand.scenes", requiredTier: "creator" }),
+      }),
+    );
+    expect(() => assertClipExportDocumentAllowed("creator", withScene)).not.toThrow();
+    const without = editorDocumentSchema.parse({ ...motionDocument, studioEdits: {} });
+    expect(() => assertClipExportDocumentAllowed("free", without)).not.toThrow();
+  }));
+
   test("refuses enabled Auto Censor segments that no longer match the transcript", bindServiceTestEnvironment(() => {
     const segment = {
       schemaVersion: 1,

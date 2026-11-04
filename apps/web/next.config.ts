@@ -15,6 +15,19 @@ function apiOrigin(): string {
 }
 const API_ORIGIN = apiOrigin();
 const API_SOCKET_ORIGIN = API_ORIGIN.replace(/^http/, "ws");
+const CSP_REPORT_URL = `${API_ORIGIN}/api/csp-report`;
+
+// A production Clerk publishable key encodes its frontend API host
+// (`pk_live_` + base64("<host>$")); a satellite or custom domain is not covered
+// by the *.clerk.com entries. Test keys and unset values add nothing.
+function clerkFrontendOrigin(): string | undefined {
+  const key = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+  if (!key?.startsWith("pk_live_")) return undefined;
+  const host = Buffer.from(key.slice("pk_live_".length), "base64").toString("utf8").replace(/\$$/, "");
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host) ? `https://${host}` : undefined;
+}
+const CLERK_FRONTEND = clerkFrontendOrigin();
+const clerkHost = CLERK_FRONTEND ? ` ${CLERK_FRONTEND}` : "";
 
 const reviewScriptSource = process.env.NODE_ENV === "development"
   ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com"
@@ -94,8 +107,9 @@ const nextConfig: NextConfig = {
           // violations but never blocks anything, so it is safe to ship. Hosts
           // are derived from images.remotePatterns (i.ytimg.com, img.youtube.com)
           // and the app's real backends: Clerk (auth), Cloudflare R2 (media),
-          // and the API progress socket. Promote to enforced once violations are
-          // reviewed. TODO(follow-up): add a report-to/report-uri endpoint.
+          // and the API progress socket. Violations are reported to the API
+          // (docs/runbooks/csp-reports.md); promote to enforced once reviewed.
+          { key: "Reporting-Endpoints", value: `csp-endpoint="${CSP_REPORT_URL}"` },
           {
             key: "Content-Security-Policy-Report-Only",
             value: [
@@ -108,10 +122,12 @@ const nextConfig: NextConfig = {
               "font-src 'self' data:",
               "style-src 'self' 'unsafe-inline'",
               // Google Identity Services and Picker, and the Dropbox Chooser, for the upload page's cloud pickers.
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com https://accounts.google.com https://apis.google.com https://www.dropbox.com https://www.youtube.com",
-              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com https://*.r2.cloudflarestorage.com https://accounts.google.com`,
-              "frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://accounts.google.com https://docs.google.com https://content.googleapis.com https://www.dropbox.com https://www.youtube.com https://www.youtube-nocookie.com",
+              `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://apis.google.com https://www.dropbox.com https://www.youtube.com`,
+              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://*.r2.cloudflarestorage.com https://accounts.google.com`,
+              `frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://docs.google.com https://content.googleapis.com https://www.dropbox.com https://www.youtube.com https://www.youtube-nocookie.com`,
               "worker-src 'self' blob:",
+              `report-uri ${CSP_REPORT_URL}`,
+              "report-to csp-endpoint",
             ].join("; ") + ";",
           },
         ],

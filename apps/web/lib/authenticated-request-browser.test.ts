@@ -191,6 +191,21 @@ describe("upgradePromptFromFailure", () => {
     ).toMatchObject({ tier: "pro", highlight: "Up to 4 Brand Profiles" });
   });
 
+  test("offers the next tier for a full audio library and a spent monthly content allowance", () => {
+    expect(
+      upgradePromptFromFailure({
+        error: "plan_limit_reached",
+        details: { currentTier: "creator", requiredTier: "pro", limit: "audioAssets", used: 10, max: 10 },
+      }),
+    ).toMatchObject({ tier: "pro", highlight: "Up to 30 uploaded audio files" });
+    expect(
+      upgradePromptFromFailure({
+        error: "plan_limit_reached",
+        details: { currentTier: "creator", requiredTier: "pro", limit: "contentGenerations", used: 30, max: 30 },
+      }),
+    ).toMatchObject({ tier: "pro", highlight: "90 content generations a month" });
+  });
+
   test("has no prompt when no tier lifts the limit or details are malformed", () => {
     expect(
       upgradePromptFromFailure({

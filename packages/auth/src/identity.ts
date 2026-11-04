@@ -294,7 +294,9 @@ async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
  * then deleted here) or sees the tombstone and writes nothing.
  */
 export async function markUserDeletedByClerkId(clerkId: string) {
-  return getRequiredPrisma().$transaction(async (tx) => {
+  const settled: OwnedWorkspaceSettlement[] = [];
+  const result = await getRequiredPrisma().$transaction(async (tx) => {
+    settled.length = 0;
     await lockClerkIdentity(tx, clerkId);
     await tx.clerkDeletedIdentity.upsert({ where: { clerkId }, create: { clerkId }, update: {} });
 
@@ -326,12 +328,94 @@ export async function markUserDeletedByClerkId(clerkId: string) {
         })),
       });
     }
+    settled.push(...(await settleDeletedOwnerWorkspaces(tx, user.id, now)));
     await removeDeletedUserMemberships(tx, user.id, now);
     return tx.user.updateMany({
       where: { clerkId },
       data: { deletedAt: user.deletedAt ?? now, primaryEmail: null, emailVerifiedAt: null },
     });
   });
+  // The ownership change is the audit record: there is no role-change table,
+  // so it is logged like every other Workspace role change, after commit.
+  for (const entry of settled) {
+    console.warn(JSON.stringify({ level: "info", message: "workspace_owner_deleted", ...entry }));
+  }
+  return result;
+}
+
+interface OwnedWorkspaceSettlement {
+  workspaceId: string;
+  outcome: "ownership_transferred" | "cancel_at_period_end_requested";
+  successorUserId?: string;
+}
+
+/**
+ * Clerk can delete a user outside our UI, so a deleted owner is never refused.
+ * Each Workspace they owned either passes to its oldest remaining admin (the
+ * subscription is left alone) or, with nobody to pass it to, asks Workspace
+ * Billing to cancel at period end: reconciliation sets Stripe's
+ * `cancel_at_period_end` and retries until the provider shows it. A personal
+ * Workspace never changes hands, because its brand data belongs to its owner.
+ * Repeat deliveries find no owner membership (transfer) or an already set
+ * request (cancel) and write nothing. The due time is picked up by the hourly
+ * `billing_wakes` page, as this package cannot queue Workspace Billing itself.
+ */
+export async function settleDeletedOwnerWorkspaces(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  now: Date,
+): Promise<OwnedWorkspaceSettlement[]> {
+  const owned = await tx.$queryRaw<Array<{ id: string; workspaceId: string }>>`
+    SELECT id, "workspaceId" FROM "WorkspaceMember"
+    WHERE "userId" = ${userId}::uuid AND role = 'owner'
+    ORDER BY "workspaceId"
+    FOR UPDATE`;
+  const settled: OwnedWorkspaceSettlement[] = [];
+  for (const membership of owned) {
+    const [successor] = await tx.$queryRaw<Array<{ id: string; userId: string }>>`
+      SELECT m.id, m."userId" FROM "WorkspaceMember" m
+      JOIN "User" u ON u.id = m."userId"
+      JOIN "Workspace" w ON w.id = m."workspaceId"
+      WHERE m."workspaceId" = ${membership.workspaceId}::uuid
+        AND m.role = 'admin'
+        AND u."deletedAt" IS NULL
+        AND w."personalOwnerUserId" IS NULL
+      ORDER BY m."joinedAt" ASC, m.id ASC
+      LIMIT 1
+      FOR UPDATE OF m`;
+    if (successor) {
+      await tx.workspaceMember.delete({ where: { id: membership.id } });
+      await tx.workspaceMember.update({ where: { id: successor.id }, data: { role: "owner" } });
+      await tx.workspace.update({
+        where: { id: membership.workspaceId },
+        data: { ownerUserId: successor.userId },
+      });
+      // The admin was a billable seat; an owner is not.
+      await tx.workspaceBillingAccount.updateMany({
+        where: { workspaceId: membership.workspaceId },
+        data: {
+          cancelAtPeriodEndRequestedAt: null,
+          desiredAdditionalSeats: { decrement: 1 },
+          seatRevision: { increment: 1 },
+          nextReconcileAt: now,
+        },
+      });
+      settled.push({
+        workspaceId: membership.workspaceId,
+        outcome: "ownership_transferred",
+        successorUserId: successor.userId,
+      });
+      continue;
+    }
+    const requested = await tx.workspaceBillingAccount.updateMany({
+      where: { workspaceId: membership.workspaceId, cancelAtPeriodEndRequestedAt: null },
+      data: { cancelAtPeriodEndRequestedAt: now, nextReconcileAt: now },
+    });
+    if (requested.count > 0) {
+      settled.push({ workspaceId: membership.workspaceId, outcome: "cancel_at_period_end_requested" });
+    }
+  }
+  return settled;
 }
 
 /**

@@ -112,7 +112,8 @@ function audioScope(c: Context<ApiEnv>) {
   const actor = getActor(c);
   return {
     ownerUserId: actor.workspaceOwnerUserId,
-    actor: { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId },
+    // The whole brand scope: uploads are gated by its plan, role and status.
+    actor: brandScope(c),
   };
 }
 
@@ -424,8 +425,7 @@ export function createBrandRoutes(deps: BrandRouteDeps) {
       })
 
       .post("/audio-assets/presign-upload", validate("json", presignAudioUploadSchema), async (c) => {
-        const { ownerUserId, actor } = audioScope(c);
-        return c.json(await deps.audioAssets.presignUpload(ownerUserId, c.req.valid("json"), actor), 200);
+        return c.json(await deps.audioAssets.presignUpload(c.req.valid("json"), audioScope(c).actor), 200);
       })
 
       .post("/audio-assets", validate("json", finalizeAudioUploadSchema), async (c) => {

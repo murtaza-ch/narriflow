@@ -22,7 +22,7 @@ export class PlanRequirementError extends ExpectedDomainFailureError<
   PlanRequirementCode,
   {
     feature?: PlanFeature;
-    limit?: PlanCountLimit | "generatedImages" | "dubs";
+    limit?: PlanCountLimit | "generatedImages" | "dubs" | "contentGenerations";
     used?: number;
     max?: number;
     currentTier: PricingTier;
@@ -35,7 +35,7 @@ export class PlanRequirementError extends ExpectedDomainFailureError<
     currentTier: PricingTier;
     requiredTier: PricingTier | null;
     feature?: PlanFeature;
-    limit?: PlanCountLimit | "generatedImages" | "dubs";
+    limit?: PlanCountLimit | "generatedImages" | "dubs" | "contentGenerations";
     used?: number;
     max?: number;
   }) {

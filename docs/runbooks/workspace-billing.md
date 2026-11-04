@@ -135,6 +135,8 @@ Then verify isolated Stripe test customers and, where the paid-period boundary m
 
 Provider timeouts retain the last verified projection and retry with bounded backoff. Missing metadata, customer conflicts, multiple paid subscriptions, duplicate or unknown seat items, unknown prices, and incomplete pagination move the account to attention. Automated repair never cancels, merges, refunds, deletes, or changes provider billing.
 
+The one cancellation Workspace Billing performs is for a deleted owner. When Clerk deletes a user, each Workspace they owned passes to its oldest remaining admin (the subscription is untouched and the admin stops counting as a billable seat), except a personal Workspace, which never changes hands. A Workspace with no admin to take over records `cancelAtPeriodEndRequestedAt` on its Billing Account. Reconciliation, picked up by the hourly `billing_wakes` page, then sets Stripe `cancel_at_period_end` (releasing a Narriflow-owned plan-change schedule first) and retries every five minutes until the provider shows it; a foreign schedule or multiple entitled subscriptions need support. Paid access ends at the verified period end, as with portal cancellation. Deletion itself is never refused, and a repeat webhook delivery changes nothing. Ownership changes are logged as `workspace_owner_deleted` with the outcome. Inspect a stuck one with `workspace_billing_owner_deletion_cancel_failed`; the operator command reconciles but still never cancels by hand.
+
 ## Diagnosis and safe reconciliation
 
 Start with read-only inspection. The command reports normalized local and provider state without customer, subscription, item, Checkout, event, or attempt IDs:

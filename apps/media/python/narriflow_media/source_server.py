@@ -7,6 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import re
 import secrets
 import socket
+import time
+from datetime import datetime
 from threading import BoundedSemaphore, Event, Lock, Thread
 
 from .control import ExecutionControlError
@@ -18,18 +20,21 @@ SOCKET_SEND_BYTES = 64 * 1024
 MAX_CONNECTIONS = 4
 MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_CACHE_ENTRIES = 128
+GRANT_SAFETY_MARGIN_SECONDS = 30
 
 
 class ScopedSourceServer:
     """Loopback transport only. The operation supplies verified package sources.
 
-    No source URL is handed to FFmpeg. Each upstream chunk gets a fresh scoped
-    grant and If-Match. A 64MiB/128-entry LRU reuses verified immutable intervals
+    No source URL is handed to FFmpeg. Each source reuses one verified scoped
+    grant across chunks until 30s before its expiresAt (and is refreshed on
+    expiry or a 403); every chunk still sends If-Match and checks the local
+    owner with assert_live(). A grant with no readable expiresAt is never reused. A 64MiB/128-entry LRU reuses verified immutable intervals
     within this operation, plus at most four 1MiB response buffers.
     The actual Popen start acknowledgement must precede allow_reads().
     """
-    def __init__(self, session, sources, *, transport=None):
-        self._session=session;self._transport=transport or SignedHttpTransport()
+    def __init__(self, session, sources, *, transport=None, clock=time.time):
+        self._session=session;self._transport=transport or SignedHttpTransport();self._clock=clock
         self._sources={source['name']:dict(source) for source in sources}
         if len(self._sources)!=len(sources) or not 1<=len(sources)<=4096:
             raise ExecutionControlError('execution_source_invalid')
@@ -42,6 +47,7 @@ class ScopedSourceServer:
         self._counter_lock=Lock();self.bytes_transferred=0;self.upstream_requests=0
         self._cache_lock=Lock();self._cache=OrderedDict();self._cache_bytes=0
         self._connection_lock=Lock();self._connections=set()
+        self._grants={};self._grant_locks={name:Lock() for name in self._sources}
         self._nonce=secrets.token_urlsafe(32)
         owner=self
         class Handler(BaseHTTPRequestHandler):
@@ -140,15 +146,29 @@ class ScopedSourceServer:
         self._assert_readable()
         return parts[0] if len(parts)==1 else b''.join(parts)
 
-    def _read_uncached(self,source,start,end):
-        self._assert_readable()
-        expected={key:source[key] for key in ('storageKey','etag','byteLength','sha256') if key in source}
-        for attempt in range(3):
-            self._assert_readable()
+    def _grant(self,source,expected,*,rejected=None):
+        """One verified grant per source; the lock makes concurrent readers share a single source-read."""
+        with self._grant_locks[source['name']]:
+            cached=self._grants.get(source['name'])
+            if cached is not None and cached[1] is not rejected and self._clock()<cached[0]:return cached[1]
+            self._grants.pop(source['name'],None);self._assert_readable()
             result=self._session.transfer('source-read',sourceId=source['name']).disposition
             if result.get('object')!=expected:
                 self._session.cancel_event.set();raise ExecutionControlError('execution_source_changed')
-            grant=result['grant'];headers={'range':f'bytes={start}-{end}','if-match':source['etag'],'accept-encoding':'identity'}
+            grant=result['grant']
+            try:usable_until=datetime.fromisoformat(grant['expiresAt']).timestamp()-GRANT_SAFETY_MARGIN_SECONDS
+            except (KeyError,TypeError,ValueError):usable_until=None
+            if usable_until is not None:self._grants[source['name']]=(usable_until,grant)
+            return grant
+
+    def _read_uncached(self,source,start,end):
+        self._assert_readable()
+        expected={key:source[key] for key in ('storageKey','etag','byteLength','sha256') if key in source}
+        rejected=None
+        for attempt in range(3):
+            self._assert_readable()
+            grant=self._grant(source,expected,rejected=rejected);rejected=None
+            headers={'range':f'bytes={start}-{end}','if-match':source['etag'],'accept-encoding':'identity'}
             try:
                 response=asyncio.run(self._transport.request(SignedGrant(grant['url'],grant['headers']),'GET',None,headers,
                     end-start+1,lambda:self._stopped.is_set() or self._session.cancel_event.is_set()))
@@ -158,7 +178,8 @@ class ScopedSourceServer:
                 if attempt<2:continue
                 raise ExecutionControlError('execution_source_unavailable') from None
             self._assert_readable();facts={key.lower():value for key,value in response.headers.items()}
-            if response.status in {403,408,429,500,502,503,504} and attempt<2:continue
+            if response.status in {403,408,429,500,502,503,504} and attempt<2:
+                rejected=grant if response.status==403 else None;continue
             if (response.status!=206 or facts.get('etag')!=source['etag'] or facts.get('content-length')!=str(end-start+1)
                     or facts.get('content-range')!=f'bytes {start}-{end}/{source["byteLength"]}' or len(response.body)!=end-start+1):
                 self._session.cancel_event.set();raise ExecutionControlError('execution_source_changed')
@@ -177,3 +198,4 @@ class ScopedSourceServer:
             connection.close()
         self._server.shutdown();self._server.server_close();self._thread.join(timeout=1)
         with self._cache_lock:self._cache.clear();self._cache_bytes=0
+        self._grants.clear()

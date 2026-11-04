@@ -282,6 +282,11 @@ export interface WorkspaceBillingProvider extends WorkspacePlanChangeProvider {
     input: { itemId: string; prorationBehavior: "create_prorations" },
     idempotencyKey: string,
   ): Promise<void>;
+  /** Sets `cancel_at_period_end` on this Workspace's subscription. Setting it twice changes nothing. */
+  cancelSubscriptionAtPeriodEnd?(
+    input: { workspaceId: string; subscriptionId: string },
+    idempotencyKey: string,
+  ): Promise<void>;
 }
 
 export interface ProviderCheckoutSession {
@@ -342,6 +347,12 @@ export interface WorkspaceBillingProjection {
   currentPeriodEnd: Date | null;
   trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  /**
+   * The Workspace's owner deleted their account and nobody could take over, so
+   * reconciliation must get the subscription cancelled at period end. This is
+   * the one cancellation Workspace Billing performs; repair never cancels.
+   */
+  cancelAtPeriodEndRequested: boolean;
   planChange: BillingPlanChange | null;
   firstPastDueAt: Date | null;
   graceDeadlineAt: Date | null;
@@ -673,6 +684,7 @@ function toProjection(
     currentPeriodEnd: account.currentPeriodEndAt,
     trialEnd: account.trialEndAt,
     cancelAtPeriodEnd: account.cancelAtPeriodEnd,
+    cancelAtPeriodEndRequested: account.cancelAtPeriodEndRequestedAt !== null,
     planChange: snapshotPlanChange(account.snapshot),
     firstPastDueAt: account.firstPastDueAt,
     graceDeadlineAt: account.graceDeadlineAt,
@@ -2192,6 +2204,50 @@ export function createWorkspaceBillingModule(dependencies: {
         revision: desired.revision,
       };
     }
+    // A deleted sole owner's subscription runs out at period end. Like a seat
+    // change this happens before the commit, and a failure only schedules the
+    // retry: the committed state keeps following the provider.
+    let committedSubscription = subscription;
+    let cancellationFailed = false;
+    if (
+      current.cancelAtPeriodEndRequested &&
+      !subscription.cancelAtPeriodEnd &&
+      !hasSubscriptionConflict &&
+      ENTITLED_SUBSCRIPTION_STATUSES.has(subscription.status)
+    ) {
+      try {
+        const provider = dependencies.provider;
+        if (!provider.cancelSubscriptionAtPeriodEnd) throw new WorkspaceBillingError("plan_change_not_configured");
+        // Stripe will not cancel a subscription that a schedule manages. The
+        // pending change is moot once the plan is ending; a schedule that is
+        // not ours is refused and retried until support releases it.
+        if (subscription.planScheduleId) {
+          if (!provider.retrievePlanChangeSubscription || !provider.cancelScheduledPlanChange) throw new WorkspaceBillingError("plan_change_not_configured");
+          await callProvider("release_plan_schedule", async () =>
+            provider.cancelScheduledPlanChange!({
+              workspaceId,
+              subscription: await provider.retrievePlanChangeSubscription!(subscription.id),
+            }),
+          );
+        }
+        await callProvider("cancel_at_period_end", () =>
+          provider.cancelSubscriptionAtPeriodEnd!(
+            { workspaceId, subscriptionId: subscription.id },
+            `workspace-cancel-${workspaceId}-${subscription.id}`,
+          ),
+        );
+        committedSubscription = { ...subscription, cancelAtPeriodEnd: true, planChange: null, planScheduleId: null };
+      } catch (error) {
+        if (error instanceof WorkspaceBillingAttemptLost) throw error;
+        cancellationFailed = true;
+        dependencies.diagnostics.record({
+          level: "warn",
+          message: "workspace_billing_owner_deletion_cancel_failed",
+          workspaceId,
+          phase: "owner_deletion_cancel",
+        });
+      }
+    }
     if (subscription.planScheduleId && !subscription.planChange && dependencies.provider.finalizeCompletedPlanChangeSchedule) {
       // Releasing a finished schedule keeps portal cancellation available; it
       // must never stop the verified state from being committed.
@@ -2207,7 +2263,7 @@ export function createWorkspaceBillingModule(dependencies: {
       settled = await dependencies.store.commitVerifiedState({
         workspaceId,
         expectedCustomerId: providerState.customerId,
-        subscription,
+        subscription: committedSubscription,
         tier,
         interval: mapped.interval,
         workspaceStatus,
@@ -2219,7 +2275,8 @@ export function createWorkspaceBillingModule(dependencies: {
         now: dependencies.clock.now(),
         attemptId,
         seat,
-        seatConvergenceFailed,
+        // Both are provider mutations that failed and retry on the changed cadence.
+        seatConvergenceFailed: seatConvergenceFailed || cancellationFailed,
       });
     } catch (error) {
       if (error instanceof WorkspaceBillingAttemptLost && providerSeatMutation) {

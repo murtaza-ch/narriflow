@@ -2721,3 +2721,120 @@ describe("Workspace Billing below-Business member restriction", () => {
     ).toBe("pending_payment");
   });
 });
+
+/**
+ * A deleted sole owner's subscription is cancelled at period end by
+ * reconciliation (the store records the request when Clerk deletes the user).
+ * These run on the in-memory store only: the Prisma store's mapping of the
+ * request column is covered by no PostgreSQL gate.
+ */
+describe("Workspace Billing deleted-owner cancellation", () => {
+  const workspaceId = "workspace-owner-deleted";
+  function world(options: { requested?: boolean; subscription?: Partial<ProviderSubscription> } = {}) {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId,
+        personal: false,
+        hasNonOwnerMembers: true,
+        pricingTier: "pro",
+        status: "active",
+        providerCustomerId: "cus_deleted",
+        cancelAtPeriodEndRequested: options.requested ?? true,
+      },
+    ]);
+    const state = {
+      subscription: subscription({ id: "sub_deleted", status: "active", ...options.subscription }),
+      cancelKeys: [] as string[],
+      released: 0,
+      failCancel: 0,
+    };
+    let now = new Date("2026-10-26T10:00:00.000Z");
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_deleted",
+          ownership: { kind: "verified", workspaceId },
+          subscriptions: [state.subscription],
+        }),
+        retrievePlanChangeSubscription: async () => ({ id: "sub_deleted" }) as never,
+        cancelScheduledPlanChange: async () => {
+          state.released += 1;
+          state.subscription = { ...state.subscription, planScheduleId: null, planChange: null };
+        },
+        cancelSubscriptionAtPeriodEnd: async (_input, key) => {
+          state.cancelKeys.push(key);
+          if (state.failCancel > 0) {
+            state.failCancel -= 1;
+            throw new Error("stripe unavailable");
+          }
+          state.subscription = { ...state.subscription, cancelAtPeriodEnd: true };
+        },
+      },
+    });
+    return {
+      billing,
+      store,
+      state,
+      advance: (ms: number) => {
+        now = new Date(now.getTime() + ms);
+      },
+      dueAt: async () => (await store.claimAccount({ workspaceId, now, leaseMs: 1 }))!.dueAt,
+      now: () => now,
+    };
+  }
+
+  test("a sole owner's subscription is cancelled at period end", async () => {
+    const w = world();
+    const result = await w.billing.reconcileCurrentState(workspaceId);
+    expect(w.state.cancelKeys).toEqual([`workspace-cancel-${workspaceId}-sub_deleted`]);
+    expect(result.view).toMatchObject({ cancelAtPeriodEnd: true, plan: "pro" });
+  });
+
+  test("a Stripe failure keeps the request and retries in five minutes", async () => {
+    const w = world();
+    w.state.failCancel = 1;
+    const first = await w.billing.reconcileCurrentState(workspaceId);
+    // The verified state still commits; the subscription is not yet ending.
+    expect(first.view).toMatchObject({ cancelAtPeriodEnd: false, plan: "pro" });
+    expect((await w.dueAt()).getTime() - w.now().getTime()).toBe(5 * 60_000);
+    w.advance(5 * 60_000 + 1);
+    const second = await w.billing.reconcileCurrentState(workspaceId);
+    expect(second.view.cancelAtPeriodEnd).toBe(true);
+    expect(w.state.cancelKeys).toHaveLength(2);
+    expect(new Set(w.state.cancelKeys).size).toBe(1);
+  });
+
+  test("a repeat delivery or later reconciliation calls Stripe once", async () => {
+    const w = world();
+    await w.billing.reconcileCurrentState(workspaceId);
+    w.advance(10 * 60_000);
+    await w.billing.reconcileCurrentState(workspaceId);
+    w.advance(10 * 60_000);
+    await w.billing.reconcileCurrentState(workspaceId);
+    expect(w.state.cancelKeys).toHaveLength(1);
+  });
+
+  test("nothing is cancelled without a request, or when the subscription already ended", async () => {
+    const untouched = world({ requested: false });
+    await untouched.billing.reconcileCurrentState(workspaceId);
+    expect(untouched.state.cancelKeys).toEqual([]);
+    const ended = world({ subscription: { status: "canceled" } });
+    await ended.billing.reconcileCurrentState(workspaceId);
+    expect(ended.state.cancelKeys).toEqual([]);
+  });
+
+  test("a pending plan-change schedule is released before the cancellation", async () => {
+    const w = world({ subscription: { planScheduleId: "sub_sched_1" } });
+    const result = await w.billing.reconcileCurrentState(workspaceId);
+    expect(w.state.released).toBe(1);
+    expect(w.state.cancelKeys).toHaveLength(1);
+    expect(result.view.cancelAtPeriodEnd).toBe(true);
+  });
+});

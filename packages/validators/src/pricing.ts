@@ -62,6 +62,8 @@ export interface PlanLimits {
   brandProfiles: number;
   /** Active custom (non built-in) Brand Templates in the owner scope. */
   brandTemplates: number;
+  /** Live uploaded Music/SFX files in the Workspace. Curated library tracks are free. */
+  audioAssets: number;
   /** Usable connected social destinations in the Workspace. */
   socialDestinations: number;
   /** Active Autopilot rules (RSS and Zoom combined). */
@@ -70,6 +72,8 @@ export interface PlanLimits {
   generatedImages: { period: "lifetime" | "month"; count: number; concurrency: number };
   /** Voice-over dubs per UTC month, each up to `maxClipSeconds` long. */
   dubs: { perMonth: number; maxClipSeconds: number };
+  /** Content-suite calls (blog, X, LinkedIn, show notes) per UTC month. No credits are charged. */
+  contentGenerationsPerMonth: number;
 }
 
 export interface PlanDefinition {
@@ -143,10 +147,12 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       projectRetentionHours: 72,
       brandProfiles: 0,
       brandTemplates: 0,
+      audioAssets: 0,
       socialDestinations: 0,
       autopilotRules: 0,
       generatedImages: { period: "lifetime", count: 1, concurrency: 1 },
       dubs: { perMonth: 0, maxClipSeconds: 0 },
+      contentGenerationsPerMonth: 0,
     },
   },
   creator: {
@@ -162,10 +168,12 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       projectRetentionHours: null,
       brandProfiles: 1,
       brandTemplates: 3,
+      audioAssets: 10,
       socialDestinations: 3,
       autopilotRules: 0,
       generatedImages: { period: "month", count: 10, concurrency: 2 },
       dubs: { perMonth: 0, maxClipSeconds: 0 },
+      contentGenerationsPerMonth: 30,
     },
   },
   pro: {
@@ -181,10 +189,12 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       projectRetentionHours: null,
       brandProfiles: 4,
       brandTemplates: 10,
+      audioAssets: 30,
       socialDestinations: 6,
       autopilotRules: 3,
       generatedImages: { period: "month", count: 30, concurrency: 4 },
       dubs: { perMonth: 10, maxClipSeconds: 180 },
+      contentGenerationsPerMonth: 90,
     },
   },
   business: {
@@ -200,10 +210,12 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       projectRetentionHours: null,
       brandProfiles: 10,
       brandTemplates: 30,
+      audioAssets: 100,
       socialDestinations: 20,
       autopilotRules: 10,
       generatedImages: { period: "month", count: 60, concurrency: 4 },
       dubs: { perMonth: 30, maxClipSeconds: 180 },
+      contentGenerationsPerMonth: 180,
     },
   },
 };
@@ -328,13 +340,15 @@ export type PlanCountLimit =
   | "brandProfiles"
   | "brandTemplates"
   | "socialDestinations"
-  | "autopilotRules";
+  | "autopilotRules"
+  | "audioAssets";
 
 const PLAN_COUNT_LIMIT_LABELS: Readonly<Record<PlanCountLimit, string>> = {
   brandProfiles: "Brand Profiles",
   brandTemplates: "custom Brand Templates",
   socialDestinations: "connected social accounts",
   autopilotRules: "active Autopilot rules",
+  audioAssets: "uploaded audio files",
 };
 
 const PLAN_COUNT_LIMIT_NOUNS: Readonly<Record<PlanCountLimit, string>> = {
@@ -342,6 +356,7 @@ const PLAN_COUNT_LIMIT_NOUNS: Readonly<Record<PlanCountLimit, string>> = {
   brandTemplates: "custom Brand Template",
   socialDestinations: "connected social account",
   autopilotRules: "active Autopilot rule",
+  audioAssets: "uploaded audio file",
 };
 
 /** Lowercase words of four or more letters, for matching a feature to its catalog line. */
@@ -400,6 +415,24 @@ export function planCountRequirement(
     requiredTier,
     max,
     message: `This plan includes ${max} ${label}.${requiredTier ? ` ${PLAN_CATALOG[requiredTier].name} includes more.` : ""}`,
+  };
+}
+
+/**
+ * Why `tier` has no content-suite call left this UTC month after `used`, or
+ * `null` while it does. The offered tier is the cheapest with room for one more.
+ */
+export function contentGenerationRequirement(
+  tier: string | null | undefined,
+  used: number,
+): { requiredTier: PricingTier | null; max: number; message: string } | null {
+  const max = planDefinition(tier).limits.contentGenerationsPerMonth;
+  if (used < max) return null;
+  const requiredTier = lowestTier((plan) => plan.limits.contentGenerationsPerMonth > used);
+  return {
+    requiredTier,
+    max,
+    message: `This plan includes ${max} content generations a month, and they renew on the 1st (UTC).${requiredTier ? ` ${PLAN_CATALOG[requiredTier].name} includes more.` : ""}`,
   };
 }
 
@@ -599,6 +632,7 @@ export function planComparison(): PlanComparisonGroup[] {
         { label: "Brand Profiles", values: perTier((plan) => countOrNo(plan.limits.brandProfiles)) },
         { label: "Custom Brand Templates", values: perTier((plan) => countOrNo(plan.limits.brandTemplates)) },
         { label: "Custom fonts and uploaded assets", values: feature("brand.customFonts") },
+        { label: "Uploaded audio files", values: perTier((plan) => countOrNo(plan.limits.audioAssets)) },
         { label: "Approval rules, default intros/outros", values: feature("brand.governance") },
       ],
     },
@@ -614,7 +648,7 @@ export function planComparison(): PlanComparisonGroup[] {
           ),
         },
         { label: "Voice-over dubbing", values: perTier((plan) => countOrNo(plan.limits.dubs.perMonth, " / month")) },
-        { label: "Blog, X, LinkedIn, show-notes repurposing", values: feature("content.repurposing") },
+        { label: "Blog, X, LinkedIn, show-notes repurposing", values: perTier((plan) => countOrNo(plan.limits.contentGenerationsPerMonth, " / month")) },
         { label: "AI post titles, descriptions, hashtags", values: feature("publishing.assistedCopy") },
       ],
     },

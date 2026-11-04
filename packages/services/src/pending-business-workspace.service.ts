@@ -16,7 +16,7 @@ const contentCounts = {
   campaignOperations: true, assistedCopyGenerations: true,
   processingUsage: true, generatedMediaUsage: true,
   webhookSubscriptions: true, callbackSigningSecrets: true, completionCallbacks: true,
-  invites: true, workspaceEvents: true, workspaceEventKeys: true,
+  invites: true, workspaceEvents: true, workspaceEventKeys: true, contentGenerations: true,
   thumbnailFrameOperations: true, audioAssetFavorites: true, socialOAuthStates: true,
   zoomOAuthStates: true, reviewApprovalOverrides: true, publicationManualDecisions: true,
   generationFinishings: true, reviewerOptOuts: true,

@@ -36,4 +36,34 @@ describe("page Content-Security-Policy", () => {
     expect(readFileSync(new URL("./app/layout.tsx", import.meta.url), "utf8")).toMatch(/<ClerkProvider\s+telemetry=\{false\}/);
     expect(await reportOnlyCspFor("/:path*")).not.toContain("clerk-telemetry.com");
   });
+
+  test("the Report-Only policy reports to the API and enforces nothing new", async () => {
+    const rules = await (config as { headers: () => Promise<{ source: string; headers: { key: string; value: string }[] }[]> }).headers();
+    const headers = rules.filter((entry) => entry.source === "/:path*").flatMap((entry) => entry.headers);
+    const csp = await reportOnlyCspFor("/:path*");
+    const origin = process.env.NEXT_PUBLIC_API_URL?.trim() ? new URL(process.env.NEXT_PUBLIC_API_URL).origin : "http://localhost:4000";
+    expect(csp).toContain(`report-uri ${origin}/api/csp-report`);
+    expect(csp).toContain("report-to csp-endpoint");
+    expect(headers.find((h) => h.key === "Reporting-Endpoints")?.value).toBe(`csp-endpoint="${origin}/api/csp-report"`);
+    expect(headers.find((h) => h.key === "Content-Security-Policy")?.value).toBe("frame-ancestors 'none';");
+    expect(csp).not.toContain("nonce-");
+  });
+
+  test("a production Clerk host is admitted only when the publishable key provides it", async () => {
+    expect(await reportOnlyCspFor("/:path*")).not.toContain("clerk.narriflow.example");
+    const previous = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = `pk_live_${Buffer.from("clerk.narriflow.example$").toString("base64")}`;
+    try {
+      const live = (await import("./next.config?clerk-live")).default as typeof config;
+      const rules = await (live as unknown as { headers: () => Promise<{ source: string; headers: { key: string; value: string }[] }[]> }).headers();
+      const csp = rules.filter((entry) => entry.source === "/:path*").flatMap((entry) => entry.headers)
+        .find((h) => h.key === "Content-Security-Policy-Report-Only")?.value ?? "";
+      for (const directive of ["script-src", "connect-src", "frame-src"]) {
+        expect(csp).toMatch(new RegExp(`${directive} [^;]*https://clerk\\.narriflow\\.example`));
+      }
+    } finally {
+      if (previous === undefined) delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+      else process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = previous;
+    }
+  });
 });

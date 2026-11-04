@@ -97,7 +97,7 @@ export function brandOwnerStoragePrefix(
 /** Serializes count-limited creation for one owner and collection inside `tx`. */
 export async function lockBrandOwner(
   tx: Prisma.TransactionClient,
-  collection: "brand-profiles" | "brand-templates",
+  collection: "brand-profiles" | "brand-templates" | "audio-assets",
   owner: { userId: string | null; workspaceId: string | null },
 ): Promise<void> {
   const key = `${collection}:${owner.workspaceId ? `workspace:${owner.workspaceId}` : `user:${owner.userId}`}`;

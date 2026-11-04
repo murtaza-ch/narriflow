@@ -209,3 +209,19 @@ ALTER TABLE "CampaignOperation" ADD CONSTRAINT "CampaignOperation_status_check"
   CHECK (status IN ('running', 'completed', 'partial', 'failed'));
 ALTER TABLE "NotificationLedger" ADD CONSTRAINT "NotificationLedger_status_check"
   CHECK (status IN ('pending', 'claimed', 'sent', 'failed', 'skipped'));
+
+-- A deleted sole owner's subscription is cancelled at period end by reconciliation.
+ALTER TABLE "WorkspaceBillingAccount" ADD COLUMN "cancelAtPeriodEndRequestedAt" TIMESTAMP(3);
+
+-- Monthly content-suite ceiling: one row per admitted call.
+CREATE TABLE "ContentGeneration" (
+    "id" UUID NOT NULL,
+    "workspaceId" UUID NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "ContentGeneration_pkey" PRIMARY KEY ("id")
+);
+
+CREATE INDEX "ContentGeneration_workspaceId_createdAt_idx" ON "ContentGeneration"("workspaceId", "createdAt");
+
+ALTER TABLE "ContentGeneration" ADD CONSTRAINT "ContentGeneration_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "Workspace"("id") ON DELETE CASCADE ON UPDATE CASCADE;
