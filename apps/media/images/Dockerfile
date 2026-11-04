@@ -94,3 +94,7 @@ RUN bun apps/media/scripts/check-render-environment.ts --enforce --stage image -
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python && ln -sf /usr/bin/pip3 /usr/local/bin/pip
 ENV PIP_BREAK_SYSTEM_PACKAGES=1 PYTHONPATH=/app/apps/media/python
 ENV MEDIA_RUNTIME_PROFILE=$MEDIA_PROFILE OMP_NUM_THREADS=$MEDIA_THREADS OPENBLAS_NUM_THREADS=$MEDIA_THREADS MKL_NUM_THREADS=$MEDIA_THREADS ORT_INTRA_OP_NUM_THREADS=$MEDIA_THREADS OPENCV_FOR_THREADS_NUM=$MEDIA_THREADS OPENCV_FFMPEG_THREADS=$MEDIA_THREADS
+
+# Last, so it sees the final image. Jobs read this record instead of repeating
+# the check; verify_*_runtime in modal_app.py still run it in a live container.
+RUN bun apps/media/scripts/check-render-environment.ts --enforce --stage start --json --profile "$MEDIA_PROFILE" > /opt/narriflow-runtime/verified-runtime.json

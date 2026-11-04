@@ -294,7 +294,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                                   transport=Transport(), assert_owned=lambda: None, cancel_event=threading.Event())
         self.assertEqual(calls, ['complete'])
 
-    async def test_virtual_ten_gib_pin_keeps_at_most_four_part_buffers(self):
+    async def test_virtual_ten_gib_pin_keeps_at_most_eight_part_buffers(self):
         size, part_size, active, maximum, completed = 10 * 1024 ** 3, 16 * 1024 ** 2, 0, 0, []
         class Control:
             async def authorize_source_range(self, start, end, etag):
@@ -335,10 +335,37 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.byte_length, size)
         self.assertEqual(len(completed), 640)
         self.assertEqual([part.part_number for part in completed], list(range(1, 641)))
-        self.assertLessEqual(maximum, 4)
-        self.assertLess(peak, 80 * 1024 * 1024)
+        self.assertLessEqual(maximum, 8)
+        self.assertLess(peak, 160 * 1024 * 1024)
         print(json.dumps({'message':'native_virtual_multipart_memory','sourceBytes':size,'parts':len(completed),
-                          'maxPartBuffers':maximum,'peakTrackedBytes':peak,'ceilingBytes':80*1024*1024}))
+                          'maxPartBuffers':maximum,'peakTrackedBytes':peak,'ceilingBytes':160*1024*1024}))
+
+    async def test_a_source_pin_moves_eight_parts_at_once(self):
+        size, active, peak = 5 * 1024 * 1024, [0], [0]
+        body = bytes(size)
+        total = size * 10
+        class Control:
+            async def authorize_source_range(self, *args):
+                return SignedGrant('https://storage.invalid/source')
+            async def authorize_part(self, *args):
+                return SignedGrant('https://storage.invalid/part')
+            async def complete(self, parts, sha256):
+                return CompletedObject('key', '"final"', total, sha256)
+            async def abort(self, reason):
+                raise AssertionError('pin aborted')
+        class Transport:
+            async def request(self, grant, method, payload, headers, max_response_bytes, is_cancelled):
+                active[0] += 1;peak[0] = max(peak[0], active[0])
+                await asyncio.sleep(.01)
+                active[0] -= 1
+                if method == 'PUT':
+                    return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
+                start, end = (int(value) for value in headers['Range'][6:].split('-'))
+                return TransferResponse(206, {'ETag': '"frozen"', 'Content-Length': str(end - start + 1),
+                    'Content-Range': f'bytes {start}-{end}/{total}'}, body)
+        await pin_source(MultipartDestination('assigned', 'upload', total, size), source_etag='"frozen"', control=Control(),
+                         transport=Transport(), assert_owned=lambda: None, cancel_event=threading.Event())
+        self.assertEqual(peak[0], 8)
 
     async def test_stale_owner_stops_before_a_new_part_or_completion(self):
         calls, cancelled = [], threading.Event()

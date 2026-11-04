@@ -12,6 +12,7 @@ import {
   judgeAdmission,
   readDiskFacts,
   renderEncodeDeadlineMs,
+  renderGroupDeadlineMs,
   renderResourceBudgetFor,
   scratchLimitBytes,
   type BudgetEnvironment,
@@ -86,6 +87,17 @@ describe("encode deadline", () => {
     expect(fourK).toBe(base * 4);
     expect(hdr).toBe(config.renderCommandTimeoutMs);
     expect(renderEncodeDeadlineMs({ ...sdr, editedDurationSec: 20, hdr: true }, config)).toBe(base * 3);
+  });
+
+  test("a whole render group gets far less than the flat limit that let a 45s clip hang for 14 minutes", () => {
+    expect(renderGroupDeadlineMs({ ...sdr, editedDurationSec: 45, variants: 1 }, config)).toBe(360_000);
+    expect(renderGroupDeadlineMs({ ...sdr, editedDurationSec: 10, variants: 1 }, config)).toBe(300_000);
+    expect(renderGroupDeadlineMs({ ...sdr, editedDurationSec: 45, variants: 4 }, config)).toBe(1_440_000);
+  });
+
+  test("a render group never exceeds its ceiling, even for unknown work", () => {
+    expect(renderGroupDeadlineMs({ ...sdr, editedDurationSec: 3600, variants: 4 }, config)).toBe(45 * 60_000);
+    expect(renderGroupDeadlineMs({ ...sdr, editedDurationSec: Number.NaN, variants: 1 }, config)).toBe(config.renderCommandTimeoutMs);
   });
 
   test("smaller-than-1080p sources never shrink the allowance", () => {

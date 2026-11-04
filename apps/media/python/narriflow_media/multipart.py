@@ -24,7 +24,7 @@ from .manifest import MAX_SOURCE_BYTES
 
 PART_SIZE_BYTES = 16 * 1024 * 1024
 MIN_PART_SIZE_BYTES = 5 * 1024 * 1024
-MAX_CONCURRENCY = 4
+MAX_CONCURRENCY = 8
 
 
 class MultipartTransferError(RuntimeError):

@@ -109,7 +109,7 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
                 if mode=='lost_commit_ack':
                     self.assertEqual(outcome,{'disposition':'unconfirmed'});self.assertEqual(set(uploads),{outputs[0]['artifactId']})
                     self.assertEqual(uploads[outputs[0]['artifactId']],payload)
-                    self.assertEqual([c['action'] for c in calls].count('commit-artifact'),3)
+                    self.assertEqual([c['action'] for c in calls].count('commit-artifact'),4)
                     self.assertNotIn('fail',[c['action'] for c in calls]);self.assertNotIn('upload-abort',[c['action'] for c in calls]);return
                 self.assertEqual(outcome,{'disposition':'completed'})
                 self.assertTrue(state['get_after_start']);self.assertEqual(state['if_match'],'"font"')

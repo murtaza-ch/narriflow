@@ -161,7 +161,7 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
                     sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage)
             self.assertEqual(uncertain.exception.artifact_id,output['artifactId'])
             self.assertEqual(str(uncertain.exception),'artifact_commit_unconfirmed')
-        self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','upload-initialize','upload-parts','upload-complete']+['commit-artifact']*3)
+        self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','upload-initialize','upload-parts','upload-complete']+['commit-artifact']*4)
         commits=calls[-3:]
         self.assertTrue(all(call[2:]==commits[0][2:] for call in commits))
 
@@ -173,7 +173,7 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ExecutionControlError) as uncertainty:
                 await artifacts.upload(output['artifactId'],path,content_type='image/png',byte_length=5,sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage)
             self.assertEqual(uncertainty.exception.code,'execution_completion_unconfirmed')
-        self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','upload-initialize','upload-parts']+['upload-complete']*3)
+        self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','upload-initialize','upload-parts']+['upload-complete']*4)
         self.assertEqual(calls[-1][2:],calls[-2][2:])
 
     async def test_source_audio_facts_bind_the_full_source_to_the_completed_server_object(self):

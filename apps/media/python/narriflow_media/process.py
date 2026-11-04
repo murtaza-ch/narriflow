@@ -34,6 +34,19 @@ class ProcessResult:
     stderr: bytes
 
 
+VERIFIED_RUNTIME_PATH = Path('/opt/narriflow-runtime/verified-runtime.json')
+
+
+def verified_runtime_id(path: Path = VERIFIED_RUNTIME_PATH) -> str | None:
+    """The image build ran the full check and images are immutable, so jobs read
+    its record. Hosts without one, like the laptop agent, run the check instead."""
+    try:
+        value = json.loads(path.read_text())['id']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return value if isinstance(value, str) and len(value) == 64 else None
+
+
 class MediaProcessError(RuntimeError):
     def __init__(self, code: str, returncode: int | None = None):
         super().__init__(code)

@@ -200,7 +200,7 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(MultipartTransferError):
                 await upload_file(path, control.destination, control=control, transport=Storage(),
                     assert_owned=session.assert_live, cancel_event=session.cancel_event)
-        self.assertEqual([call[1]['action'] for call in calls], ['acquire','upload-initialize','upload-parts']+['upload-complete']*3)
+        self.assertEqual([call[1]['action'] for call in calls], ['acquire','upload-initialize','upload-parts']+['upload-complete']*4)
         self.assertEqual(calls[-1][2:],calls[-2][2:])
 
     async def test_work_package_object_is_conditionally_read_and_raw_hash_verified_before_json_parse(self):

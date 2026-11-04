@@ -1,6 +1,8 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { renderGroup } from "./render-group";
+import { parseRenderConfig } from "./render-config";
+import { renderGroupDeadlineMs } from "./render-resource-budget";
 import { renderExecutionInputSchema } from "@narriflow/validators/render-execution";
 
 const invalid = (): never => { throw new Error("render_command_invalid"); };
@@ -24,7 +26,13 @@ async function main() {
   const input = renderExecutionInputSchema.parse(JSON.parse(await readFile(inputPath, "utf8")));
   const controller = new AbortController(), cancel = () => controller.abort(new Error("render_cancelled"));
   process.once("SIGTERM", cancel); process.once("SIGINT", cancel);
-  const timer = setTimeout(cancel, 45 * 60_000);
+  const { document, sourceProbe } = input.preparation;
+  const deadlineMs = renderGroupDeadlineMs({ editedDurationSec: document.clipEndSec - document.clipStartSec, sourceWidth: sourceProbe.video?.width ?? null,
+    sourceHeight: sourceProbe.video?.height ?? null, hdr: false, variants: command.renderIds.length }, parseRenderConfig({}));
+  const timer = setTimeout(() => {
+    console.error(JSON.stringify({ level: "warn", message: "render_group_deadline_exceeded", deadlineMs }));
+    cancel();
+  }, deadlineMs);
   // Diagnostics stay off stdout and contain only the renderer's bounded facts.
   const originalLog = console.log;
   console.log = (...args) => console.error(...args);

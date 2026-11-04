@@ -9,12 +9,15 @@ from .fetch import ExistingSourceAudio, SourceFetchFailure, fetch_source
 from .fetch_runtime import YtDlpSourceRuntime
 from .file_source_runtime import run_direct_source
 from .manifest import YouTubeSource
-from .process import run_owned_process_async
+from .process import run_owned_process_async, verified_runtime_id
 from .source_sink import ScopedSourceSink, _environment
 from .transfer import WorkPackage
 
 
 async def verify_source_runtime(session, *, bun_executable="bun"):
+    verified = verified_runtime_id()
+    if verified is not None:
+        return verified
     # Bounded startup verification precedes actual source work. A rejected image
     # starts no media operation and therefore spends no domain attempt.
     report = await run_owned_process_async([bun_executable,

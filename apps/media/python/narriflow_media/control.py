@@ -25,6 +25,9 @@ from .signing import COMMAND_MAX_BYTES, sign_execution_request
 
 TARGET = '/api/execution/command'
 MAX_RESPONSE_BYTES = 64 * 1024
+# One delivery keeps retrying for most of a 120s lease: commits from a batch of
+# clips arrive together, and a queue is not a reason to cancel healthy work.
+COMMAND_WINDOW_SECONDS = 90
 _logger = logging.getLogger(__name__)
 # One blocked sink can retain only one active and one pending sanitized
 # record. Native permission, renewal and close paths never wait for a flush.
@@ -209,7 +212,7 @@ def _disposition(value: object):
 class ExecutionControlClient:
     def __init__(self, *, origin: str, key_id: str, key: bytes,
                  transport: ControlTransport = _https, clock: Callable[[], float] = time.time,
-                 timeout_seconds: float = 10, max_attempts: int = 3, retry_delay_seconds: float = 0.25,
+                 timeout_seconds: float = 20, max_attempts: int = 4, retry_delay_seconds: float = 0.25,
                  device_session_token: str | None = None):
         try:
             parsed = urlsplit(origin)
@@ -225,7 +228,7 @@ class ExecutionControlClient:
             if device_session_token is not None and (not isinstance(device_session_token, str) or not 1 <= len(device_session_token) <= 2048
                     or not re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', device_session_token)):
                 raise ValueError()
-            if not 0 < timeout_seconds <= 10 or type(max_attempts) is not int or not 1 <= max_attempts <= 3 or not 0 <= retry_delay_seconds <= 1:
+            if not 0 < timeout_seconds <= 20 or type(max_attempts) is not int or not 1 <= max_attempts <= 4 or not 0 <= retry_delay_seconds <= 1:
                 raise ValueError()
         except (ValueError, TypeError):
             raise ExecutionControlError('execution_client_invalid') from None
@@ -259,11 +262,11 @@ class ExecutionControlClient:
         # A delivery's exact bytes, signature timestamp and ID never change on
         # a transport retry. The whole sequence is shorter than the 300s window.
         initial_mono, initial_wall = time.monotonic(), self._clock()
-        end = min(initial_mono + 40, deadline_monotonic or float('inf'))
+        end = min(initial_mono + COMMAND_WINDOW_SECONDS, deadline_monotonic or float('inf'))
         for attempt in range(self._attempts):
             if abs((self._clock() - initial_wall) - (time.monotonic() - initial_mono)) > 1:
                 raise ExecutionControlError('execution_clock_changed')
-            remaining = min(end - time.monotonic(), 40 - (self._clock() - initial_wall))
+            remaining = min(end - time.monotonic(), COMMAND_WINDOW_SECONDS - (self._clock() - initial_wall))
             if remaining <= 0:
                 raise ExecutionControlError('execution_command_deadline')
             began, began_wall = time.monotonic(), self._clock()
@@ -275,7 +278,7 @@ class ExecutionControlClient:
             if abs((received_wall - began_wall) - (received - began)) > 1:
                 raise ExecutionControlError('execution_clock_changed')
             if response is not None and response.status == 200:
-                if received >= end or received_wall - initial_wall >= 40 or len(response.body) > MAX_RESPONSE_BYTES:
+                if received >= end or received_wall - initial_wall >= COMMAND_WINDOW_SECONDS or len(response.body) > MAX_RESPONSE_BYTES:
                     raise ExecutionControlError('execution_command_deadline')
                 try:
                     disposition = parse(json.loads(response.body))
@@ -492,7 +495,7 @@ class ExecutorSession:
         self._stop.set()
         self.cancel_event.set()
         if self._renewal is not None:
-            self._renewal.join(timeout=41)
+            self._renewal.join(timeout=COMMAND_WINDOW_SECONDS + 1)
 
     def __enter__(self):
         self.assert_live()

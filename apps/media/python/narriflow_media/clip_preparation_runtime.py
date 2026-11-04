@@ -8,7 +8,7 @@ from pathlib import Path
 from .artifacts import AssignedArtifacts
 from .control import ExecutionControlError
 from .native_runtime import NativeOperationFailure, _environment, _file_facts, _json, _work
-from .process import MediaProcessError, run_owned_process_async
+from .process import MediaProcessError, run_owned_process_async, verified_runtime_id
 from .source_server import ScopedSourceServer
 
 LIMITS={'clip_preview':512*1024**2,'preview_peaks':256*1024,'layout_evidence':1024**2}
@@ -23,6 +23,8 @@ def environment():
 
 
 async def verify_prepare_runtime(session,*,bun_executable='bun'):
+    verified=verified_runtime_id()
+    if verified is not None:return verified
     result=await run_owned_process_async([bun_executable,str(Path(__file__).resolve().parents[2]/'scripts/check-render-environment.ts'),
         '--enforce','--stage','start','--json','--profile','render'],timeout_seconds=min(60,session.remaining_seconds),
         env=environment(),cancel_event=session.cancel_event)

@@ -21,6 +21,8 @@ const REFERENCE_PIXELS = 1920 * 1080;
 const MAX_PIXEL_WEIGHT = 4;
 /** Tone mapping runs on float frames at source resolution (ticket 07). */
 const HDR_WEIGHT = 3;
+const RENDER_GROUP_REALTIME_FACTOR = 8;
+const RENDER_GROUP_CEILING_MS = 45 * 60_000;
 const ESTIMATED_OUTPUT_BYTES_PER_SEC = 2 * MIB;
 const MIN_ESTIMATED_OUTPUT_BYTES = 16 * MIB;
 const DISK_BACKOFF_START_MS = 1_000;
@@ -69,6 +71,17 @@ export function renderEncodeDeadlineMs(work: EncodeWorkSize, policy: DeadlinePol
     work.editedDurationSec * 1000 * policy.renderDeadlineRealtimeFactor * pixelWeight * (work.hdr ? HDR_WEIGHT : 1);
   if (!Number.isFinite(ms)) return ceiling;
   return Math.ceil(clamp(ms, floor, ceiling));
+}
+
+/**
+ * The whole child, not one encode: a group that hangs anywhere stops here and
+ * retries instead of holding its batch while its lease keeps renewing. Measured
+ * groups take 1-2x clip length at 1080p; a factor of 8 also covers HDR, which the
+ * frozen source probe cannot identify.
+ */
+export function renderGroupDeadlineMs(work: EncodeWorkSize & { variants: number }, policy: DeadlinePolicy): number {
+  const perVariant = renderEncodeDeadlineMs(work, { ...policy, renderDeadlineRealtimeFactor: RENDER_GROUP_REALTIME_FACTOR });
+  return Math.min(RENDER_GROUP_CEILING_MS, perVariant * Math.max(1, work.variants));
 }
 
 /** Conservative disk reservation for one encoded output (about twice a typical CRF 21 rate). */

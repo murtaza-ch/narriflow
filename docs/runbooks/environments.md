@@ -13,7 +13,7 @@ The owner-directed development switch is in progress as of 2026-11-04. The origi
 | Database | `neondb` | `serverless_pipeline_gates` |
 | Direct endpoint | `ep-rough-hill-b57kvyah.c-7.us-east-2.aws.neon.tech` | `ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech` |
 | API | `https://narriflow-api-dev.murtazach275.workers.dev` | `https://narriflow-api-candidate.murtazach275.workers.dev` |
-| Hyperdrive | `52c739ac003143d8b1fc07d2603b68ad`, caching off, origin limit5 | `89ce779c45464717afa3398590d531c5`, caching off |
+| Hyperdrive | `52c739ac003143d8b1fc07d2603b68ad`, caching off, origin limit 30 | `89ce779c45464717afa3398590d531c5`, caching off |
 | Modal | Workspace `murtazach275`, environment `main`, app `narriflow-media-dev` | Workspace `murtazach275`, environment `main`, app `narriflow-media-gates` |
 | Storage | Private R2 `narriflow-dev` | Same bucket, exact owned fixture namespaces |
 | Web | `https://narriflow-dev.vercel.app` | Local web or explicit candidate origin |

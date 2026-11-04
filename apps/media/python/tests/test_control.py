@@ -86,6 +86,31 @@ class SignedControlTests(unittest.TestCase):
                     os.environ['SSL_CERT_FILE']=previous
                 release.set();server.shutdown();server.server_close();thread.join(2)
 
+    def test_a_stalled_control_plane_is_waited_out_within_the_lease(self):
+        timeouts, deliveries = [], []
+        def transport(origin, target, body, headers, timeout):
+            timeouts.append(timeout);deliveries.append(headers['X-Execution-Signature'])
+            if len(timeouts) < 4:
+                raise TimeoutError('queued behind other commits')
+            return ControlResponse(200, {'X-Execution-Server-Time': '2033-05-18T03:33:20.000Z'}, b'{"disposition":"started"}')
+        client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32,
+                                        transport=transport, clock=lambda: 2000000000, retry_delay_seconds=0)
+        result = client.command({'action': 'process-start', 'fence': {}})
+        self.assertEqual(result.disposition, {'disposition': 'started'})
+        self.assertEqual(timeouts, [20, 20, 20, 20])
+        self.assertEqual(len(set(deliveries)), 1)
+
+    def test_a_retry_never_outlives_the_callers_lease(self):
+        calls = []
+        def transport(origin, target, body, headers, timeout):
+            calls.append(timeout)
+            raise TimeoutError('queued behind other commits')
+        client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32,
+                                        transport=transport, clock=lambda: 2000000000, retry_delay_seconds=0)
+        with self.assertRaises(ExecutionControlError):
+            client.command({'action': 'process-start', 'fence': {}}, deadline_monotonic=time.monotonic() + .05)
+        self.assertLessEqual(max(calls), .05)
+
     def test_a_transport_retry_reuses_the_exact_signed_delivery(self):
         deliveries = []
         def transport(origin, target, body, headers, timeout):
@@ -251,7 +276,7 @@ class SignedControlTests(unittest.TestCase):
                 for _ in range(100):
                     if logs.records:break
                     time.sleep(.01)
-        self.assertEqual(actions,['acquire','process-start','source-read','source-read','source-read'])
+        self.assertEqual(actions,['acquire','process-start','source-read','source-read','source-read','source-read'])
         self.assertEqual(len(logs.records),1)
         record=json.loads(logs.records[0].getMessage())
         self.assertEqual((record['message'],record['action'],record['stage'],record['errorCode']),
@@ -327,7 +352,7 @@ class SignedControlTests(unittest.TestCase):
                     for _ in range(100):
                         if logs.records:break
                         time.sleep(.01)
-                self.assertEqual(actions, ['acquire', 'process-start'] + ['renew'] * (3 if mode == 'transport' else 1))
+                self.assertEqual(actions, ['acquire', 'process-start'] + ['renew'] * (4 if mode == 'transport' else 1))
                 self.assertEqual(len(logs.records),1)
                 record=json.loads(logs.records[0].getMessage())
                 self.assertEqual((record['action'],record['stage'],record['failureKind']),
