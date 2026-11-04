@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Stack, Text } from "@chakra-ui/react";
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
 import { createIngestActions, ingestConfigurationQueryOptions, linkResumeQueryOptions } from "@narriflow/api-client/ingest";
 import { Button } from "@narriflow/ui/components/button";
 import { useQuery } from "@tanstack/react-query";
@@ -111,7 +111,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
         title="Import could not be loaded"
         body={
           failure.kind === "offline"
-            ? "You appear to be offline. Check your connection and try again."
+            ? CONNECTION_FAILURE_MESSAGE
             : "Your upload options could not be loaded. Nothing has been changed."
         }
         action={

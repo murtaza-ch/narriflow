@@ -1,6 +1,6 @@
 "use client";
 
-import { describeApiFailure } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure } from "@narriflow/api-client";
 import { Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -51,7 +51,7 @@ export function PublishingLoadError({
 		<Stack gap="4" role="alert" align="flex-start">
 			<PageHeader title={title} description={description} />
 			<Text fontSize="13px" color="fg.muted">
-				{offline ? "You appear to be offline. Check your connection and try again." : `${what} could not be loaded.`}
+				{offline ? CONNECTION_FAILURE_MESSAGE : `${what} could not be loaded.`}
 			</Text>
 			<Button size="sm" variant="subtle" onClick={onRetry}>
 				Try again

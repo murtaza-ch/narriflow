@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
-import { ApiError, CLIENT_ERROR_CODES } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, ApiError, CLIENT_ERROR_CODES } from "@narriflow/api-client";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ApiErrorNotice, apiErrorMessage, apiErrorSupportId } from "./query-mutation-form";
@@ -17,9 +17,9 @@ describe("API failure wording", () => {
     expect(apiErrorMessage(failure("something_new"), "Fallback")).toBe("Fallback Support reference: req_123.");
   });
 
-  test("stays silent when the person has moved on and tells an offline person so", () => {
+  test("stays silent when the person has moved on and says when Narriflow cannot be reached", () => {
     expect(apiErrorMessage(failure(CLIENT_ERROR_CODES.scopeChanged, { status: 0 }), "Fallback")).toBeNull();
-    expect(apiErrorMessage(failure(CLIENT_ERROR_CODES.network, { status: 0 }), "Fallback")).toContain("offline");
+    expect(apiErrorMessage(failure(CLIENT_ERROR_CODES.network, { status: 0 }), "Fallback")).toBe(CONNECTION_FAILURE_MESSAGE);
   });
 
   test("an unexpected non-API error uses the fallback", () => {

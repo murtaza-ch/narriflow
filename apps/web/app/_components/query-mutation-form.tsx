@@ -1,7 +1,7 @@
 "use client";
 
 import { Stack, Text } from "@chakra-ui/react";
-import { describeApiFailure, isApiError } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, isApiError } from "@narriflow/api-client";
 import { Button } from "@narriflow/ui/components/button";
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { FormEvent, FormHTMLAttributes, ReactNode } from "react";
@@ -34,7 +34,7 @@ function browserFailure(error: unknown): BrowserRequestFailure | null {
 export function apiErrorMessage(error: unknown, fallback: string): string | null {
   const { kind } = describeApiFailure(error);
   if (kind === "superseded") return null;
-  if (kind === "offline") return "You appear to be offline. Check your connection and try again.";
+  if (kind === "offline") return CONNECTION_FAILURE_MESSAGE;
   const failure = browserFailure(error);
   if (!failure) return fallback;
   const destination = typeof window === "undefined" ? "/home" : window.location.pathname;

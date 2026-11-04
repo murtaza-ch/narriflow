@@ -191,6 +191,13 @@ export type ApiFailureKind =
   | "superseded"
   | "failed";
 
+/**
+ * What to show when a request never reached the API. The browser cannot say
+ * why, and the device is often online (a network can reset the connection).
+ */
+export const CONNECTION_FAILURE_MESSAGE =
+  "Narriflow can't be reached from this network. Check your connection or try another network.";
+
 export interface ApiFailure {
   kind: ApiFailureKind;
   error: ApiError;

@@ -1,10 +1,11 @@
 "use client";
 
 import {
+  type ApiRuntime,
+  CONNECTION_FAILURE_MESSAGE,
   describeApiFailure,
   invalidateScoped,
   isApiError,
-  type ApiRuntime,
   type WorkspaceScope,
 } from "@narriflow/api-client";
 import { createClipsClient } from "@narriflow/api-client/clips";
@@ -104,7 +105,7 @@ export function invalidateAfterFolderChanged(queryClient: QueryClient, scope: Wo
 /** Display text for a failed call: the API's own message for a refused request, else `fallback`. */
 export function failureMessage(error: unknown, fallback: string): string {
   if (describeApiFailure(error).kind === "offline") {
-    return "You appear to be offline. Check your connection and try again.";
+    return CONNECTION_FAILURE_MESSAGE;
   }
   if (isApiError(error) && error.status >= 400 && error.status < 500) {
     return hasUserErrorMessage(error.code) ? (userErrorMessage(error.code) ?? fallback) : error.message || fallback;

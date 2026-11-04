@@ -9,7 +9,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
 import {
   type ExportsClient,
   createExportsClient,
@@ -126,7 +126,7 @@ export function ExportsScreen() {
 
 function failureText(error: unknown) {
   return describeApiFailure(error).kind === "offline"
-    ? "You appear to be offline. Check your connection and try again."
+    ? CONNECTION_FAILURE_MESSAGE
     : "Exports could not be loaded.";
 }
 

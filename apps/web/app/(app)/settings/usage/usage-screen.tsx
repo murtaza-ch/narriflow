@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { describeApiFailure } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure } from "@narriflow/api-client";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { planDefinition } from "@narriflow/validators";
@@ -34,7 +34,7 @@ function UsageContent({ scope }: { scope: NonNullable<ReturnType<typeof useWorks
         <PageHeader title="Usage" description="Credits for this workspace." />
         <Text fontSize="13px" color="fg.muted">
           {offline
-            ? "You appear to be offline. Check your connection and try again."
+            ? CONNECTION_FAILURE_MESSAGE
             : "Usage could not be loaded."}
         </Text>
         <Button size="sm" variant="subtle" onClick={() => void bootstrap.refetch()}>

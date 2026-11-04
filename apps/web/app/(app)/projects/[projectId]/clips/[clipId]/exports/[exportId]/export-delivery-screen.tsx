@@ -1,6 +1,6 @@
 "use client";
 
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
 import { createExportsClient, exportQueries } from "@narriflow/api-client/exports";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
@@ -50,7 +50,7 @@ function ExportDeliveryContent({ scope, projectId, clipId, exportId }: ExportRou
         <Stack gap="4" role="alert" align="flex-start" maxW="420px">
           <Text fontSize="13px" color="fg.muted">
             {failure.kind === "offline"
-              ? "You appear to be offline. Check your connection and try again."
+              ? CONNECTION_FAILURE_MESSAGE
               : failure.kind === "forbidden"
                 ? "You don't have access to download this export."
                 : "This export could not be loaded."}

@@ -2,7 +2,7 @@
 
 import { Stack, Text } from "@chakra-ui/react";
 import { brandQueries } from "@narriflow/api-client/brand";
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
 import { createPublishingClient, publishingKeys, publishingReads } from "@narriflow/api-client/publishing";
 import { createRecipesActions, invalidateAfterRecipeChange, recipesListQueryOptions } from "@narriflow/api-client/recipes";
 import { Button } from "@narriflow/ui/components/button";
@@ -55,7 +55,7 @@ function RecipesContent({ scope }: { scope: WorkspaceScope }) {
         <PageHeader title="Recipes" />
         <Text fontSize="13px" color="fg.muted">
           {failure.kind === "offline"
-            ? "You appear to be offline. Check your connection and try again."
+            ? CONNECTION_FAILURE_MESSAGE
             : "Recipes could not be loaded. Nothing has been changed."}
         </Text>
         <Button size="sm" variant="subtle" onClick={gate.retry}>

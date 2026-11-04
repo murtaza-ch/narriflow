@@ -7,6 +7,7 @@ import {
   invalidateAfterAutomationChange,
 } from "@narriflow/api-client/automation";
 import {
+  CONNECTION_FAILURE_MESSAGE,
   describeApiFailure,
   type WorkspaceScope,
 } from "@narriflow/api-client/core";
@@ -53,7 +54,7 @@ function AutopilotContent({ scope }: { scope: WorkspaceScope }) {
         <PageHeader title="Autopilot" />
         <Text fontSize="13px" color="fg.muted">
           {failure.kind === "offline"
-            ? "You appear to be offline. Check your connection and try again."
+            ? CONNECTION_FAILURE_MESSAGE
             : "Autopilot could not be loaded. Nothing has been changed."}
         </Text>
         <Button

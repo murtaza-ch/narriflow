@@ -1,6 +1,6 @@
 "use client";
 
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
 import {
   type BillingStateData,
   billingKeys,
@@ -96,7 +96,7 @@ function BillingContent({ scope }: { scope: WorkspaceScope }) {
         <PageHeader title="Billing & plans" description="Your plan, credits, and subscription." />
         <Text fontSize="13px" color="fg.muted">
           {failure.kind === "offline"
-            ? "You appear to be offline. Check your connection and try again."
+            ? CONNECTION_FAILURE_MESSAGE
             : "Billing could not be loaded. Your plan has not changed."}
         </Text>
         <Button

@@ -6,7 +6,7 @@ import {
   invalidateAfterAutomationChange,
   standingGrantsQueryOptions,
 } from "@narriflow/api-client/automation";
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
+import { CONNECTION_FAILURE_MESSAGE, describeApiFailure, type WorkspaceScope } from "@narriflow/api-client/core";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { useQuery } from "@tanstack/react-query";
@@ -49,7 +49,7 @@ function GrantsContent({ scope }: { scope: WorkspaceScope }) {
         <Stack gap="4" role="alert" align="flex-start">
           <Text fontSize="13px" color="fg.muted">
             {failure.kind === "offline"
-              ? "You appear to be offline. Check your connection and try again."
+              ? CONNECTION_FAILURE_MESSAGE
               : "Automation grants could not be loaded. Nothing has been changed."}
           </Text>
           <Button
