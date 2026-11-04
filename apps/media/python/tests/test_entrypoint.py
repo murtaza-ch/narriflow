@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 import os
@@ -15,7 +16,7 @@ from narriflow_media.artifacts import ArtifactCommitUnconfirmed
 from narriflow_media.multipart import CompletedObject
 from narriflow_media.fetch import SourceFetchFailure
 from narriflow_media.native_runtime import NativeOperationFailure
-from narriflow_media.process import run_owned_process_async
+from narriflow_media.process import MediaProcessError, run_owned_process_async
 
 
 def instant(seconds):
@@ -40,11 +41,17 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
                     "input": {"kind": "inline", "command": {"kind": "font"}}, "sources": [], "outputs": []}
             elif action == "process-start":
                 result = {"disposition": "started"}
+            elif action == "fail" and state.get("fence_lost"):
+                return ControlResponse(409, {}, b"{}")
             elif action == "fail":
                 state["failed"] = True
                 result = {"disposition": "retry_due", "dueAt": instant(now+1)}
+            elif action == "release":
+                state["released"] = command["reason"]
+                result = {"disposition": "released", "dueAt": None}
             elif action == "read-disposition":
-                result = {"disposition": "completed" if state["completed"] else "failed" if state.get("failed") else "started"}
+                result = {"disposition": "released", "dueAt": None} if "released" in state else {
+                    "disposition": "completed" if state["completed"] else "failed" if state.get("failed") else "started"}
                 if state.get("failed"): result["failureCode"] = "media_execution_failed"
             else:
                 raise AssertionError("Unexpected native action")
@@ -124,3 +131,47 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
         await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
         failure = next(call for call in calls if call["action"] == "fail")
         self.assertEqual((failure["failureCode"], failure["retryable"]), ("source_identity_mismatch", False))
+
+    async def test_permanent_failure_after_local_cancellation_keeps_its_code(self):
+        invocation, client, state, calls = self.fixture()
+        async def operation(session, package, work):
+            # A render control handler cancels the session before its failure
+            # surfaces, so the child is reaped and the code would otherwise die here.
+            session.cancel_event.set()
+            raise NativeOperationFailure("native_source_changed", False)
+        result = await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        self.assertEqual(result, {"disposition": "failed"})
+        failure = next(call for call in calls if call["action"] == "fail")
+        self.assertEqual((failure["failureCode"], failure["retryable"]), ("native_source_changed", False))
+
+    async def test_failure_after_a_real_process_is_stopped_reaches_the_api(self):
+        invocation, client, state, calls = self.fixture()
+        async def operation(session, package, work):
+            def started(pid):
+                session.on_process_start(pid)
+                session.cancel_event.set()
+            with self.assertRaisesRegex(MediaProcessError, "media_execution_cancelled"):
+                await run_owned_process_async([sys.executable, "-c", "import time;time.sleep(30)"], timeout_seconds=5, kill_grace_seconds=.1,
+                    env={key: os.environ[key] for key in ["PATH"] if key in os.environ}, on_start=started, cancel_event=session.cancel_event)
+            raise NativeOperationFailure("render_command_invalid", False)
+        await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        self.assertEqual(next(call for call in calls if call["action"] == "fail")["failureCode"], "render_command_invalid")
+
+    async def test_a_report_the_api_refuses_stays_unconfirmed(self):
+        invocation, client, state, calls = self.fixture()
+        state["fence_lost"] = True
+        async def operation(session, package, work):
+            session.cancel_event.set()
+            raise NativeOperationFailure("native_source_changed", False)
+        result = await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        self.assertEqual(result, {"disposition": "unconfirmed"})
+        self.assertNotIn("failed", state)
+
+    async def test_shutdown_releases_the_attempt_instead_of_failing_it(self):
+        for stopped in (asyncio.CancelledError(), KeyboardInterrupt(), SystemExit()):
+            invocation, client, state, calls = self.fixture()
+            async def operation(*args): raise stopped
+            result = await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+            self.assertEqual(result, {"disposition": "released"})
+            self.assertEqual(state["released"], "shutdown")
+            self.assertNotIn("fail", [call["action"] for call in calls])

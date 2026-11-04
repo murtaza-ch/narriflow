@@ -73,8 +73,7 @@ export class ExportBundleExecution extends WorkflowRunLifecycle {
           if(['queued','running','waiting'].includes(run.status))await this.finishFailure(tx,state,reference,errorCode);
           else{
             await this.projectFailure(tx,state,errorCode,false);
-            await appendWorkflowEvent(tx,{projectId:run.projectId,workflowRunId:run.id,attemptId:run.attemptId??run.id,stage:'export_bundle',status:'failed',progress:100,errorCode,transition:'bundle_terminal_projection'},
-              {progressRequired:true,analyticsEnabled:false});
+            await appendWorkflowEvent(tx,{projectId:run.projectId,workflowRunId:run.id,attemptId:run.attemptId??run.id,stage:'export_bundle',status:'failed',progress:100,errorCode,transition:'bundle_terminal_projection'});
           }
         }
       }
@@ -194,7 +193,7 @@ export class ExportBundleExecution extends WorkflowRunLifecycle {
   private async finishFailure(tx:Tx,state:State,reference:ExecutionDispatchReference,errorCode:string){
     await this.projectFailure(tx,state,errorCode,false);
     await tx.workflowRun.update({where:{id:state.run.id},data:{status:'failed',progress:100,errorCode,leaseOwner:null,leaseExpiresAt:null,heartbeatAt:null,nextAttemptAt:null,nextPollAt:null}});
-    await appendWorkflowEvent(tx,{projectId:state.run.projectId,workflowRunId:state.run.id,attemptId:state.run.attemptId??state.run.id,stage:'export_bundle',status:'failed',progress:100,errorCode,transition:'terminal:failed',analyticsRequired:true},{progressRequired:true,analyticsEnabled:true});
+    await appendWorkflowEvent(tx,{projectId:state.run.projectId,workflowRunId:state.run.id,attemptId:state.run.attemptId??state.run.id,stage:'export_bundle',status:'failed',progress:100,errorCode,transition:'terminal:failed'});
     const wake=await appendExecutionDispatch(tx,{...reference,kind:'operation_driver',dueAt:state.now,wakeKind:'execution_finished'});
     collectExecutionDispatch(tx,wake.reference.dispatchId);
     return {dispatchIds:[wake.reference.dispatchId]};

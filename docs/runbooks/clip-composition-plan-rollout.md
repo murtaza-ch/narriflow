@@ -1,8 +1,8 @@
 # Clip Composition Plan operations
 
-Clip Composition Plan is the only video composition path for Studio preview and worker export. There are no renderer-selection, shadow, or compatibility modes.
+Clip Composition Plan is the only video composition path for Studio preview and render export. There are no renderer-selection, shadow, or compatibility modes.
 
-Automatic speaker, Split, and Screen/PiP analysis are enabled in Studio and the worker. Unavailable or failed evidence produces a typed notice and an explicit Center fallback plan.
+Automatic speaker, Split, and Screen/PiP analysis are enabled in Studio and the render execution. Unavailable or failed evidence produces a typed notice and an explicit Center fallback plan.
 
 ## Resource budgets and diagnostics
 
@@ -17,7 +17,7 @@ The historical 60-second, 24-scene 1080p Split comparison remains the grouping g
 ## Deployment
 
 1. Apply pending database migrations before deploying code that reads composition evidence.
-2. Deploy the shared planner, Studio adapter, and worker adapter together.
+2. Deploy the shared planner, Studio adapter, and the media image (render execution) together.
 3. Verify Center and Fit across all supported aspect ratios.
 4. Verify Automatic with fresh, durable, unavailable, failed, and target-ineligible evidence.
 5. Verify Split with two speakers, insufficient faces, unavailable analysis, and targets whose tiles cannot be distinct.
@@ -39,7 +39,7 @@ Exact `explicit-split-v1` and `screen-layout-v1` records are reused only when th
 
 Keep these tests passing when changing retained time, inserted Scenes, text rendering, or B-roll resolution:
 
-- Retained slivers under `MIN_KEPT_SEGMENT_SEC` share one clock for render duration, captions, subtitles, censors, and ducking: `dropped edit slivers share the render duration and caption clock` in `packages/composition-plan`, and `apps/worker/src/tasks/cut-plan.test.ts`.
+- Retained slivers under `MIN_KEPT_SEGMENT_SEC` share one clock for render duration, captions, subtitles, censors, and ducking: `dropped edit slivers share the render duration and caption clock` in `packages/composition-plan`, and `apps/media/src/tasks/cut-plan.test.ts`.
 - Music ducking follows speech after inserted Scenes: `music ducking follows speech after an inserted scene`, `music ducking follows speech across an inserted scene`, and the real-FFmpeg `encoded music ducks at the speech's final time after a Scene Block`.
-- Text-layer weight matches Studio's 800/500 request: `text layer bold control changes the rendered font weight` in `apps/worker/src/composition-text-weight.test.ts`.
-- Automatic stock cutaways render only inside their planned window: `renders automatic stock cutaway pixels only inside the planned window` in `apps/worker/src/tasks/clip-render-attempt-core-paths.test.ts`.
+- Text-layer weight matches Studio's 800/500 request: `text layer bold control changes the rendered font weight` in `apps/media/src/composition-text-weight.test.ts`.
+- Automatic stock cutaways render only inside their planned window: `renders automatic stock cutaway pixels only inside the planned window` in `apps/media/src/composition-ffmpeg-adapter.test.ts`.

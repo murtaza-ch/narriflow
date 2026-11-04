@@ -1,4 +1,3 @@
-import { getPrismaClient } from "@narriflow/db/client";
 import { getOutboundDeliveryService } from "./outbound-delivery-runtime";
 import type { ActorScope } from "./actor-scope";
 import {
@@ -6,14 +5,9 @@ import {
   type WebhookCredential,
   type WebhookSubscriptions,
 } from "./webhook-subscription";
+import { requirePrisma } from "./require-prisma";
 
-function requiredPrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
-
-const service = () => createWebhookSubscriptions({ prisma: requiredPrisma(), delivery: getOutboundDeliveryService });
+const service = () => createWebhookSubscriptions({ prisma: requirePrisma(), delivery: getOutboundDeliveryService });
 
 /** Production management of Webhook Subscriptions on the shared database. */
 export const webhookSubscriptions = {

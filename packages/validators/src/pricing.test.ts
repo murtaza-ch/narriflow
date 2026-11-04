@@ -3,6 +3,7 @@ import {
   checkoutRequestSchema,
   creditDebitSeconds,
   creditsForSourceSeconds,
+  sourceExceedsLimit,
   hasFeature,
   lowestTierWithFeature,
   paidPricingTierSchema,
@@ -106,8 +107,22 @@ describe("credits", () => {
     expect(creditsForSourceSeconds(1)).toBe(1);
     expect(creditsForSourceSeconds(59.99)).toBe(1);
     expect(creditsForSourceSeconds(60)).toBe(1);
-    expect(creditsForSourceSeconds(60.01)).toBe(2);
+    expect(creditsForSourceSeconds(60.5)).toBe(2);
     expect(creditsForSourceSeconds(30 * 60)).toBe(30);
+  });
+
+  test("audio extraction past a minute boundary does not start another credit", () => {
+    // Measured through the real extraction: 60.000s and 3600.000s MP4s.
+    expect(creditsForSourceSeconds(60.011)).toBe(1);
+    expect(creditsForSourceSeconds(3600.022)).toBe(60);
+    expect(creditsForSourceSeconds(0.1)).toBe(1);
+    expect(creditDebitSeconds(60.011)).toBe(60);
+  });
+
+  test("only a source past its limit by more than extraction drift exceeds it", () => {
+    expect(sourceExceedsLimit(3600, 3600)).toBe(false);
+    expect(sourceExceedsLimit(3600.022, 3600)).toBe(false);
+    expect(sourceExceedsLimit(3601, 3600)).toBe(true);
   });
 
   test("invalid or empty durations cost nothing", () => {
@@ -116,7 +131,7 @@ describe("credits", () => {
   });
 
   test("ledger debits are whole credits stored as multiples of 60 seconds", () => {
-    for (const seconds of [1, 59.99, 60, 60.01, 3599, 10_800]) {
+    for (const seconds of [1, 59.99, 60, 60.5, 3599, 10_800]) {
       const debit = creditDebitSeconds(seconds);
       expect(debit % 60).toBe(0);
       expect(debit / 60).toBe(creditsForSourceSeconds(seconds));

@@ -13,7 +13,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import type { ReviewMediaGrant } from "@narriflow/validators/api/reviews";
-import { formatDate, formatDuration } from "@/lib/format";
+import { formatDate, formatDuration, formatFileSize } from "@/lib/format";
 
 export function SharedExportPageClient({ token }: { token: string }) {
   const digest = useReviewTokenDigest(token);
@@ -29,12 +29,6 @@ function SharedExportQuery({ token, digest }: { token: string; digest: string })
   if (query.isPending) return <ReviewPending />;
   if (!query.data) return <SharedClipUnavailable />;
   return <SharedExportClient exported={query.data} refreshExport={(force) => queryClient.fetchQuery<SharedExport>({ ...options, ...(force ? { staleTime: 0 } : {}) })} />;
-}
-
-function formatBytes(value: number | null): string | null {
-  if (value === null || value <= 0) return null;
-  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
-  return `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
 function aspectNumber(label: string) {
@@ -66,7 +60,7 @@ export function SharedExportClient({ exported, refreshExport }: { exported: Shar
     primary.aspectRatio,
     primary.resolution,
     primary.durationSec ? formatDuration(primary.durationSec) : null,
-    formatBytes(primary.sizeBytes),
+    formatFileSize(primary.sizeBytes),
   ].filter((fact): fact is string => Boolean(fact));
   const panelRadius = { base: "0", md: "12px" } as const;
 

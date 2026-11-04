@@ -6,6 +6,7 @@ import Link from "next/link";
 import { planUpgradeHighlight } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
+import { gateQueries } from "@/app/_components/query-gate";
 import { PlanLimitNotice } from "../../../_components/plan-limit-notice";
 import { useWorkspaceBootstrap } from "../../../_components/usage";
 import { AccessNote } from "../../../settings/_components/access-note";
@@ -33,27 +34,13 @@ function EditStyleContent({ templateId }: { templateId: string }) {
   const assetsQuery = useQuery(queries.templateEditorAssets(templateId));
   const bootstrap = useWorkspaceBootstrap(scope);
 
-  const failed = [templateQuery, profileQuery, assetsQuery, bootstrap].find((query) => query.isError && !query.data);
-  if (failed) {
-    return (
-      <BrandLoadFailure
-        what="This style"
-        error={failed.error}
-        onRetry={() => {
-          void templateQuery.refetch();
-          void profileQuery.refetch();
-          void assetsQuery.refetch();
-          void bootstrap.refetch();
-        }}
-      />
-    );
+  const gate = gateQueries([templateQuery, profileQuery, assetsQuery, bootstrap]);
+  if (gate.status === "failed") {
+    return <BrandLoadFailure what="This style" error={gate.error} onRetry={gate.retry} />;
   }
-  if (!templateQuery.data || !profileQuery.data || !assetsQuery.data || !bootstrap.data) return <EditStyleLoading />;
+  if (gate.status === "loading") return <EditStyleLoading />;
 
-  const template = templateQuery.data;
-  const { profileId } = profileQuery.data;
-  const { fonts, access, plan } = assetsQuery.data;
-  const { workspace } = bootstrap.data;
+  const [template, { profileId }, { fonts, access, plan }, { workspace }] = gate.data;
   const returnHref = profileId ? `/brand-kit/${profileId}?section=styles&template=${templateId}` : "/brand-kit?tab=styles";
 
   if (template.isBuiltIn) {

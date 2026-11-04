@@ -134,6 +134,30 @@
       "types": "./src/expected-domain-failure.ts",
       "default": "./src/expected-domain-failure.ts"
     },
+    "./auth-failure-throttle": {
+      "types": "./src/auth-failure-throttle.ts",
+      "default": "./src/auth-failure-throttle.ts"
+    },
+    "./tiktok-failure-reasons": {
+      "types": "./src/tiktok-failure-reasons.ts",
+      "default": "./src/tiktok-failure-reasons.ts"
+    },
+    "./retry-after": {
+      "types": "./src/retry-after.ts",
+      "default": "./src/retry-after.ts"
+    },
+    "./openai-responses": {
+      "types": "./src/openai-responses.ts",
+      "default": "./src/openai-responses.ts"
+    },
+    "./bounded-body": {
+      "types": "./src/bounded-body.ts",
+      "default": "./src/bounded-body.ts"
+    },
+    "./log-failure": {
+      "types": "./src/log-failure.ts",
+      "default": "./src/log-failure.ts"
+    },
     "./integration-commands": {
       "types": "./src/integration-commands.ts",
       "default": "./src/integration-commands.ts"
@@ -685,6 +709,7 @@
     "test": "bun test",
     "execution:restore": "bun scripts/execution-restore.ts",
     "billing:operator": "bun scripts/workspace-billing-operator.ts",
+    "usage:operator": "bun scripts/processing-usage-operator.ts",
     "generated-media:operator": "bun scripts/generated-media-operator.ts",
     "social-publication:operator": "bun scripts/social-publication-operator.ts",
     "clean": "rm -rf dist",

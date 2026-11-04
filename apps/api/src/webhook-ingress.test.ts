@@ -31,6 +31,9 @@ function signedDelivery(bytes: number): { body: Uint8Array; signature: string } 
   return { body, signature: `t=${t},v0=${digest}` };
 }
 
+/** Well-formed and fresh, so the pre-body gate passes; the digest is not checked until the body is read. */
+const freshHeader = () => ({ "elevenlabs-signature": `t=${Math.floor(Date.now() / 1000)},v0=${"0".repeat(64)}` });
+
 /** A stream with no declared Content-Length. */
 function chunked(body: Uint8Array, chunkBytes = MIB): ReadableStream<Uint8Array> {
   let offset = 0;
@@ -72,8 +75,19 @@ describe("POST /api/webhooks/elevenlabs ingress", () => {
     expect(await response.json()).toMatchObject({ error: "invalid_signature" });
   });
 
+  test("refuses a missing or stale signature without reading any of the body", async () => {
+    for (const headers of [{}, { "elevenlabs-signature": `t=${Math.floor(Date.now() / 1000) - 3600},v0=${"0".repeat(64)}` }]) {
+      let pulled = 0;
+      const body = new ReadableStream<Uint8Array>({ pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(MIB)); } }, { highWaterMark: 0 });
+      const response = await post(URL_PATH, body, headers);
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ error: "invalid_signature" });
+      expect(pulled).toBe(0);
+    }
+  });
+
   test("refuses a declared provider body above 128 MiB before reading", async () => {
-    const response = await post(URL_PATH, new Uint8Array(1), { "content-length": String(128 * MIB + 1) });
+    const response = await post(URL_PATH, new Uint8Array(1), { ...freshHeader(), "content-length": String(128 * MIB + 1) });
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error: "payload_too_large" });
   });
@@ -93,7 +107,7 @@ describe("POST /api/webhooks/elevenlabs ingress", () => {
       },
       cancel() { cancelled = true; },
     });
-    const response = await post(URL_PATH, body);
+    const response = await post(URL_PATH, body, freshHeader());
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error: "payload_too_large" });
     expect(cancelled).toBe(true);

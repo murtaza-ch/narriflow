@@ -1,3 +1,4 @@
+import { readBoundedBody } from "@narriflow/services/bounded-body";
 import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { requireNewMutationAllowed } from "@narriflow/services/rate-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -51,37 +52,29 @@ export const MAX_REQUEST_HEADER_BYTES = 32 * KIB;
  * Content-Length: count the bytes as they stream, before any handler
  * reads, clones or parses the body.
  */
-export function limitBody(limitClass: BodyLimitClass): MiddlewareHandler<ApiEnv> {
+export function limitBody(
+  limitClass: BodyLimitClass,
+  /** A refusal decided from the headers alone, before one body byte is buffered. */
+  admit?: (request: Request) => Response | null,
+): MiddlewareHandler<ApiEnv> {
   const maxSize = BODY_LIMIT_BYTES[limitClass];
   return async (c, next) => {
     const request = c.req.raw;
+    const refused = admit?.(request);
+    if (refused) return refused;
     if (!request.body) return next();
     if (Number(request.headers.get("content-length")) > maxSize) {
       return payloadTooLargeResponse(requestIdOf(c));
     }
-    const reader = request.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > maxSize) {
-          void reader.cancel().catch(() => undefined);
-          return payloadTooLargeResponse(requestIdOf(c));
-        }
-        chunks.push(value);
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    const read = await readBoundedBody(request.body, maxSize);
+    if (read.kind === "too_large") return payloadTooLargeResponse(requestIdOf(c));
+    const { bytes } = read;
     // Preserve nonempty bytes exactly; runtimes can expose an empty POST as a stream.
     if (!c.get("ingressRequest")) c.set("ingressRequest", request);
     c.req.raw = new Request(request, {
-      body: size === 0 ? null : new ReadableStream<Uint8Array>({
+      body: bytes.byteLength === 0 ? null : new ReadableStream<Uint8Array>({
         start(controller) {
-          for (const chunk of chunks) controller.enqueue(chunk);
+          controller.enqueue(bytes);
           controller.close();
         },
       }),

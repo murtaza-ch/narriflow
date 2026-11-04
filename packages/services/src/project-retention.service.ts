@@ -1,5 +1,4 @@
 import type { PricingTier, Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import { PAID_ACCESS_ENDED_GRACE_DAYS, planLimits } from "@narriflow/validators";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -17,6 +16,9 @@ export const RETENTION_POLICIES = {
 } as const;
 
 export type RetentionPolicyKey = keyof typeof RETENTION_POLICIES;
+
+/** Marks a purge the user asked for. It has no duration, and no plan change rescues it. */
+export const USER_DELETED_RETENTION_POLICY = "user_deleted_v1";
 
 export class ProjectExpiredError extends Error {
 	readonly code = "PROJECT_EXPIRED";
@@ -81,15 +83,13 @@ export function isProjectAccessible(
 }
 
 export class ProjectRetentionService {
+	/** Call under the Workspace usage lock: billing changes a tier under it, so this tier cannot be stale. */
 	async assignmentForWorkspace(
+		tx: Prisma.TransactionClient,
 		workspaceId: string,
 		createdAt: Date,
 	): Promise<RetentionAssignment | null> {
-		const prisma = getPrismaClient();
-		if (!prisma) {
-			return retentionAssignmentForNewProject({ tier: "free", createdAt });
-		}
-		const workspace = await prisma.workspace.findUnique({
+		const workspace = await tx.workspace.findUnique({
 			where: { id: workspaceId },
 			select: { pricingTier: true },
 		});
@@ -121,6 +121,7 @@ export class ProjectRetentionService {
 				where: {
 					workspaceId: input.workspaceId,
 					expiresAt: { gt: rescueCutoff },
+					retentionPolicyKey: { not: USER_DELETED_RETENTION_POLICY },
 					purgeDeletedObjectCount: 0,
 					purgeStorageVerifiedAt: null,
 				},

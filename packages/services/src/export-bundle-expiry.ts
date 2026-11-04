@@ -3,6 +3,7 @@ import { appendExecutionDispatch } from "./execution-dispatch";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { lockWorkspaceUsage } from "./processing-usage";
+import { sha256Hex } from "./execution-hash";
 
 type Tx = Prisma.TransactionClient;
 type ExpiryIdentity = Pick<ExportBundle, "id" | "workflowRunId" | "inputBindingHash" | "storageKey" | "sizeBytes" | "checksumSha256" | "expiresAt">;
@@ -10,7 +11,7 @@ type ExpiryIdentity = Pick<ExportBundle, "id" | "workflowRunId" | "inputBindingH
 export async function exportBundleExpiryInputHash(bundle: ExpiryIdentity): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify([bundle.id, bundle.workflowRunId, bundle.inputBindingHash,
     bundle.checksumSha256, bundle.sizeBytes?.toString(), bundle.expiresAt?.toISOString()]));
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(bytes);
 }
 
 /** The result and its exact absolute expiry obligation commit together. */

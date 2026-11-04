@@ -1,10 +1,21 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
-import { CloseButton, Dialog, Portal } from "@chakra-ui/react";
+import { CloseButton, Dialog, Flex, Portal } from "@chakra-ui/react";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import { isAuthMode } from "@/lib/auth-entry";
-import { AuthForm } from "./auth-form";
+
+// The form (Clerk hooks, field components) is only needed once the dialog opens,
+// so it is not part of every page's bundle.
+const AuthForm = dynamic(() => import("./auth-form").then((m) => m.AuthForm), {
+  loading: () => (
+    <Flex justify="center" py="10" role="status" aria-label="Loading">
+      <Spinner size="sm" />
+    </Flex>
+  ),
+});
 
 export function AuthModal() {
   const pathname = usePathname();

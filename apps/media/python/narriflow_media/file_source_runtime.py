@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .control import ExecutionControlError
-from .fetch import ExistingSourceAudio,FileSnapshot,VerifiedSourceFile,SourceFetchFailure,verify_source_audio_binding
+from .fetch import ExistingSourceAudio,FileSnapshot,VerifiedSourceFile,SourceFetchFailure,probe_failure,verify_source_audio_binding
 from .manifest import MediaSource,MAX_SOURCE_BYTES,build_audio_manifest
 from .process import MediaProcessError,run_owned_process_async
 from .source_sink import ScopedSourceSink,_environment
@@ -65,7 +65,7 @@ class NativeFileRuntime:
 
     async def probe(self,path):
         result=await self._run([self.bun,str(self.source/'probe-cli.ts')],{'sourcePath':str(path.resolve())},timeout=60)
-        if result.returncode:raise SourceFetchFailure('source_probe_failed',True)
+        if result.returncode:raise probe_failure(result.stderr)
         value=_json(result.stdout);_duration(value)
         if (type(value.get('hasAudio')) is not bool or type(value.get('hasVideo')) is not bool or not isinstance(value.get('sourceProbe'),dict)
                 or not isinstance(value.get('facts'),dict) or not isinstance(value['facts'].get('audios'),list) or not isinstance(value['facts'].get('videos'),list)

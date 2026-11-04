@@ -14,8 +14,6 @@ import {
   renderEncodeDeadlineMs,
   renderResourceBudgetFor,
   scratchLimitBytes,
-  startTransferWatchdog,
-  transferDeadlineMs,
   type BudgetEnvironment,
 } from "./render-resource-budget";
 
@@ -118,20 +116,6 @@ describe("encode deadline", () => {
     expect(renderEncodeDeadlineMs({ ...sdr, editedDurationSec: 1 }, { ...config, renderDeadlineFloorMs: 9_999_999 })).toBe(
       config.renderCommandTimeoutMs,
     );
-  });
-});
-
-describe("transfer deadline", () => {
-  test("is 30s plus bytes at the minimum rate, between the floor and the ceiling", () => {
-    expect(transferDeadlineMs(0, config)).toBe(120_000);
-    expect(transferDeadlineMs(500 * MIB, config)).toBe(30_000 + 500_000);
-    expect(transferDeadlineMs(500 * GIB, config)).toBe(1_800_000);
-  });
-
-  test("unknown or invalid sizes use the ceiling", () => {
-    for (const bytes of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -5]) {
-      expect(transferDeadlineMs(bytes, config)).toBe(1_800_000);
-    }
   });
 });
 
@@ -414,92 +398,5 @@ describe("ScratchFileRefs", () => {
     await refs.release("/x");
     expect(failures).toEqual(["/x"]);
     await mkdir(tmpdir(), { recursive: true });
-  });
-});
-
-describe("transfer watchdog", () => {
-  test("aborts a download that outlives its deadline with a typed retryable failure", async () => {
-    const clock = fakeClock();
-    const watchdog = startTransferWatchdog({
-      deadlineMs: 10_000,
-      noProgressMs: 60_000,
-      measureBytes: async () => Math.floor(clock.nowMs() / 1000),
-      clock,
-      codePrefix: "source_download",
-    });
-    await clock.advance(9_999);
-    expect(watchdog.signal.aborted).toBe(false);
-    await clock.advance(1);
-    expect(watchdog.signal.aborted).toBe(true);
-    expect(watchdog.failure()).toMatchObject({ code: "source_download_timeout", disposition: "retryable" });
-    expect(watchdog.signal.reason).toBe(watchdog.failure());
-  });
-
-  test("aborts when the byte count stops growing, but not while it grows", async () => {
-    const clock = fakeClock();
-    let bytes = 0;
-    const watchdog = startTransferWatchdog({
-      deadlineMs: 600_000,
-      noProgressMs: 30_000,
-      pollMs: 5_000,
-      measureBytes: async () => bytes,
-      clock,
-      codePrefix: "source_download",
-    });
-    for (let second = 0; second < 120; second += 5) {
-      bytes += 1024;
-      await clock.advance(5_000);
-    }
-    expect(watchdog.signal.aborted).toBe(false);
-    await clock.advance(40_000);
-    expect(watchdog.failure()).toMatchObject({ code: "source_download_stalled" });
-    watchdog.stop();
-  });
-
-  test("a file that does not exist yet counts as no progress, and stop disarms everything", async () => {
-    const clock = fakeClock();
-    const stalled = startTransferWatchdog({
-      deadlineMs: 600_000,
-      noProgressMs: 10_000,
-      pollMs: 2_000,
-      measureBytes: async () => {
-        throw new Error("ENOENT");
-      },
-      clock,
-      codePrefix: "source_download",
-    });
-    await clock.advance(12_000);
-    expect(stalled.failure()).toMatchObject({ code: "source_download_stalled" });
-
-    const stopped = startTransferWatchdog({
-      deadlineMs: 5_000,
-      noProgressMs: 1_000,
-      measureBytes: async () => 0,
-      clock,
-      codePrefix: "source_download",
-    });
-    stopped.stop();
-    await clock.advance(60_000);
-    expect(stopped.signal.aborted).toBe(false);
-    expect(stopped.failure()).toBeNull();
-  });
-
-  test("follows the attempt signal without recording a watchdog failure", async () => {
-    const clock = fakeClock();
-    const parent = new AbortController();
-    const watchdog = startTransferWatchdog({
-      parent: parent.signal,
-      deadlineMs: 5_000,
-      noProgressMs: 1_000,
-      measureBytes: async () => 0,
-      clock,
-      codePrefix: "source_download",
-    });
-    const cancelled = new DOMException("cancelled", "AbortError");
-    parent.abort(cancelled);
-    expect(watchdog.signal.aborted).toBe(true);
-    expect(watchdog.signal.reason).toBe(cancelled);
-    expect(watchdog.failure()).toBeNull();
-    watchdog.stop();
   });
 });

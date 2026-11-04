@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { Hono } from "hono";
 import { requestId } from "hono/request-id";
@@ -275,6 +275,25 @@ describe("API error handling", () => {
     expect(text).toContain("internal_error");
     expect(text).not.toContain("hunter2");
     expect(text).not.toContain("postgres");
+  });
+
+  test("logs an unexpected failure with its cause chain and frames while the response stays generic", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const app = envelopeApp((a) => {
+        a.get("/boom", () => {
+          throw new Error("bootstrap failed", { cause: Object.assign(new Error("connect ECONNRESET db.internal"), { code: "ECONNRESET" }) });
+        });
+      });
+      const response = await app.request("/boom");
+      expect(response.status).toBe(500);
+      expect(JSON.stringify(await response.json())).not.toContain("ECONNRESET");
+      const line = warn.mock.calls.map(([text]) => JSON.parse(String(text))).find((entry) => entry.message === "unexpected_request_failure");
+      expect(line).toMatchObject({ level: "error", method: "GET", error: { name: "Error", message: "bootstrap failed", causes: [{ code: "ECONNRESET" }] } });
+      expect(line.error.stack.length).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("keeps an expected 503 domain failure and its Retry-After instead of flattening it", async () => {

@@ -26,7 +26,7 @@ function fixture() {
       extra: { narriflowPrincipal: principal } }) },
     allowedHosts: () => ["localhost"], allowedOrigins: () => ["http://localhost"],
     resourceMetadataUrl: () => "http://localhost/.well-known/oauth-protected-resource/mcp",
-    checkRateLimit: async () => ({ allowed: true, remaining: 299, limit: 300, availability: "available" }), diagnostic: () => {},
+    authFailureThrottle: () => ({ exhausted: async () => false, recordFailure: async () => {}, retryAfterSeconds: 60 }), checkRateLimit: async () => ({ allowed: true, remaining: 299, limit: 300, availability: "available" }), diagnostic: () => {},
     buildServer: () => {
     const server = new NarriflowMcpServer({ name: "task-test", version: "1" });
     installNarriflowTasks(server, { principal, registry: () => registry });

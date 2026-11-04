@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient, SocialAccount } from "@prisma/client";
+import { TokenExchangeRejected } from "./token-exchange-rejected";
 type Tx = Prisma.TransactionClient;
 export type SocialTokenRefreshCode =
 	| "social_account_missing"
@@ -50,7 +51,11 @@ function sameCredential(a: SocialAccount, b: SocialAccount) {
 const missing = { error: "social_account_missing" as const },
 	busy = { error: "social_account_refresh_in_progress" as const };
 /** Exactly one admitted provider exchange per account. The marker survives a
- * crashed/unknown rotation; only explicit reconnect may clear that uncertainty. */
+ * crashed/unknown rotation; only explicit reconnect may clear that uncertainty.
+ * An exchange that throws `TokenExchangeRejected` proves nothing rotated: the
+ * claim is released and the cause is rethrown. The account stays as it was for
+ * the caller to retry, unless the provider refused the grant itself, which
+ * expires it. */
 export async function refreshSocialAccountToken(options: {
 	database: PrismaClient;
 	accountId: string;
@@ -120,10 +125,12 @@ export async function refreshSocialAccountToken(options: {
 	});
 	if ("error" in started) throw new SocialTokenRefreshError(started.error);
 	let replacement: SocialTokenReplacement | undefined;
+	let rejected: TokenExchangeRejected | undefined;
 	try {
 		replacement = await options.exchange(claim.row);
-	} catch {
+	} catch (error) {
 		/* A started exchange can have rotated a token even without an ACK. */
+		if (error instanceof TokenExchangeRejected) rejected = error;
 	}
 	const outcome = await db.$transaction(async (tx) => {
 		const observed = await clock(tx),
@@ -135,6 +142,20 @@ export async function refreshSocialAccountToken(options: {
 			!sameCredential(row, claim.row)
 		)
 			return busy;
+		if (rejected) {
+			await tx.socialAccount.update({
+				where: { id: row.id },
+				// The database releases a started marker only with a credential write.
+				data: {
+					...rejected.resealed,
+					...(rejected.credentialRefused ? { status: "expired" as const } : {}),
+					tokenRefreshOwner: null,
+					tokenRefreshLeaseExpiresAt: null,
+					tokenRefreshStartedAt: null,
+				},
+			});
+			return { rejected };
+		}
 		if (
 			!replacement ||
 			!replacement.accessTokenEncrypted ||
@@ -172,6 +193,7 @@ export async function refreshSocialAccountToken(options: {
 				}
 			: busy;
 	});
+	if ("rejected" in outcome) throw outcome.rejected!.cause;
 	if ("error" in outcome) throw new SocialTokenRefreshError(outcome.error!);
 	return outcome.row!;
 }

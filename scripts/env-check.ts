@@ -135,6 +135,13 @@ export function checkEnvironmentValues({ api, web, db }: EnvironmentFiles): Envi
 
   required(api, "R2_ACCOUNT_ID", "api", issues);
   required(api, "R2_BUCKET", "api", issues);
+  // Clip selection and social publishing have no defaults for these.
+  for (const key of ["OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS", "OPENAI_SELECTION_MAX_ESTIMATED_TOKENS"]) {
+    const value = required(api, key, "api", issues);
+    if (value && !(Number.isSafeInteger(Number(value)) && Number(value) > 0)) issues.push({ message: `api ${key} must be a positive integer` });
+  }
+  const checkpointKey = required(api, "SOCIAL_PUBLICATION_CHECKPOINT_KEY", "api", issues);
+  if (checkpointKey && checkpointKey.length < 32) issues.push({ message: "api SOCIAL_PUBLICATION_CHECKPOINT_KEY must contain at least 32 characters" });
   for (const name of Object.keys(api)) {
     if (name.endsWith("_JSON") && api[name]?.trim()) {
       try { JSON.parse(api[name]!); }

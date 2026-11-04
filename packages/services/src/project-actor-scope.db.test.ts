@@ -385,6 +385,64 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		).rejects.toBeInstanceOf(ProjectNotFoundError);
 	})));
 
+	test("deletion refuses live work, then hides the Project and hands it to the durable purge", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const { owner, workspace, scope } = await fixture();
+		const created = await project(scope(owner.id));
+		const folder = await prisma.workspaceFolder.create({ data: { workspaceId: workspace.id, name: "Delete folder", normalizedName: randomUUID() } });
+		await prisma.project.update({ where: { id: created.id }, data: { folderId: folder.id } });
+		const counted = async () => (await workspaceLibraryService.listFolders(scope(owner.id))).find((row) => row.id === folder.id)?._count.projects;
+		expect(await counted()).toBe(1);
+		const job = await prisma.ingestJob.create({ data: { projectId: created.id, jobType: "link_import", payload: {}, status: "running", claimId: randomUUID(), claimExpiresAt: new Date(Date.now() + 60_000) } });
+		await expect(projectService.deleteProject(scope(owner.id), created.id)).rejects.toMatchObject({ code: "project_has_active_workflow" });
+		expect(await prisma.project.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ purgeStartedAt: null });
+		await prisma.ingestJob.update({ where: { id: job.id }, data: { status: "queued", claimId: null, claimExpiresAt: null } });
+		await projectService.deleteProject(scope(owner.id), created.id);
+		expect(await prisma.project.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ retentionPolicyKey: "user_deleted_v1", purgeStartedAt: expect.any(Date) });
+		expect(await prisma.executionDispatch.count({ where: { subjectKind: "maintenance", subjectId: { startsWith: `pr1.${created.id}.` } } })).toBe(1);
+		expect(await counted()).toBe(0);
+	})));
+
+	test("deletion refuses the provider outcomes the retention purge would refuse, and allows them once settled", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const { owner, workspace, scope } = await fixture();
+		const created = await project(scope(owner.id));
+		const run = await prisma.workflowRun.create({ data: { projectId: created.id, stage: "clip_rendering", status: "failed", idempotencyKey: randomUUID() } });
+		const clip = await prisma.clip.create({ data: { projectId: created.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, hookText: "Hook", reasoning: "Test fixture", category: "hook", transcriptSlice: [],
+			viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test" } });
+		const dub = await prisma.clipDub.create({ data: { projectId: created.id, clipId: clip.id, targetLanguageCode: "es", voice: "marin", model: "test", status: "unknown" } });
+		const media = (extra: Record<string, unknown>) => prisma.generatedMediaJob.create({ data: { workspaceId: workspace.id, projectId: created.id, createdByUserId: owner.id, workspaceOwnerUserId: owner.id, actorRole: "owner", actorStatus: "active", pricingTier: "creator",
+			isPersonalWorkspace: false, idempotencyKey: randomUUID(), requestFingerprint: "f", protectedPrompt: "A calm lake", promptFingerprint: "p".repeat(64), promptOrigin: "manual", aspectRatio: "16:9", style: "cinematic", title: "Lake",
+			provider: "openai", providerModel: "gpt-image-1", usageReservationId: randomUUID(), promptExpiresAt: new Date(Date.now() + 86_400_000), ...extra } as never });
+		const refused = async () => {
+			await expect(projectService.deleteProject(scope(owner.id), created.id)).rejects.toMatchObject({ code: "project_has_active_workflow" });
+			expect(await prisma.project.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ purgeStartedAt: null });
+		};
+		// These outcomes are immutable once recorded, so each unresolved shape is settled by removing its row.
+		await refused();
+		await prisma.clipDub.delete({ where: { id: dub.id } });
+		const halfWritten = await prisma.clipDub.create({ data: { projectId: created.id, clipId: clip.id, targetLanguageCode: "fr", voice: "marin", model: "test", status: "queued", translationIntentArtifactId: randomUUID() } });
+		await refused();
+		await prisma.clipDub.delete({ where: { id: halfWritten.id } });
+		const unknown = await media({ status: "waiting", outcomeUnknown: true });
+		await refused();
+		await prisma.generatedMediaJob.delete({ where: { id: unknown.id } });
+		const charged = await media({ status: "running", claimId: randomUUID(), executorOwner: randomUUID(), claimExpiresAt: new Date(Date.now() + 60_000), operationDeadlineAt: new Date(Date.now() + 120_000), chargedAttempts: 1, attempt: 1 });
+		await refused();
+		await prisma.generatedMediaJob.delete({ where: { id: charged.id } });
+		await projectService.deleteProject(scope(owner.id), created.id);
+		expect(await prisma.project.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ purgeStartedAt: expect.any(Date) });
+	})));
+
+	test("workflow history returns the newest events, oldest first", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const { owner, scope } = await fixture();
+		const created = await project(scope(owner.id));
+		const emittedAt = new Date();
+		await prisma.workflowEvent.createMany({ data: Array.from({ length: 205 }, (_, index) => ({
+			projectId: created.id, workflowRunId: randomUUID(), seq: index + 1, stage: "stt", status: "running", progress: 1, emittedAt, dedupeKey: randomUUID(),
+		})) });
+		const history = await projectService.getWorkflowHistory(scope(owner.id), created.id);
+		expect(history.map((event) => event.seq)).toEqual(Array.from({ length: 200 }, (_, index) => index + 6));
+	})));
+
 	test("removing the creator clears attribution and preserves Project and workflow history", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, scope } = await fixture();
 		const created = await project(scope(editor.id));

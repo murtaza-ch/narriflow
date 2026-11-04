@@ -15,6 +15,7 @@ import {
   createWorkspaceBillingModule,
   WorkspaceBillingAttemptLost,
   type ProviderCheckoutSession,
+  type ProviderCurrentState,
   type WorkspaceBillingProvider,
 } from "./workspace-billing.service";
 import { workspaceMembershipService } from "./workspace-membership.service";
@@ -1352,5 +1353,194 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       kind: "reconciled",
       view: { plan: "creator", workspaceAccessStatus: "active" },
     });
+  })));
+
+  /** A module over the Prisma store whose provider reports `state` for every read. */
+  function reconcilerFor(
+    workspaceId: string,
+    customerId: string,
+    subscriptions: Array<{ status: string; priceId: string }>,
+    options?: {
+      now?: Date;
+      ownership?: ProviderCurrentState["ownership"];
+      checkout?: Pick<ProviderCheckoutSession, "status" | "paymentStatus">;
+    },
+  ) {
+    const now = options?.now ?? new Date("2026-08-28T10:00:00.000Z");
+    return createWorkspaceBillingModule({
+      catalog,
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId,
+          ownership: options?.ownership ?? { kind: "verified", workspaceId },
+          subscriptions: subscriptions.map((subscription, index) => ({
+            id: `sub_${workspaceId}_${index}`,
+            status: subscription.status,
+            items: [{ priceId: subscription.priceId, quantity: 1 }],
+            createdAt: now,
+            effectiveAt: now,
+            currentPeriodEnd: new Date("2026-09-28T10:00:00.000Z"),
+            trialEnd: null,
+            cancelAtPeriodEnd: false,
+          })),
+        }),
+        retrieveCheckoutSession: async (sessionId) => ({
+          sessionId,
+          url: null,
+          expiresAt: now,
+          workspaceId,
+          status: options?.checkout?.status ?? "open",
+          paymentStatus: options?.checkout?.paymentStatus ?? "unpaid",
+        }),
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+  }
+
+  async function bindCompletedCheckout(workspaceId: string, actorUserId: string) {
+    const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId } });
+    return prisma.workspaceCheckoutAttempt.create({
+      data: {
+        billingAccountId: account.id,
+        actorUserId,
+        clientIdempotencyKey: randomUUID(),
+        targetTier: "pro",
+        interval: "monthly",
+        catalogVersion: "test",
+        returnDestination: "https://app.test/settings/billing",
+        customerOperationKey: randomUUID(),
+        checkoutOperationKey: randomUUID(),
+        providerSessionId: `cs_${randomUUID()}`,
+        sessionStatus: "complete",
+        paymentStatus: "paid",
+      },
+    });
+  }
+
+  test("a deleted provider customer commits Free with retention, audit, and a cleared customer", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { user, workspace } = await createWorkspace("customer-deleted");
+    const customerId = `cus_${workspace.id}`;
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { pricingTier: "pro" } });
+    const account = await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: workspace.id },
+      data: {
+        providerCustomerId: customerId,
+        canonicalSubscriptionId: `sub_${workspace.id}`,
+        providerStatus: "active",
+        billingInterval: "monthly",
+        currentPeriodEndAt: new Date("2026-09-28T10:00:00.000Z"),
+        seatItemId: `si_${workspace.id}`,
+        synchronizedAdditionalSeats: 1,
+        snapshot: { status: "active" },
+      },
+    });
+    const delivery = await prisma.webhookDeliveryLog.create({
+      data: {
+        provider: "stripe",
+        eventId: `evt_${randomUUID()}`,
+        eventType: "customer.deleted",
+        status: "accepted",
+        workspaceBillingAccountId: account.id,
+      },
+    });
+    const project = await prisma.project.create({
+      data: { title: "Kept until the Free deadline", sourceMediaUrl: "https://example.test/source.mp4", workspaceId: workspace.id },
+    });
+    const checkout = await bindCompletedCheckout(workspace.id, user.id);
+    await prisma.workspaceCheckoutAttempt.update({ where: { id: checkout.id }, data: { activeBillingAccountId: account.id } });
+    const now = new Date("2026-08-28T10:00:00.000Z");
+    const billing = reconcilerFor(workspace.id, customerId, [], { now, ownership: { kind: "customer_deleted" } });
+
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({
+      kind: "reconciled",
+      view: { plan: "free", workspaceAccessStatus: "active", health: "current", actions: ["start_checkout"] },
+    });
+
+    expect(await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).toMatchObject({ pricingTier: "free", status: "active" });
+    expect(await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).toMatchObject({
+      providerCustomerId: null,
+      canonicalSubscriptionId: null,
+      providerStatus: null,
+      seatItemId: null,
+      synchronizedAdditionalSeats: null,
+      snapshot: null,
+      health: "current",
+      attemptCount: 0,
+    });
+    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ retentionPolicyKey: "downgrade_to_free_v1" });
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).expiresAt).not.toBeNull();
+    expect(await prisma.workspaceBillingTransition.findMany({ where: { billingAccountId: account.id } })).toMatchObject([
+      { previousTier: "pro", nextTier: "free", reason: "provider_customer_deleted", providerStatus: null, sourceSubscriptionId: null },
+    ]);
+    expect(await prisma.webhookDeliveryLog.findUniqueOrThrow({ where: { id: delivery.id } })).toMatchObject({ status: "reconciled", processedAt: now });
+    // The session of the deleted customer no longer blocks the next Checkout.
+    expect(await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({ where: { id: checkout.id } })).toMatchObject({ activeBillingAccountId: null });
+  })));
+
+  test("a deleted customer on a Business Workspace with members restricts it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { workspace } = await createWorkspace("customer-deleted-team", { team: true });
+    const viewer = await prisma.user.create({ data: { clerkId: `billing-db-${randomUUID()}`, primaryEmail: `billing-${randomUUID()}@example.test` } });
+    await prisma.workspaceMember.create({ data: { workspaceId: workspace.id, userId: viewer.id, role: "viewer" } });
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { pricingTier: "business" } });
+    await prisma.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: `cus_${workspace.id}` } });
+    const billing = reconcilerFor(workspace.id, `cus_${workspace.id}`, [], { ownership: { kind: "customer_deleted" } });
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({ view: { plan: "free", workspaceAccessStatus: "restricted" } });
+    expect(await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).toMatchObject({ pricingTier: "free", status: "restricted" });
+  })));
+
+  test("a pending Workspace whose first payment never landed stays pending when its subscription ends", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { workspace } = await createWorkspace("expired-first-payment", { team: true });
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { status: "pending_payment" } });
+    await prisma.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: `cus_${workspace.id}` } });
+    const billing = reconcilerFor(workspace.id, `cus_${workspace.id}`, [{ status: "incomplete_expired", priceId: "price_business_monthly" }]);
+
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({
+      view: { plan: "free", workspaceAccessStatus: "pending_payment", status: "payment_expired", actions: ["start_checkout"] },
+    });
+    expect(await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).toMatchObject({ pricingTier: "free", status: "pending_payment" });
+  })));
+
+  test("an active Free Workspace stays active while a completed Checkout waits for its subscription", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { user, workspace } = await createWorkspace("free-activating");
+    await prisma.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: `cus_${workspace.id}` } });
+    await bindCompletedCheckout(workspace.id, user.id);
+    const billing = reconcilerFor(workspace.id, `cus_${workspace.id}`, [], { checkout: { status: "complete", paymentStatus: "paid" } });
+
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({ view: { plan: "free", workspaceAccessStatus: "active", health: "activating" } });
+    expect(await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).toMatchObject({ status: "active" });
+  })));
+
+  test("a no-subscription commit drops the stale snapshot and settles accepted deliveries", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { workspace } = await createWorkspace("no-subscription-commit");
+    const planChange = { state: "scheduled", tier: "creator", interval: "monthly", effectiveAt: "2026-09-28T10:00:00.000Z", paymentUrl: null };
+    const account = await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: workspace.id },
+      data: { providerCustomerId: `cus_${workspace.id}`, snapshot: { status: "canceled", planChange } },
+    });
+    const delivery = await prisma.webhookDeliveryLog.create({
+      data: { provider: "stripe", eventId: `evt_${randomUUID()}`, eventType: "customer.updated", status: "accepted", workspaceBillingAccountId: account.id },
+    });
+    const now = new Date("2026-08-28T10:00:00.000Z");
+
+    const result = await reconcilerFor(workspace.id, `cus_${workspace.id}`, [], { now }).reconcileCurrentState(workspace.id);
+
+    expect(result).toMatchObject({ kind: "reconciled", view: { planChange: null } });
+    expect(await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).toMatchObject({ snapshot: null });
+    expect(await prisma.webhookDeliveryLog.findUniqueOrThrow({ where: { id: delivery.id } })).toMatchObject({ status: "reconciled", processedAt: now });
+  })));
+
+  test("past-due grace keeps the lower of the projected and subscribed tiers", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { workspace } = await createWorkspace("grace-downgrade");
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { pricingTier: "pro" } });
+    await prisma.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: `cus_${workspace.id}` } });
+    const billing = reconcilerFor(workspace.id, `cus_${workspace.id}`, [{ status: "past_due", priceId: "price_creator_monthly" }]);
+
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({ view: { plan: "creator", health: "payment_action_required" } });
+    expect(await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).toMatchObject({ pricingTier: "creator" });
   })));
 });

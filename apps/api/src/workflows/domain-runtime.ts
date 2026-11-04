@@ -30,17 +30,18 @@ import { readServiceEnvironment } from "@narriflow/services/runtime-environment"
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
 import { getTranscriptionControl } from "@narriflow/services/transcription-control-runtime";
 import { continueScribeCapacityRelease } from "@narriflow/services/transcription-admission";
-import { executionDeadlineSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
+import { executionDeadlineSchema, type ExecutionDeadline, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { createWorkerExecutor, getWorkerRenderGroupService, getWorkerWorkflowRunService } from "../domains/execution/runtime";
-import { createWorkerExecutionScheduler } from "./scheduler";
-import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol";
+import { createWorkerExecutionScheduler, createWorkerModalDispatch } from "./scheduler";
+import type { WorkflowCommandHandler, WorkflowDirective, WorkflowHandlerRegistry } from "./protocol";
 import { createNativeOperationDriver } from "./native-operation-driver";
 import { createPublicationDriver } from "./publication-driver";
 import { createRenderRunDriver } from "./render-run-driver";
 import { createZoomRuleWakes, isZoomRuleWakeReference } from "@narriflow/services/zoom-rule-wakes";
 import { getWorkerMaintenanceRuntime } from "./maintenance-runtime";
+import { isAcquisitionCheck } from "@narriflow/services/modal-dispatch";
 
 async function nativeDomain(reference: ExecutionDispatchReference, bindings: ApiWorkerBindings) {
   if (reference.subject.kind === "native_validation") return getNativeValidationService();
@@ -52,6 +53,38 @@ async function nativeDomain(reference: ExecutionDispatchReference, bindings: Api
   if (reference.subject.kind === "render_group") return getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
   if (reference.subject.kind === "workflow_run") return (await getWorkerWorkflowRunService(reference, bindings.MEDIA_BUCKET)).domain;
   throw new NonRetryableError("unsupported_native_subject");
+}
+
+type DomainResult = { kind: "wait" | "sleep"; dueAt: Date } | { kind: string };
+/** The shared mapping for drivers whose outcome is wait, sleep, superseded or done. */
+function directive(result: DomainResult, deliveryId: string): WorkflowDirective {
+  if ("dueAt" in result && result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId };
+  if ("dueAt" in result && result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
+  return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+}
+
+/** Starts the acquisition watch after a confirmed spawn. A lost registration
+ * costs detection only, and the hourly dispatch sweep repairs it. */
+async function watchAcquisition(deadline: ExecutionDeadline): Promise<void> {
+  if (deadline.reference.kind !== "modal_execution") return;
+  try {
+    const check = await createWorkerModalDispatch().watchAcquisition(deadline.reference);
+    if (check) await getExecutionDispatch().deliver(check);
+  } catch (error) {
+    console.warn(JSON.stringify({ level: "warn", message: "modal_acquisition_watch_deferred", dispatchId: deadline.reference.dispatchId, errorCode: error instanceof Error ? error.message : "unknown" }));
+  }
+}
+
+/** Runs one committed obligation to acknowledgement on the outbox's own backoff.
+ * It only delivers: the domain command still runs behind its usual fences. */
+export function workflowDispatchRedelivery(bindings: ApiWorkerBindings): WorkflowCommandHandler {
+  return async ({ reference }) => {
+    const outcome = await getExecutionDispatch(createWorkerExecutionScheduler(bindings)).deliver(reference.dispatchId);
+    if (outcome.status === "acknowledged") return { type: "complete", disposition: "terminal" };
+    if (outcome.status === "superseded" || outcome.status === "missing") return { type: "complete", disposition: "superseded" };
+    if (outcome.status === "pending") return { type: "sleep", until: outcome.retryAt.toISOString() };
+    throw new NonRetryableError(`dispatch_${outcome.status}`);
+  };
 }
 
 /** Domain owners install their targeted command handlers here. Missing kinds
@@ -127,6 +160,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     },
       expire: async (deadline, deliveryId) => (await createWorkerExecutor(deadline.reference, bindings)).control.expireDeadline({ deadline, deliveryId }),
       deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
+      watchAcquisition,
     })(command);
   };
   const render: WorkflowCommandHandler = command => createRenderRunDriver({ now: Date.now,
@@ -184,18 +218,8 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     return result.kind === "wait" ? { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId }
       : { type: "complete", disposition: result.outcome === "superseded" ? "superseded" : "terminal" };
   };
-  const billing: WorkflowCommandHandler = async ({ reference }) => {
-    const result = await getBillingReconciliation().run(reference);
-    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
-    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
-    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
-  };
-  const library: WorkflowCommandHandler = async ({ reference }) => {
-    const result = await getLibraryIndex().run(reference);
-    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
-    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
-    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
-  };
+  const billing: WorkflowCommandHandler = async ({ reference }) => directive(await getBillingReconciliation().run(reference), reference.dispatchId);
+  const library: WorkflowCommandHandler = async ({ reference }) => directive(await getLibraryIndex().run(reference), reference.dispatchId);
   const notification: WorkflowCommandHandler = async ({ reference }) => {
     const database = getPrismaClient();
     if (!database) throw new Error("Notification driver requires a database scope");
@@ -218,30 +242,10 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     await createWorkspaceNotificationDispatcher({ database, deliver: deliverExecutionDispatches }).dispatch(reference);
     return { type: "complete", disposition: "terminal" };
   };
-  const finishing:WorkflowCommandHandler=async({reference})=>{
-    const result=await getGenerationFinishing().run(reference);
-    if(result.kind==="wait")return{type:"wait",until:result.dueAt.toISOString(),deliveryId:reference.dispatchId};
-    if(result.kind==="sleep")return{type:"sleep",until:result.dueAt.toISOString()};
-    return{type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
-  };
-  const emailNotification:WorkflowCommandHandler=async({reference})=>{
-    const result=await getNotificationExecution().run(reference);
-    if(result.kind==="wait")return{type:"wait",until:result.dueAt.toISOString(),deliveryId:reference.dispatchId};
-    if(result.kind==="sleep")return{type:"sleep",until:result.dueAt.toISOString()};
-    return{type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
-  };
-  const autopilot: WorkflowCommandHandler = async ({ reference }) => {
-    const result = await getAutopilotExecution().run(reference);
-    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
-    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
-    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
-  };
-  const zoomNotification: WorkflowCommandHandler = async ({ reference }) => {
-    const result = await getZoomNotificationExecution().run(reference);
-    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
-    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
-    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
-  };
+  const finishing: WorkflowCommandHandler = async ({ reference }) => directive(await getGenerationFinishing().run(reference), reference.dispatchId);
+  const emailNotification: WorkflowCommandHandler = async ({ reference }) => directive(await getNotificationExecution().run(reference), reference.dispatchId);
+  const autopilot: WorkflowCommandHandler = async ({ reference }) => directive(await getAutopilotExecution().run(reference), reference.dispatchId);
+  const zoomNotification: WorkflowCommandHandler = async ({ reference }) => directive(await getZoomNotificationExecution().run(reference), reference.dispatchId);
   const maintenancePage: WorkflowCommandHandler = async ({ reference }) => {
     const result = await (await getWorkerMaintenanceRuntime()).run(reference);
     return result.kind === "sleep" ? { type: "sleep", until: result.dueAt.toISOString() } : { type: "complete", disposition: "terminal" };
@@ -255,8 +259,13 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     prepare: reference => getPublicationExecution().prepareExecution(reference),
     expire: async (deadline, deliveryId) => (await createWorkerExecutor(deadline.reference,bindings)).control.expireDeadline({ deadline, deliveryId }),
     deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
+    watchAcquisition,
   });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (isAcquisitionCheck(reference)) {
+      const next = await createWorkerModalDispatch().recoverAcquisition(reference);
+      return next ? { type: "sleep", until: next.toISOString() } : { type: "complete", disposition: "terminal" };
+    }
     if (isZoomRuleWakeReference(reference)) {
       const database = getPrismaClient();
       if (!database) throw Error("Zoom Rule wake requires a database scope");
@@ -304,15 +313,9 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     });
     return result.kind === "sleep" ? { type: "sleep", until: result.dueAt.toISOString() } : { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
   };
-  const progress: WorkflowCommandHandler = async ({ reference }) => {
-    const outcome = await getExecutionDispatch(createWorkerExecutionScheduler(bindings)).deliver(reference.dispatchId);
-    if (outcome.status === "acknowledged") return { type: "complete" as const, disposition: "terminal" as const };
-    if (outcome.status === "superseded" || outcome.status === "missing") return { type: "complete" as const, disposition: "superseded" as const };
-    if (outcome.status === "pending") return { type: "sleep" as const, until: outcome.retryAt.toISOString() };
-    throw new Error(`Progress continuation ${outcome.status}`);
-  };
+  const progress = workflowDispatchRedelivery(bindings);
   return { maintenance: { maintenance, export_bundle: bundleExpiry }, project_progress: { maintenance: progress, workflow_event: progress },
-    import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
+    import_pipeline: { ingest_job: native }, render_run: { workflow_run: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
       workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, generation_finishing: finishing, notification: emailNotification, media_cleanup: cleanup, social_publication: publication, completion_callback: notification, webhook_subscription: notification,
       upload_session: maintenancePage, autopilot_rule: autopilot, zoom_notification: zoomNotification,

@@ -11,6 +11,8 @@ export interface BrowserStudioSessionLifecycle {
   mount(): void;
   unmount(): void;
   suppressNavigationWarning(): void;
+  /** The Studio already waited for the cloud before leaving; the unmount close need not. */
+  markLeaving(): void;
 }
 
 export function createBrowserStudioSessionLifecycle(
@@ -20,6 +22,7 @@ export function createBrowserStudioSessionLifecycle(
   let closeTimer: number | null = null;
   let mounted = false;
   let navigationWarningSuppressed = false;
+  let leaving = false;
 
   const onPageHide = (event: Event) => {
     if (!(event as PageTransitionEvent).persisted) {
@@ -63,11 +66,14 @@ export function createBrowserStudioSessionLifecycle(
       target.removeEventListener("beforeunload", onBeforeUnload);
       closeTimer = target.setTimeout(() => {
         closeTimer = null;
-        void session.perform({ type: "close", reason: "unmount" });
+        void session.perform({ type: "close", reason: leaving ? "navigation" : "unmount" });
       }, 0);
     },
     suppressNavigationWarning: () => {
       navigationWarningSuppressed = true;
+    },
+    markLeaving: () => {
+      leaving = true;
     },
   };
 }

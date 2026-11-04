@@ -9,7 +9,7 @@ import { Pool } from "pg";
 import { dubbingService } from "./dubbing.service";
 import {
   createPrismaGenerationUsageLedger,
-  reconcileGenerationUsageReservations,
+  reconcileGenerationUsagePage,
   releaseFailedDubUsage,
   summarizeGenerationUsage,
 } from "./generated-media-usage-ledger";
@@ -163,6 +163,10 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     });
   }
 
+  /** One hourly maintenance page over every due reservation. */
+  const reconcileGenerationUsageReservations = (cutoff = new Date()) =>
+    prisma.$transaction((tx) => reconcileGenerationUsagePage(tx, { deploymentEpoch: 1, cutoff, after: null, limit: 100 }));
+
   async function createImageSubject(input:{id:string;reservationId:string;workspaceId:string;actorUserId:string;projectId:string}){
    return prisma.$transaction(async tx=>{
     await tx.generatedMediaUsageReservation.update({where:{id:input.reservationId},data:{attachedAt:new Date()}});
@@ -305,6 +309,42 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { id: unknown.reservationId } }),
     ).toMatchObject({ status: "finalized", reason: "generation_subject_deleted" });
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, concurrency: { active: 0 } });
+  })));
+
+  test("the hourly sweep frees the concurrency slot of an image job deleted with its Project", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { owner, workspace: ws } = await workspace("creator", "sweep-slot");
+    const { project } = await dubbableProject(ws.id, owner.id);
+    const jobId = randomUUID();
+    const { reservationId } = await ledger.reserve({ kind: "image", jobId, workspaceId: ws.id, actorUserId: owner.id, pricingTier: "creator" });
+    await createImageSubject({ id: jobId, reservationId, workspaceId: ws.id, actorUserId: owner.id, projectId: project.id });
+    await prisma.generatedMediaUsageReservation.update({ where: { id: reservationId }, data: { attachedAt: new Date() } });
+    await prisma.project.delete({ where: { id: project.id } });
+    expect((await summarizeGenerationUsage(ws.id)).images.concurrency.active).toBe(1);
+
+    // Inside the grace window a page leaves it alone.
+    await reconcileGenerationUsageReservations(new Date(Date.now() + 60_000));
+    expect((await summarizeGenerationUsage(ws.id)).images.concurrency.active).toBe(1);
+
+    await reconcileGenerationUsageReservations(new Date(Date.now() + 11 * 60_000));
+    expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { id: reservationId } })).toMatchObject({ status: "finalized", reason: "generation_subject_deleted" });
+    expect((await summarizeGenerationUsage(ws.id)).images.concurrency.active).toBe(0);
+  })));
+
+  test("a sweep page resumes after its cursor", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { owner, workspace: ws } = await workspace("business", "sweep-pages");
+    const at = new Date(Date.now() - 7 * DAY_MS);
+    for (const offset of [0, 1, 2]) {
+      const { reservationId } = await ledger.reserve({ kind: "image", jobId: randomUUID(), workspaceId: ws.id, actorUserId: owner.id, pricingTier: "business" });
+      await prisma.generatedMediaUsageReservation.update({ where: { id: reservationId }, data: { createdAt: new Date(at.getTime() + offset) } });
+    }
+    await prisma.generatedMediaUsageReservation.updateMany({ where: { workspaceId: { not: ws.id }, status: "reserved", createdAt: { lt: new Date(at.getTime() + DAY_MS) } }, data: { createdAt: new Date() } });
+    const cutoff = new Date(at.getTime() + DAY_MS);
+    const first = await prisma.$transaction((tx) => reconcileGenerationUsagePage(tx, { deploymentEpoch: 1, cutoff, after: null, limit: 2 }));
+    expect(first.processed).toBe(2);
+    expect(first.next?.at).toEqual(new Date(at.getTime() + 1));
+    const second = await prisma.$transaction((tx) => reconcileGenerationUsagePage(tx, { deploymentEpoch: 1, cutoff, after: first.next, limit: 2 }));
+    expect(second).toEqual({ processed: 1, next: null });
+    expect(await prisma.generatedMediaUsageReservation.count({ where: { workspaceId: ws.id, status: "released" } })).toBe(3);
   })));
 
   test("deleting the actor, output, or Project never refunds a finalized count", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -596,10 +636,10 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     const free = await workspace("free", "retention");
     const paid = await workspace("pro", "retention-paid");
     const createdAt = new Date("2026-10-26T12:00:00.000Z");
-    expect(await projectRetentionService.assignmentForWorkspace(free.workspace.id, createdAt)).toEqual({
+    expect(await projectRetentionService.assignmentForWorkspace(prisma, free.workspace.id, createdAt)).toEqual({
       retentionPolicyKey: "free_project_v1",
       expiresAt: new Date(createdAt.getTime() + 72 * 60 * 60 * 1000),
     });
-    expect(await projectRetentionService.assignmentForWorkspace(paid.workspace.id, createdAt)).toBeNull();
+    expect(await projectRetentionService.assignmentForWorkspace(prisma, paid.workspace.id, createdAt)).toBeNull();
   })));
 });

@@ -6,6 +6,7 @@ import {
 	readExecutionDispatch,
 } from "./execution-dispatch";
 import {collectExecutionDispatch} from "./execution-dispatch-runtime";
+import { canonicalJson } from "./canonical-json";
 
 const scheduleInclude = {
 	frozenState: true,
@@ -17,17 +18,6 @@ type Tx = Prisma.TransactionClient;
 
 /** Schedule intent and physical-cycle identity are distinct. Provider checkpoints
  * and mutable statuses never alter the frozen input of an already admitted cycle. */
-function canonical(value: unknown): string {
-	if (value === null || typeof value !== "object") return JSON.stringify(value);
-	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-	return `{${Object.keys(value)
-		.sort()
-		.map(
-			(key) =>
-				`${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
-		)
-		.join(",")}}`;
-}
 export function publicationExecutionInputHash(post: PublicationSchedule) {
 	const frozen = post.frozenState;
 	return createHash("sha256")
@@ -56,7 +46,7 @@ export function publicationExecutionInputHash(post: PublicationSchedule) {
 							frozen.socialAccountId,
 							frozen.capabilityVersion,
 							createHash("sha256")
-								.update(canonical(frozen.providerSettings))
+								.update(canonicalJson(frozen.providerSettings))
 								.digest("hex"),
 							createHash("sha256").update(frozen.caption).digest("hex"),
 						]

@@ -3,7 +3,7 @@ name: sonnet-worker
 description: Use for fast codebase exploration, dependency tracing, file discovery, running targeted tests, reading failing logs, and summarizing context or root-cause evidence for another agent. Read-only; does not edit files.
 tools: Read, Grep, Glob, Bash
 model: sonnet
-effort: medium
+effort: high
 ---
 
 You are a fast context and analysis worker for this repository.

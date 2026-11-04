@@ -39,12 +39,13 @@ export function scribeHttpFailure(
   stage: ScribeCallStage,
   status: number,
   payload: unknown,
+  retryAfterMs: number | null = null,
 ): WorkflowFailure {
   const detail = scribeErrorDetail(payload);
   const tokens = [detail.code, detail.status, detail.type].filter(Boolean).join(" ");
   const label = `Scribe ${stage} failed with status ${status}${detail.code ? ` (${detail.code})` : ""}`;
   const permanent = (code: string) => new WorkflowFailure(code, "permanent", label);
-  const retryable = () => new WorkflowFailure(retryableCode(stage), "retryable", label);
+  const retryable = () => new WorkflowFailure(retryableCode(stage), "retryable", label, { retryAfterMs });
 
   if (/no_webhooks_configured|webhook/.test(tokens) && status >= 400 && status < 500) {
     return permanent("elevenlabs_webhook_not_configured");
@@ -78,8 +79,8 @@ export function scribeHttpFailure(
 /** Transport or service trouble that another attempt can outlive. */
 const TRANSIENT_CALLBACK = /time(?:d)? ?out|temporar|try again|unavailable|too many|\b429\b|rate.?limit|concurren|overload|busy|internal (?:server )?error|bad gateway|gateway time|connection (?:was )?(?:reset|refused|closed)|\b(?:http|status|code|error)\W{0,3}5\d\d\b|\b5\d\d (?:internal|server|service)/;
 
-/** Scribe could not fetch the source URL we handed it. The next attempt uploads
- * the extracted audio instead, so this is retryable under its own code. */
+/** Scribe could not fetch the source URL we handed it. The next attempt hands it
+ * a fresh grant for the same Source Audio, so this is retryable under its own code. */
 const SOURCE_FETCH_CALLBACK = /(?:download|fetch|retriev|reach)\w*\b.*\b(?:url|source|remote|host)|\b(?:source|signed|presigned|remote|expired) (?:url|file|server|host)|\burl\b.*\b(?:expired|forbidden|not found|unreachable|40[34])\b/;
 
 const PERMANENT_CALLBACK: readonly (readonly [RegExp, string])[] = [

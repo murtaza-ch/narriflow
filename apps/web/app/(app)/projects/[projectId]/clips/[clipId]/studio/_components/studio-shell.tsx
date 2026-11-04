@@ -96,6 +96,7 @@ import {
   useStudioEditingSession,
   useStudioSessionSelector,
 } from "./studio-editing-session-react";
+import { checkpointBeforeLeaving } from "./studio-leave";
 import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioMotionPreview, type StudioSessionSnapshot } from "./studio-editing-session";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import {
@@ -123,6 +124,7 @@ import {
 } from "@/lib/authenticated-request-browser";
 import { apiFailureBody, apiFailureStatus, createStudioExport, requireStudioApi, type StudioExportInput, studioReads, type StudioReads } from "./studio-api";
 import { useStudioApi } from "./use-studio-api";
+import { invalidateProjectClips } from "@narriflow/api-client/clips";
 import { createTokenSnapshot, createStudioCloudHttp } from "./studio-cloud-http";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
 
@@ -658,6 +660,10 @@ interface StudioFields extends StudioState {
   splitAtPlayhead: () => void;
   deleteSelectedSegment: () => void;
   handleSave: () => void;
+  /** Leaves the Studio for another page once the latest edits are saved (or the wait times out). */
+  leaveStudio: (href: string) => void;
+  /** True from the moment Back is pressed until the Studio unmounts. */
+  leavingStudio: boolean;
   handleExport: (options: StudioExportOptions) => void;
   reportCompositionPlanStatus: (status: StudioCompositionPlanStatus) => void;
   compositionPlanQaFixture: CompositionPlanQaFixture | null;
@@ -896,7 +902,14 @@ export function StudioShell({
     return {
       tokens,
       reads: studioReads(api),
-      cloud: createStudioCloudHttp({ api, projectId: clipInfo.projectId, clipId: clipInfo.id, tokens }),
+      cloud: createStudioCloudHttp({
+        api,
+        projectId: clipInfo.projectId,
+        clipId: clipInfo.id,
+        tokens,
+        // The Project page shows each clip's revision; a stored edit makes its cached copy stale.
+        onWritten: () => void invalidateProjectClips(api.runtime.queryClient, api.scope, clipInfo.projectId),
+      }),
     };
   });
   // Keep an in-memory token ready for the close-time write: Clerk tokens live about
@@ -948,8 +961,10 @@ export function StudioShell({
     playbackClock,
     setSourceAudioEnvelope,
     suppressNavigationWarning,
+    markLeaving,
   } = useStudioEditingSession(
     {
+      userId: requireStudioApi(studioApi).scope.userId,
       projectId: clipInfo.projectId,
       clipId: clipInfo.id,
       cloudRevision: initialEditorRevision,
@@ -1926,6 +1941,25 @@ export function StudioShell({
     });
   }, [studioSession]);
 
+  const leavingRef = useRef(false);
+  const [leavingStudio, setLeavingStudio] = useState(false);
+  const leaveStudio = useCallback(
+    async (href: string) => {
+      if (leavingRef.current) return;
+      leavingRef.current = true;
+      setLeavingStudio(true);
+      try {
+        await checkpointBeforeLeaving(studioSession);
+      } finally {
+        leavingRef.current = false;
+      }
+      // The page stays pending until the route changes; the unmount close need not wait again.
+      markLeaving();
+      router.push(href);
+    },
+    [router, studioSession, markLeaving],
+  );
+
   const handleExport = useCallback(async (options: StudioExportOptions) => {
     if (compositionPlanStatus === "invalid" || compositionPlanStatus === "blocked") {
       toaster.create({
@@ -2357,7 +2391,7 @@ export function StudioShell({
     selectTextLayer, deselectTextLayer,
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
-    togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
+    togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, leaveStudio, leavingStudio, handleExport,
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
     insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,

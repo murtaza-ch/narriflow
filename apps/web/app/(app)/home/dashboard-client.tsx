@@ -8,7 +8,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 
 
-const HERO_PASTE_LINK_HINT = "YouTube, Vimeo, and other supported video links or podcast feeds.";
+const HERO_PASTE_LINK_HINT = "YouTube and Dropbox links, or podcast feeds.";
 
 /**
  * Hero paste-link field — no upload logic here. Navigates to

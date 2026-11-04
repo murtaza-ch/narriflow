@@ -48,7 +48,8 @@ export async function createExportBundleArchive(input: {
       archive.on("entry",entry); archive.once("error",failed);
     });
     source.on("error",error => archive.destroy(error));
-    archive.append(source, { name: file.name });
+    // Every bundled file is an MP4, already compressed; deflating it only spends CPU.
+    archive.append(source, { name: file.name, store: true });
     await consumed;
   }
   await archive.finalize(); await completion; }

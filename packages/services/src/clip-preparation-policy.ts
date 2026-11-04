@@ -1,6 +1,7 @@
 export { resolveDisplayGeometry, type DisplayGeometry } from "@narriflow/validators/source-display-geometry";
 import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, resolveClipRenderTiming } from "@narriflow/validators";
 import type { ClipPreparationInput } from "@narriflow/validators/clip-preparation";
+import { sha256Hex } from "./execution-hash";
 
 export const DEFAULT_PREVIEW_PADDING_SEC = 4;
 export const DEFAULT_PREVIEW_MAX_HEIGHT = 540;
@@ -14,14 +15,13 @@ export const DEFAULT_PREVIEW_PEAKS_PER_SEC = 20;
 export const DEFAULT_CLIP_PREVIEW_PADDING_SEC = DEFAULT_PREVIEW_PADDING_SEC;
 
 export const CLIP_PREPARATION_POLICY = Object.freeze({
-  version: 4,
+  version: 5,
   sourceTiming: "clip-render-timing-v1",
   preview: Object.freeze({ paddingSec: DEFAULT_PREVIEW_PADDING_SEC, maxHeight: DEFAULT_PREVIEW_MAX_HEIGHT,
     videoClock: "constant-rate-preserve-window-v1",
     threadPolicy: "render-4cpu-v1", decoderThreads: 4, filterThreads: 4,
     x264Preset: DEFAULT_PREVIEW_X264_PRESET, x264Crf: DEFAULT_PREVIEW_X264_CRF,
-    audioBitrate: DEFAULT_PREVIEW_AUDIO_BITRATE, x264Threads: DEFAULT_PREVIEW_X264_THREADS,
-    timeoutMs: DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS }),
+    audioBitrate: DEFAULT_PREVIEW_AUDIO_BITRATE, x264Threads: DEFAULT_PREVIEW_X264_THREADS }),
   peaks: Object.freeze({ sampleRateHz: DEFAULT_PEAKS_PCM_SAMPLE_RATE_HZ, peaksPerSec: DEFAULT_PREVIEW_PEAKS_PER_SEC,
     deadlineMs: DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS }),
   observations: Object.freeze({ automatic: CLIP_AUTO_LAYOUT_ENGINE, screen: SCREEN_LAYOUT_ENGINE_VERSION, split: "explicit-split-v1",
@@ -31,7 +31,7 @@ export const CLIP_PREPARATION_POLICY = Object.freeze({
 export async function clipPreparationEngineHash(toolchainFingerprint: string): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(toolchainFingerprint)) throw new Error("clip_preparation_engine_invalid");
   const bytes = new TextEncoder().encode(JSON.stringify({ toolchainFingerprint, policy: CLIP_PREPARATION_POLICY }));
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(bytes);
 }
 
 export interface ClipPreviewWindow {

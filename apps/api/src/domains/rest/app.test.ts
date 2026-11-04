@@ -20,7 +20,8 @@ import { workspaceService, WorkspaceOperationError, type WorkspaceActorContext }
 import { type RateLimitResult } from "@narriflow/services/rate-limit";
 import { buildGenerationContentPack } from "@narriflow/validators";
 import { Hono } from "hono";
-import { createRestRoutes, REST_AUTH_FAILURE_RATE_LIMIT } from "./routes";
+import { AUTH_FAILURE_RATE_LIMIT as REST_AUTH_FAILURE_RATE_LIMIT } from "@narriflow/services/auth-failure-throttle";
+import { createRestRoutes } from "./routes";
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const WORKSPACE_ID = "00000000-0000-4000-8000-000000000002";
@@ -309,7 +310,7 @@ describe("REST v1 idempotency and errors", () => {
 
   test("errors carry a stable code, a safe message, and the request ID", bindServiceTestEnvironment(async () => {
     spy(projectService, "getProjectSnapshot").mockRejectedValueOnce(new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "Project not found" }))
-      .mockRejectedValueOnce(new Error("connection string postgres://secret leaked"));
+      .mockRejectedValueOnce(new Error("connection failed postgres://user:secretpw@db.internal/app password=secretpw"));
     const { call, logs } = harness();
     const missing = await call(`/projects/${PROJECT_ID}`);
     expect(missing.status).toBe(404);
@@ -320,7 +321,11 @@ describe("REST v1 idempotency and errors", () => {
     const text = await broken.text();
     expect(text).not.toContain("secret");
     expect(JSON.parse(text)).toMatchObject({ error: "internal_error" });
-    expect(JSON.stringify(logs)).not.toContain("secret");
+    // The log names the failure for diagnosis but redacts credentials.
+    const failure = logs.find((entry) => entry.message === "rest_api_failed") as { error: { name: string; message: string } };
+    expect(failure.error).toMatchObject({ name: "Error" });
+    expect(failure.error.message).toContain("connection failed");
+    expect(JSON.stringify(logs)).not.toContain("secretpw");
     const invalid = await call("/projects/not-a-uuid");
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: "invalid_request", details: { issues: [expect.objectContaining({ path: "id" })] } });

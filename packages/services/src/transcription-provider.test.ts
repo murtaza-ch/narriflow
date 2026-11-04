@@ -73,3 +73,14 @@ test("provider probe throttling keeps Auto without retrying or failing the full 
   expect(await provider.probe({ wav })).toMatchObject({ pinned: null, reason: "provider_http_429" });
   expect(requests).toBe(1);
 });
+
+test("a 429 from Scribe carries its Retry-After so the next attempt waits that long", async () => {
+  const limited = () => new Response("{}", { status: 429, headers: { "retry-after": "90" } });
+  const submitting = createScribeProvider({ apiKey: "secret", webhookId: "webhook", fetch: async () => limited() });
+  await expect(submitting.submit({ reference, sourceAudioUrl: "https://audio.example/source.m4a?grant=1", languageCode: null }))
+    .rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable", retryAfterMs: 90_000 });
+  const reading = createScribeProvider({ apiKey: "secret", webhookId: "webhook", fetch: async () => limited() });
+  expect(await reading.result("transcript")).toMatchObject({ kind: "transient", failure: { retryAfterMs: 90_000 } });
+  const silent = createScribeProvider({ apiKey: "secret", webhookId: "webhook", fetch: async () => new Response("{}", { status: 429 }) });
+  expect(await silent.result("transcript")).toMatchObject({ kind: "transient", failure: { retryAfterMs: null } });
+});

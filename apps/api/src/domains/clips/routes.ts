@@ -64,6 +64,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // artifact would outlive a regenerated proxy.
     .get(
       "/projects/:id/clips/:clipId/preview-peaks",
+      uuidParams("id", "clipId"),
       async (c) => {
         const peaks = await clipService.getClipPreviewPeaks(
           getActor(c),
@@ -80,6 +81,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // because each call is a real LLM completion.
     .post(
       "/projects/:id/clips/:clipId/title-suggestions",
+      uuidParams("id", "clipId"),
       async (c) => {
         const titles = await clipService.suggestClipTitles(
           getActor(c),
@@ -97,6 +99,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // of R2 copies.
     .post(
       "/projects/:id/clips/:clipId/duplicate",
+      uuidParams("id", "clipId"),
       requireIdempotencyKey(),
       async (c) => {
         const { clip, replayed } = await clipsCommands.duplicateClip(
@@ -119,6 +122,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // a retry after a lost response return the accepted clip.
     .post(
       "/projects/:id/clips/:clipId/create-from-selection",
+      uuidParams("id", "clipId"),
       requireIdempotencyKey(),
       validate("json", createClipFromSelectionSchema),
       async (c) => {
@@ -164,6 +168,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // `clip_has_scheduled_posts` while scheduled or publishing posts exist.
     .delete(
       "/projects/:id/clips/:clipId",
+      uuidParams("id", "clipId"),
       async (c) => {
         await clipService.deleteClip(getActor(c), c.req.param("id"), c.req.param("clipId"));
         return c.json({ ok: true }, 200);
@@ -474,6 +479,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/clips/:clipId/download",
+      uuidParams("id", "clipId"),
       validate("query", clipDownloadQuerySchema),
       async (c) => {
         const result = await clipService.getClipDownloadUrl(

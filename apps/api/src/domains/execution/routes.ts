@@ -1,5 +1,6 @@
 import { EXECUTION_COMMAND_MAX_BYTES, executionCommandSchema, executionDispositionSchema,
   type ExecutionCommand, type ExecutionDisposition } from "@narriflow/validators/execution";
+import { readBoundedBody } from "@narriflow/services/bounded-body";
 import { ExecutorControlError } from "@narriflow/services/executor-control";
 import { ExecutionStorageError } from "@narriflow/services/execution-storage";
 import { executionTransferCommandSchema, executionTransferDispositionSchema,
@@ -23,23 +24,9 @@ export interface ExecutionRouteDependencies {
 export class CommandTooLarge extends Error {}
 export async function readCommandBody(request: Request, maxBytes = EXECUTION_COMMAND_MAX_BYTES) {
   if (Number(request.headers.get("Content-Length")) > maxBytes) throw new CommandTooLarge();
-  const reader = request.body?.getReader();
-  if (!reader) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) break;
-      size += part.value.byteLength;
-      if (size > maxBytes) { await reader.cancel(); throw new CommandTooLarge(); }
-      chunks.push(part.value);
-    }
-  } finally { reader.releaseLock(); }
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return body;
+  const read = await readBoundedBody(request.body, maxBytes);
+  if (read.kind === "too_large") throw new CommandTooLarge();
+  return read.bytes;
 }
 
 export function executionCommandHandler(deps: ExecutionRouteDependencies, kind: "command" | "transfer") {

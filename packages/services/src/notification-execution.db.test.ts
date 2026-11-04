@@ -37,14 +37,14 @@ suite('Targeted email notification delivery',()=>{
  test('terminal source facts, notification intent and dispatch roll back or commit together',async()=>{
   const f=await fixture();const run=await db.workflowRun.create({data:{projectId:f.project.id,stage:'clip_rendering',status:'completed',idempotencyKey:crypto.randomUUID()}});
   const input={projectId:f.project.id,workflowRunId:run.id,attemptId:crypto.randomUUID(),stage:'clip_rendering' as const,status:'completed' as const,progress:100,errorCode:null,transition:'mail_gate',notification:{kind:'clip_render.completed' as const,projectId:f.project.id,workflowRunId:run.id,requested:2,succeeded:2,failed:0,superseded:0}};
-  await expect(db.$transaction(async tx=>{await appendWorkflowEvent(tx,input,{progressRequired:true,analyticsEnabled:false});throw Error('terminal_mail_rollback');})).rejects.toThrow('terminal_mail_rollback');
+  await expect(db.$transaction(async tx=>{await appendWorkflowEvent(tx,input);throw Error('terminal_mail_rollback');})).rejects.toThrow('terminal_mail_rollback');
   expect(await db.notificationLedger.count({where:{sourceId:run.id}})).toBe(0);expect(await db.workflowEvent.count({where:{workflowRunId:run.id}})).toBe(0);
-  await db.$transaction(tx=>appendWorkflowEvent(tx,input,{progressRequired:true,analyticsEnabled:false}));
+  await db.$transaction(tx=>appendWorkflowEvent(tx,input));
   const ledger=await db.notificationLedger.findFirstOrThrow({where:{sourceId:run.id}});
   expect(ledger).toMatchObject({status:'pending',facts:{clipCount:2,reason:null}});
   expect(await db.executionDispatch.count({where:{subjectKind:'notification',subjectId:`em1.p.${ledger.id}`}})).toBe(1);
   expect(await db.workflowEvent.findFirstOrThrow({where:{workflowRunId:run.id}})).toMatchObject({notificationRequired:true,notificationDeliveredAt:expect.any(Date)});
-  await db.$transaction(tx=>appendWorkflowEvent(tx,input,{progressRequired:true,analyticsEnabled:false}));
+  await db.$transaction(tx=>appendWorkflowEvent(tx,input));
   expect(await db.notificationLedger.count({where:{sourceId:run.id}})).toBe(1);
  });
  test('review delivery uses its own exact target and original provider key',async()=>{

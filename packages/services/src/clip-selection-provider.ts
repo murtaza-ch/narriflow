@@ -1,4 +1,6 @@
-import { CLIP_DETECTION_JSON_SCHEMA, extractResponseText } from "./clip-selection-policy";
+import { CLIP_DETECTION_JSON_SCHEMA } from "./clip-selection-policy";
+import { openAiResponseText } from "./openai-responses";
+import { parseRetryAfterMs } from "./retry-after";
 import { WorkflowFailure, workflowHttpFailureDisposition } from "./workflow-attempt-contract";
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -44,15 +46,13 @@ export function createClipSelectionProvider(config: { apiKey: string; model: str
       if (!response.ok || !payload) {
         const failure = classifyOpenAiHttpFailure(response.status, payload);
         if (failure.disposition === "permanent") throw new WorkflowFailure(failure.code, "permanent", "OpenAI rejected clip selection");
-        const now = clock().getTime(), header = response.headers.get("retry-after");
-        const seconds = header && /^\d+(?:\.\d+)?$/.test(header) ? Number(header) : NaN;
-        const specified = Number.isFinite(seconds) ? now + seconds * 1000 : header ? Date.parse(header) : NaN;
-        return { kind: "retry", dueAt: new Date(Math.min(Math.max(now, Number.isFinite(specified) ? specified : now + 30_000), input.operationDeadlineAt.getTime())),
+        const now = clock().getTime(), waitMs = parseRetryAfterMs(response.headers.get("retry-after"), clock());
+        return { kind: "retry", dueAt: new Date(Math.min(waitMs === null ? now + 30_000 : now + waitMs, input.operationDeadlineAt.getTime())),
           code: failure.code, providerRequestId, rateLimitHeaders };
       }
       if (payload.status === "incomplete") throw new WorkflowFailure("clip_detection_truncated", "retryable", "OpenAI response was incomplete");
       let content: string | null;
-      try { content = extractResponseText(payload); } catch { content = null; }
+      try { content = openAiResponseText(payload); } catch { content = null; }
       if (!content) return { kind: "retry", dueAt: new Date(Math.min(clock().getTime() + 30_000, input.operationDeadlineAt.getTime())), code: "openai_request_failed", providerRequestId, rateLimitHeaders };
       const measured = payload.usage?.total_tokens ?? (payload.usage?.input_tokens ?? 0) + (payload.usage?.output_tokens ?? 0);
       const tokensUsed = Number.isSafeInteger(measured) && measured >= 0 ? measured : 0;

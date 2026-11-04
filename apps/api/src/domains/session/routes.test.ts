@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
+import { selectListedWorkspace, type AppUser, type WorkspaceActorContext } from "@narriflow/auth";
 import { WorkspaceOperationError } from "@narriflow/services/workspace.service";
 import { createRequestPolicyRuntime } from "../../http/request-policy-runtime";
 import { createInventoryApp } from "../../test-app";
@@ -59,15 +59,17 @@ function deps(over: Partial<SessionRouteDeps> = {}): SessionRouteDeps {
         ? context(RESTRICTED, { status: "restricted", pricingTier: "business" })
         : context(PERSONAL, { workspaceSelectionChanged: hint !== undefined }),
     ),
+    selectListedWorkspace,
     selectWorkspaceForActor: mock(async (_userId, workspaceId) =>
       workspaceId === RESTRICTED || workspaceId === PERSONAL ? context(workspaceId) : null,
     ),
     listUserWorkspaces: mock(async () => [
-      { role: "owner", workspace: { id: PERSONAL, name: "Personal", avatarStorageKey: null, personalOwnerUserId: user.id, status: "active", pricingTier: "free" } },
-      { role: "editor", workspace: { id: RESTRICTED, name: "Team", avatarStorageKey: null, personalOwnerUserId: null, status: "restricted", pricingTier: "business" } },
+      { role: "owner", workspace: { id: PERSONAL, name: "Personal", ownerUserId: user.id, avatarStorageKey: null, personalOwnerUserId: user.id, status: "active", pricingTier: "free" } },
+      { role: "owner", workspace: { id: RESTRICTED, name: "Team", ownerUserId: user.id, avatarStorageKey: null, personalOwnerUserId: null, status: "restricted", pricingTier: "business" } },
     ]) as never,
     workspaceService: {
       getAvatarUrls: mock(async () => ({})),
+      presignAvatarUrls: mock(async () => ({})),
       getInvitePreview: mock(async (token: string) =>
         token === "t".repeat(24)
           ? { email: "member@example.com", role: "editor", expiresAt: new Date("2030-01-01T00:00:00Z"), workspace: { name: "Team", status: "active" } }
@@ -78,7 +80,7 @@ function deps(over: Partial<SessionRouteDeps> = {}): SessionRouteDeps {
       acceptInvite: mock(async () => ({ workspaceId: RESTRICTED, workspaceName: "Team", role: "editor" })),
     } as never,
     projectService: {
-      getUsageSummary: mock(async () => ({
+      getAuthorizedUsageSummary: mock(async () => ({
         tier: "creator",
         usedCredits: 5,
         reservedCredits: 1,
@@ -141,18 +143,20 @@ describe("GET /api/session/bootstrap", () => {
     const response = await app(routeDeps).request("/api/session/bootstrap", { headers: headers({ "x-workspace-id": PERSONAL }) });
     const body = await response.json();
     expect(body.usage).toMatchObject({ tier: "creator", remainingCredits: 94, renewsAt: "2030-02-01T00:00:00.000Z" });
-    expect(routeDeps.projectService.getUsageSummary).toHaveBeenCalledWith({ actorUserId: "user-1", workspaceId: PERSONAL });
+    expect(routeDeps.projectService.getAuthorizedUsageSummary).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: PERSONAL }));
   });
 
   test("a Workspace the member cannot view carries no credits and never reads them", async () => {
     const routeDeps = deps({
-      resolveWorkspaceContext: mock(async () => context(RESTRICTED, { role: "viewer", status: "pending_payment" })) as never,
+      listUserWorkspaces: mock(async () => [
+        { role: "viewer", workspace: { id: RESTRICTED, name: "Team", ownerUserId: "someone-else", avatarStorageKey: null, personalOwnerUserId: null, status: "pending_payment", pricingTier: "business" } },
+      ]) as never,
     });
-    const response = await app(routeDeps).request("/api/session/bootstrap", { headers: headers() });
+    const response = await app(routeDeps).request("/api/session/bootstrap", { headers: headers({ "x-workspace-id": RESTRICTED }) });
     const body = await response.json();
     expect(body.capabilities["content.view"]).toBe(false);
     expect(body.usage).toBeNull();
-    expect(routeDeps.projectService.getUsageSummary).not.toHaveBeenCalled();
+    expect(routeDeps.projectService.getAuthorizedUsageSummary).not.toHaveBeenCalled();
   });
 
   test("identity-only clients send the saved selection as a query parameter", async () => {
@@ -161,9 +165,22 @@ describe("GET /api/session/bootstrap", () => {
       headers: headers(),
     });
     expect(response.headers.get("x-workspace-id")).toBe(RESTRICTED);
-    expect(routeDeps.resolveWorkspaceContext).toHaveBeenCalledWith({ id: "user-1" }, RESTRICTED);
     const unknown = await app().request("/api/session/bootstrap?other=1", { headers: headers() });
     expect(unknown.status).toBe(400);
+  });
+
+  test("takes the Workspace and avatars from the listing, and provisions only on first use", async () => {
+    const routeDeps = deps();
+    await app(routeDeps).request("/api/session/bootstrap", { headers: headers({ "x-workspace-id": RESTRICTED }) });
+    expect(routeDeps.resolveWorkspaceContext).not.toHaveBeenCalled();
+    expect(routeDeps.workspaceService.getAvatarUrls).not.toHaveBeenCalled();
+    expect(routeDeps.listUserWorkspaces).toHaveBeenCalledTimes(1);
+
+    const listings = [[], await deps().listUserWorkspaces("user-1")];
+    const firstUse = deps({ listUserWorkspaces: mock(async () => listings.shift() ?? []) as never });
+    const response = await app(firstUse).request("/api/session/bootstrap", { headers: headers() });
+    expect(firstUse.resolveWorkspaceContext).toHaveBeenCalledWith({ id: "user-1" }, undefined);
+    expect((await response.json()).memberships).toHaveLength(2);
   });
 
   test("a removed selection falls back to the personal Workspace and says so", async () => {

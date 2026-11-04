@@ -38,6 +38,7 @@ function fakes(overrides: Record<string, unknown> = {}) {
     },
     workspaceLibraryService: {
       listProjects: track("listProjects", page),
+      listRecentProjects: track("listRecentProjects", page.items),
       listFolders: track("listFolders", [
         { id: "f1", name: "Launch", createdAt: new Date("2026-10-01T00:00:00Z"), _count: { projects: 2 } },
       ]),

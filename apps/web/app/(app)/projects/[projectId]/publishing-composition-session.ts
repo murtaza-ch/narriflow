@@ -6,6 +6,7 @@ import {
 	savedPublishingCopiesSchema,
 	savedPublishingGenerationRequestsSchema,
 	SOCIAL_PROVIDER_CAPABILITIES,
+	socialCaptionLength,
 	type BulkSocialScheduleRequest,
 	type BulkSocialScheduleOutcome,
 	type ClipExportSnapshot,
@@ -329,7 +330,7 @@ export function createPublishingCompositionSession(dependencies: {
 			result.push("Prepare a compatible video.");
 		if (draft.deliveryMode === "direct" && !draft.caption.trim())
 			result.push("Write a description.");
-		if (draft.caption.trim().length > SOCIAL_PROVIDER_CAPABILITIES[pair.account.platform].textLimit)
+		if (socialCaptionLength(pair.account.platform, draft.caption.trim()) > SOCIAL_PROVIDER_CAPABILITIES[pair.account.platform].textLimit)
 			result.push("Description exceeds the character limit.");
 		if (input.optionErrors?.[pair.account.id]) result.push(input.optionErrors[pair.account.id]!);
 		if (pair.account.platform === "tiktok") {

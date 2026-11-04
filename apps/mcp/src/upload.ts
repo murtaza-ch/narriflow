@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { parseArgs } from "node:util";
-import { buildGenerationContentPack, buildGenerationContext, finishingSettingsSchema, generationSettingsSchema, openUploadSessionSchema, type OpenUploadSessionInput, type UploadMimeType } from "@narriflow/validators";
+import { buildGenerationContentPack, buildGenerationContext, finishingSettingsSchema, generationSettingsSchema, openUploadSessionSchema, uploadMimeTypeByExtension, type OpenUploadSessionInput, type UploadMimeType } from "@narriflow/validators";
 import type { FinalizeUploadSessionOutcome, GrantUploadPartsOutcome, OpenUploadSessionOutcome, ReadUploadSessionOutcome } from "@narriflow/services/upload-session.service";
 
 export interface UploadVideoOptions {
@@ -26,8 +26,6 @@ export interface UploadVideoOptions {
   onProgress?: (completedBytes: number, totalBytes: number) => void;
 }
 
-const mimeTypes: Record<string, UploadMimeType> = { ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac" };
-
 /** Resumability belongs to Upload Sessions. Re-running this command with the
  * same key and unchanged file resumes its verified storage inventory. */
 export async function uploadVideo(options: UploadVideoOptions): Promise<FinalizeUploadSessionOutcome & { recipe?: { id: string; revision: number } }> {
@@ -38,7 +36,7 @@ export async function uploadVideo(options: UploadVideoOptions): Promise<Finalize
   if (!options.apiKey.startsWith("nf_")) throw new Error("Set NARRIFLOW_API_KEY to a workspace API key");
   const file = await stat(options.filePath);
   if (!file.isFile()) throw new Error("The source must be a regular media file");
-  const contentType = options.contentType ?? mimeTypes[extname(options.filePath).toLowerCase()];
+  const contentType = options.contentType ?? uploadMimeTypeByExtension[extname(options.filePath).toLowerCase()];
   if (!contentType) throw new Error("Specify a supported media MIME type with --content-type");
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(options.filePath, { signal: options.signal })) digest.update(chunk);

@@ -1,6 +1,6 @@
 import { PRICING_TIER_ORDER, type BillingInterval, type BillingPlanChange, type PaidPricingTier, type PlanChangeQuote, type PlanChangeResult } from "@narriflow/validators";
 import { randomUUID } from "node:crypto";
-import { WorkspaceBillingAttemptLost, WorkspaceBillingError, type BillingCatalog, type WorkspaceBillingStore, type WorkspaceBillingProvider } from "./workspace-billing.service";
+import { ENDED_SUBSCRIPTION_STATUSES, WorkspaceBillingAttemptLost, WorkspaceBillingError, type BillingCatalog, type WorkspaceBillingStore, type WorkspaceBillingProvider } from "./workspace-billing.service";
 
 export interface PlanChangeItem { id?: string; priceId: string; quantity: number }
 export interface PlanChangeSubscription {
@@ -74,7 +74,7 @@ export function createWorkspacePlanChanges(dependencies: {
     if (!provider.retrievePlanChangeSubscription) throw new WorkspaceBillingError("plan_change_not_configured");
     const state = await provider.retrieveCurrentState(projection.providerCustomerId);
     if (state.customerId !== projection.providerCustomerId || state.ownership.kind !== "verified" || state.ownership.workspaceId !== workspaceId) throw new WorkspaceBillingError("customer_identity_conflict");
-    const billable = state.subscriptions.filter((subscription) => !["canceled", "incomplete_expired"].includes(subscription.status));
+    const billable = state.subscriptions.filter((subscription) => !ENDED_SUBSCRIPTION_STATUSES.has(subscription.status));
     if (billable.length !== 1) throw new WorkspaceBillingError("plan_change_conflict");
     const subscription = await provider.retrievePlanChangeSubscription(billable[0]!.id);
     if (subscription.customerId !== projection.providerCustomerId || subscription.status !== "active" || subscription.cancelAtPeriodEnd) throw new WorkspaceBillingError("plan_change_recovery_required");

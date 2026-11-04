@@ -6,7 +6,7 @@ import { withServiceEnvironment } from "./runtime-environment";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { ZoomService } from "./zoom.service";
 import { createZoomTokenCipher, ZOOM_SCOPES } from "./zoom";
-import type { ZoomApi } from "./zoom-api";
+import { ZoomRefusal, type ZoomApi } from "./zoom-api";
 const url=process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite=process.env.ALLOW_SERVERLESS_DB_TESTS==="1"&&url?describe:describe.skip;
 const config={clientId:"synthetic",clientSecret:"synthetic",webhookSecret:"synthetic",encryptionKey:"synthetic-zoom-cipher"};
@@ -47,6 +47,14 @@ suite("Bounded Zoom rotating credential ownership",()=>{
     expect(unknown.revokedAt).not.toBeNull();
     await expect(service.recordingDownload(f.input)).rejects.toMatchObject({code:"zoom_connection_unavailable"});
     expect(calls).toBe(1);
+  }));
+  test("a Zoom 4xx refusal proves nothing rotated: the claim is released and the next read retries",scoped(async()=>{
+    const f=await fixture();let calls=0;
+    const service=new ZoomService({config:()=>config,api:api(async()=>{calls++;if(calls===1)throw new ZoomRefusal("zoom_api_unavailable");return tokens;})});
+    await expect(service.recordingDownload(f.input)).rejects.toMatchObject({code:"zoom_api_unavailable"});
+    expect(await db.zoomConnection.findUniqueOrThrow({where:{id:f.connection.id}})).toMatchObject({refreshOutcomeUnknown:false,revokedAt:null,refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null});
+    expect(await service.recordingDownload(f.input)).toMatchObject({accessToken:"refreshed-access"});
+    expect(calls).toBe(2);
   }));
   test("an expired started marker requires reconnect without making a provider request",scoped(async()=>{
     const f=await fixture();let calls=0;

@@ -18,7 +18,7 @@ We rejected deriving usage from Projects because deletion refunded it; a stored 
 
 ## Consequences
 
-The usage read model reports settled, reserved, and remaining minutes, capacity in use, and the per-video cap, and every surface renders it. Upload sources are pinned before probing so the settled duration describes the processed bytes (see the 2026-10-07 amendment to [ADR 0005](0005-upload-session-intake.md)). A worker sweep releases reservations stranded by crashes but never touches completed intakes waiting for their generation handoff. A manual retry re-admits a released reservation into the current period with fresh checks. The calendar UTC month remains the contract; a billing-anchor period would be a separate decision.
+The usage read model reports settled, reserved, and remaining minutes, capacity in use, and the per-video cap, and every surface renders it. Upload sources are pinned before probing so the settled duration describes the processed bytes (see the 2026-10-07 amendment to [ADR 0005](0005-upload-session-intake.md)). The hourly maintenance sweep releases reservations stranded by crashes but never touches completed intakes waiting for their generation handoff. A matching phase settles AI image and dub reservations whose subject was deleted or whose admission crashed, so deleting a Project mid-job cannot hold a concurrency slot past the next sweep; the count stays used. A manual retry re-admits a released reservation into the current period with fresh checks. The calendar UTC month remains the contract; a billing-anchor period would be a separate decision.
 
 ## Amendment 2026-10-26: credits
 

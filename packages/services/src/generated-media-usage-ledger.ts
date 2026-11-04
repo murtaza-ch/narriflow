@@ -1,5 +1,4 @@
 import type { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   lowestTier,
   PLAN_CATALOG,
@@ -12,6 +11,8 @@ import {
 import { GeneratedMediaJobError, type GenerationUsageLedger } from "./generated-media";
 import { generatedImagePolicy, type GenerationUsagePolicy } from "./generation-usage";
 import { hasFeature, PlanRequirementError } from "./plan-features";
+import type { MaintenancePhaseHandler } from "./execution-maintenance";
+import { requirePrisma } from "./require-prisma";
 
 /**
  * Generation counts: one Workspace-owned reservation per accepted AI image
@@ -26,12 +27,6 @@ type Tx = Prisma.TransactionClient;
 export type GenerationUsageKind = "image" | "dub";
 
 const COUNTED = ["reserved", "finalized"] as const;
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
 
 /** Serializes every count admission for one Workspace. Re-entrant within a transaction. */
 export async function lockGenerationUsage(tx: Tx, workspaceId: string) {
@@ -403,57 +398,60 @@ async function settleCandidate(
   return { action: "released", reason: dub.errorCode ?? "dub_failed" };
 }
 
+/** Admission writes the subject just after the reservation; this covers the gap. */
+const SWEEP_GRACE_MS = 10 * 60_000;
+
 /**
- * Settles reservations the request paths could not: image admissions that
- * crashed before their job existed, dubs whose terminal failure was not yet
- * released, and subjects deleted while counted (kept as used). Queued,
+ * One hourly maintenance page of reservations the request paths could not
+ * settle: image admissions that crashed before their job existed, dubs whose
+ * terminal failure was not yet released, and subjects deleted while counted
+ * (kept as used), which also frees their image concurrency slot. Queued,
  * running, and waiting requests are never touched, however old.
  */
-export async function reconcileGenerationUsageReservations(now = new Date(), graceMs = 10 * 60_000) {
-  const prisma = requirePrisma();
-  const cutoff = new Date(now.getTime() - Math.max(60_000, graceMs));
-  let settled = 0;
-  let cursor: string | undefined;
-  for (let page = 0; page < 10; page += 1) {
-    const candidates = await prisma.generatedMediaUsageReservation.findMany({
-      where: { status: "reserved", createdAt: { lt: cutoff } },
-      select: { id: true, jobId: true, kind: true, workspaceId: true, attachedAt: true },
-      orderBy: { id: "asc" },
-      take: 100,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    });
-    if (candidates.length === 0) break;
-    cursor = candidates.at(-1)!.id;
-    for (const candidate of candidates) {
-      const outcome = await prisma.$transaction(async (tx) => {
-        await lockGenerationUsage(tx, candidate.workspaceId);
-        const decision = await settleCandidate(tx, candidate);
-        if (!decision) return null;
-        const result = await tx.generatedMediaUsageReservation.updateMany({
-          where: { id: candidate.id, status: "reserved" },
-          data: {
-            status: decision.action,
-            reason: decision.reason,
-            settledAt: now,
-            ...(decision.action === "finalized" ? { actualUnits: candidate.kind === "dub" ? 1 : null } : {}),
-          },
-        });
-        return result.count === 1 ? decision : null;
-      });
-      if (!outcome) continue;
-      settled += 1;
-      console.warn(JSON.stringify({
-        level: "info",
-        message: "generation_usage_reconciled",
-        reservationId: candidate.id,
-        jobId: candidate.jobId,
-        kind: candidate.kind,
-        workspaceId: candidate.workspaceId,
-        action: outcome.action,
-        reason: outcome.reason,
-      }));
-    }
-    if (candidates.length < 100) break;
+export const reconcileGenerationUsagePage: MaintenancePhaseHandler = async (tx, page) => {
+  const rows = await tx.generatedMediaUsageReservation.findMany({
+    where: {
+      status: "reserved",
+      createdAt: { lt: new Date(page.cutoff.getTime() - SWEEP_GRACE_MS) },
+      ...(page.after
+        ? { OR: [{ createdAt: { gt: page.after.at } }, { createdAt: page.after.at, id: { gt: page.after.id } }] }
+        : {}),
+    },
+    select: { id: true, jobId: true, kind: true, workspaceId: true, attachedAt: true, createdAt: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: page.limit + 1,
+  });
+  const selected = rows.slice(0, page.limit);
+  for (const workspaceId of [...new Set(selected.map((row) => row.workspaceId))].sort()) {
+    await lockGenerationUsage(tx, workspaceId);
   }
-  return settled;
-}
+  for (const candidate of selected) {
+    const decision = await settleCandidate(tx, candidate);
+    if (!decision) continue;
+    const result = await tx.generatedMediaUsageReservation.updateMany({
+      where: { id: candidate.id, status: "reserved" },
+      data: {
+        status: decision.action,
+        reason: decision.reason,
+        settledAt: page.cutoff,
+        ...(decision.action === "finalized" ? { actualUnits: candidate.kind === "dub" ? 1 : null } : {}),
+      },
+    });
+    if (result.count !== 1) continue;
+    console.warn(JSON.stringify({
+      level: "info",
+      message: "generation_usage_reconciled",
+      reservationId: candidate.id,
+      jobId: candidate.jobId,
+      kind: candidate.kind,
+      workspaceId: candidate.workspaceId,
+      action: decision.action,
+      reason: decision.reason,
+    }));
+  }
+  const last = selected.at(-1);
+  return {
+    processed: selected.length,
+    next: rows.length > page.limit && last ? { at: last.createdAt, id: last.id } : null,
+  };
+};

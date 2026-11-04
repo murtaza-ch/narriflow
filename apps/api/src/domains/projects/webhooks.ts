@@ -1,4 +1,5 @@
 import { providerAttemptReferenceSchema } from "@narriflow/validators/execution";
+import { logFailure } from "@narriflow/services/log-failure";
 import { scribeCallbackFailure } from "@narriflow/services/scribe-errors";
 import { type FinalizeScribeTranscriptInput } from "@narriflow/services/scribe-transcript";
 import { type ProviderAttemptReference, type ProviderIds, type ProviderSettlementResult } from "@narriflow/services/workflow-run-lifecycle";
@@ -141,9 +142,7 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
         return c.json({ received: true, disposition: result.kind }, 200);
       }
     } catch (error) {
-      log("error", "elevenlabs_webhook_settlement_failed", {
-        errorName: error instanceof Error ? error.name : typeof error,
-      });
+      logFailure("elevenlabs_webhook_settlement_failed", error);
       return c.json({ error: "elevenlabs_webhook_failed" }, 500);
     }
     return ignored("unknown_type", { type: typeof type === "string" ? type.slice(0, 64) : typeof type });

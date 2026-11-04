@@ -11,10 +11,8 @@ import { CodeBlock } from "@narriflow/ui/components/code-block";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { useApiRuntime } from "@/app/_components/api-provider";
 import { developerFailureMessage } from "./failure-message";
+import { formatUtcDateTime } from "@/lib/format";
 
-// A fixed locale and zone keep server and client renders identical.
-const formatTime = (iso: string) =>
-  `${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(iso))} UTC`;
 
 export function CallbackSecretPanel({
   scope,
@@ -50,8 +48,8 @@ export function CallbackSecretPanel({
               Callback signing secret
             </Text>
             <Text fontSize="13px" color="fg.muted">
-              {status.current ? `Created ${formatTime(status.current.createdAt)}` : "Not created. Requests with a callback URL are refused until it exists."}
-              {status.previousRetiresAt ? `. The previous secret signs until ${formatTime(status.previousRetiresAt)}.` : ""}
+              {status.current ? `Created ${formatUtcDateTime(status.current.createdAt)}` : "Not created. Requests with a callback URL are refused until it exists."}
+              {status.previousRetiresAt ? `. The previous secret signs until ${formatUtcDateTime(status.previousRetiresAt)}.` : ""}
             </Text>
           </Stack>
         </Flex>

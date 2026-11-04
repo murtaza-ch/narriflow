@@ -11,6 +11,8 @@ const user = {
   imageUrl: "https://example.test/avatar.png",
   lastSignInAt: new Date(),
   defaultBrandTemplateId: "default-template",
+  // Long unrefreshed, so an incomplete profile is due another Clerk lookup.
+  updatedAt: new Date("2026-01-01T00:00:00Z"),
 } as User;
 const workspace = {
   id: "personal-workspace",
@@ -180,6 +182,7 @@ const prisma = {
   },
   $transaction: mock(async (operations: Array<Promise<unknown>> | ((tx: unknown) => Promise<unknown>)) =>
     typeof operations === "function" ? operations(prisma) : Promise.all(operations)),
+  $queryRaw: mock(async () => []),
   $executeRaw: mock(async () => {
     calls.push("identity-lock");
     return 0;
@@ -394,6 +397,14 @@ describe("App User for a verified Clerk identity", () => {
     });
   });
 
+  test("an incomplete profile that was refreshed recently does not ask Clerk again", async () => {
+    storedUser = { ...user, lastSignInAt: null, updatedAt: new Date() } as User;
+    directoryOutcome = { user: clerkPayload };
+    const returned = await getAppUserForClerkIdentity(user.clerkId, directory);
+    expect(directoryLookups).toEqual([]);
+    expect(returned.lastSignInAt).toBeNull();
+  });
+
   test("an incomplete profile refreshes synchronously from the Backend API", async () => {
     storedUser = { ...user, lastSignInAt: null } as User;
     directoryOutcome = { user: clerkPayload };
@@ -463,7 +474,7 @@ describe("Clerk user sync uniqueness races", () => {
     userUpsertFailures = [p2002()];
     emailOwner = { ...user, id: "other-user", clerkId: "clerk-other", deletedAt: null } as User;
     directoryOutcome = { user: {} };
-    await expect(syncClerkUserPayload(clerkPayload, directory)).rejects.toMatchObject({ code: "P2002" });
+    await expect(syncClerkUserPayload(clerkPayload, directory)).rejects.toMatchObject({ name: "ClerkEmailConflictError", clerkId: "clerk-actor" });
     expect(directoryLookups).toEqual(["clerk-other"]);
     expect(calls.some((call) => call.startsWith("user-soft-delete"))).toBe(false);
   });

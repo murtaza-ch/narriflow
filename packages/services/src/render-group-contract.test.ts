@@ -165,3 +165,13 @@ describe("Render parent settlement", () => {
     expect(parent([terminal({ status: "running", leaseExpiresAt: now })])).toEqual({ eligible: false, reason: "unsettled_groups" });
   });
 });
+
+test("uncharged failures back off exponentially without spending a charged attempt", () => {
+  const databaseNow = new Date("2026-11-04T00:00:00Z");
+  const members = [{ clipRenderId: "a", status: "pending" as const, failureDisposition: null }];
+  const delay = (unchargedAttemptCount: number, chargedAttemptCount = 0) =>
+    deriveRenderGroupSettlement({ members, chargedAttemptCount, databaseNow, unchargedAttemptCount }).nextAttemptAt!.getTime() - databaseNow.getTime();
+  expect([1, 2, 3].map(count => delay(count))).toEqual([5_000, 10_000, 20_000]);
+  expect(delay(0)).toBe(0);
+  expect(delay(1, 1)).toBe(30_000);
+});

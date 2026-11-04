@@ -1,5 +1,6 @@
 import { executionDispatchReferenceSchema, type ExecutionDispatchKind, type ExecutionDispatchReference, type ExecutionSubject } from "@narriflow/validators/execution";
 import { Prisma, type PrismaClient, type ExecutionDispatch as DispatchRow } from "@prisma/client";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 type QueryClient = Pick<Tx, "$queryRaw">;
@@ -81,6 +82,12 @@ export function executionDispatchContinuationId(reference: { dispatchId: string 
   return `nf_dispatch_${reference.dispatchId}`;
 }
 
+/** Owns redelivery of one committed obligation. It never runs the domain command. */
+export function executionDispatchRetryId(reference: { dispatchId: string }): string {
+  validateId(reference.dispatchId);
+  return `nf_retry_${reference.dispatchId}`;
+}
+
 export interface ExecutionDispatchRecord {
   reference: ExecutionDispatchReference;
   deliveryKey: string;
@@ -105,11 +112,6 @@ async function epoch(db: QueryClient, lock = false): Promise<number> {
   return rows[0].epoch;
 }
 
-async function databaseNow(db: QueryClient): Promise<Date> {
-  const [row] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-  if (!row) throw new ExecutionDispatchError("epoch_unavailable");
-  return row.now;
-}
 
 async function asRecord(row: DispatchRow): Promise<ExecutionDispatchRecord> {
   const reference = executionDispatchReferenceSchema.parse({
@@ -169,6 +171,13 @@ export async function appendExecutionDispatch(tx: Tx, input: AppendExecutionDisp
     throw new ExecutionDispatchError("dispatch_conflict");
   }
   return asRecord(existing);
+}
+
+/** A retry may compute a later due time for the same obligation. The first one
+ * stands; every other field must still match exactly. */
+export async function appendStableExecutionDispatch(tx: Tx, input: AppendExecutionDispatchInput): Promise<ExecutionDispatchRecord> {
+  const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: (await executionDispatchIdentity(input)).deliveryKey }, select: { dueAt: true } });
+  return appendExecutionDispatch(tx, { ...input, dueAt: existing?.dueAt ?? input.dueAt });
 }
 
 /** Bounded fan-out has the same immutable identity checks as a single append,

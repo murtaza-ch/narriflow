@@ -8,6 +8,7 @@ import {appendExecutionDispatch,readExecutionDispatch} from "./execution-dispatc
 import {collectExecutionDispatch} from "./execution-dispatch-runtime";
 import {lockWorkspaceUsage} from "./processing-usage";
 import {accessibleProjectWhere} from "./project-access";
+import { databaseNow } from "./execution-clock";
 
 type Tx=Prisma.TransactionClient;
 export type NotificationTarget={kind:'project'|'review'|'grant'|'webhook';id:string};
@@ -40,7 +41,6 @@ async function update(tx:Tx,target:NotificationTarget,data:Update){
  else await tx.webhookDisabledNotificationLedger.update({where:{id:target.id},data});
 }
 function hash(target:NotificationTarget,value:View){return createHash('sha256').update(JSON.stringify(['notification-delivery-v1',identity(target),value.row.deploymentEpoch,value.row.generation,value.identity,value.row.operationDeadlineAt.toISOString()])).digest('hex');}
-async function clock(tx:Tx){const [value]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;if(!value)throw Error('notification_clock_unavailable');return value.now;}
 async function lockLeaf(tx:Tx,target:NotificationTarget){
  if(target.kind==='project')await tx.$queryRaw`SELECT id FROM "NotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
  else if(target.kind==='review') await tx.$queryRaw`SELECT id FROM "ReviewNotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
@@ -77,7 +77,7 @@ async function current(tx:Tx,reference:ExecutionDispatchReference,owner?:string)
  const admission=await readExecutionAdmission(tx),record=await readExecutionDispatch(tx,reference.dispatchId);
  if(admission.epoch!==reference.deploymentEpoch||!record||JSON.stringify(record.reference)!==JSON.stringify(reference))return null;
  const initial=await view(tx,target);if(!initial)return null;await lock(tx,target,initial);
- const value=(await view(tx,target))!,now=await clock(tx),row=value.row;
+ const value=(await view(tx,target))!,now=await databaseNow(tx),row=value.row;
  if(row.deploymentEpoch!==reference.deploymentEpoch||row.generation!==reference.generation||hash(target,value)!==reference.inputHash)return null;
  const context=target.kind==='grant'?await readGrantNotificationContext(tx,target.id,now):target.kind==='webhook'?await readWebhookNotificationContext(tx,target.id):null;
  const available=(target.kind==='grant'||target.kind==='webhook')?context!==null&&(!row.deliveryInputHash||(row as {deliveryContextFingerprint:string}).deliveryContextFingerprint===context.contextFingerprint):Boolean(await tx.project.findFirst({where:{id:value.projectId!,workspaceId:value.workspaceId,...accessibleProjectWhere(now),workspace:{status:'active'}},select:{id:true}}));
@@ -176,7 +176,7 @@ export async function recoverNotificationDispatchIds(tx:Tx,value:unknown){
 export async function retryNotificationDeliveryWithinTransaction(tx:Tx,target:NotificationTarget,scope:{workspaceId:string;projectId:string}){
  const admission=await readExecutionAdmission(tx),initial=await view(tx,target);
  if(!initial||initial.workspaceId!==scope.workspaceId||initial.projectId!==scope.projectId)return false;
- await lock(tx,target,initial);const value=(await view(tx,target))!,now=await clock(tx);
+ await lock(tx,target,initial);const value=(await view(tx,target))!,now=await databaseNow(tx);
  if(value.row.deploymentEpoch!==admission.epoch||value.row.status!=='failed'||value.row.operationDeadlineAt<=now)return false;
  if(!admission.admissionOpen)throw Error('notification_retry_admission_closed');
  await update(tx,target,{status:'pending',generation:value.row.generation+1,attemptCount:0,claimToken:null,leaseExpiresAt:null,submissionStartedAt:null,nextAttemptAt:now,failureCode:null});
@@ -195,7 +195,7 @@ export async function recoverProjectNotificationDeliveries(tx:Tx,input:{projectI
 /** A system pause accepts one workspace notice in the same transaction. No
  * latest-grant lookup, fake Project, provider request, or new retry core. */
 export async function appendGrantPauseNotificationIntent(tx:Tx,input:{workspaceId:string;grantId:string;pauseEventId:string;grantRevision:number;reason:string}){
- const {epoch}=await readExecutionAdmission(tx),at=await clock(tx);
+ const {epoch}=await readExecutionAdmission(tx),at=await databaseNow(tx);
  const row=await tx.grantPauseNotificationLedger.upsert({where:{grantId_grantRevision:{grantId:input.grantId,grantRevision:input.grantRevision}},update:{},create:{...input,deploymentEpoch:epoch,createdAt:at,nextAttemptAt:at,operationDeadlineAt:new Date(at.getTime()+23*3600_000)}});
  if(row.workspaceId!==input.workspaceId||row.pauseEventId!==input.pauseEventId||row.reason!==input.reason)throw Error('grant_notification_intent_conflict');
  await appendNotificationDelivery(tx,{kind:'grant',id:row.id});return row;
@@ -205,7 +205,7 @@ export async function appendGrantPauseNotificationIntent(tx:Tx,input:{workspaceI
  * transaction. Repeated acceptance repairs only the original bounded intent. */
 export async function appendWebhookDisabledNotificationIntent(tx:Tx,sub:{id:string;workspaceId:string;disableRevision:number;disabledReason:string|null;urlHost:string}){
  if(sub.disableRevision<1||!sub.disabledReason)throw Error('webhook_notification_intent_invalid');
- const {epoch}=await readExecutionAdmission(tx),at=await clock(tx);
+ const {epoch}=await readExecutionAdmission(tx),at=await databaseNow(tx);
  const row=await tx.webhookDisabledNotificationLedger.upsert({where:{webhookId_disableRevision:{webhookId:sub.id,disableRevision:sub.disableRevision}},update:{},create:{workspaceId:sub.workspaceId,webhookId:sub.id,disableRevision:sub.disableRevision,reason:sub.disabledReason,urlHost:sub.urlHost,deploymentEpoch:epoch,createdAt:at,nextAttemptAt:at,operationDeadlineAt:new Date(at.getTime()+23*3600_000)}});
  if(row.workspaceId!==sub.workspaceId||row.reason!==sub.disabledReason||row.urlHost!==sub.urlHost)throw Error('webhook_notification_intent_conflict');
  await appendNotificationDelivery(tx,{kind:'webhook',id:row.id});return row;

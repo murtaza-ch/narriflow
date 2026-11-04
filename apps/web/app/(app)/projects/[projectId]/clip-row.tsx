@@ -18,11 +18,11 @@ import {
 	invalidateProjectClips,
 } from "@narriflow/api-client/clips";
 import { MediaWell } from "@narriflow/ui/components/media-well";
-import { EditClipLengthDialog } from "./edit-clip-length-dialog";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
+import { toaster } from "@narriflow/ui/components/toaster";
 import {
 	clipAspectRatioOptions,
 	type ClipAspectRatio,
@@ -56,6 +56,13 @@ import { renderFailureMessage } from "./render-status";
 import { LockedButton } from "../../_components/upgrade";
 
 /** Width/height of the tallest preview format — the media stage's shape. */
+// Only opened clips need the editor. Its code is fetched when the button is
+// first approached, so opening it still feels immediate. A failed fetch is
+// reported on the button, never thrown into the page.
+type BoundariesEditor = typeof import("./edit-clip-length-dialog").EditClipLengthDialog;
+const loadBoundariesEditor = () => import("./edit-clip-length-dialog").then((m) => m.EditClipLengthDialog);
+const prefetchBoundariesEditor = () => void loadBoundariesEditor().catch(() => {});
+
 const PREVIEW_STAGE_RATIO = Math.min(
 	...clipAspectRatioOptions.map((option) => option.width / option.height),
 );
@@ -257,6 +264,29 @@ export function ClipRow({
 	const searchParams = useSearchParams();
 	const isGallery = searchParams.get("view") !== "desk";
 	const [editingBoundaries, setEditingBoundaries] = useState(false);
+	// The editor component once its code has arrived; kept mounted so closing animates and reopening is instant.
+	const [BoundariesEditor, setBoundariesEditor] = useState<BoundariesEditor | null>(null);
+	const [loadingBoundariesEditor, setLoadingBoundariesEditor] = useState(false);
+	const openBoundariesEditor = useCallback(() => {
+		if (BoundariesEditor) {
+			setEditingBoundaries(true);
+			return;
+		}
+		setLoadingBoundariesEditor(true);
+		loadBoundariesEditor()
+			.then((component) => {
+				setBoundariesEditor(() => component);
+				setEditingBoundaries(true);
+			})
+			.catch(() => {
+				toaster.create({
+					type: "error",
+					title: "Couldn't open the editor",
+					description: "Check your connection and try again.",
+				});
+			})
+			.finally(() => setLoadingBoundariesEditor(false));
+	}, [BoundariesEditor]);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [selectedAspectRatio, setSelectedAspectRatio] =
 		useState<ClipAspectRatio>(() => getInitialAspectRatio(clip));
@@ -1027,9 +1057,12 @@ export function ClipRow({
 									variant="ghost"
 									aria-label="Trim or extend clip"
 									title="Trim / Extend"
-									onClick={() => setEditingBoundaries(true)}
+									onPointerEnter={prefetchBoundariesEditor}
+									onFocus={prefetchBoundariesEditor}
+									disabled={loadingBoundariesEditor}
+									onClick={openBoundariesEditor}
 								>
-									<Scissors size={16} />
+									{loadingBoundariesEditor ? <Spinner size="xs" /> : <Scissors size={16} />}
 								</IconButton>
 							) : null}
 						</Flex>
@@ -1050,30 +1083,32 @@ export function ClipRow({
 						)}
 					</Stack>
 
-					<EditClipLengthDialog
-						projectId={clip.projectId}
-						clipId={clip.id}
-						clipTitle={clip.title}
-						initialStartSec={clip.startSec}
-						initialEndSec={clip.endSec}
-						wholeSource={clip.wholeSource}
-						sourceVideoUrl={sourceVideoUrl}
-						// Auto-reframe re-renders what the clip already had; a clip with
-						// no renders yet reframes into the row's selected format.
-						renderAspectRatios={
-							clip.renderVariants.filter((v) => v.hasAsset).length > 0
-								? [
-										...new Set(
-											clip.renderVariants
-												.filter((v) => v.hasAsset)
-												.map((v) => v.aspectRatio),
-										),
-									]
-								: [selectedAspectRatio]
-						}
-						open={editingBoundaries}
-						onOpenChange={setEditingBoundaries}
-					/>
+					{BoundariesEditor ? (
+						<BoundariesEditor
+							projectId={clip.projectId}
+							clipId={clip.id}
+							clipTitle={clip.title}
+							initialStartSec={clip.startSec}
+							initialEndSec={clip.endSec}
+							wholeSource={clip.wholeSource}
+							sourceVideoUrl={sourceVideoUrl}
+							// Auto-reframe re-renders what the clip already had; a clip with
+							// no renders yet reframes into the row's selected format.
+							renderAspectRatios={
+								clip.renderVariants.filter((v) => v.hasAsset).length > 0
+									? [
+											...new Set(
+												clip.renderVariants
+													.filter((v) => v.hasAsset)
+													.map((v) => v.aspectRatio),
+											),
+										]
+									: [selectedAspectRatio]
+							}
+							open={editingBoundaries}
+							onOpenChange={setEditingBoundaries}
+						/>
+					) : null}
 
 					{visibleError ? (
 						<Flex role="alert" align="center" gap="1.5" color="danger.fg">

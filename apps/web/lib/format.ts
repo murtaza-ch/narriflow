@@ -127,3 +127,21 @@ export function formatTransferRate(bytesPerSecond: number): string {
   if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MiB/s`;
   return `${Math.round(safeRate / 1024)} KiB/s`;
 }
+
+/** Formats a file size as `340 KB` or `12.4 MB`; null when there is no size to show. */
+export function formatFileSize(bytes: number | null): string | null {
+  if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return null;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+const UTC_DATE_TIME_FORMAT = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "UTC",
+});
+
+/** Formats an instant as `Nov 4, 2026, 2:32 PM UTC`; one fixed zone keeps server and client renders identical. */
+export function formatUtcDateTime(iso: string): string {
+  return `${UTC_DATE_TIME_FORMAT.format(new Date(iso))} UTC`;
+}

@@ -403,10 +403,22 @@ export function planCountRequirement(
   };
 }
 
+/**
+ * Encoded audio ends a few frames after the track it came from: the real extraction
+ * of a 60.000s MP4 measures 60.011s, and of a 3600.000s MP4, 3600.022s. A source
+ * within this margin of a minute or a plan limit is that minute or limit.
+ */
+export const SOURCE_DURATION_EPSILON_SECONDS = 0.25;
+
 /** Credits debited for one source: every started minute counts, with a one-credit minimum. */
 export function creditsForSourceSeconds(seconds: number): number {
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
-  return Math.max(1, Math.ceil(seconds / MINUTE));
+  return Math.max(1, Math.ceil((seconds - SOURCE_DURATION_EPSILON_SECONDS) / MINUTE));
+}
+
+/** Every per-video length check: a source exactly at its limit stays within it after extraction. */
+export function sourceExceedsLimit(seconds: number, limitSeconds: number): boolean {
+  return seconds > limitSeconds + SOURCE_DURATION_EPSILON_SECONDS;
 }
 
 /** Debit seconds stored on the ledger for a source: whole credits, as multiples of 60. */

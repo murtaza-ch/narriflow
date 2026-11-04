@@ -250,6 +250,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     const cloud = makeDocument();
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -303,6 +304,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     }>>> = [];
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -394,6 +396,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     const polls: Array<ReturnType<typeof deferred<ClipAutoLayoutAnalysis | null>>> = [];
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -464,6 +467,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     const runtime = new ManualRuntime();
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -507,6 +511,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     let polls = 0;
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -556,6 +561,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     }>();
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -595,6 +601,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     const cloud = makeDocument();
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,
@@ -625,6 +632,7 @@ describe("StudioEditingSession preview eligibility seam", () => {
     const remote = makeDocument(12, 38);
     const session = createStudioEditingSession(
       {
+        userId: "user",
         projectId: "project",
         clipId: "clip",
         cloudRevision: 3,

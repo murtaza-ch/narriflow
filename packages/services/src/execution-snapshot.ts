@@ -1,12 +1,13 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { executionSnapshotOriginSchema, executionSnapshotQuiescenceSchema, fencedWorkerEvidenceSchema, restoreWorkerEvidenceSchema, quiescedExecutionSnapshotSchema,
   type RestoreWorkerEvidence,type FencedWorkerEvidence, type ExecutionSnapshotQuiescence, type QuiescedExecutionSnapshot } from "@narriflow/validators/execution-snapshot";
+import { sha256Hex } from "./execution-hash";
 
 export class ExecutionSnapshotError extends Error {
   constructor(readonly code: "restore_snapshot_proof_invalid" | "restore_snapshot_proof_required" | "restore_snapshot_history_unknown" | "restore_worker_not_fenced" | "restore_worker_mode_invalid") { super(code); }
 }
 const invalid = () => new ExecutionSnapshotError("restore_snapshot_proof_invalid");
-async function hash(value: unknown) { return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)))), byte => byte.toString(16).padStart(2, "0")).join(""); }
+async function hash(value: unknown) { return await sha256Hex(JSON.stringify(value)); }
 export function executionSnapshotIdentityHash(value: Pick<QuiescedExecutionSnapshot, "sourceEpoch" | "fencedAt" | "schema" | "accountId" | "worker" | "migrationSha256">) {
   return hash(["fenced-execution-snapshot-v1", value.sourceEpoch, value.fencedAt, value.schema, value.accountId, value.worker.origin, value.worker.version, value.migrationSha256]);
 }

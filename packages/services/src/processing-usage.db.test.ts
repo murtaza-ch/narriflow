@@ -27,9 +27,10 @@ import { createProjectRetentionExecution, planProjectRetentionPage } from "./pro
 import { readExecutionDispatch } from "./execution-dispatch";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
-import { ProcessingUsage, ProcessingUsageError } from "./processing-usage";
+import { lockWorkspaceUsage, ProcessingUsage, ProcessingUsageError } from "./processing-usage";
 import { getProcessingUsage } from "./processing-usage-runtime";
-import { projectService } from "./project.service";
+import { listOpenSourceRefundNeeds, refundSourceRefundNeed } from "./processing-usage-operator";
+import { LinkUnsupportedSourceError, projectService } from "./project.service";
 import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
@@ -232,13 +233,13 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     }
   })));
 
-  test("native source handoff charges 60.01 measured seconds as two credits exactly once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("native source handoff charges 60.5 measured seconds as two credits exactly once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
     const project = await measuredProject(ws.id, 60, { ingestStatus: "queued" });
     await reserve(module, ws.id, { projectId: project.id, declaredSeconds: 60 });
-    expect(await ingestMeasuredSource(module, project.id, 60.01)).toMatchObject({ kind: "admitted" });
+    expect(await ingestMeasuredSource(module, project.id, 60.5)).toMatchObject({ kind: "admitted" });
     expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: false, settledSeconds: 120 });
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 2, reservedCredits: 0 });
   })));
@@ -250,7 +251,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const cap = planLimits("creator").maxSourceSeconds;
     const project = await measuredProject(ws.id, cap, { ingestStatus: "queued" });
     await reserve(module, ws.id, { projectId: project.id, declaredSeconds: cap });
-    expect(await ingestMeasuredSource(module, project.id, cap + 0.01)).toMatchObject({ kind: "refused" });
+    expect(await ingestMeasuredSource(module, project.id, cap + 0.5)).toMatchObject({ kind: "refused" });
     expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "upload_too_long" });
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 0 });
   })));
@@ -292,16 +293,19 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     for (const projectId of [failed.id, awaiting.id, running.id, vanished, expired, uploading])
       await reserve(module, ws.id, { projectId, declaredSeconds: 60 });
 
+    const sweep = async (cutoff = clock) =>
+      (await prisma.$transaction((tx) => module.reconcileStranded(tx, { cutoff, after: null, limit: 32 }))).processed;
+
     // A crash between reserve and settle stays reserved until it's past the grace period.
-    expect(await module.reconcileStranded()).toBe(0);
+    expect(await sweep()).toBe(0);
     clock = new Date(clock.getTime() + 11 * 60_000);
-    expect(await module.reconcileStranded()).toBe(3);
+    expect(await sweep()).toBe(3);
     expect((await row(failed.id)).reason).toBe("reconciled_ingest_terminal");
     expect((await row(vanished)).reason).toBe("reconciled_intake_missing");
     expect((await row(expired)).reason).toBe("reconciled_upload_session_terminal");
     for (const kept of [awaiting.id, running.id, uploading])
       expect((await row(kept)).state).toBe("reserved");
-    expect(await module.reconcileStranded()).toBe(0);
+    expect(await sweep()).toBe(0);
   })));
 
   test("sizes reservations from declared facts, the per-video cap, and the remaining credits", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -378,14 +382,14 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
-    for (const [declaredSeconds, debit] of [[1, 60], [59.99, 60], [60, 60], [60.01, 120], [30 * 60, 1800]] as const) {
+    for (const [declaredSeconds, debit] of [[1, 60], [59.99, 60], [60, 60], [60.5, 120], [30 * 60, 1800]] as const) {
       const project = await measuredProject(ws.id, Math.ceil(declaredSeconds));
       expect([declaredSeconds, (await reserve(module, ws.id, { projectId: project.id, declaredSeconds })).reservedSeconds]).toEqual([declaredSeconds, debit]);
     }
     // A better duration fact resizes to whole credits too.
     const projectId = randomUUID();
     await reserve(module, ws.id, { projectId, declaredSeconds: 600 });
-    expect((await module.resize({ projectId, seconds: 60.01 })).reservedSeconds).toBe(120);
+    expect((await module.resize({ projectId, seconds: 60.5 })).reservedSeconds).toBe(120);
     const rows = await prisma.processingUsageReservation.findMany({ where: { workspaceId: ws.id } });
     for (const usageRow of rows) expect(usageRow.reservedSeconds % 60).toBe(0);
   })));
@@ -785,6 +789,44 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(await module.summarize(ws.id)).toMatchObject({ limitCredits: 60, reservedCredits: 180, remainingCredits: 0 });
   })));
 
+  test("the operator lists open refund needs, refunds, and resolves them once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    clock = new Date("2026-10-15T12:00:00.000Z");
+    const { workspace: ws } = await workspace("creator");
+    const operator = randomUUID();
+    const module = usage();
+    const settled = await filler(ws.id, 120);
+    await prisma.processingUsageReservation.update({ where: { id: settled.id }, data: { state: "settled", settledSeconds: 120, settledAt: clock } });
+    const reserved = await filler(ws.id, 60);
+    const need = (projectId: string, sourceRevision: number) =>
+      prisma.sourceRefundNeed.create({ data: { projectId, sourceRevision, sourceAudioId: randomUUID(), sourceAudioBindingHash: "a".repeat(64) } });
+    const first = await need(settled.projectId, 1);
+    const second = await need(settled.projectId, 2);
+    const blocked = await need(reserved.projectId, 1);
+    const dependencies = { prisma, usage: module, now: () => clock };
+    const open = (await listOpenSourceRefundNeeds(prisma)).filter((row) => row.workspaceId === ws.id);
+    expect(open.map((row) => row.id).sort()).toEqual([first.id, second.id, blocked.id].sort());
+    expect(open.find((row) => row.id === first.id)).toMatchObject({ projectId: settled.projectId, usageState: "settled", settledCredits: 2 });
+
+    const refund = { actorUserId: operator, reason: "source_audio_video_mismatch" };
+    expect(await refundSourceRefundNeed(dependencies, { needId: first.id, ...refund })).toEqual({ outcome: "refunded", projectId: settled.projectId, resolved: 2 });
+    expect(await row(settled.projectId)).toMatchObject({ state: "refunded", refundedByUserId: operator, reason: refund.reason });
+    expect(await prisma.sourceRefundNeed.findUniqueOrThrow({ where: { id: second.id } })).toMatchObject({ resolvedAt: clock });
+    expect((await module.summarize(ws.id)).usedCredits).toBe(0);
+    expect((await listOpenSourceRefundNeeds(prisma)).filter((row) => row.workspaceId === ws.id).map((row) => row.id)).toEqual([blocked.id]);
+
+    // A rerun neither refunds again nor reopens anything.
+    expect(await refundSourceRefundNeed(dependencies, { needId: first.id, ...refund })).toMatchObject({ outcome: "already_resolved", resolved: 0 });
+
+    // A crash after the refund leaves the need open; the rerun only resolves it.
+    await prisma.sourceRefundNeed.update({ where: { id: first.id }, data: { resolvedAt: null } });
+    expect(await refundSourceRefundNeed({ ...dependencies, usage: { refund: () => { throw new Error("must not refund twice"); } } }, { needId: first.id, ...refund })).toMatchObject({ outcome: "refunded", resolved: 1 });
+
+    // Usage that never settled refuses and stays open.
+    expect((await refusal(refundSourceRefundNeed(dependencies, { needId: blocked.id, ...refund }))).code).toBe("processing_usage_not_refundable");
+    expect(await prisma.sourceRefundNeed.findUniqueOrThrow({ where: { id: blocked.id } })).toMatchObject({ resolvedAt: null });
+    expect((await refusal(refundSourceRefundNeed(dependencies, { needId: randomUUID(), ...refund }))).code).toBe("source_refund_need_not_found");
+  })));
+
   test("settled usage survives Project deletion and actor removal; refunds are audited", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
@@ -889,6 +931,41 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
 
     await projectService.deleteProject(scope, link.project.id);
     expect(await row(link.project.id)).toMatchObject({ state: "released", reason: "project_deleted" });
+  })));
+
+  test("a link no acquisition path can read is refused before anything is reserved", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    clock = new Date();
+    const { workspace: ws, scope } = await workspace("free");
+    for (const url of ["https://vimeo.com/123456789", "https://www.loom.com/share/abc", "https://example.com/video.mp4", "https://www.youtube.com/@somechannel"]) {
+      await expect(projectService.queueLinkIngest(scope, { url, commitToken: randomUUID() })).rejects.toBeInstanceOf(LinkUnsupportedSourceError);
+    }
+    expect(await prisma.project.count({ where: { workspaceId: ws.id } })).toBe(0);
+    expect(await prisma.processingUsageReservation.count({ where: { workspaceId: ws.id } })).toBe(0);
+  })));
+
+  test("a link intake waits for an upgrade holding the usage lock, so a paying Workspace gets no Free deadline", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    clock = new Date();
+    const { workspace: ws, scope } = await workspace("free");
+    let intake: ReturnType<typeof projectService.queueLinkIngest> | undefined;
+    await prisma.$transaction(async tx => {
+      await lockWorkspaceUsage(tx, ws.id);
+      await tx.workspace.update({ where: { id: ws.id }, data: { pricingTier: "business" } });
+      intake = projectService.queueLinkIngest(scope, { url: "https://www.dropbox.com/s/abc/video.mp4", commitToken: randomUUID() });
+      await Bun.sleep(400);
+    });
+    const { project } = await intake!;
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).expiresAt).toBeNull();
+  })));
+
+  test("a source exactly at the Free limit settles there when its audio extracts a few frames longer", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    clock = new Date();
+    const module = getProcessingUsage();
+    const { workspace: ws } = await workspace("free");
+    const limit = planLimits("free").maxSourceSeconds;
+    const { projectId } = await reserve(module, ws.id, { declaredSeconds: limit });
+    await measuredProject(ws.id, limit + 0.022, { id: projectId });
+    expect(await settle(module, projectId)).toMatchObject({ outcome: "settled", settledSeconds: limit });
+    expect(await row(projectId)).toMatchObject({ state: "settled", settledSeconds: limit });
   })));
 
   test("a Drive Picker file is admitted as link intake from Drive's own facts, with its token sealed on the job", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

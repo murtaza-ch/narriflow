@@ -2,6 +2,7 @@ import { readServiceEnvironment } from "@narriflow/services/runtime-environment"
 import {
   listUserWorkspaces,
   resolveWorkspaceContext,
+  selectListedWorkspace,
   selectWorkspaceForActor,
 } from "@narriflow/auth";
 import { projectService } from "@narriflow/services/project.service";
@@ -20,6 +21,7 @@ function configuredOrigin(value: string | undefined): string | null {
 export function createSessionRouteDeps(_config: ApiConfig): SessionRouteDeps {
   return {
     resolveWorkspaceContext,
+    selectListedWorkspace,
     selectWorkspaceForActor,
     listUserWorkspaces,
     workspaceService,

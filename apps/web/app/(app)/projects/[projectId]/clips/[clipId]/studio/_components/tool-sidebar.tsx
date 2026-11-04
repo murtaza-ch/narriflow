@@ -1,6 +1,8 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   Subtitles,
   LayoutGrid,
@@ -16,16 +18,23 @@ import {
 import { useStudio } from "./studio-shell";
 import type { ToolId } from "./studio-shell";
 
-// Tool panel imports
-import { CaptionsPanel } from "./tool-panels/captions-panel";
-import { BRollPanel } from "./tool-panels/broll-panel";
-import { TextPanel } from "./tool-panels/text-panel";
-import { MusicPanel } from "./tool-panels/music-panel";
-import { BrandTemplatePanel } from "./tool-panels/brand-template-panel";
-import { TransitionsPanel } from "./tool-panels/transitions-panel";
-import { LayoutPanel } from "./tool-panels/layout-panel";
-import { ScenesPanel } from "./tool-panels/scenes-panel";
-import { CensorPanel } from "./tool-panels/censor-panel";
+// Each panel is its own chunk, fetched when its tool is first opened.
+function PanelPending() {
+  return (
+    <Flex justify="center" py="10" role="status" aria-label="Loading tool">
+      <Spinner size="sm" />
+    </Flex>
+  );
+}
+const CaptionsPanel = dynamic(() => import("./tool-panels/captions-panel").then((m) => m.CaptionsPanel), { loading: PanelPending });
+const BRollPanel = dynamic(() => import("./tool-panels/broll-panel").then((m) => m.BRollPanel), { loading: PanelPending });
+const TextPanel = dynamic(() => import("./tool-panels/text-panel").then((m) => m.TextPanel), { loading: PanelPending });
+const MusicPanel = dynamic(() => import("./tool-panels/music-panel").then((m) => m.MusicPanel), { loading: PanelPending });
+const BrandTemplatePanel = dynamic(() => import("./tool-panels/brand-template-panel").then((m) => m.BrandTemplatePanel), { loading: PanelPending });
+const TransitionsPanel = dynamic(() => import("./tool-panels/transitions-panel").then((m) => m.TransitionsPanel), { loading: PanelPending });
+const LayoutPanel = dynamic(() => import("./tool-panels/layout-panel").then((m) => m.LayoutPanel), { loading: PanelPending });
+const ScenesPanel = dynamic(() => import("./tool-panels/scenes-panel").then((m) => m.ScenesPanel), { loading: PanelPending });
+const CensorPanel = dynamic(() => import("./tool-panels/censor-panel").then((m) => m.CensorPanel), { loading: PanelPending });
 
 /** `railLabel` is the short name under the rail icon; `label` titles the panel. */
 const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactNode }[] = [

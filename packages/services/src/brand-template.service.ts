@@ -2,7 +2,6 @@ import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
 import { randomUUID } from "node:crypto";
 import type { BrandTemplate, Prisma as PrismaTypes } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandTemplateInputSchema,
   brandTemplateUpdateSchema,
@@ -30,6 +29,7 @@ import { requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
 import { brandFontService } from "./brand-font.service";
 import type { IntegrationMutation } from "./operation-receipt";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { requirePrisma } from "./require-prisma";
 
 const FALLBACK_BUILT_IN_KEY = "karaoke";
 
@@ -68,14 +68,6 @@ export class BrandTemplateForbiddenError extends ExpectedDomainFailureError<"bra
     super({ code, kind: brandTemplateFailureCatalog[code], message: "Brand template is read-only" });
     this.name = "BrandTemplateForbiddenError";
   }
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new Error("Database client unavailable");
-  }
-  return prisma;
 }
 
 function toSummary(template: BrandTemplate): BrandTemplateSummary {

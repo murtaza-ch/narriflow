@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { clipPreparationEngineHash } from "@narriflow/services/clip-preparation-policy";
 import { clipPreparationBinding } from "@narriflow/services/clip-preparation-input";
@@ -97,3 +97,39 @@ test("native preparation normalizes a valid VFR preview without moving its sourc
     } finally { server.stop(true); }
   });
 }, 30000);
+
+test("a source with a short audio stream, an early video end or an audio hole still prepares, and its encode deadline scales with the work", async () => {
+  await worker.withScratchDirectory("preparation-imperfect-", async work => {
+    const signal = new AbortController().signal, deadlines: number[] = [];
+    const counted = { ...worker, inspectMedia: worker.inspectMedia.bind(worker), withScratchDirectory: worker.withScratchDirectory.bind(worker),
+      execute: async (request: Parameters<typeof worker.execute>[0]) => { if (request.args.includes("libx264")) deadlines.push(request.deadlineMs); return worker.execute(request); } };
+    const sources: Array<[string, string[]]> = [["short", ["-f", "lavfi", "-i", "testsrc2=s=320x180:r=60:d=4", "-f", "lavfi", "-i", "sine=sample_rate=48000:d=3.94"]],
+      ["early", ["-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=3", "-f", "lavfi", "-i", "sine=sample_rate=48000:d=4"]],
+      ["hole", ["-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=4", "-f", "lavfi", "-i", "sine=sample_rate=48000:d=4", "-af", "aselect='not(between(t,2,2.5))'"]]];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => {
+      const file = Bun.file(join(work, new URL(request.url).pathname.slice(1))), range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.get("Range") ?? "");
+      const start = range ? Number(range[1]) : 0, end = range?.[2] ? Number(range[2]) : file.size-1;
+      return new Response(file.slice(start,end+1), { status: range ? 206 : 200,
+        headers: { "Content-Length": String(end-start+1), "Accept-Ranges": "bytes", ...(range ? { "Content-Range": `bytes ${start}-${end}/${file.size}` } : {}) } });
+    } });
+    try {
+      for (const [name, args] of sources) {
+        const sourcePath = join(work, `${name}.mp4`), directory = join(work, name);
+        await mkdir(directory);
+        await worker.execute({ command: "ffmpeg", args: ["-nostdin", "-v", "error", "-y", ...args, "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath], signal, deadlineMs: 20000 });
+        const probe = await worker.inspectMedia({ sourcePath, signal, deadlineMs: 20000 });
+        const raw = clipPreparationInputSchema.omit({ bindingHash: true }).parse({ version: 1, kind: "prepare_clip", preparationId: "02fd9a96-e78d-455f-a676-3b3909a1589a", projectId: "36b818df-487f-4429-ab59-53be156ab532", clipId: "0e282bd8-a3b4-4422-bafb-ae4f68d59ac6",
+          sourceRevision: 1, editorRevision: 3, toolchainFingerprint: "a".repeat(64), engineHash: await clipPreparationEngineHash("a".repeat(64)),
+          source: { storageKey: "execution/1/original", etag: '"source"', byteLength: (await stat(sourcePath)).size, sha256: createHash("sha256").update(await readFile(sourcePath)).digest("hex") },
+          sourceProbe: probe.sourceProbe, document: documents.cases["solo-auto-vertical"].document, wholeSource: true, llmModel: "fixture" });
+        const output = await prepareClip({ input: clipPreparationInputSchema.parse({ ...raw, bindingHash: await clipPreparationBinding(raw) }), sourcePath: `http://127.0.0.1:${server.port}/${name}.mp4`, work: directory,
+          previewArtifactId: "1926d146-807b-4e55-8ef6-0ac87f95bea2", peaksArtifactId: "2cb10336-094a-424e-81ce-e967550d8b99", workerProcess: counted, config: parseRenderConfig({ WORKER_RENDER_DEADLINE_FACTOR: "100" }), signal,
+          detectors: { detectMultiFacePath: async () => ({ samples: [] }), detectFacePath: async () => ({ samples: [] }), detectPipPath: async () => ({ movingPxFrac: 0, insufficientSamples: false, candidates: [] }), detectSceneCuts: async () => [] } });
+        expect((await stat(output.previewPath)).size).toBeGreaterThan(1000);
+        expect(output.result.preview.durationSec).toBe(4);
+      }
+      // renderEncodeDeadlineMs: 4 s of source x factor 100, over the 300 s floor.
+      expect(deadlines).toEqual([400_000, 400_000, 400_000]);
+    } finally { server.stop(true); }
+  });
+}, 60000);

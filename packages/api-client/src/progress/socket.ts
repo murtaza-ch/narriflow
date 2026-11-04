@@ -30,7 +30,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 class ApplicationFailure extends Error { constructor(readonly original: unknown) { super("Progress consumer failed"); } }
 
 /** One bounded queue, rather than one Promise per received message. */
-async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: number, expiresAt: number): AsyncGenerator<string> {
+async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: number, expiresAt: number, lifecycle: { expired: boolean }): AsyncGenerator<string> {
   const queue: string[] = [];
   let finished = false;
   let failure: ApiError | undefined;
@@ -51,7 +51,7 @@ async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: 
   socket.addEventListener("close", end);
   socket.addEventListener("error", onError);
   signal.addEventListener("abort", end, { once: true });
-  const expiry = setTimeout(() => { end(); socket.close(1000, "Renew progress authorization"); }, Math.max(1, Math.min(60_000, expiresAt - Date.now())));
+  const expiry = setTimeout(() => { lifecycle.expired = true; end(); socket.close(1000, "Renew progress authorization"); }, Math.max(1, Math.min(60_000, expiresAt - Date.now())));
   const timer = setInterval(() => {
     if (Date.now() - lastReceived >= idleTimeoutMs) fail(error(CLIENT_ERROR_CODES.streamIdle, "The progress connection went silent."));
     else if (socket.readyState === 1) socket.send("ping");
@@ -79,6 +79,8 @@ export async function runProgressSocket(options: ProgressSocketOptions): Promise
       options.onStatus?.({ state: "connecting", attempt });
       let failure: ApiError | null = null;
       let delivered = false;
+      let opened = false;
+      const lifecycle = { expired: false };
       try {
         const ticket = await options.transport.json(`/api/projects/${encodeURIComponent(options.projectId)}/progress-ticket`, { method: "POST", json: {}, signal, parse: progressTicketResponseSchema.parse });
         if (signal.aborted) break;
@@ -87,13 +89,15 @@ export async function runProgressSocket(options: ProgressSocketOptions): Promise
         url.searchParams.set("ticket", ticket.ticket);
         url.searchParams.set("sinceSeq", String(cursor));
         const socket = (options.createSocket ?? ((address) => new WebSocket(address)))(url.href);
-        for await (const raw of messages(socket, signal, options.idleTimeoutMs ?? 45_000, ticket.subscriptionExpiresAt)) {
+        for await (const raw of messages(socket, signal, options.idleTimeoutMs ?? 45_000, ticket.subscriptionExpiresAt, lifecycle)) {
           let frame;
           try { frame = progressSocketFrameSchema.parse(JSON.parse(raw)); }
           catch { throw error("stream_protocol", "Progress sent an invalid frame."); }
           if (frame.type === "resync") break;
           if (frame.type === "connected") {
             if (frame.projectId !== options.projectId || frame.cursor !== cursor) throw error("stream_protocol", "Progress cursor or Project changed.");
+            // A good connection ends the failure streak: the next drop is a first retry.
+            opened = true; attempt = 0;
             options.onStatus?.({ state: "open", attempt }); continue;
           }
           if (frame.type === "event") {
@@ -118,6 +122,8 @@ export async function runProgressSocket(options: ProgressSocketOptions): Promise
         if (!retryable || (failure.retryAfterSeconds ?? 0) > MAX_STREAM_RETRY_AFTER_SECONDS) return { reason: "fatal", error: failure };
       }
       if (signal.aborted) break;
+      // Our own renewal of an open connection is not a failure: reconnect now.
+      if (lifecycle.expired && opened && failure === null) continue;
       attempt = delivered ? 0 : attempt + 1;
       const ceiling = Math.min(1_000 * 2 ** Math.min(Math.max(attempt - 1, 0), 5), 30_000);
       const retryInMs = Math.max(Math.round(ceiling * (0.5 + (options.random ?? Math.random)() / 2)), (failure?.retryAfterSeconds ?? 0) * 1_000);

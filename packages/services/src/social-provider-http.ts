@@ -21,6 +21,7 @@ export class SocialProviderTransportError extends Error {
 		this.name = "SocialProviderTransportError";
 	}
 }
+const PROVIDER_TIMEOUT_MS = 15_000;
 /** Workers accepts manual redirects; its global fetch rejects redirect:error.
  * The fixed provider allowlist and explicit 3xx refusal keep credentials on the
  * selected origin, with no follow-up request or response-body retention. */
@@ -37,7 +38,12 @@ export async function fetchSocialProvider(
 		url.hash
 	)
 		throw new SocialProviderTransportError("social_provider_origin_invalid");
-	const response = await transport(input, { ...init, redirect: "manual" });
+	// A caller's own signal wins; every other request is bounded.
+	const response = await transport(input, {
+		...init,
+		signal: init?.signal ?? AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+		redirect: "manual",
+	});
 	if (response.status >= 300 && response.status < 400) {
 		await response.body?.cancel().catch(() => {});
 		throw new SocialProviderTransportError("social_provider_redirect");

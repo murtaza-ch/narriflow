@@ -151,6 +151,35 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       .toEqual(statuses);
   }));
 
+  test("reports Stripe's deletion marker as a typed state without listing subscriptions", bindServiceTestEnvironment(async () => {
+    const fakeStripe = {
+      customers: { retrieve: async () => ({ id: "cus_contract", deleted: true }) },
+      subscriptions: { list: async () => { throw new Error("a deleted customer has no subscriptions to read"); } },
+    } as unknown as Stripe;
+    const catalog = createBillingCatalog({
+      basePrices: [
+        { priceId: "price_creator_monthly", tier: "creator", interval: "monthly" },
+        { priceId: "price_creator_annual", tier: "creator", interval: "annual" },
+        { priceId: "price_pro_monthly", tier: "pro", interval: "monthly" },
+        { priceId: "price_pro_annual", tier: "pro", interval: "annual" },
+        { priceId: "price_business_monthly", tier: "business", interval: "monthly" },
+        { priceId: "price_business_annual", tier: "business", interval: "annual" },
+      ],
+      seatPrices: [
+        { priceId: "price_business_seat_monthly", interval: "monthly" },
+        { priceId: "price_business_seat_annual", interval: "annual" },
+      ],
+      worker: { leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 4 },
+    });
+    const adapter = createWorkspaceBillingStripeContractHarness().providerWith({ stripe: fakeStripe, catalog });
+
+    expect(await adapter.retrieveCurrentState("cus_contract")).toEqual({
+      customerId: "cus_contract",
+      ownership: { kind: "customer_deleted" },
+      subscriptions: [],
+    });
+  }));
+
   test("normalizes a completed delayed-payment Checkout through the production adapter", bindServiceTestEnvironment(async () => {
     const workspaceId = "11111111-1111-4111-8111-111111111111";
     const attemptId = "22222222-2222-4222-8222-222222222222";

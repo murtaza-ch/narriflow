@@ -63,6 +63,7 @@ export function outboundDeliveryExecutionInputHash(row:Pick<OutboundDelivery,"id
 const namespace = "c22d9ae5-2920-5c0b-9bfe-72cdf2d8a0b9";
 import { webhookSubscriptionExecutionInputHash } from "./notification-identity";
 import { isCurrentNotificationTarget } from "./notification-dispatch";
+import { databaseNow } from "./execution-clock";
 export { webhookSubscriptionExecutionInputHash } from "./notification-identity";
 export interface NotificationBodyPlan {
 	storageKey: string;
@@ -131,13 +132,6 @@ export type OutboundDeliveryPreparation =
 			deliveryId: string;
 			dispatchIds: readonly string[];
 	  };
-async function clock(tx: Tx) {
-	const [row] = await tx.$queryRaw<
-		Array<{ now: Date }>
-	>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-	if (!row) throw new OutboundDeliveryError("outbound_delivery_unavailable");
-	return row.now;
-}
 const plan = (row: OutboundDelivery): NotificationBodyPlan => ({
 	storageKey: row.bodyStorageKey,
 	sha256: row.bodySha256,
@@ -313,7 +307,7 @@ export class OutboundDeliveryService
       await this.lockParent(tx, row);
       await tx.$queryRaw`SELECT id FROM "OutboundDelivery" WHERE id = ${row.id}::uuid FOR UPDATE`;
       const current = await tx.outboundDelivery.findUniqueOrThrow({ where: { id: row.id } });
-      if (current.deploymentEpoch !== epoch || current.generation !== row.generation || current.status !== "preparing" || current.bodyStorageKey !== row.bodyStorageKey || current.expiresAt <= await clock(tx)) throw new OutboundDeliveryError("outbound_delivery_conflict", row.id);
+      if (current.deploymentEpoch !== epoch || current.generation !== row.generation || current.status !== "preparing" || current.bodyStorageKey !== row.bodyStorageKey || current.expiresAt <= await databaseNow(tx)) throw new OutboundDeliveryError("outbound_delivery_conflict", row.id);
       await lockPlannedMediaCleanupObject(tx, { origin: "outbound_delivery", cleanupClass: "notification_body", storageKey: current.bodyStorageKey });
     });
 		const headBody = async () => {
@@ -351,7 +345,7 @@ export class OutboundDeliveryService
 			let current = await tx.outboundDelivery.findUniqueOrThrow({
 				where: { id: row.id },
 			});
-      if (current.deploymentEpoch !== row.deploymentEpoch || current.generation !== row.generation || current.expiresAt <= await clock(tx)) throw new OutboundDeliveryError("outbound_delivery_conflict", row.id);
+      if (current.deploymentEpoch !== row.deploymentEpoch || current.generation !== row.generation || current.expiresAt <= await databaseNow(tx)) throw new OutboundDeliveryError("outbound_delivery_conflict", row.id);
       await lockPlannedMediaCleanupObject(tx, { origin: "outbound_delivery", cleanupClass: "notification_body", storageKey: current.bodyStorageKey });
 			if (current.status === "preparing")
 				current = await tx.outboundDelivery.update({
@@ -443,7 +437,7 @@ export class OutboundDeliveryService
 							? await this.bytes(tx, known)
 							: new Uint8Array(),
 				};
-			const at = await clock(tx);
+			const at = await databaseNow(tx);
 			if (sub.lastTestedAt && sub.lastTestedAt.getTime() > at.getTime() - 5000)
 				throw new OutboundDeliveryError("webhook_test_throttled");
 			const id = uuidV5(namespace, fingerprint),
@@ -549,7 +543,7 @@ export class OutboundDeliveryService
 							? await this.bytes(tx, known)
 							: new Uint8Array(),
 				};
-			const at = await clock(tx);
+			const at = await databaseNow(tx);
 			if (!callback.payload) {
 				if (!status)
 					throw new OutboundDeliveryError("outbound_delivery_unavailable");
@@ -620,7 +614,7 @@ export class OutboundDeliveryService
 			const sub = await tx.webhookSubscription.findUniqueOrThrow({
 				where: { id },
 			});
-			const at = await clock(tx);
+			const at = await databaseNow(tx);
 			if (sub.status !== "active") {if(sub.status==="disabled")await appendWebhookDisabledNotificationIntent(tx,sub);return { kind: "terminal" as const };}
 			const known = await tx.outboundDelivery.findFirst({
 				where: {
@@ -948,7 +942,7 @@ export class OutboundDeliveryService
 				kind: "terminal" as const,
 				disposition: { disposition: "cancelled" as const },
 			};
-		const changed = await this.transitionPolicy(tx, row, await clock(tx));
+		const changed = await this.transitionPolicy(tx, row, await databaseNow(tx));
 		if (changed) return changed;
 		return {
 			kind: "current" as const,
@@ -995,7 +989,7 @@ export class OutboundDeliveryService
 				const row = await tx.outboundDelivery.findUniqueOrThrow({
 						where: { id: initial.id },
 					}),
-					at = await clock(tx);
+					at = await databaseNow(tx);
 				if (
 					row.generation !== reference.generation ||
 					row.deploymentEpoch !== reference.deploymentEpoch ||
@@ -1106,7 +1100,7 @@ export class OutboundDeliveryService
 		ref: OutboundDeliveryReference,
 		c: ExecutorMutationContext,
 	) {
-		const at = await clock(tx);
+		const at = await databaseNow(tx);
 		const row = await tx.outboundDelivery.findFirst({
 			where: {
 				id: ref.id,
@@ -1131,7 +1125,7 @@ export class OutboundDeliveryService
 		const row = await tx.outboundDelivery.findUniqueOrThrow({
 				where: { id: ref.id },
 			}),
-			at = await clock(tx);
+			at = await databaseNow(tx);
 		if (
 			row.status !== "queued" ||
 			row.executorOwner ||
@@ -1454,7 +1448,7 @@ export class OutboundDeliveryService
 		const row = await tx.outboundDelivery.findUniqueOrThrow({
 				where: { id: locked.ref.id },
 			}),
-			at = await clock(tx),
+			at = await databaseNow(tx),
 			due =
 				observation.kind === "lease"
 					? row.leaseExpiresAt

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { createNarriflowTokenVerifier } from "@narriflow/mcp-core/auth";
 import { createNarriflowMcpHttpHandler } from "@narriflow/mcp-core/http";
 import { Hono } from "hono";
@@ -29,7 +30,7 @@ function harness() {
     handleMcp: createNarriflowMcpHttpHandler({
       verifier: { verifyAccessToken: async () => { authenticationCalls++; throw new Error("Must not authenticate"); } },
       allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl,
-      checkRateLimit: async () => { throw new Error("Must not limit"); }, buildServer: () => { throw new Error("Must not build"); }, diagnostic: () => {},
+      authFailureThrottle: () => ({ exhausted: async () => false, recordFailure: async () => {}, retryAfterSeconds: 60 }), checkRateLimit: async () => { throw new Error("Must not limit"); }, buildServer: () => { throw new Error("Must not build"); }, diagnostic: () => {},
     }),
     handleUpload: async (request) => { uploadCalls++; return Response.json({ action: new URL(request.url).pathname.split("/").at(-1) }); },
     fetch: async (_url, init) => { discoveryCalls++; expect(init).not.toHaveProperty("next"); return Response.json({ issuer: issuerUrl, authorization_endpoint: `${issuerUrl}/authorize` }); },
@@ -46,6 +47,18 @@ describe("API MCP transport", () => {
     expect(auth.resourceUrl).toBe(`${apiOrigin}/mcp`);
     const production = createMcpAuth({ ...config, nodeEnv: "production" }, { CLERK_OAUTH_ISSUER: issuerUrl });
     for (const host of ["localhost", "127.0.0.1", "[::1]"]) expect(production.allowedHosts).not.toContain(host);
+  });
+  test("the socket peer reaches the failed-credential throttle of both MCP entries", async () => {
+    const auth = createMcpAuth(config, { CLERK_OAUTH_ISSUER: issuerUrl });
+    const seen: Array<string | undefined> = [];
+    const app = createMcpTransportRoutes({ ...auth,
+      handleMcp: async (_request, socketAddress) => { seen.push(socketAddress); return new Response(); },
+      handleUpload: async (_request, _workspace, socketAddress) => { seen.push(socketAddress); return new Response(); } });
+    const bindings = { server: { requestIP: () => ({ address: "203.0.113.9" }) } };
+    const headers = { host: new URL(apiOrigin).host };
+    await app.request(`${apiOrigin}/mcp`, { method: "POST", headers }, bindings);
+    await app.request(`${apiOrigin}/mcp/integrations/${crypto.randomUUID()}/upload-sessions/open`, { method: "POST", headers }, bindings);
+    expect(seen).toEqual(["203.0.113.9", "203.0.113.9"]);
   });
   test("missing issuer refuses protected-resource discovery with public CORS", async () => {
     const auth = createMcpAuth(config, {});
@@ -73,6 +86,17 @@ describe("API MCP transport", () => {
     h.advance();
     await request(h.app, url);
     expect(h.counts().discoveryCalls).toBe(2);
+  });
+  test("the issuer document survives the per-request rebuild of the transport", async () => {
+    const auth = createMcpAuth(config, { CLERK_OAUTH_ISSUER: issuerUrl });
+    const metadataCache = {};
+    let fetches = 0;
+    const build = () => createMcpTransportRoutes({ ...auth, metadataCache, handleMcp: async () => new Response(), handleUpload: async () => new Response(),
+      fetch: async () => { fetches++; return Response.json({ issuer: issuerUrl }); } });
+    for (let rebuilt = 0; rebuilt < 3; rebuilt++) {
+      expect((await request(build(), `${apiOrigin}/.well-known/oauth-authorization-server`)).status).toBe(200);
+    }
+    expect(fetches).toBe(1);
   });
   test("discovery outage is safe and carries public CORS", async () => {
     const auth = createMcpAuth(config, {});
@@ -112,9 +136,46 @@ describe("API MCP transport", () => {
     const verifier = createNarriflowTokenVerifier({ resourceUrl: () => auth.resourceUrl, secretKey: () => "inert", authenticateApiKey: async () => null, findUser: async () => ({ id: "user" }),
       fetch: async () => Response.json({ object: "clerk_idp_oauth_access_token", id: "oat_test", subject: "user", client_id: "client", scopes: ["projects:read"], aud: [`${webOrigin}/mcp`], revoked: false, expired: false, revocation_reason: null, expiration: 2_000_000_000, created_at: 1, updated_at: 1 }),
     });
-    const handle = createNarriflowMcpHttpHandler({ verifier, allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl, diagnostic: () => {}, checkRateLimit: async () => { throw new Error("Must not limit"); }, buildServer: () => { throw new Error("Must not build"); } });
+    const handle = createNarriflowMcpHttpHandler({ verifier, allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl, diagnostic: () => {}, authFailureThrottle: () => ({ exhausted: async () => false, recordFailure: async () => {}, retryAfterSeconds: 60 }), checkRateLimit: async () => { throw new Error("Must not limit"); }, buildServer: () => { throw new Error("Must not build"); } });
     const response = await handle(new Request(`${apiOrigin}/mcp`, { method: "POST", headers: { Host: new URL(apiOrigin).host, Authorization: "Bearer originating-token" }, body: "{}" }));
     expect(response.status).toBe(401);
     expect(response.headers.get("WWW-Authenticate")).toContain(auth.metadataUrl);
+  });
+  describe("failed-authentication throttle and crash reporting", () => {
+    const auth = createMcpAuth(config, { CLERK_OAUTH_ISSUER: issuerUrl });
+    const call = (handle: ReturnType<typeof createNarriflowMcpHttpHandler>) =>
+      handle(new Request(`${apiOrigin}/mcp`, { method: "POST", headers: { Host: new URL(apiOrigin).host, Authorization: "Bearer bogus" }, body: "{}" }));
+    const handler = (verify: () => Promise<never>, throttle: { exhausted: boolean; recorded: () => void }, diagnostics: Array<{ event: string; outcome: string }> = []) =>
+      createNarriflowMcpHttpHandler({ verifier: { verifyAccessToken: verify }, allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl,
+        diagnostic: (entry) => { diagnostics.push(entry); }, authFailureThrottle: () => ({ exhausted: async () => throttle.exhausted, recordFailure: async () => throttle.recorded(), retryAfterSeconds: 60 }),
+        checkRateLimit: async () => { throw new Error("Must not limit"); }, buildServer: () => { throw new Error("Must not build"); } });
+    test("an exhausted address is refused before any token lookup", async () => {
+      let lookups = 0;
+      const response = await call(handler(async () => { lookups++; throw new OAuthError(OAuthErrorCode.InvalidToken, "x"); }, { exhausted: true, recorded: () => {} }));
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("60");
+      expect(lookups).toBe(0);
+    });
+    test("a rejected token spends the budget; an unavailable verifier does not", async () => {
+      let recorded = 0;
+      const throttle = { exhausted: false, recorded: () => { recorded++; } };
+      expect((await call(handler(async () => { throw new OAuthError(OAuthErrorCode.InvalidToken, "Revoked"); }, throttle))).status).toBe(401);
+      expect(recorded).toBe(1);
+      const { McpAuthUnavailableError } = await import("@narriflow/mcp-core/auth");
+      expect((await call(handler(async () => { throw new McpAuthUnavailableError(); }, throttle))).status).toBe(503);
+      expect(recorded).toBe(1);
+    });
+    test("a crash is logged as a failure, not recorded as an authentication denial", async () => {
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      const diagnostics: Array<{ event: string; outcome: string }> = [];
+      try {
+        const response = await call(handler(async () => { throw new TypeError("verifier bug"); }, { exhausted: false, recorded: () => {} }, diagnostics));
+        expect(response.status).toBe(500);
+        const line = warn.mock.calls.map(([text]) => JSON.parse(String(text))).find((entry) => entry.message === "mcp_http_request_failed");
+        expect(line.error).toMatchObject({ name: "TypeError", message: "verifier bug" });
+        expect(diagnostics.some((entry) => entry.event === "authentication" && entry.outcome === "denied")).toBe(false);
+        expect(diagnostics).toContainEqual(expect.objectContaining({ event: "request", outcome: "failure" }));
+      } finally { warn.mockRestore(); }
+    });
   });
 });

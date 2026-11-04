@@ -17,7 +17,7 @@ import stat
 import tempfile
 from typing import Any, Mapping, Protocol
 
-from .manifest import MAX_SOURCE_BYTES, SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest, normalize_youtube_source
+from .manifest import MAX_SOURCE_BYTES, SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest
 from .proxy import BoundProxySession, ProxySessionSequence
 
 
@@ -30,6 +30,17 @@ class SourceFetchFailure(RuntimeError):
 class ProviderAccessBlocked(SourceFetchFailure):
     def __init__(self):
         super().__init__("source_provider_access_denied")
+
+
+def probe_failure(stderr: bytes) -> SourceFetchFailure:
+    """A coded permanent verdict on the file ends the job. Anything else is worth retrying."""
+    try:
+        report = json.loads(stderr.strip().rsplit(b"\n", 1)[-1])
+        if report["retryable"] is False and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", report["errorCode"]):
+            return SourceFetchFailure(report["errorCode"])
+    except (ValueError, TypeError, KeyError, IndexError):
+        pass
+    return SourceFetchFailure("source_probe_failed", True)
 
 
 @dataclass(frozen=True, init=False)
@@ -209,15 +220,14 @@ def verify_source_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourc
     if (audio.manifest["mediaIdentity"] != video.manifest["mediaIdentity"] or
             audio.manifest["sourceRevision"] != video.manifest["sourceRevision"] or
             audio.manifest["audioTrack"] != video.manifest["audioTrack"] or
-            math.ceil(audio.manifest["durationSeconds"]/60) != math.ceil(video.manifest["durationSeconds"]/60) or
             abs(audio.manifest["durationSeconds"] - video.manifest["durationSeconds"]) > tolerance or
             abs(audio.manifest["audioStartTimeSec"] - video.manifest["audioStartTimeSec"]) > tolerance):
         raise SourceFetchFailure("source_audio_video_mismatch")
-    # The server also compares plan caps and whole-credit debit before accepting
-    # the video. The executor never rounds away a usage difference.
+    # An early stop before publishing. The server repeats these checks with the
+    # plan cap before it accepts the video, and it alone debits usage.
 
 
-async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mode: str, development: bool,
+async def fetch_source(identity: YouTubeSource, *, source_revision: int, mode: str, development: bool,
                        work_directory: Path, runtime: SourceRuntime, sink: SourceSink,
                        toolchain_fingerprint: str, proxy_template: str | None = None,
                        deadline_seconds: float = 45 * 60, existing_audio: ExistingSourceAudio | None = None,
@@ -228,7 +238,6 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
         raise SourceManifestError()
     if type(acquire_audio) is not bool or not 0 < deadline_seconds <= 45 * 60:
         raise SourceFetchFailure("source_fetch_deadline_invalid")
-    identity = normalize_youtube_source(source) if isinstance(source, str) else source
     if existing_audio is not None:
         if not isinstance(existing_audio, ExistingSourceAudio):
             raise SourceManifestError("source_audio_seed_invalid")

@@ -4,7 +4,6 @@ import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import type { ClipDub } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
@@ -37,6 +36,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 const LIVE_DUB: readonly string[] = ["queued", "processing"];
@@ -65,13 +65,6 @@ export class DubbingFailureError extends ExpectedDomainFailureError<DubbingFailu
   }
 }
 
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new Error("Database client unavailable");
-  }
-  return prisma;
-}
 
 function bigintToNumber(value: bigint | number | null) {
   return value === null ? null : Number(value);

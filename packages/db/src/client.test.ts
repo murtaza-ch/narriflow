@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createDatabaseScope, getPrismaClient, withDatabaseScope } from "./client";
 
 test("a request that does not use the database creates no client", async () => {
@@ -61,4 +61,16 @@ test("failure closes its client and work retained after the handler cannot reuse
   expect(delayedRead).toThrow("Database scope is closed");
   await expect(withDatabaseScope(scope, () => undefined)).rejects.toThrow("only run once");
   expect(getPrismaClient()).toBeNull();
+});
+
+test("a failing disposal neither replaces a successful result nor hides the original error", async () => {
+  const failingScope = () => createDatabaseScope({
+    createClient: () => ({ client: {} as unknown as import("@prisma/client").PrismaClient, dispose: async () => { throw new Error("pool already closed"); } }),
+  });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await withDatabaseScope(failingScope(), async () => { getPrismaClient(); return "committed"; })).toBe("committed");
+    await expect(withDatabaseScope(failingScope(), async () => { getPrismaClient(); throw new Error("the real failure"); })).rejects.toThrow("the real failure");
+    expect(warn.mock.calls.length).toBe(2);
+  } finally { warn.mockRestore(); }
 });

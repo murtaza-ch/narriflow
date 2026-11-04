@@ -3,6 +3,7 @@ import { matchedRoutes } from "hono/route";
 import type { ApiEnv } from "./http/env";
 import { payloadTooLargeResponse, requestIdOf } from "./http/errors";
 import { type BodyLimitClass, limitBody, ORDINARY_BODY_CAP_BYTES } from "./http/limits";
+import { checkElevenLabsSignatureHeader } from "./domains/projects/elevenlabs-signature";
 
 const BODY_CLASS = Symbol.for("narriflow.api.bodyClass");
 
@@ -42,7 +43,14 @@ export function routeBodyLimit(fallback: BodyLimitClass = "control"): Middleware
     control: limitBody("control"),
     webhook: limitBody("webhook"),
     editor: limitBody("editor"),
-    providerResult: limitBody("providerResult"),
+    // The one 128 MiB class belongs to the signed ElevenLabs result: a missing or stale
+    // signature header is refused before any of the body is buffered.
+    providerResult: limitBody("providerResult", (request) => {
+      const checked = checkElevenLabsSignatureHeader(request.headers.get("elevenlabs-signature"), Date.now());
+      if (checked.ok) return null;
+      console.warn(JSON.stringify({ level: "warn", message: "elevenlabs_webhook_signature_rejected", reason: checked.reason, stage: "before_body" }));
+      return Response.json({ error: "invalid_signature" }, { status: 401 });
+    }),
   } satisfies Record<BodyLimitClass, MiddlewareHandler<ApiEnv>>;
   return (c, next) => limiters[declaredClass(matchedRoutes(c)) ?? fallback](c, next);
 }

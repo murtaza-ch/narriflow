@@ -1,6 +1,6 @@
 /**
  * Runtime route-registration comparison: composes the real app from the real
- * domain modules (no database, Redis or provider is contacted) and compares
+ * domain modules (no database or provider is contacted) and compares
  * every mounted endpoint with the domains' admission declarations in both
  * directions. Exits non-zero on any undeclared route, phantom declaration,
  * route without its guard, duplicate registration or shadowed literal path.

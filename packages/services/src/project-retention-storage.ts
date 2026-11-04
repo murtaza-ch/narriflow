@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand,HeadObjectCommand,PutObjectCommand,S3Client } from "@aws-sdk/client-s3";
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import { createFetchR2Client } from "./r2-fetch-client";
 import type { ExecutionStorageConfig } from "./execution-storage";
 import type { ProjectDeletionProof } from "./project-retention-execution";
 const invalid=()=>Error("project_deletion_receipt_invalid");
@@ -11,7 +11,7 @@ function encode(key:string,proof:ProjectDeletionProof){if(proof.version!==1||pro
  * it cannot overwrite another receipt or accept a caller-selected URL. */
 export function createProjectDeletionReceiptStorage(config:ExecutionStorageConfig,options:{client?:S3Client}={}){
  if(!/^[a-f0-9]{32}$/.test(config.accountId)||!config.bucket||!config.accessKeyId||!config.secretAccessKey)throw Error("project_deletion_receipt_configuration_invalid");
- const client=options.client??new S3Client({region:"auto",endpoint:`https://${config.accountId}.r2.cloudflarestorage.com`,credentials:{accessKeyId:config.accessKeyId,secretAccessKey:config.secretAccessKey},requestHandler:new FetchHttpHandler({requestTimeout:10000}),requestChecksumCalculation:"WHEN_REQUIRED",responseChecksumValidation:"WHEN_REQUIRED",maxAttempts:1});
+ const client=options.client??createFetchR2Client(config,{requestTimeoutMs:10000,maxAttempts:1});
  return {async writeDeletionReceipt(key:string,proof:ProjectDeletionProof){const bytes=encode(key,proof),sha256=createHash("sha256").update(bytes).digest("hex"),signal=()=>({abortSignal:AbortSignal.timeout(10000)});
   try{const result=await client.send(new PutObjectCommand({Bucket:config.bucket,Key:key,Body:bytes,ContentType:"application/json",IfNoneMatch:"*",Metadata:{"deletion-proof-sha256":sha256}}),signal());if(!result.ETag||!/^"[^"\r\n]+"$/.test(result.ETag))throw Error("project_deletion_receipt_ack_unknown");return;}catch(error){if((error as {$metadata?:{httpStatusCode?:number}}).$metadata?.httpStatusCode!==412&&(error as {name?:string}).name!=="PreconditionFailed")throw error;}
   const head=await client.send(new HeadObjectCommand({Bucket:config.bucket,Key:key}),signal());if(!head.ETag||head.ContentType!=="application/json"||head.ContentLength!==bytes.byteLength||head.Metadata?.["deletion-proof-sha256"]!==sha256)throw invalid();

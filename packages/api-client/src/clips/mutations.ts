@@ -60,7 +60,7 @@ export const clipCommands = {
       .then((response) => response.json());
   },
 
-  /** Permanent. Refused with `clip_has_scheduled_posts` while posts are scheduled or publishing. */
+  /** Permanent. Refused with `clip_has_scheduled_posts` while posts are scheduled or publishing, and with `clip_has_publication_history` once it has review or publishing history. */
   remove(client: ClipsClient, projectId: string, clipId: string) {
     return client.projects[":id"].clips[":clipId"].$delete({ param: { id: projectId, clipId } }).then((response) => response.json());
   },

@@ -1,12 +1,4 @@
-import { getPrismaClient } from "@narriflow/db/client";
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new Error("Database client unavailable");
-  }
-  return prisma;
-}
+import { requirePrisma } from "./require-prisma";
 
 /** Deletes webhook delivery logs older than the retention window. Returns count. */
 export async function purgeOldWebhookDeliveryLogs(

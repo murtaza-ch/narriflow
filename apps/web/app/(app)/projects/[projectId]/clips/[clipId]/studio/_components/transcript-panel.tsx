@@ -1,7 +1,6 @@
 "use client";
 
 import { memo, useRef, useEffect, useCallback, useLayoutEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
@@ -968,14 +967,14 @@ export function TranscriptPanel() {
     captionPreset,
     editorDocument,
     setActiveTool,
-  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts", "captionPreset", "editorDocument", "setActiveTool");
+    leaveStudio,
+  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts", "captionPreset", "editorDocument", "setActiveTool", "leaveStudio");
   // The language the transcript was detected (or chosen) in, when it is one the catalog names.
   const spokenLanguageCode = sourceLanguageCodeSchema.safeParse(clipInfo.captionLanguage);
   const spokenLanguageLabel = spokenLanguageCode.success && spokenLanguageCode.data ? getSourceLanguageLabel(spokenLanguageCode.data) : null;
   // The spoken word follows the clip's caption style, so it reads like the captions on the video.
   const highlight = useMemo(() => transcriptHighlight(captionPreset), [captionPreset]);
   const { openUpgrade } = useUpgrade();
-  const router = useRouter();
   const studioApi = useStudioApi();
   const studioRuntime = studioApi?.runtime;
   // One intent for "Create clip": pressing it again over the same selection after a lost response reuses its key.
@@ -1289,7 +1288,7 @@ export function TranscriptPanel() {
         action: {
           label: "Open",
           onClick: () => {
-            router.push(`/projects/${clipInfo.projectId}/clips/${newClip.id}/studio`);
+            leaveStudio(`/projects/${clipInfo.projectId}/clips/${newClip.id}/studio`);
           },
         },
       });
@@ -1303,7 +1302,7 @@ export function TranscriptPanel() {
       creatingClipRef.current = false;
       setCreatingClip(false);
     }
-  }, [clipInfo.projectId, clipInfo.id, dismissSelection, router, studioApi, selectionClipIntent]);
+  }, [clipInfo.projectId, clipInfo.id, dismissSelection, leaveStudio, studioApi, selectionClipIntent]);
 
   // ⌫ deletes the transcript selection, and ⇧⌘C (⇧Ctrl+C on Windows/Linux)
   // creates a clip from it, ONLY when a selection is active — otherwise

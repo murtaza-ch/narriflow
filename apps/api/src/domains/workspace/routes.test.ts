@@ -59,6 +59,7 @@ function deps(over: Partial<WorkspaceRouteDeps> = {}) {
       })),
       updateWorkspace: mock(async (_u: string, _w: string, input: { name: string; timezone?: string }) => ({ id: WORKSPACE, ...input })),
       getAvatarUrls: mock(async () => ({})),
+      presignAvatarUrls: mock(async () => ({})),
       listMembers: mock(async () => ({
         members: [{ id: MEMBER, role: "editor", joinedAt: new Date("2029-03-01T00:00:00Z"), user: { id: "u2", primaryEmail: "e@example.com", firstName: null, lastName: null, imageUrl: null } }],
         invites: [{ id: INVITE, email: "i@example.com", role: "viewer", expiresAt: new Date("2030-01-01T00:00:00Z"), createdAt: new Date("2029-12-25T00:00:00Z") }],

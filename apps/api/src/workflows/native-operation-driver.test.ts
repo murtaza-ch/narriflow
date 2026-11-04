@@ -64,3 +64,13 @@ test("a pending watchdog cannot be bypassed by the automatic postcommit collecto
   expect(await runWorkflowCommand(()=>withExecutionDispatches(()=>run({reference,wake:{type:"start"}}),{database,deliver:async()=>{automatic++;}}))).toEqual({type:"sleep",until:new Date(now+1000).toISOString()});
   expect(batches).toEqual([[deliveryId]]);expect(automatic).toBe(0);
 });
+
+test("the acquisition watch starts only after the heavy call is confirmed and never for a live lease",async()=>{
+  const watched:string[]=[];
+  const confirmed=async(ids:readonly string[])=>ids.map(dispatchId=>({status:"acknowledged" as const,dispatchId,destinationId:"fixture"}));
+  const run=(kind:"operation"|"lease")=>createNativeOperationDriver({now:()=>now,prepare:async()=>({kind:"waiting",deadline:{...deadline,kind},deliveryId,dispatchIds:[deliveryId,deadline.reference.dispatchId]}),
+    expire:async()=>{throw Error("not_due");},deliver:confirmed,watchAcquisition:async value=>{watched.push(value.attemptToken);}})({reference,wake:{type:"start"}});
+  expect(await run("operation")).toMatchObject({type:"wait",until:deadline.observedDeadlineAt});
+  await run("lease");
+  expect(watched).toEqual([deadline.attemptToken]);
+});

@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  abandonedUploadResumes,
+  clearUploadResume,
   createPendingUploadResume,
   loadUploadResume,
-  parseStoredUploadResume,
+  markUploadResumeIdle,
+  parseStoredUploadResumes,
   saveUploadResume,
+  UPLOAD_ACTIVE_WINDOW_MS,
   UPLOAD_RESUME_STORAGE_KEY,
   UPLOAD_RESUME_VERSION,
   type UploadResumeStorage,
@@ -24,19 +28,17 @@ function memoryStorage(): UploadResumeStorage & { values: Map<string, string> } 
   };
 }
 
-describe("Upload Session browser resume record", () => {
+function pending(fingerprint = FINGERPRINT) {
+  return createPendingUploadResume({ clientIdempotencyKey: CLIENT_KEY, fingerprint, fileName: "source.mp4", title: "Source" });
+}
+
+describe("Upload Session browser resume records", () => {
   test("writes a client intent before the server returns a session", () => {
-    const record = createPendingUploadResume({
-      clientIdempotencyKey: CLIENT_KEY,
-      fingerprint: FINGERPRINT,
-      fileName: "source.mp4",
-      title: "Source",
-    });
     const storage = memoryStorage();
 
-    saveUploadResume(storage, record);
+    saveUploadResume(storage, pending());
 
-    expect(JSON.parse(storage.values.get(UPLOAD_RESUME_STORAGE_KEY)!)).toEqual({
+    expect(JSON.parse(storage.values.get(UPLOAD_RESUME_STORAGE_KEY)!)).toEqual([{
       version: UPLOAD_RESUME_VERSION,
       clientIdempotencyKey: CLIENT_KEY,
       sessionId: null,
@@ -44,64 +46,58 @@ describe("Upload Session browser resume record", () => {
       fingerprint: FINGERPRINT,
       fileName: "source.mp4",
       title: "Source",
-    });
+      openRequest: null,
+      transferActiveAt: null,
+    }]);
   });
 
-  test("loads the same client key only for the exact selected file", () => {
+  test("keeps one record per file, so choosing another file loses neither", () => {
     const storage = memoryStorage();
-    saveUploadResume(storage, {
-      ...createPendingUploadResume({
-        clientIdempotencyKey: CLIENT_KEY,
-        fingerprint: FINGERPRINT,
-        fileName: "source.mp4",
-        title: "Source",
-      }),
-      sessionId: SESSION_ID,
-      projectId: PROJECT_ID,
-    });
+    saveUploadResume(storage, { ...pending(), sessionId: SESSION_ID, projectId: PROJECT_ID });
+    saveUploadResume(storage, pending("other-file"));
 
-    expect(loadUploadResume(storage, FINGERPRINT)).toMatchObject({
-      clientIdempotencyKey: CLIENT_KEY,
-      sessionId: SESSION_ID,
-      projectId: PROJECT_ID,
-    });
-    expect(loadUploadResume(storage, "other-file")).toBeNull();
+    expect(loadUploadResume(storage, FINGERPRINT)).toMatchObject({ sessionId: SESSION_ID, projectId: PROJECT_ID });
+    expect(loadUploadResume(storage, "other-file")).toMatchObject({ sessionId: null });
+    expect(loadUploadResume(storage, "unsaved-file")).toBeNull();
+
+    saveUploadResume(storage, { ...pending("other-file"), title: "Renamed" });
+    expect(parseStoredUploadResumes(storage.values.get(UPLOAD_RESUME_STORAGE_KEY)!)).toHaveLength(2);
+
+    clearUploadResume(storage, FINGERPRINT);
+    expect(loadUploadResume(storage, FINGERPRINT)).toBeNull();
+    clearUploadResume(storage, "other-file");
     expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(false);
   });
 
-  test("rejects corrupt and other-version records without exposing provider details", () => {
-    expect(parseStoredUploadResume("not-json", FINGERPRINT)).toEqual({
-      kind: "discard",
-      reason: "corrupt",
-    });
-    expect(
-      parseStoredUploadResume(
-        JSON.stringify({
-          version: 2,
-          fingerprint: FINGERPRINT,
-          uploadId: "opaque-provider-id",
-          key: "private/object/key",
-        }),
-        FINGERPRINT,
-      ),
-    ).toEqual({ kind: "discard", reason: "corrupt" });
+  test("a record is abandoned unless another tab's transfer reported recently", () => {
+    const storage = memoryStorage(), now = 10 * UPLOAD_ACTIVE_WINDOW_MS;
+    saveUploadResume(storage, pending());
+    saveUploadResume(storage, { ...pending("idle") });
+    saveUploadResume(storage, { ...pending("live"), transferActiveAt: now - UPLOAD_ACTIVE_WINDOW_MS });
+    saveUploadResume(storage, { ...pending("stale"), transferActiveAt: now - UPLOAD_ACTIVE_WINDOW_MS - 1 });
 
-    const current = JSON.stringify({
-      ...createPendingUploadResume({
-        clientIdempotencyKey: CLIENT_KEY,
-        fingerprint: FINGERPRINT,
-        fileName: "source.mp4",
-        title: "Source",
-      }),
+    expect(abandonedUploadResumes(storage, FINGERPRINT, now).map((record) => record.fingerprint)).toEqual(["idle", "stale"]);
+
+    markUploadResumeIdle(storage, "live");
+    expect(loadUploadResume(storage, "live")?.transferActiveAt).toBeNull();
+  });
+
+  test("drops corrupt and other-version records without exposing provider details", () => {
+    expect(parseStoredUploadResumes("not-json")).toEqual([]);
+    expect(parseStoredUploadResumes(JSON.stringify({ version: 1, fingerprint: FINGERPRINT }))).toEqual([]);
+    expect(
+      parseStoredUploadResumes(JSON.stringify([{ version: 1, fingerprint: FINGERPRINT, uploadId: "opaque-provider-id", key: "private/object/key" }])),
+    ).toEqual([]);
+
+    const [record] = parseStoredUploadResumes(JSON.stringify([{
+      ...pending(),
       providerUploadId: "must-not-survive",
       storageKey: "must/not/survive",
       etags: ["must-not-survive"],
-    });
-    const parsed = parseStoredUploadResume(current, FINGERPRINT);
-    expect(parsed.kind).toBe("resume");
-    if (parsed.kind !== "resume") throw new Error("expected resume record");
-    expect(parsed.record).not.toHaveProperty("providerUploadId");
-    expect(parsed.record).not.toHaveProperty("storageKey");
-    expect(parsed.record).not.toHaveProperty("etags");
+    }]));
+    expect(record).toBeDefined();
+    expect(record).not.toHaveProperty("providerUploadId");
+    expect(record).not.toHaveProperty("storageKey");
+    expect(record).not.toHaveProperty("etags");
   });
 });

@@ -11,6 +11,9 @@ export function resolvePostAuthRedirect(
     const target = new URL(redirectUrl, appOrigin);
     if (target.username || target.password) return fallback;
     if (target.origin === new URL(appOrigin).origin) {
+      // `/.//evil.example/x` resolves same-origin but yields the pathname `//evil.example/x`,
+      // which `router.replace` reads as a protocol-relative URL. Backslashes are slashes to browsers.
+      if (target.pathname.startsWith("//") || redirectUrl.includes("\\")) return fallback;
       const path = decodeURIComponent(target.pathname).replace(/\/+$/, "") || "/";
       if (
         (path === "/" && target.searchParams.has("auth")) ||

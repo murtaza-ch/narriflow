@@ -23,6 +23,7 @@ import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationContex
 import { WorkflowFailure } from "./workflow-attempt-contract";
 import { appendWorkflowEvent } from "./workflow-event-append";
 import { flushProjectProgressDrains } from "./progress-outbox";
+import { sha256Hex } from "./execution-hash";
 
 type Tx = Prisma.TransactionClient;
 interface Dependencies {
@@ -159,7 +160,7 @@ export class DubbingExecution extends WorkflowRunLifecycle {
     if (evidence.stage === "translation_intent") {
       if (!translated || state.dub.translationIntentArtifactId || state.dub.translationResultArtifactId) throw new ExecutorControlError("artifact_invalid");
       const body = new TextEncoder().encode(JSON.stringify(dubTranslationRequestBody(state.request)));
-      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", body)), byte => byte.toString(16).padStart(2, "0")).join("");
+      const hash = await sha256Hex(body);
       if (evidence.bodySha256 !== hash) throw new ExecutorControlError("artifact_invalid");
       await tx.clipDub.update({ where: { id: state.dub.id }, data: { translationIntentArtifactId: artifact.artifactId } });
     } else if (evidence.stage === "translation_result") {
@@ -173,7 +174,7 @@ export class DubbingExecution extends WorkflowRunLifecycle {
       if (!state.dub.translationResultArtifactId || !state.dub.translatedText || state.dub.speechIntentArtifactId || state.dub.audioArtifactId) throw new ExecutorControlError("artifact_invalid");
       await checkpointObject(tx, state.dub.translationResultArtifactId, input.requestHash, "translation_result", state.run.id);
       const body = new TextEncoder().encode(JSON.stringify(dubSpeechRequestBody(state.request, state.dub.translatedText)));
-      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", body)), byte => byte.toString(16).padStart(2, "0")).join("");
+      const hash = await sha256Hex(body);
       if (evidence.bodySha256 !== hash) throw new ExecutorControlError("artifact_invalid");
       await tx.clipDub.update({ where: { id: state.dub.id }, data: { speechIntentArtifactId: artifact.artifactId } });
     } else {
@@ -247,7 +248,7 @@ export class DubbingExecution extends WorkflowRunLifecycle {
     await tx.workflowRun.update({ where: { id: state.run.id }, data: { status: state.run.status === "cancelled" ? "cancelled" : "failed", progress: 100, errorCode: code, requestedCount: 1, succeededCount: 0, failedCount: 1,
       leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, nextPollAt: null } });
     await appendWorkflowEvent(tx, { workflowRunId: state.run.id, projectId: state.run.projectId, attemptId: state.run.attemptId ?? state.dub.workflowAttemptId ?? state.dub.id,
-      stage: "dubbing", status: "failed", progress: 100, errorCode: code, transition: "terminal:failed", analyticsRequired: true }, { progressRequired: true, analyticsEnabled: true });
+      stage: "dubbing", status: "failed", progress: 100, errorCode: code, transition: "terminal:failed" });
     const wake = await appendExecutionDispatch(tx, { ...reference, kind: "operation_driver", dueAt: state.now, wakeKind: "execution_finished" });
     collectExecutionDispatch(tx, wake.reference.dispatchId);return { dispatchIds: [wake.reference.dispatchId] };
   }

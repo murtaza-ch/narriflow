@@ -162,8 +162,9 @@ async def pin_source(invocation: dict) -> dict:
                                operation=run_pin_source, max_operation_seconds=2700)
 
 
+# Every render group waits on one preparation, so preparation scales with rendering.
 @app.function(image=render_image, secrets=[executor_secret], timeout=2700,
-              max_containers=8, restrict_modal_access=True, **LEAN_RESOURCES)
+              max_containers=80, restrict_modal_access=True, **LEAN_RESOURCES)
 async def prepare_clip(invocation: dict) -> dict:
     from narriflow_media.entrypoint import invoke_native, native_client
     from narriflow_media.clip_preparation_runtime import run_prepare_clip

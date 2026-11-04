@@ -35,7 +35,7 @@ function fixture() {
         extra: { narriflowPrincipal: principal } };
     } },
     allowedHosts: () => [http.url.hostname], allowedOrigins: () => [http.url.origin], resourceMetadataUrl: () => `${http.url.origin}/.well-known/oauth-protected-resource/mcp`,
-    checkRateLimit: async () => ({ allowed: true, remaining: 299, limit: 300, availability: "available" }), diagnostic: () => {},
+    authFailureThrottle: () => ({ exhausted: async () => false, recordFailure: async () => {}, retryAfterSeconds: 60 }), checkRateLimit: async () => ({ allowed: true, remaining: 299, limit: 300, availability: "available" }), diagnostic: () => {},
     buildServer: () => {
       const server = new NarriflowMcpServer({ name: "remote-gate", version: "1" }, { capabilities: { logging: {} }, requestState: { verify: async (token) => ({ valid: token === "opaque-confirmation" }) } });
       installNarriflowTasks(server, { principal, registry: () => registry });

@@ -7,7 +7,6 @@ import math
 from pathlib import Path
 import re
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlsplit
 
 MAX_SOURCE_BYTES = 10 * 1024 ** 3
 
@@ -45,40 +44,6 @@ class YouTubeSource:
     @property
     def url(self) -> str:
         return f"https://www.youtube.com/watch?v={self.media_id}"
-
-
-def normalize_youtube_source(value: str) -> YouTubeSource:
-    try:
-        if not isinstance(value, str) or len(value) > 2048 or any(ord(char) <= 32 for char in value):
-            raise ValueError()
-        if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
-            return YouTubeSource(value)
-        parsed = urlsplit(value)
-        if parsed.scheme not in {"http", "https"} or parsed.username is not None or parsed.password is not None:
-            raise ValueError()
-        if parsed.port not in {None, 443 if parsed.scheme == "https" else 80}:
-            raise ValueError()
-        host = parsed.hostname
-        path = parsed.path.strip("/").split("/")
-        if host == "youtu.be" and len(path) == 1:
-            media_id = path[0]
-        elif host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
-            if parsed.path == "/watch":
-                ids = parse_qs(parsed.query).get("v", [])
-                if len(ids) != 1:
-                    raise ValueError()
-                media_id = ids[0]
-            elif len(path) == 2 and path[0] in {"shorts", "embed", "live"}:
-                media_id = path[1]
-            else:
-                raise ValueError()
-        else:
-            raise ValueError()
-        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", media_id):
-            raise ValueError()
-        return YouTubeSource(media_id)
-    except (ValueError, TypeError, UnicodeError):
-        raise SourceManifestError("source_url_unsupported") from None
 
 
 def toolchain_versions() -> dict[str, str]:

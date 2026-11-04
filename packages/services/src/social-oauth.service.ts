@@ -1,19 +1,15 @@
 import {fetchSocialProvider} from "./social-provider-http";
 import {readExecutionAdmission} from "./execution-admission";
 import { refreshSocialAccountToken,SocialTokenRefreshError } from "./social-token-refresh";
+import { TokenExchangeRejected } from "./token-exchange-rejected";
 import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { parsePostingSchedule } from "./posting-schedule";
 import { revokeGrantsInTransaction } from "./standing-grant";
 import type { ActorScope } from "./actor-scope";
-import {
-	createCipheriv,
-	createDecipheriv,
-	createHash,
-	randomBytes,
-} from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { createSealedValueCipher } from "./sealed-value-cipher";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
 	socialPlatformSchema,
 	type SocialAccountSnapshot,
@@ -27,11 +23,17 @@ import {
 	readPublishableSocialAccountIds,
 	SOCIAL_DESTINATION_SLOT_WHERE,
 } from "./social-account-eligibility";
+import { requirePrisma } from "./require-prisma";
 
 const CALLBACK_PATH = "/api/social/oauth/callback";
 const DEFAULT_REDIRECT_PATH = "/settings/social-accounts";
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
-const TOKEN_REFRESH_WINDOW_MS = 60 * 1000;
+/** A publication runs up to ~5 minutes (the media CLI's 290 s ceiling), so a
+ * token that expires within 6 minutes is refreshed before the publish starts. */
+const TOKEN_REFRESH_WINDOW_MS = 6 * 60 * 1000;
+const INSTAGRAM_PUBLISH_SCOPES = ["instagram_content_publish", "pages_show_list"];
+const META_PAGE_LIMIT = 100;
+const META_MAX_PAGES = 10;
 const META_GRAPH_VERSION =
 	SOCIAL_PROVIDER_CAPABILITIES.instagram_reels.apiVersion;
 
@@ -39,11 +41,21 @@ export class SocialOAuthError extends Error {
 	code: string;
 	/** The provider's HTTP status when the failure was an HTTP response. */
 	status?: number;
+	/** The OAuth `error` / `error_description` the provider answered with. */
+	providerError?: string;
+	providerDescription?: string;
 
-	constructor(code: string, message: string, status?: number) {
+	constructor(
+		code: string,
+		message: string,
+		status?: number,
+		provider?: { error?: string; description?: string },
+	) {
 		super(message);
 		this.code = code;
 		this.status = status;
+		this.providerError = provider?.error;
+		this.providerDescription = provider?.description;
 	}
 }
 
@@ -75,14 +87,6 @@ export type PublishSocialAccount = {
 	scopes: string[];
 	metadata: Prisma.JsonValue | null;
 };
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) {
-		throw new Error("Database client unavailable");
-	}
-	return prisma;
-}
 
 function requireEnv(name: string) {
 	const value = readServiceEnvironment()[name]?.trim();
@@ -126,40 +130,23 @@ function getTokenCryptoKey() {
 	return createHash("sha256").update(raw).digest();
 }
 
+function tokenCipher() {
+	return createSealedValueCipher(
+		getTokenCryptoKey(),
+		() =>
+			new SocialOAuthError(
+				"social_token_invalid",
+				"Stored social token is not in a supported format",
+			),
+	);
+}
+
 function encryptToken(token: string) {
-	const iv = randomBytes(12);
-	const cipher = createCipheriv("aes-256-gcm", getTokenCryptoKey(), iv);
-	const ciphertext = Buffer.concat([
-		cipher.update(token, "utf8"),
-		cipher.final(),
-	]);
-	return [
-		"v1",
-		iv.toString("base64url"),
-		cipher.getAuthTag().toString("base64url"),
-		ciphertext.toString("base64url"),
-	].join(":");
+	return tokenCipher().seal(token);
 }
 
 function decryptToken(encrypted: string) {
-	const [version, ivRaw, tagRaw, ciphertextRaw] = encrypted.split(":");
-	if (version !== "v1" || !ivRaw || !tagRaw || !ciphertextRaw) {
-		throw new SocialOAuthError(
-			"social_token_invalid",
-			"Stored social token is not in a supported format",
-		);
-	}
-
-	const decipher = createDecipheriv(
-		"aes-256-gcm",
-		getTokenCryptoKey(),
-		Buffer.from(ivRaw, "base64url"),
-	);
-	decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
-	return Buffer.concat([
-		decipher.update(Buffer.from(ciphertextRaw, "base64url")),
-		decipher.final(),
-	]).toString("utf8");
+	return tokenCipher().open(encrypted);
 }
 
 export async function readSocialProviderJson(response: Response) {
@@ -178,10 +165,22 @@ export async function readSocialProviderJson(response: Response) {
 			"social_oauth_http_failed",
 			`Social provider request failed with status ${response.status}`,
 			response.status,
+			oauthErrorOf(parsed),
 		);
 	}
 
 	return parsed;
+}
+
+/** RFC 6749 section 5.2 error body, as TikTok, Google, LinkedIn and X answer a token request. */
+function oauthErrorOf(body: unknown) {
+	if (!body || typeof body !== "object") return undefined;
+	const { error, error_description: description } = body as Record<string, unknown>;
+	if (typeof error !== "string") return undefined;
+	return {
+		error: error.slice(0, 100),
+		description: typeof description === "string" ? description.slice(0, 300) : undefined,
+	};
 }
 
 type FacebookPageCandidate = {
@@ -205,7 +204,7 @@ export function eligibleFacebookPages(value: unknown): FacebookPageCandidate[] {
 		!Array.isArray(value.data)
 	)
 		return [];
-	return value.data.slice(0, 100).flatMap((candidate) => {
+	return value.data.flatMap((candidate) => {
 		if (!candidate || typeof candidate !== "object") return [];
 		const page = candidate as {
 			id?: unknown;
@@ -238,7 +237,7 @@ export function eligibleFacebookPages(value: unknown): FacebookPageCandidate[] {
 					.slice(0, 32),
 			},
 		];
-	});
+	}).slice(0, 100);
 }
 
 export function grantedFacebookScopes(value: unknown): string[] {
@@ -258,6 +257,25 @@ export function grantedFacebookScopes(value: unknown): string[] {
 	});
 }
 
+/** Every Page the user manages: `limit=100` per request, following Meta's
+ * `paging.next` for at most `META_MAX_PAGES` requests. */
+export async function readMetaPages(
+	url: URL,
+	transport?: typeof fetch,
+): Promise<{ data: unknown[] }> {
+	url.searchParams.set("limit", String(META_PAGE_LIMIT));
+	const data: unknown[] = [];
+	let next: string | null = url.toString();
+	for (let page = 0; next && page < META_MAX_PAGES; page++) {
+		const body = (await readSocialProviderJson(
+			await fetchSocialProvider(next, undefined, transport),
+		)) as { data?: unknown; paging?: { next?: unknown } } | null;
+		if (Array.isArray(body?.data)) data.push(...body.data);
+		next = typeof body?.paging?.next === "string" ? body.paging.next : null;
+	}
+	return { data };
+}
+
 async function postForm(
 	url: string,
 	body: URLSearchParams,
@@ -265,7 +283,6 @@ async function postForm(
 ) {
 	return readSocialProviderJson(
 		await fetchSocialProvider(url, {
-			signal: AbortSignal.timeout(15_000),
 			method: "POST",
 			headers: {
 				"Content-Type": "application/x-www-form-urlencoded",
@@ -324,6 +341,48 @@ function toSnapshot(row: {
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
+}
+
+/** Whether a failed refresh exchange could have rotated the stored tokens.
+ * Google never rotates, and a 4xx from any provider is a refusal before any
+ * rotation; timeouts, 5xx and unreadable answers prove nothing. */
+function refreshMayHaveRotated(platform: string, error: unknown) {
+	if (platform === "youtube_shorts") return false;
+	return !(
+		error instanceof SocialOAuthError &&
+		error.code === "social_oauth_http_failed" &&
+		error.status !== undefined &&
+		error.status >= 400 &&
+		error.status < 500 &&
+		error.status !== 408
+	);
+}
+
+/** A provider that answers a refusal with HTTP 200 and an OAuth error body. */
+function refuseErrorBody(token: Record<string, unknown>) {
+	const provider = oauthErrorOf(token);
+	if (provider && typeof token.access_token !== "string")
+		throw new SocialOAuthError("social_oauth_refresh_invalid", "The provider refused the token refresh", undefined, provider);
+	return token;
+}
+
+/** Whether the provider answered that the refresh grant itself is dead, so only
+ * a reconnect helps: `invalid_grant` (TikTok, Google), an `invalid_token`, or
+ * the `invalid_request` LinkedIn and X use for a revoked, expired or consumed
+ * token. A client misconfiguration (`invalid_client`), a missing parameter,
+ * throttling and 5xx are not. */
+function refreshGrantRefused(error: unknown) {
+	if (!(error instanceof SocialOAuthError)) return false;
+	const { status, providerError, providerDescription } = error;
+	if (status !== undefined && (status < 400 || status >= 500 || status === 408 || status === 429)) return false;
+	if (providerError === "invalid_grant") return true;
+	if (providerError === "invalid_token") return true;
+	return (
+		status === 400 &&
+		providerError === "invalid_request" &&
+		/\b(?:token|grant)\b/i.test(providerDescription ?? "") &&
+		/\b(?:invalid|expired|revoked)\b/i.test(providerDescription ?? "")
+	);
 }
 
 export class SocialOAuthService {
@@ -1038,17 +1097,40 @@ export class SocialOAuthService {
 						fb_exchange_token: shortAccessToken,
 					}),
 			),
-		).catch(() => shortToken)) as Record<string, unknown>;
+		)) as Record<string, unknown>;
 
-		const userAccessToken = String(longToken.access_token ?? shortAccessToken);
-		const pages = (await readSocialProviderJson(
-			await fetchSocialProvider(
-				`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?` +
-					new URLSearchParams({
+		const userAccessToken = String(longToken.access_token ?? "");
+		if (!userAccessToken) {
+			throw new SocialOAuthError(
+				"social_oauth_token_missing",
+				"Meta did not return a long-lived access token",
+			);
+		}
+		// Meta's code exchange returns no `scope`; the grant is read the way the Facebook path does.
+		const grantedScopes = grantedFacebookScopes(
+			await readSocialProviderJson(
+				await fetchSocialProvider(
+					`https://graph.facebook.com/${META_GRAPH_VERSION}/me/permissions?${new URLSearchParams({ access_token: userAccessToken })}`,
+				),
+			),
+		);
+		if (
+			!INSTAGRAM_PUBLISH_SCOPES.every((scope) => grantedScopes.includes(scope))
+		) {
+			throw new SocialOAuthError(
+				"social_instagram_permissions_missing",
+				"Instagram did not grant every required publishing permission",
+			);
+		}
+		const pages = (await readMetaPages(
+			new URL(
+				`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?${new URLSearchParams(
+					{
 						fields:
 							"id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}",
 						access_token: userAccessToken,
-					}),
+					},
+				)}`,
 			),
 		)) as {
 			data?: Array<{
@@ -1076,8 +1158,9 @@ export class SocialOAuthService {
 				avatarUrl: ig.profile_picture_url ?? null,
 				accessToken: page.access_token,
 				refreshToken: null,
-				scopes: scopesFrom(shortToken.scope),
-				expiresAt: expiresAtFromSeconds(longToken.expires_in),
+				scopes: grantedScopes,
+				// A Page token from a long-lived user token has no expiry date; the user token's is not the Page's.
+				expiresAt: null,
 				metadata: {
 					pageId: page.id ?? null,
 					pageName: page.name ?? null,
@@ -1157,8 +1240,8 @@ export class SocialOAuthService {
 				"Facebook did not grant every required Page publishing permission",
 			);
 		}
-		const pages = await readSocialProviderJson(
-			await fetchSocialProvider(
+		const pages = await readMetaPages(
+			new URL(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?${new URLSearchParams(
 					{
 						fields: "id,name,access_token,picture{url},tasks",
@@ -1174,14 +1257,14 @@ export class SocialOAuthService {
 				"No Facebook Page with content publishing access was returned",
 			);
 		}
-		const expiresAt = expiresAtFromSeconds(longToken.expires_in);
+		// A Page token from a long-lived user token has no expiry date; the user token's is not the Page's.
 		if (eligiblePages.length > 1) {
 			return {
 				accounts: [],
 				selection: {
 					pages: eligiblePages,
 					scopes: grantedScopes,
-					expiresAt: expiresAt?.toISOString() ?? null,
+					expiresAt: null,
 				},
 			};
 		}
@@ -1197,7 +1280,7 @@ export class SocialOAuthService {
 				accessToken: page.accessToken,
 				refreshToken: null,
 				scopes: grantedScopes,
-				expiresAt,
+				expiresAt: null,
 				metadata: {
 					pageId: page.id,
 					pageName: page.name ?? null,
@@ -1377,8 +1460,18 @@ export class SocialOAuthService {
   for(const key of refreshEnvironment[observed.platform]??[])requireEnv(key);
   try{return await refreshSocialAccountToken({database,accountId,refreshWindowMs:TOKEN_REFRESH_WINDOW_MS,exchange:async row=>{
    const refreshToken=decryptToken(row.refreshTokenEncrypted!);
-   const refreshed=row.platform==="tiktok"?await this.refreshTikTok(refreshToken):row.platform==="youtube_shorts"?await this.refreshGoogle(refreshToken):row.platform==="linkedin"?await this.refreshLinkedIn(refreshToken):await this.refreshX(refreshToken);
-   if(!refreshed.accessToken.trim())throw new SocialOAuthError("social_oauth_refresh_invalid","The provider refresh response had no access token");
+   const resealed=()=>({accessTokenEncrypted:encryptToken(decryptToken(row.accessTokenEncrypted)),refreshTokenEncrypted:encryptToken(refreshToken)});
+   let refreshed:OAuthToken;
+   try{
+    refreshed=row.platform==="tiktok"?await this.refreshTikTok(refreshToken):row.platform==="youtube_shorts"?await this.refreshGoogle(refreshToken):row.platform==="linkedin"?await this.refreshLinkedIn(refreshToken):await this.refreshX(refreshToken);
+    if(!refreshed.accessToken.trim())throw new SocialOAuthError("social_oauth_refresh_invalid","The provider refresh response had no access token");
+   }catch(error){
+    const detail=error instanceof SocialOAuthError?{status:error.status,providerError:error.providerError}:{};
+    // A dead grant never recovers by retrying: expire the account so the user reconnects.
+    if(refreshGrantRefused(error)){console.warn(JSON.stringify({level:"warn",message:"social_token_refresh_grant_refused",accountId:row.id,platform:row.platform,...detail}));throw new TokenExchangeRejected(new SocialOAuthError("social_account_expired","The provider no longer accepts this connection. Reconnect this social account."),resealed(),true);}
+    if(!refreshMayHaveRotated(row.platform,error)){console.warn(JSON.stringify({level:"warn",message:"social_token_refresh_rejected",accountId:row.id,platform:row.platform,...detail}));throw new TokenExchangeRejected(error,resealed());}
+    throw error;
+   }
    return {accessTokenEncrypted:encryptToken(refreshed.accessToken),refreshTokenEncrypted:refreshed.refreshToken===undefined?row.refreshTokenEncrypted:refreshed.refreshToken?encryptToken(refreshed.refreshToken):null,expiresAt:refreshed.expiresAt??null,scopes:refreshed.scopes.length?refreshed.scopes:row.scopes};
   }});}catch(error){
    if(error instanceof SocialTokenRefreshError)throw new SocialOAuthError(error.code,error.code==="social_account_refresh_unconfirmed"?"The token exchange outcome is unconfirmed. Reconnect this social account.":error.code==="social_account_refresh_in_progress"?"A token exchange is already in progress.":"Connected social account is unavailable.",error.code==="social_account_refresh_in_progress"?503:409);
@@ -1387,7 +1480,7 @@ export class SocialOAuthService {
  }
 
 	private async refreshTikTok(refreshToken: string): Promise<OAuthToken> {
-		const token = (await postForm(
+		const token = refuseErrorBody((await postForm(
 			"https://open.tiktokapis.com/v2/oauth/token/",
 			new URLSearchParams({
 				client_key: requireEnv("TIKTOK_CLIENT_KEY"),
@@ -1395,7 +1488,7 @@ export class SocialOAuthService {
 				grant_type: "refresh_token",
 				refresh_token: refreshToken,
 			}),
-		)) as Record<string, unknown>;
+		)) as Record<string, unknown>);
 		return {
 			accessToken: String(token.access_token ?? ""),
 			refreshToken:
@@ -1408,7 +1501,7 @@ export class SocialOAuthService {
 	}
 
 	private async refreshGoogle(refreshToken: string): Promise<OAuthToken> {
-		const token = (await postForm(
+		const token = refuseErrorBody((await postForm(
 			"https://oauth2.googleapis.com/token",
 			new URLSearchParams({
 				client_id: requireEnv("GOOGLE_CLIENT_ID"),
@@ -1416,7 +1509,7 @@ export class SocialOAuthService {
 				grant_type: "refresh_token",
 				refresh_token: refreshToken,
 			}),
-		)) as Record<string, unknown>;
+		)) as Record<string, unknown>);
 		return {
 			accessToken: String(token.access_token ?? ""),
 			refreshToken: undefined,
@@ -1426,7 +1519,7 @@ export class SocialOAuthService {
 	}
 
 	private async refreshLinkedIn(refreshToken: string): Promise<OAuthToken> {
-		const token = (await postForm(
+		const token = refuseErrorBody((await postForm(
 			"https://www.linkedin.com/oauth/v2/accessToken",
 			new URLSearchParams({
 				grant_type: "refresh_token",
@@ -1434,7 +1527,7 @@ export class SocialOAuthService {
 				client_id: requireEnv("LINKEDIN_CLIENT_ID"),
 				client_secret: requireEnv("LINKEDIN_CLIENT_SECRET"),
 			}),
-		)) as Record<string, unknown>;
+		)) as Record<string, unknown>);
 		return {
 			accessToken: String(token.access_token ?? ""),
 			refreshToken:
@@ -1458,11 +1551,11 @@ export class SocialOAuthService {
 					Authorization: `Basic ${Buffer.from(`${requireEnv("X_CLIENT_ID")}:${clientSecret}`).toString("base64")}`,
 				}
 			: undefined;
-		const token = (await postForm(
+		const token = refuseErrorBody((await postForm(
 			"https://api.x.com/2/oauth2/token",
 			body,
 			headers,
-		)) as Record<string, unknown>;
+		)) as Record<string, unknown>);
 		return {
 			accessToken: String(token.access_token ?? ""),
 			refreshToken:

@@ -675,7 +675,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		const run = await prisma.workflowRun.create({
 			data: {
 				projectId: project.id,
-				stage: "clip_detection",
+				stage: "moment_detection",
 				idempotencyKey: randomUUID(),
 				status: "completed",
 			},

@@ -8,6 +8,7 @@ import {
 } from "@narriflow/validators";
 import { saveIssueFor } from "./save-issue";
 import {
+  CLOSE_CHECKPOINT_TIMEOUT_MS,
   createStudioEditingSession,
   type StudioCloudSaveOutcome,
   type StudioCloudResetOutcome,
@@ -268,6 +269,7 @@ async function makeSession(
 ) {
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -515,6 +517,112 @@ test("close attempts one keepalive only when dirty and no regular save is active
   ]);
 });
 
+test("closing on unmount saves through the regular save path and never uses keepalive", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const removed: unknown[] = [];
+  const session = await makeSession(cloud, new ManualRuntime(), "writer", {
+    load: async () => null,
+    write: async () => "written",
+    remove: async (key) => {
+      removed.push(key);
+      return "removed";
+    },
+  });
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+
+  const closing = session.perform({ type: "close", reason: "unmount" });
+  await waitUntil(() => cloud.saves.length === 1);
+  expect(cloud.saves[0]).toMatchObject({
+    baseRevision: 3,
+    document: { brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  cloud.acknowledge(0, 4);
+
+  expect(await closing).toEqual({ kind: "closed" });
+  expect(cloud.keepalives).toHaveLength(0);
+  expect(session.getSnapshot().status).toBe("closed");
+  expect(session.getSnapshot().cloud).toMatchObject({ revision: 4, dirty: false });
+  // Saved and current: nothing newer than the cloud copy is left on the device.
+  expect(removed).not.toEqual([]);
+});
+
+test("closing on unmount keeps an in-flight save's response and still sends the newest edit", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  const checkpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/b.mp4" },
+  });
+
+  const closing = session.perform({ type: "close", reason: "unmount" });
+  cloud.acknowledge(0, 4);
+  await waitUntil(() => cloud.saves.length === 2);
+  // Built on the acknowledged revision: the first response was not dropped into a conflict.
+  expect(cloud.saves[1]).toMatchObject({
+    baseRevision: 4,
+    document: { brollUrl: "https://cdn.example.com/b.mp4" },
+  });
+  cloud.acknowledge(1, 5);
+
+  expect(await closing).toEqual({ kind: "closed" });
+  await checkpoint;
+  expect(cloud.keepalives).toHaveLength(0);
+  expect(session.getSnapshot().cloud).toMatchObject({ revision: 5, dirty: false });
+});
+
+test("closing on unmount gives up after the checkpoint timeout and leaves the Device Draft", async () => {
+  const runtime = new ManualRuntime();
+  const cloud = new ControlledCloud(3, makeDocument());
+  const written: Array<{ document: unknown; baseRevision: number }> = [];
+  const session = await makeSession(cloud, runtime, "writer", {
+    load: async () => null,
+    write: async (record) => {
+      written.push({ document: record.document, baseRevision: record.baseRevision });
+      return "written";
+    },
+    remove: async () => "removed",
+  });
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+
+  const closing = session.perform({ type: "close", reason: "unmount" });
+  await waitUntil(() => cloud.saves.length === 1);
+  runtime.advance(CLOSE_CHECKPOINT_TIMEOUT_MS);
+
+  expect(await closing).toEqual({ kind: "closed" });
+  expect(cloud.keepalives).toHaveLength(0);
+  expect(written.at(-1)).toMatchObject({
+    baseRevision: 3,
+    document: expect.objectContaining({ brollUrl: "https://cdn.example.com/a.mp4" }),
+  });
+});
+
+test("a page hide during an unmount checkpoint closes at once", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  const closing = session.perform({ type: "close", reason: "unmount" });
+  await waitUntil(() => cloud.saves.length === 1);
+
+  expect(await session.perform({ type: "close", reason: "pagehide" })).toEqual({ kind: "closed" });
+  expect(await closing).toEqual({ kind: "closed" });
+  expect(session.getSnapshot().status).toBe("closed");
+});
+
 test("a close-time write that cannot be sent leaves the Device Draft as the recoverable copy", async () => {
   const cloud = new ControlledCloud(3, makeDocument());
   // The transport reports nothing sent (no token snapshot, body over the keepalive budget).
@@ -548,10 +656,11 @@ test("a close-time write that cannot be sent leaves the Device Draft as the reco
 
 test("close rejects new edits while its final Device Draft is still writing", async () => {
   const cloud = new ControlledCloud(3, makeDocument());
+  const runtime = new ManualRuntime();
   const draftWrite = deferred<"written" | "stale">();
   const session = await makeSession(
     cloud,
-    new ManualRuntime(),
+    runtime,
     "writer",
     {
       load: async () => null,
@@ -563,7 +672,10 @@ test("close rejects new edits while its final Device Draft is still writing", as
     type: "document.edit",
     action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
   });
-  const close = session.perform({ type: "close", reason: "navigation" });
+  const close = session.perform({ type: "close", reason: "unmount" });
+  // The checkpoint is stuck behind the Device Draft write; the timeout releases the close.
+  runtime.advance(CLOSE_CHECKPOINT_TIMEOUT_MS);
+  await waitUntil(() => session.getSnapshot().status === "closed");
   expect(
     session.dispatch({
       type: "document.edit",
@@ -572,6 +684,32 @@ test("close rejects new edits while its final Device Draft is still writing", as
   ).toEqual({ accepted: false, reason: "closed" });
   draftWrite.resolve("written");
   expect(await close).toEqual({ kind: "closed" });
+});
+
+test("closing after the Studio already waited to leave does not wait again", async () => {
+  const runtime = new ManualRuntime();
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, runtime);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  // No clock advance: a close that waited for the checkpoint would never settle here.
+  expect(await session.perform({ type: "close", reason: "navigation" })).toEqual({ kind: "closed" });
+  expect(session.getSnapshot().status).toBe("closed");
+});
+
+test("closing while offline does not wait for a checkpoint that cannot run", async () => {
+  const runtime = new ManualRuntime();
+  runtime.online = false;
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, runtime);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  expect(await session.perform({ type: "close", reason: "unmount" })).toEqual({ kind: "closed" });
+  expect(cloud.saves).toHaveLength(0);
 });
 
 test("reconnect wakes an offline checkpoint immediately", async () => {
@@ -911,7 +1049,7 @@ test("blocks edits for ordered-array conflicts and keeping cloud starts fresh", 
     history: { canUndo: false, canRedo: false },
     cloud: { state: "current", revision: 4, dirty: false },
   });
-  expect(removed).toContainEqual({ key: "project:clip", generation: 1 });
+  expect(removed).toContainEqual({ key: "user:project:clip", generation: 1 });
 });
 
 test("refreshes and converges a newer cloud head before bfcache editing resumes", async () => {
@@ -1150,6 +1288,7 @@ test("waits for startup recovery before preparing the exact cloud revision", asy
   const runtime = new ManualRuntime();
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -1187,7 +1326,8 @@ test("waits for startup recovery before preparing the exact cloud revision", asy
 
   draftLoad.resolve({
     formatVersion: 1,
-    key: "project:clip",
+    key: "user:project:clip",
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     baseRevision: 3,

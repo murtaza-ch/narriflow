@@ -4,9 +4,9 @@ import {
   type PaidPricingTier,
   type PricingTier,
 } from "@narriflow/validators";
+import { createInMemoryWorkspaceBillingStore } from "./workspace-billing.memory-store-test-support";
 import {
   createBillingCatalog,
-  createInMemoryWorkspaceBillingStore,
   createWorkspaceBillingModule,
   projectWorkspaceAccessStatus,
   type ProviderCheckoutSession,
@@ -833,13 +833,152 @@ describe("Workspace Billing", () => {
       {
         itemId: "si_seat",
         quantity: 2,
-        key: "workspace-seat-workspace-seats-sub_seats-monthly-1",
+        key: "workspace-seat-workspace-seats-sub_seats-monthly-1-2",
       },
     ]);
     expect(result.view).toMatchObject({
       desiredAdditionalSeats: 2,
       synchronizedAdditionalSeats: 2,
     });
+  });
+
+  test("a seat retry that counts a different quantity never reuses the provider key", async () => {
+    const memory = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-seat-key",
+        personal: false,
+        hasNonOwnerMembers: true,
+        pricingTier: "business",
+        status: "active",
+        providerCustomerId: "cus_seat_key",
+        desiredAdditionalSeats: 2,
+      },
+    ]);
+    let desired = 2;
+    const keys: string[] = [];
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      // The count and the revision are separate reads, so one revision can
+      // arrive with two different quantities.
+      store: { ...memory, readDesiredSeatState: async () => ({ desired, revision: 7 }) },
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_seat_key",
+          ownership: { kind: "verified", workspaceId: "workspace-seat-key" },
+          subscriptions: [
+            {
+              id: "sub_seat_key",
+              status: "active",
+              items: [
+                { id: "si_base", priceId: "price_business_monthly", quantity: 1 },
+                { id: "si_seat", priceId: "price_business_seat_monthly", quantity: 1 },
+              ],
+              createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
+              currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+        updateSeatItem: async (_input, idempotencyKey) => {
+          keys.push(idempotencyKey);
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    await billing.reconcileCurrentState("workspace-seat-key");
+    desired = 3;
+    await billing.reconcileCurrentState("workspace-seat-key");
+
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  test("a deleted customer ends paid access and a new Checkout can start", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-customer-deleted",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+        ownerUserId: "owner-customer-deleted",
+      },
+    ]);
+    let deleted = false;
+    let customers = 0;
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async (customerId) => ({
+          customerId,
+          ownership: deleted
+            ? { kind: "customer_deleted" }
+            : { kind: "verified", workspaceId: "workspace-customer-deleted" },
+          subscriptions: [],
+        }),
+        findCustomersByWorkspace: async () => [],
+        createCustomer: async () => {
+          customers += 1;
+          return { customerId: `cus_${customers}` };
+        },
+        findCheckoutSessionsByAttempt: async () => [],
+        createCheckoutSession: async (input) => ({
+          sessionId: `cs_${input.attemptId}`,
+          url: "https://checkout.stripe.test/customer-deleted",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open",
+          paymentStatus: "unpaid",
+          workspaceId: input.workspaceId,
+          attemptId: input.attemptId,
+        }),
+        retrieveCheckoutSession: async (sessionId) => ({
+          sessionId,
+          url: null,
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "complete",
+          paymentStatus: "paid",
+          workspaceId: "workspace-customer-deleted",
+        }),
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    const checkout = (clientIdempotencyKey: string) =>
+      billing.startCheckout({
+        workspaceId: "workspace-customer-deleted",
+        actorUserId: "owner-customer-deleted",
+        clientIdempotencyKey,
+        targetTier: "creator",
+        interval: "monthly",
+        returnDestination: "/settings/billing",
+      });
+    await checkout("before-deletion");
+
+    deleted = true;
+    expect(await billing.reconcileCurrentState("workspace-customer-deleted")).toMatchObject({
+      kind: "reconciled",
+      view: { plan: "free", health: "current", actions: ["start_checkout"] },
+    });
+    expect(await store.readProjection("workspace-customer-deleted")).toMatchObject({
+      providerCustomerId: null,
+      canonicalSubscriptionId: null,
+    });
+
+    deleted = false;
+    expect(await checkout("after-deletion")).toMatchObject({ kind: "checkout" });
+    expect(customers).toBe(2);
   });
 
   test("period-end cancellation keeps paid access and clears after reactivation", async () => {
@@ -1366,7 +1505,7 @@ describe("Workspace Billing", () => {
       { status: "active", viewStatus: "active", plan: "creator", workspaceStatus: "active", health: "current" },
       { status: "trialing", viewStatus: "trial", plan: "creator", workspaceStatus: "active", health: "current" },
       { status: "incomplete", viewStatus: "payment_pending", plan: "free", workspaceStatus: "pending_payment", health: "activating" },
-      { status: "past_due", viewStatus: "payment_past_due", plan: "pro", workspaceStatus: "active", health: "payment_action_required" },
+      { status: "past_due", viewStatus: "payment_past_due", plan: "creator", workspaceStatus: "active", health: "payment_action_required" },
       { status: "unpaid", viewStatus: "payment_failed", plan: "free", workspaceStatus: "active", health: "current" },
       { status: "paused", viewStatus: "paused", plan: "free", workspaceStatus: "active", health: "current" },
       { status: "incomplete_expired", viewStatus: "payment_expired", plan: "free", workspaceStatus: "active", health: "current" },
@@ -1378,7 +1517,7 @@ describe("Workspace Billing", () => {
           workspaceId: `workspace-${expected.status}`,
           personal: true,
           hasNonOwnerMembers: false,
-          pricingTier: expected.status === "past_due" ? "pro" : "free",
+          pricingTier: expected.status === "past_due" ? "creator" : "free",
           status: expected.status === "incomplete" ? "pending_payment" : "active",
           providerCustomerId: `cus_${expected.status}`,
         },

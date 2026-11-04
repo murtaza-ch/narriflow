@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
-import { createBillingCatalog, createInMemoryWorkspaceBillingStore, createWorkspaceBillingModule, type WorkspaceBillingProvider } from "./workspace-billing.service";
+import { createInMemoryWorkspaceBillingStore } from "./workspace-billing.memory-store-test-support";
+import { createBillingCatalog, createWorkspaceBillingModule, type WorkspaceBillingProvider } from "./workspace-billing.service";
 import type { PlanChangeSubscription } from "./workspace-plan-change";
 import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./workspace-plan-change-stripe";
 

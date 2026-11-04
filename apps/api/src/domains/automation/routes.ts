@@ -85,7 +85,7 @@ export function createAutomationRoutes(deps: AutomationRouteDeps) {
         return c.json({ ok: true }, 200);
       })
 
-      .post("/autopilot/rules/:ruleId/take-over", async (c) => {
+      .post("/autopilot/rules/:ruleId/take-over", uuidParams("ruleId"), async (c) => {
         const rule = await autopilotService.takeOver(getActor(c), c.req.param("ruleId"));
         return c.json(rule, 200);
       })
@@ -115,6 +115,7 @@ export function createAutomationRoutes(deps: AutomationRouteDeps) {
 
       .post(
         "/automation/standing-grants/:grantId/renew",
+        uuidParams("grantId"),
         validate("param", standingGrantReferenceSchema),
         validate("json", renewStandingGrantRequestSchema),
         async (c) => {
@@ -125,6 +126,7 @@ export function createAutomationRoutes(deps: AutomationRouteDeps) {
 
       .post(
         "/automation/standing-grants/:grantId/pause",
+        uuidParams("grantId"),
         validate("param", standingGrantReferenceSchema),
         async (c) => {
           await standingGrants.pause(getActor(c), c.req.valid("param").grantId);
@@ -134,6 +136,7 @@ export function createAutomationRoutes(deps: AutomationRouteDeps) {
 
       .post(
         "/automation/standing-grants/:grantId/revoke",
+        uuidParams("grantId"),
         validate("param", standingGrantReferenceSchema),
         async (c) => {
           await standingGrants.revoke(getActor(c), c.req.valid("param").grantId);

@@ -391,8 +391,10 @@ class ExecutorSession:
         if action not in {'read-disposition', 'commit-artifact', 'fail', 'release', 'progress', 'publication-command'} or {'fence', 'action'} & fields.keys():
             raise ExecutionControlError('execution_command_invalid')
         # Auditing never restores permission and remains possible after local
-        # cancellation or an uncertain acknowledgement. Mutations require it.
-        if action != 'read-disposition':
+        # cancellation or an uncertain acknowledgement. Other mutations require it.
+        # Fail and release only report the end of work that already stopped;
+        # the API's fence, not this event, decides whether they still land.
+        if action not in {'read-disposition', 'fail', 'release'}:
             self.assert_live()
         try:
             result = self._client.command({'action': action, 'fence': self._fence, **fields},

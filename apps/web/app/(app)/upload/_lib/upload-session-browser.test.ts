@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { ApiError, apiErrorFromResponse } from "@narriflow/api-client/core";
 import {
   createUploadSessionBrowserAdapter as createAdapterWithControls,
@@ -10,7 +10,15 @@ import {
   uploadRetryDelayMs,
 } from "./upload-session-browser";
 import {
+  createPendingUploadResume,
+  createUploadFileFingerprint,
+  loadUploadResume,
+  parseStoredUploadResumes,
+  saveUploadResume,
+  UPLOAD_ACTIVE_WINDOW_MS,
   UPLOAD_RESUME_STORAGE_KEY,
+  UPLOAD_RESUME_VERSION,
+  type UploadResumeRecord,
   type UploadResumeStorage,
 } from "./upload-resume";
 
@@ -153,7 +161,7 @@ async function runAdapterTransfer(input: AdapterTransferTestInput) {
   if (reconciliationOutcome) {
     const saved = storage?.getItem(UPLOAD_RESUME_STORAGE_KEY);
     const projectId = saved
-      ? (JSON.parse(saved) as { projectId?: string }).projectId
+      ? parseStoredUploadResumes(saved)[0]?.projectId ?? undefined
       : undefined;
     return { ...reconciliationOutcome, projectId };
   }
@@ -186,10 +194,10 @@ describe("Upload Session browser adapter", () => {
       if (url === "/api/upload-sessions/open") {
         const saved = storage.values.get(UPLOAD_RESUME_STORAGE_KEY);
         expect(saved).toBeDefined();
-        expect(JSON.parse(saved!)).toMatchObject({
+        expect(parseStoredUploadResumes(saved!)).toMatchObject([{
           sessionId: null,
           projectId: null,
-        });
+        }]);
         return Response.json({
           outcome: "uploading",
           sessionId: "11111111-1111-4111-8111-111111111111",
@@ -1644,10 +1652,10 @@ describe("Upload Session browser adapter", () => {
       type: "video/mp4",
       lastModified: 92,
     });
-    storage.setItem(
-      UPLOAD_RESUME_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
+    saveUploadResume(storage, {
+        version: UPLOAD_RESUME_VERSION,
+        openRequest: null,
+        transferActiveAt: null,
         clientIdempotencyKey: "22222222-3333-4444-8555-666666666666",
         sessionId: "aaaaaaaa-3333-4333-8333-aaaaaaaaaaaa",
         projectId: "bbbbbbbb-4444-4444-8444-bbbbbbbbbbbb",
@@ -1659,8 +1667,7 @@ describe("Upload Session browser adapter", () => {
         ]),
         fileName: source.name,
         title: "Frozen title",
-      }),
-    );
+    });
     const requests: string[] = [];
     const navigations: string[] = [];
     const adapter = createUploadSessionBrowserAdapter({
@@ -2107,18 +2114,17 @@ describe("Upload Session browser adapter", () => {
       source.type,
       source.lastModified,
     ]);
-    storage.setItem(
-      UPLOAD_RESUME_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
+    saveUploadResume(storage, {
+        version: UPLOAD_RESUME_VERSION,
+        openRequest: null,
+        transferActiveAt: null,
         clientIdempotencyKey: "55555555-6666-4777-8888-999999999999",
         sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         fingerprint,
         fileName: source.name,
         title: "Expired source",
-      }),
-    );
+    });
     const requests: string[] = [];
     const navigations: string[] = [];
     const adapter = createUploadSessionBrowserAdapter({
@@ -2176,10 +2182,10 @@ describe("Upload Session browser adapter", () => {
       type: "audio/wav",
       lastModified: 96,
     });
-    storage.setItem(
-      UPLOAD_RESUME_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
+    saveUploadResume(storage, {
+        version: UPLOAD_RESUME_VERSION,
+        openRequest: null,
+        transferActiveAt: null,
         clientIdempotencyKey: "77777777-8888-4999-8aaa-bbbbbbbbbbbb",
         sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         projectId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
@@ -2191,8 +2197,7 @@ describe("Upload Session browser adapter", () => {
         ]),
         fileName: source.name,
         title: "Unsafe cleanup",
-      }),
-    );
+    });
     const requests: string[] = [];
     const adapter = createUploadSessionBrowserAdapter({
       storage,
@@ -2237,10 +2242,10 @@ describe("Upload Session browser adapter", () => {
       type: "audio/wav",
       lastModified: 98,
     });
-    storage.setItem(
-      UPLOAD_RESUME_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
+    saveUploadResume(storage, {
+        version: UPLOAD_RESUME_VERSION,
+        openRequest: null,
+        transferActiveAt: null,
         clientIdempotencyKey: "89898989-9999-4aaa-8bbb-cccccccccccc",
         sessionId: "aaaaaaaa-dddd-4eee-8fff-bbbbbbbbbbbb",
         projectId: "bbbbbbbb-eeee-4fff-8aaa-cccccccccccc",
@@ -2252,8 +2257,7 @@ describe("Upload Session browser adapter", () => {
         ]),
         fileName: source.name,
         title: "Missing saved session",
-      }),
-    );
+    });
     const requests: string[] = [];
     const adapter = createUploadSessionBrowserAdapter({
       storage,
@@ -2381,16 +2385,172 @@ describe("Upload Session browser adapter", () => {
     ).toMatchObject({ upgrade: { tier: "creator", highlight: "Videos up to 2 hours" } });
   });
 
+  describe("saved uploads and the first open", () => {
+    const SESSION = "11111111-1111-4111-8111-111111111111", PROJECT = "22222222-2222-4222-8222-222222222222";
+    const KEY = "44444444-4444-4444-8444-444444444444";
+    const OTHER_SESSION = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", OTHER_PROJECT = "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb";
+    function otherUpload(fingerprint: string, overrides: Partial<UploadResumeRecord> = {}): UploadResumeRecord {
+      return { ...createPendingUploadResume({ clientIdempotencyKey: "55555555-5555-4555-8555-555555555555", fingerprint, fileName: "other.mp4", title: "Other" }),
+        sessionId: OTHER_SESSION, projectId: OTHER_PROJECT, ...overrides };
+    }
+    function server(calls: Array<{ action: string; body: Record<string, unknown> }>, discard: () => Response = () => Response.json({ outcome: "discarded", sessionId: OTHER_SESSION })): typeof fetch {
+      return async (request, init) => {
+        const url = String(request), action = url.split("/").at(-1)!;
+        if (url.startsWith("/api/upload-sessions/")) calls.push({ action, body: JSON.parse(String(init?.body)) });
+        if (action === "discard") return discard();
+        if (action === "open") return Response.json({ outcome: "uploading", sessionId: SESSION, projectId: PROJECT,
+          transfer: { kind: "single", contentType: "video/mp4", grant: { url: "https://upload.invalid/single", contentType: "video/mp4" } } });
+        if (action === "finalize") return Response.json({ outcome: "queued_for_ingest", sessionId: SESSION, projectId: PROJECT });
+        if (url === "https://upload.invalid/single") return new Response(null, { status: 200 });
+        throw new Error(`Unexpected request: ${url}`);
+      };
+    }
+    const file = (name = "talk.mp4", type = "video/mp4") => new File([new Uint8Array([1, 2, 3, 4])], name, { type, lastModified: 42 });
+    const transfer = (source: File, storage: UploadResumeStorage, fetcher: typeof fetch, extra: Partial<AdapterTransferTestInput> = {}) =>
+      runUploadSessionTransfer({ file: source, title: "Talk", brandTemplateId: null, generationContext: {}, storage, fetcher, ...extra });
+
+    test("a first open that never answered retries open with the saved key, not status", async () => {
+      const storage = memoryStorage(), calls: Array<{ action: string; body: Record<string, unknown> }> = [];
+      const source = file();
+      saveUploadResume(storage, createPendingUploadResume({ clientIdempotencyKey: KEY, fingerprint: createUploadFileFingerprint(source), fileName: source.name, title: "Talk" }));
+      expect(await transfer(source, storage, server(calls))).toEqual({ projectId: PROJECT });
+      expect(calls.map((call) => call.action)).toEqual(["open", "finalize"]);
+      expect(calls[0]?.body.clientIdempotencyKey).toBe(KEY);
+    });
+
+    test("choosing another file discards the abandoned session before opening, so its credits come back", async () => {
+      const storage = memoryStorage(), calls: Array<{ action: string; body: Record<string, unknown> }> = [];
+      saveUploadResume(storage, otherUpload("abandoned"));
+      await transfer(file(), storage, server(calls));
+      expect(calls.map((call) => call.action)).toEqual(["discard", "open", "finalize"]);
+      expect(calls[0]?.body).toEqual({ sessionId: OTHER_SESSION });
+      expect(loadUploadResume(storage, "abandoned")).toBeNull();
+    });
+
+    test("another tab's live transfer is left alone", async () => {
+      const storage = memoryStorage(), calls: Array<{ action: string; body: Record<string, unknown> }> = [], now = Date.now();
+      saveUploadResume(storage, otherUpload("live", { transferActiveAt: now - UPLOAD_ACTIVE_WINDOW_MS / 2 }));
+      await transfer(file(), storage, server(calls), { now: () => now });
+      expect(calls.map((call) => call.action)).toEqual(["open", "finalize"]);
+      expect(loadUploadResume(storage, "live")?.sessionId).toBe(OTHER_SESSION);
+    });
+
+    test("a finalize that outlasts the active window is not abandoned by a second tab", async () => {
+      jest.useFakeTimers();
+      try {
+        const storage = memoryStorage(), calls: Array<{ action: string; body: Record<string, unknown> }> = [];
+        let clock = 5_000_000;
+        const finalizing = Promise.withResolvers<Response>(), finalizeReached = Promise.withResolvers<void>();
+        const slowFinalize: typeof fetch = async (request, init) => {
+          const url = String(request);
+          if (url.endsWith("/finalize")) {
+            finalizeReached.resolve();
+            return finalizing.promise;
+          }
+          return server(calls)(request, init);
+        };
+        const first = transfer(file("first.mp4"), storage, slowFinalize, { now: () => clock });
+        await finalizeReached.promise;
+        for (let step = 0; step < 6; step += 1) {
+          clock += 30_000;
+          jest.advanceTimersByTime(30_000);
+          await Promise.resolve();
+        }
+        expect(clock - 5_000_000).toBeGreaterThan(UPLOAD_ACTIVE_WINDOW_MS);
+        const secondCalls: Array<{ action: string; body: Record<string, unknown> }> = [];
+        await transfer(file("second.mp4"), storage, server(secondCalls), { now: () => clock });
+        expect(secondCalls.map((call) => call.action)).toEqual(["open", "finalize"]);
+        finalizing.resolve(Response.json({ outcome: "queued_for_ingest", sessionId: SESSION, projectId: PROJECT }));
+        await first;
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("an unanswered first open of another file is replayed with its saved request, then discarded", async () => {
+      const storage = memoryStorage(), calls: Array<{ action: string; body: Record<string, unknown> }> = [];
+      const openRequest = { clientIdempotencyKey: "55555555-5555-4555-8555-555555555555", title: "Other" };
+      saveUploadResume(storage, otherUpload("unanswered", { sessionId: null, projectId: null, openRequest }));
+      await transfer(file(), storage, server(calls));
+      expect(calls.map((call) => call.action)).toEqual(["open", "discard", "open", "finalize"]);
+      expect(calls[0]?.body).toEqual(openRequest);
+      expect(calls[1]?.body).toEqual({ sessionId: SESSION });
+      expect(loadUploadResume(storage, "unanswered")).toBeNull();
+    });
+
+    test("an unanswered first open that still cannot be reached keeps its record", async () => {
+      const storage = memoryStorage();
+      const openRequest = { clientIdempotencyKey: "55555555-5555-4555-8555-555555555555", title: "Other" };
+      saveUploadResume(storage, otherUpload("unanswered", { sessionId: null, projectId: null, openRequest }));
+      const unreachable: typeof fetch = async (request, init) => {
+        const url = String(request);
+        if (url.endsWith("/open") && JSON.parse(String(init?.body)).title === "Other") {
+          return Response.json({ error: { code: "upload_session_unavailable" } }, { status: 503 });
+        }
+        return server([])(request, init);
+      };
+      await transfer(file(), storage, unreachable);
+      expect(loadUploadResume(storage, "unanswered")?.openRequest).toEqual(openRequest);
+    });
+
+    test("an outage keeps the record for the next start; a refusal ends it, and neither blocks this upload", async () => {
+      const storage = memoryStorage();
+      saveUploadResume(storage, otherUpload("abandoned"));
+      await transfer(file(), storage, server([], () => Response.json({ error: { code: "upload_session_unavailable" } }, { status: 503 })));
+      expect(loadUploadResume(storage, "abandoned")?.sessionId).toBe(OTHER_SESSION);
+      await transfer(file("second.mp4"), storage, server([], () => Response.json({ error: { code: "upload_session_invalid_state" } }, { status: 409 })));
+      expect(loadUploadResume(storage, "abandoned")).toBeNull();
+    });
+
+    test("a transfer marks its record active while it runs and idle once it stops", async () => {
+      const storage = memoryStorage(), source = file(), seen: Array<number | null | undefined> = [];
+      await transfer(source, storage, server([]), {
+        now: () => 5_000_000,
+        uploadTransport: async ({ onProgress }) => {
+          onProgress(2);
+          seen.push(loadUploadResume(storage, createUploadFileFingerprint(source))?.transferActiveAt);
+          throw new DOMException("Upload paused", "AbortError");
+        },
+      }).catch(() => {});
+      expect(seen).toEqual([5_000_000]);
+      expect(loadUploadResume(storage, createUploadFileFingerprint(source))?.transferActiveAt).toBeNull();
+    });
+
+    test("a single PUT publishes the bytes it has sent", async () => {
+      const storage = memoryStorage(), progress: number[] = [];
+      await transfer(file(), storage, server([]), {
+        uploadTransport: async ({ onProgress }) => {
+          onProgress(1);
+          onProgress(3);
+          return { etag: '"etag"' };
+        },
+        onProgress: (update) => { if (update.stage === "upload") progress.push(update.transferredBytes); },
+      });
+      expect(progress).toEqual([0, 1, 3, 4]);
+    });
+
+    test("opens with the type the server accepts, and refuses one it never will before any request", async () => {
+      const storage = memoryStorage(), calls: Array<{ action: string; body: Record<string, unknown> }> = [];
+      await transfer(file("talk.m4v", "video/x-m4v"), storage, server(calls));
+      expect((calls[0]?.body.source as { contentType: string }).contentType).toBe("video/mp4");
+
+      calls.length = 0;
+      const refused = await transfer(file("talk.avi", "video/x-msvideo"), storage, server(calls)).catch((error: unknown) => error);
+      expect(refused).toMatchObject({ message: expect.stringContaining("Unsupported file type") });
+      expect(calls).toEqual([]);
+    });
+  });
+
   test("dispose stops local verification polling and navigation", async () => {
     const storage = memoryStorage();
     const source = new File([new Uint8Array([1])], "dispose.wav", {
       type: "audio/wav",
       lastModified: 97,
     });
-    storage.setItem(
-      UPLOAD_RESUME_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
+    saveUploadResume(storage, {
+        version: UPLOAD_RESUME_VERSION,
+        openRequest: null,
+        transferActiveAt: null,
         clientIdempotencyKey: "88888888-9999-4aaa-8bbb-cccccccccccc",
         sessionId: "aaaaaaaa-cccc-4ddd-8eee-ffffffffffff",
         projectId: "bbbbbbbb-dddd-4eee-8fff-aaaaaaaaaaaa",
@@ -2402,8 +2562,7 @@ describe("Upload Session browser adapter", () => {
         ]),
         fileName: source.name,
         title: "Dispose polling",
-      }),
-    );
+    });
     let releasePoll!: () => void;
     let announcePoll!: () => void;
     const pollStarted = new Promise<void>((resolve) => {

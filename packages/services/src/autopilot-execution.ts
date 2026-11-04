@@ -15,11 +15,11 @@ import type { ActorScope } from "./actor-scope";
 import { operationFingerprint } from "./operation-receipt";
 import { autopilotCycleInputSchema, autopilotCycleSelectionSchema, type AutopilotCycleInput } from "@narriflow/validators/autopilot-execution";
 import { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 export const AUTOPILOT_CYCLE_DEADLINE_MS = 3600_000;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const clock = async (tx: Tx) => (await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;
 export function autopilotExecutionInputHash(rule: AutopilotRule) {
   return hash(["autopilot-rule-v1", rule.id, rule.deploymentEpoch, rule.generation, rule.executionCycleId, rule.executionInputHash, rule.executionCursor, rule.nextRunAt.toISOString(), rule.executionDueAt?.toISOString(), rule.operationDeadlineAt?.toISOString()]);
 }
@@ -39,7 +39,7 @@ export async function wakeAutopilotProbe(tx: Tx, id: string): Promise<string[]> 
   if (!probe || probe.deploymentEpoch !== epoch || !["completed", "failed", "cancelled"].includes(probe.status)) return [];
   const rule = await tx.autopilotRule.findUnique({ where: { executionProbeId: id } });
   if (!rule || rule.deploymentEpoch !== epoch || !rule.executionCycleId || !["active", "running"].includes(rule.status)) return [];
-  return [(await appendRule(tx, rule, { wakeKind: `rss.${id.replaceAll("-", "")}`, dueAt: await clock(tx) })).dispatchId];
+  return [(await appendRule(tx, rule, { wakeKind: `rss.${id.replaceAll("-", "")}`, dueAt: await databaseNow(tx) })).dispatchId];
 }
 export async function queueAutopilotRule(tx: Tx, id: string): Promise<ExecutionDispatchReference | null> {
   const { epoch } = await readExecutionAdmission(tx);
@@ -98,7 +98,7 @@ export class AutopilotExecution {
       if (rule.deploymentEpoch !== admission.epoch || rule.generation !== reference.generation || autopilotExecutionInputHash(rule) !== reference.inputHash || rule.sourceKind !== "rss" || !["active", "running"].includes(rule.status)) {
         return { result: { kind: "superseded" } as AutopilotExecutionResult, ids: await this.repair(tx,rule) };
       }
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       if (record.observedDeadlineAt && record.observedDeadlineAt > now) return { result: { kind: "sleep", dueAt: record.observedDeadlineAt }, ids: [] };
       if (rule.nextRunAt > now) return { result: { kind: "sleep", dueAt: rule.nextRunAt } as AutopilotExecutionResult, ids: [] };
       if (rule.executionCycleId) {
@@ -215,7 +215,7 @@ export class AutopilotExecution {
   async assertIntakeWithinTransaction(tx: Tx, input: { reference: ExecutionDispatchReference; claimToken: string; scope: ActorScope; episode: RssEpisodeInput }) {
     const { reference } = input;
     if ((await readExecutionAdmission(tx)).epoch !== reference.deploymentEpoch || reference.kind !== "operation_driver" || reference.subject.kind !== "autopilot_rule") throw Error("autopilot_coordinator_superseded");
-    const record = await readExecutionDispatch(tx,reference.dispatchId), row = await tx.autopilotRule.findUnique({ where: { id: reference.subject.id } }), now = await clock(tx);
+    const record = await readExecutionDispatch(tx,reference.dispatchId), row = await tx.autopilotRule.findUnique({ where: { id: reference.subject.id } }), now = await databaseNow(tx);
     if (!record || JSON.stringify(record.reference) !== JSON.stringify(reference) || !row || row.workspaceId !== input.scope.workspaceId || row.createdByUserId !== input.scope.actorUserId || row.status !== "running" || row.deploymentEpoch !== reference.deploymentEpoch || row.generation !== reference.generation || autopilotExecutionInputHash(row) !== reference.inputHash || row.claimToken !== input.claimToken || !row.leaseExpiresAt || row.leaseExpiresAt <= now || !row.operationDeadlineAt || row.operationDeadlineAt <= now) throw Error("autopilot_coordinator_superseded");
     const selection = autopilotCycleSelectionSchema.parse(row.executionSelection);
     if (selection.episodeHashes[row.executionCursor] !== operationFingerprint(input.episode) || !await actorAvailable(tx,row) || await autopilotPlanPauseReason(tx,row)) throw Error("autopilot_coordinator_superseded");
@@ -234,13 +234,13 @@ export class AutopilotExecution {
     await tx.autopilotRule.update({ where: { id: row.id }, data: {
       generation: { increment: 1 }, status: "paused", pauseKind: kind, claimToken: null, leaseExpiresAt: null,
       executionCycleId: null, executionDueAt: null, operationDeadlineAt: null, executionInput: Prisma.DbNull, executionInputHash: null, executionProbeId: null, executionSelection: Prisma.DbNull, executionCursor: 0,
-      lastError: reason, lastCheckedAt: await clock(tx),
+      lastError: reason, lastCheckedAt: await databaseNow(tx),
     } });
     return [];
   }
 
   private async failCycle(tx: Tx, row: AutopilotRule, code: string) {
-    const now = await clock(tx), failures = row.consecutiveFailures + 1;
+    const now = await databaseNow(tx), failures = row.consecutiveFailures + 1;
     const next = await tx.autopilotRule.update({ where: { id: row.id }, data: {
       generation: { increment: 1 }, status: failures >= AUTOPILOT_MAX_CONSECUTIVE_FAILURES || ["rss_invalid_xml","rss_no_media_episodes","rss_unsupported_document","remote_url_unsafe"].includes(code) ? "failed" : "active", claimToken: null, leaseExpiresAt: null,
       executionCycleId: null, executionDueAt: null, operationDeadlineAt: null, executionInput: Prisma.DbNull, executionInputHash: null, executionProbeId: null, executionSelection: Prisma.DbNull, executionCursor: 0,
@@ -250,7 +250,7 @@ export class AutopilotExecution {
   }
 
   private async completeCycle(tx: Tx, row: AutopilotRule, input: AutopilotCycleInput, feed: RssFeedSnapshot, shouldAdvanceCursor: boolean, deferred: boolean) {
-    const now = await clock(tx), head = feed.episodes[0];
+    const now = await databaseNow(tx), head = feed.episodes[0];
     const advance = !deferred && (!input.selectionRule.initializedAt || shouldAdvanceCursor);
     const next = await tx.autopilotRule.update({ where: { id: row.id }, data: { generation: { increment: 1 }, status: "active", executionCycleId: null, executionDueAt: null, operationDeadlineAt: null, executionInput: Prisma.DbNull, executionInputHash: null, executionProbeId: null, executionSelection: Prisma.DbNull, executionCursor: 0, claimToken: null, leaseExpiresAt: null,
       lastCheckedAt: now, lastSuccessAt: now, lastError: null, consecutiveFailures: 0, nextRunAt: new Date(now.getTime()+input.intervalMinutes*60_000),
@@ -265,7 +265,7 @@ export class AutopilotExecution {
     if (!initial) return null;
     await lockRuleActor(tx,initial);
     await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id"=${initial.id}::uuid FOR NO KEY UPDATE`;
-    const row = await tx.autopilotRule.findUniqueOrThrow({ where: { id: initial.id } }), now = await clock(tx);
+    const row = await tx.autopilotRule.findUniqueOrThrow({ where: { id: initial.id } }), now = await databaseNow(tx);
     return row.status === "running" && row.deploymentEpoch === reference.deploymentEpoch && row.generation === reference.generation && autopilotExecutionInputHash(row) === reference.inputHash && row.claimToken === token && row.leaseExpiresAt && row.leaseExpiresAt > now && row.operationDeadlineAt && row.operationDeadlineAt > now ? row : null;
   }
 }

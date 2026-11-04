@@ -194,7 +194,6 @@ export {
 	ProjectService,
 	LinkUnsupportedSourceError,
 	ProjectAccessDeniedError,
-	ProjectDeletionIncompleteError,
 	ProjectHasActivePublicationError,
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
@@ -203,7 +202,6 @@ export {
 } from "./project.service";
 export {
 	createUploadSessionModule,
-	assertUploadProviderLifecyclePrerequisite,
 	defaultUploadSessionConfig,
 	planUploadTransfer,
 	uploadSessionConfigFromEnv,
@@ -255,7 +253,6 @@ export {
 } from "./plan-features";
 export {
 	createBillingCatalog,
-	createInMemoryWorkspaceBillingStore,
 	createPrismaWorkspaceBillingStore,
 	createWorkspaceBillingModule,
 	WorkspaceBillingAttemptLost,
@@ -336,7 +333,6 @@ export {
 	GeneratedMediaService,
 } from "./generated-media-runtime";
 export {
-	reconcileGenerationUsageReservations,
 	summarizeGenerationUsage,
 	type DubUsageSummary,
 	type GeneratedImageUsageSummary,
@@ -443,7 +439,7 @@ export {
 } from "./clip-preview-storage";
 export {
 	getLastWorkflowSeq,
-	getWorkflowEventsSince,
+	getRecentWorkflowEvents,
 	publishPersistedWorkflowEvent,
 } from "./workflow.service";
 export {
@@ -603,7 +599,7 @@ export { reviewsCommands } from "./reviews-commands-runtime";
 export { syncClipExportAggregate, syncClipExportAggregates } from "./clip-export-aggregates";
 
 export * from "./render-group-contract";
-export { RenderGroupLifecycle, RenderGroupAttemptLost, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
+export { RenderGroupLifecycle, RenderGroupAttemptLost, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
 
 export { createPendingBusinessWorkspaceService, type PendingBusinessWorkspaceDependencies } from "./pending-business-workspace.service";
 

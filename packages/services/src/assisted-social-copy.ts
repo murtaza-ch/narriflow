@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	brandVoiceGuidanceSchema,
 	SOCIAL_PROVIDER_CAPABILITIES,
+	socialCaptionLength,
 	type BrandVoiceGuidance,
 	type SocialPlatform,
 } from "@narriflow/validators";
@@ -326,7 +327,7 @@ function validateProviderVariants(
 		const capability = SOCIAL_PROVIDER_CAPABILITIES[platform];
 		if (
 			!caption ||
-			composeAssistedCopyCaption({ caption, hashtags }).length >
+			socialCaptionLength(platform, composeAssistedCopyCaption({ caption, hashtags })) >
 				capability.textLimit
 		) {
 			throw new AssistedSocialCopyError(

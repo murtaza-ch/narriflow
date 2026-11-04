@@ -1,6 +1,7 @@
 import type {
   listUserWorkspaces,
   resolveWorkspaceContext,
+  selectListedWorkspace,
   selectWorkspaceForActor,
 } from "@narriflow/auth";
 import { type projectService } from "@narriflow/services/project.service";
@@ -23,16 +24,17 @@ import { createRouteApp, getSignedInActor } from "../../http/admission";
 import { WORKSPACE_HEADER } from "../../http/request-policy-runtime";
 import { validate } from "../../http/route";
 import { sessionAdmission as access } from "./admission";
-import { readMemberships, toSessionUser, toUsage } from "./projection";
+import { projectMemberships, toSessionUser, toUsage } from "./projection";
 
 /** Services the session routes call. `runtime.ts` supplies the production instances. */
 export interface SessionRouteDeps {
   resolveWorkspaceContext: typeof resolveWorkspaceContext;
+  selectListedWorkspace: typeof selectListedWorkspace;
   selectWorkspaceForActor: typeof selectWorkspaceForActor;
   listUserWorkspaces: typeof listUserWorkspaces;
-  workspaceService: Pick<typeof workspaceService, "getAvatarUrls" | "getInvitePreview">;
+  workspaceService: Pick<typeof workspaceService, "getAvatarUrls" | "presignAvatarUrls" | "getInvitePreview">;
   workspaceMembershipService: Pick<typeof workspaceMembershipService, "acceptInvite">;
-  projectService: Pick<typeof projectService, "getUsageSummary">;
+  projectService: Pick<typeof projectService, "getAuthorizedUsageSummary">;
   /** Validated Clerk origins for client navigation; never request-supplied. */
   authContinuation: AuthContinuationConfig;
 }
@@ -67,27 +69,24 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
       const user = getSignedInActor(c);
       // Identity-only client requests never carry the header, so the hint may also come as a query parameter.
       const hint = c.req.header(WORKSPACE_HEADER)?.trim() || c.req.valid("query").workspaceId;
-      const contextRead = deps.resolveWorkspaceContext({ id: user.actorUserId }, hint);
-      // The shell's credits ride along so it needs no second request. They start
-      // as soon as the Workspace is known and overlap the memberships. A
-      // Workspace this member cannot view gets none: its own bootstrap says why.
-      const usageRead = contextRead.then(async (resolved) =>
-        resolved && workspaceCapabilities(resolved)["content.view"]
-          ? toUsage(
-              await deps.projectService.getUsageSummary({
-                actorUserId: user.actorUserId,
-                workspaceId: resolved.workspaceId,
-              }),
-            )
-          : null,
-      );
-      const [context, memberships, usage] = await Promise.all([
-        contextRead,
-        readMemberships(deps, user.actorUserId),
-        usageRead,
-      ]);
-      if (!context) throw new Error("A signed-in user has no Workspace to select");
+      // The listing is the live membership read, so it also answers which Workspace
+      // applies and proves access to each avatar. Only first use reads anything more.
+      let listed = await deps.listUserWorkspaces(user.actorUserId);
+      let context = deps.selectListedWorkspace(user.actorUserId, listed, hint);
+      if (!context) {
+        context = await deps.resolveWorkspaceContext({ id: user.actorUserId }, hint);
+        if (!context) throw new Error("A signed-in user has no Workspace to select");
+        listed = await deps.listUserWorkspaces(user.actorUserId);
+      }
       const capabilities = workspaceCapabilities(context);
+      // The shell's credits ride along so it needs no second request. A Workspace
+      // this member cannot view gets none: its own bootstrap says why.
+      const [memberships, usage] = await Promise.all([
+        projectMemberships(deps, listed),
+        capabilities["content.view"]
+          ? deps.projectService.getAuthorizedUsageSummary(context).then(toUsage)
+          : null,
+      ]);
       c.header("X-Workspace-Id", context.workspaceId);
       const body: SessionBootstrap = {
         user: toSessionUser(user),

@@ -8,6 +8,7 @@ import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { lockWorkspaceUsage } from "./processing-usage";
 import type { ExecutorArtifactCommit } from "./executor-domain-control";
 import type { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 type Fence = ReturnType<typeof executorFenceSchema.parse>;
@@ -29,11 +30,6 @@ type State = { kind: "skip" | "unavailable"; reason: string } | {
 function same(left: ExecutionDispatchReference, right: ExecutionDispatchReference) {
   return left.dispatchId === right.dispatchId && left.kind === right.kind && left.subject.kind === right.subject.kind && left.subject.id === right.subject.id &&
     left.deploymentEpoch === right.deploymentEpoch && left.generation === right.generation && left.inputHash === right.inputHash;
-}
-async function clock(tx: Tx) {
-  const [row] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-  if (!row) throw new Error("Database clock unavailable");
-  return row.now;
 }
 
 async function probeState(tx: Tx, target: Target, provider?: ProviderAttemptReference): Promise<State> {
@@ -94,7 +90,7 @@ async function probeState(tx: Tx, target: Target, provider?: ProviderAttemptRefe
   const descriptor: SourceLanguageProbeDescriptor = { input, output: { role: "probe", bindingHash, contentType: "audio/wav", maxBytes: LANGUAGE_PROBE_MAX_BYTES } };
   const artifact = await tx.executionArtifact.findFirst({ where: { role: "probe", bindingHash, contentType: "audio/wav", committedAt: { not: null },
     attempt: { deploymentEpoch: reference.deploymentEpoch, dispatch: { subjectKind: "ingest_job", subjectId: job.id } } }, orderBy: [{ committedAt: "asc" }, { id: "asc" }] });
-  const now = await clock(tx);
+  const now = await databaseNow(tx);
   let active = false;
   if (job.status === "running" && job.claimId && job.executorOwner && job.claimExpiresAt && job.claimExpiresAt > now) {
     const token = executorFenceSchema.shape.attemptToken.safeParse(job.claimId);

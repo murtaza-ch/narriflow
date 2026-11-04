@@ -1,13 +1,14 @@
-import type {
+import {
   Prisma,
-  PrismaClient,
-  ProcessingIntakeKind,
-  ProcessingUsageReservation,
-  ProcessingUsageState,
+  type PrismaClient,
+  type ProcessingIntakeKind,
+  type ProcessingUsageReservation,
+  type ProcessingUsageState,
 } from "@prisma/client";
 import {
   creditDebitSeconds,
   creditsForSourceSeconds,
+  sourceExceedsLimit,
   lowestTier,
   planDefinition,
   planLimits,
@@ -22,6 +23,7 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
+import type { MaintenancePage, MaintenancePageResult } from "./execution-maintenance";
 
 type Tx = Prisma.TransactionClient;
 
@@ -50,6 +52,8 @@ export type ProcessingUsageFailureCode =
  * in-flight video reaches a terminal state. */
 const CAPACITY_RETRY_AFTER_SECONDS = 60;
 const MAX_REASON_LENGTH = 120;
+/** A reservation this quiet can be stranded; younger ones may still be settling. */
+const STRANDED_RESERVATION_GRACE_MS = 10 * 60_000;
 
 export type ProcessingUsageFailureDetails =
   | {
@@ -426,7 +430,7 @@ export class ProcessingUsage {
       tier,
       periodStart,
     );
-    if (declared !== null && declared > maxSeconds)
+    if (declared !== null && sourceExceedsLimit(declared, maxSeconds))
       throw refuse(tooLong(tier, declared, remainingSeconds), {});
     if (
       remainingSeconds <= 0 ||
@@ -517,7 +521,7 @@ export class ProcessingUsage {
         row.periodStart,
       );
       const failure =
-        sourceSeconds > planLimits(tier).maxSourceSeconds
+        sourceExceedsLimit(sourceSeconds, planLimits(tier).maxSourceSeconds)
           ? tooLong(tier, sourceSeconds, remainingSeconds + row.reservedSeconds)
           : next - row.reservedSeconds > remainingSeconds
             ? creditsExhausted({
@@ -635,7 +639,7 @@ export class ProcessingUsage {
     const failure =
       workspace.status !== "active"
         ? inactiveWorkspace()
-        : seconds > planLimits(tier).maxSourceSeconds
+        : sourceExceedsLimit(seconds, planLimits(tier).maxSourceSeconds)
           ? tooLong(tier, seconds, row.reservedSeconds + remainingSeconds)
           : debitSeconds > row.reservedSeconds + remainingSeconds
             ? creditsExhausted({
@@ -803,8 +807,13 @@ export class ProcessingUsage {
 
   /** The one usage projection web, MCP, and REST render. */
   async summarize(workspaceId: string): Promise<ProcessingUsageSummary> {
+    const { tier } = await this.workspaceTier(this.deps.prisma, workspaceId);
+    return this.summarizeForTier(workspaceId, tier);
+  }
+
+  /** The same projection for a caller that read the plan with the membership. */
+  async summarizeForTier(workspaceId: string, tier: PricingTier): Promise<ProcessingUsageSummary> {
     const db = this.deps.prisma;
-    const { tier } = await this.workspaceTier(db, workspaceId);
     const periodStart = processingPeriodStart(this.now());
     const [usage, inFlight] = await Promise.all([
       this.periodUsage(db, workspaceId, periodStart),
@@ -829,23 +838,21 @@ export class ProcessingUsage {
   }
 
   /**
-   * Releases reservations stranded by crashes or missed terminal paths: a
-   * terminal Upload Session that never handed off, an Ingest Job that failed
-   * or was cancelled, or an intake whose Project no longer exists. Completed
-   * Ingest Jobs waiting for or deferring their generation handoff, including
-   * browser setup awaiting commitment, are never released.
+   * One hourly maintenance page of reservations stranded by crashes or missed
+   * terminal paths: a terminal Upload Session that never handed off, an Ingest
+   * Job that failed or was cancelled, or an intake whose Project no longer
+   * exists. Completed Ingest Jobs waiting for or deferring their generation
+   * handoff, including browser setup awaiting commitment, are never released.
    */
   async reconcileStranded(
-    options: { limit?: number; graceMs?: number } = {},
-  ): Promise<number> {
-    const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
-    const cutoff = new Date(
-      this.now().getTime() - Math.max(0, options.graceMs ?? 10 * 60_000),
-    );
-    const candidates = await this.deps.prisma.$queryRaw<
-      Array<{ projectId: string; updatedAt: Date; reason: string }>
+    tx: Tx,
+    page: Pick<MaintenancePage, "cutoff" | "after" | "limit">,
+  ): Promise<MaintenancePageResult> {
+    const before = new Date(page.cutoff.getTime() - STRANDED_RESERVATION_GRACE_MS);
+    const candidates = await tx.$queryRaw<
+      Array<{ id: string; projectId: string; updatedAt: Date; reason: string }>
     >`
-      SELECT usage."projectId", usage."updatedAt",
+      SELECT usage."id", usage."projectId", usage."updatedAt",
         CASE
           WHEN session."status" IN ('aborted', 'expired', 'failed') THEN 'upload_session_terminal'
           WHEN project."id" IS NULL THEN 'intake_missing'
@@ -860,27 +867,29 @@ export class ProcessingUsage {
         ORDER BY job."createdAt" DESC, job."id" DESC
         LIMIT 1
       ) latest ON TRUE
-      WHERE usage."state" = 'reserved' AND usage."updatedAt" < ${cutoff}
+      WHERE usage."state" = 'reserved' AND usage."updatedAt" < (${before}::timestamp)
+        ${page.after ? Prisma.sql`AND (usage."updatedAt", usage."id") > ((${page.after.at}::timestamp), ${page.after.id}::uuid)` : Prisma.empty}
         AND (
           session."status" IN ('aborted', 'expired', 'failed')
           OR (project."id" IS NULL AND (session."id" IS NULL OR session."status" = 'queued_for_ingest'))
           OR (project."id" IS NOT NULL AND latest."status" IN ('failed', 'cancelled'))
         )
       ORDER BY usage."updatedAt" ASC, usage."id" ASC
-      LIMIT ${limit}
+      LIMIT ${page.limit + 1}
     `;
-    let released = 0;
-    for (const candidate of candidates) {
+    const selected = candidates.slice(0, page.limit);
+    for (const candidate of selected) {
       // The updatedAt fence skips rows a manual retry re-admitted meanwhile.
-      const won = await this.deps.prisma.$transaction((tx) =>
-        this.release(tx, {
-          projectId: candidate.projectId,
-          reason: `reconciled_${candidate.reason}`,
-          expectedUpdatedAt: candidate.updatedAt,
-        }),
-      );
-      if (won) released += 1;
+      await this.release(tx, {
+        projectId: candidate.projectId,
+        reason: `reconciled_${candidate.reason}`,
+        expectedUpdatedAt: candidate.updatedAt,
+      });
     }
-    return released;
+    const last = selected.at(-1);
+    return {
+      processed: selected.length,
+      next: candidates.length > page.limit && last ? { at: last.updatedAt, id: last.id } : null,
+    };
   }
 }

@@ -2,7 +2,7 @@
 
 The TypeScript renderer, FFmpeg compiler, caption code, normalized probe, process owner, layout analysis, preview graphs, audio extraction, dub mux and export archive builder live here. Composition and caption policy still come from the shared packages.
 
-`tasks/clip-render-attempt-runtime.ts` requires domain reads, fenced writes, scoped storage and stock-media resolution as ports. Its native defaults contain no database, Redis, queue claim or parent-settlement implementation. `executeRenderGroup` consumes one already acquired group. The signed executor-control adapter supplies these ports.
+`tasks/clip-render-attempt-runtime.ts` requires domain reads, fenced writes, scoped storage and stock-media resolution as ports. Its native defaults contain no database, queue claim or parent-settlement implementation. `executeRenderGroup` consumes one already acquired group. The signed executor-control adapter supplies these ports.
 
 Both Modal images use `runtime-lock.json` and the same Dockerfile. The render profile includes detector wheels, the pinned model and caption fonts. The lean profile omits those payloads. Python stays at 3.13.5; Modal must not inject a different interpreter. The deployment SDK is pinned to `modal==1.6.3`, which supports the account's `2026.10` image builder.
 

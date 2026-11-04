@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ClipPreviewPeaks } from "@narriflow/validators/clip-preview-peaks";
 import {
   isClipPreviewPeaksShape,
+  loadClipPreviewPeaks,
   sampleAmplitudeAtSourceTime,
 } from "./waveform-peaks";
 
@@ -104,5 +105,38 @@ describe("sampleAmplitudeAtSourceTime", () => {
     const peaks = makePeaks({ peaks: [150, -20] });
     expect(sampleAmplitudeAtSourceTime(peaks, 10)).toBe(1);
     expect(sampleAmplitudeAtSourceTime(peaks, 10.05)).toBe(0);
+  });
+});
+
+describe("loadClipPreviewPeaks", () => {
+  test("a successful read is shared by every later caller", async () => {
+    let reads = 0;
+    const source = { cacheScope: "user:ws", peaks: async () => { reads += 1; return makePeaks(); } };
+    const first = await loadClipPreviewPeaks("/peaks/shared", source);
+    const second = await loadClipPreviewPeaks("/peaks/shared", source);
+    expect(second).toBe(first);
+    expect(reads).toBe(1);
+  });
+
+  test("a failed read is not remembered, so the next mount tries again", async () => {
+    let reads = 0;
+    const source = {
+      cacheScope: "user:ws",
+      peaks: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("network");
+        return makePeaks();
+      },
+    };
+    expect(await loadClipPreviewPeaks("/peaks/flaky", source)).toBeNull();
+    expect(await loadClipPreviewPeaks("/peaks/flaky", source)).not.toBeNull();
+    expect(reads).toBe(2);
+  });
+
+  test("a malformed answer is not remembered either", async () => {
+    let reads = 0;
+    const source = { cacheScope: "user:ws", peaks: async () => { reads += 1; return reads === 1 ? { nope: true } : makePeaks(); } };
+    expect(await loadClipPreviewPeaks("/peaks/odd", source)).toBeNull();
+    expect(await loadClipPreviewPeaks("/peaks/odd", source)).not.toBeNull();
   });
 });

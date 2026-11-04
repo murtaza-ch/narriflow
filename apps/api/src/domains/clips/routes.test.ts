@@ -339,3 +339,16 @@ describe("campaign operations keep their native identities", () => {
     expect(retry).not.toHaveBeenCalled();
   });
 });
+
+describe("clip path parameters", () => {
+  test("a malformed :clipId is a 400 before any service call, never a database 500", async () => {
+    const deps = { clipService: { getClipPreviewPeaks: mock(async () => null), suggestClipTitles: mock(async () => []) } };
+    const app = appWith(deps as never);
+    for (const [method, path] of [["GET", "preview-peaks"], ["POST", "title-suggestions"]] as const) {
+      const response = await app.request(`${base}/not-a-uuid/${path}`, { method, headers });
+      expect(response.status).toBe(400);
+    }
+    expect(deps.clipService.getClipPreviewPeaks).not.toHaveBeenCalled();
+    expect(deps.clipService.suggestClipTitles).not.toHaveBeenCalled();
+  });
+});

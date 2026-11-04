@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { isWorkspaceId, type AppUser, type VerifiedClerkIdentity, type WorkspaceActorContext } from "@narriflow/auth";
+import { ClerkEmailConflictError, ClerkIdentityDeletedError, isWorkspaceId, type AppUser, type VerifiedClerkIdentity, type WorkspaceActorContext } from "@narriflow/auth";
 import { createRequestPolicyRuntime, type RequestPolicyRuntimeOptions } from "./request-policy-runtime";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
@@ -100,5 +100,30 @@ describe("Workspace actor resolution", () => {
     const { built } = runtime({ isWorkspaceHint: isWorkspaceId, authenticate: async () => ({ status: "unauthenticated", reason: "missing_credential" }) });
     const malformed = new Request("http://x/api/things", { headers: { "x-workspace-id": "nope" } });
     expect(await built.actorsFor(malformed).workspace()).toBeNull();
+  });
+});
+
+describe("identity outcomes are not server errors", () => {
+  class ClerkAPIResponseError extends Error {
+    static kind = "ClerkAPIResponseError";
+    status = 404;
+  }
+
+  test.each([
+    ["a deleted Clerk identity", () => new ClerkIdentityDeletedError("clerk-1")],
+    ["a Clerk 404", () => new ClerkAPIResponseError("not found")],
+  ])("%s resolves to no actor, which admission answers as 401", async (_name, failure) => {
+    const { built, request } = runtime({ loadAppUser: mock(async () => { throw failure(); }) });
+    await expect(built.actorsFor(request()).workspace()).resolves.toBeNull();
+  });
+
+  test("an email owned by another live identity is a typed 409", async () => {
+    const { built, request } = runtime({ loadAppUser: mock(async () => { throw new ClerkEmailConflictError("clerk-1"); }) });
+    await expect(built.actorsFor(request()).workspace()).rejects.toMatchObject({ failure: { status: 409, code: "account_email_conflict" } });
+  });
+
+  test("an unrecognised failure is still an error", async () => {
+    const { built, request } = runtime({ loadAppUser: mock(async () => { throw new Error("db down"); }) });
+    await expect(built.actorsFor(request()).workspace()).rejects.toThrow("db down");
   });
 });

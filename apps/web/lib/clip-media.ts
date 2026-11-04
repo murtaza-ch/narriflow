@@ -52,13 +52,32 @@ export function useClipApi(): ClipApi | null {
   }, [runtime, scope, queryClient]);
 }
 
+/** Anything that can mint an Intent: the API runtime, or a screen's own `api` wrapper. */
+export interface IntentSource {
+  createIntent<TInput>(): Intent<TInput>;
+}
+
 /** The intent held in `ref` for the current user action, created on first use. */
 export function intentIn<TInput>(
   ref: { current: Intent<TInput> | null },
-  runtime: ApiRuntime,
+  source: IntentSource,
 ): Intent<TInput> {
-  if (!ref.current) ref.current = runtime.createIntent<TInput>();
+  if (!ref.current) ref.current = source.createIntent<TInput>();
   return ref.current;
+}
+
+/** The intent held in `intents` for one row's action, created on first use; delete it once the action is accepted. */
+export function intentFor<TInput>(
+  intents: Map<string, Intent<TInput>>,
+  id: string,
+  source: IntentSource,
+): Intent<TInput> {
+  let intent = intents.get(id);
+  if (!intent) {
+    intent = source.createIntent<TInput>();
+    intents.set(id, intent);
+  }
+  return intent;
 }
 
 /** For an action handler: the bound clients, or the typed "no Workspace yet" failure. */

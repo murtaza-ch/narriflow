@@ -1,5 +1,6 @@
 import { transcriptUtteranceSchema, type TranscriptUtterance } from "@narriflow/validators";
 import { frozenDubbingRequestSchema, type FrozenDubbingRequest } from "@narriflow/validators/dubbing-execution";
+import { sha256Hex } from "./execution-hash";
 
 function languageRoot(code: string | null | undefined) { return code?.split("-")[0]?.toLowerCase() ?? null; }
 export function shouldTranslateDub(sourceCode: string | null, targetCode: string) {
@@ -25,7 +26,7 @@ export function canonicalDubbingJson(value: unknown): string {
 }
 export async function frozenDubbingRequestHash(value: FrozenDubbingRequest) {
   const bytes = new TextEncoder().encode(canonicalDubbingJson(frozenDubbingRequestSchema.parse(value)));
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(bytes);
 }
 
 export function dubTranslationRequestBody(input: Pick<FrozenDubbingRequest, "translationModel" | "script" | "sourceLanguageCode" | "targetLanguageCode">) {
@@ -48,5 +49,5 @@ export const DUBBING_STAGE_OUTPUTS = {
 export type DubbingArtifactStage = keyof typeof DUBBING_STAGE_OUTPUTS;
 export async function dubbingArtifactBindingHash(requestHash: string, stage: DubbingArtifactStage) {
   const value = JSON.stringify({ version: 1, kind: "dubbing_artifact", requestHash, stage });
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(value);
 }

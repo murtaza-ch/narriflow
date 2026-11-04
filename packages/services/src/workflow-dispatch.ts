@@ -1,5 +1,5 @@
 import type { Prisma, WorkflowRun } from "@prisma/client";
-import { appendExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
+import { appendStableExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 
@@ -16,9 +16,7 @@ export async function appendWorkflowRunDispatch(tx: Prisma.TransactionClient, ru
   const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: runId }, include: { project: { select: { sourceRevision: true } } } });
   const identity = { deploymentEpoch: run.deploymentEpoch, kind: run.stage === "clip_rendering" ? "render_run" as const : "operation_driver" as const,
     subject: { kind: "workflow_run" as const, id: run.id }, generation: run.generation };
-  const key = await executionDispatchIdentity(identity);
-  const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } });
-  return appendExecutionDispatch(tx, { ...identity, inputHash: await readWorkflowRunInputHash(tx, run, run.project.sourceRevision), dueAt: existing?.dueAt ?? run.nextAttemptAt ?? run.createdAt });
+  return appendStableExecutionDispatch(tx, { ...identity, inputHash: await readWorkflowRunInputHash(tx, run, run.project.sourceRevision), dueAt: run.nextAttemptAt ?? run.createdAt });
 }
 
 /** Replaying accepted work only redelivers its current committed obligation.

@@ -3,8 +3,8 @@
  *
  * Everything here is policy from `RenderConfig` (spec: "Resource, temporary-file
  * and deadline policy"). The attempt asks three questions:
- *  - how long may this encode / transfer legitimately run? (`renderEncodeDeadlineMs`,
- *    `transferDeadlineMs`: finite at every input, never below the floor);
+ *  - how long may this encode legitimately run? (`renderEncodeDeadlineMs`: finite
+ *    at every input, never below the floor);
  *  - may I produce another output now? (`RenderResourceBudget.reserve`: waits for
  *    upload backlog room, then for free disk, and defers the attempt rather than
  *    failing a clip when space does not come back);
@@ -23,7 +23,6 @@ const MAX_PIXEL_WEIGHT = 4;
 const HDR_WEIGHT = 3;
 const ESTIMATED_OUTPUT_BYTES_PER_SEC = 2 * MIB;
 const MIN_ESTIMATED_OUTPUT_BYTES = 16 * MIB;
-const TRANSFER_SETUP_MS = 30_000;
 const DISK_BACKOFF_START_MS = 1_000;
 const DISK_BACKOFF_MAX_MS = 15_000;
 
@@ -31,17 +30,12 @@ type DeadlinePolicy = Pick<
   RenderConfig,
   "renderCommandTimeoutMs" | "renderDeadlineFloorMs" | "renderDeadlineRealtimeFactor"
 >;
-type TransferPolicy = Pick<
-  RenderConfig,
-  "transferDeadlineFloorMs" | "transferDeadlineCeilingMs" | "transferMinBytesPerSec"
->;
 type DiskPolicy = Pick<
   RenderConfig,
   "diskMinFreeBytes" | "diskMinFreeFraction" | "scratchMaxBytes" | "scratchMaxVolumeFraction"
 >;
 type BacklogPolicy = Pick<RenderConfig, "uploadMaxWaitingJobs" | "uploadMaxWaitingBytes">;
 export type RenderResourcePolicy = DeadlinePolicy &
-  TransferPolicy &
   DiskPolicy &
   BacklogPolicy &
   Pick<RenderConfig, "diskAdmissionWaitMs">;
@@ -75,14 +69,6 @@ export function renderEncodeDeadlineMs(work: EncodeWorkSize, policy: DeadlinePol
     work.editedDurationSec * 1000 * policy.renderDeadlineRealtimeFactor * pixelWeight * (work.hdr ? HDR_WEIGHT : 1);
   if (!Number.isFinite(ms)) return ceiling;
   return Math.ceil(clamp(ms, floor, ceiling));
-}
-
-/** clamp(30s + bytes / minimum rate, floor, ceiling). Unknown size is the ceiling. */
-export function transferDeadlineMs(bytes: number | null | undefined, policy: TransferPolicy): number {
-  const ceiling = policy.transferDeadlineCeilingMs;
-  const floor = Math.min(policy.transferDeadlineFloorMs, ceiling);
-  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) return ceiling;
-  return Math.ceil(clamp(TRANSFER_SETUP_MS + (bytes / policy.transferMinBytesPerSec) * 1000, floor, ceiling));
 }
 
 /** Conservative disk reservation for one encoded output (about twice a typical CRF 21 rate). */
@@ -403,90 +389,4 @@ export class ScratchFileRefs {
       this.onRemoveFailure(path, error);
     }
   }
-}
-
-// --- Transfer watchdog -------------------------------------------------------
-
-export interface WatchdogClock {
-  nowMs(): number;
-  setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
-  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
-}
-
-export interface TransferWatchdog {
-  /** Aborts when the deadline passes or the byte count stops growing; also follows `parent`. */
-  readonly signal: AbortSignal;
-  /** The typed timeout failure when the watchdog (not the parent) stopped the transfer. */
-  failure(): WorkflowFailure | null;
-  stop(): void;
-}
-
-/** Enforces the size-derived deadline and the no-progress bound on a download. */
-export function startTransferWatchdog(input: {
-  parent?: AbortSignal;
-  deadlineMs: number;
-  noProgressMs: number;
-  pollMs?: number;
-  measureBytes(): Promise<number>;
-  clock: WatchdogClock;
-  codePrefix: string;
-}): TransferWatchdog {
-  const controller = new AbortController();
-  const { clock } = input;
-  let failure: WorkflowFailure | null = null;
-  let stopped = false;
-  let lastBytes = -1;
-  let lastProgressAtMs = clock.nowMs();
-  const pollMs = input.pollMs ?? Math.max(250, Math.floor(input.noProgressMs / 4));
-
-  const trip = (code: string, message: string) => {
-    if (stopped || failure) return;
-    failure = new WorkflowFailure(`${input.codePrefix}_${code}`, "retryable", message);
-    controller.abort(failure);
-  };
-  const deadlineTimer = clock.setTimeout(() => trip("timeout", "Transfer exceeded its size-derived deadline"), input.deadlineMs);
-  let pollTimer: ReturnType<typeof setTimeout> | undefined;
-  const poll = () => {
-    if (stopped || failure) return;
-    input.measureBytes().then(
-      (bytes) => {
-        if (stopped || failure) return;
-        const now = clock.nowMs();
-        if (bytes !== lastBytes) {
-          lastBytes = bytes;
-          lastProgressAtMs = now;
-        } else if (now - lastProgressAtMs >= input.noProgressMs) {
-          trip("stalled", "Transfer made no progress");
-          return;
-        }
-        pollTimer = clock.setTimeout(poll, pollMs);
-      },
-      () => {
-        if (stopped || failure) return;
-        // An unreadable size (file not created yet) is "no growth", not a failure.
-        if (clock.nowMs() - lastProgressAtMs >= input.noProgressMs) {
-          trip("stalled", "Transfer made no progress");
-          return;
-        }
-        pollTimer = clock.setTimeout(poll, pollMs);
-      },
-    );
-  };
-  pollTimer = clock.setTimeout(poll, pollMs);
-  const onParentAbort = () => {
-    if (!failure) controller.abort(abortReason(input.parent));
-  };
-  input.parent?.addEventListener("abort", onParentAbort, { once: true });
-  if (input.parent?.aborted) onParentAbort();
-
-  return {
-    signal: controller.signal,
-    failure: () => failure,
-    stop: () => {
-      stopped = true;
-      clock.clearTimeout(deadlineTimer);
-      if (pollTimer !== undefined) clock.clearTimeout(pollTimer);
-      input.parent?.removeEventListener("abort", onParentAbort);
-    },
-  };
 }

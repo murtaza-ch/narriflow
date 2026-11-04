@@ -1,3 +1,4 @@
+import { logFailure } from "@narriflow/services/log-failure";
 import { ZoomError } from "@narriflow/services/zoom";
 import { type ZoomService } from "@narriflow/services/zoom.service";
 import { createRouteApp } from "../../http/admission";
@@ -27,7 +28,7 @@ export function createAutomationWebhookRoutes(deps: AutomationWebhookDeps) {
         const status = error.code === "zoom_signature_invalid" ? 401 : error.code === "zoom_not_configured" ? 503 : 400;
         return c.json({ error: error.code }, status);
       }
-      console.warn(JSON.stringify({ level: "error", message: "zoom_webhook_persistence_failed" }));
+      logFailure("zoom_webhook_persistence_failed", error);
       return c.json({ error: "zoom_webhook_persistence_failed" }, 500);
     }
   });

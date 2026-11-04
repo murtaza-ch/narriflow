@@ -12,6 +12,8 @@ import { guardedFetch,createByteLimitTransform,RemoteFetchError,UnsafeUrlError }
 export class DirectSourceFailure extends Error {
  constructor(readonly code:string,readonly retryable=false){super(code);}
 }
+/** File hosts label media with these. Web pages still stop here; the probe decides what the bytes are. */
+const GENERIC_MEDIA_CONTENT_TYPES=new Set(["application/octet-stream","binary/octet-stream","application/binary","application/x-binary","application/download","application/force-download","application/x-download","application/mp4","application/ogg","application/x-matroska"]);
 /** One guarded read implementation for direct, RSS, Drive and Zoom sources. */
 export async function downloadDirectSource(raw:IngestDirectRead,targetPath:string,options:{
  fetch?:typeof guardedFetch;signal?:AbortSignal;deadlineMs?:number;maxBytes?:number;delay?:(milliseconds:number)=>Promise<void>;
@@ -36,7 +38,7 @@ export async function downloadDirectSource(raw:IngestDirectRead,targetPath:strin
    }
    assertResponseContentLength(response,maximum);
    const contentType=response.headers.get("content-type")?.split(";",1)[0]?.trim().toLowerCase();
-   if(!contentType||!contentType.startsWith("audio/")&&!contentType.startsWith("video/")&&contentType!=="application/octet-stream")throw new DirectSourceFailure("remote_media_invalid_content_type");
+   if(!contentType||!contentType.startsWith("audio/")&&!contentType.startsWith("video/")&&!GENERIC_MEDIA_CONTENT_TYPES.has(contentType))throw new DirectSourceFailure("remote_media_invalid_content_type");
    const file=createWriteStream(targetPath,{flags:"wx",mode:0o600});created=true;
    await pipeline(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),createByteLimitTransform(maximum),file,{signal});
    const size=(await stat(targetPath)).size;if(!size)throw new DirectSourceFailure("source_download_failed",true);

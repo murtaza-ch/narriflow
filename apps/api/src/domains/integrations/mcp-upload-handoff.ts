@@ -2,6 +2,7 @@ import type { McpUploadHandoffState, NarriflowMcpPrincipal } from "@narriflow/mc
 import { assertInlineFinishing } from "@narriflow/services/integration-commands";
 import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { type ActorScope } from "@narriflow/services/actor-scope";
+import { isUuid } from "@narriflow/validators/identifiers";
 import { buildGenerationContext, openUploadSessionSchema } from "@narriflow/validators";
 
 export interface McpUploadHandoffDependencies {
@@ -52,7 +53,7 @@ export async function admitMcpUploadHandoff(
     if (fields.clientIdempotencyKey !== state.intent.clientIdempotencyKey) failure("mcp_upload_handoff_binding_mismatch", "forbidden", "This upload status request belongs to another handoff");
   } else {
     const sessionId = typeof fields.sessionId === "string" ? fields.sessionId : "";
-    if (!/^[a-f0-9-]{36}$/i.test(sessionId)) failure("upload_session_not_found", "missing", "Upload Session not found");
+    if (!isUuid(sessionId)) failure("upload_session_not_found", "missing", "Upload Session not found");
     if (!await deps.findOwnedSession({ sessionId, userId, workspaceId, clientIdempotencyKey: state.intent.clientIdempotencyKey })) {
       failure("mcp_upload_handoff_binding_mismatch", "forbidden", "This Upload Session belongs to another handoff");
     }

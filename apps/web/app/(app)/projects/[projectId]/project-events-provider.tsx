@@ -11,10 +11,11 @@ import {
   type ReactNode,
 } from "react";
 import { CLIENT_ERROR_CODES } from "@narriflow/api-client/core";
-import { clearProjectAccess } from "@narriflow/api-client/projects";
+import { clearProjectAccess, invalidateProject } from "@narriflow/api-client/projects";
 import { useProgressStream } from "@narriflow/api-client/progress";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { useDocumentVisible } from "@/lib/use-document-visible";
 import {
   PROJECT_EVENT_ROW_LIMIT,
   rememberBoundedIdentity,
@@ -64,6 +65,11 @@ const ProjectEventsContext = createContext<ProjectEventsContextValue | null>(
  * pages), which also refreshes the Project's cached reads on its 5-second
  * trailing throttle and once per terminal outcome. This provider only holds
  * the bounded event history and the latest event per stage for its consumers.
+ *
+ * The socket is open whenever the tab is visible, so work started from another
+ * tab, device or integration shows up on a page that was idle. A hidden tab
+ * keeps none. Coming back to the tab refetches the Project, and the stream
+ * resumes from the newest event this page holds.
  */
 export function ProjectEventsProvider(props: {
   projectId: string;
@@ -94,6 +100,9 @@ function ProjectEventsState({
   const [latestByStage, setLatestByStage] = useState<
     Record<string, WorkflowStageUpdatedEvent>
   >(() => latestStageMap(initialEvents));
+  const visible = useDocumentVisible();
+  // The newest event this page holds, so a resumed stream replays only what it missed.
+  const cursor = useRef(initialSeq);
   const seenEventRows = useRef<Set<string> | null>(null);
   if (seenEventRows.current === null) {
     seenEventRows.current = new Set();
@@ -120,6 +129,7 @@ function ProjectEventsState({
       if (event.projectId !== projectId) return;
       const seen = seenEventRows.current;
       if (!seen || !rememberBoundedIdentity(seen, workflowEventRowIdentity(event))) return;
+      cursor.current = Math.max(cursor.current, event.seq);
       setEvents((current) => sortAndCapEvents([...current, event]));
       setLatestByStage((current) => {
         const existing = current[event.stage];
@@ -138,13 +148,22 @@ function ProjectEventsState({
   }, [runtime, scope, projectId]);
 
   useProgressStream(runtime, scope, projectId, {
-    sinceSeq: initialSeq,
+    enabled: visible,
+    sinceSeq: Math.max(initialSeq, cursor.current),
     onEvent,
     onRevoked: reread,
     onFatal: (error) => {
       if (error.code !== CLIENT_ERROR_CODES.scopeChanged) reread();
     },
   });
+
+  // Work may have started or finished while the tab was hidden and the socket closed.
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    const returned = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (returned && scope) void invalidateProject(runtime.queryClient, scope, projectId);
+  }, [visible, runtime, scope, projectId]);
 
   const value = useMemo<ProjectEventsContextValue>(
     () => ({ events, latestByStage }),

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
 import { getPrismaClient, createDatabaseScope } from "@narriflow/db/client";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
@@ -158,4 +158,22 @@ test("the original signed webhook bytes reach Hono without reserialization", asy
   const response = await worker.fetch(request, bindings("postgresql://unused.test/db"), context);
   expect(await response.text()).toBe(bytes);
   expect(getPrismaClient()).toBeNull();
+});
+
+test("a crash while building or running the app is logged and answered as a generic JSON 500 with a request ID", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const web = "https://web.test";
+    const worker = createApiWorker({ createApp: () => { throw new Error("config exploded", { cause: Object.assign(new Error("db down"), { code: "ECONNREFUSED" }) }); } });
+    const response = await worker.fetch(new Request("https://api.test/api/session/bootstrap", { method: "POST", headers: { Origin: web } }),
+      { ...bindings("unused"), CORS_ALLOWED_ORIGINS: web } as unknown as ApiWorkerBindings, context);
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(web);
+    const body = await response.json();
+    expect(body).toMatchObject({ error: "internal_error" });
+    expect(JSON.stringify(body)).not.toContain("exploded");
+    expect(response.headers.get("X-Request-ID")).toBe(body.requestId);
+    const line = warn.mock.calls.map(([text]) => JSON.parse(String(text))).find((entry) => entry.message === "worker_unhandled_failure");
+    expect(line).toMatchObject({ requestId: body.requestId, error: { message: "config exploded", causes: [{ code: "ECONNREFUSED" }] } });
+  } finally { warn.mockRestore(); }
 });

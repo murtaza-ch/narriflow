@@ -1,5 +1,5 @@
 import { AbortMultipartUploadCommand, DeleteObjectCommand, ListMultipartUploadsCommand, S3Client } from "@aws-sdk/client-s3";
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import { createFetchR2Client } from "./r2-fetch-client";
 import type { ExecutionStorageConfig } from "./execution-storage";
 import { MEDIA_CLEANUP_HTTP_TIMEOUT_MS, type MediaCleanupStorage } from "./media-cleanup-control";
 
@@ -10,9 +10,7 @@ export class MediaCleanupStorageError extends Error {
  * MPU inventory is bounded; an incomplete page never permits DELETE. */
 export function createMediaCleanupStorage(config: ExecutionStorageConfig, options: { client?: S3Client } = {}): MediaCleanupStorage {
   if (!/^[a-f0-9]{32}$/.test(config.accountId) || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.bucket) || !config.accessKeyId || !config.secretAccessKey) throw new MediaCleanupStorageError("cleanup_storage_configuration_invalid");
-  const client = options.client ?? new S3Client({ region: "auto", endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey }, maxAttempts: 1,
-    requestHandler: new FetchHttpHandler({ requestTimeout: MEDIA_CLEANUP_HTTP_TIMEOUT_MS }), requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED" });
+  const client = options.client ?? createFetchR2Client(config, { requestTimeoutMs: MEDIA_CLEANUP_HTTP_TIMEOUT_MS, maxAttempts: 1 });
   return { async deleteExact(storageKey, options) {
     if (!/^[A-Za-z0-9][A-Za-z0-9/_.-]{0,1023}$/.test(storageKey) || storageKey.split("/").some(part => !part || part === "." || part === "..")) throw new MediaCleanupStorageError("cleanup_storage_key_invalid");
     const abortSignal = AbortSignal.any([options.signal, AbortSignal.timeout(MEDIA_CLEANUP_HTTP_TIMEOUT_MS)]), Bucket = config.bucket;

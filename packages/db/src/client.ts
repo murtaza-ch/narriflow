@@ -89,7 +89,12 @@ export class DatabaseScope {
         this.closed = true;
         const resource = this.resource;
         this.resource = undefined;
-        await resource?.dispose();
+        // Cleanup must not replace the operation's result or its original error.
+        try {
+          await resource?.dispose();
+        } catch (error) {
+          console.warn(JSON.stringify({ level: "warn", message: "database_scope_dispose_failed", errorName: error instanceof Error ? error.name : typeof error }));
+        }
       }
     });
   }

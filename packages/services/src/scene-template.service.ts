@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   sceneTemplateCreateSchema,
   sceneTemplateDefinitionSchema,
@@ -20,6 +19,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const sceneTemplateFailureCatalog = {
   brand_profile_not_found: "missing",
@@ -38,12 +38,6 @@ export class SceneTemplateError extends ExpectedDomainFailureError<SceneTemplate
     super({ code, kind: sceneTemplateFailureCatalog[code], message });
     this.name = "SceneTemplateError";
   }
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 function definitionFingerprint(definition: SceneTemplateDefinition) {

@@ -1,11 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma, VisualAsset } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   reusableAssetSoftDeleteSchema,
   resolvePricingTier,
-  sceneBlockSchema,
-  studioEditsSchema,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
   workspaceAllowsCapability,
@@ -31,13 +28,14 @@ import {
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
 import { getNativeValidationService } from "./native-validation-runtime";
-import { accessibleProjectWhere } from "./project-access";
+import { accessibleProjectSql } from "./project-access";
 import { withSerializableTransaction } from "./serializable-transaction";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
   type ExpectedDomainFailureDetails,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 
 export interface VisualMediaProbe {
@@ -171,26 +169,6 @@ export function assertVisualBrollAssetReferences(
   }
 }
 
-export function visualAssetIsReferencedByClipStorage(
-  assetId: string,
-  stored: { studioEdits: unknown; sceneBlocks: unknown },
-): boolean {
-  const studioEdits = studioEditsSchema.safeParse(stored.studioEdits ?? {});
-  if (
-    studioEdits.success &&
-    studioEdits.data.visualBroll.some((placement) => placement.asset.id === assetId)
-  ) {
-    return true;
-  }
-  if (!Array.isArray(stored.sceneBlocks)) return false;
-  return stored.sceneBlocks.some((value) => {
-    const scene = sceneBlockSchema.safeParse(value);
-    return scene.success &&
-      (scene.data.content.kind === "image" || scene.data.content.kind === "video") &&
-      scene.data.content.asset.id === assetId;
-  });
-}
-
 export function visualAssetKindForContentType(contentType: string): "image" | "video" {
   return contentType.startsWith("image/") ? "image" : "video";
 }
@@ -234,11 +212,6 @@ const productionStorage: VisualAssetStorage = {
   },
 };
 
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
 
 function toRow(asset: VisualAsset, accessUrl: string | null, replayed = false) {
   return {
@@ -437,10 +410,11 @@ export class VisualAssetService {
       }
       // An expired Project can't be opened, rendered or restored (only a paid
       // plan before the deadline clears it), so its clips don't hold the asset.
-      const clips = await tx.clip.findMany({
-        where: { project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
-        select: { title: true, studioEdits: true, sceneBlocks: true },
-      });
+      const clips = await tx.$queryRaw<Array<{ title: string | null }>>`
+        SELECT c.title FROM "Clip" c JOIN "Project" p ON p.id = c."projectId"
+        WHERE p."workspaceId" = ${scope.workspaceId}::uuid AND ${accessibleProjectSql("p")} AND (
+          c."studioEdits" @> jsonb_build_object('visualBroll', jsonb_build_array(jsonb_build_object('asset', jsonb_build_object('id', ${id}::text))))
+          OR c."sceneBlocks" @> jsonb_build_array(jsonb_build_object('content', jsonb_build_object('asset', jsonb_build_object('id', ${id}::text)))))`;
       const identityReferences = await tx.brandProfile.findMany({
         where: {
           ...brandOwnerWhere(scope),
@@ -454,9 +428,7 @@ export class VisualAssetService {
       });
       // Clips and Scene templates always block; Brand Profiles only when no replacement takes over.
       const usage: VisualAssetUsage = {
-        clips: clips
-          .filter((clip) => visualAssetIsReferencedByClipStorage(id, clip))
-          .map((clip) => clip.title?.trim() || "Untitled clip"),
+        clips: clips.map((clip) => clip.title?.trim() || "Untitled clip"),
         sceneTemplates: asset.sceneTemplates.map((template) => template.name),
         profiles: parsed.replacementId
           ? []

@@ -1,5 +1,4 @@
 import type { listUserWorkspaces } from "@narriflow/auth";
-import type { sendEmail } from "@narriflow/email";
 import { type WorkspaceCommands } from "@narriflow/services/workspace-commands";
 import { type autoCensorService } from "@narriflow/services/auto-censor.service";
 import { type performanceService } from "@narriflow/services/performance.service";
@@ -32,7 +31,7 @@ import { validate } from "../../http/route";
 import { uuidParams } from "../platform/params";
 import { readMemberships, toSessionUser, toUsage } from "../session/projection";
 import { workspaceAdmission as access } from "./admission";
-import { deliverWorkspaceInvite } from "./invite-delivery";
+import { deliverWorkspaceInvite, type InviteDeliveryDeps } from "./invite-delivery";
 
 /** Services the workspace routes call. `runtime.ts` supplies the production instances. */
 export interface WorkspaceRouteDeps {
@@ -46,7 +45,7 @@ export interface WorkspaceRouteDeps {
     "getWorkspaceWords" | "replaceWorkspaceWords" | "resetWorkspaceWords"
   >;
   listUserWorkspaces: typeof listUserWorkspaces;
-  sendEmail: typeof sendEmail;
+  sendEmail: InviteDeliveryDeps["sendEmail"];
   /** W: invitation links are for people, so they use the web origin. */
   webOrigin: string;
 }

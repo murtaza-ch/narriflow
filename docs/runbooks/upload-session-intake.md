@@ -1,8 +1,8 @@
 # Upload Session intake rollout and recovery
 
 Upload Session is the only local-file intake path. The web route, browser
-transfer adapter, PostgreSQL persistence, worker maintenance loop, and R2
-adapter translate its commands; none of them owns a second upload state
+transfer adapter, PostgreSQL persistence, the Upload Session execution and
+hourly maintenance chain, and R2 adapter translate its commands; none of them owns a second upload state
 machine. This is a pre-production direct cutover with no compatibility mode.
 
 ## Deployment order
@@ -15,13 +15,13 @@ machine. This is a pre-production direct cutover with no compatibility mode.
 3. Verify the production R2 adapter against a dedicated test prefix:
 
    ```sh
-   R2_CONTRACT_TEST_PREFIX=tests/narriflow-upload-session-cutover bun --env-file=apps/worker/.env test packages/services/src/r2-storage.test.ts
+   R2_CONTRACT_TEST_PREFIX=tests/narriflow-upload-session-cutover bun --env-file=apps/api/.dev.vars test packages/services/src/r2-storage.test.ts
    ```
 
    The prefix must start with `test/` or `tests/`. Every fixture adds a UUID
    below it and cleans up in `finally`; never substitute a workspace or project
    prefix.
-4. Deploy the API and worker together. There is no feature flag, shadow write,
+4. Deploy the API Worker and Workflows together. There is no feature flag, shadow write,
    legacy payload, or old Project-owned upload fallback.
 5. Run the authenticated browser checklist below, then watch terminal outcomes
    and reconciliation age before accepting the cutover.
@@ -37,7 +37,7 @@ windows.
 
 R2 lifecycle rules should abort incomplete multipart uploads after the Upload
 Session hard lifetime plus the maximum reconciliation delay. Do not configure
-the provider lifecycle shorter than that envelope. The worker first attempts
+the provider lifecycle shorter than that envelope. Reconciliation first attempts
 owned compensation, and the provider lifecycle is the final backstop for
 declared abandoned bytes.
 
@@ -51,7 +51,7 @@ This is a bounded cleanup policy. [R2's presigned URL contract](https://develope
 
 ## Runtime controls and budgets
 
-Configuration is parsed once at process startup. Invalid, non-finite, or
+Configuration is parsed once per Worker invocation. Invalid, non-finite, or
 out-of-range values fail startup. Relevant controls are:
 
 - `UPLOAD_SESSION_IDLE_MS` and `UPLOAD_SESSION_HARD_LIFETIME_MS`
@@ -108,9 +108,9 @@ lost browser responses or provider instability.
    reconciliation attempt, lease expiry, stable failure code, and timestamps.
 2. Correlate only sanitized structured diagnostics. Never paste a signed URL,
    provider ID, raw ETag, or storage credential into logs or a ticket.
-3. If the row is reconciling, let the worker retry unless its lease is stale.
-   Restarting a worker is safe because claims are fenced and replay is
-   idempotent.
+3. If the row is reconciling, let the Workflow retry unless its lease is stale.
+   Redelivering the wake is safe because claims are fenced and replay is
+   idempotent; the hourly maintenance chain re-drives a lost one.
 4. For CORS failures, verify the browser origin, `PUT`, allowed
    `Content-Type`, and exposed `ETag` with the isolated R2 contract. Do not
    loosen the bucket to public access.
@@ -142,7 +142,7 @@ lost browser responses or provider instability.
 
 ## Rollback and cleanup
 
-Stop the upgraded API and worker together before rolling code back. Because
+Close admission and stop the upgraded API Worker before rolling code back. Because
 there are no production users or mixed-version deployments, either keep the
 new schema and resume with the upgraded code, or deliberately reset local
 Upload Session rows and version-3 browser resume records. Do not restore the

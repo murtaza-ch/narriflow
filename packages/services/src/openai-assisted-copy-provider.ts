@@ -1,5 +1,6 @@
 import type { AssistedCopyProvider } from "./assisted-social-copy";
 import { AssistedSocialCopyError } from "./assisted-social-copy";
+import { openAiResponseText } from "./openai-responses";
 import { readResponseBodyBounded } from "./url-policy";
 
 const RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
@@ -34,21 +35,6 @@ function userPrompt(input: Parameters<AssistedCopyProvider["generate"]>[0]) {
     lockedHashtags: input.lockedHashtags,
     brandVoice: input.voiceGuidance,
   });
-}
-
-function responseText(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const record = payload as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-  };
-  if (record.output_text) return record.output_text;
-  for (const item of record.output ?? []) {
-    for (const content of item.content ?? []) {
-      if (content.type === "output_text" && content.text) return content.text;
-    }
-  }
-  return null;
 }
 
 async function jsonResponse(response: Response, maxBytes = 256 * 1024) {
@@ -138,7 +124,7 @@ export function createOpenAiAssistedCopyProvider(options: ProviderOptions): Assi
               : "assisted_copy_provider_rejected",
         );
       }
-      const text = responseText(payload);
+      const text = openAiResponseText(payload);
       if (!text) throw new AssistedSocialCopyError("assisted_copy_provider_output_invalid");
       let parsed: {
         variants?: Array<{

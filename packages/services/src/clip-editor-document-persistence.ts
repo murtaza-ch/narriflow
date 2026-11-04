@@ -1060,8 +1060,6 @@ function prismaDocumentUpdateData(
           autoLayoutAnalysis: Prisma.DbNull,
           splitLayoutAnalysis: Prisma.DbNull,
           autoLayoutStatus: "pending" as const,
-          autoLayoutClaimToken: null,
-          autoLayoutLeaseExpiresAt: null,
         }
       : {}),
   };

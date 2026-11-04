@@ -1,4 +1,4 @@
-import type { ReviewRoomData, ReviewRound } from "./review-panel";
+import type { ReviewRoomData, ReviewRound } from "./internal-reviews";
 
 const CLOSED_ROUND_STATUSES = new Set(["expired", "revoked", "superseded"]);
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

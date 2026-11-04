@@ -113,6 +113,7 @@ describe("runClipDeletion", () => {
       },
       getClipRow: async () => ({
         hasActivePublication: false,
+        hasPublicationHistory: false,
         storage: storageSnapshot({
           renderStorageKeys: ["private/render-a.mp4", "private/render-b.mp4"],
           dubStorageKeys: ["private/dub.mp3"],
@@ -260,6 +261,7 @@ describe("runClipDeletion", () => {
     const deps = makeDeps({
       getClipRow: async () => ({
         hasActivePublication: true,
+        hasPublicationHistory: false,
         storage: storageSnapshot(),
       }),
     });
@@ -313,6 +315,7 @@ describe("ClipService.deleteClip", () => {
         });
         return {
           hasActivePublication: false,
+          hasPublicationHistory: false,
           storage: storageSnapshot({
             renderStorageKeys: ["private/render-a.mp4", "private/render-b.mp4"],
             dubStorageKeys: ["private/dub.mp3"],
@@ -436,6 +439,7 @@ describe("ClipService.deleteClip", () => {
     const active = makeAdapter({
       getClipRow: async () => ({
         hasActivePublication: true,
+        hasPublicationHistory: false,
         storage: storageSnapshot(),
       }),
     });
@@ -448,6 +452,24 @@ describe("ClipService.deleteClip", () => {
       "clip_has_scheduled_posts",
     );
     expect(active.attempted).toEqual([]);
+
+    const history = makeAdapter({
+      getClipRow: async () => ({
+        hasActivePublication: false,
+        hasPublicationHistory: true,
+        storage: storageSnapshot(),
+      }),
+    });
+    await expectActionCode(
+      new ClipService({ authorizeActor: async () => {}, clipDeletionAdapter: history }).deleteClip(
+        { actorUserId: "user-1", workspaceId: "workspace-1" },
+        "project-1",
+        "clip-1",
+      ),
+      "clip_has_publication_history",
+    );
+    expect(history.attempted).toEqual([]);
+    expect(history.rowDeleteCalls).toBe(0);
   });
 });
 

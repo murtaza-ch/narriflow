@@ -22,7 +22,7 @@ for (const [path, output] of Object.entries(metadata.outputs)) {
   }
   for (const imported of output.imports ?? []) if (imported.external) external.add(imported.path);
 }
-const forbidden = ["ioredis", "@node-rs/argon2", "sharp", "fontkit", "@ffprobe-installer/ffprobe"];
+const forbidden = ["@node-rs/argon2", "sharp", "fontkit", "@ffprobe-installer/ffprobe"];
 const forbiddenPackages = forbidden.flatMap((name) => {
   const inputs = [...emitted.keys()].filter((path) => path.includes(`/node_modules/${name}/`));
   return inputs.length ? [{ name, inputs: inputs.length, emittedBytes: inputs.reduce((sum, path) => sum + (emitted.get(path) ?? 0), 0) }] : [];

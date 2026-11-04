@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { notFound, useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef } from "react";
@@ -16,9 +17,6 @@ import { ArrowLeft, Info } from "lucide-react";
 import { type ClipApi, useClipApi } from "@/lib/clip-media";
 import { resolveReviewPreselection } from "@/lib/review-preselection";
 import { useWorkspaceBootstrap } from "../../_components/usage";
-import { AnalyticsPanel } from "./analytics-panel";
-import { ContentSuitePanel } from "./content-suite-panel";
-import { DubbingPanel } from "./dubbing-panel";
 import { ProjectClipsTab } from "./project-clips-tab";
 import { ProjectEvents } from "./project-events";
 import { ProjectEventsProvider } from "./project-events-provider";
@@ -35,8 +33,14 @@ import {
 	dubbingUpgradeFor,
 } from "./project-view-model";
 import { ProjectPosts, PublishingProvider } from "./publishing-provider";
-import { ReviewPanel, type ReviewRoomData } from "./review-panel";
-import { TranscriptPanel } from "./transcript-panel";
+import type { ReviewRoomData } from "./internal-reviews";
+
+// Each tab's panel is its own chunk, fetched when the tab is first opened.
+const AnalyticsPanel = dynamic(() => import("./analytics-panel").then((m) => m.AnalyticsPanel), { loading: () => <TabPending /> });
+const ContentSuitePanel = dynamic(() => import("./content-suite-panel").then((m) => m.ContentSuitePanel), { loading: () => <TabPending /> });
+const DubbingPanel = dynamic(() => import("./dubbing-panel").then((m) => m.DubbingPanel), { loading: () => <TabPending /> });
+const ReviewPanel = dynamic(() => import("./review-panel").then((m) => m.ReviewPanel), { loading: () => <TabPending /> });
+const TranscriptPanel = dynamic(() => import("./transcript-panel").then((m) => m.TranscriptPanel), { loading: () => <TabPending /> });
 
 /** Accounts are read only for the Clips and Posts tabs; every other tab hands the drawer none. */
 const NO_ACCOUNTS: ProjectDetailData["tabData"]["socialAccounts"] = [];

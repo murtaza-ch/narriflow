@@ -19,7 +19,7 @@ import {
 import { createRouteApp, getActor } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
 import { validate } from "../../http/route";
-import { uuidParams } from "../platform/params";
+import { pathParams, uuidParams } from "../platform/params";
 import { exportsAdmission as access } from "./admission";
 
 /** Services the exports routes call. `runtime.ts` supplies the production instances. */
@@ -252,6 +252,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/clips/:clipId/exports",
+      uuidParams("id", "clipId"),
       requireIdempotencyKey(),
       validate("json", createClipExportSchema),
       async (c) => {
@@ -285,6 +286,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .get(
       "/projects/:id/clips/:clipId/exports/:exportId",
+      uuidParams("id", "clipId", "exportId"),
       async (c) => {
         const projectId = c.req.param("id");
         const [result, lastSeq] = await Promise.all([
@@ -305,6 +307,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     // SRT and VTT for one export, derived on demand from its frozen snapshot.
     .get(
       "/projects/:id/clips/:clipId/exports/:exportId/subtitles/:format",
+      pathParams(["id", "clipId", "exportId"], "format"),
       async (c) => {
         const format = c.req.param("format");
         if (format !== "srt" && format !== "vtt") {
@@ -330,6 +333,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     // The editor revision travels in a header so the page can show what it fetched.
     .get(
       "/projects/:id/clips/:clipId/timeline/:format",
+      pathParams(["id", "clipId"], "format"),
       async (c) => {
         const format = timelineFormatSchema.safeParse(c.req.param("format"));
         if (!format.success) return c.json({ error: "timeline_format_invalid" }, 400);
@@ -352,6 +356,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     // timelines refer to. JSON, so the page can show a refusal.
     .get(
       "/projects/:id/clips/:clipId/timeline-source",
+      uuidParams("id", "clipId"),
       async (c) => {
         const source = await clipTimelineService.issueSourceGrant(
           getActor(c),
@@ -365,6 +370,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/clips/:clipId/exports/:exportId/retry",
+      uuidParams("id", "clipId", "exportId"),
       async (c) => {
         const result = await clipExportService.retryFailed(
           getActor(c),
@@ -378,6 +384,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/clips/:clipId/exports/:exportId/share-links",
+      uuidParams("id", "clipId", "exportId"),
       validate("json", createClipShareLinkSchema),
       async (c) => {
         const result = await clipExportService.createShareLink(
@@ -393,6 +400,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .delete(
       "/projects/:id/clips/:clipId/exports/:exportId/share-links",
+      uuidParams("id", "clipId", "exportId"),
       async (c) => {
         const result = await clipExportService.revokeShareLinks(
           getActor(c),

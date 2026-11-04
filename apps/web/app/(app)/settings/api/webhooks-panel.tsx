@@ -13,10 +13,8 @@ import { ActionMenu } from "@narriflow/ui/components/menu";
 import { useApiRuntime } from "@/app/_components/api-provider";
 import { EVENT_LABELS } from "./add-webhook-dialog";
 import { developerFailureMessage } from "./failure-message";
+import { formatUtcDateTime } from "@/lib/format";
 
-// A fixed locale and zone keep server and client renders identical.
-const formatTime = (iso: string) =>
-  `${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(iso))} UTC`;
 
 const DISABLED_TEXT: Record<WebhookDisabledReason, string> = {
   consecutive_failures: "Paused after 20 failed deliveries",
@@ -50,7 +48,7 @@ function delivery(webhook: WebhookView) {
   if (webhook.consecutiveFailures > 0) {
     return webhook.lastResponseStatus ? `Last attempt answered ${webhook.lastResponseStatus}` : "Last attempt got no response";
   }
-  return webhook.lastDeliveredAt ? `Delivered ${formatTime(webhook.lastDeliveredAt)}` : "Nothing delivered yet";
+  return webhook.lastDeliveredAt ? `Delivered ${formatUtcDateTime(webhook.lastDeliveredAt)}` : "Nothing delivered yet";
 }
 
 export function WebhooksPanel({ scope, webhooks }: { scope: WorkspaceScope; webhooks: WebhookView[] }) {

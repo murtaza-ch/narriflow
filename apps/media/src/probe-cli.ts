@@ -38,8 +38,9 @@ async function main() {
 
 if (import.meta.main) {
  main().catch((error: unknown) => {
-  const code = error instanceof WorkflowFailure ? error.code : "source_probe_failed";
-  console.error(JSON.stringify({ level: "error", message: code }));
+  const failure = error instanceof WorkflowFailure ? error : null;
+  const code = failure?.code ?? "source_probe_failed";
+  console.error(JSON.stringify({ level: "error", message: code, errorCode: code, retryable: failure?.disposition !== "permanent" }));
   process.exitCode = 1;
  });
 }

@@ -4,7 +4,6 @@ import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   clipAspectRatioFromDb,
   applyProjectBrandProfileSelectedSchema,
@@ -55,6 +54,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const CAMPAIGN_OPERATION_LEASE_MS = 10 * 60_000;
 
@@ -119,11 +119,6 @@ async function settleFailedRenderBestEffort(operationId: string, settle: () => P
   }
 }
 
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
 
 function fingerprint(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");

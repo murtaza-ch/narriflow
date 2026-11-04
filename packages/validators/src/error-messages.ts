@@ -59,6 +59,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"The uploaded file could not be verified. Choose the file again to restart it.",
 	ingest_max_duration_exceeded:
 		"This video is longer than your plan allows. Upgrade or trim it and try again.",
+	source_live_unsupported:
+		"That video is live or hasn't started yet. Import it after the stream ends.",
+	source_media_invalid:
+		"We couldn't read that file. It may be damaged or not a real video or audio file. Export it again and retry.",
 	ingest_download_failed:
 		"We couldn't download that source. Check the link and try again.",
 	ingest_unsupported_format:
@@ -245,7 +249,7 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"We couldn't cancel that post — it may have already started publishing. Check its current status above.",
 	link_missing_url: "No video link was provided. Paste a link and try again.",
 	link_unsupported_source:
-		"We couldn't recognize that link. Supported: YouTube, Google Drive, StreamYard, Loom, Twitch, X, TikTok, LinkedIn, Facebook, Vimeo, Dropbox.",
+		"We can't import that link. Paste a YouTube video or Dropbox link, or upload the file.",
 	drive_token_expired:
 		"Your Google Drive access expired. Choose the file again.",
 	drive_token_invalid:
@@ -310,8 +314,6 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Reconnect the selected social account before creating a new scheduled post.",
 	publication_capability_version_mismatch:
 		"This post was prepared with an older publishing setup. Create a new scheduled post.",
-	project_deletion_incomplete:
-		"We couldn't fully remove this project's files. Please try deleting again.",
 	ingest_retries_exhausted:
 		"We retried this upload automatically a few times and it kept failing. Try again, or contact support if it keeps happening.",
 	workflow_retries_exhausted:
@@ -340,6 +342,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	// how to retry. Workers log the provider detail at error level for operators.
 	openai_quota_exhausted:
 		"Clip detection is temporarily unavailable on our side. Retry detection in a little while.",
+	openai_rate_limited:
+		"Our AI provider is busy right now. Please try again in a minute.",
 	openai_request_failed:
 		"Our AI provider didn't respond. Please try again in a moment.",
 	openai_bad_output:
@@ -357,6 +361,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	library_search_unavailable:
 		"Library search is temporarily unavailable. Please try again in a moment.",
 	library_search_query_invalid: "Search for 2 to 300 characters.",
+	clip_has_publication_history:
+		"This clip has review or publishing history, so it can't be deleted on its own. Delete the project to remove it.",
 	clip_has_scheduled_posts:
 		"This clip has scheduled or publishing social posts. Cancel them in Publish, then delete the clip.",
 	campaign_motion_target_missing:

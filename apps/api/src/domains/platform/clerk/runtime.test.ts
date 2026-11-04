@@ -19,22 +19,27 @@ mock.module("@narriflow/auth", () => ({
   verifyClerkWebhook: () => ({ type: "x", data: {} }),
 }));
 mock.module("@narriflow/email", () => ({
+  mailerConfig: (environment: Record<string, string | undefined>) => ({ apiKey: environment.RESEND_API_KEY }),
   relayClerkEmail: async (payload: unknown, options: unknown) => {
     relayCalls.push({ payload, options });
     return { sent: true };
   },
 }));
 
+const { withServiceEnvironment } = await import("@narriflow/services/runtime-environment");
 const { createClerkWebhookDependencies } = await import("./runtime");
 const deps = createClerkWebhookDependencies({ webhookSecret: "whsec", clerkClient: {} as never });
 
 describe("Clerk webhook runtime wiring", () => {
   test("the Resend idempotency key is purpose-bound and stable per Svix message", async () => {
-    await deps.relayEmail({ subject: "Code" }, "msg_abc");
-    await deps.relayEmail({ subject: "Code" }, "msg_abc");
+    await withServiceEnvironment({ RESEND_API_KEY: "re_worker" }, async () => {
+      await deps.relayEmail({ subject: "Code" }, "msg_abc");
+      await deps.relayEmail({ subject: "Code" }, "msg_abc");
+    });
+    // The provider key comes from the Worker's settings, never process.env.
     expect(relayCalls.map((call) => call.options)).toEqual([
-      { idempotencyKey: "clerk-email/msg_abc" },
-      { idempotencyKey: "clerk-email/msg_abc" },
+      { apiKey: "re_worker", idempotencyKey: "clerk-email/msg_abc" },
+      { apiKey: "re_worker", idempotencyKey: "clerk-email/msg_abc" },
     ]);
   });
 

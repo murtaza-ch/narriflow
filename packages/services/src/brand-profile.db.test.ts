@@ -582,12 +582,12 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       storageKey: `workspaces/${f.workspace.id}/visual-assets/${randomUUID()}.png`, contentType: "image/png", sizeBytes: 128, width: 64, height: 64, fingerprint: "a".repeat(64),
     } });
     const placed = studioEditsSchema.parse({ visualBroll: [{ id: randomUUID(), asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, startSec: 1, endSec: 3, fit: "cover" }] });
-    const clipIn = async (title: string, expiresAt: Date | null) => {
+    const clipIn = async (title: string, expiresAt: Date | null, document: { studioEdits?: object; sceneBlocks?: object[] } = { studioEdits: placed as object }) => {
       const project = await prisma.project.create({ data: { title, sourceMediaUrl: "r2://test/source.mp4", workspaceId: f.workspace.id, createdByUserId: f.user.id, expiresAt } });
       const pack = await prisma.contentPack.create({ data: { projectId: project.id, outputTypes: ["short_clip"], clipCountTarget: 1, clipDurationSecTarget: 30, toneConstraints: [], captionPreset: "bold-pop", platformPlaybookVersion: "test" } });
       const run = await prisma.workflowRun.create({ data: { projectId: project.id, idempotencyKey: `run-${randomUUID()}`, stage: "moment_detection", status: "completed", contentPackId: pack.id } });
       return prisma.clip.create({ data: {
-        projectId: project.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, title, hookText: "Hook", reasoning: "Fixture", category: "hook", transcriptSlice: [], studioEdits: placed as object,
+        projectId: project.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, title, hookText: "Hook", reasoning: "Fixture", category: "hook", transcriptSlice: [], ...document,
         viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test",
       } });
     };
@@ -595,6 +595,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     const live = await clipIn("Live clip", null);
     await expect(visualAssetService.softDelete(f.scope, asset.id, {})).rejects.toMatchObject({ details: { usedIn: "clip Live clip" } });
     await prisma.clip.delete({ where: { id: live.id } });
+    const scene = await clipIn("Scene clip", null, { sceneBlocks: [{ id: randomUUID(), schemaVersion: 1, anchorSec: 0, durationSec: 2, content: { kind: "image", asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, fit: "cover", backgroundColor: "#000000" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null }] });
+    await expect(visualAssetService.softDelete(f.scope, asset.id, {})).rejects.toMatchObject({ details: { usedIn: "clip Scene clip" } });
+    await prisma.clip.delete({ where: { id: scene.id } });
     await visualAssetService.softDelete(f.scope, asset.id, {});
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).deletedAt).not.toBeNull();
   })));

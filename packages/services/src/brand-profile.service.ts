@@ -1,6 +1,5 @@
 import { validatedFontFaceSchema } from "@narriflow/validators/native-validation";
 import { Prisma, type BrandProfile, type BrandTemplate } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandAudioSnapshotSchema,
   brandPlanRequirement,
@@ -44,6 +43,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const brandProfileFailureCatalog = {
   brand_profile_not_found: "missing",
@@ -179,12 +179,6 @@ export function resolveProfileStyleSelection(input: {
   if (!selected) return null;
   if (!input.memberTemplateIds.includes(selected)) throw new BrandProfileMembershipError();
   return selected;
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 function templateMembershipOwnerWhere(

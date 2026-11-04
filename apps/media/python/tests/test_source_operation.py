@@ -26,11 +26,13 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
             "durationSeconds":120,"wholeSource":True,"audioStartTimeSec":0,
             "probeVersion":"normalized-probe-v1","toolchainFingerprint":"a"*64}
         command = {"kind":"youtube_source","audioPolicy":"pending_pack","projectId":project_id,"sourceRevision":1,"mediaId":"dQw4w9WgXcQ",
-            "sourceAudioId": audio_id, "toolchainFingerprint":"a"*64,"probeVersion":"normalized-probe-v1",
+            "maxSourceSeconds":3600,"sourceAudioId": audio_id, "toolchainFingerprint":"a"*64,"probeVersion":"normalized-probe-v1",
             "existingSourceAudio":audio if seeded else None,"languageProbe":None}
         package = WorkPackage("fetch_source","b"*64,_wire(command),_wire([]),_wire([]),_wire(fence))
         class Runtime:
-            def __init__(self, **options): trace.append("runtime"); self.start = options["on_process_start"]
+            def __init__(self, **options):
+                trace.append("runtime"); self.start = options["on_process_start"]
+                assert options["max_source_seconds"] == 3600
             async def resolve(self, source, proxy, work): self.start(123); return source
         class Sink:
             def __init__(self, *args, **options): pass

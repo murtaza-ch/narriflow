@@ -5,6 +5,7 @@ import { executeExecutionPage, readExecutionPageReceipt } from "./execution-page
 import { readExecutionAdmission } from "./execution-admission";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispatch } from "./execution-dispatch";
+import { sha256Hex } from "./execution-hash";
 
 export class ExecutionRestoreError extends Error {
   constructor(readonly code: "restore_epoch_changed" | "restore_reference_invalid" | "restore_phase_unavailable" | "restore_page_invalid") { super(code); }
@@ -44,7 +45,7 @@ function parse(id: string) {
   return { facts, phase, after };
 }
 async function hash(epoch: number, subjectId: string, attestation: string) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["restore-page-v2", epoch, subjectId, attestation])))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(JSON.stringify(["restore-page-v2", epoch, subjectId, attestation]));
 }
 
 /** Operator authority only. The fence commits in its own transaction before

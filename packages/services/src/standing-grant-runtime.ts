@@ -1,7 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import {readExecutionAdmission} from "./execution-admission";
 import {recoverPublicationDispatches} from "./publication-dispatch";
-import { getPrismaClient } from "@narriflow/db/client";
 import { resolvePricingTier, type FinishingReason } from "@narriflow/validators";
 import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
@@ -17,17 +16,12 @@ import {
   type StandingGrants,
 } from "./standing-grant";
 import { workspaceService } from "./workspace.service";
-
-function requiredPrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
+import { requirePrisma } from "./require-prisma";
 
 const requireActor = (userId: string, workspaceId: string, capability: Parameters<typeof workspaceService.requireActor>[2]) =>
   workspaceService.requireActor(userId, workspaceId, capability);
 
-const service = () => createStandingGrants({ prisma: requiredPrisma(), requireActor });
+const service = () => createStandingGrants({ prisma: requirePrisma(), requireActor });
 
 /** Production management of Standing Grants on the shared database. */
 export const standingGrants = {
@@ -38,7 +32,7 @@ export const standingGrants = {
   revoke: (actor: ActorScope, grantId: string) => service().revoke(actor, grantId),
 };
 
-const reviewerOptOutService = () => createReviewerOptOut({ prisma: requiredPrisma(), secret: reviewDeliverySecret });
+const reviewerOptOutService = () => createReviewerOptOut({ prisma: requirePrisma(), secret: reviewDeliverySecret });
 
 /** A reviewer's opt-out from automated review requests, by the signed link in the email. */
 export const reviewerOptOut = {
@@ -60,14 +54,14 @@ export type GrantAcceptOutcome = "accepted" | "no_grant" | "tiktok_excluded" | "
  * outcome, not an error. */
 export type FrozenStandingGrant={id:string;revision:number;ruleFingerprint:string};
 async function readFrozenFinishingGrant(input:{finishingId:string;workspaceId:string;projectId:string;expectedGrant:FrozenStandingGrant|null},kind:"publish"|"review_send",socialAccountId?:string){
- const expected=input.expectedGrant;if(!expected)return null;const prisma=requiredPrisma();
+ const expected=input.expectedGrant;if(!expected)return null;const prisma=requirePrisma();
  const finishing=await prisma.generationFinishing.findFirst({where:{id:input.finishingId,workspaceId:input.workspaceId,projectId:input.projectId},select:{autopilotRuleId:true}});
  if(!finishing?.autopilotRuleId)return null;
  return prisma.standingGrant.findFirst({where:{id:expected.id,revision:expected.revision,ruleFingerprint:expected.ruleFingerprint,workspaceId:input.workspaceId,autopilotRuleId:finishing.autopilotRuleId,kind,...(socialAccountId?{socialAccountId}:{}),status:"active",expiresAt:{gt:new Date()}},select:{id:true,revision:true,grantedByUserId:true,reviewerEmails:true}});
 }
 
 export async function acceptProposalUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string;expectedScheduleRevision:number;expectedGrant:{id:string;revision:number;ruleFingerprint:string}|null }, options: {beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>} = {}): Promise<GrantAcceptOutcome> {
-  const prisma = requiredPrisma();
+  const prisma = requirePrisma();
   const post = await prisma.socialPost.findFirst({
     where: { id: input.proposalId, workspaceId: input.workspaceId, projectId: input.projectId, proposal: { isNot: null } },
     select: { status: true, platform: true, socialAccountId: true, standingGrantId: true,standingGrantRevision:true,scheduleRevision:true,frozenState:{select:{confirmedScheduleRevision:true}} },
@@ -120,7 +114,7 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
  * so a re-claim or a second worker finds it. A refusal says why, and finishing
  * ends with the reason instead of failing. */
 export async function sendReviewRoundUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[];expectedGrant:FrozenStandingGrant|null }, options: {beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>} = {}): Promise<{ sent: true } | { sent: false; reason: FinishingReason }> {
-  const prisma = requiredPrisma();
+  const prisma = requirePrisma();
   const sent = await prisma.reviewRound.findFirst({ where: { finishingId: input.finishingId,workspaceId:input.workspaceId,projectId:input.projectId }, select: { id: true } });
   if (sent) return { sent: true };
 

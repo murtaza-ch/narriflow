@@ -1,4 +1,4 @@
-export const DATABASE_CHECKS = ["execution", "workflow", "upload-session", "processing-usage", "workspace-billing", "social-publication", "clip-editor-persistence", "authenticated-request-policy", "brand-profiles", "vizard-expansion", "integration-api", "library-search"] as const;
+export const DATABASE_CHECKS = ["execution", "workflow", "upload-session", "processing-usage", "workspace-billing", "social-publication", "clip-editor-persistence", "authenticated-request-policy", "brand-profiles", "vizard-expansion", "integration-api", "library-search", "schema-drift"] as const;
 
 export function assertLocalTestDatabase(database: string) {
 const target = new URL(database);

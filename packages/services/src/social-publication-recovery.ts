@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import { Prisma, type SocialPlatform } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   confirmSocialPublicationSchema,
   recheckSocialPublicationSchema,
@@ -32,6 +31,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const DEFAULT_PROCESSING_DEADLINE_MS = 24 * 60 * 60_000;
 const DEFAULT_RECONCILIATION_DEADLINE_MS = 24 * 60 * 60_000;
@@ -118,12 +118,6 @@ export class SocialPublicationRecoveryError extends ExpectedDomainFailureError<S
     super({ code, kind: SOCIAL_PUBLICATION_RECOVERY_FAILURES[code], message });
     this.name = "SocialPublicationRecoveryError";
   }
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 function assertPlatformUrl(platform: SocialPlatform, raw: string | null | undefined) {

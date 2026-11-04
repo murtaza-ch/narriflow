@@ -2,7 +2,6 @@ import { BrandFontIntegrityError, BrandFontReferenceError, assertSceneBrandFontR
 export { BrandFontIntegrityError, BrandFontReferenceError, assertSceneBrandFontReferences, type ParsedBrandFont } from "./brand-font-contract";
 import { randomUUID } from "node:crypto";
 import type { BrandFont } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandFontFinalizeSchema,
   brandFontUploadSchema,
@@ -29,17 +28,12 @@ import {
 import { validatedFontFaceSchema } from "@narriflow/validators/native-validation";
 import { getNativeValidationService } from "./native-validation-runtime";
 import { withSerializableTransaction } from "./serializable-transaction";
+import { requirePrisma } from "./require-prisma";
 
 function formatForContentType(contentType: string): "ttf" | "otf" | "woff2" {
   if (contentType === "font/woff2") return "woff2";
   if (contentType === "font/otf") return "otf";
   return "ttf";
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 function toRow(font: BrandFont, accessUrl: string | null, replayed = false, face: CaptionFontFace | null = null) {

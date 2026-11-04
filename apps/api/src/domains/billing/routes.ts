@@ -66,6 +66,9 @@ export function createBillingRoutes(deps: BillingRouteDeps) {
                 beforeAccept: async () => enforceRecordedRateLimit(getRecordedRateLimit(c)),
               }
             : undefined;
+        // The creation branch spends the budget after its receipt lookup; resuming an existing
+        // Workspace has no receipt, so it spends it here. Either way Checkout is never free.
+        if (creation === undefined) enforceRecordedRateLimit(getRecordedRateLimit(c));
         const result = await billingService.startBusinessWorkspaceCheckout({
           actorUserId: actor.actorUserId,
           ...(input.name === undefined ? {} : { name: input.name }),

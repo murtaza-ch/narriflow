@@ -1,7 +1,7 @@
-import type { sendEmail } from "@narriflow/email";
+import type { SendEmailInput, SendEmailResult } from "@narriflow/email";
 
 export interface InviteDeliveryDeps {
-  sendEmail: typeof sendEmail;
+  sendEmail: (input: SendEmailInput) => Promise<SendEmailResult>;
   /** W: invitation links are for people, so they use the web origin. */
   webOrigin: string;
 }

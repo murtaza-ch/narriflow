@@ -3,7 +3,6 @@ import { combineLatestCaptures, latestCaptureInclude } from "./performance-summa
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandProgramAnalyticsEventSchema,
   recordAnalyticsEventSchema,
@@ -17,6 +16,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const analyticsFailureCatalog = {
   analytics_clip_not_found: "missing",
@@ -30,14 +30,6 @@ export class AnalyticsServiceError extends ExpectedDomainFailureError<AnalyticsF
     super({ code, kind: analyticsFailureCatalog[code], message });
     this.name = "AnalyticsServiceError";
   }
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new Error("Database client unavailable");
-  }
-  return prisma;
 }
 
 function toEventType(type: AnalyticsEventType) {

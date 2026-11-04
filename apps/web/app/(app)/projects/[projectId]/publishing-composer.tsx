@@ -1,0 +1,1440 @@
+"use client";
+import { PublishingPreview } from "./publishing-preview";
+import { TimePicker } from "@narriflow/ui/components/time-picker";
+import { DatePicker } from "@narriflow/ui/components/date-picker";
+import { Select } from "@narriflow/ui/components/select";
+import { SocialPlatformMark } from "@/lib/social-platform-mark";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useEffectEvent,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
+import Link from "next/link";
+import {
+	Avatar,
+	chakra,
+	Box,
+	Drawer,
+	Field,
+	Flex,
+	NativeSelect,
+	Stack,
+	Text,
+	Collapsible,
+} from "@chakra-ui/react";
+import {
+	Copy,
+	Settings2,
+	CheckCircle2,
+	ImagePlus,
+	CalendarClock,
+	ChevronDown,
+	Film,
+	Inbox,
+	Plus,
+	Send,
+	Share2,
+	Sparkles,
+} from "lucide-react";
+import { Button } from "@narriflow/ui/components/button";
+import { Input } from "@narriflow/ui/components/input";
+import { Textarea } from "@narriflow/ui/components/textarea";
+import { Checkbox } from "@narriflow/ui/components/checkbox";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import {
+	clipExportSnapshotSchema,
+	SOCIAL_PROVIDER_CAPABILITIES,
+	socialCaptionLength,
+	planFeatureRequirement,
+	type BulkSocialScheduleOutcome,
+	type PublishingDraft,
+	type ClipSnapshot,
+	type ClipExportSnapshot,
+} from "@narriflow/validators";
+import { formatDuration } from "@/lib/format";
+import {
+	SOCIAL_PLATFORM_LABELS,
+} from "@/lib/social-post-status";
+import {
+	currentPublicationExport,
+	publishingDraftKey,
+} from "./publishing-draft";
+import { type ProjectPublishingApi } from "./publishing-api";
+import { type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
+import { PublishingCover } from "./publishing-cover";
+import { isApiError, type Intent } from "@narriflow/api-client";
+import { invalidatePublishing, type ProposeInput } from "@narriflow/api-client/publishing";
+import { createExportsClient, exportQueries } from "@narriflow/api-client/exports";
+import { invalidateProject } from "@narriflow/api-client/projects";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { apiFailureMessage, browserFailureFromApiError } from "@/lib/publishing-client";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+
+import type { Config } from "./publishing-provider";
+
+/** Rethrows a refused publishing request after opening the upgrade dialog when a plan would lift it. */
+function openUpgradeOnRefusal(openUpgrade: (prompt: UpgradePrompt) => void) {
+	return (error: unknown): never => {
+		if (isApiError(error) && error.status === 402) {
+			const prompt = upgradePromptFromFailure(browserFailureFromApiError(error));
+			if (prompt) openUpgrade(prompt);
+		}
+		throw error;
+	};
+}
+
+type Options = PublishingOptions;
+type BulkResult = BulkSocialScheduleOutcome;
+export function PublishingRecoveryComposer({ api, session, onSubmitted, projectId }: { api: ProjectPublishingApi; session: PublishingCompositionSession; onSubmitted(outcome: BulkResult): Promise<void>; projectId: string }) {
+	const { openUpgrade } = useUpgrade();
+	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+	return <>
+		<Drawer.Body p={{ base: "4", md: "6" }}>
+			<Text>{snapshot.recoveryUnavailable ? "Saved publishing information could not be read. Check it before composing another post." : "The previous submission is saved. Check its result before composing another post."}</Text>
+			{snapshot.error && <Text role="status" color="warning.fg" mt="3">{snapshot.error}</Text>}
+		</Drawer.Body>
+		<Drawer.Footer><Button size="sm" disabled={snapshot.busy || (!snapshot.pending && !snapshot.recoveryUnavailable)} onClick={() => void session.submit({ exports: [], options: {} }, (payload) => api.schedule(projectId, payload).catch(openUpgradeOnRefusal(openUpgrade))).then((outcome) => outcome ? onSubmitted(outcome) : undefined)}>
+			{snapshot.busy && <Spinner size="xs" />} Check previous submission
+		</Button></Drawer.Footer>
+	</>;
+}
+export function PublishingComposer({
+	api,
+	config,
+	session,
+	clips,
+	preferredExportId,
+	open,
+	onSubmitted,
+}: {
+	api: ProjectPublishingApi;
+	config: Config;
+	session: PublishingCompositionSession;
+	clips: ClipSnapshot[];
+	preferredExportId?: string;
+	open: boolean;
+	onSubmitted(outcome: BulkResult): Promise<void>;
+}) {
+	const runtime = useApiRuntime();
+	const scope = useWorkspaceScope();
+	const queryClient = useQueryClient();
+	const proposeIntents = useRef(new Map<string, Intent<ProposeInput>>());
+	const exportIntent = useMemo(() => runtime.createIntent<{ clipId: string; expectedRevision: number; resolution: string }>(), [runtime]);
+	const { openUpgrade, currentTier } = useUpgrade();
+	const campaignUpgrade = featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to publish multiple posts together");
+	const campaignRequirement = planFeatureRequirement(currentTier, "campaign.operations")?.message
+		?? "Your workspace plan does not include publishing multiple posts together.";
+	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+	const { restored, drafts, accountIds, timing, copyErrors, busy, pending, result, error, generating, generationNeeded } = snapshot;
+	const setError = session.setError;
+	const setTiming = session.updateTiming;
+	const [activeId, setActiveId] = useState(clips[0]!.id);
+	const [options, setOptions] = useState<Record<string, Options>>({});
+	const [optionErrors, setOptionErrors] = useState<Record<string, string>>({});
+	const [slots, setSlots] = useState<
+		Array<{ clipId: string; scheduledFor: string }>
+	>([]);
+	const [previewError, setPreviewError] = useState("");
+	const [renderBusy, setRenderBusy] = useState(false);
+	const [override, setOverride] = useState("");
+	const approvalBlocked = result?.items.some((item) => item.errorCode === "review_approval_required") ?? false;
+	const [instruction, setInstruction] = useState("");
+	const [lockedPhrases, setLockedPhrases] = useState("");
+	const [lockedHashtags, setLockedHashtags] = useState("");
+	const [replaceScope, setReplaceScope] = useState<string | null>(null);
+	const [coverAccount, setCoverAccount] = useState<string | null>(null);
+	const [queued, setQueued] = useState<Record<string, { state: "pending" | "done" | "error"; message?: string }>>({});
+	const eligible = useMemo(
+		() =>
+			config.accounts.filter(
+				(a) =>
+					a.status === "active" &&
+					a.publishingEligible &&
+					SOCIAL_PROVIDER_CAPABILITIES[a.platform].publishingEnabled,
+			),
+		[config.accounts],
+	);
+	const accounts = useMemo(
+		() =>
+			accountIds.flatMap((id) => {
+				const a = eligible.find((a) => a.id === id);
+				return a ? [a] : [];
+			}),
+		[accountIds, eligible],
+	);
+	const active = clips.find((c) => c.id === activeId) ?? clips[0]!;
+	const accepted = new Set(
+		result?.items
+			.filter((i) => i.status === "succeeded")
+			.map((i) => publishingDraftKey(i.clipId, i.accountId)) ?? [],
+	);
+	const pairs = useMemo(
+		() =>
+			clips.flatMap((clip) =>
+				accounts.map((account) => ({
+					clip,
+					account,
+					key: publishingDraftKey(clip.id, account.id),
+				})),
+			),
+		[clips, accounts],
+	);
+	useEffect(() => {
+		void session.checkSavedCovers(() => api.visualAssets());
+	}, [session, api]);
+	// The Project's current exports, re-read every 5s while the drawer is open (renders finish meanwhile).
+	const exportsClient = useMemo(
+		() => (scope ? createExportsClient(runtime.transport.scoped(scope)) : null),
+		[runtime.transport, scope],
+	);
+	const currentExports = useQuery({
+		...(scope && exportsClient
+			? exportQueries.current(exportsClient, scope, config.projectId)
+			: { queryKey: ["publishing-exports-idle", config.projectId], queryFn: async () => ({ exports: [] }) }),
+		enabled: open && scope !== null,
+		refetchInterval: 5000,
+	});
+	const exports = useMemo<ClipExportSnapshot[]>(
+		() => (currentExports.data ? clipExportSnapshotSchema.array().parse(currentExports.data.exports) : []),
+		[currentExports.data],
+	);
+	const refetchExports = currentExports.refetch;
+	const refreshExports = useCallback(async () => {
+		await refetchExports({ throwOnError: true });
+	}, [refetchExports]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: errorUpdatedAt re-reports each failed read.
+	useEffect(() => {
+		if (currentExports.error) setError(currentExports.error.message);
+	}, [currentExports.error, currentExports.errorUpdatedAt, setError]);
+	const staleRevision = exports.some((item) =>
+		clips.some(
+			(clip) =>
+				clip.id === item.clipId &&
+				item.currentEditorRevision > clip.editorRevision,
+		),
+	);
+	// A newer edit exists than the clips this drawer was opened with: re-read the Project's clips.
+	useEffect(() => {
+		if (staleRevision && scope) void invalidateProject(queryClient, scope, config.projectId);
+	}, [staleRevision, queryClient, scope, config.projectId]);
+	useEffect(() => {
+		let alive = true;
+		for (const account of accounts) {
+			if (options[account.id] || optionErrors[account.id]) continue;
+			void api
+				.publishingOptions(config.projectId, account.id)
+				.then((value) => {
+					if (alive) setOptions((o) => ({ ...o, [account.id]: value as Options }));
+				})
+				.catch((e) => {
+					if (alive)
+						setOptionErrors((o) => ({ ...o, [account.id]: e.message }));
+				});
+		}
+		return () => {
+			alive = false;
+		};
+	}, [accounts, api, config.projectId, options, optionErrors]);
+	const timingSignature = JSON.stringify({
+		...timing,
+		clipIds: clips.map((c) => c.id),
+	});
+	useEffect(() => {
+		const mode = JSON.parse(timingSignature).scheduleMode;
+		if (!open || mode === "now" || mode === "queue") {
+			setSlots([]);
+			setPreviewError("");
+			return;
+		}
+		let alive = true;
+		setSlots([]);
+		const timer = setTimeout(
+			() =>
+				void api
+					.previewSchedule(config.projectId, JSON.parse(timingSignature))
+					.then((v) => {
+						if (alive) {
+							setSlots(v.slots.flatMap((slot) => (slot.clipId ? [{ clipId: slot.clipId, scheduledFor: slot.scheduledFor }] : [])));
+							setPreviewError("");
+						}
+					})
+					.catch((e) => {
+						if (alive) setPreviewError(e.message);
+					}),
+			250,
+		);
+		return () => {
+			alive = false;
+			clearTimeout(timer);
+		};
+	}, [timingSignature, open, api, config.projectId]);
+	function update(key: string, patch: Partial<PublishingDraft>) {
+		session.updateDraft(key, patch);
+	}
+	/** Hands the draft's export and caption to the account's publishing queue, where a person accepts it into a slot. */
+	async function proposeToQueue(key: string, clipId: string, exportId: string, socialAccountId: string, caption: string) {
+		if (!scope) return;
+		setQueued((current) => ({ ...current, [key]: { state: "pending" } }));
+		const proposal = { clipId, exportId, socialAccountId, ...(caption.trim() ? { caption: caption.trim() } : {}) };
+		// One key per draft and content: a retry after a lost answer replays the same proposal, an edited caption is a new one.
+		let intent = proposeIntents.current.get(key);
+		if (!intent) {
+			intent = runtime.createIntent<typeof proposal>();
+			proposeIntents.current.set(key, intent);
+		}
+		try {
+			await api.propose(proposal, intent.keyFor(proposal));
+			intent.complete();
+			setQueued((current) => ({ ...current, [key]: { state: "done" } }));
+			void invalidatePublishing(queryClient, scope);
+		} catch (error) {
+			setQueued((current) => ({
+				...current,
+				[key]: { state: "error", message: apiFailureMessage(error, "The post could not be proposed.") },
+			}));
+		}
+	}
+	function generate(clip: ClipSnapshot, targets: typeof pairs, force = false) {
+		return session.generate({ clipId: clip.id, accountIds: targets.map((target) => target.account.id), force, instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => api.assistedCopy(config.projectId, input));
+	}
+	const generateInBackground = useEffectEvent(() => session.generateMissing({ instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => api.assistedCopy(config.projectId, input)));
+	useEffect(() => {
+		if (restored && open && config.assistedCopyEnabled && !pending && generating.length < 2 && generationNeeded) generateInBackground();
+	}, [restored, open, config.assistedCopyEnabled, pending, generating.length, generationNeeded]);
+	async function regenerate(scope: string) {
+		setReplaceScope(null);
+		for (const clip of scope !== "all" ? [active] : clips) {
+			await generate(
+				clip,
+				pairs.filter(
+					(p) =>
+						p.clip.id === clip.id &&
+						!accepted.has(p.key) &&
+						(scope === "all" || scope === "current" || scope === p.key),
+				),
+				true,
+			);
+		}
+	}
+	function requestRegeneration(scope: "current" | "all") {
+		if (
+			pairs.some(
+				(p) =>
+					(scope === "all" || p.clip.id === active.id) && drafts[p.key]?.edited,
+			)
+		)
+			setReplaceScope(scope);
+		else void regenerate(scope);
+	}
+	function issues(pair: (typeof pairs)[number]) {
+		return session.issues(pair.key, { exports, options, optionErrors, preferredExportId });
+	}
+	async function prepare() {
+		setRenderBusy(true);
+		setError("");
+		try {
+			if (activeExport?.status === "failed") {
+				await api.retryExport(config.projectId, active.id, activeExport.id);
+			} else {
+				const resolution = config.can1080pExport ? "1080p" : "720p";
+				const request = { clipId: active.id, expectedRevision: active.editorRevision, resolution };
+				// Rendering spends credits: a retry after a lost answer reuses the key and gets the accepted export back.
+				await api.createExport(
+					config.projectId,
+					active.id,
+					{ expectedRevision: active.editorRevision, aspectRatios: ["9:16"], resolution },
+					exportIntent.keyFor(request),
+				);
+				exportIntent.complete();
+			}
+			await refreshExports();
+		} catch (e) {
+			setError(
+				e instanceof Error ? e.message : "The video could not be prepared.",
+			);
+		} finally {
+			setRenderBusy(false);
+		}
+	}
+	async function submit() {
+		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => api.schedule(config.projectId, payload).catch(openUpgradeOnRefusal(openUpgrade)));
+		if (outcome) await onSubmitted(outcome);
+	}
+	const activeExport = exports.find(
+		(e) =>
+			e.clipId === active.id &&
+			e.editorRevision === active.editorRevision &&
+			!e.isOlderVersion,
+	);
+	const activeMediaReady =
+		accounts.length > 0 &&
+		accounts.every(
+			(a) =>
+				!!currentPublicationExport(
+					active,
+					a.platform,
+					exports,
+					preferredExportId,
+				),
+		);
+	const preparingVideo =
+		renderBusy ||
+		(!!activeExport && ["queued", "rendering"].includes(activeExport.status));
+	const disabled = busy || !!pending;
+	const unresolved = pairs.filter((p) => !accepted.has(p.key));
+	const issueCount = unresolved.reduce((n, p) => n + issues(p).length, 0);
+	const inboxCount = unresolved.filter(
+		(p) => drafts[p.key]?.deliveryMode === "tiktok_inbox",
+	).length;
+	const directCount = unresolved.length - inboxCount;
+	// Posting slots are the account's own, so the queue is offered when every chosen account has some.
+	const queueAvailable =
+		accounts.length > 0 &&
+		accounts.every((account) => (account.postingSchedule?.slots.length ?? 0) > 0);
+	// A queued post's time is chosen when it is written, so there is nothing to preview.
+	const needsPreview = timing.scheduleMode !== "now" && timing.scheduleMode !== "queue";
+	const queueBlocked = timing.scheduleMode === "queue" && !queueAvailable;
+	const submitBlockedReason = pending
+		? null
+		: !restored
+			? "Restore the publishing draft before submitting."
+			: !unresolved.length
+				? "Choose at least one post to submit."
+				: issueCount > 0
+					? "Resolve the highlighted publishing requirements before submitting."
+					: pairs.length > 1 && !config.campaignSchedulingEnabled
+						? campaignRequirement
+						: queueBlocked
+							? "Add posting slots to every chosen account, or pick a time."
+							: needsPreview && (!!previewError || !slots.length)
+							? previewError || "Choose a valid schedule before submitting."
+							: approvalBlocked &&
+								(!config.canOverrideReview || !override.trim())
+								? config.canOverrideReview
+									? "Provide a reason to publish without the required approval."
+									: "Request approval in the Review tab before publishing."
+								: null;
+	const coverPair = coverAccount
+		? pairs.find(
+				(p) => p.clip.id === active.id && p.account.id === coverAccount,
+			)
+		: null;
+	const coverMedia = coverPair
+		? currentPublicationExport(
+				active,
+				coverPair.account.platform,
+				exports,
+				preferredExportId,
+			)
+		: null;
+	return (
+		<>
+			<Drawer.Body p="0" px={{ base: "0", md: "2" }} overflow="hidden" display="grid" gap="2" gridTemplateColumns={{base:"minmax(0, 1fr)", md:"260px minmax(0, 1fr)"}} gridTemplateRows={{base:"auto minmax(0, 1fr)",md:"minmax(0, 1fr)"}} minH="0">
+				<chakra.fieldset disabled={disabled || !restored} border="0" m="0" minW="0" p="5" bg="bg" borderRadius={{ base: "0", md: "12px" }} overflowY="auto">
+					<Stack gap="4">
+						<Text as="h3" textStyle="eyebrow" color="fg.muted">
+							Post to
+						</Text>
+										<Flex gap="2" wrap="wrap" direction={{base:"row",md:"column"}}>
+											{config.accounts.map((account) => {
+												const enabled = eligible.some(
+													(a) => a.id === account.id,
+												);
+												return (
+													<Box
+														key={account.id}
+														py="2">
+														<Checkbox
+															checked={accountIds.includes(account.id)}
+															disabled={!enabled}
+															onCheckedChange={(checked) =>
+																session.selectAccounts(checked ? [...accountIds, account.id] : accountIds.filter((id) => id !== account.id))
+															}
+														>
+															<Flex gap="3" align="center" minW="0">
+																<Box position="relative" flexShrink={0}>
+<Avatar.Root size="sm"><Avatar.Fallback name={account.displayName}/><Avatar.Image src={account.avatarUrl ?? undefined}/></Avatar.Root>
+<Box position="absolute" bottom="-1" right="-1" bg="bg.panel" borderRadius="full" p="0.5"><SocialPlatformMark
+																	platform={account.platform}
+																	size="4"
+																/></Box></Box>
+																<Box minW="0">
+																	<Text fontSize="sm" overflowWrap="anywhere">{account.handle || account.displayName}</Text>
+																	{!SOCIAL_PROVIDER_CAPABILITIES[account.platform].publishingEnabled && (
+																		<Text fontSize="xs" color="fg.muted">Publishing coming soon</Text>
+																	)}
+																</Box>
+															</Flex>
+														</Checkbox>
+													</Box>
+												);
+											})}
+										</Flex>
+										{config.accounts.length ? (
+											<Button variant="subtle" size="sm" width="full" asChild>
+												<Link
+													aria-label="Manage accounts"
+													title="Manage accounts"
+													href={`/settings/social-accounts?returnTo=${encodeURIComponent(`/projects/${config.projectId}?publishClips=${clips.map((c) => c.id).join(",")}`)}`}
+												>
+													<Settings2 size={16} /> Manage accounts
+												</Link>
+											</Button>
+										) : (
+											<Stack align="center" textAlign="center" gap="3" py="8" px="2">
+												<Flex boxSize="11" borderRadius="full" bg="bg.soft" align="center" justify="center" color="fg.muted">
+													<Share2 size={20} />
+												</Flex>
+												<Box>
+													<Text fontSize="14px" fontWeight="500">
+														No accounts yet
+													</Text>
+													<Text fontSize="13px" color="fg.muted" mt="1">
+														Connect a social account to publish this clip.
+													</Text>
+												</Box>
+												<Button variant="subtle" size="sm" asChild>
+													<Link
+														href={`/settings/social-accounts?returnTo=${encodeURIComponent(`/projects/${config.projectId}?publishClips=${clips.map((c) => c.id).join(",")}`)}`}
+													>
+														<Plus size={16} /> Connect an account
+													</Link>
+												</Button>
+											</Stack>
+										)}
+										{config.accounts.length > 0 && !accounts.length && (
+											<Text fontSize="xs" color="fg.muted">
+												Choose the accounts for this selection.
+											</Text>
+										)}
+									</Stack></chakra.fieldset>
+				<Stack
+					overflowY="auto"
+ minH="0" css={{"& > *": {flexShrink: 0}}}
+					flex="1"
+					minW="0"
+					p={{ base: "4", md: "6" }}
+					bg="bg"
+					borderRadius={{ base: "0", md: "12px" }}
+					gap="6"
+				>
+					{!restored ? (
+						<Spinner />
+					) : (
+						<>
+							{clips.length > 1 && (
+					<Stack
+						as="nav"
+						aria-label="Selected clips"
+ flexShrink={0} minH="132px" overflowY="hidden"
+						width="full"
+						direction="row"
+						bg="bg.subtle"
+						overflowX="auto"
+						p="2"
+						gap="2"
+						display={{ base: "none", md: "flex" }}
+					>
+						{clips.map((clip) => {
+							const count = pairs
+								.filter((p) => p.clip.id === clip.id)
+								.reduce((n, p) => n + issues(p).length, 0);
+							return (
+								<Button
+									key={clip.id}
+									variant="ghost" bg={active.id === clip.id ? "accent.subtle" : "transparent"} _hover={{ bg: active.id === clip.id ? "accent.subtle" : "bg.soft" }}
+									aria-current={active.id === clip.id ? "true" : undefined}
+									width="180px" minW="180px" maxW="180px" flexShrink={0} whiteSpace="normal"
+									textAlign="start"
+									h="auto" minH="112px"
+									p="3"
+									justifyContent="start"
+									onClick={() => setActiveId(clip.id)}
+								>
+									<Stack gap="2" minW="0" width="full">
+										<Flex align="center" gap="2">
+											{exports
+												.find((e) => e.clipId === clip.id)
+												?.variants.find((v) => v.previewUrl)?.previewUrl ? (
+												<PublishingPreview key={exports.find(e => e.clipId === clip.id)?.variants.find(v => v.previewUrl)?.id}
+													muted
+													preload="metadata"
+													aria-label={`Preview of ${clip.title ?? clip.hookText}`}
+													src={
+														exports
+															.find((e) => e.clipId === clip.id)
+															?.variants.find((v) => v.previewUrl)
+															?.previewUrl ?? undefined
+													}
+													style={{
+														width: 32,
+														height: 44,
+														objectFit: "cover",
+														borderRadius: 4,
+													}}
+												/>
+											) : (
+												<Flex width="32px" height="44px" flexShrink={0} align="center" justify="center" bg="bg.panel" borderRadius="4px"><Film size={16} /></Flex>
+											)}
+											<Text fontSize="xs">
+												{formatDuration(clip.durationSec)}
+											</Text>
+										</Flex>
+										<Text fontSize="xs" lineClamp={2} minH="32px">
+											{clip.title ?? clip.hookText}
+										</Text>
+										<Text
+										fontSize="xs"
+										color={count ? "fg.muted" : "success.fg"}
+										>
+											{count ? "Needs review" : "Ready"}
+										</Text>
+									</Stack>
+								</Button>
+							);
+						})}
+					</Stack>
+				)}
+{clips.length > 1 && (
+								<Field.Root display={{ md: "none" }}>
+									<Field.Label>Clip</Field.Label>
+									<NativeSelect.Root>
+										<NativeSelect.Field
+											value={active.id}
+											onChange={(e) => setActiveId(e.target.value)}
+										>
+											{clips.map((c) => (
+												<option value={c.id} key={c.id}>
+													{c.title ?? c.hookText}
+												</option>
+											))}
+										</NativeSelect.Field>
+										<NativeSelect.Indicator />
+									</NativeSelect.Root>
+								</Field.Root>
+							)}
+							{pending && (
+								<Box bg="bg.soft" borderRadius="l2" p="3">
+									<Text fontSize="sm">
+										A previous submission needs its result checked. Your saved
+										request will be reused.
+									</Text>
+								</Box>
+							)}
+							<chakra.fieldset
+								disabled={disabled}
+								border="0"
+								p="0"
+								m="0"
+								minW="0"
+							>
+								<Stack gap="7">
+{!activeMediaReady && (
+										<Flex
+											justify="space-between"
+											gap="3"
+											align="center"
+											>
+											<Box minW="0">
+												<Text fontSize="14px" fontWeight="500" truncate>
+													{active.title ?? active.hookText}
+												</Text>
+												<Text fontSize="13px" color="fg.muted">
+												{formatDuration(active.durationSec)} ·{" "}
+													{activeMediaReady ? (
+														<CheckCircle2 size={13} aria-label="Video ready" />
+													) : (
+														"Video required"
+													)}
+												</Text>
+											</Box>
+											{!activeMediaReady && (
+												<Button
+													variant="subtle"
+													size="sm"
+													flexShrink={0}
+													disabled={preparingVideo}
+													onClick={() => void prepare()}
+												>
+													<Film size={16} />
+													{preparingVideo
+														? `Preparing ${activeExport?.progress ?? 0}%`
+														: activeExport?.status === "failed"
+															? "Retry video"
+															: "Prepare video"}
+												</Button>
+											)}
+										</Flex>
+									)}
+{config.assistedCopyEnabled ? (
+<Collapsible.Root>
+<Collapsible.Trigger asChild><Button variant="ghost" size="sm" alignSelf="start"><Sparkles size={14}/>Description assistance<ChevronDown size={13}/></Button></Collapsible.Trigger>
+<Collapsible.Content><Stack gap="4" mt="4">
+<Field.Root gap="3">
+<Field.Label>Regenerate descriptions</Field.Label>
+<Textarea aria-label="Regeneration instructions" value={instruction} rows={3} p="4" lineHeight="1.7" placeholder="Adjust the tone or tell us what to emphasize." onChange={(e) => setInstruction(e.target.value)} />
+</Field.Root>
+<Flex gap="2" wrap="wrap" align="center">
+{[{label:"Tone & voice", text:"Use our Tone & Voice"},{label:"Hashtags",text:"Add relevant hashtags"},{label:"Call to action",text:"Include a clear CTA"}].map(({label,text}) => <Button key={text} aria-label={text} variant="ghost" size="xs" onClick={() => setInstruction(v => [v,text].filter(Boolean).join(". "))}>{label}</Button>)}
+<Button ms="auto" size="sm" variant="subtle" disabled={generating.length > 0} onClick={() => requestRegeneration(clips.length > 1 ? "all" : "current")}><Sparkles size={14}/>Regenerate all</Button>
+</Flex>
+<Collapsible.Root>
+<Collapsible.Trigger asChild><Button variant="ghost" size="xs"><Settings2 size={14}/>AI options<ChevronDown size={13}/></Button></Collapsible.Trigger>
+<Collapsible.Content><Stack gap="4" pt="4" mt="3">
+<Field.Root><Field.Label>Keep these phrases</Field.Label><Input value={lockedPhrases} placeholder="Separate phrases with commas" onChange={e=>setLockedPhrases(e.target.value)}/></Field.Root>
+<Field.Root><Field.Label>Keep these hashtags</Field.Label><Input value={lockedHashtags} placeholder="#YourBrand" onChange={e=>setLockedHashtags(e.target.value)}/></Field.Root>
+{clips.length > 1 && <Button alignSelf="start" variant="subtle" size="sm" disabled={generating.length > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
+</Stack></Collapsible.Content></Collapsible.Root>
+</Stack></Collapsible.Content></Collapsible.Root>
+) : config.assistedCopyUpgrade ? (
+<LockedButton variant="ghost" size="sm" alignSelf="start" prompt={config.assistedCopyUpgrade}><Sparkles size={14}/>Description assistance</LockedButton>
+) : null}
+{accounts.map((account) => {
+										const key = publishingDraftKey(active.id, account.id);
+										const d = drafts[key];
+										if (!d) return null;
+										const capability =
+											SOCIAL_PROVIDER_CAPABILITIES[account.platform];
+										const accountOptions = options[account.id];
+										const warnings = issues({ clip: active, account, key });
+										const media = currentPublicationExport(
+											active,
+											account.platform,
+											exports,
+											preferredExportId,
+										);
+										const submitted = accepted.has(key);
+										return (
+											<Stack
+												key={key}
+												gap="4"
+												borderWidth="1px"
+												borderColor="border.card"
+												borderRadius="l3"
+												p={{ base: "5", md: "7" }}
+												bg="bg.panel"
+												opacity={submitted ? 0.6 : 1}
+											>
+												<Flex align="center" justify="space-between" gap="2">
+													<Flex gap="2" align="center">
+														<SocialPlatformMark
+															platform={account.platform}
+															size="4"
+														/>
+														<Text fontSize="sm" fontWeight="semibold">
+															{accounts.length > 1
+																? account.displayName
+																: SOCIAL_PLATFORM_LABELS[account.platform]}
+														</Text>
+													</Flex>
+							{submitted ? (
+								<Text fontSize="xs" color="success.fg">
+									Submitted
+								</Text>
+							) : null}
+												</Flex>
+												<chakra.fieldset
+													disabled={submitted}
+													border="0"
+													p="0"
+													m="0"
+												>
+													<Stack gap="6">
+														{account.platform === "tiktok" && (
+															<Field.Root>
+																<Field.Label>Delivery</Field.Label>
+																<NativeSelect.Root>
+																	<NativeSelect.Field
+																		value={d.deliveryMode}
+																		onChange={(e) =>
+																			update(key, {
+																				deliveryMode: e.target
+																					.value as PublishingDraft["deliveryMode"],
+																			})
+																		}
+																	>
+																		<option value="direct">
+																			Publish directly
+																		</option>
+																		<option value="tiktok_inbox">
+																			Send to TikTok inbox
+																		</option>
+																	</NativeSelect.Field>
+																	<NativeSelect.Indicator />
+																</NativeSelect.Root>
+															</Field.Root>
+														)}
+														{d.deliveryMode === "tiktok_inbox" && (
+															<Text fontSize="xs" color="fg.muted">
+																Finish editing and publish in TikTok. Copy your
+																caption below.
+															</Text>
+														)}
+														{d.deliveryMode === "direct" &&
+															capability.titleField &&
+															account.platform !== "tiktok" && (
+																<Field.Root>
+																	<Field.Label>Title</Field.Label>
+																	<Input
+																		value={d.title}
+																		maxLength={100}
+																		onChange={(e) =>
+																			update(key, { title: e.target.value })
+																		}
+																	/>
+																</Field.Root>
+															)}
+														<Field.Root
+															invalid={
+																d.deliveryMode === "direct" &&
+																socialCaptionLength(account.platform, d.caption) > capability.textLimit
+															}
+														>
+															<Flex
+																width="full"
+																justify="space-between"
+																align="center"
+															>
+																<Field.Label mb="0">
+																	{d.deliveryMode === "tiktok_inbox"
+																		? "Suggested description"
+																		: "Description"}
+																</Field.Label>
+																{generating.length > 0 &&
+																	!d.generated &&
+																	!d.edited && (
+																		<Flex gap="1" align="center">
+																			<Spinner size="xs" />
+																			<Text fontSize="12px" color="fg.muted">
+																			Writing…
+																			</Text>
+																		</Flex>
+																	)}
+															</Flex>
+															<Textarea aria-label="Description"
+																value={d.caption}
+																rows={9}
+minH="220px" p="4" lineHeight="1.8"
+																resize="vertical"
+																placeholder={
+																	config.assistedCopyEnabled
+																		? "Write a caption…"
+																		: "Write a caption…"
+																}
+																onChange={(e) =>
+																	update(key, { caption: e.target.value })
+																}
+															/>
+														<Flex width="full" justify="space-between">
+																<Button
+																	aria-label="Copy description"
+																	title="Copy description"
+																	variant="ghost"
+																	size="xs"
+																	disabled={!d.caption}
+																	onClick={() =>
+																		void navigator.clipboard
+																			.writeText(d.caption)
+																			.catch(() =>
+																				setError(
+																					"The description could not be copied.",
+																				),
+																			)
+																	}
+																>
+																	<Copy size={15} />
+																</Button>
+																<Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+																{socialCaptionLength(account.platform, d.caption)}/{capability.textLimit}
+																</Text>
+														</Flex>
+														{media && (
+															<Flex align="center" gap="2" wrap="wrap">
+																<Button
+																	variant="ghost"
+																	size="xs"
+																	disabled={queued[key]?.state === "pending" || queued[key]?.state === "done"}
+																	onClick={() => void proposeToQueue(key, active.id, media.export.id, account.id, d.caption)}
+																>
+																	<Inbox size={15} /> Propose to queue
+																</Button>
+																{queued[key]?.state === "done" && (
+																	<Text role="status" fontSize="12px" color="fg.muted">
+																		Proposed. <Link href="/calendar/queue">Accept it in the queue</Link>
+																	</Text>
+																)}
+																{queued[key]?.state === "error" && (
+																	<Text role="alert" fontSize="12px" color="danger.fg">
+																		{queued[key]?.message}
+																	</Text>
+																)}
+															</Flex>
+														)}
+														{config.assistedCopyEnabled && (
+															<Button
+																aria-label="Regenerate"
+																variant="ghost"
+																size="xs"
+																disabled={generating.length > 0}
+																onClick={() => {
+																	if (d.edited) setReplaceScope(key);
+																	else void generate(active, [{ clip: active, account, key }], true);
+																}}
+															>
+																<Sparkles size={15} /> Regenerate description
+															</Button>
+														)}
+														{!config.assistedCopyEnabled && config.assistedCopyUpgrade && (
+															<LockedButton variant="ghost" size="xs" prompt={config.assistedCopyUpgrade}>
+																<Sparkles size={15} /> Regenerate description
+															</LockedButton>
+														)}
+															<Field.ErrorText>
+																Shorten the description before publishing.
+															</Field.ErrorText>
+														</Field.Root>
+														{copyErrors[key] && (
+															<Text
+																role="status"
+																color="warning.fg"
+																fontSize="xs"
+															>
+																{copyErrors[key]} You can write a description or
+																regenerate it.
+															</Text>
+														)}
+														{d.deliveryMode === "direct" && (
+															<>
+																{capability.thumbnailSources.length > 0 && (
+																	<Flex
+																		align="center"
+																		justify="space-between"
+																		gap="2"
+																	>
+																		<Text fontSize="xs" color="fg.muted">
+																			{d.thumbnail
+																				? "Custom cover selected"
+																				: "Default cover"}
+																		</Text>
+																		<Flex gap="2">
+																			{d.thumbnail && (
+																				<Button
+																					size="xs"
+																					variant="ghost"
+																					onClick={() =>
+																						update(key, { thumbnail: null })
+																					}
+																				>
+																					Remove
+																				</Button>
+																			)}
+																			{!config.customThumbnailsEnabled && config.customThumbnailsUpgrade ? (
+																				// Current media stays a prerequisite: upgrading can't add a cover without it.
+																				<LockedButton size="xs" variant="subtle" disabled={!media} prompt={config.customThumbnailsUpgrade}>
+																					<ImagePlus size={14} /> Cover
+																				</LockedButton>
+																			) : (
+																				<Button
+																					size="xs"
+																					variant="subtle"
+																					disabled={
+																					!media ||
+																						!config.customThumbnailsEnabled
+																					}
+																					onClick={() =>
+																						setCoverAccount(account.id)
+																					}
+																				>
+																					<ImagePlus size={14} /> Cover
+																				</Button>
+																			)}
+																		</Flex>
+																	</Flex>
+																)}
+																{(account.platform === "youtube_shorts" ||
+																	account.platform === "tiktok" ||
+																	account.platform === "linkedin") && (
+																	<Field.Root>
+																		<Field.Label>Visibility</Field.Label>
+																		<Select ariaLabel="Visibility" placeholder="Choose visibility" disabled={disabled || submitted} items={account.platform === "tiktok" ? (accountOptions?.privacyOptions ?? []).map(value => ({value,label: ({PUBLIC_TO_EVERYONE:"Public",SELF_ONLY:"Only me",MUTUAL_FOLLOW_FRIENDS:"Friends",FOLLOWER_OF_CREATOR:"Followers"} as Record<string,string>)[value] ?? value})) : account.platform === "youtube_shorts" ? [{value:"public",label:"Public"},{value:"unlisted",label:"Unlisted"},{value:"private",label:"Private"}] : [{value:"PUBLIC",label:"Public"},{value:"CONNECTIONS",label:"Connections"}]} value={String(d.settings[account.platform === "tiktok" ? "tiktokPrivacyLevel" : account.platform === "youtube_shorts" ? "youtubePrivacyStatus" : "linkedinVisibility"] ?? "")} onValueChange={value => update(key, {settings: {...d.settings, [account.platform === "tiktok" ? "tiktokPrivacyLevel" : account.platform === "youtube_shorts" ? "youtubePrivacyStatus" : "linkedinVisibility"]: value}})} />
+																	</Field.Root>
+																)}
+																{account.platform === "instagram_reels" && (
+																	<Checkbox
+																		checked={d.settings.shareToFeed !== false}
+																		onCheckedChange={(checked) =>
+																			update(key, {
+																				settings: {
+																					...d.settings,
+																					shareToFeed: checked,
+																				},
+																			})
+																		}
+																	>
+																		Share to feed
+																	</Checkbox>
+																)}
+																{account.platform === "tiktok" && (
+																	<Collapsible.Root>
+																		<Collapsible.Trigger asChild>
+																			<Button variant="ghost" size="xs">
+																				Interaction settings
+																				<ChevronDown size={12} />
+																			</Button>
+																		</Collapsible.Trigger>
+																		<Collapsible.Content>
+																			<Stack gap="3" pt="3">
+																				{[
+																					[
+																						"disableComment",
+																						"Allow comments",
+																						accountOptions?.commentDisabled,
+																					],
+																					[
+																						"disableDuet",
+																						"Allow Duet",
+																						accountOptions?.duetDisabled,
+																					],
+																					[
+																						"disableStitch",
+																						"Allow Stitch",
+																						accountOptions?.stitchDisabled,
+																					],
+																				].map(([name, label, restricted]) => (
+																					<Checkbox
+																						key={String(name)}
+																						disabled={restricted === true}
+																						checked={
+																							restricted !== true &&
+																							d.settings[String(name)] !== true
+																						}
+																						onCheckedChange={(checked) =>
+																							update(key, {
+																								settings: {
+																									...d.settings,
+																									[String(name)]: !checked,
+																								},
+																							})
+																						}
+																					>
+																						{String(label)}
+																					</Checkbox>
+																				))}
+																				<Checkbox
+																					checked={d.settings.isAigc === true}
+																					onCheckedChange={(checked) =>
+																						update(key, {
+																							settings: {
+																								...d.settings,
+																								isAigc: checked,
+																							},
+																						})
+																					}
+																				>
+																					AI-generated content
+																				</Checkbox>
+																			</Stack>
+																		</Collapsible.Content>
+																	</Collapsible.Root>
+																)}
+															</>
+														)}
+														{d.reviewedRevision !== active.editorRevision && (
+															<Checkbox
+																checked={false}
+																onCheckedChange={(checked) => {
+																	if (checked)
+																		update(key, {
+																			reviewedRevision: active.editorRevision,
+																		});
+																}}
+															>
+																I reviewed this clip’s updated video and
+																description.
+															</Checkbox>
+														)}
+														{optionErrors[account.id] && (
+															<Button
+																size="xs"
+																variant="subtle"
+																onClick={() =>
+																void api
+																		.publishingOptions(config.projectId, account.id)
+																		.then((value) => {
+																			setOptions((o) => ({
+																				...o,
+																				[account.id]: value as Options,
+																			}));
+																			setOptionErrors((o) => {
+																				const next = { ...o };
+																				delete next[account.id];
+																				return next;
+																			});
+																		})
+																		.catch((e) => setError(e.message))
+																}
+															>
+																Retry account settings
+															</Button>
+														)}
+														{warnings.length > 0 && (
+															<Stack gap="1">
+																{warnings.map((w) => (
+																	<Text
+																		key={w}
+																		fontSize="xs"
+																		color="warning.fg"
+																	>
+																		{w}
+																	</Text>
+																))}
+															</Stack>
+														)}
+														{result?.items
+															.filter(
+																(i) =>
+																	i.clipId === active.id &&
+																	i.accountId === account.id &&
+																	i.status !== "succeeded",
+															)
+															.map((i) => (
+																<Text
+																	key={`${i.clipId}:${i.accountId}`}
+																	fontSize="xs"
+																	color="danger.fg"
+																>
+																	This post needs attention.{" "}
+																	{i.errorCode?.replaceAll("_", " ")}
+																</Text>
+															))}
+													</Stack>
+												</chakra.fieldset>
+											</Stack>
+										);
+									})}
+									{replaceScope && (
+										<Box
+											p="3"
+											bg="bg.panel"
+											borderWidth="1px"
+											borderColor="border.card"
+											borderRadius="l2"
+											>
+											<Text fontSize="sm" mb="3">
+											Replace edited descriptions for{" "}
+												{replaceScope === "all"
+													? "all selected clips"
+													: replaceScope === "current"
+														? "this clip"
+														: "this account’s description"}
+												?
+											</Text>
+											<Flex gap="2">
+												<Button
+													size="sm"
+													onClick={() => void regenerate(replaceScope)}
+												>
+													Replace descriptions
+												</Button>
+												<Button
+													size="sm"
+													variant="ghost"
+													onClick={() => setReplaceScope(null)}
+												>
+													Keep edits
+												</Button>
+											</Flex>
+										</Box>
+									)}
+									{approvalBlocked && (
+										<Field.Root>
+											<Field.Label>Review approval required</Field.Label>
+											{config.canOverrideReview ? (
+												<>
+													<Field.HelperText>
+														Provide a reason to publish without the required
+														approval.
+													</Field.HelperText>
+													<Textarea
+														value={override}
+														onChange={(e) => setOverride(e.target.value)}
+														maxLength={500}
+													/>
+												</>
+											) : (
+												<Field.HelperText>
+													Request approval in the Review tab before publishing.
+												</Field.HelperText>
+											)}
+										</Field.Root>
+									)}
+								</Stack>
+							</chakra.fieldset>
+						</>
+					)}
+				</Stack>
+			</Drawer.Body>
+			<Drawer.Footer
+				flexDirection="column"
+				alignItems="stretch"
+				gap="3"
+				flexShrink={0}
+				px="4"
+				py="3"
+				>
+				{timing.scheduleMode !== "now" && (<chakra.fieldset disabled={disabled} border="0" p={{base:"3",md:"5"}} m="0" bg="bg" borderRadius="12px" maxH="40dvh" overflowY="auto">
+					<Stack gap="4"><Flex justify="space-between" align="center"><Text fontSize="sm" fontWeight="medium">Schedule posts</Text><Text fontSize="xs" color="fg.muted">{config.workspaceTimezone}</Text></Flex>
+						{(queueAvailable || timing.scheduleMode === "queue") && (
+							<Stack gap="1">
+								<Checkbox
+									checked={timing.scheduleMode === "queue"}
+									onCheckedChange={(checked) =>
+										setTiming((t) => ({ ...t, scheduleMode: checked ? "queue" : "scheduled" }))
+									}
+								>
+									Use posting schedule
+								</Checkbox>
+								{timing.scheduleMode === "queue" && (
+									<Text fontSize="xs" color="fg.muted">
+										Each post takes the next free slot of its account. Set the slots in the publishing queue.
+									</Text>
+								)}
+							</Stack>
+						)}
+						{timing.scheduleMode !== "queue" && (
+							<>
+								<Flex gap="4" align="end" wrap="wrap">
+									<Field.Root flex="1" minW="130px">
+										<Field.Label fontSize="xs">Date</Field.Label>
+										<DatePicker ariaLabel="Date" width="full" value={timing.startDate} disabled={disabled} onValueChange={(startDate) => setTiming(t => ({...t, startDate}))} />
+									</Field.Root>
+									<Field.Root flex="1" minW="100px">
+										<Field.Label fontSize="xs">
+											{inboxCount && !directCount
+												? "Inbox delivery time"
+												: "Time"}
+										</Field.Label>
+										<TimePicker ariaLabel="Time" value={timing.postingWindow.start} disabled={disabled} onValueChange={value => setTiming(t => ({...t, postingWindow: {...t.postingWindow, start: value}}))} />
+									</Field.Root>
+									{clips.length > 1 && (
+										<Checkbox mb="2"
+											checked={timing.scheduleMode === "spread"}
+											onCheckedChange={(checked) =>
+												setTiming((t) => ({
+													...t,
+													scheduleMode: checked ? "spread" : "scheduled",
+												}))
+											}
+										>
+											Spread out
+										</Checkbox>
+									)}
+								</Flex>
+								{timing.scheduleMode === "spread" && (
+									<Flex gap="3" align="end">
+										<Field.Root>
+											<Field.Label fontSize="xs">Posting hours end</Field.Label>
+											<TimePicker ariaLabel="Posting hours end" value={timing.postingWindow.end} disabled={disabled} onValueChange={value => setTiming(t => ({...t, postingWindow: {...t.postingWindow, end: value}}))} />
+										</Field.Root>
+										<Field.Root>
+											<Field.Label fontSize="xs">Every</Field.Label>
+											<Input
+												size="sm"
+												type="number"
+												min="1"
+												max={timing.frequency.unit === "hours" ? 24 : 30}
+												value={timing.frequency.value}
+												onChange={(e) =>
+													setTiming((t) => ({
+														...t,
+														frequency: {
+															...t.frequency,
+															value: Number(e.target.value),
+														},
+													}))
+												}
+											/>
+										</Field.Root>
+										<Field.Root>
+											<Field.Label fontSize="xs">Unit</Field.Label>
+											<NativeSelect.Root size="sm">
+												<NativeSelect.Field
+													value={timing.frequency.unit}
+													onChange={(e) =>
+														setTiming((t) => ({
+															...t,
+															frequency: {
+																unit: e.target.value as "hours" | "days",
+																value: t.frequency.value,
+															},
+														}))
+													}
+												>
+													<option value="hours">Hours</option>
+													<option value="days">Days</option>
+												</NativeSelect.Field>
+											</NativeSelect.Root>
+										</Field.Root>
+									</Flex>
+								)}
+								{previewError && (
+									<Text fontSize="xs" color="danger.fg">
+										{previewError}
+									</Text>
+								)}
+								{previewError.toLowerCase().includes("twice") && (
+									<NativeSelect.Root>
+										<NativeSelect.Field
+											aria-label="Repeated clock hour"
+											value={timing.dstDisambiguation ?? ""}
+											onChange={(e) =>
+												setTiming((t) => ({
+													...t,
+													dstDisambiguation: e.target.value as
+														| "earlier"
+														| "later",
+												}))
+											}
+										>
+											<option value="">Choose occurrence</option>
+											<option value="earlier">First occurrence</option>
+											<option value="later">Second occurrence</option>
+										</NativeSelect.Field>
+									</NativeSelect.Root>
+								)}
+								{slots.length > 0 && (
+									<Collapsible.Root>
+										<Collapsible.Trigger asChild>
+											<Button size="xs" variant="ghost">
+												View schedule ({slots.length}{" "}
+												{slots.length === 1 ? "clip" : "clips"})
+												<ChevronDown size={12} />
+											</Button>
+										</Collapsible.Trigger>
+										<Collapsible.Content>
+											<Stack gap="0" maxH="160px" overflowY="auto" pt="2">
+												{slots.map((slot, index) => (
+<Flex key={slot.clipId} gap="3" align="center" justify="space-between" py="3" borderTopWidth="1px" borderColor="border.subtle">
+<Flex gap="3" align="center" minW="0"><Text fontSize="xs" color="fg.muted" minW="4">{index + 1}</Text><Text fontSize="xs" lineClamp={1}>{clips.find(c => c.id === slot.clipId)?.title}</Text></Flex>
+<Text fontSize="xs" color="fg.muted" whiteSpace="nowrap">{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",timeZone:config.workspaceTimezone}).format(new Date(slot.scheduledFor))}</Text>
+</Flex>
+))}
+											</Stack>
+										</Collapsible.Content>
+									</Collapsible.Root>
+								)}
+							</>
+						)}
+					</Stack>
+				</chakra.fieldset>)}
+				{error && (
+					<Text role="alert" fontSize="xs" color="danger.fg">
+						{error}
+					</Text>
+				)}
+				{!config.campaignSchedulingEnabled && pairs.length > 1 && (
+					<PlanLimitNotice message={campaignRequirement} upgrade={campaignUpgrade} />
+				)}
+				<Flex justify="space-between" gap="3" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
+					<chakra.fieldset disabled={disabled} border="0" p="0" m="0" flex="1" minW="0"><Flex gap="2" align="center" wrap="wrap">
+							<Flex gap="0.5" p="0.5" bg="bg.soft" borderRadius="control">
+								<Button
+									size="sm"
+									variant="ghost"
+									bg={timing.scheduleMode === "now" ? "bg.raised" : "transparent"}
+									color={timing.scheduleMode === "now" ? "fg" : "fg.muted"}
+									onClick={() =>
+										setTiming((t) => ({ ...t, scheduleMode: "now" }))
+									}
+								>
+									Now
+								</Button>
+								<Button
+									size="sm"
+									variant="ghost"
+									bg={timing.scheduleMode !== "now" ? "bg.raised" : "transparent"}
+									color={timing.scheduleMode !== "now" ? "fg" : "fg.muted"}
+									onClick={() =>
+										setTiming((t) => ({ ...t, scheduleMode: "scheduled" }))
+									}
+								>
+									<CalendarClock size={16} />
+									Schedule
+								</Button>
+							</Flex>
+							<Text fontSize="xs" color="fg.muted" ms={{ base: "0", sm: "auto" }} overflowWrap="anywhere">
+								{config.workspaceTimezone}
+							</Text>
+						</Flex></chakra.fieldset>
+					<Flex gap="2" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
+						<Text fontSize="xs" color="fg.muted">
+							{directCount
+								? `${directCount} post${directCount === 1 ? "" : "s"}`
+								: ""}
+							{directCount && inboxCount ? " · " : ""}
+							{inboxCount
+								? `${inboxCount} TikTok inbox ${inboxCount === 1 ? "draft" : "drafts"}`
+								: ""}
+						</Text>
+						{submitBlockedReason && (
+							<Text fontSize="13px" color="fg.muted" role="status">
+								{submitBlockedReason}
+							</Text>
+						)}
+						<Button
+							size="sm"
+							disabled={
+								busy ||
+								(!pending &&
+									(!restored ||
+										!unresolved.length ||
+										issueCount > 0 ||
+										(pairs.length > 1 && !config.campaignSchedulingEnabled) ||
+										queueBlocked ||
+										(needsPreview &&
+											(!!previewError || !slots.length)) ||
+										(approvalBlocked &&
+											(!config.canOverrideReview || !override.trim()))))
+							}
+							onClick={() => void submit()}
+						>
+							{busy ? <Spinner size="xs" /> : <Send size={14} />}{" "}
+							{pending
+								? "Check previous submission"
+								: timing.scheduleMode !== "now"
+									? "Schedule"
+									: inboxCount && !directCount
+										? "Send to TikTok"
+										: inboxCount
+											? "Submit selection"
+											: "Publish now"}
+						</Button>
+					</Flex>
+				</Flex>
+			</Drawer.Footer>
+			{coverPair && coverMedia && (
+				<PublishingCover
+					api={api}
+					projectId={config.projectId}
+					clipId={active.id}
+					platform={coverPair.account.platform}
+					variant={coverMedia.variant}
+					canUpload={config.canUploadVisualAssets}
+					onChoose={(value) => {
+						update(coverPair.key, { thumbnail: value });
+						setCoverAccount(null);
+					}}
+					onClose={() => setCoverAccount(null)}
+				/>
+			)}
+		</>
+	);
+}

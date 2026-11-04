@@ -90,8 +90,12 @@ export function verifyZoomSignature(input: { rawBody: string; timestamp: string 
   if (!timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) throw new ZoomError("zoom_signature_invalid");
 }
 
+/** The CRC answers before any signature check, so it must never HMAC attacker-shaped text: a `v0:<ts>:<body>`
+ * string would be a valid event signature. Zoom's tokens are short and URL-safe; no `:`, braces or spaces. */
+const ZOOM_PLAIN_TOKEN = /^[A-Za-z0-9_\-.~+/=]{1,128}$/;
+
 export function zoomValidationChallenge(plainToken: unknown, secret: string) {
-  if (typeof plainToken !== "string" || plainToken.length < 1 || plainToken.length > 1024) throw new ZoomError("zoom_payload_invalid");
+  if (typeof plainToken !== "string" || !ZOOM_PLAIN_TOKEN.test(plainToken)) throw new ZoomError("zoom_payload_invalid");
   return { plainToken, encryptedToken: createHmac("sha256", secret).update(plainToken).digest("hex") };
 }
 

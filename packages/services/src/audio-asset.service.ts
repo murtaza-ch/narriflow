@@ -10,7 +10,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { Prisma, type AudioAsset } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   AUDIO_UPLOAD_MAX_BYTES,
   audioUploadContentTypeSchema,
@@ -34,6 +33,7 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { isUniqueConstraintError } from "./generation-sequencing";
+import { requirePrisma } from "./require-prisma";
 
 function log(
   level: "info" | "error",
@@ -135,14 +135,6 @@ const CONTENT_TYPE_EXT: Record<string, string> = {
 
 export function extensionForAudioContentType(contentType: string): string {
   return CONTENT_TYPE_EXT[contentType] ?? "bin";
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new Error("Database client unavailable");
-  }
-  return prisma;
 }
 
 function toListRow(row: AudioAsset, favorited = false): AudioAssetListRow {

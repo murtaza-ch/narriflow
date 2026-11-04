@@ -107,8 +107,9 @@ Then verify isolated Stripe test customers and, where the paid-period boundary m
 
 - `active` and `trialing` grant the mapped paid plan.
 - A first `incomplete` subscription remains `pending_payment` on Free.
-- `past_due` retains the last verified paid plan for seven days from its first durable observation. Repeated events and retries never move the deadline.
-- `unpaid`, `paused`, `incomplete_expired`, and `canceled` remove paid access.
+- `past_due` retains the last verified paid plan for seven days from its first durable observation, or the subscribed plan when that is lower (a scheduled downgrade can take effect on the renewal that failed). Repeated events and retries never move the deadline.
+- `unpaid`, `paused`, `incomplete_expired`, and `canceled` remove paid access. A Workspace still in `pending_payment` stays there: only a first successful payment releases it, and the owner can start Checkout again.
+- A customer Stripe verifiably deleted commits Free through the same retention transition, clears the customer, canonical subscription, and seat item, and frees the Checkout slot, so the owner can start over with a new customer. A 404 is not deletion: it can mean the wrong key or mode, so it retries and keeps access.
 - Period-end cancellation keeps paid access through the verified provider end date.
 - A Workspace without non-owner members is never restricted by plan: a personal Workspace returns to active Free after paid access ends.
 - Any Workspace whose plan lacks `workspace.members` (everything below Business) and still has non-owner members, Viewers included, is restricted. This covers a Business-to-Pro or Business-to-Creator change as well as paid access ending. The owner retains billing, viewing, downloads, demotions, and removals. Processing, publishing, API/MCP, editing, and every new member (Viewers included) stop until the owner upgrades or removes the members. One rule, `projectWorkspaceAccessStatus`, decides this in the same transaction that commits the projection, and every membership change wakes reconciliation so a removal lifts the restriction promptly.
@@ -128,7 +129,8 @@ Then verify isolated Stripe test customers and, where the paid-period boundary m
 
 - Seats converge only on `active`, `trialing`, or `past_due` subscriptions. Canceled, unpaid, paused, and expired subscriptions are never mutated.
 - A rejected seat change never blocks the verified projection: the plan, access status, and past-due grace origin commit, and seat convergence retries on the five-minute cadence.
-- Seat idempotency keys include the Workspace, subscription, interval, and membership revision, so a returning subscription or interval change cannot replay an older provider operation.
+- Seat idempotency keys include the Workspace, subscription, interval, membership revision, and quantity, so a returning subscription, an interval change, or a retry that counted a different quantity cannot replay an older provider operation.
+- Clerk deletion removes the user's non-owner memberships, frees their seats, and marks Billing due. The hourly `billing_wakes` page picks that up. An owner's membership stays.
 - Projection commits take the Workspace usage lock (`lockWorkspaceUsage`) first, then Project retention rows, then billing rows, matching Processing Usage reservations.
 
 Provider timeouts retain the last verified projection and retry with bounded backoff. Missing metadata, customer conflicts, multiple paid subscriptions, duplicate or unknown seat items, unknown prices, and incomplete pagination move the account to attention. Automated repair never cancels, merges, refunds, deletes, or changes provider billing.
@@ -155,6 +157,19 @@ bun --env-file=apps/api/.dev.vars run packages/services/scripts/workspace-billin
 ```
 
 The command is idempotent. It retrieves current state and invokes the same fenced Workspace Billing interface as the Workflow driver. It does not directly edit a tier, cancel, merge, refund, delete, or repair Stripe objects.
+
+Source Refund Needs record settled credits for a source that later proved unusable. List the open ones read-only, then refund one with a named actor and reason:
+
+```sh
+bun --env-file=apps/api/.dev.vars run packages/services/scripts/processing-usage-operator.ts
+
+bun --env-file=apps/api/.dev.vars run packages/services/scripts/processing-usage-operator.ts \
+  --refund 11111111-1111-4111-8111-111111111111 \
+  --actor 22222222-2222-4222-8222-222222222222 \
+  --reason "Source audio did not match the video"
+```
+
+The refund marks that Project's settled usage `refunded` and resolves every open need on the Project. Rerunning is safe: it never refunds twice. Usage that is not settled refuses with `processing_usage_not_refundable` and the need stays open for review. This corrects credits only and never moves money in Stripe.
 
 Diagnosis guide:
 

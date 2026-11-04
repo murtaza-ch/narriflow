@@ -13,7 +13,6 @@ describe("RenderConfig", () => {
     const config = parseRenderConfig({});
 
     expect(config).toMatchObject({
-      sourceMode: "ranged",
       uploadConcurrency: 2,
       renderCommandTimeoutMs: 1_800_000,
       probeCommandTimeoutMs: 120_000,
@@ -45,9 +44,6 @@ describe("RenderConfig", () => {
   });
 
   test("rejects invalid enums and non-positive or non-finite deadlines", () => {
-    expect(() =>
-      parseRenderConfig({ WORKER_RENDER_SOURCE_MODE: "stream" }),
-    ).toThrow("WORKER_RENDER_SOURCE_MODE");
     expect(() =>
       parseRenderConfig({ WORKER_RENDER_FFMPEG_TIMEOUT_MS: "0" }),
     ).toThrow("WORKER_RENDER_FFMPEG_TIMEOUT_MS");
@@ -103,10 +99,6 @@ describe("resource bounds", () => {
     expect(parseRenderConfig({})).toMatchObject({
       renderDeadlineFloorMs: 300_000,
       renderDeadlineRealtimeFactor: 20,
-      transferDeadlineFloorMs: 120_000,
-      transferDeadlineCeilingMs: 1_800_000,
-      transferMinBytesPerSec: 1024 * 1024,
-      transferNoProgressMs: 30_000,
       uploadMaxWaitingJobs: 2,
       uploadMaxWaitingBytes: 512 * 1024 ** 2,
       diskMinFreeBytes: 1024 ** 3,
@@ -126,9 +118,6 @@ describe("resource bounds", () => {
     for (const [name, invalid] of [
       ["WORKER_RENDER_DEADLINE_FLOOR_MS", "1800001"],
       ["WORKER_RENDER_DEADLINE_FACTOR", "0.5"],
-      ["WORKER_TRANSFER_DEADLINE_FLOOR_MS", "1800001"],
-      ["WORKER_TRANSFER_MIN_BYTES_PER_SEC", "10"],
-      ["WORKER_TRANSFER_NO_PROGRESS_MS", "10"],
       ["WORKER_UPLOAD_MAX_WAITING_JOBS", "0"],
       ["WORKER_UPLOAD_MAX_WAITING_BYTES", "1.5"],
       ["WORKER_DISK_MIN_FREE_FRACTION", "0.95"],

@@ -1,14 +1,11 @@
 import { exportBundleExecutionInputSchema, type ExportBundleExecutionInput } from "@narriflow/validators/export-bundle-execution";
 import type { PrivateJsonObject } from "./private-json-storage";
+import { sha256Hex } from "./execution-hash";
+import { canonicalJson } from "./canonical-json";
 
-const digest=async(bytes:Uint8Array)=>Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new Uint8Array(bytes))),value=>value.toString(16).padStart(2,"0")).join("");
-function canonical(value:unknown):string {
-  if(Array.isArray(value))return `[${value.map(canonical).join(",")}]`;
-  if(value!==null&&typeof value==="object")return `{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical(Reflect.get(value,key))}`).join(",")}}`;
-  return JSON.stringify(value);
-}
+const digest=async(bytes:Uint8Array)=>await sha256Hex(new Uint8Array(bytes));
 export async function exportBundleInputBinding(input:Omit<ExportBundleExecutionInput,"bindingHash">) {
-  return digest(new TextEncoder().encode(canonical(input)));
+  return digest(new TextEncoder().encode(canonicalJson(input)));
 }
 export async function encodeExportBundleInput(raw:ExportBundleExecutionInput) {
   const input=exportBundleExecutionInputSchema.parse(raw),{bindingHash,...value}=input;

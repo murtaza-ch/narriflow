@@ -25,7 +25,8 @@ describe("project retention policy", () => {
     process.env.PROJECT_RETENTION_MODE = "observe";
     try {
       const createdAt = new Date("2026-08-21T00:00:00.000Z");
-      expect(await new ProjectRetentionService().assignmentForWorkspace("workspace-1", createdAt)).toEqual({
+      const tx = { workspace: { findUnique: async () => ({ pricingTier: "free" }) } } as never;
+      expect(await new ProjectRetentionService().assignmentForWorkspace(tx, "workspace-1", createdAt)).toEqual({
         retentionPolicyKey: "free_project_v1",
         expiresAt: new Date(createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs),
       });

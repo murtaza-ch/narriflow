@@ -8,6 +8,8 @@ import { flushProjectProgressDrains } from "./progress-outbox";
 import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { flushWorkspaceEvents } from "./workspace-event";
 import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult, ExecutorExpiryResult } from "./executor-domain-control";
+import { sha256Hex } from "./execution-hash";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 type Attempt = AttemptRow & { dispatch: Pick<DispatchRow, "kind" | "subjectKind" | "subjectId"> };
@@ -167,11 +169,11 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
           wakeDispatchIds: uniqueWakes, committedAt: now, expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60_000) } });
         return { disposition, wakeDispatchIds: uniqueWakes };
       };
-      if (epoch.epoch !== reference.deploymentEpoch) return record({ disposition: "superseded" }, await clock(tx));
+      if (epoch.epoch !== reference.deploymentEpoch) return record({ disposition: "superseded" }, await databaseNow(tx));
       const locked = await options.domain.lockExecution(tx, reference, attemptToken);
       const attempt = await lockAttempt(tx, attemptToken);
       assertReference(attempt, reference, options.subjectKind);
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       if (locked.kind === "terminal") {
         if (locked.dispatchIds) track({ dispatchIds: locked.dispatchIds });
         return record(locked.disposition, now);
@@ -231,7 +233,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         if (mutation?.renderGroup && reference.subject.kind !== "render_group") throw new ExecutorControlError("invalid_reference");
         await tx.executionArtifact.update({ where: { id: prepared.artifactId }, data: { committedAt: now, byteLength: prepared.byteLength, etag: prepared.etag, checksumSha256: prepared.sha256 } });
         const outcome = await options.domain.lockExecution(tx, reference, attemptToken);
-        if (outcome.kind === "terminal") {
+        if (outcome.kind === "terminal" && !outcome.restricted) {
           if (outcome.dispatchIds) track({ dispatchIds: outcome.dispatchIds });
           const status = outcome.disposition.disposition;
           await tx.executionAttempt.update({ where: { attemptToken }, data: { status: ["completed", "cancelled", "expired", "superseded"].includes(status) ? status : "failed", finishedAt: now } });
@@ -284,7 +286,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       const locked = await options.domain.lockExecution(tx, fence.reference, fence.attemptToken);
       const attempt = await lockAttempt(tx, fence.attemptToken);
       assertReference(attempt, fence.reference, options.subjectKind);
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       if (locked.kind === "terminal" || ended(attempt) || attempt.revokedAt || attempt.owner !== fence.owner ||
         !attempt.leaseExpiresAt || attempt.leaseExpiresAt <= now || attempt.operationDeadlineAt <= now ||
         (requireStarted && (!attempt.processStartedAt || attempt.status !== "running"))) throw new ExecutorControlError("authority_lost");
@@ -304,7 +306,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
     const deadline = executionDeadlineSchema.parse(input.deadline);
     if (!["lease", "operation"].includes(deadline.kind) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.deliveryId)) throw new ExecutorControlError("invalid_reference");
     if (!options.domain.expireExecution) throw new ExecutorControlError("scheduler_unavailable");
-    const requestHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(deadline)))), byte => byte.toString(16).padStart(2, "0")).join("");
+    const requestHash = await sha256Hex(JSON.stringify(deadline));
     const receiptKey = { audience: "watchdog", deliveryId: input.deliveryId };
     const parseOutcome = (value: Prisma.JsonValue): ExecutorExpiryResult => {
       if (!value || typeof value !== "object" || Array.isArray(value) || !["terminal", "superseded", "expired"].includes(String(value.kind))) throw new ExecutorControlError("invalid_reference");
@@ -330,13 +332,13 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         return { outcome, dispatchIds };
       };
       const reference = deadline.reference;
-      if (epoch.epoch !== reference.deploymentEpoch) return record({ kind: "superseded" }, await clock(tx));
+      if (epoch.epoch !== reference.deploymentEpoch) return record({ kind: "superseded" }, await databaseNow(tx));
       const locked = await options.domain.lockExecution(tx, reference, deadline.attemptToken);
       const attempt = await lockAttempt(tx, deadline.attemptToken);
       assertReference(attempt, reference, options.subjectKind);
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       if (ended(attempt)) return record({ kind: "terminal", ...(locked.kind === "terminal" ? { dispatchIds: locked.dispatchIds } : {}) }, now);
-      if (locked.kind === "terminal") {
+      if (locked.kind === "terminal" && !locked.restricted) {
         const status = locked.disposition.disposition;
         await tx.executionAttempt.update({ where: { attemptToken: attempt.attemptToken }, data: {
           status: ["completed", "cancelled", "expired", "superseded"].includes(status) ? status : "failed", finishedAt: now, revokedAt: now,
@@ -365,8 +367,3 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
   return { execute, expireDeadline, authorize, withAuthority };
 }
 
-async function clock(tx: Tx) {
-  const [row] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-  if (!row) throw new ExecutorControlError("epoch_unavailable");
-  return row.now;
-}

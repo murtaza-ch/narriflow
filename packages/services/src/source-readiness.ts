@@ -1,7 +1,7 @@
-import { creditDebitSeconds } from "@narriflow/validators";
+import { sourceExceedsLimit } from "@narriflow/validators";
 import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding } from "@narriflow/validators/execution";
 
-/** Whole-source identity is strict. Probe tolerance cannot change admission or charging. */
+/** Whole-source identity is strict. Usage debits one fact, so duration only has to agree within tolerance. */
 export function sourceAudioMatchesVideo(audioInput: SourceAudioBinding, videoInput: SourceVideoBinding, maxSourceSeconds: number): boolean {
   const audio = sourceAudioBindingSchema.parse(audioInput), video = sourceVideoBindingSchema.parse(videoInput);
   if (!Number.isFinite(maxSourceSeconds) || maxSourceSeconds <= 0) throw new Error("source_plan_limit_invalid");
@@ -9,8 +9,7 @@ export function sourceAudioMatchesVideo(audioInput: SourceAudioBinding, videoInp
     audio.mediaIdentity.provider !== video.mediaIdentity.provider || audio.mediaIdentity.mediaId !== video.mediaIdentity.mediaId ||
     !video.audioTrack || JSON.stringify(audio.audioTrack) !== JSON.stringify(video.audioTrack) ||
     audio.probeVersion !== video.probeVersion || audio.toolchainFingerprint !== video.toolchainFingerprint ||
-    audio.durationSeconds > maxSourceSeconds || video.probe.durationSec > maxSourceSeconds ||
-    creditDebitSeconds(audio.durationSeconds) !== creditDebitSeconds(video.probe.durationSec)) return false;
+    sourceExceedsLimit(audio.durationSeconds, maxSourceSeconds) || sourceExceedsLimit(video.probe.durationSec, maxSourceSeconds)) return false;
   const rate = video.probe.video?.frameRate;
   const tolerance = Math.max(1, rate ? 2 * rate.denominator / rate.numerator : 1);
   if (Math.abs(audio.durationSeconds - video.probe.durationSec) > tolerance || video.audioStartTimeSec === null ||
@@ -26,12 +25,13 @@ export function sourceAudioMatchesVideo(audioInput: SourceAudioBinding, videoInp
 /** Measured binding digest includes all normalized probe facts. */
 export async function sourceVideoBindingHash(input: SourceVideoBinding): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(sourceVideoBindingSchema.parse(input)));
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(bytes);
 }
 
 import type { Prisma, SourceAudio } from "@prisma/client";
 import { planLimits, resolvePricingTier } from "@narriflow/validators";
 import type { ProcessingUsage } from "./processing-usage";
+import { sha256Hex } from "./execution-hash";
 
 type VideoValidationInput = {
   ref: { projectId: string; sourceRevision: number; attemptToken: string };

@@ -1,5 +1,4 @@
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   finishingSettingsSchema,
   MAX_RECIPES_PER_WORKSPACE,
@@ -29,6 +28,7 @@ import { assertFinishingQueue } from "./publishing-queue.service";
 import { onRecipeContentChanged } from "./recipe-content-change";
 import { workspaceService } from "./workspace.service";
 import { flushWorkspaceEvents } from "./workspace-event";
+import { requirePrisma } from "./require-prisma";
 
 const recipeFailureCatalog = {
   recipe_not_found: "missing",
@@ -80,12 +80,6 @@ export interface PlannedRecipe {
 export interface RecipeUse {
   id: string;
   resolve(): Promise<ResolvedRecipe>;
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 type RecipeRow = {

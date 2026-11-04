@@ -16,10 +16,16 @@ function jwt(expSec: number): string {
   return `${encode({ alg: "none" })}.${encode({ exp: expSec })}.sig`;
 }
 
-function setup(options: { token?: string | null; fetchImpl?: typeof fetch } = {}) {
+function setup(options: { token?: string | null; fetchImpl?: typeof fetch; hang?: boolean } = {}) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const transportFetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
+    if (options.hang) {
+      // A connection that never answers: only the caller's abort ends it.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    }
     return Response.json({ revision: 4, document: {} });
   }) as typeof fetch;
   const runtime = createApiRuntime({
@@ -67,6 +73,67 @@ describe("token snapshot", () => {
     expect(snapshot.current()).not.toBeNull();
   });
 });
+
+describe("save and reset time limit", () => {
+  test("a save that never answers is abandoned so the session can retry it", async () => {
+    const { api } = setup({ hang: true });
+    const http = createStudioCloudHttp({
+      api,
+      projectId: PROJECT,
+      clipId: CLIP,
+      tokens: createTokenSnapshot({ getToken: async () => null }),
+      requestTimeoutMs: 20,
+    });
+    // A rejection (no response arrived) is what the session classifies as a transient network failure.
+    await expect(http.save({ baseRevision: 3, document: {} })).rejects.toBeDefined();
+    await expect(http.reset({ baseRevision: 3 })).rejects.toBeDefined();
+  });
+});
+
+describe("accepted writes", () => {
+  function http(api: StudioApi, onWritten: () => void) {
+    return createStudioCloudHttp({
+      api,
+      projectId: PROJECT,
+      clipId: CLIP,
+      tokens: createTokenSnapshot({ getToken: async () => null }),
+      onWritten,
+    });
+  }
+
+  test("a stored save or reset tells the page the clip changed", async () => {
+    const { api } = setup();
+    let written = 0;
+    const cloud = http(api, () => {
+      written += 1;
+    });
+    await cloud.load();
+    expect(written).toBe(0);
+    await cloud.save({ baseRevision: 3, document: {} });
+    await cloud.reset({ baseRevision: 4 });
+    expect(written).toBe(2);
+  });
+
+  test("a refused save changes nothing", async () => {
+    let written = 0;
+    await http(setupRefusal(), () => {
+      written += 1;
+    }).save({ baseRevision: 3, document: {} });
+    expect(written).toBe(0);
+  });
+});
+
+function setupRefusal(): StudioApi {
+  const runtime = createApiRuntime({
+    baseUrl: "https://api.test",
+    getToken: async () => jwt(Math.floor(Date.now() / 1000) + 60),
+    fetch: (async () =>
+      Response.json({ error: "editor_revision_conflict", message: "stale" }, { status: 409 })) as typeof fetch,
+  });
+  runtime.setIdentity("user_1");
+  runtime.selectWorkspace("ws_1");
+  return { runtime, scope: { userId: "user_1", workspaceId: "ws_1" } };
+}
 
 describe("close-time keepalive", () => {
   const document = { clip: "x" };

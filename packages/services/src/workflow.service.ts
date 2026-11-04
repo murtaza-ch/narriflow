@@ -28,19 +28,22 @@ export async function getLastWorkflowSeq(projectId: string) {
   return result._max.seq ?? 0;
 }
 
-export async function getWorkflowEventsSince(projectId: string, sinceSeq = 0) {
+/** The newest events for a Project, oldest first. */
+export async function getRecentWorkflowEvents(projectId: string, limit: number) {
   const prisma = getPrismaClient();
   if (!prisma) return [];
 
   const rows = await prisma.workflowEvent.findMany({
-    where: {
-      projectId,
-      seq: { gt: sinceSeq },
+    where: { projectId },
+    orderBy: { seq: "desc" },
+    take: limit,
+    select: {
+      projectId: true, workflowRunId: true, ingestJobId: true, seq: true, stage: true,
+      status: true, progress: true, errorCode: true, emittedAt: true,
     },
-    orderBy: { seq: "asc" },
   });
 
-  return rows.map((row) => ({
+  return rows.reverse().map((row) => ({
     event: "workflow.stage.updated" as const,
     projectId: row.projectId,
     workflowRunId: row.workflowRunId,

@@ -1,8 +1,13 @@
 import { type ApiError, isApiError } from "@narriflow/api-client/core";
+import { uploadMimeTypeForFile } from "@narriflow/validators";
 import {
+  abandonedUploadResumes,
+  clearUploadResume,
   createPendingUploadResume,
   createUploadFileFingerprint,
+  keepUploadResumeActive,
   loadUploadResume,
+  markUploadResumeIdle,
   saveUploadResume,
   type UploadResumeRecord,
   type UploadResumeStorage,
@@ -349,6 +354,8 @@ const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
   upload_session_integrity_failed:
     "The stored object did not match the selected file. Start a fresh upload.",
   rate_limited: "Too many upload requests. Wait a moment, then retry.",
+  upload_unsupported_type:
+    "Unsupported file type. Upload an MP4, MOV, WebM, MKV, MP3, WAV, M4A or AAC file.",
   upload_session_unavailable:
     "Upload storage is temporarily unavailable. Your saved session is unchanged.",
 };
@@ -557,8 +564,54 @@ async function putWithRetry(input: {
   throw lastError instanceof Error ? lastError : new Error("Upload failed");
 }
 
-async function runUploadSessionTransfer(
-  input: RunUploadSessionTransferInput) {
+/** The session an unanswered first open created, if it did. Open is idempotent on the saved key. */
+async function sessionOfUnansweredOpen(record: UploadResumeRecord, controls: UploadSessionControls, signal?: AbortSignal) {
+  if (!record.openRequest) return null;
+  const opened = parseOpenOutcome(await controls.open(record.openRequest, signal));
+  return opened?.outcome === "uploading" || opened?.outcome === "reconciling" ? opened.sessionId : null;
+}
+
+/** Releases what saved uploads of other files hold. A refusal ends the record; an outage leaves it for the next start. */
+async function releaseAbandonedUploads(
+  storage: UploadResumeStorage,
+  controls: UploadSessionControls,
+  fingerprint: string,
+  now: number,
+  signal?: AbortSignal,
+) {
+  for (const record of abandonedUploadResumes(storage, fingerprint, now)) {
+    try {
+      const sessionId = record.sessionId ?? (await sessionOfUnansweredOpen(record, controls, signal));
+      if (sessionId) await controls.discard({ sessionId }, signal);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      if (!isApiError(error) || isNetworkFailure(error) || error.status === 429 || error.status >= 500) continue;
+    }
+    clearUploadResume(storage, record.fingerprint);
+  }
+}
+
+async function runUploadSessionTransfer(input: RunUploadSessionTransferInput) {
+  const fingerprint = createUploadFileFingerprint(input.file);
+  let stopKeepingActive = () => {};
+  try {
+    return await transferUploadSession(input, (storage) => {
+      stopKeepingActive = keepUploadResumeActive(storage, fingerprint, input.now ?? Date.now);
+    });
+  } finally {
+    stopKeepingActive();
+    if (input.storage) markUploadResumeIdle(input.storage, fingerprint);
+  }
+}
+
+async function transferUploadSession(
+  input: RunUploadSessionTransferInput,
+  holdActive: (storage: UploadResumeStorage) => void,
+) {
+  const contentType = uploadMimeTypeForFile(input.file);
+  if (!contentType) {
+    throw new UploadSessionBrowserFailure("upload_unsupported_type", UPLOAD_FAILURE_MESSAGES.upload_unsupported_type!);
+  }
   const fetcher = input.fetcher ?? fetch;
   const uploadTransport =
     input.uploadTransport ?? (input.fetcher ? undefined : browserUploadTransport);
@@ -572,27 +625,60 @@ async function runUploadSessionTransfer(
   const existing = input.storage
     ? loadUploadResume(input.storage, fingerprint)
     : null;
-  let resume: UploadResumeRecord =
-    existing ??
-    createPendingUploadResume({
-      clientIdempotencyKey:
-        input.createClientKey?.() ?? globalThis.crypto.randomUUID(),
-      fingerprint,
+  const clientIdempotencyKey = existing?.clientIdempotencyKey ?? input.createClientKey?.() ?? globalThis.crypto.randomUUID();
+  const openRequest = {
+    clientIdempotencyKey,
+    title: input.title,
+    source: {
       fileName: input.file.name,
-      title: input.title,
-    });
-  if (input.storage) saveUploadResume(input.storage, resume);
+      sizeBytes: input.file.size,
+      contentType,
+      browserFingerprint: fingerprint,
+    },
+    ...(input.recipeId
+      ? { recipeId: input.recipeId }
+      : {
+          brandTemplateId: input.brandTemplateId,
+          // Omitted (not null) lets an assistant handoff use the Workspace default.
+          ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
+          generationContext: input.generationContext,
+        }),
+    ...(input.declaredDurationSeconds
+      ? { declaredDurationSeconds: input.declaredDurationSeconds }
+      : {}),
+  };
+  let resume: UploadResumeRecord = existing?.sessionId
+    ? existing
+    : {
+        ...(existing ??
+          createPendingUploadResume({
+            clientIdempotencyKey,
+            fingerprint,
+            fileName: input.file.name,
+            title: input.title,
+          })),
+        openRequest,
+      };
+  const clock = input.now ?? Date.now;
+  if (input.storage) {
+    saveUploadResume(input.storage, { ...resume, transferActiveAt: clock() });
+    holdActive(input.storage);
+  }
   input.onProgress?.({
     stage: "prepare",
     percent: 0,
     transferredBytes: 0,
     totalBytes: input.file.size,
   });
+  if (input.storage) {
+    await releaseAbandonedUploads(input.storage, input.controls, fingerprint, clock(), input.signal);
+  }
 
-  const contentType = input.file.type || "video/mp4";
+  // A saved key without a session means the first open went unanswered. Open is
+  // idempotent on that key, so it either replays the session or admits it now.
   const openedPayload = await control(
     () =>
-      existing
+      existing?.sessionId
         ? input.controls.status(
             {
               clientIdempotencyKey: resume.clientIdempotencyKey,
@@ -601,37 +687,14 @@ async function runUploadSessionTransfer(
             },
             input.signal,
           )
-        : input.controls.open(
-            {
-              clientIdempotencyKey: resume.clientIdempotencyKey,
-              title: input.title,
-              source: {
-                fileName: input.file.name,
-                sizeBytes: input.file.size,
-                contentType,
-                browserFingerprint: fingerprint,
-              },
-              ...(input.recipeId
-                ? { recipeId: input.recipeId }
-                : {
-                    brandTemplateId: input.brandTemplateId,
-                    // Omitted (not null) lets an assistant handoff use the Workspace default.
-                    ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
-                    generationContext: input.generationContext,
-                  }),
-              ...(input.declaredDurationSeconds
-                ? { declaredDurationSeconds: input.declaredDurationSeconds }
-                : {}),
-            },
-            input.signal,
-          ),
+        : input.controls.open(resume.openRequest!, input.signal),
     "Failed to open Upload Session.",
   );
   const opened = parseOpenOutcome(openedPayload);
   if (!opened) throw new Error("The upload service returned an invalid contract.");
   if (opened.outcome === "terminal") return opened;
   if (opened.outcome === "queued_for_ingest") {
-    if (input.storage) saveUploadResume(input.storage, null);
+    if (input.storage) clearUploadResume(input.storage, fingerprint);
     return { projectId: opened.projectId };
   }
   if (opened.outcome === "reconciling") {
@@ -642,17 +705,45 @@ async function runUploadSessionTransfer(
     ...resume,
     sessionId: opened.sessionId,
     projectId: opened.projectId,
+    openRequest: null,
   };
-  if (input.storage) saveUploadResume(input.storage, resume);
+  if (input.storage) saveUploadResume(input.storage, { ...resume, transferActiveAt: clock() });
+
+  const progressClock = input.progressClock ?? Date.now;
+  const progressStartedAt = progressClock();
+  const reportTransfer = (transferredBytes: number, initialStoredBytes: number) => {
+    const elapsedSeconds = Math.max(
+      0,
+      (progressClock() - progressStartedAt) / 1_000,
+    );
+    const bytesTransferredThisRun = Math.max(
+      0,
+      transferredBytes - initialStoredBytes,
+    );
+    const bytesPerSecond =
+      elapsedSeconds > 0 ? bytesTransferredThisRun / elapsedSeconds : 0;
+    input.onProgress?.({
+      stage: "upload",
+      percent: Math.round((transferredBytes / input.file.size) * 100),
+      transferredBytes,
+      totalBytes: input.file.size,
+      ...(bytesPerSecond > 0
+        ? {
+            bytesPerSecond,
+            etaSeconds: Math.max(
+              0,
+              Math.round(
+                (input.file.size - transferredBytes) / bytesPerSecond,
+              ),
+            ),
+          }
+        : { etaSeconds: null }),
+    });
+  };
 
   let completedParts: Array<{ partNumber: number; etag: string }> = [];
   if (opened.transfer.kind === "single") {
-    input.onProgress?.({
-      stage: "upload",
-      percent: 0,
-      transferredBytes: 0,
-      totalBytes: input.file.size,
-    });
+    reportTransfer(0, 0);
     await putWithRetry({
       fetcher,
       url: opened.transfer.grant.url,
@@ -661,13 +752,9 @@ async function runUploadSessionTransfer(
       signal: input.signal,
       waitBeforeRetry,
       uploadTransport,
+      onProgress: (loadedBytes) => reportTransfer(Math.min(input.file.size, loadedBytes), 0),
     });
-    input.onProgress?.({
-      stage: "upload",
-      percent: 100,
-      transferredBytes: input.file.size,
-      totalBytes: input.file.size,
-    });
+    reportTransfer(input.file.size, 0);
   } else {
     const transfer = opened.transfer;
     const completedByPartNumber = new Map(
@@ -691,45 +778,18 @@ async function runUploadSessionTransfer(
     );
     const activeBytes = new Map<number, number>();
     const initialStoredBytes = storedBytes;
-    const progressClock = input.progressClock ?? Date.now;
-    const progressStartedAt = progressClock();
-    const reportProgress = () => {
-      const transferredBytes = Math.min(
-        input.file.size,
-        storedBytes +
-          Array.from(activeBytes.values()).reduce(
-            (total, loadedBytes) => total + loadedBytes,
-            0,
-          ),
+    const reportProgress = () =>
+      reportTransfer(
+        Math.min(
+          input.file.size,
+          storedBytes +
+            Array.from(activeBytes.values()).reduce(
+              (total, loadedBytes) => total + loadedBytes,
+              0,
+            ),
+        ),
+        initialStoredBytes,
       );
-      const elapsedSeconds = Math.max(
-        0,
-        (progressClock() - progressStartedAt) / 1_000,
-      );
-      const bytesTransferredThisRun = Math.max(
-        0,
-        transferredBytes - initialStoredBytes,
-      );
-      const bytesPerSecond =
-        elapsedSeconds > 0 ? bytesTransferredThisRun / elapsedSeconds : 0;
-      input.onProgress?.({
-        stage: "upload",
-        percent: Math.round((transferredBytes / input.file.size) * 100),
-        transferredBytes,
-        totalBytes: input.file.size,
-        ...(bytesPerSecond > 0
-          ? {
-              bytesPerSecond,
-              etaSeconds: Math.max(
-                0,
-                Math.round(
-                  (input.file.size - transferredBytes) / bytesPerSecond,
-                ),
-              ),
-            }
-          : { etaSeconds: null }),
-      });
-    };
     reportProgress();
     type ActiveGrant = {
       partNumber: number;
@@ -908,7 +968,7 @@ async function runUploadSessionTransfer(
     throw new Error("The upload service returned an invalid finalization contract.",
     );
   }
-  if (input.storage) saveUploadResume(input.storage, null);
+  if (input.storage) clearUploadResume(input.storage, fingerprint);
   return { projectId: opened.projectId };
 }
 
@@ -957,9 +1017,15 @@ export function createUploadSessionBrowserAdapter(
     for (const listener of listeners) listener();
   };
 
+  const forgetCurrentUpload = () => {
+    if (dependencies.storage && currentInput) {
+      clearUploadResume(dependencies.storage, createUploadFileFingerprint(currentInput.file));
+    }
+  };
+
   const finishQueued = (projectId: string, totalBytes: number) => {
     if (disposed) return;
-    if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+    forgetCurrentUpload();
     publish({
       ...currentSnapshot,
       phase: "queued",
@@ -999,7 +1065,7 @@ export function createUploadSessionBrowserAdapter(
 
   const finishDiscarded = () => {
     if (disposed) return;
-    if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+    forgetCurrentUpload();
     currentInput = null;
     publish({
       ...IDLE_UPLOAD_SNAPSHOT,
@@ -1345,7 +1411,7 @@ export function createUploadSessionBrowserAdapter(
     },
     async startFresh() {
       if (!freshStartAllowed || !currentInput) return;
-      if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+      forgetCurrentUpload();
       freshStartAllowed = false;
       await start(currentInput);
     },

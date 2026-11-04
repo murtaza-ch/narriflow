@@ -25,6 +25,21 @@ test("a real bundle opens frozen streams one at a time and preserves their exact
   expect(await child.exited).toBe(0);
 });
 
+test("bundled video is stored rather than deflated, and extracts to its exact bytes", async () => {
+  const directory = await mkdtemp(join(tmpdir(),"bundle-store-")); directories.push(directory);
+  const name = "project/001-first/9x16.mp4", bytes = Buffer.alloc(256*1024,7), outputPath = join(directory,"bundle.zip");
+  const manifest = { schemaVersion: 1 as const, operationId: crypto.randomUUID(), projectId: crypto.randomUUID(), createdAt: "2026-10-31T00:00:00Z", excluded: [],
+    included: [{clipId:crypto.randomUUID(),exportId:crypto.randomUUID(),editorRevision:1,files:[{variantId:crypto.randomUUID(),aspectRatio:"9:16" as const,name,sizeBytes:bytes.length}]}]};
+  const info = await createExportBundleArchive({ outputPath, manifest, files: [{name,open:async()=>Readable.from([bytes])}] });
+  expect(info.size).toBeGreaterThan(bytes.length);
+  const listing = await new Response(Bun.spawn(["unzip","-v",outputPath]).stdout).text();
+  expect(listing).toMatch(new RegExp(`${bytes.length}\\s+Stored\\s+${bytes.length}\\s+0%.*9x16\\.mp4`));
+  expect(listing).toMatch(/Defl:.*manifest\.json/);
+  const extracted = await new Response(Bun.spawn(["unzip","-p",outputPath,name]).stdout).arrayBuffer();
+  expect(Buffer.from(extracted).equals(bytes)).toBe(true);
+  expect(await Bun.spawn(["unzip","-tq",outputPath]).exited).toBe(0);
+});
+
 test("a changed frozen input length or digest aborts the archive instead of producing a publishable ZIP", async () => {
   const directory = await mkdtemp(join(tmpdir(),"bundle-changed-")); directories.push(directory);
   const name="project/001-first/9x16.mp4";

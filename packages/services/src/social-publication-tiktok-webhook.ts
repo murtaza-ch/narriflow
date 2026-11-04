@@ -6,9 +6,10 @@ import {createHash} from "node:crypto";
 import { lockPublicationAttempt } from "./publication-locks";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import { publicationOperationLookupHash } from "./social-publication-attempt";
 import { emitSocialPostFinished } from "./social-post-finished";
+import { tiktokFailureCode } from "./tiktok-failure-reasons";
+import { requirePrisma } from "./require-prisma";
 
 const MAX_SIGNATURE_AGE_SECONDS = 5 * 60;
 
@@ -24,12 +25,6 @@ export class TikTokPublicationWebhookError extends Error {
 		super(message);
 		this.name = "TikTokPublicationWebhookError";
 	}
-}
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
 }
 
 export function verifyTikTokWebhookSignature(input: {
@@ -242,16 +237,7 @@ export async function recordTikTokPublicationEvent(
 					attempt.phase === "succeeded" ||
 					attempt.phase === "failed"
     ){await recoverPublicationDispatches(tx,attempt.socialPostId);return {kind:"already_settled" as const,attemptId:attempt.id};}
-				const codes: Record<string, string> = {
-					spam_risk: "tiktok_spam_risk",
-					spam_risk_text: "tiktok_spam_risk",
-					spam_risk_too_many_posts: "tiktok_rate_limit",
-					spam_risk_too_many_pending_share: "tiktok_pending_drafts_limit",
-					spam_risk_user_banned_from_posting: "tiktok_account_restricted",
-					unaudited_client_can_only_post_to_private_accounts:
-						"tiktok_audit_privacy_required",
-				};
-				const errorCode = codes[event.reason ?? ""] ?? "tiktok_publish_failed";
+				const errorCode = tiktokFailureCode(event.reason);
 				await tx.socialPublicationAttempt.update({
 					where: { id: attempt.id },
 					data: {

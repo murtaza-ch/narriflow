@@ -102,6 +102,7 @@ function makeSession(
 ) {
   return createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 1,

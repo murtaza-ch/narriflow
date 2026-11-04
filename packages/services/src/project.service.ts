@@ -1,7 +1,9 @@
 import { freezeAutopilotFinishingAuthority, type AutopilotImportSource } from "./autopilot-finishing-authority";
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
 import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
-import type { ExecutionDispatchRecord } from "./execution-dispatch";
+import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
+import { beginUserProjectPurge } from "./project-retention-execution";
+import { hasUnresolvedProviderOutcome } from "./project-provider-outcome";
 import { type ZoomRecordingNotification } from "@narriflow/validators";
 
 /**
@@ -46,6 +48,7 @@ import {
 	type AcceptedRecipe,
 	buildRecipeGenerationContext,
 	detectLinkProvider,
+	youtubeMediaId,
 	driveIngestSchema,
 	generateProjectRequestSchema,
 	googleDriveFileViewUrl,
@@ -86,7 +89,6 @@ import {
 	type LinkResumeData,
 	type LinkResumeResult,
 } from "@narriflow/validators/api/ingest";
-import { deleteObject } from "./r2-storage";
 import {
 	createDriveTokenCipher,
 	googleDriveFileReader,
@@ -106,7 +108,7 @@ import {
 	buildTranscriptSnapshot,
 	exportTranscript,
 } from "./transcript.service";
-import { getLastWorkflowSeq, getWorkflowEventsSince } from "./workflow.service";
+import { getLastWorkflowSeq, getRecentWorkflowEvents } from "./workflow.service";
 import { toProjectSnapshot, type ProjectSnapshot } from "./project-snapshot";
 import { projectRetentionService } from "./project-retention.service";
 import { accessibleProjectWhere } from "./project-access";
@@ -166,22 +168,6 @@ function storedPackData(pack: unknown, draft: boolean) {
 	return { ...parsed, captionedVideo: parsed.captionedVideo ?? Prisma.DbNull, draft };
 }
 
-function isMissingObjectError(error: unknown) {
-	if (typeof error !== "object" || error === null) return false;
-	const candidate = error as {
-		name?: unknown;
-		code?: unknown;
-		Code?: unknown;
-	};
-	const codes = [candidate.code, candidate.Code].filter(
-		(value): value is string => typeof value === "string",
-	);
-	if (codes.length > 0) {
-		return codes.every((code) => ["NoSuchKey", "NotFound"].includes(code));
-	}
-	return ["NoSuchKey", "NotFound"].includes(String(candidate.name ?? ""));
-}
-
 function toWorkflowRunSnapshot(row: PrismaWorkflowRun) {
 	return {
 		workflowRunId: row.id,
@@ -221,7 +207,6 @@ export const projectFailureCatalog = {
 	generation_settings_conflict: "conflict",
 	link_unsupported_source: "unprocessable",
 	project_access_denied: "forbidden",
-	project_deletion_incomplete: "unavailable",
 	project_has_active_publication: "conflict",
 	project_has_active_workflow: "conflict",
 	project_ingest_not_ready: "conflict",
@@ -244,15 +229,8 @@ export class ProjectServiceError extends ExpectedDomainFailureError<ProjectFailu
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Self-serve project deletion. Errors mirror the getProjectAccess three-way
-// discriminator ("missing" -> 404, "forbidden" -> 403) plus two deletion-
-// specific refusals. The orchestration itself (runProjectDeletion below) is a
-// pure, dependency-injected function — same shape as resolveExistingUploadResume
-// above — so its guarantees (ownership, the active-run guard, the "storage
-// deletes before the DB row" ordering, and idempotent re-delete) have direct
-// unit coverage without touching a real database or R2 bucket.
-// ---------------------------------------------------------------------------
+// discriminator ("missing" -> 404, "forbidden" -> 403) plus two refusals.
 
 export class ProjectNotFoundError extends ExpectedDomainFailureError<"project_not_found"> {
 	constructor() {
@@ -309,195 +287,6 @@ export class ProjectHasActivePublicationError extends ExpectedDomainFailureError
 		});
 		this.name = "ProjectHasActivePublicationError";
 	}
-}
-
-export class ProjectDeletionIncompleteError extends ExpectedDomainFailureError<
-	"project_deletion_incomplete",
-	{ failedKeyCount: number }
-> {
-	constructor(failedKeyCount: number) {
-		super({
-			code: "project_deletion_incomplete",
-			kind: projectFailureCatalog.project_deletion_incomplete,
-			message:
-				"Some of this project's files couldn't be removed from storage. Please try deleting again.",
-			details: { failedKeyCount },
-		});
-		this.name = "ProjectDeletionIncompleteError";
-	}
-}
-
-/**
- * Every storage-key-bearing row a project may own, already fetched — kept
- * separate from the Prisma query shape so the planning logic below has no
- * dependency on a live database.
- *
- * Deliberately excludes: `Clip.brollUrl` and `studioEdits.music.url` (these
- * are user-supplied public HTTP URLs validated by assertPublicHttpUrl
- * elsewhere, never R2 objects this project owns) and `BrandTemplate.
- * logoStorageKey` / anything inside `Project.brandSnapshot` (owned by the
- * user's brand template, which other projects may still reference — deleting
- * one project must never delete a shared template's logo).
- */
-export interface ProjectStorageSnapshot {
-	sourceStorageKey: string | null;
-	transcriptRawStorageKey: string | null;
-	clipPreviewStorageKeys: ReadonlyArray<string | null>;
-	clipRenderStorageKeys: ReadonlyArray<string | null>;
-	clipDubStorageKeys: ReadonlyArray<string | null>;
-}
-
-export interface ProjectDeletionPlan {
-	/** Deduped R2 object keys to DeleteObject. */
-	objectKeysToDelete: string[];
-}
-
-/**
- * Pure enumeration of everything a project deletion must touch in R2. Exported
- * and tested directly so "which tables get swept" has coverage independent of
- * the Prisma query that feeds it in ProjectService.deleteProject below.
- */
-export function planProjectStorageDeletion(
-	snapshot: ProjectStorageSnapshot,
-): ProjectDeletionPlan {
-	const keys = new Set<string>();
-	const addKey = (key: string | null | undefined) => {
-		if (key) keys.add(key);
-	};
-
-	addKey(snapshot.sourceStorageKey);
-	addKey(snapshot.transcriptRawStorageKey);
-	snapshot.clipPreviewStorageKeys.forEach(addKey);
-	snapshot.clipRenderStorageKeys.forEach(addKey);
-	snapshot.clipDubStorageKeys.forEach(addKey);
-
-	return { objectKeysToDelete: Array.from(keys) };
-}
-
-export interface ProjectDeletionIo {
-	deleteObject: (key: string) => Promise<unknown>;
-	isMissingObjectError: (error: unknown) => boolean;
-}
-
-export interface ProjectDeletionIoResult {
-	/** Keys that failed for a reason OTHER than "already missing" — these
-	 *  block the DB row from being deleted so the objects stay reachable and
-	 *  retryable rather than orphaned forever. */
-	failedKeys: string[];
-}
-
-/**
- * Executes a storage deletion plan resiliently: every key is attempted via
- * Promise.allSettled (one bad key can't stop the rest), and "already gone"
- * is treated as success exactly like exact-key Media Cleanup does. Only
- * genuine failures are returned, since those are what must keep the DB row
- * alive for a retry.
- */
-export async function deleteProjectStorageObjects(
-	plan: ProjectDeletionPlan,
-	io: ProjectDeletionIo,
-): Promise<ProjectDeletionIoResult> {
-	const results = await Promise.allSettled(
-		plan.objectKeysToDelete.map((key) => io.deleteObject(key)),
-	);
-
-	const failedKeys: string[] = [];
-	results.forEach((result, index) => {
-		if (
-			result.status === "rejected" &&
-			!io.isMissingObjectError(result.reason)
-		) {
-			failedKeys.push(plan.objectKeysToDelete[index]!);
-		}
-	});
-
-	return { failedKeys };
-}
-
-export type ProjectDeletionOutcome =
-	| { kind: "not_found" }
-	| { kind: "forbidden" }
-	| { kind: "active_workflow" }
-	| { kind: "active_publication" }
-	| { kind: "storage_incomplete"; failedKeys: string[] }
-	| { kind: "deleted" }
-	| { kind: "already_deleted" };
-
-export interface ProjectDeletionRow {
-	/** Whether any WorkflowRun for this project is still queued/running —
-	 *  same guard exact-key Media Cleanup uses before touching a source. */
-	hasActiveWorkflowRun: boolean;
-	hasActivePublication: boolean;
-	storage: ProjectStorageSnapshot;
-}
-
-export interface ProjectDeletionAccessResult {
-	access: "missing" | "forbidden" | "owned";
-	row: ProjectDeletionRow | null;
-}
-
-export interface ProjectDeletionDeps {
-	getAccessAndRow: () => Promise<ProjectDeletionAccessResult>;
-	deleteObject: (key: string) => Promise<unknown>;
-	isMissingObjectError: (error: unknown) => boolean;
-	/** Conditioned delete (e.g. `deleteMany({ where: { id, workspaceId } })`) so a
-	 *  row a concurrent call already removed resolves to count 0 instead of
-	 *  throwing — this is what makes repeated/racing calls safe. */
-	deleteProjectRow: () => Promise<{ count: number }>;
-}
-
-/**
- * Pure orchestration for project deletion, fully dependency-injected so
- * every guarantee below has direct
- * test coverage without a live database or R2 bucket:
- *
- *  - ownership: "missing"/"forbidden" access short-circuits before any I/O.
- *  - the active-run guard: a queued/running WorkflowRun blocks deletion.
- *  - storage-first ordering: the DB row is only deleted once every storage
- *    key either deleted cleanly or was already gone; any other failure
- *    leaves the row intact so the objects stay reachable and retryable.
- *  - idempotent re-delete: deleteProjectRow resolving to count 0 (the row
- *    was already gone) is a success-shaped no-op, not a thrown error.
- */
-export async function runProjectDeletion(
-	deps: ProjectDeletionDeps,
-): Promise<ProjectDeletionOutcome> {
-	const { access, row } = await deps.getAccessAndRow();
-
-	// Check the discriminator itself first: "forbidden" also carries a null
-	// row (there's nothing to hand back for someone else's project), so a
-	// combined "missing or no row" check here would misclassify it as
-	// not_found instead of forbidden.
-	if (access === "missing") {
-		return { kind: "not_found" };
-	}
-	if (access === "forbidden") {
-		return { kind: "forbidden" };
-	}
-	if (!row) {
-		return { kind: "not_found" };
-	}
-	if (row.hasActiveWorkflowRun) {
-		return { kind: "active_workflow" };
-	}
-	if (row.hasActivePublication) {
-		return { kind: "active_publication" };
-	}
-
-	const plan = planProjectStorageDeletion(row.storage);
-	const { failedKeys } = await deleteProjectStorageObjects(plan, {
-		deleteObject: deps.deleteObject,
-		isMissingObjectError: deps.isMissingObjectError,
-	});
-
-	if (failedKeys.length > 0) {
-		return { kind: "storage_incomplete", failedKeys };
-	}
-
-	const deleteResult = await deps.deleteProjectRow();
-	return deleteResult.count > 0
-		? { kind: "deleted" }
-		: { kind: "already_deleted" };
 }
 
 /** The Brand Profile an intake path freezes onto its new Project. Without a
@@ -663,165 +452,50 @@ export class ProjectService {
 	}
 
 	/**
-	 * Self-serve, user-initiated project deletion — distinct from
-	 * the bounded source-retention planner (which only ever
-	 * reclaims the source object once it has aged out; this deletes the whole
-	 * project and everything it owns, right now, on the user's request).
+	 * Self-serve, user-initiated project deletion. The Project disappears from
+	 * every read on commit; the retention purge then removes every object its
+	 * ledgers know, and deletes the row only after storage acknowledges each key.
+	 * The guards run under the same locks as that purge, so no work can start
+	 * between the check and the mark.
 	 *
-	 * Storage is deleted before the DB row, and the row is only removed once
-	 * every key deleted cleanly or was already gone — a partial storage
-	 * failure leaves the project row intact so a retry can find the same
-	 * (still-referenced) keys again rather than orphaning them. See
-	 * runProjectDeletion above for the guarantees this wires together.
-	 *
-	 * Storage-key-bearing tables covered: Project.sourceStorageKey,
-	 * Transcript.rawStorageKey, Clip.previewStorageKey, ClipRender.storageKey,
-	 * and ClipDub.audioStorageKey/renderStorageKey.
-	 * Deliberately NOT touched: BrandTemplate.logoStorageKey and any logo key
-	 * embedded in Project.brandSnapshot (owned by the user's brand template,
-	 * which other projects may still reference) and Clip.brollUrl /
-	 * studioEdits.music.url (external HTTP URLs, not objects this project
-	 * owns in R2).
+	 * Deliberately not deleted: BrandTemplate.logoStorageKey and any logo key
+	 * inside Project.brandSnapshot (other Projects may share them), Clip.brollUrl
+	 * and studioEdits.music.url (external URLs, not objects this Project owns).
 	 */
 	async deleteProject(scope: ActorScope, projectId: string): Promise<void> {
 		await this.requireActor(scope, "content.edit");
 		const prisma = this.requirePrisma();
-
-		const revocations: ExecutionDispatchRecord[] = [];
-		const outcome = await runProjectDeletion({
-			getAccessAndRow: async () => {
-				const project = await prisma.project.findUnique({
-					where: { id: projectId },
-					select: {
-						workspaceId: true,
-						expiresAt: true,
-						purgeStartedAt: true,
-						sourceStorageKey: true,
-						transcript: { select: { rawStorageKey: true } },
-						clips: {
-							select: {
-								previewStorageKey: true,
-								renders: { select: { storageKey: true } },
-								dubs: {
-									select: { audioStorageKey: true, renderStorageKey: true },
-								},
-							},
-						},
-						workflowRuns: {
-							where: { status: { in: ["queued", "running", "waiting"] } },
-							select: { id: true },
-							take: 1,
-						},
-						socialPosts: {
-							where: {
-								status: {
-									in: [
-										"publishing",
-										"processing",
-										"reconciling",
-										"needs_attention",
-									],
-								},
-							},
-							select: { id: true },
-							take: 1,
-						},
+		const revocation = await prisma.$transaction(async (tx) => {
+			const { epoch } = await requireExecutionAdmissionOpen(tx);
+			const owner = await tx.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } });
+			if (!owner) throw new ProjectNotFoundError();
+			if (owner.workspaceId !== scope.workspaceId) throw new ProjectAccessDeniedError();
+			await lockExecutionRecoveryParents(tx, [{ workspaceId: owner.workspaceId, projectId }]);
+			const project = await tx.project.findFirst({
+				where: { id: projectId, ...accessibleProjectWhere() },
+				select: {
+					// A queued import has spent nothing yet: the purge cancels it.
+					ingestJobs: { where: { status: "running" }, select: { id: true }, take: 1 },
+					workflowRuns: { where: { status: { in: ["queued", "running", "waiting"] } }, select: { id: true }, take: 1 },
+					socialPosts: {
+						where: { status: { in: ["publishing", "processing", "reconciling", "needs_attention"] } },
+						select: { id: true },
+						take: 1,
 					},
-				});
-
-				if (!project) {
-					return { access: "missing", row: null };
-				}
-				if (project.workspaceId !== scope.workspaceId) {
-					return { access: "forbidden", row: null };
-				}
-
-				if (
-					project.purgeStartedAt ||
-					(project.expiresAt && project.expiresAt <= new Date())
-				)
-					return { access: "missing", row: null };
-
-				return {
-					access: "owned",
-					row: {
-						hasActiveWorkflowRun: project.workflowRuns.length > 0,
-						hasActivePublication: project.socialPosts.length > 0,
-						storage: {
-							sourceStorageKey: project.sourceStorageKey,
-							transcriptRawStorageKey:
-								project.transcript?.rawStorageKey ?? null,
-							clipPreviewStorageKeys: project.clips.map(
-								(clip) => clip.previewStorageKey,
-							),
-							clipRenderStorageKeys: project.clips.flatMap((clip) =>
-								clip.renders.map((render) => render.storageKey),
-							),
-							clipDubStorageKeys: project.clips.flatMap((clip) =>
-								clip.dubs.flatMap((dub) => [
-									dub.audioStorageKey,
-									dub.renderStorageKey,
-								]),
-							),
-						},
-					},
-				};
-			},
-			deleteObject,
-			isMissingObjectError,
-			deleteProjectRow: async () => {
-				const notDeleted = new Error("project_not_deleted");
-				try {
-					return await prisma.$transaction(async (tx) => {
-						// Deleting an intake before settlement returns its reservation.
-						// Settled usage has no Project foreign key and is unchanged.
-						// Release precedes the Project row lock, as settlement orders them.
-						await getProcessingUsage().release(tx, {
-							projectId,
-							reason: "project_deleted",
-						});
-						const result = await tx.project.deleteMany({
-							where: {
-								id: projectId,
-								workspaceId: scope.workspaceId,
-								...accessibleProjectWhere(),
-							},
-						});
-						if (result.count === 0) throw notDeleted;
-						revocations.push(await appendProgressRevocation(tx, { workspaceId: scope.workspaceId, projectId, error: "project_inaccessible" }));
-						return { count: result.count };
-					});
-				} catch (error) {
-					if (error === notDeleted) return { count: 0 };
-					throw error;
-				}
-			},
+				},
+			});
+			if (!project) throw new ProjectNotFoundError();
+			if (project.ingestJobs.length > 0 || project.workflowRuns.length > 0) throw new ProjectHasActiveWorkflowError();
+			if (project.socialPosts.length > 0) throw new ProjectHasActivePublicationError();
+			// The purge refuses these forever, so the delete must refuse them now.
+			if (await hasUnresolvedProviderOutcome(tx, projectId)) throw new ProjectHasActiveWorkflowError();
+			// Deleting an intake before settlement returns its reservation at once.
+			// Settled usage has no Project foreign key and is unchanged.
+			await getProcessingUsage().release(tx, { projectId, reason: "project_deleted" });
+			await beginUserProjectPurge(tx, projectId, epoch);
+			return appendProgressRevocation(tx, { workspaceId: scope.workspaceId, projectId, error: "project_inaccessible" });
 		});
-
-		await deliverProgressAfterCommit(prisma, revocations);
-		switch (outcome.kind) {
-			case "not_found":
-				throw new ProjectNotFoundError();
-			case "forbidden":
-				throw new ProjectAccessDeniedError();
-			case "active_workflow":
-				throw new ProjectHasActiveWorkflowError();
-			case "active_publication":
-				throw new ProjectHasActivePublicationError();
-			case "storage_incomplete":
-				console.warn(
-					JSON.stringify({
-						level: "warn",
-						message: "project_delete_storage_incomplete",
-						projectId,
-						failedKeyCount: outcome.failedKeys.length,
-					}),
-				);
-				throw new ProjectDeletionIncompleteError(outcome.failedKeys.length);
-			case "deleted":
-			case "already_deleted":
-				return;
-		}
+		await deliverProgressAfterCommit(prisma, [revocation]);
 	}
 
 	/** Whether any clip of the project has a completed render. */
@@ -899,10 +573,8 @@ export class ProjectService {
 	}
 
 	/**
-	 * Persisted WorkflowEvent history for the Activity tab's initial paint —
-	 * reuses getWorkflowEventsSince (the same durable-catch-up source the SSE
-	 * route already replays from) instead of a second query path, and bounds
-	 * the payload defensively; the client applies its own tighter display cap.
+	 * Persisted WorkflowEvent history for the Activity tab's initial paint. The
+	 * read is bounded in SQL; the client applies its own tighter display cap.
 	 */
 	async getWorkflowHistory(
 		scope: ActorScope,
@@ -913,11 +585,8 @@ export class ProjectService {
 			return [];
 		}
 
-		const events = await getWorkflowEventsSince(projectId, 0);
-		const recent = events.slice(-WORKFLOW_HISTORY_FETCH_LIMIT);
-
 		const validated: WorkflowStageUpdatedEvent[] = [];
-		for (const event of recent) {
+		for (const event of await getRecentWorkflowEvents(projectId, WORKFLOW_HISTORY_FETCH_LIMIT)) {
 			const parsed = workflowStageUpdatedEventSchema.safeParse(event);
 			if (parsed.success) {
 				validated.push(parsed.data);
@@ -1520,7 +1189,7 @@ export class ProjectService {
 			parsed,
 			async () => {
 				const provider = detectLinkProvider(parsed.url);
-				if (!provider) {
+				if (!provider || (provider === "youtube" && !youtubeMediaId(parsed.url))) {
 					throw new LinkUnsupportedSourceError();
 				}
 				if (provider === "youtube") await requireYouTubeImport(scope.workspaceId);
@@ -1623,9 +1292,6 @@ export class ProjectService {
 		let source: LinkIntakeSource;
 		let brand: IntakeBrand;
 		let createdAt: Date;
-		let retention: Awaited<
-			ReturnType<typeof projectRetentionService.assignmentForWorkspace>
-		>;
 		let pack: ContentPack;
 		let generationContext = options.generationContext;
 		let usedRecipe: ResolvedRecipe | null = null;
@@ -1652,10 +1318,6 @@ export class ProjectService {
 				templateId: parsed.brandTemplateId,
 			});
 			createdAt = new Date();
-			retention = await projectRetentionService.assignmentForWorkspace(
-				actor.workspaceId,
-				createdAt,
-			);
 
 			// Browser intake can wait for setup; MCP commits runnable settings
 			// in the same transaction as its Project and Ingest Job.
@@ -1684,6 +1346,11 @@ export class ProjectService {
 				intakeKind: "link",
 				declaredSeconds: source.declaredSeconds,
 			});
+			const retention = await projectRetentionService.assignmentForWorkspace(
+				tx,
+				actor.workspaceId,
+				createdAt,
+			);
 			const createdProject = await tx.project.create({
 				data: {
 					id: projectId,
@@ -1989,10 +1656,6 @@ export class ProjectService {
 
 		for (const episode of input.episodes) {
 			const createdAt = new Date();
-			const retention = await projectRetentionService.assignmentForWorkspace(
-				actor.workspaceId,
-				createdAt,
-			);
 			let project: Project;
 			let jobId: string;
 			try {
@@ -2003,6 +1666,11 @@ export class ProjectService {
           for(const user of intakeActors)await tx.$queryRaw`SELECT id FROM "WorkspaceMember" WHERE "workspaceId"=${actor.workspaceId}::uuid AND "userId"=${user}::uuid FOR SHARE`;
           await lockWorkspaceUsage(tx, actor.workspaceId);
           await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${actor.workspaceId}::uuid FOR SHARE`;
+					const retention = await projectRetentionService.assignmentForWorkspace(
+						tx,
+						actor.workspaceId,
+						createdAt,
+					);
 					const authority = options.autopilotSource ? await freezeAutopilotFinishingAuthority(tx, { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, source: options.autopilotSource, recipe: options.generationContext?.recipe, finishing: options.generationContext?.finishing, contentPack: options.generationContext?.contentPack, languageCode: options.generationContext?.languageCode, brandProfileId: input.brandProfileId ?? null }) : null;
 					if (options.zoom) {
 						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
@@ -2524,6 +2192,11 @@ export class ProjectService {
 	async getUsageSummary(scope: ActorScope): Promise<ProcessingUsageSummary> {
 		await this.requireActor(scope, "content.view");
 		return getProcessingUsage().summarize(scope.workspaceId);
+	}
+
+	/** Bootstrap has just read the live membership, so it neither re-authorizes nor re-reads the plan. */
+	async getAuthorizedUsageSummary(context: { workspaceId: string; pricingTier: string }): Promise<ProcessingUsageSummary> {
+		return getProcessingUsage().summarizeForTier(context.workspaceId, resolvePricingTier(context.pricingTier));
 	}
 }
 

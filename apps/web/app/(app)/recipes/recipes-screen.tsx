@@ -11,6 +11,7 @@ import { hasFeature } from "@narriflow/validators";
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { gateQueries } from "@/app/_components/query-gate";
 import { useWorkspaceBootstrap } from "../_components/usage";
 import RecipesLoading from "./loading";
 import { type RecipeBrandLook, RecipesPanel, type RecipesPanelApi } from "./recipes-panel";
@@ -46,9 +47,9 @@ function RecipesContent({ scope }: { scope: WorkspaceScope }) {
     [transport, scope, runtime, queryClient],
   );
 
-  const failed = [recipes, kit, accounts, bootstrap].find((query) => query.isError);
-  if (failed) {
-    const failure = describeApiFailure(failed.error);
+  const gate = gateQueries([recipes, kit, accounts, bootstrap]);
+  if (gate.status === "failed") {
+    const failure = describeApiFailure(gate.error);
     return (
       <Stack gap="4" role="alert" align="flex-start">
         <PageHeader title="Recipes" />
@@ -57,27 +58,23 @@ function RecipesContent({ scope }: { scope: WorkspaceScope }) {
             ? "You appear to be offline. Check your connection and try again."
             : "Recipes could not be loaded. Nothing has been changed."}
         </Text>
-        <Button
-          size="sm"
-          variant="subtle"
-          onClick={() => {
-            for (const query of [recipes, kit, accounts, bootstrap]) if (query.isError) void query.refetch();
-          }}
-        >
+        <Button size="sm" variant="subtle" onClick={gate.retry}>
           Try again
         </Button>
       </Stack>
     );
   }
-  if (!recipes.data || !kit.data || !accounts.data || !bootstrap.data) return <RecipesLoading />;
+  if (gate.status === "loading") return <RecipesLoading />;
 
-  const brandProfiles = kit.data.profiles.map(({ id, name }) => ({
+  const [recipeList, brandKit, publishingAccounts, workspaceBootstrap] = gate.data;
+
+  const brandProfiles = brandKit.profiles.map(({ id, name }) => ({
     id,
     name,
-    isDefault: id === kit.data.defaultProfileId,
+    isDefault: id === brandKit.defaultProfileId,
   }));
   const brandLooks: Record<string, RecipeBrandLook> = Object.fromEntries(
-    kit.data.profiles.map((profile) => [
+    brandKit.profiles.map((profile) => [
       profile.id,
       {
         colors: {
@@ -94,12 +91,12 @@ function RecipesContent({ scope }: { scope: WorkspaceScope }) {
 
   return (
     <RecipesPanel
-      recipes={recipes.data}
+      recipes={recipeList}
       brandProfiles={brandProfiles}
       brandLooks={brandLooks}
-      canEdit={bootstrap.data.capabilities["content.edit"]}
-      finishingAvailable={hasFeature(bootstrap.data.usage.tier, "campaign.operations")}
-      queueAccounts={accounts.data.accounts
+      canEdit={workspaceBootstrap.capabilities["content.edit"]}
+      finishingAvailable={hasFeature(workspaceBootstrap.usage.tier, "campaign.operations")}
+      queueAccounts={publishingAccounts.accounts
         .filter((account) => account.status === "active")
         .map(({ id, platform, displayName }) => ({ id, platform, displayName }))}
       api={api}

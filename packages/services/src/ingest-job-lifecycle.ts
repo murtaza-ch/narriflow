@@ -15,6 +15,7 @@ import {
   wholeSourceWindowFault,
   type SourceProbe,
   type WorkflowStageUpdatedEvent,
+  SINGLE_PUT_CLEANUP_DELAY_MS,
 } from "@narriflow/validators";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { freezeGenerationFinishing, queueSettledGenerationFinishing } from "./generation-finishing";
@@ -39,6 +40,8 @@ import { collectExecutionDispatch, takeExecutionDispatchIds } from "./execution-
 
 import { ingestAcquisitionSchema, type IngestAcquisition, sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
+import { resolveIngestSourceDefinition } from "./ingest-source-definition";
 import { commitSourceLanguageProbeWithinTransaction } from "./transcription-probe";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
@@ -129,7 +132,6 @@ export interface IngestJobLifecycleDependencies {
   workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff" | "dispatchRunWithinTransaction" | "cancelSourceExecutionsWithinTransaction">;
   usage: Pick<ProcessingUsage, "reserve" | "settle" | "release">;
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
-  progressRequired?: boolean;
   sourceBucket?: string;
   /** Required for video publication. Performs only typed validation/DB facts, never R2 I/O under locks. */
   validateVideo?: IngestVideoValidator;
@@ -216,8 +218,6 @@ export class IngestJobLifecycle {
         progressRequired: true,
         notificationRequired: input.notify ?? false,
         notificationDeliveredAt: input.notify ? now : null,
-        availableAt: now,
-        nextDeliveryAt: now,
       },
     });
     await appendProgressEventDispatch(tx, event);
@@ -306,8 +306,9 @@ export class IngestJobLifecycle {
   async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<IngestExecutionReference>> {
     const state = await this.executionState(tx, reference, attemptToken);
     if (state.kind === "terminal") return state;
-    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true } });
-    return project ? { kind: "current", ref: state.ref } : { kind: "terminal", disposition: { disposition: "cancelled" } };
+    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now) }, select: { workspace: { select: { status: true } } } });
+    if (!project) return { kind: "terminal", disposition: { disposition: "cancelled" } };
+    return project.workspace.status === "active" ? { kind: "current", ref: state.ref } : { kind: "terminal", disposition: { disposition: "cancelled" }, restricted: true };
   }
 
   private executionClaim(ref: IngestExecutionReference, context: ExecutorMutationContext): IngestClaimRef {
@@ -441,7 +442,7 @@ export class IngestJobLifecycle {
     if (decision.kind === "waiting_for_audio") return this.executionWakes(tx, ref, context.reference.inputHash, "video_evidence_ready");
     if (decision.kind === "rejected") {
       const cancelled = await this.deps.workflow.cancelSourceExecutionsWithinTransaction(tx, { projectId: ref.projectId,
-        deploymentEpoch: ref.deploymentEpoch, errorCode: decision.failureCode, now });
+        deploymentEpoch: ref.deploymentEpoch, errorCode: decision.failureCode, now, discardTranscript: true });
       const result = await this.settleFailure(tx, job, this.owned(claim, now), decision.failureCode, decision.failureCode, `${claim.claimId}:source_mismatch`, now, "permanent");
       if (!result) throw new IngestJobClaimLost(ref.id);
       const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
@@ -449,30 +450,46 @@ export class IngestJobLifecycle {
     }
     await this.completeWithinTransaction(tx, claim, { sourceStorageKey: artifact.storageKey, sourceMimeType: artifact.contentType,
       sourceSizeBytes: Number(artifact.byteLength), sourceDurationSeconds: Math.ceil(artifact.binding.probe.durationSec), sourceProbe: artifact.binding.probe });
+    // The pinned copy now owns the source, so the upload's original goes once no PUT can still land on it.
+    if (job.jobType === "upload_finalize") {
+      const definition = await resolveIngestSourceDefinition(job, {});
+      if (definition.kind !== "upload_source") throw new Error("source_upload_payload_invalid");
+      await admitMediaCleanupObligations(tx, [{ origin: "upload_source_pinning", cleanupClass: "upload_source", projectId: ref.projectId, objectKey: definition.source.storageKey,
+        notBefore: new Date(now.getTime() + SINGLE_PUT_CLEANUP_DELAY_MS) }]);
+    }
     return this.executionWakes(tx, ref, context.reference.inputHash, "video_ready");
   }
 
   async failExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
     const { claim, job, now } = await this.ownedExecution(tx, ref, context);
-    if (["source_audio_video_mismatch", "source_identity_mismatch"].includes(failure.failureCode)) {
-      const code = "source_audio_video_mismatch";
-      const cancelled = await this.deps.workflow.cancelSourceExecutionsWithinTransaction(tx, { projectId: ref.projectId,
-        deploymentEpoch: ref.deploymentEpoch, errorCode: code, now });
-      const reservation = await tx.processingUsageReservation.findUnique({ where: { projectId: ref.projectId }, select: { state: true } });
-      const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
-      if (reservation?.state === "settled" && audio) await tx.sourceRefundNeed.upsert({
-        where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } },
-        create: { projectId: ref.projectId, sourceRevision: ref.sourceRevision, sourceAudioId: audio.id, sourceAudioBindingHash: audio.bindingHash, videoBindingHash: null }, update: {},
-      });
-      const decision = await this.settleFailure(tx, job, this.owned(claim, now), code, code, `${claim.claimId}:source_mismatch`, now, "permanent");
-      if (!decision) throw new IngestJobClaimLost(ref.id);
-      const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
-      return { dispatchIds: [...cancelled.dispatchIds, ...wakes.dispatchIds] };
-    }
-    const decision = await this.settleFailure(tx, job, this.owned(claim, now), failure.failureCode, failure.failureCode,
-      `${claim.claimId}:failed`, now, failure.retryable ? undefined : "permanent");
+    const mismatch = ["source_audio_video_mismatch", "source_identity_mismatch"].includes(failure.failureCode);
+    const code = mismatch ? "source_audio_video_mismatch" : failure.failureCode;
+    const decision = await this.settleFailure(tx, job, this.owned(claim, now), code, code,
+      `${claim.claimId}:${mismatch ? "source_mismatch" : "failed"}`, now, mismatch || !failure.retryable ? "permanent" : undefined);
     if (!decision) throw new IngestJobClaimLost(ref.id);
-    return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_outcome", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+    const closed = decision.outcome === "permanent" ? await this.closeAdmittedGeneration(tx, ref, decision.terminalErrorCode, now, mismatch) : [];
+    const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, mismatch ? "ingest_failed" : "ingest_outcome",
+      decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+    return { dispatchIds: [...closed, ...wakes.dispatchIds] };
+  }
+
+  /** Audio-first handoff admits a generation before the video is verified. A
+   * source that ends in failure can never reach ready, and every run guard then
+   * refuses it, so the same commit cancels that work. Usage settled from the
+   * audio stays settled and leaves an operator refund fact, but only when that
+   * admitted work was actually cancelled: finished work was delivered. A
+   * completed Transcript survives unless the audio is the mismatch. */
+  private async closeAdmittedGeneration(tx: Tx, ref: Pick<IngestExecutionReference, "projectId" | "sourceRevision" | "deploymentEpoch">, errorCode: string, now: Date, discardTranscript = false): Promise<string[]> {
+    const admitted = await tx.workflowRun.count({ where: { projectId: ref.projectId, deploymentEpoch: ref.deploymentEpoch, status: { in: ["queued", "running", "waiting"] } } });
+    if (!admitted) return [];
+    const cancelled = await this.deps.workflow.cancelSourceExecutionsWithinTransaction(tx, { projectId: ref.projectId, deploymentEpoch: ref.deploymentEpoch, errorCode, now, discardTranscript });
+    const reservation = await tx.processingUsageReservation.findUnique({ where: { projectId: ref.projectId }, select: { state: true } });
+    const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
+    if (reservation?.state === "settled" && audio) await tx.sourceRefundNeed.upsert({
+      where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } },
+      create: { projectId: ref.projectId, sourceRevision: ref.sourceRevision, sourceAudioId: audio.id, sourceAudioBindingHash: audio.bindingHash, videoBindingHash: null }, update: {},
+    });
+    return cancelled.dispatchIds;
   }
 
   async releaseExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
@@ -504,7 +521,9 @@ export class IngestJobLifecycle {
       status: job.status, claimId: job.claimId, ...(job.status === "running" ? { claimExpiresAt: { lte: now } } : {}) }, permanent ? "operation_deadline_exceeded" : "worker_stalled",
       permanent ? "Source acquisition deadline expired" : "Ingest execution lease expired", `${attemptToken}:expired`, now, permanent ? "permanent" : undefined);
     if (!decision) return { kind: "superseded" };
-    return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined) };
+    const closed = decision.outcome === "permanent" ? await this.closeAdmittedGeneration(tx, ref, decision.terminalErrorCode, now) : [];
+    const wakes = await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+    return { kind: "expired", dispatchIds: [...closed, ...wakes.dispatchIds] };
   }
 
   private async progressWithinTransaction(tx: Tx, 
@@ -701,6 +720,8 @@ export class IngestJobLifecycle {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
       await readExecutionAdmission(tx);
+      await lockWorkspaceUsage(tx, input.workspaceId);
+      await this.lockGeneration(tx, input.projectId);
       const job = await tx.ingestJob.findFirst({ where: { id: input.ingestJobId, projectId: input.projectId,
         status: "queued", project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
       if (!job) return false;
@@ -714,6 +735,7 @@ export class IngestJobLifecycle {
       await this.event(tx, { id: job.id, projectId: job.projectId, transition: "mcp_cancelled",
         stage: "ingest", status: "failed", progress: 0, errorCode: "MCP_CANCELLED" }, now);
       await emitIntakeFinished(tx, job.id, "cancelled");
+      for (const id of await this.closeAdmittedGeneration(tx, job, "MCP_CANCELLED", now)) collectExecutionDispatch(tx, id);
       return true;
     });
   }

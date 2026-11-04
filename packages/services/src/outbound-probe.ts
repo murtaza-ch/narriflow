@@ -1,5 +1,6 @@
 import { queueOutboundProbeRow } from "./outbound-probe-dispatch";
 import { createHash, randomUUID } from "node:crypto";
+import { isUuid } from "@narriflow/validators/identifiers";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type OutboundProbe, type PrismaClient } from "@prisma/client";
 import { MAX_RSS_RESULT_BYTES, outboundRssInputSchema, rssFeedSnapshotSchema, type OutboundRssInput } from "@narriflow/validators/outbound-probe";
@@ -87,7 +88,7 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
   }
 
   async get(scope: ActorScope, id: string) {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new OutboundProbeError("outbound_probe_missing");
+    if (!isUuid(id)) throw new OutboundProbeError("outbound_probe_missing");
     await this.database.$transaction(tx => this.actor(tx, scope));
     const row = await this.database.outboundProbe.findFirst({ where: { id, workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId } });
     if (!row) throw new OutboundProbeError("outbound_probe_missing");

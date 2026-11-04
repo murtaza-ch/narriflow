@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from narriflow_media.manifest import SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest, normalize_youtube_source, toolchain_versions
+from narriflow_media.manifest import SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest, toolchain_versions
 
 
 class SourceManifestTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class SourceManifestTests(unittest.TestCase):
         self.assertEqual(seed.binding['audioTrack']['id'],'stream:0');self.assertNotIn('http',json.dumps(seed.binding))
 
     def test_frozen_source_identity_and_whole_audio_facts_are_location_independent(self):
-        source = normalize_youtube_source("https://youtu.be/_123456789-")
+        source = YouTubeSource("_123456789-")
         self.assertEqual(source.media_id, "_123456789-")
         self.assertEqual(source.url, "https://www.youtube.com/watch?v=_123456789-")
         probe = {"probeVersion": "probe-fixture-v1", "durationSec": 3600.125, "hasAudio": True, "facts": {"audios": [
@@ -47,14 +47,6 @@ class SourceManifestTests(unittest.TestCase):
         self.assertEqual(versions["ffmpeg"], "7.1.5-0+deb13u1")
 
     def test_foreign_or_ambiguous_identity_cannot_enter_a_manifest(self):
-        for value in [
-            "https://youtube.com.evil.example/watch?v=abcdefghijk",
-            "https://hidden:secret@youtube.com/watch?v=abcdefghijk",
-            "https://www.youtube.com/watch?v=abcdefghijk&v=lmnopqrstuv",
-            "https://youtu.be/too-short",
-        ]:
-            with self.assertRaises(SourceManifestError):
-                normalize_youtube_source(value)
         with self.assertRaises(SourceManifestError):
             YouTubeSource("https://private.example/secret")
 

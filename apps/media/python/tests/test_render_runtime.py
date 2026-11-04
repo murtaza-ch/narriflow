@@ -26,6 +26,9 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_lost_publication_ack_retains_completed_upload_without_failure_or_cleanup_mutation(self):
         await self.actual_operation(lost_ack=True)
 
+    async def test_a_refused_upload_fails_only_its_variant_with_a_typed_retryable_code(self):
+        await self.actual_operation(refused_upload=True)
+
     async def test_changed_source_probe_publishes_only_a_typed_permanent_failure_proof(self):
         await self.actual_operation(source_mismatch=True)
 
@@ -60,7 +63,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured['sourceBytesTransferred'],0)
         self.assertNotIn('private',logs.getvalue())
 
-    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,source_sha256=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1',fixture_document=None,inspect_output=None):
+    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,source_sha256=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1',fixture_document=None,inspect_output=None,refused_upload=False):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);source=Path(source_path) if source_path is not None else base/'original.mp4';work=base/'work';work.mkdir()
@@ -166,6 +169,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                             body=data[start:end+1];size=len(data)
                         return TransferResponse(206,{'etag':etag,'content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{size}'},body)
                     artifact_id,part_number=grant.url.rsplit('/',2)[-2:]
+                    if refused_upload and artifact_id==outputs[0]['artifactId']:return TransferResponse(400,{},b'')
                     upload_parts.setdefault(artifact_id,{})[int(part_number)]=bytes(body)
                     uploads[artifact_id]=b''.join(value for _,value in sorted(upload_parts[artifact_id].items()))
                     return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
@@ -183,6 +187,13 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(measured['detectorExecutions'],0)
             commits=[fields['artifact'] for action,fields in calls if action=='commit-artifact']
             measured={**measured,'starts':len(starts),'artifacts':[{'role':item['role'],'byteLength':item['byteLength'],'sha256':item['sha256']} for item in commits]}
+            if refused_upload:
+                self.assertFalse(Session.cancel_event.is_set())
+                self.assertEqual([item['role'] for item in commits],['render_outcome'])
+                self.assertEqual(json.loads(uploads[outputs[1]['artifactId']]),{'version':1,'kind':'failed','renderId':render_id,
+                    'bindingHash':outputs[1]['bindingHash'],'errorCode':'render_upload_failed','disposition':'retryable'})
+                self.assertEqual(measured['outcome'],{'status':'failed','requested':1,'succeeded':0,'failed':1,'superseded':0})
+                return measured
             if source_mismatch:
                 self.assertEqual([item['role'] for item in commits],['render_outcome'])
                 self.assertEqual(set(uploads),{outputs[1]['artifactId']})

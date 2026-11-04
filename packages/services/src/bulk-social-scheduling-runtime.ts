@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
 	bulkSocialScheduleSchema,
 	publishingPreviewSchema,
@@ -20,6 +19,7 @@ import { readQueueSlots } from "./publishing-queue.service";
 import { accessibleProjectWhere } from "./project-access";
 import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import { workspaceService } from "./workspace.service";
+import { requirePrisma } from "./require-prisma";
 
 const operationInclude = {
 	items: { orderBy: { createdAt: "asc" as const } },
@@ -38,12 +38,6 @@ type StoredItemResult = {
 	retryable?: boolean;
 	socialPostId?: string | null;
 };
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
 
 function storedResult(value: Prisma.JsonValue | null): StoredItemResult {
 	return value && typeof value === "object" && !Array.isArray(value)

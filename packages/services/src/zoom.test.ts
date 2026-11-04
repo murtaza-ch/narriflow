@@ -25,6 +25,14 @@ describe("Zoom webhook contract", () => {
     expect(zoomValidationChallenge("qgg8vlvZRS6UYooatFL8Aw", "webhook_secret")).toEqual({ plainToken: "qgg8vlvZRS6UYooatFL8Aw", encryptedToken: "4eb3e791eff1f402d8d99a140679c2ff8ea349674fc45c906f7442be72bda568" });
     expect(() => zoomValidationChallenge({}, "secret")).toThrow();
   });
+
+  test("the URL challenge refuses text that could be a signed event body", () => {
+    const forged = JSON.stringify({ event: "app_deauthorized", event_ts: 1, payload: { account_id: "a", user_id: "u" } });
+    expect(() => zoomValidationChallenge(`v0:1700000000:${forged}`, "secret")).toThrow();
+    expect(() => zoomValidationChallenge("a:b", "secret")).toThrow();
+    expect(() => zoomValidationChallenge("x".repeat(129), "secret")).toThrow();
+    expect(() => zoomValidationChallenge("", "secret")).toThrow();
+  });
   const files = [
     { id: "audio", file_type: "M4A", status: "completed" },
     { id: "speaker", file_type: "MP4", status: "completed", recording_type: "speaker_view" },

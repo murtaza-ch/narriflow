@@ -1,5 +1,6 @@
 import { SCRIBE_MODEL_ID } from "@narriflow/validators";
 import { scribeErrorDetail, scribeHttpFailure } from "./scribe-errors";
+import { parseRetryAfterMs } from "./retry-after";
 import { WorkflowFailure } from "./workflow-attempt-contract";
 import { decideProbePin, LANGUAGE_PROBE_MAX_BYTES, type LanguageProbeResult } from "./language-probe-contract";
 
@@ -69,7 +70,7 @@ export function createScribeProvider(config: { apiKey: string; webhookId: string
         throw new ScribeSubmissionUnconfirmed();
       }
       const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
-      if (!response.ok) throw scribeHttpFailure("submit", response.status, payload);
+      if (!response.ok) throw scribeHttpFailure("submit", response.status, payload, parseRetryAfterMs(response.headers.get("retry-after"), new Date()));
       if (typeof payload?.request_id !== "string" || !payload.request_id || typeof payload.transcription_id !== "string" || !payload.transcription_id) throw new ScribeSubmissionUnconfirmed();
       return { requestId: payload.request_id, transcriptionId: payload.transcription_id };
     },
@@ -89,7 +90,7 @@ export function createScribeProvider(config: { apiKey: string; webhookId: string
         ? { kind: "ready", payload: payload as Record<string, unknown> }
         : { kind: "transient", failure: new WorkflowFailure("elevenlabs_transcript_fetch_failed", "retryable", "Scribe returned an unreadable transcript") };
       if (response.status === 404 && scribeErrorDetail(payload).code === "transcript_not_found") return { kind: "pending" };
-      const failure = scribeHttpFailure("result", response.status, payload);
+      const failure = scribeHttpFailure("result", response.status, payload, parseRetryAfterMs(response.headers.get("retry-after"), new Date()));
       return { kind: failure.disposition === "permanent" ? "failed" : "transient", failure };
     },
   };

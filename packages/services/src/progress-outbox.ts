@@ -3,6 +3,7 @@ import type { ExecutionDispatchReference } from "@narriflow/validators/execution
 import { appendExecutionDispatch, createExecutionDispatch, type ExecutionDispatchConfirmation, type ExecutionDispatchRecord } from "./execution-dispatch";
 import { progressDeliveryPort } from "./progress-delivery";
 import { progressEvent, type ProgressRevocation } from "./progress-feed";
+import { sha256Hex } from "./execution-hash";
 
 type Tx = Prisma.TransactionClient;
 type Revocation = Omit<ProgressRevocation, "projectId" | "authorizedBefore"> & { projectId?: string; authorizedBefore: number; afterProjectId?: string };
@@ -32,7 +33,7 @@ function decode(id: string): Revocation {
   return value;
 }
 async function hash(kind: string, id: string): Promise<string> {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["project_progress", kind, id])))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(JSON.stringify(["project_progress", kind, id]));
 }
 async function append(tx: Tx, subject: ExecutionDispatchReference["subject"], dueAt: Date, deploymentEpoch?: number): Promise<ExecutionDispatchRecord> {
   const epoch = deploymentEpoch ?? (await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
@@ -118,13 +119,12 @@ export async function deliverProgressDispatch(database: PrismaClient, reference:
     const obligations = await database.executionDispatch.findMany({ where: { deploymentEpoch: reference.deploymentEpoch, kind: "project_progress", subjectKind: "workflow_event", subjectId: { in: page.map(event => event.id) } }, select: { id: true, subjectId: true } });
     const byEvent = new Map(obligations.map(row => [row.subjectId, row.id]));
     const dispatch = createExecutionDispatch({ database, scheduler: { deliver: delivery => deliverProgressDispatch(database, delivery.reference) } });
-    for (let offset = 0; offset < page.length; offset += 4) {
-      const outcomes = await Promise.all(page.slice(offset, offset + 4).map(async event => {
-        const id = byEvent.get(event.id);
-        if (!id) throw new Error("Progress event obligation unavailable");
-        return dispatch.deliver(id);
-      }));
-      if (outcomes.some(outcome => outcome.status !== "acknowledged" && outcome.status !== "superseded")) throw new Error("Progress event page unconfirmed");
+    // The progress socket resets on any gap in seq, so a page publishes in order.
+    for (const event of page) {
+      const id = byEvent.get(event.id);
+      if (!id) throw new Error("Progress event obligation unavailable");
+      const outcome = await dispatch.deliver(id);
+      if (outcome.status !== "acknowledged" && outcome.status !== "superseded") throw new Error("Progress event page unconfirmed");
     }
     if (events.length > 100) {
       const next = await database.$transaction(tx => append(tx, { kind: "maintenance", id: eventRangeId(range.projectId, page.at(-1)!.seq, range.through) }, new Date(0), reference.deploymentEpoch));

@@ -2,20 +2,17 @@ import { renderExecutionInputSchema, type RenderExecutionInput } from "@narriflo
 import type { ClipPreparationObject } from "@narriflow/validators/clip-preparation";
 import { encodeClipPreparationInput } from "./clip-preparation-input";
 import { clipPreparationEngineHash } from "./clip-preparation-policy";
+import { sha256Hex } from "./execution-hash";
+import { canonicalJson } from "./canonical-json";
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(Reflect.get(value, key))}`).join(",")}}`;
-  return JSON.stringify(value);
-}
 async function digest(bytes: Uint8Array) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(Uint8Array.from(bytes));
 }
 export async function encodeRenderExecutionInput(raw: RenderExecutionInput) {
   const input = renderExecutionInputSchema.parse(raw);
   await encodeClipPreparationInput(input.preparation);
   if (input.preparation.engineHash !== await clipPreparationEngineHash(input.preparation.toolchainFingerprint)) throw new Error("render_input_invalid");
-  const bytes = new TextEncoder().encode(canonical(input));
+  const bytes = new TextEncoder().encode(canonicalJson(input));
   if (bytes.byteLength === 0 || bytes.byteLength > 16 * 1024 ** 2) throw new Error("render_input_invalid");
   return { input, bytes, byteLength: bytes.byteLength, sha256: await digest(bytes) };
 }

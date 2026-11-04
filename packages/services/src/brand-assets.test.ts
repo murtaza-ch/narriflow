@@ -14,7 +14,6 @@ import {
   assertSceneVisualAssetReferences,
   assertVisualBrollAssetReferences,
   describeVisualAssetUsage,
-  visualAssetIsReferencedByClipStorage,
   visualAssetKindForContentType,
 } from "./visual-asset.service";
 import {
@@ -142,31 +141,6 @@ describe("visual object verification", () => {
     expect(() => assertVisualBrollAssetReferences([placement], [])).toThrow(
       expect.objectContaining({ code: "visual_broll_asset_invalid", details: { placementIds: [placement.id] } }),
     );
-  });
-
-  test("detects generated B-roll and Scene references in stored Clip documents", () => {
-    const assetId = crypto.randomUUID();
-    expect(visualAssetIsReferencedByClipStorage(assetId, {
-      studioEdits: {
-        visualBroll: [{
-          id: crypto.randomUUID(),
-          asset: { kind: "visual_asset", id: assetId, fingerprint: "a".repeat(64) },
-          startSec: 1,
-          endSec: 3,
-          fit: "cover",
-        }],
-      },
-      sceneBlocks: [],
-    })).toBe(true);
-    expect(visualAssetIsReferencedByClipStorage(assetId, {
-      studioEdits: null,
-      sceneBlocks: [{
-        id: crypto.randomUUID(), schemaVersion: 1, anchorSec: 0, durationSec: 2,
-        content: { kind: "image", asset: { kind: "visual_asset", id: assetId, fingerprint: "a".repeat(64) }, fit: "cover", backgroundColor: "#000000" },
-        motion: { entrance: "none", exit: "none" }, templateSnapshot: null,
-      }],
-    })).toBe(true);
-    expect(visualAssetIsReferencedByClipStorage(assetId, { studioEdits: null, sceneBlocks: [] })).toBe(false);
   });
 });
 

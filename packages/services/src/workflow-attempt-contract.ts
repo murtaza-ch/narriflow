@@ -23,14 +23,18 @@ export function workflowHttpFailureDisposition(
 }
 
 export class WorkflowFailure extends Error {
+  /** A provider's own wait before the next attempt, when it named one. */
+  public readonly retryAfterMs: number | null;
+
   constructor(
     public readonly code: string,
     public readonly disposition: WorkflowFailureDisposition,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { retryAfterMs?: number | null },
   ) {
     super(message, options);
     this.name = "WorkflowFailure";
+    this.retryAfterMs = options?.retryAfterMs ?? null;
   }
 }
 

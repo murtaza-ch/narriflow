@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { bucketWidth, cacheKeyFor, sourceTimeToVideoTime } from "./timeline-preview-manager";
+import {
+  bucketWidth,
+  cacheKeyFor,
+  releaseTimelineThumbnailResources,
+  requestTimelineThumbnail,
+  sourceTimeToVideoTime,
+} from "./timeline-preview-manager";
 
 // ─── sourceTimeToVideoTime ──────────────────────────────────────────────────
 //
@@ -165,5 +171,71 @@ describe("cacheKeyFor", () => {
     const a = baseRequest({ cutsSignature: "[]" });
     const b = baseRequest({ cutsSignature: JSON.stringify([{ startSec: 5, endSec: 6 }]) });
     expect(cacheKeyFor(a)).not.toBe(cacheKeyFor(b));
+  });
+});
+
+// ─── failed video slots ─────────────────────────────────────────────────────
+
+describe("a video that failed to load", () => {
+  test("is replaced by a fresh element for the next request instead of failing forever", async () => {
+    const created: Array<{ fire(type: string): void }> = [];
+    const makeVideo = () => {
+      const handlers = new Map<string, Array<() => void>>();
+      const video = {
+        readyState: 0,
+        currentTime: 0,
+        muted: false,
+        preload: "",
+        playsInline: false,
+        src: "",
+        addEventListener: (type: string, handler: () => void) => { handlers.set(type, [...(handlers.get(type) ?? []), handler]); },
+        removeEventListener: (type: string, handler: () => void) => { handlers.set(type, (handlers.get(type) ?? []).filter((candidate) => candidate !== handler)); },
+        pause: () => {},
+        load: () => {},
+        removeAttribute: () => {},
+      };
+      created.push({ fire: (type) => { for (const handler of handlers.get(type) ?? []) handler(); } });
+      return video;
+    };
+    const globals = globalThis as unknown as Record<string, unknown>;
+    const previous = { document: globals.document, window: globals.window };
+    globals.document = { createElement: (tag: string) => (tag === "video" ? makeVideo() : {}) };
+    globals.window = {
+      // Idle waits are short; the 8s media-event timeouts never fire in this test.
+      setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms >= 1000 ? 2 ** 31 - 1 : 0).unref() as unknown as number,
+      clearTimeout: (id: number) => clearTimeout(id),
+    };
+    try {
+      const request = (left: number, onError: () => void) => ({
+        sourcePreviewId: "project-failed-slot",
+        sourceVideoUrl: "https://cdn.example.com/preview.mp4",
+        videoKind: "proxy" as const,
+        offsetSec: 0,
+        clipStartSec: 0,
+        editedStartSec: left,
+        editedEndSec: left + 2,
+        editedTimeMap: { segments: [] } as never,
+        cutsSignature: "[]",
+        width: 100,
+        height: 60,
+        quality: "coarse" as const,
+        onFrame: () => {},
+        onError,
+      });
+      let firstFailed = false;
+      requestTimelineThumbnail(request(0, () => { firstFailed = true; }));
+      while (created.length === 0) await Bun.sleep(1);
+      created[0]?.fire("error");
+      while (!firstFailed) await Bun.sleep(1);
+
+      requestTimelineThumbnail(request(10, () => {}));
+      const deadline = Date.now() + 500;
+      while (created.length < 2 && Date.now() < deadline) await Bun.sleep(1);
+      expect(created.length).toBe(2);
+    } finally {
+      releaseTimelineThumbnailResources();
+      globals.document = previous.document;
+      globals.window = previous.window;
+    }
   });
 });

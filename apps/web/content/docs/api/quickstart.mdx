@@ -110,7 +110,7 @@ def wait_for(operation_id):
     </CodeGroup>
   </Step>
   <Step title="Submit a video link">
-    `POST /projects` imports a link and starts clip generation. It returns `202` with an operation to follow. Use a new `Idempotency-Key` for each new video. The link must come from YouTube, Google Drive, StreamYard, Loom, Twitch, X, TikTok, LinkedIn, Facebook, Vimeo or Dropbox.
+    `POST /projects` imports a link and starts clip generation. It returns `202` with an operation to follow. Use a new `Idempotency-Key` for each new video. The link must be a YouTube video or a Dropbox file. Any other link is refused with `link_unsupported_source` before credits are reserved.
 
     <CodeGroup>
 

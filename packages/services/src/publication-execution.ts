@@ -53,6 +53,7 @@ import {
 import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { emitSocialPostFinished } from "./social-post-finished";
 import type { PublicationProviderOperation } from "./social-publication-platform";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 const ended = ["succeeded", "failed", "needs_attention"];
@@ -140,12 +141,6 @@ export class PublicationExecutionError extends Error {
 		this.name = "PublicationExecutionError";
 	}
 }
-const clock = async (tx: Tx) =>
-	(
-		await tx.$queryRaw<
-			Array<{ now: Date }>
-		>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`
-	)[0]!.now;
 
 /** One existing Social Publication Attempt retains provider identity across
  * physical cycles. Each claim has fresh generic ownership and a fixed deadline. */
@@ -206,7 +201,7 @@ export class PublicationExecution
 				where: { id: post.projectId },
 				select: { purgeStartedAt: true, expiresAt: true },
 			}),
-			now = await clock(tx);
+			now = await databaseNow(tx);
 		if (
 			!project ||
 			project.purgeStartedAt !== null ||
@@ -239,7 +234,7 @@ export class PublicationExecution
 		const row = await tx.standingGrant.findUnique({
 				where: { id: post.standingGrantId },
 			}),
-			now = await clock(tx);
+			now = await databaseNow(tx);
 		if (
 			!row ||
 			row.revision !== post.standingGrantRevision ||
@@ -288,7 +283,7 @@ export class PublicationExecution
 		code: string,
 		uncertain: boolean,
 	) {
-		const now = await clock(tx);
+		const now = await databaseNow(tx);
 		await tx.socialPublicationAttempt.update({
 			where: { id: ref.attemptId },
 			data: {
@@ -330,7 +325,7 @@ export class PublicationExecution
 			claim = await tx.publicationClaim.findUniqueOrThrow({
 				where: { id: ref.claimId },
 			}),
-			now = await clock(tx);
+			now = await databaseNow(tx);
 		if (
 			attempt.nativeStartCount >= attempt.nativeStartCeiling ||
 			budgetDeadline(attempt) <= now
@@ -411,7 +406,7 @@ export class PublicationExecution
 			const row = await tx.publicationClaim.findUniqueOrThrow({
 					where: { id: other.id },
 				}),
-				now = await clock(tx);
+				now = await databaseNow(tx);
 			if (
 				row.releasedAt ||
 				row.leaseExpiresAt > now ||
@@ -468,7 +463,7 @@ export class PublicationExecution
 			)
 				return { kind: "superseded" as const };
 			await lockPublicationPost(tx, reference.subject.id);
-   let post=await this.post(tx,reference.subject.id);const now=await clock(tx);
+   let post=await this.post(tx,reference.subject.id);const now=await databaseNow(tx);
 			if (
 				!post ||
 				post.generation !== reference.generation ||
@@ -886,7 +881,7 @@ export class PublicationExecution
 				claim = await tx.publicationClaim.findUniqueOrThrow({
 					where: { id: snapshot.claim.id },
 				}),
-				now = await clock(tx);
+				now = await databaseNow(tx);
 			if (
 				!post ||
 				post.generation !== reference.generation ||
@@ -994,7 +989,7 @@ export class PublicationExecution
 					where: { id: attemptToken },
 					include: { attempt: true },
 				}),
-				now = await clock(tx);
+				now = await databaseNow(tx);
 			if (
 				!post ||
 				!claim ||
@@ -1282,7 +1277,7 @@ export class PublicationExecution
 					: claim.operationDeadlineAt;
 		if (!due || due.getTime() !== observation.observedDeadlineAt.getTime())
 			return { kind: "superseded" };
-		if (due > (await clock(tx))) return { kind: "sleep", dueAt: due };
+		if (due > (await databaseNow(tx))) return { kind: "sleep", dueAt: due };
 		return {
 			kind: "expired",
 			...(await this.uncertain(tx, locked.ref, "publication_native_expired")),

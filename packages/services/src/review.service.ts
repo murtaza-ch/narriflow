@@ -5,7 +5,6 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { hashReviewPasscode, verifyReviewPasscode } from "./review-passcode";
 export { hashReviewPasscode, verifyReviewPasscode } from "./review-passcode";
 import { AnalyticsEventType, Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandProfileSnapshotSchema,
   createReviewRoundSchema,
@@ -30,6 +29,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const REVIEW_SESSION_TTL_SEC = 12 * 60 * 60;
 const REVIEW_COMMENT_EDIT_WINDOW_MS = 15 * 60_000;
@@ -98,12 +98,6 @@ export function deriveReviewRoundStatus(round: {
 export function brandApprovalRequiredByDefault(snapshot: unknown): boolean {
 	const parsed = brandProfileSnapshotSchema.safeParse(snapshot);
 	return parsed.success && parsed.data.approvalRule === "approval_required";
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 export function hashReviewAccessToken(token: string) {

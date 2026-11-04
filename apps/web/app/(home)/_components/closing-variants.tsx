@@ -13,7 +13,7 @@ import { DEMOS, SOURCE_FRAME } from "./landing-data";
  */
 
 const VARIANTS = [
-  { id: "links", label: "Any link" },
+  { id: "links", label: "A link" },
   { id: "feed", label: "Feed" },
   { id: "compare", label: "Before / after" },
   { id: "fan", label: "Fan" },
@@ -51,7 +51,7 @@ function Note({ freeCredits }: { freeCredits: number }) {
   return <p className="lx-close__note">Free plan · {freeCredits} credits a month</p>;
 }
 
-/* ---------- 1. Any link: the field types real links and each one's clips slide out ---------- */
+/* ---------- 1. A link: the field types real links and each one's clips slide out ---------- */
 
 function AnyLink({ styles, freeCredits }: Props) {
   const [ref, onScreen] = useOnScreen<HTMLDivElement>(0.4);
@@ -88,7 +88,7 @@ function AnyLink({ styles, freeCredits }: Props) {
 
   return (
     <div ref={ref} className="lx-close lx-close--links">
-      <Title first="Paste any link." second="We'll take it from there." />
+      <Title first="Paste a YouTube link." second="We'll take it from there." />
       <div
         className="lx-links__field"
         data-demo={paused ? undefined : ""}

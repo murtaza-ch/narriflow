@@ -7,7 +7,6 @@ import { createExecutionStorage } from "@narriflow/services/execution-storage";
 import { createNativeValidationExecution } from "@narriflow/services/native-validation-execution";
 import { getNativeValidationService } from "@narriflow/services/native-validation-runtime";
 import { getThumbnailFrameExecution } from "@narriflow/services/thumbnail-frame-preparation-runtime";
-import { deliverExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runtime";
 import { createOutboundProbeExecution } from "@narriflow/services/outbound-probe-execution";
 import { createIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
@@ -32,6 +31,7 @@ import { zoomService } from "@narriflow/services/zoom.service";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../../worker-bindings";
 import { createAssignedArtifactStorage } from "./artifact-storage";
+import { createExecutorWakeDelivery } from "../../workflows/scheduler";
 
 /** Parse the executor-to-Worker ring at the verification boundary, never at module import. */
 export function executorControlKeyRing(environment: Readonly<Record<string, string | undefined>>): ReadonlyMap<string, Uint8Array> {
@@ -53,7 +53,7 @@ export async function createWorkerExecutor(reference: ExecutionDispatchReference
   const required = (name: string) => { const value = environment[name]; if (!value) throw new ExecutorControlError("storage_unavailable"); return value; };
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
-  const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
+  const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: createExecutorWakeDelivery(bindings) };
   if (reference.subject.kind === "workflow_run") {
     const execution = await getWorkerWorkflowRunService(reference, bindings.MEDIA_BUCKET);
     return execution.stage === "dubbing" ? createDubbingExecution({ ...common, domain: execution.domain }) : createExportBundleExecution({ ...common, domain: execution.domain });

@@ -8,6 +8,8 @@ import type { ApiEnv } from "../../http/env";
 import { limitBody, trustedIngressIp } from "../../http/limits";
 import { socketAddress } from "../../server-hooks";
 import { REST_ENDPOINT_COMMANDS, type RestEndpoint } from "./admission";
+import { authFailureThrottle } from "@narriflow/services/auth-failure-throttle";
+import { describeFailure } from "@narriflow/services/log-failure";
 import { assertCompletionCallbackUrl, callbackEventId } from "@narriflow/services/completion-callback";
 import { boundedExpectedDomainFailureDetails, ExpectedDomainFailureError, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
 import { brandProfileService } from "@narriflow/services/brand-profile.service";
@@ -40,10 +42,6 @@ const REPLAYABLE_ENDPOINTS = new Set([
   "POST /uploads", "POST /projects", "POST /captioned-videos", "POST /projects/{id}/generations",
   "POST /clips/{id}/exports", "POST /social-posts/proposals", "POST /operations/{id}/callback/redeliver",
 ]);
-
-/** Failed authentications per trusted client IP. Valid keys never count, so
- * integrations sharing an egress IP (n8n Cloud, Zapier) do not share a budget. */
-export const REST_AUTH_FAILURE_RATE_LIMIT = { limit: 600, windowSeconds: 60 } as const;
 
 export const REST_API_RATE_LIMIT = { limit: 300, windowSeconds: 60 } as const;
 
@@ -162,14 +160,12 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       trustedHeader: dependencies.trustedClientIpHeader ?? null,
       socketAddress: socketAddress(c as unknown as Context<ApiEnv>),
     });
-    const failureBucket = `rest:authfail:${ip}`;
-    const { limit, windowSeconds } = REST_AUTH_FAILURE_RATE_LIMIT;
-    const failures = await dependencies.readRateLimit(failureBucket, limit, windowSeconds);
-    if (!failures.allowed) throw new RestFailure(429, "rate_limited", "Too many failed authentication attempts from this address", {
-      retryAfterSeconds: windowSeconds,
+    const throttle = authFailureThrottle("rest", ip, { read: dependencies.readRateLimit, check: dependencies.checkRateLimit });
+    if (await throttle.exhausted()) throw new RestFailure(429, "rate_limited", "Too many failed authentication attempts from this address", {
+      retryAfterSeconds: throttle.retryAfterSeconds,
     });
     const refuse = async (error: string, message: string, headers: Record<string, string>) => {
-      await dependencies.checkRateLimit(failureBucket, limit, windowSeconds);
+      await throttle.recordFailure();
       return new RestFailure(401, error, message, { headers });
     };
     const header = c.req.header("authorization") ?? "";
@@ -202,7 +198,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
         ? { "WWW-Authenticate": `Bearer realm="narriflow", error="insufficient_scope", scope="${(error.details as { scope: string }).scope}"` } : {};
       return respond(status, { error: error.code, message: error.message, details: boundedExpectedDomainFailureDetails(error.details), retryAfterSeconds }, insufficientScope);
     }
-    log({ level: "error", message: "rest_api_failed", requestId, route: c.req.routePath, errorName: error instanceof Error ? error.name : "unknown" });
+    log({ level: "error", message: "rest_api_failed", requestId, route: c.req.routePath, error: describeFailure(error) });
     return respond(500, { error: "internal_error", message: "Narriflow could not complete this request. Retry with the same idempotency key, or contact support with the request ID." });
   });
 

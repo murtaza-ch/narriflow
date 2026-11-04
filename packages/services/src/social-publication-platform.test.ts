@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-  createDeterministicPublicationPlatform,
   createPublicationPlatformRegistry,
   PublicationPlatformConfigurationError,
   type PublicationPlatformResult,
 } from "./social-publication-platform";
+import { createDeterministicPublicationPlatform } from "./social-publication-platform-test-support";
 
 const results: PublicationPlatformResult[] = [
   {

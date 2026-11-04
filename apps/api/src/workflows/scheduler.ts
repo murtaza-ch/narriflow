@@ -1,6 +1,6 @@
 import { getPrismaClient } from "@narriflow/db/client";
-import { getExecutionDispatch } from "@narriflow/services/execution-dispatch-runtime";
-import { ExecutionDispatchError, type ExecutionDispatchConfirmation, type ExecutionDispatchScheduler } from "@narriflow/services/execution-dispatch";
+import { deliverExecutionDispatches, getExecutionDispatch } from "@narriflow/services/execution-dispatch-runtime";
+import { ExecutionDispatchError, executionDispatchRetryId, type ExecutionDispatchConfirmation, type ExecutionDispatchScheduler } from "@narriflow/services/execution-dispatch";
 import { deliverProgressDispatch } from "@narriflow/services/progress-outbox";
 import { createModalDispatch } from "@narriflow/services/modal-dispatch";
 import { createModalBridgeClient } from "@narriflow/services/modal-bridge";
@@ -26,7 +26,18 @@ export async function deliverLocalFetchReference(reference: ExecutionDispatchRef
   const attempt = attempts[0];
   if (attempts.length !== 1 || !attempt || attempt.inputHash !== reference.inputHash || attempt.functionName !== "fetch_source") throw new ExecutionDispatchError("invalid_dispatch");
   const confirmed = await bindings.LOCAL_FETCH_MAILBOX.getByName(job.project.workspaceId).deliver({ reference, attemptToken: attempt.attemptToken });
-  return { status: "confirmed_notified", destinationId: confirmed.destinationId };
+  // A native spawn is a registration: the mailbox holds it for the device to acquire.
+  return { status: "confirmed_created", destinationId: confirmed.destinationId };
+}
+
+/** Text settings are read per call; each command resolves its own client. */
+export function createWorkerModalDispatch() {
+  const database = getPrismaClient(), environment = readServiceEnvironment();
+  const keyId = environment.MODAL_BRIDGE_KEY_ID, origin = environment.MODAL_BRIDGE_ORIGIN;
+  if (!database || !keyId || !origin) throw new ExecutionDispatchError("scheduler_unavailable");
+  const key = executionKeyRing(environment.MODAL_BRIDGE_KEYS_JSON).get(keyId);
+  if (!key) throw new ExecutionDispatchError("scheduler_unavailable");
+  return createModalDispatch(database, createModalBridgeClient({ origin, keyId, key }));
 }
 async function createConfirmed(binding: Workflow, id: string, reference: ExecutionDispatchReference): Promise<ExecutionDispatchConfirmation> {
   assertMetadataBound(reference);
@@ -70,12 +81,7 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
       }
       if (reference.kind === "modal_execution") {
         if (delivery.mode !== "registration") throw new ExecutionDispatchError("invalid_dispatch");
-        const database = getPrismaClient(), environment = readServiceEnvironment();
-        const keyId = environment.MODAL_BRIDGE_KEY_ID, origin = environment.MODAL_BRIDGE_ORIGIN;
-        if (!database || !keyId || !origin) throw new ExecutionDispatchError("scheduler_unavailable");
-        const key = executionKeyRing(environment.MODAL_BRIDGE_KEYS_JSON).get(keyId);
-        if (!key) throw new ExecutionDispatchError("scheduler_unavailable");
-        return createModalDispatch(database, createModalBridgeClient({ origin, keyId, key })).spawn(reference);
+        return createWorkerModalDispatch().spawn(reference);
       }
       if (reference.kind === "local_fetch") return deliverLocalFetchReference(reference, bindings);
       const binding = reference.kind === "import_pipeline" ? bindings.IMPORT_PIPELINE
@@ -101,6 +107,26 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
       const confirmed = await independent();
       return { status: "confirmed_notified", destinationId: confirmed.destinationId };
     },
+  };
+}
+
+/** Executor outcomes commit their wakes first. A transient delivery failure then
+ * continues in a retry Workflow on the outbox's own backoff, so a project does
+ * not pause until the hourly sweep. If that cannot register either, the executor
+ * gets the failure and replays its exact command. */
+export function createExecutorWakeDelivery(bindings: ApiWorkerBindings) {
+  return async (ids: readonly string[]): Promise<void> => {
+    try { await deliverExecutionDispatches(ids); }
+    catch (failure) {
+      if (bindings.DEV_CLOUD) throw failure;
+      const dispatch = getExecutionDispatch(createWorkerExecutionScheduler(bindings));
+      for (const id of new Set(ids)) {
+        const record = await dispatch.read(id);
+        if (!record || record.acknowledgedAt || record.deadLetteredAt) continue;
+        await createConfirmed(bindings.MAINTENANCE, executionDispatchRetryId(record.reference), record.reference);
+      }
+      console.warn(JSON.stringify({ level: "warn", message: "executor_wake_delivery_continued", wakes: ids.length }));
+    }
   };
 }
 

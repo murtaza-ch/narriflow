@@ -152,6 +152,7 @@ export interface StudioEditingSessionReactAdapter {
   playbackClock: PlaybackClock;
   setSourceAudioEnvelope(gain: number): void;
   suppressNavigationWarning(): void;
+  markLeaving(): void;
 }
 
 export interface StudioEditingSessionReactAdapters {
@@ -168,16 +169,17 @@ export function useStudioEditingSession(
     const media = createBrowserStudioMediaAdapter();
     const session = createStudioEditingSession(
       seed,
-      seed.projectId && seed.clipId
+      seed.userId && seed.projectId && seed.clipId
         ? {
             ...createBrowserStudioSessionDependencies({
+              userId: seed.userId,
               projectId: seed.projectId,
               clipId: seed.clipId,
             }, adapters.cloud, adapters.preview),
             media,
           }
         : undefined,
-      { deferStart: Boolean(seed.projectId && seed.clipId) },
+      { deferStart: Boolean(seed.userId && seed.projectId && seed.clipId) },
     );
     return { session, media };
   });
@@ -205,6 +207,7 @@ export function useStudioEditingSession(
     () => lifecycle?.suppressNavigationWarning(),
     [lifecycle],
   );
+  const markLeaving = useCallback(() => lifecycle?.markLeaving(), [lifecycle]);
   const setSourceAudioEnvelope = useCallback(
     (gain: number) =>
       session.dispatch({ type: "preview.set-source-audio-envelope", gain }),
@@ -217,5 +220,6 @@ export function useStudioEditingSession(
     playbackClock,
     setSourceAudioEnvelope,
     suppressNavigationWarning,
+    markLeaving,
   };
 }

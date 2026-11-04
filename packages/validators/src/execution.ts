@@ -247,7 +247,7 @@ export type IngestDirectRead=z.infer<typeof ingestDirectReadSchema>;
 /** Worker-produced source input. Scoped grants stay in the package descriptors. */
 export const ingestFetchSourceCommandSchema = z.strictObject({
   kind: z.literal("youtube_source"), audioPolicy: ingestAcquisitionSchema.shape.audioPolicy, projectId: z.string().uuid(), sourceRevision: generation,
-  mediaId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), sourceAudioId: z.string().uuid(),
+  mediaId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), sourceAudioId: z.string().uuid(), maxSourceSeconds: z.number().int().positive(),
   toolchainFingerprint: sha256, probeVersion: z.literal("normalized-probe-v1"),
   existingSourceAudio: sourceAudioBindingSchema.nullable(), languageProbe: sourceLanguageProbeInputSchema.nullable(),
 });
@@ -258,8 +258,8 @@ export const ingestUploadReadSchema=z.strictObject({
  contentType:z.string().min(1).max(128).regex(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/),
 });
 export type IngestUploadRead=z.infer<typeof ingestUploadReadSchema>;
-const ingestFileSourceBase=ingestFetchSourceCommandSchema.omit({kind:true,mediaId:true}).extend({mediaIdentity:executionMediaIdentitySchema});
-export const ingestDirectSourceCommandSchema=ingestFileSourceBase.extend({kind:z.enum(["direct_source","extractor_source"]),source:ingestDirectReadSchema})
+const ingestFileSourceBase=ingestFetchSourceCommandSchema.omit({kind:true,mediaId:true,maxSourceSeconds:true}).extend({mediaIdentity:executionMediaIdentitySchema});
+export const ingestDirectSourceCommandSchema=ingestFileSourceBase.extend({kind:z.literal("direct_source"),source:ingestDirectReadSchema})
  .refine(value=>value.mediaIdentity.provider===value.source.provider);
 export const ingestPinSourceCommandSchema=ingestFileSourceBase.extend({kind:z.literal("upload_source"),source:ingestUploadReadSchema})
  .refine(value=>value.mediaIdentity.provider==="upload");

@@ -10,6 +10,9 @@ export interface ZoomApi {
   revoke(accessToken: string): Promise<void>;
 }
 
+/** Zoom answered the OAuth request with a 4xx: it processed nothing, so a refresh token cannot have rotated. */
+export class ZoomRefusal extends ZoomError {}
+
 export function createZoomApi(config: { clientId: string; clientSecret: string }, transport: typeof fetch = fetch): ZoomApi {
   const basic = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`;
   async function request(url: string, init: RequestInit, oauth = false): Promise<unknown> {
@@ -18,6 +21,7 @@ export function createZoomApi(config: { clientId: string; clientSecret: string }
     catch { throw new ZoomError("zoom_api_unavailable"); }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
+      if (oauth && response.status < 500) throw new ZoomRefusal(response.status === 429 ? "zoom_api_unavailable" : "zoom_connection_unavailable");
       if (response.status === 429 || response.status >= 500) throw new ZoomError("zoom_api_unavailable");
       if (oauth || response.status === 401) throw new ZoomError("zoom_connection_unavailable");
       throw new ZoomError("zoom_recording_unavailable");

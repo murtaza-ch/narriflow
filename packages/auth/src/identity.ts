@@ -59,6 +59,14 @@ export class ClerkIdentityDeletedError extends Error {
   }
 }
 
+/** The email belongs to another live Clerk identity, so this person cannot be provisioned until support merges the accounts. */
+export class ClerkEmailConflictError extends Error {
+  constructor(readonly clerkId: string) {
+    super("This email address belongs to another account");
+    this.name = "ClerkEmailConflictError";
+  }
+}
+
 /**
  * Serializes every write that creates, updates or deletes the App User of one
  * Clerk identity, so a deletion and a concurrent create/update cannot interleave.
@@ -233,12 +241,10 @@ export async function syncClerkUserPayload(
     // Release it only after its previous identity's deletion is confirmed;
     // never transfer an existing workspace to another Clerk identity based on
     // an email match.
-    if (
-      !isUniqueViolation(error) ||
-      !primaryEmail ||
-      !(await releaseDeletedEmailOwner(primaryEmail, clerkId, directory))
-    ) {
-      throw error;
+    if (!isUniqueViolation(error) || !primaryEmail) throw error;
+    if (!(await releaseDeletedEmailOwner(primaryEmail, clerkId, directory))) {
+      console.warn(JSON.stringify({ level: "warn", message: "clerk_email_conflict", clerkId }));
+      throw new ClerkEmailConflictError(clerkId);
     }
     appUser = await writeLiveUser(clerkId, userData, identities);
   }
@@ -320,11 +326,39 @@ export async function markUserDeletedByClerkId(clerkId: string) {
         })),
       });
     }
+    await removeDeletedUserMemberships(tx, user.id, now);
     return tx.user.updateMany({
       where: { clerkId },
       data: { deletedAt: user.deletedAt ?? now, primaryEmail: null, emailVerifiedAt: null },
     });
   });
+}
+
+/**
+ * A deleted user cannot return, so a non-owner membership would stay a billable
+ * seat and could keep a Workspace restricted. Owners are kept: nobody else can
+ * reach their billing. Matches `markMembershipChanged` in Workspace Membership;
+ * the row lock serializes with its removal so a seat is released once, and the
+ * due time is picked up by the hourly `billing_wakes` page, as this package
+ * cannot queue Workspace Billing itself.
+ */
+async function removeDeletedUserMemberships(tx: Prisma.TransactionClient, userId: string, now: Date) {
+  const memberships = await tx.$queryRaw<Array<{ id: string; workspaceId: string; role: string }>>`
+    SELECT id, "workspaceId", role::text AS role FROM "WorkspaceMember"
+    WHERE "userId" = ${userId}::uuid AND role <> 'owner'
+    ORDER BY "workspaceId"
+    FOR UPDATE`;
+  for (const membership of memberships) {
+    await tx.workspaceMember.delete({ where: { id: membership.id } });
+    const billable = membership.role === "admin" || membership.role === "editor";
+    await tx.workspaceBillingAccount.updateMany({
+      where: { workspaceId: membership.workspaceId },
+      data: {
+        nextReconcileAt: now,
+        ...(billable ? { desiredAdditionalSeats: { decrement: 1 }, seatRevision: { increment: 1 } } : {}),
+      },
+    });
+  }
 }
 
 /** Backend API lookup that reports an unreachable directory as `ClerkDirectoryUnavailableError`. */
@@ -363,8 +397,12 @@ async function releaseDeletedEmailOwner(
   return true;
 }
 
-function needsUserRefresh(user: AppUser): boolean {
-  return !user.primaryEmail || !user.emailVerifiedAt || !user.lastSignInAt;
+/** A user missing a profile field would otherwise call Clerk on every request, so a refresh (which stamps `updatedAt`) is retried hourly. */
+const USER_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+
+export function needsUserRefresh(user: AppUser, nowMs: number = Date.now()): boolean {
+  if (user.primaryEmail && user.emailVerifiedAt && user.lastSignInAt) return false;
+  return nowMs - user.updatedAt.getTime() >= USER_REFRESH_INTERVAL_MS;
 }
 
 /** The App User row of a live Clerk identity. */
@@ -389,8 +427,8 @@ function readPersonalOwnership(clerkUserId: string) {
  * login. Callers must pass an id from verified session claims, never from a
  * request header or body.
  *
- * A provisioned, refreshed user costs one round trip: the user row and the
- * personal-Workspace invariant are read together, and nothing is written.
+ * A provisioned, refreshed user costs two reads issued together: the user row
+ * and the personal-Workspace invariant. Nothing is written.
  */
 export async function getAppUserForClerkIdentity(
   clerkUserId: string,
@@ -424,10 +462,10 @@ export interface WorkspaceRequestActor {
 }
 
 /**
- * The hot path of a Workspace-scoped request in one round trip: the App User,
- * the live membership of the selected Workspace, that Workspace and the
- * personal-Workspace invariant are independent reads keyed by the verified
- * Clerk id, so they are issued together. Returns null whenever anything needs
+ * The hot path of a Workspace-scoped request: the App User, the live membership
+ * of the selected Workspace, that Workspace and the personal-Workspace invariant
+ * are independent reads keyed by the verified Clerk id, so they are issued
+ * together and cost one wait on four statements. Returns null whenever anything needs
  * provisioning, refreshing or refusing; the caller then takes the full path
  * (`getAppUserForClerkIdentity` and `resolveScopedWorkspaceContext`), which
  * makes the decision. Nothing is cached across requests.

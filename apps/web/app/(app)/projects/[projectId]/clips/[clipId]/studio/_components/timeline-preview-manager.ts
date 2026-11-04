@@ -186,18 +186,20 @@ function createVideoSlot(sourcePreviewId: string, sourceVideoUrl: string): Video
   return slot;
 }
 
+function disposeVideoSlot(sourcePreviewId: string, slot: VideoSlot) {
+  slot.video.pause();
+  slot.video.removeAttribute("src");
+  slot.video.load();
+  if (videoSlots.get(sourcePreviewId) === slot) videoSlots.delete(sourcePreviewId);
+}
+
 function getVideoSlot(sourcePreviewId: string, sourceVideoUrl: string) {
   const existing = videoSlots.get(sourcePreviewId);
   if (existing?.sourceVideoUrl === sourceVideoUrl) {
     return existing;
   }
 
-  if (existing) {
-    existing.video.pause();
-    existing.video.removeAttribute("src");
-    existing.video.load();
-    videoSlots.delete(sourcePreviewId);
-  }
+  if (existing) disposeVideoSlot(sourcePreviewId, existing);
 
   return createVideoSlot(sourcePreviewId, sourceVideoUrl);
 }
@@ -325,6 +327,10 @@ async function runJob(job: ThumbnailJob) {
 
     rememberStrip(job.cacheKey, strip);
   } catch {
+    // A video that failed (or wedged on a seek) must not serve the next
+    // request: its metadata promise stays rejected for good. Drop it so the
+    // next job opens a fresh element, which recovers from a transient failure.
+    disposeVideoSlot(job.sourcePreviewId, slot);
     if (!job.cancelled) {
       job.onError();
     }

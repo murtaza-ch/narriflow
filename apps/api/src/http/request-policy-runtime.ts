@@ -1,6 +1,9 @@
 import {
   type AppUser,
   ClerkDirectoryUnavailableError,
+  ClerkEmailConflictError,
+  ClerkIdentityDeletedError,
+  isClerkNotFound,
   type BearerAuthResult,
   getAppUserForClerkIdentity,
   isWorkspaceId,
@@ -111,6 +114,15 @@ function malformedWorkspaceHeader(): AuthenticatedRequestFailure {
   });
 }
 
+function emailConflict(): AuthenticatedRequestFailure {
+  return new AuthenticatedRequestFailure({
+    code: "account_email_conflict",
+    category: "conflict",
+    status: 409,
+    message: "This email address is already used by another Narriflow account. Contact support to merge them.",
+  });
+}
+
 function authenticationUnavailable(): AuthenticatedRequestFailure {
   return new AuthenticatedRequestFailure({
     code: "authentication_unavailable",
@@ -144,6 +156,9 @@ export function createRequestPolicyRuntime(
           // The session is valid; only the Clerk directory lookup that
           // provisions or refreshes the App User could not be answered.
           if (error instanceof ClerkDirectoryUnavailableError) throw authenticationUnavailable();
+          // A deleted or unknown identity holds a token that no longer names anyone: sign it out (401), not a 500.
+          if (error instanceof ClerkIdentityDeletedError || isClerkNotFound(error)) return null;
+          if (error instanceof ClerkEmailConflictError) throw emailConflict();
           throw error;
         }
       });
@@ -213,7 +228,7 @@ function logDiagnostic(
   );
 }
 
-/** Production wiring: Clerk Bearer verification, the shared Prisma client and Redis limiter. */
+/** Production wiring: Clerk Bearer verification, the shared Prisma client and rate limiter. */
 export function createProductionRequestPolicyRuntime(config: {
   authenticate: RequestPolicyRuntimeOptions["authenticate"];
   clerkClient: ClerkUserDirectory;

@@ -1,8 +1,6 @@
+import { isUuid } from "@narriflow/validators/identifiers";
 import type { PrismaClient } from "@prisma/client";
 import type { ActorScope, ProjectAdmissionResult } from "./request-policy";
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Project ids are Postgres UUIDs. A malformed id cannot name a Project, so it
@@ -12,7 +10,7 @@ export async function resolveAuthenticatedProject(
   prisma: Pick<PrismaClient, "project" | "workspace">,
   input: { actor: ActorScope; projectId: string; now?: Date },
 ): Promise<ProjectAdmissionResult> {
-  if (!UUID_PATTERN.test(input.projectId)) return { kind: "missing" };
+  if (!isUuid(input.projectId)) return { kind: "missing" };
   // One single-table read: the actor's membership is a filter, not a second
   // lookup, and the Workspace name is fetched only to explain a mismatch.
   const project = await prisma.project.findFirst({

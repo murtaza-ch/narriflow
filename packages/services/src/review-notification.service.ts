@@ -2,13 +2,13 @@ import { retryNotificationDeliveryWithinTransaction } from "./notification-execu
 
 import type { Prisma } from "@prisma/client";
 
-import { getPrismaClient } from "@narriflow/db/client";
 
 import { accessibleProjectWhere } from "./project-access";
 
 import { signReviewOptOutToken } from "./review-opt-out";
 
 import { decryptReviewValue, reviewDeliverySecret } from "./review.service";
+import { requirePrisma } from "./require-prisma";
 
 export type ReviewNotificationKind = "round_sent" | "first_change_requested" | "all_approved" | "mention";
 
@@ -46,13 +46,6 @@ export interface ReviewNotificationMailInput {
         workspaceName: string;
     };
     idempotencyKey: string;
-}
-
-function requirePrisma() {
-    const prisma = getPrismaClient();
-    if (!prisma)
-        throw new Error("Database client unavailable");
-    return prisma;
 }
 
 export function createReviewNotificationStore(transaction?: Prisma.TransactionClient): ReviewNotificationStore {

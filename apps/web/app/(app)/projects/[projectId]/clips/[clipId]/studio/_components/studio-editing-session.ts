@@ -24,6 +24,7 @@ import {
 import type { TimelineSegment } from "./studio-types";
 import {
   decideDraftRecovery,
+  editorDraftKey,
   LOCAL_DRAFT_WRITE_DEBOUNCE_MS,
   mergeEditorDocuments,
   type StoredEditorDraft,
@@ -37,6 +38,8 @@ const PREVIEW_POLL_MAX_ATTEMPTS = 45;
 const AUTO_LAYOUT_POLL_INITIAL_MS = 2_000;
 const AUTO_LAYOUT_POLL_MAX_MS = 30_000;
 const AUTO_LAYOUT_POLL_DEADLINE_MS = 6 * 60_000;
+/** How long leaving the Studio waits for the last edits to reach the cloud before the Device Draft carries them. */
+export const CLOSE_CHECKPOINT_TIMEOUT_MS = 5_000;
 
 function insertedSceneTimeline(document: EditorDocument) {
   let insertedBeforeSec = 0;
@@ -210,6 +213,7 @@ export type StudioSessionOperation =
    *  while the save is blocked and nothing is in flight. */
   | { type: "revert-to-cloud" }
   | { type: "reset-to-original" }
+  /** "navigation": the Studio already waited for the cloud before leaving, so closing does not wait again. */
   | { type: "close"; reason: "unmount" | "navigation" | "pagehide" };
 
 export type StudioOperationResult =
@@ -277,6 +281,7 @@ export interface StudioSessionRoot {
 }
 
 export interface StudioSessionIdentity {
+  userId: string;
   projectId: string;
   clipId: string;
 }
@@ -736,12 +741,12 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   ) {
     this.seed = seed;
     this.dependencies = dependencies;
-    if (dependencies && (!seed.projectId || !seed.clipId)) {
-      throw new Error("Durable Studio sessions require a project and clip identity");
+    if (dependencies && (!seed.userId || !seed.projectId || !seed.clipId)) {
+      throw new Error("Durable Studio sessions require a user, project and clip identity");
     }
     this.identity =
-      seed.projectId && seed.clipId
-        ? { projectId: seed.projectId, clipId: seed.clipId }
+      seed.userId && seed.projectId && seed.clipId
+        ? { userId: seed.userId, projectId: seed.projectId, clipId: seed.clipId }
         : null;
     this.writerId = dependencies?.runtime.createId() ?? "standalone-session";
     this.cloudDocument = ownDocument(seed.document);
@@ -950,12 +955,21 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         return { kind: "closed" };
       }
       this.releaseMedia();
+      // Leaving inside the app keeps the page alive, so the last edits go
+      // through the regular save (and its responses stay valid) rather than a
+      // size-capped keepalive. Only an unloading page uses the keepalive.
+      if (operation.reason === "unmount" && this.canCheckpointBeforeClose()) {
+        await this.checkpointBeforeClose();
+        // A page hide can close the session while the checkpoint is waiting.
+        if (this.getSnapshot().status === "closed") return { kind: "closed" };
+      }
       this.sessionGeneration += 1;
       this.clearCloudTimers();
       this.clearDerivedPolling();
       this.unsubscribeOnline?.();
       this.unsubscribeOnline = null;
       if (
+        operation.reason === "pagehide" &&
         !this.cloudSaveRunning &&
         this.projection.cloud.dirty &&
         this.dependencies?.cloud.keepalive &&
@@ -1246,6 +1260,28 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.cloudAutosaveTimer = null;
       void this.startCloudCheckpoint();
     }, delayMs);
+  }
+
+  private canCheckpointBeforeClose(): boolean {
+    return (
+      !!this.dependencies?.cloud.save &&
+      (this.dependencies.runtime.isOnline?.() ?? true) &&
+      this.projection.status === "ready" &&
+      this.projection.cloud.dirty &&
+      (this.projection.ownership.kind === "writer" ||
+        this.projection.ownership.kind === "degraded")
+    );
+  }
+
+  /** Waits for the cloud to hold the latest edits, but never longer than the timeout. */
+  private async checkpointBeforeClose(): Promise<void> {
+    const runtime = this.dependencies!.runtime;
+    let timer: number | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = runtime.setTimeout(resolve, CLOSE_CHECKPOINT_TIMEOUT_MS);
+    });
+    await Promise.race([this.waitForCloudCurrent("checkpoint"), timeout]);
+    if (timer !== null) runtime.clearTimeout(timer);
   }
 
   private waitForCloudCurrent(
@@ -2715,7 +2751,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
 
   private get deviceDraftKey(): string {
     if (!this.identity) throw new Error("Device Draft identity is unavailable");
-    return `${this.identity.projectId}:${this.identity.clipId}`;
+    return editorDraftKey(this.identity.userId, this.identity.projectId, this.identity.clipId);
   }
 
   private diagnose(message: string, outcome: string, error?: unknown): void {
@@ -3210,6 +3246,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       const outcome = await dependencies.drafts.write({
         formatVersion: 1,
         key,
+        userId: this.identity.userId,
         projectId: this.identity.projectId,
         clipId: this.identity.clipId,
         baseRevision: this.cloudRevision,

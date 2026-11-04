@@ -6,6 +6,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { buildNarriflowMcpServer, McpToolAdmission, MCP_WORKSPACE_ACCESS_MESSAGE, verifyMcpPreparation, verifyMcpUploadHandoff, acceptMcpConfirmation } from "@narriflow/mcp-core";
 import { principalFromMcpAuth } from "@narriflow/mcp-core/auth";
 import { createNarriflowMcpHttpHandler } from "@narriflow/mcp-core/http";
+import { authFailureThrottle } from "@narriflow/services/auth-failure-throttle";
 import { checkRateLimit } from "@narriflow/services/rate-limit";
 import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { integrationUploadSessionKey, integrationUploadSessions } from "@narriflow/services/integration-commands";
@@ -17,11 +18,12 @@ import { uploadSessionService } from "@narriflow/services/upload-session.service
 import { workspaceService } from "@narriflow/services/workspace.service";
 import { buildGenerationContext, hasFeature, roleHasWorkspaceCapability, type WorkspaceCapability } from "@narriflow/validators";
 import type { ApiConfig } from "../../config";
+import { trustedIngressIp } from "../../http/limits";
 import { createMcpAuth, getMcpMutationGuard } from "./mcp-auth";
 import { inspectMcpConfiguration } from "./mcp-configuration";
 import { admitMcpContinuation } from "./mcp-continuation-principal";
 import { mcpIntegrationMutationGuard } from "./mcp-integration-admission";
-import type { McpTransportDeps } from "./mcp";
+import type { AuthorizationMetadataCache, McpTransportDeps } from "./mcp";
 import { admitMcpUploadHandoff } from "./mcp-upload-handoff";
 import { createMcpUploadHttpHandler } from "./mcp-upload-http";
 import type { IntegrationsRouteDeps } from "./routes";
@@ -95,14 +97,20 @@ export function createIntegrationsRouteDeps(config: ApiConfig): IntegrationsRout
   };
 }
 
-export function createMcpTransportDeps(config: ApiConfig, clerk = createServerClerkClient(config.clerk), runInRequestScope?: WorkerInvocation): McpTransportDeps {
+/** One per isolate: the transport is rebuilt per request, the issuer document is not. */
+const isolateMetadataCache: AuthorizationMetadataCache = {};
+
+export function createMcpTransportDeps(config: ApiConfig, clerk = createServerClerkClient(config.clerk), runInRequestScope?: WorkerInvocation, jwtKey?: string): McpTransportDeps {
   const auth = createMcpAuth(config);
   const admission = new McpToolAdmission(workspaceService);
   const admitContinuation = continuationAdmission(auth);
-  const authenticateSession = createBearerAuthenticator({ client: clerk, authorizedParties: config.clerk.authorizedParties });
+  const authenticateSession = createBearerAuthenticator({ client: clerk, authorizedParties: config.clerk.authorizedParties, jwtKey });
+  // Failed credentials are counted per ingress address, shared by the MCP and upload entries.
+  const failureThrottle = (request: Request, socketAddress?: string) => authFailureThrottle("mcp", trustedIngressIp(request.headers, { trustedHeader: config.trustedClientIpHeader, socketAddress }));
   return {
+    metadataCache: isolateMetadataCache,
     allowedHosts: auth.allowedHosts, allowedOrigins: auth.allowedOrigins, issuerUrl: auth.issuerUrl, protectedResourceMetadata: auth.protectedResourceMetadata,
-    handleMcp: createNarriflowMcpHttpHandler({ verifier: auth.verifier, allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl, checkRateLimit,
+    handleMcp: createNarriflowMcpHttpHandler({ verifier: auth.verifier, allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl, checkRateLimit, authFailureThrottle: failureThrottle,
       buildServer: (principal, options) => buildNarriflowMcpServer(principal, { ...options, runInRequestScope, appOrigin: config.webOrigin, apiOrigin: config.apiOrigin }),
     }),
     handleUpload: createMcpUploadHttpHandler({
@@ -128,6 +136,7 @@ export function createMcpTransportDeps(config: ApiConfig, clerk = createServerCl
         });
       },
       authenticationFailure: auth.authenticationFailure,
+      authFailureThrottle: failureThrottle,
       service: integrationUploadSessions(uploadSessionService),
     }),
   };

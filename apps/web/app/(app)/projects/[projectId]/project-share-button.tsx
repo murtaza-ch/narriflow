@@ -22,7 +22,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { AccountAvatar } from "../../_components/account-menu";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
-import { useInternalReviews, type ReviewCommand } from "./review-panel";
+import { useInternalReviews, type ReviewCommand } from "./internal-reviews";
 import {
   activeShareRound,
   buildQuickReviewRoundInput,

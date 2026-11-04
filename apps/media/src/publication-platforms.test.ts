@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SocialPlatform } from "@narriflow/validators";
-import { createNativePublicationPlatformRegistry } from "./publication-platforms";
+import { createNativePublicationPlatformRegistry, escapeLinkedInCommentary } from "./publication-platforms";
 import type { PublicationPlatformInput } from "@narriflow/services/social-publication-platform";
 
 const CONTRACT_FIXTURE = (await Bun.file(
@@ -246,6 +246,28 @@ describe("native publication adapters", () => {
 			},
 		});
 		expect(checkpoints).toEqual(["submission_started", "submission_started"]);
+	});
+	test.each([
+		[10, 1, ["bytes 0-9/10"]],
+		[17, 2, ["bytes 0-7/17", "bytes 8-16/17"]],
+	])("announces TikTok's total_chunk_count rounded down for %d bytes and folds the trailing bytes into the last chunk", async (sizeBytes, totalChunks, ranges) => {
+		const request = input("tiktok");
+		request.media.sizeBytes = sizeBytes;
+		request.providerSettings = { deliveryMode: "tiktok_inbox" };
+		request.account!.scopes = ["video.upload"];
+		const state = harness([
+			json({ data: { publish_id: "chunked", upload_url: "https://upload.tiktokapis.com/video" } }),
+			...ranges.map((_, index) => new Response(null, { status: index === ranges.length - 1 ? 201 : 206 })),
+			json({ data: { status: "PROCESSING_UPLOAD" } }),
+		]);
+		await state.registry.get("tiktok").publish(request, { signal: new AbortController().signal, checkpoint: async () => {} });
+		expect(JSON.parse(String(state.requests[0]!.init?.body)).source_info).toEqual({
+			source: "FILE_UPLOAD",
+			video_size: sizeBytes,
+			chunk_size: 8,
+			total_chunk_count: totalChunks,
+		});
+		expect(state.requests.slice(1, 1 + ranges.length).map((call) => (call.init?.headers as Record<string, string>)["Content-Range"])).toEqual(ranges);
 	});
 	test("requires the inbox upload scope without initializing another upload", async () => {
 		const request = input("tiktok");
@@ -1724,6 +1746,54 @@ describe("native publication adapters", () => {
 			failure: { code: "x_publication_invalid", disposition: "permanent" },
 		});
 		expect(state.requests).toHaveLength(0);
+	});
+
+	test("escapes LinkedIn little-text syntax in the commentary and keeps real hashtags", () => {
+		expect(escapeLinkedInCommentary("Plain caption.")).toBe("Plain caption.");
+		expect(escapeLinkedInCommentary("Save 50% (today) [limited] #launch #AI_tools now")).toBe("Save 50% \\(today\\) \\[limited\\] #launch #AI_tools now");
+		expect(escapeLinkedInCommentary("ping @alice * bullet | pipe {x} <b> a_b ~ \\ end")).toBe("ping \\@alice \\* bullet \\| pipe \\{x\\} \\<b\\> a\\_b \\~ \\\\ end");
+		expect(escapeLinkedInCommentary("issue#12 and # alone")).toBe("issue\\#12 and \\# alone");
+		expect(escapeLinkedInCommentary("#日本語 ok")).toBe("#日本語 ok");
+	});
+
+	test("counts X text in X's weighted units: CJK and emoji weigh 2, a link 23", async () => {
+		const accepted = async (caption: string) => {
+			const state = harness([
+				json({ data: { id: "media-1", media_key: "media-key-1" } }),
+				new Response(null, { status: 204 }),
+				json({ data: {} }),
+				json({ data: { id: "x-post-1" } }),
+			]);
+			const request = input("x");
+			request.caption = caption;
+			return state.registry.get("x").publish(request, { signal: new AbortController().signal, checkpoint: async () => undefined });
+		};
+		expect(await accepted("字".repeat(140))).toMatchObject({ kind: "accepted" });
+		expect(await accepted("字".repeat(141))).toMatchObject({ kind: "failed", failure: { code: "x_publication_invalid" } });
+		expect(await accepted(`${"a".repeat(250)} https://example.com/${"p".repeat(60)}`)).toMatchObject({ kind: "accepted" });
+	});
+
+	test.each([400, 403, 422])("a %d from POST /tweets is a definite non-publication, not an unknown outcome", async (status) => {
+		const state = await publish("x", [
+			json({ data: { id: "media-1", media_key: "media-key-1" } }),
+			new Response(null, { status: 204 }),
+			json({ data: {} }),
+			new Response("{}", { status }),
+		]);
+		expect(state.result).toMatchObject({
+			kind: "failed",
+			failure: { disposition: "permanent", safeToRepublishAfterSubmission: true },
+		});
+	});
+
+	test("a 5xx from POST /tweets stays an unknown outcome", async () => {
+		const state = await publish("x", [
+			json({ data: { id: "media-1", media_key: "media-key-1" } }),
+			new Response(null, { status: 204 }),
+			json({ data: {} }),
+			new Response("{}", { status: 503 }),
+		]);
+		expect(state.result).toMatchObject({ kind: "unknown" });
 	});
 
 	test("refuses an Instagram container when the professional account changed", async () => {

@@ -10,7 +10,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
 import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import type { Intent } from "@narriflow/api-client";
-import { clipMutationOptions, clipQueries } from "@narriflow/api-client/clips";
+import { clipMutationOptions, clipQueries, invalidateProjectClips } from "@narriflow/api-client/clips";
 import { intentIn, requireClipApi, useClipApi } from "@/lib/clip-media";
 import {
   buildApplyProjectBrandProfileSelectedInput,
@@ -21,7 +21,7 @@ import {
   serializeCampaignEditorActionPreflightRequest,
   submitCampaignEditorAction,
 } from "./campaign-command-state";
-import { clipActionErrorCopy } from "./clip-action-error-copy";
+import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 
 export type CampaignEditorActionKind = "brand_profile" | "style" | "scene";
 
@@ -558,6 +558,8 @@ export function CampaignEditorActionPreview({
         retryIntent,
       );
     } catch (applyError) {
+      // A lost response or a conflict: the clips' state says whether it was accepted.
+      if (api && failureNeedsStateRefetch(applyError)) void invalidateProjectClips(api.queryClient, api.scope, projectId);
       setError(clipActionErrorCopy(applyError, "The campaign action could not be applied."));
     } finally {
       setSubmitting(false);

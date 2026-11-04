@@ -180,6 +180,22 @@ dbDescribe("Exact Workflow execution commands", () => {
     expect(await db.executionDispatch.count({ where: { subjectId: f.run.id, generation: 2, kind: "operation_driver", wakeKind: null } })).toBe(1);
   }, 180_000);
 
+  test.each([[10 * 60_000, 10 * 60_000], [3 * 60 * 60_000, 15 * 60_000]])("a provider's Retry-After of %dms delays the next attempt by %dms at most", async (retryAfterMs, expectedMs) => {
+    const f = await fixture("stt", false);
+    const admission = createTranscriptionAdmission({ database: db, workflow: f.lifecycle, maxUnits: 4 });
+    const begun = await withServiceEnvironment({}, () => admission.admit(f.reference, { owner: f.owner }));
+    if (begun.kind !== "begun") throw new Error("Expected fresh provider intent");
+    await withServiceEnvironment({}, () => f.lifecycle.recordProviderAcceptance(begun.intent.reference,
+      { requestId: "request-gate", transcriptionId: "transcription-gate", nextPollAt: new Date(begun.intent.serverTime.getTime() + 60_000) }));
+    const result = await withServiceEnvironment({}, () => f.lifecycle.failProviderAttempt(begun.intent.reference,
+      new WorkflowFailure("elevenlabs_transcript_fetch_failed", "retryable", "Rate limited", { retryAfterMs }), { requestId: "request-gate", transcriptionId: "transcription-gate" }));
+    expect(result.kind).toBe("applied");
+    const run = await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } });
+    const waitedMs = run.nextAttemptAt!.getTime() - begun.intent.serverTime.getTime();
+    expect(waitedMs).toBeGreaterThanOrEqual(expectedMs);
+    expect(waitedMs).toBeLessThan(expectedMs + 60_000);
+  }, 180_000);
+
   test("provider watchdog sleeps on the exact explicit deadline and expiry retries without reviving a generic lease", async () => {
     const f = await fixture("stt", false);
     const admission = createTranscriptionAdmission({ database: db, workflow: f.lifecycle, maxUnits: 4 });
@@ -342,6 +358,25 @@ dbDescribe("Exact Workflow execution commands", () => {
     expect(await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline, deliveryId }))).toEqual(first);
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptCount: 1, attemptId: null, leaseOwner: null });
     expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "expired" });
+  }, 120_000);
+
+  test("a Workspace restriction leaves the run to its deadline and reactivation can admit the retry", async () => {
+    const f = await fixture();
+    await f.acquire();
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence: f.fence }, verifiedRequest: f.verified() }));
+    const project = await db.project.findUniqueOrThrow({ where: { id: f.run.projectId } });
+    await db.workspace.update({ where: { id: project.workspaceId }, data: { status: "restricted" } });
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command: { action: "renew", fence: f.fence, leaseSeconds: 120 }, verifiedRequest: f.verified() }))).disposition).toBe("superseded");
+    const expired = new Date(0);
+    await db.workflowRun.update({ where: { id: f.run.id }, data: { leaseExpiresAt: expired } });
+    await db.executionAttempt.update({ where: { attemptToken: f.token }, data: { leaseExpiresAt: expired } });
+    const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
+    const deadline = { reference: f.reference, attemptToken: f.token, kind: "lease", observedDeadlineAt: expired.toISOString() };
+    expect((await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline, deliveryId }))).kind).toBe("expired");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptId: null, leaseOwner: null });
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "expired" });
+    await db.workspace.update({ where: { id: project.workspaceId }, data: { status: "active" } });
+    expect((await db.$transaction(tx => f.lifecycle.dispatchRunWithinTransaction(tx, f.run.id))).reference.generation).toBe(2);
   }, 120_000);
 
   test("unacquired operation deadline fails without inventing a charged Workflow attempt", async () => {

@@ -5,7 +5,7 @@ import {
 	PutObjectCommand,
 	S3Client,
 } from "@aws-sdk/client-s3";
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import { createFetchR2Client } from "./r2-fetch-client";
 import { NOTIFICATION_BODY_MAX_BYTES } from "@narriflow/validators/outbound-delivery";
 import type {
 	NotificationBodyPlan,
@@ -28,18 +28,7 @@ export function createNotificationBodyStorage(
 		throw new Error("notification_storage_configuration_invalid");
 	const client =
 		options.client ??
-		new S3Client({
-			region: "auto",
-			endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
-			credentials: {
-				accessKeyId: config.accessKeyId,
-				secretAccessKey: config.secretAccessKey,
-			},
-			requestHandler: new FetchHttpHandler({ requestTimeout: 10000 }),
-			requestChecksumCalculation: "WHEN_REQUIRED",
-			responseChecksumValidation: "WHEN_REQUIRED",
-			maxAttempts: 3,
-		});
+		createFetchR2Client(config, { requestTimeoutMs: 10000, maxAttempts: 3 });
 	function valid(plan: NotificationBodyPlan) {
 		if (
 			!/^notifications\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/body\.json$/.test(

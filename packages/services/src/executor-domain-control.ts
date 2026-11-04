@@ -7,7 +7,10 @@ export type ExecutorDomainTransaction = Prisma.TransactionClient;
 
 export type ExecutorDomainLock<TRef> =
   | { kind: "current"; ref: TRef }
-  | { kind: "terminal"; disposition: ExecutionDisposition; dispatchIds?: readonly string[] };
+  | { kind: "terminal"; disposition: ExecutionDisposition; dispatchIds?: readonly string[];
+    /** A restricted Workspace stops the executor but ends nothing: the domain row
+     * stays live, so only its own deadline may close the attempt. */
+    restricted?: true };
 
 /** Constructed from locked authority and validated server-owned work inputs. */
 export interface ExecutorMutationContext {

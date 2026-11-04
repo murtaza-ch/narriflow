@@ -1,3 +1,4 @@
+import { readBoundedBody } from "@narriflow/services/bounded-body";
 
 
 export const MCP_JSON_MAX_BYTES = 1024 * 1024;
@@ -48,26 +49,11 @@ export async function boundedMcpRequest(request: Request, maximum = MCP_JSON_MAX
     return Response.json({ error: "request_too_large", maximumBytes: maximum }, { status: 413 });
   }
   if (!request.body) return request;
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      bytes += next.value.byteLength;
-      if (bytes > maximum) {
-        await reader.cancel();
-        return Response.json({ error: "request_too_large", maximumBytes: maximum }, { status: 413 });
-      }
-      chunks.push(next.value);
-    }
-  } catch {
-    return Response.json({ error: "invalid_request_body" }, { status: 400 });
-  } finally { reader.releaseLock(); }
-  const body = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  let read: Awaited<ReturnType<typeof readBoundedBody>>;
+  try { read = await readBoundedBody(request.body, maximum); }
+  catch { return Response.json({ error: "invalid_request_body" }, { status: 400 }); }
+  if (read.kind === "too_large") return Response.json({ error: "request_too_large", maximumBytes: maximum }, { status: 413 });
+  const body = read.bytes;
   return new Request(request, { body });
 }
 

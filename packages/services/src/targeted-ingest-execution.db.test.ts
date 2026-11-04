@@ -1,11 +1,12 @@
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
+import { SINGLE_PUT_CLEANUP_DELAY_MS } from "@narriflow/validators";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { ProcessingUsage } from "./processing-usage";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { withServiceEnvironment } from "./runtime-environment";
 import { createSourceVideoValidator } from "./source-readiness";
 import { createExecutorControl } from "./executor-control";
@@ -277,7 +278,7 @@ dbDescribe("Targeted Ingest execution", () => {
   async function earlyAudio(f: Awaited<ReturnType<typeof fixture>>, draft = false) {
     await db.project.update({ where: { id: f.project.id }, data: { ingestStatus: "downloading", sourceDurationSeconds: null } });
     await db.ingestJob.update({ where: { id: f.job.id }, data: { status: "running", claimId: f.token, executorOwner: f.owner, claimExpiresAt: new Date(Date.now() + 120_000) } });
-    const binding = { ...measuredBindings(f, `execution/${f.token}/source.m4a`).audio, durationSeconds: 60.01 };
+    const binding = { ...measuredBindings(f, `execution/${f.token}/source.m4a`).audio, durationSeconds: 60.5 };
     const sourceAudio = await db.sourceAudio.create({ data: { id: binding.sourceAudioId, projectId: f.project.id, sourceRevision: 1,
       mediaProvider: binding.mediaIdentity.provider, mediaId: binding.mediaIdentity.mediaId, audioTrack: binding.audioTrack,
       bindingHash: await sourceAudioBindingHash(binding), storageKey: binding.object.key, etag: binding.object.etag, byteLength: BigInt(binding.object.byteLength),
@@ -440,7 +441,7 @@ dbDescribe("Targeted Ingest execution", () => {
     const run = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
     expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "running", generationRunId: run.id, executorOwner: f.owner });
     expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ sourceAudioId: binding.sourceAudioId, sourceRevision: 1, status: "queued" });
-    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 180 });
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 120 });
     expect(await db.executionDispatch.count({ where: { subjectId: run.id, kind: "operation_driver", wakeKind: null, deadlineKind: null } })).toBe(1);
     expect((await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).ingestStatus).not.toBe("ready");
   }, 120_000);
@@ -506,7 +507,7 @@ dbDescribe("Targeted Ingest execution", () => {
     await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
     const key = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`;
     const binding = measuredBindings(f, key);
-    binding.audio.durationSeconds = 60.01;
+    binding.audio.durationSeconds = 61.5;
     binding.video.probe.durationSec = 60;
     binding.video.probe.facts.format.durationSec = 60;
     for (const stream of [...binding.video.probe.facts.videos, ...binding.video.probe.facts.audios]) { stream.durationSec = 60; stream.endTimeSec = 60; }
@@ -537,7 +538,7 @@ dbDescribe("Targeted Ingest execution", () => {
     await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
     const audioKey = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`;
     const bindings = measuredBindings(f, audioKey);
-    bindings.audio.durationSeconds = 60.01;
+    bindings.audio.durationSeconds = 61.5;
     bindings.video.probe.durationSec = bindings.video.probe.facts.format.durationSec = 60;
     for (const stream of [...bindings.video.probe.facts.videos, ...bindings.video.probe.facts.audios]) stream.durationSec = stream.endTimeSec = 60;
     const audio = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_audio", bindingHash: "b".repeat(64), storageKey: audioKey,
@@ -566,6 +567,115 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(1);
     expect(await f.workflow.recordProviderAcceptance(begun.intent.reference, { requestId: "late-mismatch", transcriptionId: "late-mismatch", nextPollAt: new Date() })).toMatchObject({ kind: "stale", reason: "source_superseded" });
     expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "failed", errorCode: "source_audio_video_mismatch", providerResultDeadlineAt: null });
+  }, 120_000);
+
+  async function audioAdmitted(executionDeadline?: Date) {
+    const f = await fixture(executionDeadline);
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
+      clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const audioKey = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`;
+    const bindings = measuredBindings(f, audioKey);
+    bindings.audio.durationSeconds = 60.01;
+    const audio = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_audio", bindingHash: "b".repeat(64), storageKey: audioKey,
+      contentType: "audio/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: audio.id, role: "source_audio",
+      contentType: audio.contentType, byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: audio.bindingHash, sourceAudio: bindings.audio } }, verifiedRequest: f.verified() }));
+    const run = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
+    const reference = (await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id))).reference;
+    const begun = await withServiceEnvironment({}, () => createTranscriptionAdmission({ database: db, workflow: f.workflow, maxUnits: 12 }).admit(reference, { owner: crypto.randomUUID() }));
+    if (begun.kind !== "begun") throw new Error("Provider work must be admitted before the terminal source failure");
+    return { ...f, fence, run, begun };
+  }
+
+  test.each(["fail", "expire"] as const)("a terminal source %s after audio handoff cancels the admitted generation and records the refund need", async mode => {
+    const [clock] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+    const expiry = new Date(clock!.now.getTime() + 1_500);
+    const f = await audioAdmitted(mode === "expire" ? expiry : undefined);
+    if (mode === "fail") {
+      expect((await withServiceEnvironment({}, () => f.control.execute({ command: { action: "fail", fence: f.fence, failureCode: "source_unavailable", retryable: false }, verifiedRequest: f.verified() }))).disposition).toBe("failed");
+    } else {
+      await Bun.sleep(Math.max(0, expiry.getTime() - Date.now()) + 200);
+      const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
+      const deadline = { reference: f.reference, attemptToken: f.token, kind: "operation", observedDeadlineAt: expiry.toISOString() };
+      expect((await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline, deliveryId }))).kind).toBe("expired");
+    }
+    const errorCode = mode === "fail" ? "source_unavailable" : "operation_deadline_exceeded";
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "failed" });
+    expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: errorCode });
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "cancelled", errorCode, leaseOwner: null, nextPollAt: null });
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "failed", errorCode, providerResultDeadlineAt: null });
+    expect(await db.executionDispatch.count({ where: { subjectId: f.run.id, wakeKind: "source_cancelled" } })).toBe(1);
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled" });
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id, sourceRevision: 1, videoBindingHash: null } })).toBe(1);
+  }, 120_000);
+
+  test("a terminal video failure after audio-first leaves the paid Transcript completed and still cancels the waiting run", async () => {
+    const f = await audioAdmitted();
+    await db.transcript.update({ where: { projectId: f.project.id }, data: { status: "completed", text: "paid transcript", completedAt: new Date(), providerResultDeadlineAt: null } });
+    await db.workflowRun.update({ where: { id: f.run.id }, data: { status: "waiting" } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "fail", fence: f.fence, failureCode: "source_unavailable", retryable: false }, verifiedRequest: f.verified() }));
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "cancelled", errorCode: "source_unavailable" });
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "completed", errorCode: null, text: "paid transcript" });
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id, sourceRevision: 1 } })).toBe(1);
+  }, 120_000);
+
+  test("a terminal video failure after the admitted generation already finished cancels nothing and raises no refund need", async () => {
+    const f = await audioAdmitted();
+    await db.workflowRun.update({ where: { id: f.run.id }, data: { status: "completed" } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "fail", fence: f.fence, failureCode: "source_unavailable", retryable: false }, verifiedRequest: f.verified() }));
+    expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe("completed");
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
+  }, 120_000);
+
+  test("a retryable source failure keeps the admitted generation and owes no refund", async () => {
+    const f = await audioAdmitted();
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "fail", fence: f.fence, failureCode: "remote_download_failed", retryable: true }, verifiedRequest: f.verified() }));
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "queued", generation: 2 });
+    expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).status).not.toBe("cancelled");
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
+  }, 120_000);
+
+  test("a terminal source failure with no admitted generation leaves a transcript untouched and owes no refund", async () => {
+    const f = await fixture();
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await db.transcript.create({ data: { projectId: f.project.id, sourceRevision: 1, status: "completed" } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "fail", fence, failureCode: "source_unavailable", retryable: false }, verifiedRequest: f.verified() }));
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ status: "completed", errorCode: null });
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "released" });
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
+  }, 120_000);
+
+  test("a Workspace restriction keeps the source row recoverable through the expired lease and after reactivation", async () => {
+    const f = await fixture();
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const workspaceId = f.project.workspaceId;
+    await db.workspace.update({ where: { id: workspaceId }, data: { status: "restricted" } });
+    // The executor stops on the terminal disposition; only a deadline may change the rows.
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command: { action: "renew", fence, leaseSeconds: 120 }, verifiedRequest: f.verified() }))).disposition).toBe("cancelled");
+    expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).status).toBe("running");
+    const past = new Date(0), deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
+    await db.executionAttempt.update({ where: { attemptToken: f.token }, data: { leaseExpiresAt: past } });
+    await db.ingestJob.update({ where: { id: f.job.id }, data: { claimExpiresAt: past } });
+    const deadline = { reference: f.reference, attemptToken: f.token, kind: "lease", observedDeadlineAt: past.toISOString() };
+    expect((await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline, deliveryId }))).kind).toBe("expired");
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "expired" });
+    const job = await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    expect(job).toMatchObject({ status: "queued", generation: 2, claimId: null, executorOwner: null });
+    const row = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: job.id, generation: job.generation, kind: "operation_driver", wakeKind: null, deadlineKind: null } });
+    const options = { database: db, domain: f.lifecycle, reference: (await readExecutionDispatch(db, row.id))!.reference, toolchainFingerprint: "d".repeat(64), executionKind: "modal_execution" as const };
+    await db.$executeRaw`UPDATE "IngestJob" SET "updatedAt" = '2026-01-01' WHERE id = ${job.id}::uuid`;
+    expect(await prepareIngestSourceExecution(options)).toEqual({ kind: "terminal" });
+    await db.workspace.update({ where: { id: workspaceId }, data: { status: "active" } });
+    const prepared = await prepareIngestSourceExecution(options);
+    if (prepared.kind !== "waiting") throw new Error(`Reactivation must admit the retry, got ${prepared.kind}`);
+    expect(prepared.deadline.attemptToken).not.toBe(f.token);
+    expect(prepared.deadline.reference.generation).toBe(2);
   }, 120_000);
 
   for (const first of ["source_audio", "source_video"] as const) test(`${first} can commit first and the second callback atomically publishes verified video`, async () => {
@@ -607,6 +717,30 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.executionDispatch.count({ where: { subjectId: f.job.id, kind: "import_pipeline", wakeKind: "video_ready" } })).toBe(1);
     if (waitingRenderRunId) expect(await db.executionDispatch.count({ where: { subjectId: waitingRenderRunId, kind: "render_run", wakeKind: "video_ready" } })).toBe(1);
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "reserved", settledSeconds: null });
+  }, 120_000);
+
+  test("a pinned upload schedules its original for deletion when the job completes, and only then", async () => {
+    const source = { uploadSessionId: crypto.randomUUID(), storageKey: `uploads/${crypto.randomUUID()}/source.mp4`, verifiedEtag: '"frozen"', verifiedSizeBytes: 1024, verifiedContentType: "video/mp4" };
+    const f = await fixture(undefined, "none", { jobType: "upload_finalize", payload: source });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const videoKey = `execution/${f.epoch}/${f.token}/${f.owner}/source.mp4`;
+    const binding = measuredBindings(f, "execution/unused").video;
+    binding.mediaIdentity = { provider: "upload", mediaId: source.uploadSessionId };
+    binding.audioTrack = null; binding.audioStartTimeSec = null; binding.probe.audio = null; binding.probe.facts.audios = [];
+    const video = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_video", bindingHash: "e".repeat(64), storageKey: videoKey,
+      contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    const obligation = () => db.mediaCleanupObligation.findFirst({ where: { objectKey: source.storageKey } });
+    expect(await obligation()).toBeNull();
+    const before = Date.now();
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: video.id, role: "source_video", contentType: "video/mp4",
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: video.bindingHash, sourceVideo: binding } }, verifiedRequest: f.verified() }))).disposition).toBe("committed");
+    expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "ready", sourceStorageKey: videoKey });
+    const admitted = await obligation();
+    expect(admitted).toMatchObject({ origin: "upload_source_pinning", cleanupClass: "upload_source", projectId: f.project.id });
+    expect(admitted!.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + SINGLE_PUT_CLEANUP_DELAY_MS);
+    await db.mediaCleanupObligation.deleteMany({ where: { projectId: f.project.id } });
   }, 120_000);
 
   test("accepted source admission freezes one replayable import-pipeline obligation from the canonical job input", async () => {

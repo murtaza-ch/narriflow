@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { saveBlob } from "@/lib/download";
 import { IntakeProvider } from "../_lib/intake-context";
 import { decideResume, decideResumeFailure, deniedImportDestination, type ResumeDecision } from "../_lib/resume-decision";
 import { type SourcePickerConfig, sourcePickerConfig } from "../_lib/source-pickers";
@@ -144,8 +145,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
             setDeviceSessionState("saving");
             try {
               const session = await createIngestActions(transport, scope).issueLocalFetchSession();
-              const url = URL.createObjectURL(new Blob([JSON.stringify(session)], { type: "application/json" }));
-              const link = document.createElement("a"); link.href = url; link.download = "narriflow-local-fetch-device.json"; link.click(); URL.revokeObjectURL(url);
+              saveBlob(new Blob([JSON.stringify(session)], { type: "application/json" }), "narriflow-local-fetch-device.json");
               setDeviceSessionState("saved");
             } catch { setDeviceSessionState("failed"); }
           }}>Create development fetch session</Button>

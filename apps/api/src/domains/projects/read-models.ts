@@ -34,7 +34,7 @@ export interface ProjectReadDeps {
     | "getWorkflowHistory"
     | "getUsageSummary"
   >;
-  workspaceLibraryService: Pick<typeof workspaceLibraryService, "listProjects" | "listFolders">;
+  workspaceLibraryService: Pick<typeof workspaceLibraryService, "listProjects" | "listRecentProjects" | "listFolders">;
   clipService: Pick<typeof clipService, "listClips">;
   socialService: Pick<typeof socialService, "listProjectPosts">;
   socialOAuthService: Pick<typeof socialOAuthService, "listAccounts">;
@@ -74,14 +74,14 @@ function showsRetentionBanner(pricingTier: string): boolean {
 /** `GET /api/home`: recent Projects plus the facts the dashboard's cards depend on. */
 export async function readHome(deps: ProjectReadDeps, actor: BrowserActorScope) {
   const canCreate = workspaceAllowsCapability(actor.workspace, "content.edit");
-  const [recent, rules] = await Promise.all([
-    deps.workspaceLibraryService.listProjects(actor, { limit: RECENT_PROJECTS_LIMIT }),
+  const [items, rules] = await Promise.all([
+    deps.workspaceLibraryService.listRecentProjects(actor, RECENT_PROJECTS_LIMIT),
     // Only editors see the Autopilot card.
     canCreate ? deps.autopilotService.listRules(actor) : Promise.resolve([]),
   ]);
   return {
     firstName: actor.firstName?.trim() || null,
-    items: recent.items,
+    items,
     canCreate,
     readOnlyReason: (actor.workspace.role === "viewer"
       ? "viewer"

@@ -8,6 +8,8 @@ interface Ports {
   prepare(reference: ExecutionDispatchReference): Promise<NativeValidationPreparation>;
   expire(deadline: ExecutionDeadline, deliveryId: string): Promise<ExecutorExpiryResult>;
   deliver(ids: readonly string[]): Promise<readonly ExecutionDispatchDeliveryResult[]>;
+  /** Best effort after the heavy call is confirmed; the operation deadline still bounds it. */
+  watchAcquisition?(deadline: ExecutionDeadline): Promise<void>;
   now(): number;
 }
 
@@ -41,6 +43,7 @@ export function createNativeOperationDriver(ports: Ports): WorkflowCommandHandle
       if (results.some(result => !["acknowledged", "superseded", "pending"].includes(result.status))) throw new Error("native_dispatch_unavailable");
       if (pending.length) throw new ExecutionDispatchPendingError(new Date(Math.min(Date.parse(deadline.observedDeadlineAt), ...pending.map(result => result.retryAt.getTime()))));
     }
+    if (deadline.kind === "operation") await ports.watchAcquisition?.(deadline);
     return { type: "wait", until: deadline.observedDeadlineAt, deliveryId: prepared.deliveryId, deadline };
   };
 }

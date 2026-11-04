@@ -63,6 +63,8 @@ STRIPE_PRICE_BUSINESS_SEAT_ANNUAL=
 # --- Social and Zoom (optional; a missing provider degrades to its typed refusal) ---
 # Persist this key across API deployments and local development.
 SOCIAL_TOKEN_ENCRYPTION_KEY=
+# Required, at least 32 characters; encrypts provider operation checkpoints. Persist it too.
+SOCIAL_PUBLICATION_CHECKPOINT_KEY=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 # Public ID, also used to verify Google Drive picker tokens.
@@ -91,6 +93,10 @@ NARRIFLOW_EMAIL_FROM=
 
 # --- Analysis and media (optional; a missing provider degrades to its typed refusal) ---
 OPENAI_API_KEY=
+# Required, no defaults: clip selection admits at most this many provider requests
+# and estimated tokens at once.
+OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS=
+OPENAI_SELECTION_MAX_ESTIMATED_TOKENS=
 # OPENAI_CLIP_MODEL=
 # OPENAI_CONTENT_MODEL=
 # OPENAI_ASSISTED_COPY_MODEL=

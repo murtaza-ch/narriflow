@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import type { UpgradeBillingMode } from "./upgrade";
-import type { ReviewRoomData, ReviewRound } from "../projects/[projectId]/review-panel";
+import type { ReviewRoomData, ReviewRound } from "../projects/[projectId]/internal-reviews";
 
 const navigation = await import("next/navigation");
 mock.module("next/navigation", () => ({ ...navigation, useRouter: () => ({ refresh() {} }) }));

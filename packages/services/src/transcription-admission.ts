@@ -5,6 +5,7 @@ import type { ProviderSubmissionIntent, WorkflowRunLifecycle } from "./workflow-
 import { flushWorkspaceEvents } from "./workspace-event";
 import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 const CAPACITY_LOCK = "provider_capacity:elevenlabs:scribe_v2";
@@ -24,16 +25,11 @@ export type TranscriptionAdmissionResult =
   | { kind: "completed"; dispatchIds: string[] }
   | { kind: "terminal"; disposition: ExecutionDisposition; dispatchIds: string[] };
 
-async function clock(tx: Tx): Promise<Date> {
-  const [row] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-  if (!row) throw new Error("Database clock unavailable");
-  return row.now;
-}
 
 /** Caller owns this run's ordinary domain locks. No other run is row-locked. */
 export async function readScribeCapacityWithinTransaction(tx: Tx, excludeRunId: string) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${CAPACITY_LOCK}, 0)) IS NULL AS "locked"`;
-  const now = await clock(tx);
+  const now = await databaseNow(tx);
   const [usage] = await tx.$queryRaw<Array<{ usedUnits: number; dueAt: Date | null }>>`
     SELECT COALESCE(SUM(LEAST(4, CEIL(audio."durationSeconds" / 480))), 0)::double precision AS "usedUnits",
       MIN(CASE WHEN run.status = 'running' THEN run."leaseExpiresAt"
@@ -61,7 +57,7 @@ export async function appendScribeCapacityWakesWithinTransaction(tx: Tx, input: 
   const waiting = await tx.workflowRun.findMany({ where: { deploymentEpoch: input.deploymentEpoch, stage: "stt", status: "queued", errorCode: SCRIBE_CAPACITY_WAIT,
     project: { ingestStatus: { not: "failed" } }, ...(cursor ? { OR: [{ createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } }] } : {}) },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }], take: 101 });
-  const now = await clock(tx), dispatchIds: string[] = [];
+  const now = await databaseNow(tx), dispatchIds: string[] = [];
   for (const run of waiting.slice(0, 100)) {
     const registered = await tx.executionDispatch.findFirstOrThrow({ where: { deploymentEpoch: run.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
       generation: run.generation, kind: "operation_driver", wakeKind: null, deadlineKind: null }, orderBy: { createdAt: "asc" } });
@@ -125,7 +121,7 @@ export function createTranscriptionAdmission(input: { database: PrismaClient; wo
             run.deploymentEpoch === reference.deploymentEpoch && run.generation === reference.generation) locked = await input.workflow.lockExecution(tx, reference, run.attemptId);
           if (locked.kind === "terminal") return { kind: "terminal", disposition: locked.disposition,
             dispatchIds: locked.disposition.disposition === "completed" ? await input.workflow.readCompletedTranscriptionWakesWithinTransaction(tx, reference) : [] };
-          const now = await clock(tx);
+          const now = await databaseNow(tx);
           if (run.status === "waiting") {
             const history = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: run.attemptId! } });
             const intent = await input.workflow.beginProviderSubmissionExecution(tx, locked.ref, { reference, attemptToken: run.attemptId!, owner: invocation.owner, now,
@@ -153,7 +149,7 @@ export function createTranscriptionAdmission(input: { database: PrismaClient; wo
             return { kind: "capacity_wait", dueAt: capacity.dueAt, dispatchIds: [wake.reference.dispatchId] };
           }
           if (run.errorCode === SCRIBE_CAPACITY_WAIT) await tx.workflowRun.update({ where: { id: run.id }, data: { errorCode: null, nextAttemptAt: null } });
-          const activeNow = await clock(tx);
+          const activeNow = await databaseNow(tx);
           const operationDeadlineAt = new Date(activeNow.getTime() + 10 * 60_000), leaseExpiresAt = new Date(activeNow.getTime() + 120_000);
           await tx.executionAttempt.create({ data: { attemptToken: prospectiveToken, dispatchId: reference.dispatchId, deploymentEpoch: reference.deploymentEpoch,
             generation: reference.generation, inputHash: reference.inputHash, functionName: "stt", operationDeadlineAt } });

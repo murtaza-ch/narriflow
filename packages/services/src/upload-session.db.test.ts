@@ -13,7 +13,8 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
-import { buildGenerationContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack, planLimits } from "@narriflow/validators";
+import { lockWorkspaceUsage } from "./processing-usage";
 import { encodeOperationId } from "./operation-status";
 import { recipeService } from "./recipe.service";
 import { listWorkspaceEvents } from "./workspace-event";
@@ -1151,6 +1152,67 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       expect(stored.has(key)).toBe(true);expect(deletes).toBe(0);expect((await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:obligation.id}})).completedAt).toBeNull();
 
     } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  })));
+
+  function finalizingSession(workspaceId: string, actorUserId: string, transferKind: "single" | "multipart", createdAt = new Date()) {
+    const now = new Date();
+    return prisma.uploadSession.create({ data: {
+      workspaceId, actorUserId, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: randomUUID(), preallocatedProjectId: randomUUID(),
+      title: "Handoff", fileName: "handoff.mp4", fileSizeBytes: 2048n, contentType: "video/mp4", browserFingerprint: "handoff",
+      generationSettings: { languageCode: "en", contentPack: CONTENT_PACK }, transferKind, storageKey: `workspaces/${workspaceId}/${randomUUID()}.mp4`,
+      status: "finalizing", createdAt, expiresAt: new Date(now.getTime() + 60_000), hardExpiresAt: new Date(now.getTime() + 120_000),
+    } });
+  }
+  const handoffInput = (sessionId: string, updatedAt: Date) => ({ sessionId, queuedJobId: randomUUID(), verifiedSizeBytes: 2048, verifiedContentType: "video/mp4", verifiedEtag: '"etag"', reconciliationAttemptId: null, updatedAt });
+
+  test("a Free upload handed off days after it opened keeps its whole retention period", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-retention:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Late handoff", ownerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    try {
+      const now = new Date();
+      const session = await finalizingSession(workspace.id, user.id, "single", new Date(now.getTime() - 5 * 24 * 60 * 60_000));
+      await prismaUploadSessionPersistence.handoff(handoffInput(session.id, now));
+      const project = await prisma.project.findUniqueOrThrow({ where: { id: session.preallocatedProjectId } });
+      expect(project.expiresAt).toEqual(new Date(now.getTime() + planLimits("free").projectRetentionHours! * 60 * 60_000));
+      expect(project.createdAt).toEqual(session.createdAt);
+    } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  })));
+
+  test("a handoff waits for an upgrade holding the usage lock, so a paying Workspace gets no Free deadline", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-upgrade:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Upgrading", ownerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    try {
+      const session = await finalizingSession(workspace.id, user.id, "single");
+      let handoff: Promise<unknown> | undefined;
+      await prisma.$transaction(async tx => {
+        await lockWorkspaceUsage(tx, workspace.id);
+        await tx.workspace.update({ where: { id: workspace.id }, data: { pricingTier: "business" } });
+        handoff = prismaUploadSessionPersistence.handoff(handoffInput(session.id, new Date()));
+        await Bun.sleep(400);
+      });
+      await handoff;
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: session.preallocatedProjectId } })).expiresAt).toBeNull();
+    } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  })));
+
+  test("a multipart session that fails after completing its object schedules that object for deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-multipart-orphan:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Completed multipart", ownerUserId: user.id } });
+    try {
+      const session = await finalizingSession(workspace.id, user.id, "multipart");
+      await prismaUploadSessionPersistence.recordFailure({ sessionId: session.id, status: "failed", failureCode: "upload_size_mismatch", updatedAt: new Date() });
+      expect(await prisma.mediaCleanupObligation.findFirst({ where: { objectKey: session.storageKey } })).toMatchObject({ origin: "upload_session_termination", cleanupClass: "upload_source" });
+    } finally {
+      await prisma.mediaCleanupObligation.deleteMany({ where: { projectId: { not: null }, objectKey: { startsWith: `workspaces/${workspace.id}/` } } });
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });
     }

@@ -3,9 +3,10 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { readExecutionAdmission } from "./execution-admission";
+import { sha256Hex } from "./execution-hash";
 
-export const HOURLY_MAINTENANCE_PHASES = ["dispatches", "deadlines", "provider_waits", "domain_wakes", "workflow_wakes", "render_wakes", "selection_wakes", "preparation_wakes", "native_validation_wakes", "thumbnail_wakes", "generated_media_wakes", "outbound_probe_wakes", "outbound_delivery_wakes", "cleanup_wakes", "callback_wakes", "subscription_wakes", "upload_wakes", "billing_wakes", "library_wakes", "finishing_wakes", "publication_wakes", "publication_receipts", "publication_captures", "bundle_wakes", "dubbing_wakes", "autopilot_wakes", "zoom_notification_wakes", "notification_wakes", "review_notification_wakes", "grant_notification_wakes", "webhook_notification_wakes"] as const;
-export const DAILY_MAINTENANCE_PHASES = ["tasks", "receipts", "events", "workspace_events", "webhook_logs", "generated_prompts", "validation_rows", "probe_rows", "grant_notification_rows", "webhook_notification_rows", "deletion_receipts", "grants", "grant_authority", "bundle_expiry", "project_warnings", "retention", "sources", "pending_workspaces", "cleanup"] as const;
+export const HOURLY_MAINTENANCE_PHASES = ["dispatches", "deadlines", "provider_waits", "domain_wakes", "workflow_wakes", "render_wakes", "selection_wakes", "preparation_wakes", "native_validation_wakes", "thumbnail_wakes", "generated_media_wakes", "outbound_probe_wakes", "outbound_delivery_wakes", "cleanup_wakes", "callback_wakes", "subscription_wakes", "upload_wakes", "billing_wakes", "usage_reservations", "generation_reservations", "library_wakes", "finishing_wakes", "publication_wakes", "publication_receipts", "publication_captures", "bundle_wakes", "dubbing_wakes", "autopilot_wakes", "zoom_notification_wakes", "notification_wakes", "review_notification_wakes", "grant_notification_wakes", "webhook_notification_wakes"] as const;
+export const DAILY_MAINTENANCE_PHASES = ["tasks", "receipts", "events", "workspace_events", "webhook_logs", "generated_prompts", "validation_rows", "probe_rows", "grant_notification_rows", "webhook_notification_rows", "deletion_receipts", "grants", "grant_authority", "bundle_expiry", "project_warnings", "retention", "sources", "pending_workspaces", "cleanup", "retention_deliveries", "retention_zoom_jobs", "retention_operation_receipts", "retention_callbacks", "retention_analytics", "retention_uploads", "retention_oauth_states", "retention_artifacts", "retention_cleanup_obligations", "retention_attempts", "retention_dispatches"] as const;
 export type MaintenancePhase = typeof HOURLY_MAINTENANCE_PHASES[number] | typeof DAILY_MAINTENANCE_PHASES[number];
 export type MaintenanceCadence = "hourly" | "daily";
 export const MAINTENANCE_RECEIPT_AUDIENCES = ["modal-bridge", "executor-control", "dev-device", "watchdog", "maintenance-page", "restore-page"] as const;
@@ -43,7 +44,7 @@ function parse(id: string) {
   return { cadence, cutoff, phase, after };
 }
 async function hash(epoch: number, id: string) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["maintenance-page-v1", epoch, id])))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(JSON.stringify(["maintenance-page-v1", epoch, id]));
 }
 
 /** A bounded page commits its cursor and domain obligations together. Ports
@@ -102,7 +103,19 @@ export class ExecutionMaintenanceService {
       return { kind: "complete" as const, processed: 0, dispatchIds: [] };
       });
     });
-    if (result.dispatchIds.length) await this.options.register(result.dispatchIds);
+    await this.deliver(result);
     return result;
+  }
+  /** The next page carries the sweep, so it is confirmed first and alone. A
+   * recovered wake that cannot be delivered stays due in the outbox, where the
+   * next pass retries it; it must not stop the phases behind it. */
+  private async deliver(result: MaintenanceResult) {
+    const continuation = result.kind === "continue" ? result.dispatchIds.at(-1) : undefined;
+    if (continuation) await this.options.register([continuation]);
+    const wakes = result.dispatchIds.filter(id => id !== continuation);
+    for (let offset = 0; offset < wakes.length; offset += 4) {
+      try { await this.options.register(wakes.slice(offset, offset + 4)); }
+      catch (error) { console.warn(JSON.stringify({ level: "warn", message: "maintenance_wake_delivery_deferred", wakes: wakes.length, errorCode: error instanceof Error ? error.message : "unknown" })); }
+    }
   }
 }

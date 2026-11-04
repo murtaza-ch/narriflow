@@ -43,6 +43,9 @@ import {
   googleDriveFileViewUrl,
   LINK_PROVIDERS,
   MAX_UPLOAD_SIZE_BYTES,
+  uploadMimeTypeByExtension,
+  uploadMimeTypeForFile,
+  uploadMimeTypes,
 } from "@narriflow/validators";
 import { isApiError } from "@narriflow/api-client/core";
 import { formatDate, formatTimecode } from "@/lib/format";
@@ -88,13 +91,12 @@ type PasteOverride = "auto" | "link" | "rss";
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_BYTES;
 const RSS_EPISODE_PAGE_SIZE = 50;
 
-const FILE_ACCEPT =
-  "video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac";
+const FILE_ACCEPT = [...uploadMimeTypes, ...Object.keys(uploadMimeTypeByExtension)].join(",");
 
-/** Human-readable labels for the supported providers, joined for hints. */
-const LINK_PROVIDER_LABELS_JOINED = LINK_PROVIDERS.map((p) => p.label).join(
-  " · ",
-);
+/** The providers a pasted link can come from, joined for hints. */
+const LINK_PROVIDER_LABELS_JOINED = LINK_PROVIDERS.filter((p) => p.hosts.length > 0)
+  .map((p) => p.label)
+  .join(" · ");
 
 function linkProviderLabel(provider: LinkProviderId): string {
   return LINK_PROVIDERS.find((p) => p.id === provider)?.label ?? "Link";
@@ -615,12 +617,8 @@ export function UploadShell({
       );
       return;
     }
-    if (
-      file.type &&
-      !file.type.startsWith("video/") &&
-      !file.type.startsWith("audio/")
-    ) {
-      setErrorMessage("Unsupported file type — upload a video or audio file.");
+    if (!uploadMimeTypeForFile(file)) {
+      setErrorMessage("Unsupported file type. Upload an MP4, MOV, WebM, MKV, MP3, WAV, M4A or AAC file.");
       return;
     }
 

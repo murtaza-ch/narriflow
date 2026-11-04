@@ -5,7 +5,7 @@ import {
 	PutObjectCommand,
 	S3Client,
 } from "@aws-sdk/client-s3";
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import { createFetchR2Client } from "./r2-fetch-client";
 import type { ExecutionStorageConfig } from "./execution-storage";
 import { WorkflowFailure } from "./workflow-attempt-contract";
 
@@ -75,18 +75,7 @@ export function createPrivateJsonStorage(
 		throw new Error("execution_input_configuration_invalid");
 	const client =
 		options.client ??
-		new S3Client({
-			region: "auto",
-			endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
-			credentials: {
-				accessKeyId: config.accessKeyId,
-				secretAccessKey: config.secretAccessKey,
-			},
-			requestHandler: new FetchHttpHandler({ requestTimeout: 10_000 }),
-			requestChecksumCalculation: "WHEN_REQUIRED",
-			responseChecksumValidation: "WHEN_REQUIRED",
-			maxAttempts: 3,
-		});
+		createFetchR2Client(config, { requestTimeoutMs: 10_000, maxAttempts: 3 });
 	async function provider<T>(operation: () => Promise<T>): Promise<T> {
 		try {
 			return await operation();

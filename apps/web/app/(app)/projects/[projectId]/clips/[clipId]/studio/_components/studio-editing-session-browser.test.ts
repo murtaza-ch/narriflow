@@ -150,7 +150,7 @@ describe("browser Studio coordination adapter", () => {
     });
     try {
       const coordination = createBrowserStudioSessionDependencies(
-        { projectId: "project", clipId: "clip" },
+        { userId: "user", projectId: "project", clipId: "clip" },
         unusedCloudHttp,
       ).coordination;
       expect(await coordination.start({

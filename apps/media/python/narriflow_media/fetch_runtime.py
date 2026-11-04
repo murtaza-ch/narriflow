@@ -12,7 +12,7 @@ from typing import Callable
 from threading import Event
 from urllib.parse import urlsplit
 
-from .fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure
+from .fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure, probe_failure
 from .manifest import MAX_SOURCE_BYTES, YouTubeSource, toolchain_versions
 from .process import FILE_SIZE_LIMIT_EXIT_CODE, run_owned_process_async
 from .proxy import BoundProxySession
@@ -25,7 +25,7 @@ class YtDlpSourceRuntime:
     def __init__(self, *, token_provider_url: str | None = None, on_process_start: Callable[[int], None],
                  deadline_seconds: float = 45 * 60, bun_executable: str = "bun",
                  cancel_event: Event | None = None, token_server_home: Path | None = None,
-                 assert_owned: Callable[[], None] | None = None):
+                 assert_owned: Callable[[], None] | None = None, max_source_seconds: int | None = None):
         try:
             if (token_server_home is None) == (token_provider_url is None) or token_server_home is not None and not callable(assert_owned):
                 raise ValueError()
@@ -49,6 +49,7 @@ class YtDlpSourceRuntime:
         self._start = on_process_start
         self._cancel = cancel_event if cancel_event is not None else Event()
         self._token_home, self._assert_owned = token_server_home, assert_owned
+        self._max_source_seconds = max_source_seconds
         self._helper: OwnedTokenHelper | None = None
         self._session_directory: Path | None = None
         self._deadline = time.monotonic() + deadline_seconds
@@ -108,6 +109,8 @@ class YtDlpSourceRuntime:
             if (b"sign in to confirm" in diagnostic or re.search(rb"http(?: error)?[ :]+(?:403|429)\b", diagnostic)
                     or b"403 forbidden" in diagnostic):
                 raise ProviderAccessBlocked()
+            if b"live event will begin" in diagnostic or b"premieres in" in diagnostic:
+                raise SourceFetchFailure("source_live_unsupported")
             raise SourceFetchFailure("source_fetch_failed", True)
         if self._helper is not None:
             self._helper.assert_live()
@@ -134,6 +137,12 @@ class YtDlpSourceRuntime:
             facts = json.loads(metadata.read_bytes())
             if facts["id"] != source.media_id:
                 raise ValueError()
+            # Metadata costs little. Both refusals stop before any paid download.
+            if facts.get("is_live") is True or facts.get("live_status") in {"is_live", "is_upcoming"}:
+                raise SourceFetchFailure("source_live_unsupported")
+            duration = facts.get("duration")
+            if self._max_source_seconds is not None and type(duration) in {int, float} and duration > self._max_source_seconds:
+                raise SourceFetchFailure("ingest_max_duration_exceeded")
             formats = facts.get("requested_formats")
             if not isinstance(formats, list):
                 formats = [facts]
@@ -191,9 +200,9 @@ class YtDlpSourceRuntime:
             timeout_seconds=self._remaining(60), env=self._environment(None), on_start=self._start,
             cancel_event=self._cancel,
         )
+        if result.returncode:
+            raise probe_failure(result.stderr)
         try:
-            if result.returncode:
-                raise ValueError()
             return json.loads(result.stdout)
         except (ValueError, UnicodeError):
             raise SourceFetchFailure("source_probe_failed", True) from None

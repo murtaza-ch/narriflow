@@ -1,4 +1,5 @@
 import { open } from "node:fs/promises";
+import { openAiResponseText } from "@narriflow/services/openai-responses";
 import { guardedFetch, type GuardedFetchOptions } from "./outbound-transport";
 
 export type DubProviderRequest = (url: string, options: GuardedFetchOptions) => Promise<Response>;
@@ -37,7 +38,7 @@ export async function submitDubTranslation(body: object, options: Options): Prom
     try { while (true) { const part = await reader.read();if (part.done) break;size += part.value.byteLength;if (size > 1024 ** 2) throw Error();chunks.push(part.value); } }
     finally { await reader.cancel().catch(() => {}); }
     const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-    const text = (typeof payload?.output_text === "string" ? payload.output_text : Array.isArray(payload?.output) ? payload.output.flatMap((item: { content?: unknown }) => Array.isArray(item?.content) ? item.content : []).flatMap((item: { text?: unknown }) => typeof item?.text === "string" ? [item.text] : []).join("") : "").trim();
+    const text = (openAiResponseText(payload) ?? "").trim();
     if (!text || text.length > 100_000 || text.includes("\0")) return unknown("translation", "payload");
     const providerRequestId = typeof payload?.id === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(payload.id) ? payload.id : null;
     return { outcome: "completed", text, providerRequestId };

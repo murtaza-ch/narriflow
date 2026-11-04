@@ -6,11 +6,11 @@ const reference = { dispatchId: "190f5cd8-2f6a-42a6-96dc-1dd08a99b2fb", deployme
   subject: { kind: "workflow_run" as const, id: "ce4d7e7e-caae-4d85-80f8-17f55e2eaf79" }, generation: 1, inputHash: "f".repeat(64) };
 const key = { workflowRunId: reference.subject.id, attemptId: "05bfd4bb-8ce2-455c-a598-1328f676a288", deploymentEpoch: 1,
   sourceRevision: 1, sourceAudioId: "d5ab39a2-80e7-45d1-8da8-5bc90097075e" };
-const now = new Date("2026-10-31T00:00:00Z"), deadline = new Date("2026-10-31T00:10:00Z"), hold = new Date("2026-10-31T04:00:00Z");
+const now = new Date("2026-10-31T00:00:00Z"), deadline = new Date("2026-10-31T00:10:00Z"), hold = new Date("2026-10-31T04:00:00Z"), held = new Date("2026-10-31T02:00:00Z");
 const intent = { kind: "begun" as const, reference: key, serverTime: now, submissionDeadlineAt: deadline, providerAudioGrantExpiresAt: hold, dispatchIds: [reference.dispatchId] };
 
 function harness(input: { unknown?: boolean; deliveryFailure?: boolean; explicitLanguage?: string; skip?: boolean; nativeWait?: boolean } = {}) {
-  let admissions = 0, submissions = 0, grants = 0, probes = 0;
+  let admissions = 0, submissions = 0, grants = 0, probes = 0, extensions = 0;
   const deliveries: string[][] = [], failures: unknown[] = [];
   const waiting = { kind: "waiting" as const, attempt: { workflowRunId: key.workflowRunId, projectId: crypto.randomUUID(), attemptId: key.attemptId, attemptCount: 1, stage: "stt" as const },
     providerJobId: null as string | null, providerRequestId: null as string | null, submissionDeadlineAt: deadline as Date | null, resultDeadlineAt: null as Date | null,
@@ -24,6 +24,7 @@ function harness(input: { unknown?: boolean; deliveryFailure?: boolean; explicit
       recordProviderAcceptance: async (_key, accepted) => { waiting.providerJobId = accepted.transcriptionId; waiting.providerRequestId = accepted.requestId;
         waiting.resultDeadlineAt = new Date("2026-10-31T02:00:00Z"); waiting.nextCheckAt = new Date("2026-10-31T00:00:30Z"); waiting.submissionDeadlineAt = null;
         return { kind: "applied", dispatchIds: ["6d6aa630-d89d-40c8-a7fe-8af8d1f726ae"] }; },
+      extendUnconfirmedSubmission: async () => { waiting.submissionDeadlineAt = held; extensions++; return { kind: "sleep", dueAt: held, dispatchIds: ["a2f0bd9a-1c53-4b47-8a27-6f0cf5a4a9de"] }; },
       failProviderAttempt: async (_key, error) => { failures.push(error); return { kind: "applied" }; },
       expireProviderDeadline: async () => { throw new Error("No expiry expected"); },
       observeProviderPending: async () => { throw new Error("No recovery expected"); },
@@ -37,7 +38,7 @@ function harness(input: { unknown?: boolean; deliveryFailure?: boolean; explicit
     finalize: async () => { throw new Error("No finalization expected"); },
     deliverWakes: async ids => { deliveries.push([...ids]); if (input.deliveryFailure) throw new Error("scheduler_unavailable"); },
   });
-  return { control, deliveries, failures, admissions: () => admissions, calls: () => ({ submissions, grants, probes }) };
+  return { control, deliveries, failures, extensions: () => extensions, admissions: () => admissions, calls: () => ({ submissions, grants, probes }) };
 }
 
 test("fresh STT command confirms intent before one POST and a repeated invocation cannot POST again", async () => {
@@ -49,11 +50,13 @@ test("fresh STT command confirms intent before one POST and a repeated invocatio
   expect(h.failures).toEqual([]);
 });
 
-test("unknown acceptance stays on the original intent deadline with no second POST", async () => {
+test("unknown acceptance waits to the extended deadline with no second POST", async () => {
   const h = harness({ unknown: true });
-  expect(await h.control.run(reference)).toEqual({ kind: "wait", dueAt: deadline });
-  expect(await h.control.run(reference)).toEqual({ kind: "wait", dueAt: deadline });
+  expect(await h.control.run(reference)).toEqual({ kind: "wait", dueAt: held });
+  expect(await h.control.run(reference)).toEqual({ kind: "wait", dueAt: held });
   expect(h.calls().submissions).toBe(1);
+  expect(h.extensions()).toBe(1);
+  expect(h.deliveries[1]).toEqual(["a2f0bd9a-1c53-4b47-8a27-6f0cf5a4a9de"]);
   expect(h.failures).toEqual([]);
 });
 

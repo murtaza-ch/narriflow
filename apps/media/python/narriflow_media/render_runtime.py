@@ -15,6 +15,7 @@ from threading import BoundedSemaphore, Event, Lock, Thread
 from .artifacts import AssignedArtifacts
 from .clip_preparation_runtime import environment, verify_prepare_runtime
 from .control import ExecutionControlError
+from .multipart import MultipartTransferError
 from .native_runtime import NativeOperationFailure, _file_facts, _json, _work
 from .process import MediaProcessError, run_owned_process_async
 from .source_server import ScopedSourceServer, CHUNK_BYTES
@@ -129,7 +130,11 @@ class RenderControlServer:
             allowed={item['attribution']['pexelsId'] for item in self._command['autoBroll']['resolved']}
             if not isinstance(ids,list) or len(ids)>6 or any(type(value) is not int or value not in allowed for value in ids) or len(set(ids))!=len(ids):raise NativeOperationFailure('render_command_invalid')
             size,sha=_file_facts(path,self.session,assigned['maxBytes']);path.chmod(0o400)
-            completed=asyncio.run(self.artifacts.upload_only(assigned['artifactId'],path,content_type='video/mp4',byte_length=size,sha256=sha,transport=self.transport))
+            try:completed=asyncio.run(self.artifacts.upload_only(assigned['artifactId'],path,content_type='video/mp4',byte_length=size,sha256=sha,transport=self.transport))
+            except MultipartTransferError:
+                # A lost upload fails its variant. Only lost authority stops the siblings.
+                if self.session.cancel_event.is_set():raise
+                return {'uploadFailed':True}
             with self._lock:self.uploaded[render_id]=(completed,ids)
             return {}
         if operation=='complete':

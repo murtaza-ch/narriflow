@@ -5,11 +5,11 @@ import {acceptSocialPostProposalSchema,ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT} from 
 import {acceptAllProposalsRequestSchema} from "@narriflow/validators/api/publishing";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
 	clipAspectRatioFromDb,
 	postingScheduleSchema,
 	SOCIAL_PROVIDER_CAPABILITIES,
+	socialCaptionLength,
 	socialProviderAcceptsMedia,
 	sortedPostingSchedule,
 	type AcceptSocialPostProposalInput,
@@ -35,6 +35,7 @@ import { requirePlanFeature } from "./plan-features";
 import { readPublishableSocialAccountIds, requirePublishableSocialAccount, socialAccountBeyondPlanError } from "./social-account-eligibility";
 import { isSocialProviderPublishingEnabled } from "./social-publication-config";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
+import { requirePrisma } from "./require-prisma";
 
 /** The Publishing Queue: weekly posting slots on each Social Account, and
  * proposals that wait, in the unused `draft` Social Post status, for a person
@@ -79,12 +80,6 @@ export const ACCEPT_ALL_BATCH = ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT;
  * which is all any client or integration can choose, so nobody can claim it ahead of time, and a
  * retry after a lost response finds the post the first attempt made. */
 export const proposalAcceptKey = (proposalId: string,scheduleRevision:number) => `proposal-accept:${proposalId}:${scheduleRevision}`;
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
 
 function sha256(value: string) {
 	return createHash("sha256").update(value).digest("hex");
@@ -279,7 +274,7 @@ export const publishingQueue = {
 					})
 					: null;
 				const caption = input.caption ?? (copy ? composeAssistedCopyCaption({ caption: copy.caption, hashtags: copy.hashtags as string[] }) : "");
-				if (caption.length > capability.textLimit) {
+				if (socialCaptionLength(account.platform, caption) > capability.textLimit) {
 					throw new PublishingQueueError("social_proposal_caption_too_long", `This platform allows ${capability.textLimit} characters.`);
 				}
 				const open = await tx.socialPost.count({ where: { workspaceId: scope.workspaceId, status: "draft", proposal: { isNot: null } } });
@@ -380,7 +375,7 @@ export const publishingQueue = {
 		const proposal = await prisma.socialPost.findFirst({ where: { id: proposalId, ...proposalWhere(scope.workspaceId) }, select: { platform: true } });
 		if (!proposal) throw new PublishingQueueError("social_proposal_not_found", "This proposal was already accepted or rejected.");
 		const limit = SOCIAL_PROVIDER_CAPABILITIES[proposal.platform].textLimit;
-		if (caption.length > limit) throw new PublishingQueueError("social_proposal_caption_too_long", `This platform allows ${limit} characters.`);
+		if (socialCaptionLength(proposal.platform, caption) > limit) throw new PublishingQueueError("social_proposal_caption_too_long", `This platform allows ${limit} characters.`);
 		const updated = await prisma.socialPost.updateMany({ where: { id: proposalId, ...proposalWhere(scope.workspaceId) }, data: { caption } });
 		if (updated.count === 0) throw new PublishingQueueError("social_proposal_not_found", "This proposal was already accepted or rejected.");
 	},

@@ -34,6 +34,7 @@
     "clean": "turbo run clean && rm -rf .turbo node_modules",
     "test:mcp:integration": "bun test packages/mcp-core/src apps/mcp/src apps/api/src/integration-admission-parity.test.ts apps/api/src/domains/integrations/mcp.test.ts apps/api/src/domains/integrations/mcp-configuration.test.ts apps/api/src/domains/integrations/mcp-upload-http.test.ts apps/api/src/domains/integrations/mcp-upload-handoff.test.ts apps/api/src/domains/integrations/mcp-continuation-principal.test.ts",
     "test:execution:db": "bun packages/services/scripts/run-execution-db-tests.ts",
+    "test:schema-drift:db": "bun packages/services/scripts/run-schema-drift-gate.ts",
     "fetch:local": "bun apps/media/src/local-fetch-agent.ts",
     "verify:local": "bun --no-env-file scripts/verify-local.ts"
   },
@@ -43,8 +44,7 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "@neon/config": "^1.9.5",
-    "@neon/env": "^1.6.6"
+    "@neon/config": "^1.9.5"
   },
   "overrides": {
     "brace-expansion": "2.1.7",

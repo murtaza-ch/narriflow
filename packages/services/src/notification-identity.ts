@@ -1,12 +1,8 @@
 import { createHash } from "node:crypto";
 import type { CompletionCallback, WebhookSubscription, WorkspaceEvent } from "@prisma/client";
+import { canonicalJson } from "./canonical-json";
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
-  return JSON.stringify(value);
-}
-export const notificationInputHash = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
+export const notificationInputHash = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 
 export function completionCallbackExecutionInputHash(row: Pick<CompletionCallback, "id" | "workspaceId" | "operationKind" | "operationId" | "urlFingerprint" | "eventId" | "createdAt">) {
   return notificationInputHash(["completion-callback-v1", row.id, row.workspaceId, row.operationKind, row.operationId, row.urlFingerprint, row.eventId, row.createdAt.toISOString()]);

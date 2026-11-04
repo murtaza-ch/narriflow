@@ -206,6 +206,7 @@ test("defers browser adapter startup until the public session lifecycle starts",
   let starts = 0;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -253,7 +254,8 @@ test("recovers a conflict-free Device Draft before accepting mutations", async (
   const recovered = makeTimedDocument("https://cdn.example.com/recovered.mp4");
   const draft: StudioDraftRecord = {
     formatVersion: 1,
-    key: "project:clip",
+    key: "user:project:clip",
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     baseRevision: 3,
@@ -290,6 +292,7 @@ test("recovers a conflict-free Device Draft before accepting mutations", async (
 
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -322,7 +325,8 @@ test("re-fences a recovered version-two draft before the new writer becomes edit
   const cloud = makeDocument();
   const prior: StudioDraftRecord = {
     formatVersion: 1,
-    key: "project:clip",
+    key: "user:project:clip",
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     baseRevision: 3,
@@ -335,6 +339,7 @@ test("re-fences a recovered version-two draft before the new writer becomes edit
   let fenced: StudioDraftRecord | null = null;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -380,7 +385,8 @@ test("keeps an overlapping Device Draft durable until the user chooses it", asyn
   const cloud = makeDocument("https://cloud.example.com/video.mp4");
   const draft: StudioDraftRecord = {
     formatVersion: 1,
-    key: "project:clip",
+    key: "user:project:clip",
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     baseRevision: 3,
@@ -393,6 +399,7 @@ test("keeps an overlapping Device Draft durable until the user chooses it", asyn
   let removed = false;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 4,
@@ -448,6 +455,7 @@ test("keeps cloud editing available with navigation protection when Device Draft
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -503,6 +511,7 @@ test("marks an edit durable only after its fenced Device Draft write completes",
   const writes: StudioDraftRecord[] = [];
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -555,7 +564,7 @@ test("marks an edit durable only after its fenced Device Draft write completes",
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({
     formatVersion: 1,
-    key: "project:clip",
+    key: "user:project:clip",
     baseRevision: 3,
     writerId: "writer-a",
     ownershipGeneration: 7,
@@ -568,6 +577,7 @@ test("keeps durability degraded when a cloud checkpoint cannot remove the Device
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -630,6 +640,7 @@ test("hands off the newest Device Draft before a second session becomes writable
     },
   });
   const seed = {
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     cloudRevision: 3,
@@ -703,6 +714,7 @@ test("fences a late outgoing checkpoint after a two-second forced takeover", asy
     },
   });
   const seed = {
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     cloudRevision: 3,
@@ -744,6 +756,7 @@ test("allows cloud-fenced editing while exposing degraded browser coordination",
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -789,6 +802,7 @@ test("stops accepting mutations immediately when the coordination adapter report
     | null = null;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -839,6 +853,7 @@ test("does not regain ownership when startup completes after ownership loss", as
     | null = null;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -886,6 +901,7 @@ test("does not regain ownership when takeover reconciliation finishes late", asy
     | null = null;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -933,6 +949,7 @@ test("does not become writable from a stale takeover cloud head", async () => {
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -985,6 +1002,7 @@ test("refuses cooperative handoff when the newest Device Draft checkpoint fails"
     | null = null;
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -1032,6 +1050,7 @@ test("loses write ownership when draft fencing reports a newer generation", asyn
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
+      userId: "user",
       projectId: "project",
       clipId: "clip",
       cloudRevision: 3,
@@ -1042,7 +1061,8 @@ test("loses write ownership when draft fencing reports a newer generation", asyn
       drafts: {
         load: async () => ({
           formatVersion: 1,
-          key: "project:clip",
+          key: "user:project:clip",
+          userId: "user",
           projectId: "project",
           clipId: "clip",
           baseRevision: 3,

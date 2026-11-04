@@ -113,11 +113,12 @@ suite("Media cleanup independent safety wakes", () => {
     const root = await maintenance.start({ cadence: "hourly", scheduledAt: new Date() });
     fail = true;
     await expect(maintenance.run(root)).rejects.toThrow("registration reply lost");
-    const originalIds = deliveries.at(-1)!;
+    const continuation = deliveries.at(-1)!;
     expect((await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: f.row.id } })).attemptCount).toBe(0);
     fail = false;
-    expect((await maintenance.run(root)).dispatchIds).toEqual(originalIds);
-    expect(deliveries.at(-1)).toEqual(originalIds);
+    const { dispatchIds } = await maintenance.run(root);
+    expect(dispatchIds.slice(-1)).toEqual(continuation);
+    expect(deliveries.slice(-2)).toEqual([continuation, dispatchIds.slice(0, -1)]);
     expect(await database.executionDispatch.count({ where: { subjectId: f.row.id, wakeKind: { startsWith: "hourly_" } } })).toBe(1);
   });
 

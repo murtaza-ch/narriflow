@@ -55,13 +55,15 @@ describe("link and Drive commits", () => {
     expect(fetchLinkTitle).toHaveBeenCalledTimes(1);
   });
 
-  test("an unsupported link is refused by the shared schema before any service runs", async () => {
-    const queueLinkIngest = mock(async () => ({}));
-    const routes = app({ projectService: { queueLinkIngest } as never });
-    const request = post("/api/ingest/link", { url: "https://example.com/video.mp4", commitToken: COMMIT_TOKEN });
+  test("an unsupported link reaches intake, whose refusal keeps its stable code", async () => {
+    const queueLinkIngest = mock(async () => {
+      throw new ExpectedDomainFailureError({ code: "link_unsupported_source", kind: "unprocessable", message: "We can't import that link." });
+    });
+    const routes = app({ projectService: { queueLinkIngest, fetchLinkTitle: async () => null } as never });
+    const request = post("/api/ingest/link", { url: "https://vimeo.com/123456789", commitToken: COMMIT_TOKEN });
     const response = await routes.request(request.path, request.init);
-    expect(response.status).toBe(400);
-    expect(queueLinkIngest).not.toHaveBeenCalled();
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: "link_unsupported_source" });
   });
 
   test("a usage refusal keeps its code and recovery details in the common envelope", async () => {

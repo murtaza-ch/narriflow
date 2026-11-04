@@ -21,7 +21,8 @@ import {
   apiNotFoundHandler,
   errorEnvelopeMiddleware,
 } from "./http/errors";
-import { limitRequestEnvelope } from "./http/limits";
+import { ipRateLimit, limitRequestEnvelope, trustedIngressIp } from "./http/limits";
+import { socketAddress } from "./server-hooks";
 import { apiRequestId, requestLogger } from "./http/logging";
 import { requireJsonContentType } from "./http/route";
 import type { RequestPolicyRuntime } from "./http/request-policy-runtime";
@@ -76,6 +77,13 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   app.onError(apiErrorHandler);
   app.notFound(apiNotFoundHandler);
 
+  // Anonymous and database-backed, so it spends a per-address budget like other public reads.
+  app.use("/api/ready", ipRateLimit({
+    prefix: "ready",
+    tier: "publicRead",
+    clientIp: (c) => trustedIngressIp(c.req.raw.headers, { trustedHeader: config.trustedClientIpHeader, socketAddress: socketAddress(c) }),
+    rateLimit: deps.admin.rateLimit,
+  }));
   app.route("/api", createHealthRoutes(deps.health));
 
   app.use("/api/webhooks/*", routeBodyLimit("webhook"));

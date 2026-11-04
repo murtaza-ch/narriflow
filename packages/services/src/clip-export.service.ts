@@ -6,7 +6,6 @@ import { receiptCallback } from "./completion-callback";
 import type { IntegrationMutation } from "./operation-receipt";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
@@ -51,6 +50,7 @@ import {
   decodeFrozenClipEditorDocument,
   encodeClipEditorDocumentForStorage,
 } from "./clip-editor-document-persistence";
+import { requirePrisma } from "./require-prisma";
 
 const EXPORT_DOWNLOAD_TTL_SECONDS = 15 * 60;
 
@@ -62,12 +62,6 @@ export interface WorkspaceExportPageSource {
     }
   >;
   nextCursor: string | null;
-}
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
 }
 
 const clipExportFailureCatalog = {

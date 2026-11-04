@@ -4,7 +4,6 @@ import { lockPublicationPost, lockPublicationScope } from "./publication-locks";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import { clipAspectRatioFromDb, clipAspectRatioToDb } from "@narriflow/validators";
 import { clipExportService } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-access";
@@ -16,6 +15,7 @@ import { reviewApprovalGate } from "./review-approval-gate.prisma";
 import { workspaceService } from "./workspace.service";
 import { requirePublishableSocialAccount } from "./social-account-eligibility";
 import { createSocialPublicationScheduling, PublicationIntentConflictError, PublicationIntentStateError, type PublicationIntent, type PublicationSchedulingStore } from "./social-publication-scheduling";
+import { requirePrisma } from "./require-prisma";
 
 const publicationIntentInclude = {
 	frozenState: true,
@@ -24,12 +24,6 @@ const publicationIntentInclude = {
 type PublicationIntentRow = Prisma.SocialPostGetPayload<{
 	include: typeof publicationIntentInclude;
 }>;
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
 
 function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 	const frozen = row.frozenState;

@@ -81,7 +81,6 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
         fonts: input.assets.fonts.filter(asset => query.fontIds.includes(asset.id)).map(asset => ({ id: asset.id, family: asset.family, fingerprint: asset.fingerprint, storageKey: asset.object.storageKey, format: asset.format })) };
     } },
     storage: { deleteObject: async () => { throw new Error("render_cleanup_owned_by_api"); },
-      sourceSizeBytes: async key => { const found = sources.get(key); if (!found) return lost(); return found.object.byteLength; },
       presignDownloadUrl: async ({ key }) => { const found = sources.get(key); if (!found) return lost(); return options.ports.sourceUrl(found.name); },
       downloadObjectToFile: async ({ key, filePath }) => { const found = sources.get(key); if (!found) throw new WorkflowFailure("render_asset_unavailable", "permanent", "Optional frozen asset is unavailable"); await request({ operation: "download", sourceName: found.name, path: filePath, maxBytes: found.object.byteLength }); return { key, contentType: null }; },
       putFileFromPath: async ({ key, filePath, contentType, metadata }) => {
@@ -93,7 +92,8 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
             authorName: slot.attribution.authorName, authorUrl: slot.attribution.authorUrl, pageUrl: slot.attribution.pageUrl }));
           if (!matched) return lost(); return matched.attribution.pexelsId;
         }))];
-        await request({ operation: "upload", renderId, path: filePath, usedStockIds });
+        const uploaded = await request({ operation: "upload", renderId, path: filePath, usedStockIds });
+        if (uploaded.uploadFailed) throw new WorkflowFailure("render_upload_failed", "retryable", "Rendered output upload failed");
         return { key, fileName: key.split("/").at(-1)! };
       } },
     resolveBrollCutaways: async query => {

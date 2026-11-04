@@ -22,7 +22,7 @@ dbDescribe("Source Audio Processing Usage admission", () => {
     await db.user.deleteMany({ where: { id: { in: users } } });
     await db.$disconnect();
   });
-  async function fixture(seconds = 60.01) {
+  async function fixture(seconds = 60.5) {
     const user = await db.user.create({ data: { clerkId: `audio-admission-gate:${randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Audio admission gate", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Audio-first", sourceMediaUrl: "https://youtu.be/dQw4w9WgXcQ", sourceType: "link", ingestStatus: "downloading" } });
@@ -35,7 +35,7 @@ dbDescribe("Source Audio Processing Usage admission", () => {
       checksumSha256: "b".repeat(64), durationSeconds: seconds, audioStartTimeSec: 0, probeVersion: "normalized-probe-1", toolchainFingerprint: "c".repeat(64) } });
     return { usage, project, workspace, audio };
   }
-  test("settles 60.01 seconds once while full video is still running", async () => {
+  test("settles 60.5 seconds once while full video is still running", async () => {
     const f = await fixture();
     const results = await Promise.all([1, 2].map(() => db.$transaction(tx => f.usage.settle(tx, f.project.id))));
     expect(results).toContainEqual({ outcome: "settled", charged: true, settledSeconds: 120 });
@@ -44,7 +44,7 @@ dbDescribe("Source Audio Processing Usage admission", () => {
   }, 30_000);
   test("refuses cap overflow and workspace restriction before a new debit", async () => {
     for (const reason of ["duration", "restriction"] as const) {
-      const f = await fixture(reason === "duration" ? 3600.01 : 60.01);
+      const f = await fixture(reason === "duration" ? 3600.5 : 60.5);
       if (reason === "restriction") await db.workspace.update({ where: { id: f.workspace.id }, data: { status: "restricted" } });
       const result = await db.$transaction(tx => f.usage.settle(tx, f.project.id));
       expect(result.outcome).toBe("refused");

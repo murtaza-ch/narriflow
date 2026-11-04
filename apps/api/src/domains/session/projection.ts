@@ -8,7 +8,7 @@ import type { WorkspaceUsage } from "@narriflow/validators/api/workspace";
 /** What both bootstrap reads need to list a user's Workspaces. */
 export interface MembershipReads {
   listUserWorkspaces: typeof listUserWorkspaces;
-  workspaceService: Pick<typeof workspaceService, "getAvatarUrls">;
+  workspaceService: Pick<typeof workspaceService, "presignAvatarUrls">;
 }
 
 /** Safe identity facts of the signed-in user; no Clerk IDs, secrets or unrelated columns. */
@@ -33,10 +33,16 @@ export async function readMemberships(
   reads: MembershipReads,
   userId: string,
 ): Promise<WorkspaceSummary[]> {
-  const memberships = await reads.listUserWorkspaces(userId);
-  const avatarUrls = await reads.workspaceService.getAvatarUrls(
-    userId,
-    memberships.map(({ workspace }) => workspace.id),
+  return projectMemberships(reads, await reads.listUserWorkspaces(userId));
+}
+
+/** The wire shape of memberships already read. The listing proves access to each avatar. */
+export async function projectMemberships(
+  reads: Pick<MembershipReads, "workspaceService">,
+  memberships: Awaited<ReturnType<typeof listUserWorkspaces>>,
+): Promise<WorkspaceSummary[]> {
+  const avatarUrls = await reads.workspaceService.presignAvatarUrls(
+    memberships.map(({ workspace }) => workspace),
   );
   return memberships.map(({ role, workspace }) => ({
     id: workspace.id,

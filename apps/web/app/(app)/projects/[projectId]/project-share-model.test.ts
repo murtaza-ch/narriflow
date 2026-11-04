@@ -7,7 +7,7 @@ import {
   reviewApprovalProgress,
   shownRound,
 } from "./project-share-model";
-import type { ReviewRoomData } from "./review-panel";
+import type { ReviewRoomData } from "./internal-reviews";
 
 const data = {
   project: {

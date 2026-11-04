@@ -31,6 +31,7 @@ import {
 import { createRouteApp, getActor } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
 import { validate } from "../../http/route";
+import { uuidParams } from "../platform/params";
 import { projectsAdmission as access } from "./admission";
 import {
   readExplorer,
@@ -122,8 +123,9 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       return c.json(snapshot, 200);
     })
 
-    // Permanently deletes the Project and its media. Naturally idempotent: a
-    // Project that is already gone is the success the caller asked for.
+    // Permanently deletes the Project: it is gone from every read on return, and
+    // the durable purge removes its media. Naturally idempotent: a Project that
+    // is already gone is the success the caller asked for.
     .delete("/projects/:id", async (c) => {
       try {
         await projectService.deleteProject(getActor(c), c.req.param("id"));
@@ -210,6 +212,7 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/runs/:workflowRunId",
+      uuidParams("id", "workflowRunId"),
       async (c) => {
         const snapshot = await projectService.getWorkflowRun(
           getActor(c),
@@ -324,6 +327,7 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/dubs/:dubId/download",
+      uuidParams("id", "dubId"),
       validate("query", dubDownloadQuerySchema),
       async (c) => {
         const result = await dubbingService.getDubDownloadUrl(

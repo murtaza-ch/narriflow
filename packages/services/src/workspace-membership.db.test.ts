@@ -7,6 +7,7 @@ import { PrismaClient, type WorkspaceRole } from "@prisma/client";
 import { Pool } from "pg";
 import { workspaceCommands } from "./workspace-commands-runtime";
 import { workspaceMembershipService } from "./workspace-membership.service";
+import { workspaceService } from "./workspace.service";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
 const databaseSchema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
@@ -138,6 +139,15 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       expect(later).toMatchObject({ replayed: true, token: null });
       expect(later.invite.id).toBe(rows[0]?.id);
       expect(await prisma.workspaceInvite.count({ where: { workspaceId: current.workspace.id, email } })).toBe(1);
+    })));
+
+    test("concurrent invites to one address leave a single pending invite, and the database refuses a second", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+      const current = await fixture("editor");
+      const email = `Concurrent-${randomUUID()}@Example.com`;
+      await Promise.all(["a", "b", "c"].map(() => workspaceService.createInvite(current.owner.id, current.workspace.id, { email, role: "viewer" })));
+      const pending = await prisma.workspaceInvite.findMany({ where: { workspaceId: current.workspace.id, acceptedAt: null, revokedAt: null } });
+      expect(pending).toHaveLength(1);
+      await expect((async () => prisma.workspaceInvite.create({ data: { workspaceId: current.workspace.id, email: email.toUpperCase(), role: "viewer", tokenHash: randomUUID(), invitedByUserId: current.owner.id, expiresAt: new Date(Date.now() + 1000) } }))()).rejects.toMatchObject({ code: "P2002" });
     })));
 
     test("an invite key reused with different input conflicts instead of inviting someone else", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

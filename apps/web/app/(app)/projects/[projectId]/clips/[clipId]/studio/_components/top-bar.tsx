@@ -289,7 +289,9 @@ export function TopBar() {
     handleTakeOverEditing,
     saveIssue,
     saveIssueActions,
-  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "editingElsewhere", "handleTakeOverEditing", "saveIssue", "saveIssueActions");
+    leaveStudio,
+    leavingStudio,
+  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "editingElsewhere", "handleTakeOverEditing", "saveIssue", "saveIssueActions", "leaveStudio", "leavingStudio");
   const isMac = useIsMac();
   const { openUpgrade } = useUpgrade();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -322,12 +324,14 @@ export function TopBar() {
           cursor="pointer"
           title="Back to project"
           aria-label="Back to project"
+          aria-busy={leavingStudio}
+          pointerEvents={leavingStudio ? "none" : undefined}
           transition="background 120ms ease, color 120ms ease"
           _hover={{ bg: "studio.raised", color: "studio.fg" }}
           _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
-          onClick={() => router.push(`/projects/${clipInfo.projectId}`)}
+          onClick={() => leaveStudio(`/projects/${clipInfo.projectId}`)}
         >
-          <ChevronLeft size={18} />
+          {leavingStudio ? <Spinner size="xs" /> : <ChevronLeft size={18} />}
         </Flex>
         <Text
           ms="1.5"
@@ -352,7 +356,7 @@ export function TopBar() {
           fallbackTitle={clipInfo.title}
           surface="studio"
           onDuplicated={(clip) =>
-            router.push(`/projects/${clip.projectId}/clips/${clip.id}/studio`)
+            leaveStudio(`/projects/${clip.projectId}/clips/${clip.id}/studio`)
           }
           onDeleted={() => router.push(`/projects/${clipInfo.projectId}`)}
         />
@@ -393,7 +397,7 @@ export function TopBar() {
               undo: canUndo ? handleUndo : null,
               upgrade: openUpgrade,
               openSignIn: () => window.open(authEntryHref("sign-in", "/home"), "_blank", "noopener"),
-              backToProject: () => router.push(`/projects/${clipInfo.projectId}`),
+              backToProject: () => leaveStudio(`/projects/${clipInfo.projectId}`),
             }}
           />
         )}

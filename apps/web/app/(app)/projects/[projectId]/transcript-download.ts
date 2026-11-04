@@ -12,7 +12,7 @@ export interface TranscriptFile {
 /**
  * The transcript as a text, SubRip or WebVTT file. An anchor cannot carry the
  * session token, so the bounded body is fetched with the Bearer transport and
- * the caller saves the Blob (`saveBlob`). The status is checked before the body
+ * the caller saves the Blob (`saveBlob` in `@/lib/download`). The status is checked before the body
  * is read, so a refusal surfaces as the typed `ApiError`, never as a saved file.
  */
 export async function fetchTranscriptFile(
@@ -39,16 +39,4 @@ export async function fetchTranscriptFile(
 		blob,
 		fileName: /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? `transcript.${format}`,
 	};
-}
-
-/** Saves a fetched file: a short-lived object URL on a temporary anchor, revoked right after. */
-export function saveBlob(file: TranscriptFile): void {
-	const url = URL.createObjectURL(file.blob);
-	const anchor = document.createElement("a");
-	anchor.href = url;
-	anchor.download = file.fileName;
-	document.body.appendChild(anchor);
-	anchor.click();
-	anchor.remove();
-	setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

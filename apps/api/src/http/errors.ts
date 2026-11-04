@@ -1,3 +1,4 @@
+import { logFailure } from "@narriflow/services/log-failure";
 import { boundedExpectedDomainFailureDetails, type ExpectedDomainFailure, type ExpectedDomainFailureKind, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
 import type { ApiErrorBody } from "@narriflow/validators/api/errors";
 import type { Context, Next } from "hono";
@@ -29,7 +30,7 @@ const DOMAIN_FAILURE_HTTP: Record<
 };
 
 const MAX_RETRY_AFTER_SECONDS = 86_400;
-const GENERIC_SERVER_MESSAGE =
+export const GENERIC_SERVER_MESSAGE =
   "Something went wrong. Try again or contact support.";
 
 /** The HTTP status for an expected domain failure, shared by the first-party API and public REST. */
@@ -154,23 +155,7 @@ export function markEnvelope(c: Context<ApiEnv>, response: Response): Response {
 }
 
 function logUnexpected(c: Context<ApiEnv>, requestId: string, cause: unknown): void {
-  const code =
-    cause && typeof cause === "object" && "code" in cause
-      ? (cause as { code: unknown }).code
-      : undefined;
-  console.warn(
-    JSON.stringify({
-      level: "error",
-      message: "unexpected_request_failure",
-      requestId,
-      method: c.req.method,
-      route: routePath(c, -1),
-      errorName: cause instanceof Error ? cause.name : typeof cause,
-      ...(typeof code === "string" || typeof code === "number"
-        ? { errorCode: code }
-        : {}),
-    }),
-  );
+  logFailure("unexpected_request_failure", cause, { requestId, method: c.req.method, route: routePath(c, -1) });
 }
 
 function internalFailureResponse(requestId: string): Response {

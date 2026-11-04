@@ -5,6 +5,7 @@ import { appendExecutionDispatch, readExecutionDispatch } from "./execution-disp
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { readExecutionAdmission } from "./execution-admission";
 import { queueMediaCleanupBatchWithinTransaction, MediaCleanupControlError } from "./media-cleanup-control";
+import { sha256Hex } from "./execution-hash";
 
 type Position = { id: string; at: Date };
 const invalid = () => new MediaCleanupControlError("cleanup_reference_invalid");
@@ -20,7 +21,7 @@ function parse(id: string) {
   return { first, through, after };
 }
 async function hash(epoch: number, id: string) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["media-cleanup-drain-v1", epoch, id])))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(JSON.stringify(["media-cleanup-drain-v1", epoch, id]));
 }
 async function append(tx: Prisma.TransactionClient, epoch: number, first: Position, through: Position, after: Position | null) {
   const id = identity(first, through, after);

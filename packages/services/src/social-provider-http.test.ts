@@ -48,4 +48,17 @@ describe("Worker social provider transport", () => {
 			).rejects.toMatchObject({ code: "social_provider_origin_invalid" });
 		expect(calls).toBe(0);
 	});
+	test("bounds every request with a timeout unless the caller brings its own signal", async () => {
+		const seen: Array<AbortSignal | null | undefined> = [];
+		const transport = (async (_url, init) => {
+			seen.push(init?.signal);
+			return Response.json({});
+		}) as typeof fetch;
+		await fetchSocialProvider("https://graph.facebook.com/v24.0/me", {}, transport);
+		const own = new AbortController();
+		await fetchSocialProvider("https://graph.facebook.com/v24.0/me", { signal: own.signal }, transport);
+		expect(seen[0]).toBeInstanceOf(AbortSignal);
+		expect(seen[0]).not.toBe(own.signal);
+		expect(seen[1]).toBe(own.signal);
+	});
 });

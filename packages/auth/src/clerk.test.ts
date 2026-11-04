@@ -148,6 +148,21 @@ describe("Bearer session verification", () => {
     expect([...(seen[0] ?? new Headers()).keys()]).toEqual(["authorization"]);
   });
 
+  test("verification options carry the configured JWT key and omit it when unset", async () => {
+    const options: Array<Record<string, unknown>> = [];
+    const spy = {
+      authenticateRequest: async (_request: Request, option: Record<string, unknown>) => {
+        options.push(option);
+        return { status: "signed-out", tokenType: "session_token", reason: "x" };
+      },
+    } as unknown as SessionTokenVerifier;
+    const headers = { authorization: "Bearer abc.def.ghi" };
+    await createBearerAuthenticator({ client: spy, authorizedParties: [WEB_ORIGIN], jwtKey })(request(headers));
+    await createBearerAuthenticator({ client: spy, authorizedParties: [WEB_ORIGIN] })(request(headers));
+    expect(options[0]).toMatchObject({ jwtKey });
+    expect(options[1]).not.toHaveProperty("jwtKey");
+  });
+
   test("a pending or userless session is not authenticated", async () => {
     const stub = {
       authenticateRequest: async () => ({

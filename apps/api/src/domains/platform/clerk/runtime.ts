@@ -7,7 +7,8 @@ import {
   verifyClerkWebhook,
   type ClerkUserDirectory,
 } from "@narriflow/auth";
-import { relayClerkEmail } from "@narriflow/email";
+import { mailerConfig, relayClerkEmail } from "@narriflow/email";
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import type { ClerkWebhookDependencies } from "./webhook";
 
 export interface ClerkWebhookRuntimeOptions {
@@ -44,6 +45,6 @@ export function createClerkWebhookDependencies(
     // Purpose-bound and stable per Svix message: Resend returns the first result
     // for a repeated key, so a retry after a failed log write sends nothing new.
     relayEmail: (payload, deliveryId) =>
-      relayClerkEmail(payload, { idempotencyKey: `clerk-email/${deliveryId}` }),
+      relayClerkEmail(payload, { ...mailerConfig(readServiceEnvironment()), idempotencyKey: `clerk-email/${deliveryId}` }),
   };
 }

@@ -20,6 +20,8 @@ export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "invalid_source_dimensions",
   "unsupported_aspect_ratio",
   "ingest_max_duration_exceeded",
+  "source_live_unsupported",
+  "source_media_invalid",
   "upload_too_long",
   "credits_exhausted",
   "credits_reservation_released",

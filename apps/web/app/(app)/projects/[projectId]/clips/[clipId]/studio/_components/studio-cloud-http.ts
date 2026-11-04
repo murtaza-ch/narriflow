@@ -104,14 +104,30 @@ export function createTokenSnapshot(options: {
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
+/**
+ * A save or reset that has not answered by now is abandoned. It rejects like
+ * any lost connection, so the session retries it as transient instead of
+ * showing "Saving…" behind a request that will never finish.
+ */
+export const CLOUD_WRITE_TIMEOUT_MS = 30_000;
+
 export function createStudioCloudHttp(options: {
   api: StudioApi;
   projectId: string;
   clipId: string;
   tokens: TokenSnapshot;
   fetchImpl?: typeof fetch;
+  requestTimeoutMs?: number;
+  /** Called after the API stored a save or reset, so caches that show this clip can refresh. */
+  onWritten?: () => void;
 }): StudioCloudHttp {
   const { api, projectId, clipId, tokens } = options;
+  const written = async (pending: Promise<StudioCloudResponse>): Promise<StudioCloudResponse> => {
+    const response = await pending;
+    if (response.status >= 200 && response.status < 300) options.onWritten?.();
+    return response;
+  };
+  const writeInit = () => ({ init: { signal: AbortSignal.timeout(options.requestTimeoutMs ?? CLOUD_WRITE_TIMEOUT_MS) } });
   const param = { id: projectId, clipId };
   const client = () => studioClientFor(api).projects[":id"].clips[":clipId"].editor;
   // Hono's JSON input type is the schema's; the session already holds a validated document.
@@ -120,8 +136,9 @@ export function createStudioCloudHttp(options: {
   return {
     load: () => settle(() => client().$get({ param })),
     save: ({ baseRevision, document }) =>
-      settle(() => client().$put({ param, json: { baseRevision, document } as SaveJson })),
-    reset: ({ baseRevision }) => settle(() => client().reset.$post({ param, json: { baseRevision } })),
+      written(settle(() => client().$put({ param, json: { baseRevision, document } as SaveJson }, writeInit()))),
+    reset: ({ baseRevision }) =>
+      written(settle(() => client().reset.$post({ param, json: { baseRevision } }, writeInit()))),
     keepalive({ baseRevision, document }) {
       const token = tokens.current();
       if (!token) return false;

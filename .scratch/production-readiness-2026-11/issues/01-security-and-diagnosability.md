@@ -1,0 +1,55 @@
+# 01 Security and diagnosability
+
+**What to build:** Close the security holes and make production failures diagnosable.
+
+**Blocked by:** None
+
+**Status:** done
+
+Owns: `packages/email`, `apps/api/src/http/**`, `apps/api/src/worker.ts`, `apps/api/src/index.ts`, `apps/api/wrangler.jsonc`, `packages/mcp-core`, `packages/auth`, `packages/db/src/client.ts`, zoom webhook code, `apps/web/lib/post-auth-redirect.ts`.
+
+## Must fix
+1. **No email can be sent from the Worker (critical, verified).** `packages/email/src/mailer.ts:33,47` reads `process.env`, but `apps/api/wrangler.jsonc` sets `disallow_importable_env`, so it is empty. Callers: `packages/services/src/notification-execution-runtime.ts:68`, `apps/api/src/domains/workspace/invite-delivery.ts:25`, `apps/api/src/domains/platform/clerk/runtime.ts:47`. Pass `apiKey` and `from` explicitly from `readServiceEnvironment()`, drop the module-level client, and log the `reason` on failure. Check the notification path no longer ends as `provider_unavailable` silently.
+2. **Zoom CRC is a signing oracle (high, proved).** `packages/services/src/zoom.service.ts:139` answers `endpoint.url_validation` before `verifyZoomSignature`, and `zoom.ts:93` HMACs any string up to 1024 chars. A forged body signs as `v0:<ts>:<body>`, so `app_deauthorized` can be forged. Restrict `plainToken` so it cannot contain `:` (Zoom tokens are short and URL-safe; check Zoom's docs for the shape) and verify the signature first if Zoom's docs confirm CRC requests are signed. Update `automation/webhooks.test.ts:43`. Add a test that replays the forgery. Note for the report: `ZOOM_WEBHOOK_SECRET_TOKEN` rotation is an owner step. Proof script: `/private/tmp/claude-501/-Users-murtaza-Documents-dev-narriflow/b41b7230-89b6-40aa-a5ae-edee3cbfb363/scratchpad/zoom-oracle.ts`.
+3. **Open redirect after sign-in (high).** `apps/web/lib/post-auth-redirect.ts:13-19,72`: `/.//evil.example/x` resolves same-origin and yields pathname `//evil.example/x`, then `router.replace` in `apps/web/app/auth/continue/clerk-oauth-continuation.tsx`. Fall back when pathname starts with `//` or the raw value has a backslash. Add both payloads to `post-auth-redirect.test.ts`.
+4. **Unexpected errors cannot be diagnosed (high).** A real 500 on `/api/session/bootstrap` left only `errorName`. Add one `logFailure(message, cause, ctx)` recording name, code, bounded redacted message, top stack frames and the cause chain; client responses stay generic. Use it at `apps/api/src/http/errors.ts:156-174`, `domains/rest/routes.ts:205`, `domains/integrations/mcp-upload-http.ts:45` (it also answers internal bugs with a retryable 503), `packages/mcp-core/src/index.ts:90`, `packages/mcp-core/src/mcp-http-handler.ts:86-89` (a crash is recorded as `authentication/denied`), `domains/automation/webhooks.ts:30`, `domains/publishing/webhooks.ts:47`, `worker.ts:63`. Add a top-level try/catch in `createApiWorker.fetch` that returns a generic JSON 500 with a request id. Add an `observability` block to `wrangler.jsonc`. Replace the copied `errorName` pattern (at least 6 files).
+5. **ElevenLabs webhook buffers up to 128 MiB before checking the signature (medium).** `apps/api/src/http/limits.ts:31,54-91`, `domains/projects/webhooks.ts:76-83`. Refuse a missing or stale `elevenlabs-signature` before reading any body.
+6. **MCP has no failed-auth throttle (medium).** `packages/mcp-core/src/mcp-http-handler.ts:53-55`, `mcp-auth.ts:60-65`, `apps/api/src/domains/integrations/mcp-auth.ts:40-43`. Each bogus token costs a Clerk API call. Move REST's `rest:authfail:<ip>` read-then-consume bucket into a shared helper and apply it to both MCP entries before any token lookup.
+7. **App rebuilt per request, so caches do nothing (medium).** `worker.ts:63`, `index.ts:10`, `domains/platform/health.ts:47-56`, `domains/integrations/mcp.ts:26,39-45`. `/api/ready` opens a DB scope per anonymous call with no limit, and each OAuth metadata call fetches Clerk. Move those two caches to module scope (keep values per-deployment) and rate-limit `/api/ready`. Memoising the whole app is optional; do it only if no per-request state is captured.
+8. **Identity outcomes become 500s (medium).** `apps/api/src/http/request-policy-runtime.ts:141-148`, `packages/auth/src/identity.ts:243-250,386-396`. Map Clerk 404 and `ClerkIdentityDeletedError` to a null actor (401), and the email P2002 conflict to a typed 409 with a structured log.
+9. **`POST /workspaces/business-checkout` skips its limiter on the `workspaceId` branch (low).** `apps/api/src/domains/billing/routes.ts:60-69`. Call `enforceRecordedRateLimit(getRecordedRateLimit(c))` there.
+10. **Scope disposal failure replaces a successful response (low).** `packages/db/src/client.ts:88-93`. Catch and log; keep the operation's result or original error.
+11. **Unvalidated `:clipId` can return 500 (low).** `apps/api/src/domains/clips/routes.ts:65-71` and other routes in that file. Add `uuidParams("id","clipId")`. Check for the same gap in other domains.
+12. **Users missing a profile field hit Clerk on every request (low).** `packages/auth/src/identity.ts:366,411,472`. Throttle `needsUserRefresh` on `updatedAt`, about hourly.
+13. **`CLERK_JWT_KEY` unused in production (low).** `apps/api/src/runtime.ts:142`. Pass `jwtKey` when configured.
+
+## Reuse
+- One streaming bounded-body reader: `http/limits.ts:54`, `packages/mcp-core/src/mcp-http.ts:47`, `domains/execution/routes.ts:24`.
+- One domain-failure-to-HTTP mapping: `http/errors.ts:14`, `domains/rest/routes.ts` `onError`, `integrations/mcp-upload-http.ts:43`.
+- One Bearer parser and one UUID validator where the same regex is repeated (`packages/auth/src/workspace.ts:16`, `http/project-admission.ts:4`, `integrations/mcp.ts:56`, `mcp-upload-handoff.ts`, `outbound-probe.ts:90`).
+
+## Comments
+
+### Implementation, 2026-11-04
+
+All 13 findings were confirmed in code and fixed; none rejected. Regression tests were written for each testable behaviour.
+
+1. **Email.** `sendEmail(input, config)` and `relayClerkEmail(payload, {apiKey, from, idempotencyKey})` take settings explicitly (`mailerConfig(env)`), module-level client dropped, every not-sent path logs `email_not_sent` with its reason. Wired from `readServiceEnvironment()` in the invite route deps, the Clerk relay and the notification executor (which also logs `notification_send_failed`). Removed a dead `sendEmail` member from a type cast in `notification.service.ts`.
+2. **Zoom CRC.** Zoom's docs do not require verifying the CRC request signature, so the signature is not checked first. `plainToken` is limited to `[A-Za-z0-9_\-.~+/=]{1,128}`, which excludes the `:` of `v0:<ts>:<body>`. Forgery replay test added to `automation/webhooks.test.ts`; unit test in `zoom.test.ts`. Owner step: rotate `ZOOM_WEBHOOK_SECRET_TOKEN` (the CRC was an oracle until this deploys).
+3. **Open redirect.** Same-origin targets whose pathname starts with `//`, or raw values containing a backslash, fall back to `/home`. Payloads added to `post-auth-redirect.test.ts`.
+4. **Diagnosability.** `@narriflow/services/log-failure` (`logFailure`, `describeFailure`): name, code, redacted 300-char message, 5 frames, 3-deep cause chain. Used in `http/errors.ts`, REST `onError`, MCP upload, MCP tool failures, MCP HTTP handler (a crash is now a logged 500, not `authentication/denied`), Zoom/TikTok/ElevenLabs webhooks, drain closers. MCP upload internal defects are now a non-retryable 500 instead of a retryable 503. `createApiWorker.fetch` has a top-level try/catch returning JSON 500 + request id (with first-party CORS headers). `wrangler.jsonc` has `observability`. Not converted (other owners): `billing.service.ts:918` (ticket 08), `api-client/src/progress/hub.ts` (browser), `apps/mcp` stdio bridge.
+5. **ElevenLabs.** `limitBody(class, admit)`; the `providerResult` class refuses a missing/stale `elevenlabs-signature` with 401 before buffering a byte (`checkElevenLabsSignatureHeader`). Two existing ingress tests now send a fresh header; new test proves the stream is never pulled.
+6. **MCP failed-auth throttle.** `@narriflow/services/auth-failure-throttle` (`rest:authfail:<ip>` / `mcp:authfail:<ip>`, read then consume); REST refactored onto it. Applied before any token lookup in the MCP handler and the MCP upload handler; only `invalid_token` rejections spend it (not Clerk outages, not scope errors). Address is from `trustedClientIpHeader` only (`unknown` when absent, e.g. local Bun).
+7. **Caches.** Readiness answer and OAuth authorization-server metadata now live in per-isolate cache objects passed in by `runtime.ts` (plain data only; in-flight promises stay per app because they cannot cross requests in workerd). `/api/ready` has the `publicRead` per-IP limiter. App memoisation skipped (the invocation closure captures bindings).
+8. **Identity outcomes.** `ClerkIdentityDeletedError` and Clerk 404 resolve to no actor (401); email conflict is `ClerkEmailConflictError` -> typed 409 `account_email_conflict` with a `clerk_email_conflict` log.
+9. **business-checkout.** The `workspaceId` branch now calls `enforceRecordedRateLimit`.
+10. **Scope disposal.** A failing `dispose()` is logged and never replaces the result or original error.
+11. **UUID params.** Added to clips (6 routes), exports (8), projects (`runs/:workflowRunId`, `dubs/:dubId/download`), automation (`take-over`, 3 standing-grant routes). Every path param is listed because the typed client reads them (`pathParams` keeps `:format`). Left alone: project `:id` (already concealed by project admission), audio assets (already validated), `ingest/:projectId` (project admission), RSS probe id (service validates).
+12. **Refresh throttle.** `needsUserRefresh` retries an incomplete profile at most hourly via `updatedAt`.
+13. **CLERK_JWT_KEY.** `createBearerAuthenticator({ jwtKey })`, passed from `runtime.ts`. Owner step: optionally set the `CLERK_JWT_KEY` secret (PEM public key) on the Worker; a wrong key rejects every session. The upload-handoff session authenticator in `integrations/runtime.ts` still uses JWKS.
+
+**Reuse.** `readBoundedBody` (`@narriflow/services/bounded-body`) replaces three stream readers; MCP upload uses `domainFailureHttpStatus`; `isUuid` and `bearerCredential` (`@narriflow/validators/identifiers`) replace seven copied patterns.
+
+**Schema.** No schema change needed.
+
+**Verification.** Targeted: services 19 (log-failure, throttle, bounded-body, zoom), email 5, auth 92, db 7, validators 693, apps/mcp 12, web lib 253, mcp-core 139 pass. apps/api `bun run test`: 962 pass, 3 fail, all in other tickets' work in progress (session bootstrap x2, review routes from a missing `render-group-lifecycle` export). `test:inventory` 296 routes 0 problems, `openapi:check` ok (32 operations), `build:worker` and its import audit pass, `check:web-split` passes. Typecheck is clean for every package I touched; `services` and `web` currently fail on other agents' edits (`render-group-lifecycle`, `appendStableExecutionDispatch`, `review-panel`). Biome reports nothing in my files.

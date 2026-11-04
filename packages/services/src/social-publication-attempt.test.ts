@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-	createDeterministicPublicationPlatform,
-	createPublicationPlatformRegistry,
-} from "./social-publication-platform";
+import { createPublicationPlatformRegistry } from "./social-publication-platform";
+import { createDeterministicPublicationPlatform } from "./social-publication-platform-test-support";
 import {
 	createInMemorySocialPublicationAttemptStore,
 	createSocialPublicationAttempt,

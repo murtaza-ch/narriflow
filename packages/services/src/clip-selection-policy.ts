@@ -719,25 +719,6 @@ export function buildMarketCompliantClipCandidates(input: {
   };
 }
 
-export function summarizeDurations(clips: Array<{ durationSec: number }>) {
-  if (clips.length === 0) {
-    return {
-      minSec: null,
-      maxSec: null,
-      avgSec: null,
-    };
-  }
-
-  const durations = clips.map((clip) => clip.durationSec);
-  const total = durations.reduce((sum, duration) => sum + duration, 0);
-
-  return {
-    minSec: roundSeconds(Math.min(...durations)),
-    maxSec: roundSeconds(Math.max(...durations)),
-    avgSec: roundSeconds(total / durations.length),
-  };
-}
-
 export const CLIP_DETECTION_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -817,28 +798,3 @@ export const CLIP_DETECTION_JSON_SCHEMA = {
     },
   },
 } as const;
-
-export function extractResponseText(payload: unknown): string | null {
-  const response = payload as {
-    output_text?: unknown;
-    output?: Array<{
-      content?: Array<{
-        text?: unknown;
-        type?: unknown;
-      }>;
-    }>;
-  };
-
-  if (typeof response.output_text === "string") {
-    return response.output_text;
-  }
-
-  const textParts =
-    response.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((content) => content.text)
-      .filter((text): text is string => typeof text === "string") ?? [];
-
-  return textParts.length > 0 ? textParts.join("") : null;
-}
-

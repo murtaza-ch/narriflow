@@ -6,13 +6,13 @@ import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { flushProjectProgressDrains } from "./progress-outbox";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
+import { exportWithHistoryWhere } from "./clip-history";
 import { assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 
 export { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "./motion-render-analytics";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import type { Clip, ClipRender } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
+import type { ClipRender } from "@prisma/client";
 import { effectiveCaptionLanguage } from "./clip-export-subtitles";
 import { projectService } from "./project.service";
 import {
@@ -88,13 +88,9 @@ import {
   tryDerivePeaksStorageKey,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
-import { hasFeature } from "./plan-features";
-import {
-  partitionRenderGroups,
-} from "./render-group-contract";
-import type { RenderGroupAdmission } from "./render-group-lifecycle";
 import { assertClipExportDocumentAllowed, resolveClipExportOutput } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-access";
+import { OpenAiResponsesError, requestOpenAiText } from "./openai-responses";
 import { workspaceService } from "./workspace.service";
 import type { ActorScope } from "./actor-scope";
 import {
@@ -116,6 +112,7 @@ import {
   computePlatformScore,
   computeViralityScore,
 } from "./clip-scoring";
+import { requirePrisma } from "./require-prisma";
 
 export {
   computeDurationOptimality,
@@ -124,8 +121,27 @@ export {
   computeViralityScore,
 } from "./clip-scoring";
 
-type ClipWithRenders = Clip & {
-  renders: ClipRender[];
+/** What a Clip render row contributes to a snapshot. */
+const clipRenderVariantSelect = {
+  aspectRatio: true, status: true, sizeBytes: true, durationSec: true, errorCode: true,
+  completedAt: true, storageKey: true, resolution: true, captionDiagnostics: true, exportVariantId: true,
+} satisfies Prisma.ClipRenderSelect;
+
+/** Every Clip column a snapshot reads, and nothing the Studio alone needs. */
+const clipSnapshotSelect = {
+  id: true, projectId: true, editorRevision: true, editorDocumentVersion: true, index: true, status: true,
+  startSec: true, endSec: true, wholeSource: true, title: true, hookText: true, payoffText: true,
+  reasoning: true, category: true, platformFit: true, transcriptSlice: true, captionPreset: true,
+  brollUrl: true, brollCues: true, studioEdits: true, deletedRanges: true, sceneBlocks: true,
+  censorSegments: true, mediaMotions: true, viralityScore: true, hookStrengthScore: true,
+  emotionalIntensityScore: true, storyCompletenessScore: true, pacingScore: true,
+  durationOptimalityScore: true, tiktokScore: true, youtubeScore: true, instagramScore: true,
+  previewStorageKey: true, createdAt: true,
+} satisfies Prisma.ClipSelect;
+
+type ClipRenderVariantRow = Prisma.ClipRenderGetPayload<{ select: typeof clipRenderVariantSelect }>;
+type ClipWithRenders = Prisma.ClipGetPayload<{ select: typeof clipSnapshotSelect }> & {
+  renders: ClipRenderVariantRow[];
   project?: { sourceDurationSeconds: number | null; sourceProbe?: Prisma.JsonValue | null } | null;
 };
 
@@ -188,13 +204,6 @@ function sortPendingClipRenders<
   });
 }
 
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new Error("Database client unavailable");
-  }
-  return prisma;
-}
 
 function normalizeAspectRatios(
   aspectRatios?: ClipAspectRatio[],
@@ -211,7 +220,7 @@ function normalizeAspectRatios(
   );
 }
 
-export function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
+export function toClipRenderVariantSnapshot(render: ClipRenderVariantRow): ClipRenderVariant {
   const aspectRatioDb = clipAspectRatioDbSchema.parse(render.aspectRatio);
   const aspectRatio = clipAspectRatioFromDb[aspectRatioDb];
   const resolution = clipRenderResolutionSchema.parse(render.resolution);
@@ -313,6 +322,7 @@ const clipActionFailureCatalog = {
   clip_create_from_selection_failed: "unprocessable",
   clip_delete_failed: "unprocessable",
   clip_duplicate_failed: "unprocessable",
+  clip_has_publication_history: "conflict",
   clip_has_scheduled_posts: "conflict",
   clip_not_found: "missing",
 	clip_render_not_found: "missing",
@@ -325,6 +335,7 @@ const clipActionFailureCatalog = {
   editor_document_empty_timeline: "unprocessable",
 	no_clips_available: "unprocessable",
   openai_not_configured: "unavailable",
+  openai_rate_limited: "rate_limited",
 	project_not_found: "missing",
 	transcript_not_ready: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -335,6 +346,7 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   clip_create_from_selection_failed: "The selected clip could not be created",
   clip_delete_failed: "The clip could not be deleted",
   clip_duplicate_failed: "The clip could not be duplicated",
+  clip_has_publication_history: "This clip has review or publishing history",
   clip_has_scheduled_posts: "Cancel scheduled posts before deleting this clip",
   clip_not_found: "Clip not found",
 	clip_render_not_found: "Clip render not found",
@@ -347,6 +359,7 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   editor_document_empty_timeline: "The clip timeline cannot be empty",
 	no_clips_available: "No clips are available for rendering",
   openai_not_configured: "Title suggestions are temporarily unavailable",
+  openai_rate_limited: "Title suggestions are busy. Try again in a minute",
 	project_not_found: "Project not found",
 	transcript_not_ready: "The transcript is not ready",
 };
@@ -655,6 +668,10 @@ export function planCreateClipFromSelection(
   };
 }
 
+// Three short titles; the budget also covers the model's reasoning tokens.
+const TITLE_MAX_OUTPUT_TOKENS = 4_000;
+const TITLE_TIMEOUT_MS = 45_000;
+
 /**
  * System prompt for AI title suggestions.
  *
@@ -705,23 +722,6 @@ export function buildClipTitleUserPrompt(input: {
     .join("\n");
 }
 
-/** Pulls the text out of an OpenAI Responses API payload, which returns either
- *  a flattened `output_text` or the structured `output[].content[].text` form.
- *  Mirrors the same helper in content-suite.service.ts. */
-function extractOpenAiResponseText(payload: unknown): string | null {
-  const response = payload as {
-    output_text?: unknown;
-    output?: Array<{ content?: Array<{ text?: unknown }> }>;
-  };
-  if (typeof response.output_text === "string") return response.output_text;
-  const parts =
-    response.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((content) => content.text)
-      .filter((text): text is string => typeof text === "string") ?? [];
-  return parts.length > 0 ? parts.join("") : null;
-}
-
 /** Every storage-key-bearing field hanging off one clip. Mirrors
  *  ProjectStorageSnapshot's role for whole-project deletion. */
 export interface ClipStorageSnapshot {
@@ -759,6 +759,7 @@ export function planClipStorageDeletion(
 
 export interface ClipDeletionRow {
   hasActivePublication: boolean;
+  hasPublicationHistory: boolean;
   storage: ClipStorageSnapshot;
 }
 
@@ -772,6 +773,7 @@ export interface ClipDeletionDeps {
 export type ClipDeletionOutcome =
   | { kind: "not_found" }
   | { kind: "active_publication" }
+  | { kind: "publication_history" }
   | { kind: "storage_incomplete"; failedObjectCount: number }
   | { kind: "deleted" }
   | { kind: "already_deleted" };
@@ -799,6 +801,7 @@ export async function runClipDeletion(
   const row = await deps.getClipRow();
   if (!row) return { kind: "not_found" };
   if (row.hasActivePublication) return { kind: "active_publication" };
+  if (row.hasPublicationHistory) return { kind: "publication_history" };
 
   const keys = planClipStorageDeletion(row.storage);
   const results = await Promise.allSettled(keys.map((key) => deps.deleteObject(key)));
@@ -932,9 +935,10 @@ export class ClipService {
         projectId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
-      include: {
+      select: {
+        ...clipSnapshotSelect,
         project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
-        renders: true,
+        renders: { where: { exportVariantId: null }, select: clipRenderVariantSelect },
       },
       orderBy: { viralityScore: "desc" },
     });
@@ -1061,15 +1065,13 @@ export class ClipService {
       "gpt-5.4-mini";
 
     await prisma.$transaction(requireExecutionAdmissionOpen);
-    let response: Response;
+    let content: string;
     try {
-      response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+      content = await requestOpenAiText({
+        apiKey,
+        maxOutputTokens: TITLE_MAX_OUTPUT_TOKENS,
+        timeoutMs: TITLE_TIMEOUT_MS,
+        body: {
           model,
           input: [
             {
@@ -1108,26 +1110,14 @@ export class ClipService {
               },
             },
           },
-        }),
+        },
       });
-    } catch {
-      throw new ClipActionError("clip_title_suggestion_failed");
-    }
-
-    const payload = (await response.json().catch(() => null)) as { error?: { message?: string };
-    }
-      | null;
-
-    if (!response.ok || !payload) {
+    } catch (error) {
+      if (!(error instanceof OpenAiResponsesError)) throw error;
       throw new ClipActionError(
-        "clip_title_suggestion_failed",
-      );
-    }
-
-    const content = extractOpenAiResponseText(payload);
-    if (!content) {
-      throw new ClipActionError(
-        "clip_title_suggestion_failed",
+        error.code === "openai_rate_limited"
+          ? "openai_rate_limited"
+          : "clip_title_suggestion_failed",
       );
     }
 
@@ -1773,11 +1763,13 @@ export class ClipService {
                   where: { status: { in: ["scheduled", "publishing"] } },
                   select: { id: true },
                 },
+                exports: { where: exportWithHistoryWhere, select: { id: true }, take: 1 },
               },
             });
             if (!clip) return null;
             return {
               hasActivePublication: clip.socialPosts.length > 0,
+              hasPublicationHistory: clip.exports.length > 0,
               storage: {
                 previewStorageKey: clip.previewStorageKey,
                 renderStorageKeys: clip.renders.map(
@@ -1825,6 +1817,9 @@ export class ClipService {
       throw new ClipActionError(
         "clip_has_scheduled_posts",
       );
+    }
+    if (outcome.kind === "publication_history") {
+      throw new ClipActionError("clip_has_publication_history");
     }
     if (outcome.kind === "storage_incomplete") {
       throw new ClipActionError(
@@ -2123,46 +2118,6 @@ export class ClipService {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
-  }
-
-  /**
-   * The complete Render Group partition of a frozen Render Work Set: one group
-   * per clip and frozen export configuration, so aspect variants that share an
-   * export share their analysis and one encode. Returns null once the work set
-   * has been admitted; a reclaiming coordinator then continues from the stored
-   * membership instead of recomputing it from rows that have since settled.
-   */
-  async planRenderGroups(
-    projectId: string,
-    workflowRunId: string,
-  ): Promise<readonly RenderGroupAdmission[] | null> {
-    const prisma = requirePrisma();
-    const run = await prisma.workflowRun.findFirst({
-      where: { id: workflowRunId, projectId },
-      select: {
-        renderWorkSetGeneration: true,
-        project: { select: { workspace: { select: { pricingTier: true } } } },
-      },
-    });
-    if (!run) throw new Error("Render work set run not found");
-    if (run.renderWorkSetGeneration) return null;
-    const noWatermark = hasFeature(
-      resolvePricingTier(run.project.workspace.pricingTier),
-      "export.noWatermark",
-    );
-    const variants = await prisma.clipRender.findMany({
-      where: { workflowRunId, clip: { projectId } },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: {
-        id: true,
-        clipId: true,
-        resolution: true,
-        editorRevision: true,
-        clip: { select: { editorRevision: true } },
-        exportVariant: { select: { exportId: true, watermark: true } },
-      },
-    });
-    return partitionRenderGroups(variants, !noWatermark);
   }
 
   /** Queues a fresh clip_rendering run for variants that were added while a

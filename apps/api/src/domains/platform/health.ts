@@ -11,6 +11,8 @@ export interface HealthDependencies {
   /** Upper bound for the database probe. */
   databaseTimeoutMs?: number;
   cacheMs?: number;
+  /** Where the last answer lives. The Worker rebuilds the app per request, so production passes one per isolate. */
+  readiness?: ReadinessCache;
   now?: () => number;
 }
 
@@ -39,18 +41,24 @@ async function databaseReady(dependencies: HealthDependencies): Promise<boolean>
 }
 
 /**
- * Liveness and readiness, mounted at `/api`. Neither needs credentials, Clerk,
- * Redis or an AI/provider key: readiness is the migrated database plus the validated
+ * Liveness and readiness, mounted at `/api`. Neither needs credentials, Clerk
+ * or an AI/provider key: readiness is the migrated database plus the validated
  * startup configuration, and it fails while the process drains.
  */
+/** The last readiness answer: plain data, so it can outlive the request that measured it. */
+export interface ReadinessCache {
+  value?: { ready: boolean; expiresAt: number };
+}
+
 export function createHealthRoutes(dependencies: HealthDependencies) {
+  const cache = dependencies.readiness ?? {};
   const now = dependencies.now ?? (() => performance.now());
-  let cached: { ready: boolean; expiresAt: number } | undefined;
+  // A probe promise belongs to the request that started it, so only the answer is shared.
   let inFlight: Promise<boolean> | undefined;
   const probe = () => {
-    if (cached && now() < cached.expiresAt) return Promise.resolve(cached.ready);
+    if (cache.value && now() < cache.value.expiresAt) return Promise.resolve(cache.value.ready);
     inFlight ??= databaseReady(dependencies).then((ready) => {
-      cached = { ready, expiresAt: now() + (dependencies.cacheMs ?? 5_000) };
+      cache.value = { ready, expiresAt: now() + (dependencies.cacheMs ?? 5_000) };
       inFlight = undefined;
       return ready;
     });

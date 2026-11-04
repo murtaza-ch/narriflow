@@ -4,6 +4,7 @@ import type { ExecutionArtifact, Prisma, PrismaClient } from "@prisma/client";
 import { executionOutputDescriptorSchema, executionPartPlanSchema, executionTransferCommandSchema, executionTransferDispositionSchema,
   EXECUTION_TRANSFER_PART_BYTES, type ExecutionOutputDescriptor, type ExecutionPartPlan, type ExecutionTransferCommand, type ExecutionTransferDisposition } from "@narriflow/validators/execution-transfer";
 import { executionMediaFunctionSchema } from "@narriflow/validators/execution";
+import { uploadMimeTypes } from "@narriflow/validators";
 import type { ExecutorLiveAuthority } from "./executor-control";
 import { ExecutorControlError } from "./executor-control";
 import type { VerifiedExecutionRequest } from "./execution-signature";
@@ -46,7 +47,7 @@ interface Options<TRef, TPrepared> {
 
 const contentTypes: Readonly<Record<string, readonly string[]>> = {
   source_audio: ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg", "audio/aac"],
-  source_video: ["application/octet-stream", "audio/ogg", "audio/flac", "audio/x-wav", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "audio/mpeg", "audio/mp4", "audio/wav", "audio/aac"],
+  source_video: ["application/octet-stream", "audio/ogg", "audio/flac", ...uploadMimeTypes],
   render_variant: ["video/mp4"], render_outcome: ["application/json"], clip_preview: ["video/mp4"], preview_peaks: ["application/json"], layout_evidence: ["application/json"], probe: ["application/json", "audio/wav"],
   thumbnail: ["image/png", "image/jpeg", "image/webp"], export_bundle: ["application/zip"], dub_mix: ["video/mp4", "audio/wav", "audio/mpeg", "audio/mp4"], selection_window: ["application/json"],
   validated_font: ["font/ttf", "font/otf", "font/woff2", "application/font-sfnt", "application/x-font-ttf", "application/x-font-opentype", "application/octet-stream"],

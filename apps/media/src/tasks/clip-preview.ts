@@ -12,13 +12,13 @@ import type { CaptionPreset } from "@narriflow/validators";
 import { resolveDisplayGeometry, type WorkerProcessModule, type VideoClockDecision } from "../worker-process";
 
 
-// CRF 30 at 540p measured ~1-2MB for a 30s talking-head clip in verification
-// (see the worker's clip-preview report) — tune via env without a deploy.
+// CRF 30 at 540p measured ~1-2MB for a 30s talking-head clip in verification.
 // Preview encoding uses two threads within the container resource limit.
 
-/** ffmpeg reads the source over HTTPS rather than from disk, so a transient
- *  network blip mid-cut would otherwise abort the encode. These make it
- *  reconnect instead. Harmless when the input happens to be a local path.
+/** ffmpeg reads the source over HTTP from the executor's loopback source
+ *  server, so a transient upstream blip mid-cut would otherwise abort the
+ *  encode. These make it reconnect instead. They are HTTP protocol options:
+ *  ffmpeg refuses them on a local path.
  *
  *  `-reconnect_on_http_error` only covers status codes actually worth
  *  retrying: 429 (rate limited) and the transient 5xx family. Deliberately
@@ -29,8 +29,8 @@ import { resolveDisplayGeometry, type WorkerProcessModule, type VideoClockDecisi
  *  it, a connection that goes quiet mid-transfer (rather than erroring or
  *  closing) hangs the ffmpeg child forever; the reconnect flags above never
  *  even trigger because nothing has "failed" yet. This is a per-I/O-op
- *  timeout, not a whole-process one — execCommand's own timeoutMs (below) is
- *  the wall-clock backstop for the process as a whole. */
+ *  timeout, not a whole-process one — the worker process deadline is the
+ *  wall-clock backstop for the process as a whole. */
 export const HTTP_SOURCE_RECONNECT_HTTP_ERROR_CODES = "429,500,502,503,504";
 export const HTTP_SOURCE_RW_TIMEOUT_US = 30_000_000; // 30s
 
@@ -49,14 +49,6 @@ export const HTTP_SOURCE_ARGS = [
   String(HTTP_SOURCE_RW_TIMEOUT_US),
 ] as const;
 
-// A whole-process wall-clock bound on ffmpeg/ffprobe children. Without this,
-// a stalled read (or a pathological input) blocks this task's own poll
-// loop's mutex indefinitely — see index.ts's pollClipPreviewQueue, which
-// depends on this task always eventually returning. ffprobe only reads a
-// small header's worth of the stream, so it gets a much tighter budget than
-// a full cut. Measured a real cut at 11.72s wall for a 38s window off a
-// 531 MB 4K source (see processPendingClipPreviews); 120s leaves generous
-// headroom for a slower network or a longer padded window before killing it.
 export const PREVIEW_PEAKS_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 
 export function previewPaddingSec(): number {
@@ -589,12 +581,14 @@ export async function persistOptionalClipPreviewPeaks(params: {
 }
 
 /** Expected facts for the existing proxy command; source display geometry
- * drives its scale, and the waveform path has its own fixed 25 fps canvas. */
+ * drives its scale, and the waveform path has its own fixed 25 fps canvas.
+ * Each stream ends where its source stream ends within the window. */
 export function clipPreviewOutputExpectation(
   probe: Parameters<typeof resolveDisplayGeometry>[0] & { hasVideo: boolean; hasAudio: boolean; fps: number; videoClock?: VideoClockDecision },
-  durationSec: number,
+  window: { startSec: number; durationSec: number },
   maxHeight: number = previewMaxHeight(),
 ): RenderOutputExpectation {
+  const { durationSec } = window;
   const geometry = resolveDisplayGeometry(probe);
   const dimensions = probe.hasVideo ? {
     width: Math.max(2, Math.round(maxHeight * geometry.width / geometry.height / 2) * 2),
@@ -606,12 +600,15 @@ export function clipPreviewOutputExpectation(
     numerator: geometry.width * dimensions.height,
     denominator: geometry.height * dimensions.width,
   };
+  const windowEnd = (stream: { endTimeSec: number | null } | undefined) => typeof stream?.endTimeSec === "number"
+    ? Math.min(durationSec, Math.max(0, stream.endTimeSec - (probe.facts?.format.startTimeSec ?? 0) - window.startSec)) : null;
   return {
     durationSec, ...dimensions,
     frameRate: probe.hasVideo ? probe.videoClock?.constantRate ?? video?.rFrameRate ?? standardFrameRate(probe.fps) ?? { numerator: 30, denominator: 1 } : { numerator: 25, denominator: 1 },
     sampleAspectRatio: sar,
     audio: probe.hasAudio ? { channels: 1, ...(audio?.sampleRate ? { sampleRate: audio.sampleRate } : {}) } : null,
     color: passthroughColor(video),
+    previewStreamEnds: { videoSec: windowEnd(video), audioSec: windowEnd(audio) },
   };
 }
 
@@ -621,9 +618,9 @@ export async function encodeAndValidateClipPreview(params: {
   args: string[];
   outputPath: string;
   expected: RenderOutputExpectation;
-  deadlineMs?: number;
+  deadlineMs: number;
   diagnose?: Parameters<typeof validateRenderOutput>[0]["diagnose"];
 }) {
-  await params.workerProcess.execute({ command: "ffmpeg", args: params.args, signal: params.signal, deadlineMs: params.deadlineMs ?? previewFfmpegTimeoutMs() });
+  await params.workerProcess.execute({ command: "ffmpeg", args: params.args, signal: params.signal, deadlineMs: params.deadlineMs });
   return validateRenderOutput({ path: params.outputPath, expected: params.expected, workerProcess: params.workerProcess, signal: params.signal, diagnose: params.diagnose });
 }

@@ -1,6 +1,7 @@
-import { detectLinkProvider,LINK_PROVIDERS,zoomIngestPayloadSchema } from "@narriflow/validators";
+import { detectLinkProvider,zoomIngestPayloadSchema } from "@narriflow/validators";
 import type { IngestJob } from "@prisma/client";
 import { ingestAcquisitionSchema,ingestDirectReadSchema,ingestUploadReadSchema,type IngestUploadRead,type IngestDirectRead,type SourceVideoBinding } from "@narriflow/validators/execution";
+import { sha256Hex } from "./execution-hash";
 
 type Job=Pick<IngestJob,"jobType"|"payload"|"sourceCredential"|"projectId">;
 export interface IngestSourceReadPorts {
@@ -14,12 +15,12 @@ function payload(job:Job){
  if(!job.payload||typeof job.payload!=="object"||Array.isArray(job.payload))throw new IngestSourceDefinitionError("worker_invalid_payload");
  ingestAcquisitionSchema.parse(job.payload.acquisition);return job.payload;
 }
-async function identityHash(value:unknown){return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify(value)))),byte=>byte.toString(16).padStart(2,"0")).join("");}
+async function identityHash(value:unknown){return await sha256Hex(JSON.stringify(value));}
 function episode(value:ReturnType<typeof payload>){const item=value.episode;if(!item||typeof item!=="object"||Array.isArray(item)||typeof item.id!=="string"||typeof item.enclosureUrl!=="string")throw new IngestSourceDefinitionError("rss_missing_enclosure");return item;}
 function link(value:ReturnType<typeof payload>){
  if(typeof value.url!=="string"||value.url.length>8192)throw new IngestSourceDefinitionError("link_unsupported_source");
- const provider=detectLinkProvider(value.url),definition=LINK_PROVIDERS.find(item=>item.id===provider);
- if(!provider||provider==="youtube"||value.provider!==provider||!definition)throw new IngestSourceDefinitionError("link_unsupported_source");return definition;
+ const provider=detectLinkProvider(value.url);
+ if(!provider||provider==="youtube"||value.provider!==provider)throw new IngestSourceDefinitionError("link_unsupported_source");
 }
 function uploadId(value:unknown){if(typeof value!=="string"||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value))throw new IngestSourceDefinitionError("worker_invalid_payload");return value;}
 function upload(value:ReturnType<typeof payload>){return ingestUploadReadSchema.parse({storageKey:value.storageKey,etag:value.verifiedEtag,byteLength:value.verifiedSizeBytes,contentType:value.verifiedContentType});}
@@ -33,7 +34,7 @@ export async function ingestSourceMediaIdentity(job:Job):Promise<SourceVideoBind
  if(job.jobType==="rss_import"){const item=episode(value);return {provider:"rss",mediaId:await identityHash(["rss",value.rssUrl,item.id,item.enclosureUrl])};}
  throw new IngestSourceDefinitionError("worker_invalid_payload");
 }
-export type IngestSourceDefinition={kind:"direct_source"|"extractor_source";mediaIdentity:SourceVideoBinding["mediaIdentity"];source:IngestDirectRead}|
+export type IngestSourceDefinition={kind:"direct_source";mediaIdentity:SourceVideoBinding["mediaIdentity"];source:IngestDirectRead}|
  {kind:"upload_source";mediaIdentity:SourceVideoBinding["mediaIdentity"];source:IngestUploadRead};
 async function resolveDefinition(job:Job,ports:IngestSourceReadPorts):Promise<IngestSourceDefinition>{
  const mediaIdentity=await ingestSourceMediaIdentity(job);
@@ -41,8 +42,7 @@ async function resolveDefinition(job:Job,ports:IngestSourceReadPorts):Promise<In
  if(job.jobType==="link_import"){
   const value=payload(job),url=new URL(String(value.url));url.hash="";
   if(value.provider==="dropbox")url.searchParams.set("dl","1");
-  const strategy=link(value).strategy;
-  return {kind:strategy==="direct"?"direct_source":"extractor_source",mediaIdentity,source:ingestDirectReadSchema.parse({provider:"direct",url:url.toString(),authorization:null})};
+  return {kind:"direct_source",mediaIdentity,source:ingestDirectReadSchema.parse({provider:"direct",url:url.toString(),authorization:null})};
  }
  if(job.jobType==="rss_import")return {kind:"direct_source",mediaIdentity,source:ingestDirectReadSchema.parse({provider:"rss",url:episode(payload(job)).enclosureUrl,authorization:null})};
  if(job.jobType==="zoom_import"){

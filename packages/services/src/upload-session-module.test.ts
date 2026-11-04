@@ -4,7 +4,6 @@ import { ProcessingUsageError } from "./processing-usage";
 import { MAX_UPLOAD_SIZE_BYTES } from "@narriflow/validators";
 import {
   createUploadSessionModule,
-  assertUploadProviderLifecyclePrerequisite,
   defaultUploadSessionConfig,
   planUploadTransfer,
   UploadSessionIdempotencyConflictError,
@@ -96,24 +95,6 @@ describe("Upload Session", () => {
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
-  });
-
-  test("requires a confirmed provider lifecycle beyond the application hard lifetime", () => {
-    expect(() =>
-      assertUploadProviderLifecyclePrerequisite({ NODE_ENV: "production" }),
-    ).toThrow("R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS");
-    expect(() =>
-      assertUploadProviderLifecyclePrerequisite({
-        NODE_ENV: "production",
-        R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS: "6",
-      }),
-    ).toThrow("longer than the Upload Session hard lifetime");
-    expect(() =>
-      assertUploadProviderLifecyclePrerequisite({
-        NODE_ENV: "production",
-        R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS: "7",
-      }),
-    ).not.toThrow();
   });
 
   test("plans direct PUT through 100 MiB and multipart above the threshold", () => {

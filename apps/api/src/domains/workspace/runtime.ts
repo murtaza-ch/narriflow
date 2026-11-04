@@ -1,8 +1,9 @@
 import { listUserWorkspaces } from "@narriflow/auth";
-import { sendEmail } from "@narriflow/email";
+import { mailerConfig, sendEmail } from "@narriflow/email";
 import { autoCensorService } from "@narriflow/services/auto-censor.service";
 import { performanceService } from "@narriflow/services/performance.service";
 import { projectService } from "@narriflow/services/project.service";
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { workspaceCommands } from "@narriflow/services/workspace-commands-runtime";
 import { workspaceMembershipService } from "@narriflow/services/workspace-membership.service";
 import { workspaceService } from "@narriflow/services/workspace.service";
@@ -19,7 +20,8 @@ export function createWorkspaceRouteDeps(config: ApiConfig): WorkspaceRouteDeps 
     performanceService,
     autoCensorService,
     listUserWorkspaces,
-    sendEmail,
+    // Read per call: the Worker's settings exist only inside a request.
+    sendEmail: (input) => sendEmail(input, mailerConfig(readServiceEnvironment())),
     webOrigin: config.webOrigin,
   };
 }

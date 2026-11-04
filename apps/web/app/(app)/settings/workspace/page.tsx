@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Flex, Input, Stack, Text } from "@chakra-ui/react";
-import { describeApiFailure, type WorkspaceScope } from "@narriflow/api-client";
+import type { WorkspaceScope } from "@narriflow/api-client";
 import { createPublishingClient, publishingKeys } from "@narriflow/api-client/publishing";
 import {
   performanceGuidanceMutation,
@@ -17,6 +17,7 @@ import { queryOptions, useMutation, useQuery } from "@tanstack/react-query";
 import { Building2, Sparkles } from "lucide-react";
 import { useMemo } from "react";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { gateQueries } from "@/app/_components/query-gate";
 import { QueryLoadError, QueryMutationForm } from "@/app/_components/query-mutation-form";
 import { AccessNote } from "../_components/access-note";
 import { SettingsCard, StatusPill } from "../_components/settings-ui";
@@ -59,28 +60,21 @@ function WorkspaceSettingsContent({ scope }: { scope: WorkspaceScope }) {
   const update = useMutation(useMemo(() => updateWorkspaceMutation(runtime, scope), [runtime, scope]));
   const setGuidance = useMutation(useMemo(() => performanceGuidanceMutation(runtime, scope), [runtime, scope]));
 
-  const reads = [profile, bootstrap, guidanceRead, censorWords];
-  const failed = reads.find((query) => query.isError);
-  if (failed && describeApiFailure(failed.error).kind !== "superseded") {
+  const gate = gateQueries([profile, bootstrap, guidanceRead, censorWords]);
+  if (gate.status === "failed") {
     return (
       <Stack gap="6">
         <PageHeader title="Workspace settings" description="Name, timezone, and how Narriflow picks clips here." />
-        <QueryLoadError
-          error={failed.error}
-          what="Workspace settings"
-          onRetry={() => {
-            for (const query of reads) if (query.isError) void query.refetch();
-          }}
-        />
+        <QueryLoadError error={gate.error} what="Workspace settings" onRetry={gate.retry} />
       </Stack>
     );
   }
-  if (!profile.data || !bootstrap.data || !guidanceRead.data || !censorWords.data) return <WorkspaceSettingsLoading />;
+  if (gate.status === "loading") return <WorkspaceSettingsLoading />;
 
-  const workspace = profile.data;
-  const guidance = guidanceRead.data.guidance;
+  const [workspace, workspaceBootstrap, guidanceResult, censorWordList] = gate.data;
+  const guidance = guidanceResult.guidance;
   // The same capability the save routes and avatar routes admit with.
-  const canManage = bootstrap.data.capabilities["workspace.manage"];
+  const canManage = workspaceBootstrap.capabilities["workspace.manage"];
   return (
     <Stack gap="6">
       <PageHeader title="Workspace settings" description="Name, timezone, and how Narriflow picks clips here." />
@@ -147,7 +141,7 @@ function WorkspaceSettingsContent({ scope }: { scope: WorkspaceScope }) {
           )}
         </QueryMutationForm>
       </SettingsCard>
-      <CensorWordsCard scope={scope} words={censorWords.data.words} customized={censorWords.data.customized} canManage={canManage} />
+      <CensorWordsCard scope={scope} words={censorWordList.words} customized={censorWordList.customized} canManage={canManage} />
     </Stack>
   );
 }

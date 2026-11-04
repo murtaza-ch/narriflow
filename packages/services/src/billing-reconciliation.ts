@@ -4,6 +4,7 @@ import { appendExecutionDispatch, readExecutionDispatch } from "./execution-disp
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { readExecutionAdmission } from "./execution-admission";
 import { lockWorkspaceUsage } from "./processing-usage";
+import { sha256Hex } from "./execution-hash";
 
 type Tx = Prisma.TransactionClient;
 export interface BillingReconciliationClaim { workspaceId: string; attemptId: string; attemptCount: number; dueAt: Date }
@@ -12,7 +13,7 @@ async function inputHash(row: WorkspaceBillingAccount): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(["billing-reconciliation-v1", row.workspaceId,
     row.reconciliationEpoch, row.reconciliationGeneration, row.nextReconcileAt.toISOString(),
     row.providerCustomerId, row.canonicalSubscriptionId, row.seatRevision]));
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2,"0")).join("");
+  return await sha256Hex(bytes);
 }
 async function append(tx: Tx, row: WorkspaceBillingAccount) {
   const record = await appendExecutionDispatch(tx, { deploymentEpoch: row.reconciliationEpoch, generation: row.reconciliationGeneration,

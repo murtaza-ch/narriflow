@@ -31,3 +31,14 @@ test("a chunked source exceeding its bound is refused once and its partial file 
   expect(calls).toBe(1);await expect(readFile(path)).rejects.toMatchObject({code:"ENOENT"});
  }finally{await rm(directory,{recursive:true,force:true});}
 });
+
+test("a file host's generic binary label reaches the probe, and a web page stops here",async()=>{
+ const directory=await mkdtemp(join(tmpdir(),"native-direct-type-"));
+ const read=(type:string,name:string)=>downloadDirectSource({provider:"direct",url:"https://www.dropbox.com/s/abc/video.mp4?dl=1",authorization:null},join(directory,name),{
+  fetch:async()=>new Response("media",{headers:{"content-type":type}}),delay:async()=>{}});
+ try{
+  expect(await read("application/binary","binary")).toEqual({byteLength:5,contentType:"application/binary"});
+  expect(await read("binary/octet-stream; charset=binary","octet")).toEqual({byteLength:5,contentType:"binary/octet-stream"});
+  await expect(read("text/html; charset=utf-8","page")).rejects.toMatchObject({code:"remote_media_invalid_content_type",retryable:false});
+ }finally{await rm(directory,{recursive:true,force:true});}
+});

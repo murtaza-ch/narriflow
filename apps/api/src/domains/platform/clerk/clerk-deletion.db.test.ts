@@ -119,6 +119,44 @@ dbDescribe("Clerk deletion is terminal", () => {
     await expectClosed(account);
   }));
 
+  test("deletion removes non-owner memberships, frees their seats, and wakes Billing", bindServiceTestEnvironment(async () => {
+    const owner = await provision();
+    const editor = await provision();
+    const viewer = await provision();
+    const team = await prisma.workspace.create({
+      data: {
+        name: "Deleted member team",
+        ownerUserId: owner.user.id,
+        pricingTier: "business",
+        members: { create: [
+          { userId: owner.user.id, role: "owner" },
+          { userId: editor.user.id, role: "editor" },
+          { userId: viewer.user.id, role: "viewer" },
+        ] },
+        billingAccount: { create: { desiredAdditionalSeats: 1, seatRevision: 3, nextReconcileAt: new Date("2030-01-01T00:00:00.000Z") } },
+      },
+    });
+
+    await auth.markUserDeletedByClerkId(editor.user.clerkId);
+    await auth.markUserDeletedByClerkId(editor.user.clerkId);
+    const afterEditor = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: team.id } });
+    expect(afterEditor).toMatchObject({ desiredAdditionalSeats: 0, seatRevision: 4 });
+    expect(afterEditor.nextReconcileAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // A Viewer holds no seat, but its removal can still lift a restriction.
+    await prisma.workspaceBillingAccount.update({ where: { workspaceId: team.id }, data: { nextReconcileAt: new Date("2030-01-01T00:00:00.000Z") } });
+    await auth.markUserDeletedByClerkId(viewer.user.clerkId);
+    const afterViewer = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: team.id } });
+    expect(afterViewer).toMatchObject({ desiredAdditionalSeats: 0, seatRevision: 4 });
+    expect(afterViewer.nextReconcileAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    expect(await prisma.workspaceMember.findMany({ where: { workspaceId: team.id }, select: { userId: true, role: true } })).toEqual([
+      { userId: owner.user.id, role: "owner" },
+    ]);
+    // Their own Workspace keeps its owner: paid-owner deletion is a separate decision.
+    expect(await prisma.workspaceMember.count({ where: { userId: editor.user.id, role: "owner" } })).toBe(1);
+  }));
+
   test("a delayed older user.updated or user.created after user.deleted is refused", bindServiceTestEnvironment(async () => {
     const account = await provision();
     await auth.markUserDeletedByClerkId(account.user.clerkId);

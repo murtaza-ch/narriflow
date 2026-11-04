@@ -11,8 +11,8 @@ import { lockWorkspaceUsage } from "./processing-usage";
 import { lockAutopilotImportPlan } from "./autopilot-finishing-authority";
 import { autopilotPlanPauseReason } from "./autopilot-plan";
 import { ruleFingerprint } from "./standing-grant";
+import { databaseNow } from "./execution-clock";
 type Tx = Prisma.TransactionClient;
-const clock = async (tx:Tx)=>(await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;
 export const ZOOM_NOTIFICATION_DEADLINE_MS = 30*86400_000;
 export function zoomNotificationInputHash(row:ZoomWebhookJob) {
   return operationFingerprint(["zoom-notification-v1",row.id,row.eventKey,row.payload,row.deploymentEpoch,row.generation,row.ruleCursor,row.executionTarget,row.availableAt.toISOString(),row.operationDeadlineAt?.toISOString()]);
@@ -81,7 +81,7 @@ export class ZoomNotificationExecution {
       const initial=await tx.zoomWebhookJob.findUnique({where:{id:reference.subject.id}});
       if(!initial)return {result:{kind:"superseded"},ids:[]};
       if(initial.deploymentEpoch!==admission.epoch||initial.generation!==reference.generation||zoomNotificationInputHash(initial)!==reference.inputHash||!["queued","running"].includes(initial.status))return {result:{kind:"superseded"},ids:await repair(tx,initial)};
-      let now=await clock(tx);
+      let now=await databaseNow(tx);
       if(record.observedDeadlineAt&&record.observedDeadlineAt>now)return {result:{kind:"sleep",dueAt:record.observedDeadlineAt},ids:[]};
       if(initial.operationDeadlineAt&&initial.operationDeadlineAt<=now){
         const expired=await currentJob(tx,reference);
@@ -98,7 +98,7 @@ export class ZoomNotificationExecution {
       const rule=candidate?await lockRuleParents(tx,candidate.id):null;
       const row=await currentJob(tx,reference);
       if(!row)return {result:{kind:"superseded"},ids:[]};
-      now=await clock(tx);
+      now=await databaseNow(tx);
       if(!row.operationDeadlineAt)throw Error("zoom_notification_deadline_missing");
       if(row.operationDeadlineAt<=now){await tx.zoomWebhookJob.update({where:{id:row.id},data:{status:"failed",generation:{increment:1},completedAt:now,lastError:"zoom_notification_deadline",claimToken:null,leaseExpiresAt:null}});return {result:{kind:"complete"},ids:[]};}
       if(!candidate){await tx.zoomWebhookJob.update({where:{id:row.id},data:{status:"completed",generation:{increment:1},completedAt:now,claimToken:null,leaseExpiresAt:null,lastError:null}});return {result:{kind:"complete"},ids:[]};}
@@ -143,7 +143,7 @@ export class ZoomNotificationExecution {
           await tx.autopilotRule.update({where:{id:prepared.target.plan.source.ruleId},data:{status:"paused",pauseKind:"brand_profile",lastError:"The Recipe's Brand Profile cannot be applied. Fix the Brand Kit or Recipe, then resume this rule."}});
           return this.defer(tx,row,"zoom_brand_profile_unavailable");
         }
-        await tx.autopilotRule.update({where:{id:prepared.target.plan.source.ruleId},data:{lastCheckedAt:await clock(tx),lastSuccessAt:await clock(tx),lastError:null,consecutiveFailures:0}});
+        await tx.autopilotRule.update({where:{id:prepared.target.plan.source.ruleId},data:{lastCheckedAt:await databaseNow(tx),lastSuccessAt:await databaseNow(tx),lastError:null,consecutiveFailures:0}});
         return this.advance(tx,row,prepared.target.plan.source.ruleId,admitted.refusal==="too_long");
       });
       if(ids===null)return {kind:"superseded"};
@@ -163,7 +163,7 @@ export class ZoomNotificationExecution {
   private async prepareDeauthorization(tx:Tx,reference:ExecutionDispatchReference,notification:Deauthorization,now:Date):Promise<Prepared>{
     const row=await currentJob(tx,reference);
     if(!row)return {result:{kind:"superseded"},ids:[]};
-    now=await clock(tx);
+    now=await databaseNow(tx);
     if(row.operationDeadlineAt<=now){await tx.zoomWebhookJob.update({where:{id:row.id},data:{status:"failed",generation:{increment:1},completedAt:now,lastError:"zoom_notification_deadline",claimToken:null,leaseExpiresAt:null}});return {result:{kind:"complete"},ids:[]};}
     const target=row.executionTarget===null?null:zoomExecutionTargetSchema.parse(row.executionTarget);
     if(target&&target.kind!=="deauthorize")throw Error("zoom_notification_target_invalid");
@@ -185,7 +185,7 @@ export class ZoomNotificationExecution {
   private async runDeauthorization(reference:ExecutionDispatchReference,prepared:Extract<Prepared,{action:"deauthorize"}>):Promise<ZoomExecutionResult>{
     const owned=async(tx:Tx)=>{
       if((await readExecutionAdmission(tx)).epoch!==reference.deploymentEpoch)return null;
-      const row=await currentJob(tx,reference),now=await clock(tx);
+      const row=await currentJob(tx,reference),now=await databaseNow(tx);
       return row&&row.claimToken===prepared.claimToken&&row.leaseExpiresAt&&row.leaseExpiresAt>now&&row.operationDeadlineAt&&row.operationDeadlineAt>now?row:null;
     };
     try{
@@ -210,7 +210,7 @@ export class ZoomNotificationExecution {
     if((await readExecutionAdmission(tx)).epoch!==reference.deploymentEpoch||reference.kind!=="operation_driver"||reference.subject.kind!=="zoom_notification")throw Error("zoom_notification_superseded");
     const ledger=await readExecutionDispatch(tx,reference.dispatchId);
     await tx.$queryRaw`SELECT id FROM "ZoomWebhookJob" WHERE id=${reference.subject.id}::uuid FOR SHARE`;
-    const row=await tx.zoomWebhookJob.findUnique({where:{id:reference.subject.id}}),now=await clock(tx);
+    const row=await tx.zoomWebhookJob.findUnique({where:{id:reference.subject.id}}),now=await databaseNow(tx);
     if(!ledger||JSON.stringify(ledger.reference)!==JSON.stringify(reference)||!row||row.status!=="running"||row.deploymentEpoch!==reference.deploymentEpoch||row.generation!==reference.generation||zoomNotificationInputHash(row)!==reference.inputHash||row.claimToken!==input.claimToken||!row.leaseExpiresAt||row.leaseExpiresAt<=now||!row.operationDeadlineAt||row.operationDeadlineAt<=now||operationFingerprint(row.executionTarget)!==operationFingerprint(target)||operationFingerprint(row.payload)!==operationFingerprint(input.notification))throw Error("zoom_notification_superseded");
     const rule=await tx.autopilotRule.findUnique({where:{id:target.plan.source.ruleId},include:{zoomConnection:true}});
     if(!rule||rule.status!=="active"||rule.sourceKind!=="zoom"||rule.createdByUserId!==target.scope.actorUserId||rule.workspaceId!==target.scope.workspaceId||rule.zoomConnectionId!==target.connectionId||!rule.zoomConnection||rule.zoomConnection.revokedAt||rule.zoomConnection.refreshOutcomeUnknown||rule.zoomConnection.userId!==target.connectionUserId||!rule.zoomConnection.accessTokenEncrypted||!rule.zoomConnection.refreshTokenEncrypted||rule.zoomConnection.zoomAccountId!==input.notification.accountId||rule.zoomConnection.zoomUserId!==input.notification.hostId||await ruleFingerprint(tx,rule.id)!==target.plan.source.sourceRuleFingerprint||!await actorAllowed(tx,rule.workspaceId,rule.createdByUserId)||!await actorAllowed(tx,rule.workspaceId,rule.zoomConnection.userId)||await autopilotPlanPauseReason(tx,rule))throw Error("zoom_notification_superseded");
@@ -218,15 +218,15 @@ export class ZoomNotificationExecution {
   private async owned(tx:Tx,reference:ExecutionDispatchReference,token:string,target:ZoomRecordingTarget){
     if((await readExecutionAdmission(tx)).epoch!==reference.deploymentEpoch)return null;
     await lockRuleParents(tx,target.plan.source.ruleId);
-    const row=await currentJob(tx,reference),now=await clock(tx);
+    const row=await currentJob(tx,reference),now=await databaseNow(tx);
     return row&&row.claimToken===token&&row.leaseExpiresAt&&row.leaseExpiresAt>now&&row.operationDeadlineAt&&row.operationDeadlineAt>now?row:null;
   }
   private async advance(tx:Tx,row:ZoomWebhookJob,cursor:string,skipped=false){
-    const next=await tx.zoomWebhookJob.update({where:{id:row.id},data:{status:"queued",generation:{increment:1},availableAt:await clock(tx),ruleCursor:cursor,executionTarget:Prisma.DbNull,claimToken:null,leaseExpiresAt:null,lastError:null,...(skipped?{skippedTargets:{increment:1}}:{})}});
+    const next=await tx.zoomWebhookJob.update({where:{id:row.id},data:{status:"queued",generation:{increment:1},availableAt:await databaseNow(tx),ruleCursor:cursor,executionTarget:Prisma.DbNull,claimToken:null,leaseExpiresAt:null,lastError:null,...(skipped?{skippedTargets:{increment:1}}:{})}});
     return repair(tx,next);
   }
   private async defer(tx:Tx,row:ZoomWebhookJob,code:string){
-    const now=await clock(tx),dueAt=new Date(Math.min(now.getTime()+Math.min(3600_000,60_000*2**Math.min(row.attempts,6)),row.operationDeadlineAt!.getTime()));
+    const now=await databaseNow(tx),dueAt=new Date(Math.min(now.getTime()+Math.min(3600_000,60_000*2**Math.min(row.attempts,6)),row.operationDeadlineAt!.getTime()));
     const next=await tx.zoomWebhookJob.update({where:{id:row.id},data:{status:"queued",generation:{increment:1},claimToken:null,leaseExpiresAt:null,availableAt:dueAt,lastError:code}});
     return repair(tx,next);
   }

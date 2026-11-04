@@ -1,5 +1,6 @@
 import { readServiceEnvironment } from "./runtime-environment";
 import { createHash } from "node:crypto";
+import { createR2Client } from "./r2-client";
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -13,7 +14,6 @@ import {
   ListPartsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
-  S3Client,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -146,30 +146,7 @@ function getR2Config() {
 
 function getClient() {
   const { accountId, accessKeyId, secretAccessKey } = getR2Config();
-
-  return new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId,
-      secretAccessKey,
-    },
-    // The SDK's default ("WHEN_SUPPORTED") attaches a request checksum to
-    // every request whose operation supports one — including PutObject/
-    // UploadPart — by wrapping the body in `aws-chunked` trailer framing.
-    // R2 rejects that framing outright, which is the actual root cause behind
-    // both errors this file used to hit when streaming a body ("You did not
-    // provide the number of bytes specified by the Content-Length HTTP
-    // header" on single PUT; "The socket connection was closed unexpectedly"
-    // on multipart). "WHEN_REQUIRED" only computes a checksum when the
-    // operation mandates one (S3/R2's PutObject and UploadPart do not), so
-    // the body goes out exactly as given — no forced chunked framing.
-    // Verified against the real bucket at 1.5 MB and 50 MB with this set:
-    // see the streaming-vs-buffering decision below and the worker's
-    // clip-preview verification report for the measurements.
-    requestChecksumCalculation: "WHEN_REQUIRED",
-  });
-
+  return createR2Client({ accountId, accessKeyId, secretAccessKey });
 }
 
 export function isR2Configured() {
@@ -477,28 +454,6 @@ export async function readObjectBytes(
   const bytes = Buffer.from(await body.transformToByteArray());
   if (bytes.byteLength > maxBytes) throw new Error("R2 object exceeds the bounded read limit");
   return bytes;
-}
-
-export async function hashObjectSha256(
-  key: string,
-  options?: { signal?: AbortSignal },
-): Promise<string> {
-  await projectStorageDeadline(key);
-  const client = getClient();
-  const { bucket } = getR2Config();
-  const response = await client.send(
-    new GetObjectCommand({ Bucket: bucket, Key: key }),
-    { abortSignal: options?.signal },
-  );
-  if (!response.Body) throw new Error("R2 object body is missing");
-  const body = response.Body as AsyncIterable<Uint8Array>;
-  if (!body[Symbol.asyncIterator]) throw new Error("R2 object body cannot be streamed");
-  const digest = createHash("sha256");
-  for await (const chunk of body) {
-    options?.signal?.throwIfAborted();
-    digest.update(chunk);
-  }
-  return digest.digest("hex");
 }
 
 /** Reads a deliberately small JSON object directly from R2. This is used for

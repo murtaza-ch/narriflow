@@ -5,7 +5,7 @@
     "source": "Railway build log of @narriflow/worker deployment 320ce761-8b4d-4683-91f0-1611c22ecc7e (2026-10-24T17:26Z), the last build that executed the apt and pip layers; every later build (through 39b41650, commit ece879e8, 2026-10-29) hit those cached layers.",
     "aptUpdateAt": "2026-10-24T17:27:02Z",
     "gaps": [
-      "The running container was not inspected (railway ssh needs an SSH key registered on the account). Ticket 21 must run check-render-environment.ts --enforce inside the deployed worker and record the result.",
+      "The running container was not inspected. The deployed Modal image must run check-render-environment.ts --enforce and the result be recorded.",
       "Resolved fallback font files and their SHA-256 were not recoverable offline; fonts.probes[].expectedSha256 stays null until the first in-image capture fills it.",
       "The FFmpeg configure string is not in the log; the package version plus the dated snapshot identify the build."
     ]

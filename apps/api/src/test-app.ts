@@ -31,6 +31,7 @@ export function createInventoryApp(
     policyRuntime?: RequestPolicyRuntime;
     domains?: Partial<ApiDomainRoutes>;
     health?: Partial<ApiAppDependencies["health"]>;
+    admin?: Partial<ApiAppDependencies["admin"]>;
   } = {},
 ): Hono<ApiEnv> {
   const config = inertConfig();
@@ -69,6 +70,6 @@ export function createInventoryApp(
     },
     domains: { ...createDomainRoutes(config), ...overrides.domains },
     ...createExternalRoutes(config),
-    admin: { rateLimit: async () => ({ allowed: true }) as never },
+    admin: { rateLimit: async () => ({ allowed: true }) as never, ...overrides.admin },
   }));
 }

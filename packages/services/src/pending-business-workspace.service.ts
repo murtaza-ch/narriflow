@@ -21,7 +21,7 @@ const contentCounts = {
   zoomOAuthStates: true, reviewApprovalOverrides: true, publicationManualDecisions: true,
   generationFinishings: true, reviewerOptOuts: true,
   // Accepted notices are protected content until their own bounded retention removes them.
-  grantPauseNotifications: true, webhookDisabledNotifications: true,
+  grantPauseNotifications: true, webhookDisabledNotifications: true, outboundDeliveries: true,
 } as const;
 
 export const pendingBusinessWorkspaceSelection = {

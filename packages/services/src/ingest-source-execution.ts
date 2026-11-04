@@ -1,4 +1,5 @@
 import type { IngestJob, Prisma, PrismaClient } from "@prisma/client";
+import { planLimits, resolvePricingTier, youtubeMediaId } from "@narriflow/validators";
 import { ingestAcquisitionSchema, ingestNativeSourceCommandSchema,ingestSourceRefusalCommandSchema, sourceAudioBindingSchema, sourceVideoBindingSchema } from "@narriflow/validators/execution";
 import { createExecutorControl, ExecutorControlError, type ExecutorArtifactHead } from "./executor-control";
 import { createExecutionTransfer } from "./execution-transfer";
@@ -12,35 +13,22 @@ import type { NativeValidationPreparation } from "./native-validation";
 import { autoRetryBackoffMs } from "./processing-retry-policy";
 import { ingestSourceMediaIdentity,resolveIngestSourceDefinition,IngestSourceDefinitionError,type IngestSourceReadPorts } from "./ingest-source-definition";
 import type { ExecutorLiveAuthority } from "./executor-control";
+import { sha256Hex } from "./execution-hash";
+import { canonicalJson } from "./canonical-json";
 
-function canonical(value: Prisma.JsonValue): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key]!)}`).join(",")}}`;
-  return JSON.stringify(value);
-}
-async function digest(value: string) { return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, "0")).join(""); }
+async function digest(value: string) { return await sha256Hex(value); }
 
 /** Canonical payload order survives Postgres JSONB serialization. */
 export function ingestExecutionInputHash(job: Pick<IngestJob, "id" | "projectId" | "jobType" | "payload" | "sourceRevision" | "generation" | "deploymentEpoch">, toolchainFingerprint: string): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(toolchainFingerprint)) throw new ExecutorControlError("invalid_reference");
-  return digest(canonical({ kind: "ingest_source_v1", id: job.id, projectId: job.projectId, jobType: job.jobType, payload: job.payload,
+  return digest(canonicalJson({ kind: "ingest_source_v1", id: job.id, projectId: job.projectId, jobType: job.jobType, payload: job.payload,
     sourceRevision: job.sourceRevision, generation: job.generation, deploymentEpoch: job.deploymentEpoch, toolchainFingerprint }));
 }
 
 /** Normalize to an identity before any native extractor sees a URL. */
 export function ingestYouTubeMediaId(input: unknown): string {
-  if (typeof input !== "string" || input.length > 2048 || [...input].some(char => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127)) throw new ExecutorControlError("invalid_reference");
-  let id: string | null = null;
-  try {
-    const url = new URL(input);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port) throw new Error();
-    if (url.hostname === "youtu.be" && /^\/[A-Za-z0-9_-]{11}\/?$/.test(url.pathname)) id = url.pathname.split("/")[1]!;
-    else if (["youtube.com", "www.youtube.com", "m.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"].includes(url.hostname)) {
-      if (url.pathname === "/watch" && url.searchParams.getAll("v").length === 1) id = url.searchParams.get("v");
-      else if (/^\/(?:shorts|embed|live)\/[A-Za-z0-9_-]{11}\/?$/.test(url.pathname)) id = url.pathname.split("/")[2]!;
-    }
-  } catch { /* Return only a fixed error, never the source URL. */ }
-  if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) throw new ExecutorControlError("invalid_reference");
+  const id = typeof input === "string" ? youtubeMediaId(input) : null;
+  if (!id) throw new ExecutorControlError("invalid_reference");
   return id;
 }
 
@@ -108,7 +96,7 @@ export function createIngestSourceExecution(options: {
   async function current(authority:ExecutorLiveAuthority, database: Pick<Prisma.TransactionClient, "ingestJob"> = options.database){
     const {reference}=authority.fence;
     if(!["modal_execution","local_fetch"].includes(reference.kind)||reference.subject.kind!=="ingest_job")throw new ExecutorControlError("invalid_reference");
-    const job=await database.ingestJob.findUniqueOrThrow({where:{id:reference.subject.id},include:{project:{select:{sourceRevision:true}}}});
+    const job=await database.ingestJob.findUniqueOrThrow({where:{id:reference.subject.id},include:{project:{select:{sourceRevision:true,workspace:{select:{pricingTier:true}}}}}});
     if(job.deploymentEpoch!==reference.deploymentEpoch||job.generation!==reference.generation||job.sourceRevision!==job.project.sourceRevision||reference.inputHash!==await ingestExecutionInputHash(job,options.toolchainFingerprint))throw new ExecutorControlError("authority_lost");
     if(authority.functionName!==(job.jobType==="upload_finalize"?"pin_source":"fetch_source")||reference.kind==="local_fetch"&&!isYouTube(job))throw new ExecutorControlError("invalid_reference");
     return job;
@@ -160,7 +148,8 @@ export function createIngestSourceExecution(options: {
       if (existingSourceAudio && (existingSourceAudio.mediaIdentity.provider !== mediaIdentity.provider || existingSourceAudio.mediaIdentity.mediaId !== mediaIdentity.mediaId ||
         existingSourceAudio.toolchainFingerprint !== options.toolchainFingerprint || existingSourceAudio.probeVersion !== "normalized-probe-v1")) throw new ExecutorControlError("authority_lost");
       const optionalProbe = await probe.descriptorForIngest(authority.fence);
-      const command = ingestNativeSourceCommandSchema.parse({ ...definition, projectId: job.projectId, sourceRevision: job.sourceRevision,
+      const command = ingestNativeSourceCommandSchema.parse({ ...definition, ...(definition.kind==="youtube_source"?{maxSourceSeconds:planLimits(resolvePricingTier(job.project.workspace.pricingTier)).maxSourceSeconds}:{}),
+        projectId: job.projectId, sourceRevision: job.sourceRevision,
         audioPolicy:acquisition.audioPolicy,sourceAudioId: existingSourceAudio?.sourceAudioId ?? attemptToken, toolchainFingerprint: options.toolchainFingerprint,
         probeVersion: "normalized-probe-v1", existingSourceAudio, languageProbe: optionalProbe?.input ?? null });
       const output = async (role: "source_audio" | "source_video", contentType: string, maxBytes: number) => ({ role, contentType, maxBytes,

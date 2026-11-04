@@ -46,9 +46,10 @@ export interface PeaksSource {
   peaks(path: string): Promise<unknown>;
 }
 
-// Endpoint responses are immutable for one preview attempt. Cache both success
-// and failure so timeline remounts/resizes never repeat the request or R2
-// metadata read.
+// An endpoint answer is immutable for one preview attempt, so a good read is
+// shared: timeline remounts and resizes never repeat the request or its R2
+// metadata read. A failure is not kept, or one dropped connection would leave
+// the waveform blank until the tab reloads.
 const peaksRequestCache = new Map<string, Promise<ClipPreviewPeaks | null>>();
 
 /** `path` is the API-relative URL the preview source returns; the source adds the origin and Bearer token. */
@@ -59,7 +60,11 @@ export function loadClipPreviewPeaks(path: string, source: PeaksSource): Promise
   const request = source
     .peaks(path)
     .then((value) => (isClipPreviewPeaksShape(value) ? value : null))
-    .catch(() => null);
+    .catch(() => null)
+    .then((peaks) => {
+      if (peaks === null && peaksRequestCache.get(cacheKey) === request) peaksRequestCache.delete(cacheKey);
+      return peaks;
+    });
   peaksRequestCache.set(cacheKey, request);
   return request;
 }

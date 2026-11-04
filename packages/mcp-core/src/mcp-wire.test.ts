@@ -53,7 +53,7 @@ function harness() {
 		allowedOrigins: () => [origin],
 		resourceMetadataUrl: () =>
 			`${origin}/.well-known/oauth-protected-resource/mcp`,
-		checkRateLimit: async () => ({
+		authFailureThrottle: () => ({ exhausted: async () => false, recordFailure: async () => {}, retryAfterSeconds: 60 }), checkRateLimit: async () => ({
 			allowed: true,
 			remaining: 299,
 			limit: 300,

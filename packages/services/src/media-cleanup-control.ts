@@ -5,6 +5,8 @@ import { appendExecutionDispatch, appendExecutionDispatches, readExecutionDispat
 import { readExecutionAdmission } from "./execution-admission";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { MEDIA_CLEANUP_CLASSES, MEDIA_CLEANUP_ORIGINS } from "./media-cleanup-contract";
+import { sha256Hex } from "./execution-hash";
+import { databaseNow } from "./execution-clock";
 
 const LEASE_MS = 120_000;
 export const MEDIA_CLEANUP_HTTP_TIMEOUT_MS = 30_000;
@@ -18,11 +20,6 @@ export type MediaCleanupResult =
 export interface MediaCleanupStorage { deleteExact(storageKey: string, options: { signal: AbortSignal }): Promise<void> }
 export type MediaCleanupHold = (tx: Tx, intent: Readonly<MediaCleanupObligation>, now: Date) => Promise<Date | null>;
 
-async function clock(tx: Tx) {
-  const [value] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
-  if (!value) throw new MediaCleanupControlError("cleanup_clock_unavailable");
-  return value.now;
-}
 function validateIntent(row: MediaCleanupObligation) {
   if (!(MEDIA_CLEANUP_ORIGINS as readonly string[]).includes(row.origin) || !(MEDIA_CLEANUP_CLASSES as readonly string[]).includes(row.cleanupClass) ||
     !/^[A-Za-z0-9][A-Za-z0-9/_.-]{0,1023}$/.test(row.objectKey) || row.objectKey.split("/").some(part => !part || part === "." || part === "..")) throw new MediaCleanupControlError("cleanup_intent_invalid");
@@ -35,7 +32,7 @@ async function lockIntent(tx: Tx, id: string) {
 }
 async function inputHash(row: MediaCleanupObligation) {
   const fields = ["media-cleanup-v1", row.id, row.origin, row.cleanupClass, row.objectKey, row.projectId, row.clipId, row.createdAt.toISOString()];
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(fields)))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(JSON.stringify(fields));
 }
 async function latest(tx: Tx, epoch: number, id: string) {
   const [row] = await tx.$queryRaw<ExecutionDispatch[]>`SELECT * FROM "ExecutionDispatch" WHERE "deploymentEpoch" = ${epoch}
@@ -117,7 +114,7 @@ export function createMediaCleanupControl(options: { database: PrismaClient; reg
         const next = await append(tx, epoch, row);
         return { result: { kind: "retry" as const, until: row.nextAttemptAt, dispatchIds: [next.dispatchId] } };
       }
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       if (row.claimId && row.claimExpiresAt && row.claimExpiresAt > now) {
         const timer = await appendExecutionDispatch(tx, { ...reference, dueAt: row.claimExpiresAt, wakeKind: "cleanup_claimed", deadlineKind: "lease", observedDeadlineAt: row.claimExpiresAt });
         collectExecutionDispatch(tx, timer.reference.dispatchId);
@@ -148,7 +145,7 @@ export function createMediaCleanupControl(options: { database: PrismaClient; reg
     const allowed = await options.database.$transaction(async tx => {
       const { epoch } = await readExecutionAdmission(tx);
       if (epoch !== reference.deploymentEpoch) return false;
-      const row = await lockIntent(tx, claim.id), now = await clock(tx);
+      const row = await lockIntent(tx, claim.id), now = await databaseNow(tx);
       return Boolean(row && !row.completedAt && row.claimId === claim.claimId && row.claimExpiresAt && row.claimExpiresAt.getTime() > now.getTime() + MEDIA_CLEANUP_HTTP_TIMEOUT_MS);
     });
     if (!allowed) return { kind: "superseded", dispatchIds: [] };
@@ -160,7 +157,7 @@ export function createMediaCleanupControl(options: { database: PrismaClient; reg
     const result = await options.database.$transaction(async tx => {
       const { epoch } = await readExecutionAdmission(tx);
       if (epoch !== reference.deploymentEpoch) return { kind: "superseded" as const, dispatchIds: [] };
-      const row = await lockIntent(tx, claim.id), now = await clock(tx);
+      const row = await lockIntent(tx, claim.id), now = await databaseNow(tx);
       if (!row || row.claimId !== claim.claimId || row.completedAt || !row.claimExpiresAt || row.claimExpiresAt <= now) return { kind: "superseded" as const, dispatchIds: [] };
       if (acknowledged) {
         await tx.mediaCleanupObligation.update({ where: { id: row.id }, data: { completedAt: now, claimId: null, claimExpiresAt: null, failureCode: null } });

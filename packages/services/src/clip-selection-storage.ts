@@ -1,5 +1,5 @@
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import { createFetchR2Client } from "./r2-fetch-client";
 import type { ExecutionStorageConfig } from "./execution-storage";
 import type { ClipSelectionStorage } from "./clip-selection-preparation";
 import type { ClipSelectionObjectReference } from "./clip-selection-window";
@@ -25,9 +25,7 @@ function quotedEtag(etag: unknown): etag is string { return typeof etag === "str
 /** Workers-safe private JSON I/O. No caller-selected URLs or native transfer code. */
 export function createClipSelectionStorage(config: ExecutionStorageConfig, options: { client?: S3Client } = {}): ClipSelectionStorage {
   if (!/^[a-f0-9]{32}$/.test(config.accountId) || !config.bucket || !config.accessKeyId || !config.secretAccessKey) throw new Error("selection_storage_configuration_invalid");
-  const client = options.client ?? new S3Client({ region: "auto", endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey }, requestHandler: new FetchHttpHandler({ requestTimeout: 10_000 }),
-    requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED", maxAttempts: 3 });
+  const client = options.client ?? createFetchR2Client(config, { requestTimeoutMs: 10_000, maxAttempts: 3 });
   async function provider<T>(operation: () => Promise<T>): Promise<T> {
     try { return await operation(); } catch (error) {
       if (error instanceof WorkflowFailure) throw error;

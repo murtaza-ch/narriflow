@@ -32,7 +32,8 @@ import { Box, Flex, Grid, Input, Stack, Text } from "@chakra-ui/react";
 import { formatDuration, formatTimecode } from "@/lib/format";
 import { useClipApi } from "@/lib/clip-media";
 import { clipActionErrorCopy } from "./clip-action-error-copy";
-import { fetchTranscriptFile, saveBlob, type TranscriptFormat } from "./transcript-download";
+import { saveBlob } from "@/lib/download";
+import { fetchTranscriptFile, type TranscriptFormat } from "./transcript-download";
 import { PanelHeader } from "./panel-header";
 import { groupTranscriptParagraphs, type TranscriptParagraph } from "./transcript-paragraphs";
 
@@ -272,7 +273,8 @@ export function TranscriptPanel({
 			if (!api || downloading) return;
 			setDownloading(true);
 			try {
-				saveBlob(await fetchTranscriptFile(api.projects, projectId, format));
+				const file = await fetchTranscriptFile(api.projects, projectId, format);
+				saveBlob(file.blob, file.fileName);
 			} catch (failure) {
 				toaster.create({
 					type: "error",

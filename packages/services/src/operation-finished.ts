@@ -198,8 +198,7 @@ async function queueCaptionedGenerationFinished(tx: Tx, input: { projectId: stri
         failureCode: input.derived.failureCode,
         items: input.derived.items.map((item) => ({ id: item.id, state: item.state === "working" ? "failed" : item.state, failureCode: item.failureCode })),
       },
-    // A record for history: nothing is owed to Redis or analytics.
-    }, { progressRequired: false, analyticsEnabled: false });
+    });
   }
   await queueFinishedGenerations(tx, { id: detection.id, projectId: input.projectId });
 }
@@ -208,12 +207,6 @@ async function queueCaptionedGenerationFinished(tx: Tx, input: { projectId: stri
 export async function queueExportsFinishedByRun(tx: Tx, workflowRunId: string): Promise<void> {
   const owners = await tx.clipExportVariant.findMany({ where: { render: { workflowRunId } }, select: { exportId: true }, distinct: ["exportId"], orderBy: { exportId: "asc" } });
   for (const { exportId } of owners) await queueExportFinished(tx, exportId);
-}
-
-/** Writes at once: call it as the last act of the transaction. */
-export async function emitExportFinished(tx: Tx, exportId: string): Promise<void> {
-  await queueExportFinished(tx, exportId);
-  await flushWorkspaceEvents(tx);
 }
 
 /** Project expiry cancels queued intakes and fails queued exports; queue their

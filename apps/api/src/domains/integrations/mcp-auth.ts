@@ -6,6 +6,7 @@ import { mcpRateLimitKey, parseMcpOrigins } from "@narriflow/mcp-core/http";
 import { checkRateLimit } from "@narriflow/services/rate-limit";
 import { workspaceService } from "@narriflow/services/workspace.service";
 import { WORKSPACE_API_KEY_SCOPES } from "@narriflow/validators";
+import { bearerCredential } from "@narriflow/validators/identifiers";
 import type { ApiConfig, ApiEnvironment } from "../../config";
 import { mcpIntegrationAuthenticationFailure, mcpIntegrationMutationGuard } from "./mcp-integration-admission";
 
@@ -39,7 +40,7 @@ export function createMcpAuth(config: ApiConfig, env: ApiEnvironment = readServi
     },
     async authenticate(request: Request) {
       const header = request.headers.get("authorization") ?? "";
-      if (!/^Bearer [^\s,]+$/i.test(header)) throw new OAuthError(OAuthErrorCode.InvalidToken, "Expected one Bearer credential");
+      if (bearerCredential(header) === null) throw new OAuthError(OAuthErrorCode.InvalidToken, "Expected one Bearer credential");
       return principalFromMcpAuth(await verifyBearerToken(header, { verifier }));
     },
     authenticationFailure: (error: unknown) => mcpIntegrationAuthenticationFailure(error, metadataUrl),

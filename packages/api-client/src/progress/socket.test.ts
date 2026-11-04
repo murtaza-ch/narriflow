@@ -16,7 +16,7 @@ class Socket extends EventTarget {
   send(value: string) { this.sent.push(value); }
   close() { if (this.readyState === 3) return; this.readyState = 3; this.dispatchEvent(new Event("close")); }
 }
-function harness(scripts: unknown[][], response?: () => Response) {
+function harness(scripts: unknown[][], response?: () => Response, keepOpen = false) {
   const scope = new ApiScope(); scope.setUser("user"); scope.selectWorkspace("workspace");
   const tokens: string[] = [];
   const urls: string[] = [];
@@ -27,7 +27,7 @@ function harness(scripts: unknown[][], response?: () => Response) {
     minted += 1;
     return response?.() ?? Response.json({ ticket: `ticket-${minted}`, ticketExpiresAt: Date.now() + 30_000, subscriptionExpiresAt: Date.now() + 60_000 });
   } }).scoped({ userId: "user", workspaceId: "workspace" });
-  return { scope, bound, tokens, urls, sockets, createSocket: (url: string) => { urls.push(url); const socket = new Socket(scripts.shift() ?? [], scripts.length === 0); sockets.push(socket); return socket as unknown as WebSocket; } };
+  return { scope, bound, tokens, urls, sockets, createSocket: (url: string) => { urls.push(url); const socket = new Socket(scripts.shift() ?? [], keepOpen || scripts.length === 0); sockets.push(socket); return socket as unknown as WebSocket; } };
 }
 const noSleep = async () => {};
 
@@ -84,6 +84,26 @@ describe("progress socket transport", () => {
     const abort = new AbortController(); let retries = 0;
     await runProgressSocket({ transport: h.bound, projectId, signal: abort.signal, createSocket: h.createSocket, onEvent: () => {}, sleep: async () => { retries += 1; abort.abort(); } });
     expect(retries).toBe(1); expect(h.sockets[0]?.readyState).toBe(3);
+  });
+  test("a clean renewal at subscription expiry reconnects at once and keeps the backoff at zero", async () => {
+    const connected = { type: "connected", projectId, cursor: 0 };
+    const h = harness([[connected], [connected], [connected]], () => Response.json({ ticket: "short-ticket", ticketExpiresAt: Date.now() + 10, subscriptionExpiresAt: Date.now() + 20 }), true);
+    const abort = new AbortController(); const statuses: string[] = []; let slept = 0;
+    await runProgressSocket({ transport: h.bound, projectId, signal: abort.signal, createSocket: h.createSocket, onEvent: () => {}, sleep: async () => { slept += 1; },
+      onStatus: (status) => { if (status.state === "open") { statuses.push(`open:${status.attempt}`); if (statuses.length === 3) abort.abort(); } },
+    });
+    expect(slept).toBe(0); expect(statuses).toEqual(["open:0", "open:0", "open:0"]); expect(h.urls).toHaveLength(3);
+  });
+  test("a connection that opened starts the next backoff over", async () => {
+    const connected = { type: "connected", projectId, cursor: 0 };
+    const h = harness([[connected], [connected], [connected], [connected]]);
+    const abort = new AbortController(); const reconnecting: Array<[number, number]> = [];
+    await runProgressSocket({ transport: h.bound, projectId, signal: abort.signal, createSocket: h.createSocket, random: () => 1, sleep: async () => {},
+      onEvent: () => {},
+      onStatus: (status) => { if (status.state === "reconnecting") { reconnecting.push([status.attempt, status.retryInMs]); if (reconnecting.length === 3) abort.abort(); } },
+    });
+    // Each drop follows a good connection, so it is always the first retry.
+    expect(reconnecting).toEqual([[1, 1_000], [1, 1_000], [1, 1_000]]);
   });
   test("a consumer failure rejects instead of silently losing its event", async () => {
     const h = harness([[event(1)]]); const failure = new ApiError({ code: "consumer", message: "consumer", status: 0 });

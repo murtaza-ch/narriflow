@@ -9,6 +9,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { chunkUtterances } from "./library-passages";
 import { planEmbeddingBatches, type EmbeddingBatchLimits } from "./library-embedding-batches";
 import { EmbeddingProviderError, LIBRARY_EMBEDDING_MODEL, LIBRARY_EMBEDDING_DIMENSIONS, type EmbeddingProvider } from "./openai-embedding-provider";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 export const MAX_INDEX_ATTEMPTS = 8;
@@ -16,11 +17,6 @@ const LEASE_MS = 60_000, DEADLINE_MS = 45 * 60_000;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function sourceHash(row: Transcript) { return hash(["library-source-v1", row.id, row.completedAt?.toISOString(), row.selectionGeneration, row.utterancesJson, LIBRARY_EMBEDDING_MODEL]); }
 function inputHash(row: Transcript) { return hash(["library-index-v1", row.id, row.passagesEpoch, row.passagesGeneration, row.passagesSourceHash, row.passagesRetryAt?.toISOString(), row.passagesDeadlineAt?.toISOString()]); }
-async function databaseNow(tx: Tx) {
-  const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-  if (!clock) throw Error("library_clock_unavailable");
-  return clock.now;
-}
 async function lock(tx: Tx, id: string) {
   const { epoch } = await readExecutionAdmission(tx);
   const initial = await tx.transcript.findUnique({ where: { id }, select: { projectId: true, project: { select: { workspaceId: true } } } });

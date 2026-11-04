@@ -10,7 +10,11 @@ export const MAX_CONDITIONAL_COPY_SIZE_BYTES = 5 * 1024 ** 3 - 5 * 1024 ** 2;
 export const MAX_MEDIA_DURATION_SECONDS = 4 * 60 * 60;
 export const MAX_UPLOAD_GRANT_TTL_SECONDS = 60 * 60;
 /** Allow all outstanding PUT grants to expire before the final exact-key deletion. */
-export const UPLOAD_SOURCE_CLEANUP_DELAY_MS = (MAX_UPLOAD_GRANT_TTL_SECONDS + 10 * 60) * 1000;
+const UPLOAD_SOURCE_CLEANUP_DELAY_MS = (MAX_UPLOAD_GRANT_TTL_SECONDS + 10 * 60) * 1000;
+/** A PUT started just before its grant expired can still land. This bounds that
+ * late write at a conservative 64 KiB/s, as a cleanup policy rather than a provider deadline. */
+export const SINGLE_PUT_CLEANUP_DELAY_MS =
+  UPLOAD_SOURCE_CLEANUP_DELAY_MS + Math.ceil(MAX_UPLOAD_SIZE_BYTES / (64 * 1024)) * 1_000;
 export const uploadMimeTypes = [
   "video/mp4",
   "video/quicktime",
@@ -24,6 +28,25 @@ export const uploadMimeTypes = [
 ] as const;
 
 export const uploadMimeTypeSchema = z.enum(uploadMimeTypes);
+
+export const uploadMimeTypeByExtension: Readonly<Record<string, (typeof uploadMimeTypes)[number]>> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+};
+
+/** Browsers report the same file differently, or not at all, so an unknown type falls back to the extension. */
+export function uploadMimeTypeForFile(file: { name: string; type: string }): UploadMimeType | null {
+  if ((uploadMimeTypes as readonly string[]).includes(file.type)) return file.type as UploadMimeType;
+  const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  return uploadMimeTypeByExtension[extension] ?? null;
+}
 
 const uploadGenerationContextSchema = z
   .object({

@@ -18,6 +18,9 @@ function api(overrides: EnvironmentValues = {}): EnvironmentValues {
     CLERK_PUBLISHABLE_KEY: "pk_shared",
     R2_ACCOUNT_ID: account,
     R2_BUCKET: "narriflow-dev",
+    OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS: "4",
+    OPENAI_SELECTION_MAX_ESTIMATED_TOKENS: "2000000",
+    SOCIAL_PUBLICATION_CHECKPOINT_KEY: "k".repeat(32),
     ...overrides,
   };
 }
@@ -48,6 +51,15 @@ describe("serverless env check", () => {
   });
   test("accepts three consistent files with pooled and direct URLs of one database", () => {
     expect(checkEnvironmentValues(files())).toEqual([]);
+  });
+  test("requires the settings that have no default, with names and without printing the checkpoint key", () => {
+    const issues = checkEnvironmentValues(files({ api: api({ OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS: "", OPENAI_SELECTION_MAX_ESTIMATED_TOKENS: "many", SOCIAL_PUBLICATION_CHECKPOINT_KEY: "short-private-key" }) }));
+    expect(messages(issues)).toEqual([
+      "api is missing OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS",
+      "api OPENAI_SELECTION_MAX_ESTIMATED_TOKENS must be a positive integer",
+      "api SOCIAL_PUBLICATION_CHECKPOINT_KEY must contain at least 32 characters",
+    ]);
+    expect(JSON.stringify(issues)).not.toContain("short-private-key");
   });
   test("rejects escaped JSON settings before startup without printing signing keys", () => {
     const value = '{\\"local\\":\\"private-signing-key\\"}';

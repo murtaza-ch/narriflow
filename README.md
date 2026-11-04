@@ -93,7 +93,7 @@ bun run dev:mcp
 
 The optional stdio bridge forwards MCP messages to the API's `/mcp` endpoint.
 The API authenticates every request and owns tools, resources, Apps, Tasks and
-human links. The bridge needs no database or Redis credentials. The root
+human links. The bridge needs no database credentials. The root
 `bun run dev` command does not start it. Remote clients can also connect to
 `/mcp` directly with OAuth or scoped workspace API keys.
 

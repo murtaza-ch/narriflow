@@ -1,3 +1,4 @@
+import { isUuid } from "@narriflow/validators/identifiers";
 import type { PricingTier, User, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
 import { getRequiredPrisma, isUniqueViolation } from "./database";
 
@@ -13,11 +14,10 @@ export interface WorkspaceActorContext {
   workspaceSelectionChanged: boolean;
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Workspace ids are Postgres UUIDs; anything else cannot name a membership. */
 export function isWorkspaceId(value: string | undefined): value is string {
-  return value !== undefined && UUID_PATTERN.test(value);
+  return isUuid(value);
 }
 
 function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">): string {
@@ -139,7 +139,7 @@ export function toWorkspaceActorContext(
 /**
  * Live membership read: the only thing that makes a selection hint valid.
  * The membership and the Workspace are two single-table reads issued together,
- * one round trip where a relation include would be two sequential ones.
+ * so they cost one wait, not two sequential ones.
  */
 async function readSelectedMembership(userId: string, workspaceId: string | undefined) {
   if (!isWorkspaceId(workspaceId)) return null;
@@ -155,7 +155,7 @@ async function readSelectedMembership(userId: string, workspaceId: string | unde
   return membership && workspace ? { userId, role: membership.role, workspace } : null;
 }
 
-/** The user's Owner membership of their own personal Workspace, read in one round trip. */
+/** The user's Owner membership of their own personal Workspace: two reads issued together. */
 async function readPersonalMembership(userId: string) {
   const prisma = getRequiredPrisma();
   const [membership, workspace] = await Promise.all([
@@ -198,6 +198,24 @@ export async function resolveWorkspaceContext(
 }
 
 /**
+ * Bootstrap resolution from the memberships it already listed, with the same
+ * rule as `resolveWorkspaceContext`. `null` means no personal Workspace is
+ * listed yet, and that function must provision it.
+ */
+export function selectListedWorkspace(
+  userId: string,
+  memberships: Awaited<ReturnType<typeof listUserWorkspaces>>,
+  requestedWorkspaceId?: string,
+): WorkspaceActorContext | null {
+  const requested = memberships.find(({ workspace }) => workspace.id === requestedWorkspaceId);
+  if (requested) return toWorkspaceActorContext({ userId, ...requested });
+  const personal = memberships.find(({ role, workspace }) => role === "owner" && workspace.personalOwnerUserId === userId);
+  return personal
+    ? toWorkspaceActorContext({ userId, ...personal }, Boolean(requestedWorkspaceId && requestedWorkspaceId !== personal.workspace.id))
+    : null;
+}
+
+/**
  * Scoped-request resolution. Requires an explicit selection that is a current
  * membership; `null` means the caller must answer 409 `workspace_selection_changed`
  * before invoking any operation.
@@ -236,6 +254,7 @@ export async function listUserWorkspaces(userId: string) {
         select: {
           id: true,
           name: true,
+          ownerUserId: true,
           avatarStorageKey: true,
           personalOwnerUserId: true,
           status: true,

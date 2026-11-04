@@ -13,18 +13,18 @@ from uuid import uuid4
 import wave
 
 from narriflow_media.file_source_runtime import NativeFileRuntime,run_direct_source
-from narriflow_media.fetch import FileSnapshot,SourceFetchFailure
+from narriflow_media.fetch import FileSnapshot,SourceFetchFailure,probe_failure
 from narriflow_media.multipart import CompletedObject
 from narriflow_media.source_sink import ScopedSourceSink
 from narriflow_media.transfer import WorkPackage,_wire
 
 
 class FileSourceOperationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_known_whole_credit_mismatch_stops_before_audio_publication(self):
+    async def test_audio_extracted_past_a_minute_boundary_publishes_and_a_real_difference_stops(self):
         events=[]
         with tempfile.TemporaryDirectory() as directory:
             work=Path(directory);fence={'reference':{'inputHash':'a'*64},'attemptToken':str(uuid4()),'owner':str(uuid4())}
-            session=SimpleNamespace(fence=fence,assert_live=lambda:None)
+            session=SimpleNamespace(fence=fence,assert_live=lambda:None);durations={'audio':60.011}
             command={'kind':'direct_source','audioPolicy':'required','projectId':str(uuid4()),'sourceRevision':1,'mediaIdentity':{'provider':'direct','mediaId':'frozen'},'sourceAudioId':fence['attemptToken'],
                 'toolchainFingerprint':'d'*64,'probeVersion':'normalized-probe-v1','existingSourceAudio':None,'languageProbe':None,'source':{}}
             package=WorkPackage('fetch_source','a'*64,_wire(command),_wire([]),_wire([{'role':'source_video','contentTypes':['video/mp4']}]),_wire(fence))
@@ -33,16 +33,35 @@ class FileSourceOperationTests(unittest.IsolatedAsyncioTestCase):
                     path=work/'original';path.write_bytes(b'v');return path,'video/mp4'
                 async def extract_audio(self,path,probe,work):
                     audio=work/'audio';audio.write_bytes(b'a');return audio
-                async def probe(self,path):return {'durationSec':60.01 if path.name=='audio' else 60.0,'hasAudio':True,'hasVideo':path.name=='original','probeVersion':'normalized-probe-v1',
+                async def probe(self,path):return {'durationSec':durations['audio'] if path.name=='audio' else 60.0,'hasAudio':True,'hasVideo':path.name=='original','probeVersion':'normalized-probe-v1',
                     'facts':{'audios':[{'index':0,'codec':'aac','sampleRate':48000,'channels':2,'startTimeSec':0}],'videos':[]}}
                 async def hash(self,path):return FileSnapshot.read(path),hashlib.sha256(path.read_bytes()).hexdigest()
             class Sink:
                 def __init__(self,*args,**kwargs):pass
                 async def audio_ready(self,artifact):events.append('audio')
                 async def video_ready(self,*args):events.append('video')
+            await run_direct_source(session,package,work,runtime=Runtime(),sink_class=Sink)
+            self.assertEqual(events,['audio','video'])
+            events.clear();durations['audio']=62.0
+            for name in ('original','audio'):(work/name).unlink()
             with self.assertRaisesRegex(SourceFetchFailure,'source_audio_video_mismatch'):
                 await run_direct_source(session,package,work,runtime=Runtime(),sink_class=Sink)
             self.assertEqual(events,[])
+
+    async def test_a_file_no_probe_can_read_fails_once_with_its_permanent_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'upload.mp4';path.write_bytes(b'not media at all')
+            session=SimpleNamespace(assert_live=lambda:None,remaining_seconds=60,on_process_start=lambda pid:None,cancel_event=Event())
+            with self.assertRaises(SourceFetchFailure) as failure:
+                await NativeFileRuntime(session).probe(path)
+            self.assertEqual((failure.exception.code,failure.exception.retryable),('source_media_invalid',False))
+
+    def test_only_a_coded_permanent_probe_failure_stops_retries(self):
+        permanent=probe_failure(b'bun warning\n{"level":"error","message":"source_media_invalid","errorCode":"source_media_invalid","retryable":false}\n')
+        self.assertEqual((permanent.code,permanent.retryable),('source_media_invalid',False))
+        for stderr in (b'',b'not json',b'{"errorCode":"source_media_invalid","retryable":true}',b'{"errorCode":"NOT A CODE","retryable":false}',b'[]'):
+            transient=probe_failure(stderr)
+            self.assertEqual((transient.code,transient.retryable),('source_probe_failed',True))
 
     async def actual_file_operation(self,*,policy="required",silent=False):
         root=Path(__file__).resolve().parents[4]

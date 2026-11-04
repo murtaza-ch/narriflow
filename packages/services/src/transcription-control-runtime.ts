@@ -11,6 +11,7 @@ import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { createTranscriptionProbe } from "./transcription-probe";
 import { readObjectBytes } from "./r2-storage";
 import { LANGUAGE_PROBE_MAX_BYTES } from "./language-probe-contract";
+import { sha256Hex } from "./execution-hash";
 
 /** Fresh within the invocation. Neither a service nor a read URL crosses a sleep. */
 export function getTranscriptionControl(options: { probeLanguage?: TranscriptionControlPorts["probeLanguage"] } = {}) {
@@ -45,7 +46,7 @@ export function getTranscriptionControl(options: { probeLanguage?: Transcription
       const prepared = await probe.readForProvider(reference);
       if (!prepared) return { pinned: null, reason: "probe_unavailable" };
       const wav = await readObjectBytes(prepared.artifact.storageKey, LANGUAGE_PROBE_MAX_BYTES, { signal });
-      const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(wav))), byte => byte.toString(16).padStart(2, "0")).join("");
+      const digest = await sha256Hex(new Uint8Array(wav));
       if (BigInt(wav.byteLength) !== prepared.artifact.byteLength || digest !== prepared.artifact.checksumSha256) return { pinned: null, reason: "probe_invalid" };
       return provider().probe({ wav, signal });
     }),

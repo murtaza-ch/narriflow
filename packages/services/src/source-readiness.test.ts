@@ -29,13 +29,21 @@ const video: SourceVideoBinding = {
 };
 
 describe("Whole-source audio and video agreement", () => {
-  test("accepts the same source within probe tolerance and one credit boundary", () => {
+  test("accepts the same source within probe tolerance", () => {
     expect(sourceAudioMatchesVideo(audio, video, 3600)).toBe(true);
     expect(sourceAudioMatchesVideo(audio, { ...video, probe: { ...video.probe, durationSec: 61.02 } }, 3600)).toBe(false);
   });
-  test("a sub-second difference cannot hide a different whole-credit debit or source cap", () => {
-    expect(sourceAudioMatchesVideo(audio, { ...video, probe: { ...video.probe, durationSec: 60 } }, 3600)).toBe(false);
-    expect(sourceAudioMatchesVideo({ ...audio, durationSeconds: 3599.99 }, { ...video, probe: { ...video.probe, durationSec: 3600.01 } }, 3600)).toBe(false);
+  test("audio extracted just past a minute boundary still matches its video", () => {
+    // The real extraction of a 60.000s MP4 measures 60.011s, and of 3600.000s, 3600.022s.
+    const atMinute = { ...video, probe: { ...video.probe, durationSec: 60 } };
+    expect(sourceAudioMatchesVideo({ ...audio, durationSeconds: 60.011 }, atMinute, 3600)).toBe(true);
+    const atLimit = { ...video, probe: { ...video.probe, durationSec: 3600 } };
+    expect(sourceAudioMatchesVideo({ ...audio, durationSeconds: 3600.022 }, atLimit, 3600)).toBe(true);
+  });
+  test("a source past the plan limit by more than extraction drift is refused", () => {
+    const over = { ...video, probe: { ...video.probe, durationSec: 3601 } };
+    expect(sourceAudioMatchesVideo({ ...audio, durationSeconds: 3600.5 }, over, 3600)).toBe(false);
+    expect(sourceAudioMatchesVideo({ ...audio, durationSeconds: 3601 }, { ...video, probe: { ...video.probe, durationSec: 3600.5 } }, 3600)).toBe(false);
   });
   test("preserves a measured nonzero A/V offset while rejecting fabricated timing", () => {
     const shifted = { ...video, audioStartTimeSec: 1.5, probe: { ...video.probe, facts: { ...video.probe.facts,

@@ -50,6 +50,7 @@ import {
   type ZoomConnectionSnapshot,
 } from "@narriflow/validators";
 import type { AutopilotRuleInput, AutopilotRuleUpdate } from "@narriflow/validators/api/automation";
+import { intentFor } from "@/lib/clip-media";
 import { formatDateTime } from "@/lib/format";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { useConnectZoom, ZoomConnections } from "./zoom-connections";
@@ -387,8 +388,7 @@ export function AutopilotPanel({
   });
   const runRuleNow = useMutation({
     mutationFn: (rule: AutopilotRuleSnapshot) => {
-      const intent = runIntents.current.get(rule.id) ?? api.createIntent<string>();
-      runIntents.current.set(rule.id, intent);
+      const intent = intentFor(runIntents.current, rule.id, api);
       return api.actions.runRuleNow(rule.id, intent.keyFor(rule.id));
     },
     onSuccess: async (_run, rule) => {

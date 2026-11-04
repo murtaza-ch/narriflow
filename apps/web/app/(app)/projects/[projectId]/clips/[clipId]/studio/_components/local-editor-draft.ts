@@ -15,6 +15,8 @@ export const EDITOR_LEASE_HEARTBEAT_MS = 2_500;
 export interface StoredEditorDraft {
   formatVersion: 1;
   key: string;
+  /** Whose draft this is: a shared browser never offers it to another person. */
+  userId: string;
   projectId: string;
   clipId: string;
   baseRevision: number;
@@ -41,12 +43,17 @@ export type DraftRecovery =
   | { kind: "recover"; document: EditorDocument; baseRevision: number; merged: boolean }
   | { kind: "conflict"; document: EditorDocument; paths: string[] };
 
-export function editorDraftKey(projectId: string, clipId: string): string {
+export function editorDraftKey(userId: string, projectId: string, clipId: string): string {
+  return `${userId}:${projectId}:${clipId}`;
+}
+
+/** The cross-tab write lease and its channel belong to the clip, whoever holds it. */
+export function editorClipKey(projectId: string, clipId: string): string {
   return `${projectId}:${clipId}`;
 }
 
 export function editorLeaseKey(projectId: string, clipId: string): string {
-  return `narriflow:studio-lease:${editorDraftKey(projectId, clipId)}`;
+  return `narriflow:studio-lease:${editorClipKey(projectId, clipId)}`;
 }
 
 function jsonEqual(a: unknown, b: unknown): boolean {
@@ -150,6 +157,7 @@ export function decideDraftRecovery(
 
 export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null {
   if (!isPlainObject(value)) return null;
+  const userId = value.userId;
   const projectId = value.projectId;
   const clipId = value.clipId;
   const key = value.key;
@@ -161,6 +169,7 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
   const baseDocument = editorDocumentSchema.safeParse(value.baseDocument);
   const document = editorDocumentSchema.safeParse(value.document);
   if (
+    typeof userId !== "string" ||
     typeof projectId !== "string" ||
     typeof clipId !== "string" ||
     typeof key !== "string" ||
@@ -174,7 +183,7 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
     typeof ownershipGeneration !== "number" ||
     !Number.isInteger(ownershipGeneration) ||
     ownershipGeneration < 0 ||
-    key !== editorDraftKey(projectId, clipId) ||
+    key !== editorDraftKey(userId, projectId, clipId) ||
     !baseDocument.success ||
     !document.success
   ) {
@@ -183,6 +192,7 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
   return {
     formatVersion,
     key,
+    userId,
     projectId,
     clipId,
     baseRevision,
@@ -239,12 +249,13 @@ function waitForTransaction(transaction: IDBTransaction): Promise<void> {
 }
 
 export async function loadEditorDraft(
+  userId: string,
   projectId: string,
   clipId: string,
 ): Promise<StoredEditorDraft | null> {
   const database = await openDraftDatabase();
   const transaction = database.transaction(DRAFT_STORE_NAME, "readonly");
-  const request = transaction.objectStore(DRAFT_STORE_NAME).get(editorDraftKey(projectId, clipId));
+  const request = transaction.objectStore(DRAFT_STORE_NAME).get(editorDraftKey(userId, projectId, clipId));
   const raw = await new Promise<unknown>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("Could not load the local draft"));
@@ -278,6 +289,7 @@ export async function persistEditorDraft(
 }
 
 export async function removeEditorDraft(
+  userId: string,
   projectId: string,
   clipId: string,
   ownershipGeneration?: number,
@@ -285,7 +297,7 @@ export async function removeEditorDraft(
   const database = await openDraftDatabase();
   const transaction = database.transaction(DRAFT_STORE_NAME, "readwrite");
   const store = transaction.objectStore(DRAFT_STORE_NAME);
-  const key = editorDraftKey(projectId, clipId);
+  const key = editorDraftKey(userId, projectId, clipId);
   if (ownershipGeneration !== undefined) {
     const request = store.get(key);
     const raw = await new Promise<unknown>((resolve, reject) => {

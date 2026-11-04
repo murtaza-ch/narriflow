@@ -27,35 +27,29 @@ interface ClerkEmailPayload {
   from_email_address?: string;
 }
 
-let resendClient: Resend | null = null;
-
-function getResendClient() {
-  const apiKey = process.env.RESEND_API_KEY;
-
-  if (!apiKey) {
-    return null;
-  }
-
-  if (!resendClient) {
-    resendClient = new Resend(apiKey);
-  }
-
-  return resendClient;
+/** Provider settings, passed by the caller: the Worker has no process environment to read. */
+export interface MailerConfig {
+  apiKey?: string;
+  from?: string;
 }
 
-function getDefaultFromAddress() {
-  return process.env.NARRIFLOW_EMAIL_FROM ?? "Narriflow <no-reply@narriflow.app>";
+const DEFAULT_FROM = "Narriflow <no-reply@narriflow.app>";
+
+/** The mail settings in a service environment. */
+export function mailerConfig(environment: Readonly<Record<string, string | undefined>>): MailerConfig {
+  return { apiKey: environment.RESEND_API_KEY?.trim() || undefined, from: environment.NARRIFLOW_EMAIL_FROM?.trim() || undefined };
 }
 
-export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  const client = getResendClient();
+function notSent(result: { reason?: string; error?: string }): SendEmailResult {
+  console.warn(JSON.stringify({ level: "warn", message: "email_not_sent", ...result }));
+  return { sent: false, ...result };
+}
 
-  if (!client) {
-    return {
-      sent: false,
-      reason: "RESEND_API_KEY is not configured",
-    };
+export async function sendEmail(input: SendEmailInput, config: MailerConfig): Promise<SendEmailResult> {
+  if (!config.apiKey) {
+    return notSent({ reason: "RESEND_API_KEY is not configured" });
   }
+  const client = new Resend(config.apiKey);
 
   let content: { html: string; text?: string } | { text: string; html?: string };
 
@@ -67,16 +61,13 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   } else if (typeof input.text === "string" && input.text.trim().length > 0) {
     content = { text: input.text };
   } else {
-    return {
-      sent: false,
-      reason: "Email body must include html or text content",
-    };
+    return notSent({ reason: "Email body must include html or text content" });
   }
 
   try {
     const response = await client.emails.send(
       {
-        from: input.from ?? getDefaultFromAddress(),
+        from: input.from ?? config.from ?? DEFAULT_FROM,
         to: input.to,
         subject: input.subject,
         ...content,
@@ -87,10 +78,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     );
 
     if (response.error) {
-      return {
-        sent: false,
-        error: response.error.message,
-      };
+      return notSent({ error: response.error.message });
     }
 
     return {
@@ -98,10 +86,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       id: response.data?.id,
     };
   } catch (error) {
-    return {
-      sent: false,
-      error: error instanceof Error ? error.message : "Failed to send email",
-    };
+    return notSent({ error: error instanceof Error ? error.message : "Failed to send email" });
   }
 }
 
@@ -135,7 +120,7 @@ function getHtml(payload: ClerkEmailPayload): string {
 
 export async function relayClerkEmail(
   payload: ClerkEmailPayload,
-  options: { idempotencyKey?: string } = {},
+  options: { idempotencyKey?: string } & MailerConfig,
 ): Promise<SendEmailResult> {
   const to = getRecipient(payload);
 
@@ -155,12 +140,15 @@ export async function relayClerkEmail(
 
   const html = getHtml(payload);
 
-  return sendEmail({
-    to,
-    from: payload.from ?? payload.from_email_address ?? getDefaultFromAddress(),
-    subject: payload.subject,
-    html,
-    text: payload.text,
-    idempotencyKey: options.idempotencyKey,
-  });
+  return sendEmail(
+    {
+      to,
+      from: payload.from ?? payload.from_email_address,
+      subject: payload.subject,
+      html,
+      text: payload.text,
+      idempotencyKey: options.idempotencyKey,
+    },
+    options,
+  );
 }

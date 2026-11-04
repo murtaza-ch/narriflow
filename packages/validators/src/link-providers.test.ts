@@ -3,6 +3,7 @@ import {
   detectLinkProvider,
   linkIngestSchema,
   LINK_PROVIDERS,
+  youtubeMediaId,
 } from ".";
 
 describe("detectLinkProvider", () => {
@@ -16,69 +17,6 @@ describe("detectLinkProvider", () => {
     ).toBe("youtube");
   });
 
-  test("recognizes google drive URLs", () => {
-    expect(
-      detectLinkProvider("https://drive.google.com/file/d/abc123/view"),
-    ).toBe("gdrive");
-  });
-
-  test("recognizes streamyard URLs", () => {
-    expect(detectLinkProvider("https://streamyard.com/watch/abc123")).toBe(
-      "streamyard",
-    );
-  });
-
-  test("recognizes loom URLs", () => {
-    expect(detectLinkProvider("https://www.loom.com/share/abc123")).toBe(
-      "loom",
-    );
-  });
-
-  test("recognizes twitch URLs, including clips subdomain", () => {
-    expect(detectLinkProvider("https://www.twitch.tv/somechannel")).toBe(
-      "twitch",
-    );
-    expect(
-      detectLinkProvider("https://clips.twitch.tv/SomeClipSlug"),
-    ).toBe("twitch");
-  });
-
-  test("recognizes x/twitter URLs", () => {
-    expect(detectLinkProvider("https://x.com/someuser/status/123")).toBe("x");
-    expect(
-      detectLinkProvider("https://twitter.com/someuser/status/123"),
-    ).toBe("x");
-  });
-
-  test("recognizes tiktok URLs, including vm short links", () => {
-    expect(
-      detectLinkProvider("https://vm.tiktok.com/ZMabcdefg/"),
-    ).toBe("tiktok");
-    expect(
-      detectLinkProvider("https://www.tiktok.com/@someuser/video/123"),
-    ).toBe("tiktok");
-  });
-
-  test("recognizes linkedin URLs", () => {
-    expect(
-      detectLinkProvider("https://www.linkedin.com/posts/someuser_video-activity-123"),
-    ).toBe("linkedin");
-  });
-
-  test("recognizes facebook URLs, including fb.watch", () => {
-    expect(detectLinkProvider("https://fb.watch/abc123/")).toBe("facebook");
-    expect(
-      detectLinkProvider("https://www.facebook.com/someuser/videos/123"),
-    ).toBe("facebook");
-  });
-
-  test("recognizes vimeo URLs, including player subdomain", () => {
-    expect(detectLinkProvider("https://vimeo.com/123456789")).toBe("vimeo");
-    expect(
-      detectLinkProvider("https://player.vimeo.com/video/123456789"),
-    ).toBe("vimeo");
-  });
-
   test("recognizes dropbox share URLs", () => {
     expect(
       detectLinkProvider("https://www.dropbox.com/s/abc123/video.mp4?dl=0"),
@@ -88,6 +26,22 @@ describe("detectLinkProvider", () => {
         "https://www.dropbox.com/scl/fi/abc123/video.mp4?rlkey=xyz",
       ),
     ).toBe("dropbox");
+  });
+
+  test("a host nothing can import from is not a link provider", () => {
+    for (const url of [
+      "https://drive.google.com/file/d/abc123/view",
+      "https://streamyard.com/watch/abc123",
+      "https://www.loom.com/share/abc123",
+      "https://www.twitch.tv/somechannel",
+      "https://x.com/someuser/status/123",
+      "https://twitter.com/someuser/status/123",
+      "https://www.tiktok.com/@someuser/video/123",
+      "https://www.linkedin.com/posts/someuser_video-activity-123",
+      "https://www.facebook.com/someuser/videos/123",
+      "https://fb.watch/abc123/",
+      "https://vimeo.com/123456789",
+    ]) expect(detectLinkProvider(url)).toBeNull();
   });
 
   test("returns null for unsupported or invalid input", () => {
@@ -104,19 +58,37 @@ describe("detectLinkProvider", () => {
     expect(
       detectLinkProvider("https://youtube.com.evil.com/watch?v=x"),
     ).toBeNull();
-    expect(detectLinkProvider("https://notvimeo.com/123")).toBeNull();
-    expect(detectLinkProvider("https://x.com.attacker.net/status/1")).toBeNull();
     expect(detectLinkProvider("https://fakedropbox.com/s/abc")).toBeNull();
   });
 
-  test("every provider def has an entry in LINK_PROVIDERS", () => {
-    expect(LINK_PROVIDERS.length).toBe(11);
-    expect(LINK_PROVIDERS.find((p) => p.id === "dropbox")?.strategy).toBe(
-      "direct",
-    );
-    expect(
-      LINK_PROVIDERS.filter((p) => p.strategy === "ytdlp").length,
-    ).toBe(10);
+  test("Google Drive labels Picker imports but no pasted link matches it", () => {
+    expect(LINK_PROVIDERS.map((provider) => provider.id)).toEqual(["youtube", "gdrive", "dropbox"]);
+    expect(LINK_PROVIDERS.find((provider) => provider.id === "gdrive")?.hosts).toEqual([]);
+  });
+});
+
+describe("youtubeMediaId", () => {
+  test("reads the video id from each link form a person can paste", () => {
+    for (const url of [
+      "https://youtu.be/dQw4w9WgXcQ",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=30",
+      "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+      "https://www.youtube.com/live/dQw4w9WgXcQ",
+      "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+    ]) expect(youtubeMediaId(url)).toBe("dQw4w9WgXcQ");
+  });
+
+  test("a YouTube page that names no single video has no id", () => {
+    for (const url of [
+      "https://www.youtube.com/@somechannel",
+      "https://www.youtube.com/playlist?list=PL123",
+      "https://www.youtube.com/watch?v=short",
+      "https://www.youtube.com:8443/watch?v=dQw4w9WgXcQ",
+      "https://user@www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://vimeo.com/123456789",
+      "not a url",
+    ]) expect(youtubeMediaId(url)).toBeNull();
   });
 });
 
@@ -132,16 +104,16 @@ describe("linkIngestSchema", () => {
 
   test("accepts a minimal valid link (url only)", () => {
     const result = linkIngestSchema.safeParse({
-      url: "https://vimeo.com/123456789",
+      url: "https://www.dropbox.com/s/abc123/video.mp4",
     });
     expect(result.success).toBe(true);
   });
 
-  test("rejects an unsupported host", () => {
+  test("leaves an unsupported host to intake, which refuses it with a stable code", () => {
     const result = linkIngestSchema.safeParse({
       url: "https://example.com/video.mp4",
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   test("rejects a non-URL string", () => {

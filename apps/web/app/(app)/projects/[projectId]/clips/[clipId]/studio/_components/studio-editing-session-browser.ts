@@ -1,6 +1,7 @@
 import { editorDocumentSchema } from "@narriflow/validators";
 import {
   claimEditorLease,
+  editorClipKey,
   editorDraftKey,
   editorLeaseKey,
   loadEditorDraft,
@@ -143,7 +144,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
     this.leaseKey = editorLeaseKey(projectId, clipId);
     this.generationKey = `${this.leaseKey}:generation`;
     this.signalKey = `${this.leaseKey}:signal`;
-    this.channelName = `narriflow:studio:${editorDraftKey(projectId, clipId)}`;
+    this.channelName = `narriflow:studio:${editorClipKey(projectId, clipId)}`;
   }
 
   async start(participant: StudioCoordinationParticipant) {
@@ -429,7 +430,7 @@ export function createBrowserStudioSessionDependencies(
   cloud: StudioCloudHttp,
   preview?: StudioSessionDependencies["preview"],
 ): StudioSessionDependencies {
-  const expectedDraftKey = editorDraftKey(input.projectId, input.clipId);
+  const expectedDraftKey = editorDraftKey(input.userId, input.projectId, input.clipId);
   const assertDraftKey = (key: string) => {
     if (key !== expectedDraftKey) {
       throw new Error("Device Draft key does not match this Studio session");
@@ -440,6 +441,7 @@ export function createBrowserStudioSessionDependencies(
       load: async (key) => {
         assertDraftKey(key);
         return (await loadEditorDraft(
+          input.userId,
           input.projectId,
           input.clipId,
         )) as StudioDraftRecord | null;
@@ -447,7 +449,7 @@ export function createBrowserStudioSessionDependencies(
       write: (record) => persistEditorDraft(record),
       remove: (key, generation) => {
         assertDraftKey(key);
-        return removeEditorDraft(input.projectId, input.clipId, generation);
+        return removeEditorDraft(input.userId, input.projectId, input.clipId, generation);
       },
     },
     coordination: new BrowserStudioCoordinationAdapter(input.projectId, input.clipId),

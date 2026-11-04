@@ -42,7 +42,8 @@ function makeDraft(overrides: Partial<StoredEditorDraft> = {}): StoredEditorDraf
   const baseDocument = makeDocument();
   return {
     formatVersion: 1,
-    key: editorDraftKey("project", "clip"),
+    key: editorDraftKey("user", "project", "clip"),
+    userId: "user",
     projectId: "project",
     clipId: "clip",
     baseRevision: 3,
@@ -79,9 +80,9 @@ describe("local editor draft recovery", () => {
     });
     const draft = makeDraft();
     expect(await persistEditorDraft(draft)).toBe("written");
-    expect(await loadEditorDraft(draft.projectId, draft.clipId)).toEqual(draft);
-    await removeEditorDraft(draft.projectId, draft.clipId);
-    expect(await loadEditorDraft(draft.projectId, draft.clipId)).toBeNull();
+    expect(await loadEditorDraft(draft.userId, draft.projectId, draft.clipId)).toEqual(draft);
+    await removeEditorDraft(draft.userId, draft.projectId, draft.clipId);
+    expect(await loadEditorDraft(draft.userId, draft.projectId, draft.clipId)).toBeNull();
   });
 
   test("rejects drafts that do not use the current format", () => {
@@ -96,7 +97,7 @@ describe("local editor draft recovery", () => {
       configurable: true,
       value: fakeIndexedDB,
     });
-    const key = editorDraftKey("fenced-project", "fenced-clip");
+    const key = editorDraftKey("user", "fenced-project", "fenced-clip");
     const newer = makeDraft({
       key,
       projectId: "fenced-project",
@@ -113,7 +114,27 @@ describe("local editor draft recovery", () => {
 
     expect(await persistEditorDraft(newer)).toBe("written");
     expect(await persistEditorDraft(stale)).toBe("stale");
-    expect(await loadEditorDraft("fenced-project", "fenced-clip")).toEqual(newer);
+    expect(await loadEditorDraft("user", "fenced-project", "fenced-clip")).toEqual(newer);
+  });
+
+  test("a Device Draft belongs to the person who wrote it", async () => {
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: fakeIndexedDB,
+    });
+    const mine = makeDraft({
+      key: editorDraftKey("alice", "shared-project", "shared-clip"),
+      userId: "alice",
+      projectId: "shared-project",
+      clipId: "shared-clip",
+    });
+    await persistEditorDraft(mine);
+
+    expect(await loadEditorDraft("alice", "shared-project", "shared-clip")).toEqual(mine);
+    expect(await loadEditorDraft("bob", "shared-project", "shared-clip")).toBeNull();
+    // Bob discarding his (absent) draft never touches Alice's.
+    expect(await removeEditorDraft("bob", "shared-project", "shared-clip")).toBe("removed");
+    expect(await loadEditorDraft("alice", "shared-project", "shared-clip")).toEqual(mine);
   });
 
   test("rejects draft removal from an older ownership generation", async () => {
@@ -122,16 +143,16 @@ describe("local editor draft recovery", () => {
       value: fakeIndexedDB,
     });
     const draft = makeDraft({
-      key: editorDraftKey("remove-project", "remove-clip"),
+      key: editorDraftKey("user", "remove-project", "remove-clip"),
       projectId: "remove-project",
       clipId: "remove-clip",
       ownershipGeneration: 8,
     });
     await persistEditorDraft(draft);
 
-    expect(await removeEditorDraft("remove-project", "remove-clip", 7)).toBe("stale");
-    expect(await loadEditorDraft("remove-project", "remove-clip")).toEqual(draft);
-    expect(await removeEditorDraft("remove-project", "remove-clip", 8)).toBe("removed");
+    expect(await removeEditorDraft("user", "remove-project", "remove-clip", 7)).toBe("stale");
+    expect(await loadEditorDraft("user", "remove-project", "remove-clip")).toEqual(draft);
+    expect(await removeEditorDraft("user", "remove-project", "remove-clip", 8)).toBe("removed");
   });
 
   test("ignores a draft identical to the cloud document", () => {
@@ -219,6 +240,9 @@ describe("local editor draft recovery", () => {
     expect(parseStoredEditorDraft(null)).toBeNull();
     expect(parseStoredEditorDraft({ ...makeDraft(), baseRevision: -1 })).toBeNull();
     expect(parseStoredEditorDraft({ ...makeDraft(), key: "another:clip" })).toBeNull();
+    expect(parseStoredEditorDraft({ ...makeDraft(), userId: "someone-else" })).toBeNull();
+    const { userId: _userId, ...anonymous } = makeDraft();
+    expect(parseStoredEditorDraft(anonymous)).toBeNull();
     expect(
       parseStoredEditorDraft({
         ...makeDraft(),
@@ -230,7 +254,7 @@ describe("local editor draft recovery", () => {
 
 describe("single-writer editor lease", () => {
   test("builds clip-scoped keys", () => {
-    expect(editorDraftKey("p", "c")).toBe("p:c");
+    expect(editorDraftKey("u", "p", "c")).toBe("u:p:c");
     expect(editorLeaseKey("p", "c")).toBe("narriflow:studio-lease:p:c");
   });
 

@@ -2,7 +2,9 @@ import { afterAll,beforeAll,describe,expect,test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { planProjectRetentionPage,createProjectRetentionExecution,type ProjectDeletionProof } from "./project-retention-execution";
+import { beginUserProjectPurge,planProjectRetentionPage,createProjectRetentionExecution,type ProjectDeletionProof } from "./project-retention-execution";
+import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
+import { projectRetentionService } from "./project-retention.service";
 import { createMediaCleanupControl,queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
 import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 import { readExecutionDispatch,appendExecutionDispatch } from "./execution-dispatch";
@@ -21,5 +23,51 @@ suite("Bounded Project privacy purge",()=>{
   expect(await cleanup.run(clean)).toMatchObject({kind:"retry"});expect((await db.mediaCleanupObligation.findUniqueOrThrow({where:{id:intent.id}})).completedAt).toBeNull();expect(await controller.run(current)).toMatchObject({kind:"sleep"});
   lose=false;await db.mediaCleanupObligation.update({where:{id:intent.id},data:{nextAttemptAt:new Date(0)}});clean=(await db.$transaction(tx=>queueMediaCleanupWithinTransaction(tx,intent.id)))!;loseWake=true;await expect(cleanup.run(clean)).rejects.toThrow("privacy wake ACK lost");expect((await db.mediaCleanupObligation.findUniqueOrThrow({where:{id:intent.id}})).completedAt).not.toBeNull();expect(await cleanup.run(clean)).toMatchObject({kind:"complete",dispatchIds:[expect.any(String)]});expect(deletes).toBe(2);
   expect(await controller.run(current)).toEqual({kind:"complete"});expect(await db.project.findUnique({where:{id:project.id}})).toBeNull();expect(proof).toMatchObject({version:1,objectCount:1,totalBytes:"100",retentionPolicyKey:"free_project_v1"});expect(await db.projectDeletionReceipt.findUnique({where:{projectIdHash:proof!.projectIdHash}})).toMatchObject({objectCount:1,totalBytes:100n});await controller.run(current);expect(writes).toBe(1);expect(deletes).toBe(2);await db.workspace.delete({where:{id:workspace.id}});
+ });
+
+ /** The children that used to block a Project row: published, reviewed, prepared and transcribed. */
+ async function publishedProject(){
+  const user=await db.user.create({data:{clerkId:`privacy-${crypto.randomUUID()}`}}),workspace=await db.workspace.create({data:{ownerUserId:user.id,name:"Published",pricingTier:"business"}}),epoch=(await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).epoch,hex="a".repeat(64),now=new Date();
+  const project=await db.project.create({data:{workspaceId:workspace.id,title:"Published",sourceMediaUrl:"r2://known",ingestStatus:"ready"}}),workSetGeneration=crypto.randomUUID(),run=await db.workflowRun.create({data:{projectId:project.id,idempotencyKey:crypto.randomUUID(),stage:"moment_detection",status:"completed",renderWorkSetGeneration:workSetGeneration}});
+  const clip=await db.clip.create({data:{projectId:project.id,workflowRunId:run.id,index:0,startSec:0,endSec:5,hookText:"Hook",reasoning:"Why",category:"insight",transcriptSlice:[],viralityScore:1,hookStrengthScore:1,emotionalIntensityScore:1,pacingScore:1,durationOptimalityScore:1,tiktokScore:1,youtubeScore:1,instagramScore:1,llmProvider:"test",llmModel:"test"}});
+  const clipExport=await db.clipExport.create({data:{projectId:project.id,workspaceId:workspace.id,clipId:clip.id,editorRevision:0,fingerprint:hex,resolution:"1080p",watermark:false,status:"ready"}}),variant=await db.clipExportVariant.create({data:{exportId:clipExport.id,aspectRatio:"ratio_9_16",resolution:"1080p",watermark:false,status:"completed"}});
+  const audio=await db.sourceAudio.create({data:{projectId:project.id,sourceRevision:1,mediaProvider:"upload",mediaId:project.id,audioTrack:{},bindingHash:hex,storageKey:`projects/${project.id}/audio-${crypto.randomUUID()}.m4a`,etag:'"a"',byteLength:1n,checksumSha256:hex,durationSeconds:5,audioStartTimeSec:0,probeVersion:"v1",toolchainFingerprint:hex}});
+  await db.project.update({where:{id:project.id},data:{sourceRevision:1}});await db.transcript.create({data:{projectId:project.id,sourceAudioId:audio.id,sourceRevision:1}});
+  const preparation=await db.clipPreparation.create({data:{projectId:project.id,clipId:clip.id,sourceRevision:1,editorRevision:0,bindingHash:hex,engineHash:hex,inputHash:hex,inputStorageKey:`private/${crypto.randomUUID()}.json`,inputEtag:'"a"',inputByteLength:1n,inputChecksumSha256:hex,deploymentEpoch:epoch,operationDeadlineAt:new Date(now.getTime()+60000)}});
+  await db.renderGroup.create({data:{workflowRunId:run.id,workSetGeneration,clipId:clip.id,exportIdentity:"e",preparationId:preparation.id}});
+  const post=await db.socialPost.create({data:{projectId:project.id,workspaceId:workspace.id,clipId:clip.id,platform:"tiktok",caption:"c",clientIdempotencyKey:crypto.randomUUID(),immutableRequestHash:hex,status:"failed"}});
+  const frozen=await db.frozenPublicationState.create({data:{socialPostId:post.id,clipExportId:clipExport.id,clipExportVariantId:variant.id,platform:"tiktok",editorRevision:0,exportFingerprint:hex,aspectRatio:"ratio_9_16",caption:"c",providerSettings:{},capabilityVersion:"v1",scheduledFor:now}});
+  const attempt=(attemptNumber:number,priorAttemptId?:string)=>db.socialPublicationAttempt.create({data:{socialPostId:post.id,frozenStateId:frozen.id,attemptNumber,idempotencyKey:crypto.randomUUID(),phase:"failed",nextActionAt:now,processingDeadline:now,reconciliationDeadline:now,priorAttemptId}});
+  const first=await attempt(1),second=await attempt(2,first.id);
+  await db.providerReceipt.create({data:{attemptId:first.id,platform:"tiktok",receiptId:crypto.randomUUID()}});await db.publicationAnalyticsIntent.create({data:{attemptId:first.id,socialPostId:post.id,projectId:project.id,kind:"published"}});
+  await db.publicationManualDecision.create({data:{socialPostId:post.id,attemptId:second.id,workspaceId:workspace.id,actorUserId:user.id,kind:"recheck_requested",reason:"r"}});
+  const round=await db.reviewRound.create({data:{workspaceId:workspace.id,projectId:project.id,createdByUserId:user.id,revision:1,title:"Review",accessTokenHash:crypto.randomUUID(),deliveryTokenEncrypted:"x",recipientEmails:[]}}),later=await db.reviewRound.create({data:{workspaceId:workspace.id,projectId:project.id,createdByUserId:user.id,revision:2,title:"Later",accessTokenHash:crypto.randomUUID(),deliveryTokenEncrypted:"x",recipientEmails:[]}});
+  const item=await db.reviewRoundItem.create({data:{reviewRoundId:round.id,clipId:clip.id,exportId:clipExport.id,editorRevision:0,position:0,selectedVariantIds:[variant.id]}}),comment=await db.reviewComment.create({data:{reviewRoundId:round.id,itemId:item.id,authorKind:"guest",authorName:"G",authorGrantHash:hex,body:"b"}});
+  await db.reviewRoundContext.create({data:{reviewRoundId:later.id,sourceCommentId:comment.id}});await db.reviewApprovalOverride.create({data:{workspaceId:workspace.id,projectId:project.id,exportId:clipExport.id,actorUserId:user.id,clientIdempotencyKey:crypto.randomUUID(),requestFingerprint:hex,reason:"r"}});
+  return {user,workspace,project,epoch,clip};
+ }
+ const driver=(writes:string[]=[])=>{const registrations:string[][]=[];return {registrations,controller:createProjectRetentionExecution({database:db,register:async ids=>{registrations.push([...ids]);},releaseUsage:async()=>{},writeDeletionReceipt:async key=>{writes.push(key);}})};};
+ async function complete(ids:readonly string[]){const cleanup=createMediaCleanupControl({database:db,register:async()=>{},hold:mediaCleanupObjectRetainUntil,storage:{async deleteExact(){}}});for(const id of ids){const row=await db.mediaCleanupObligation.findUniqueOrThrow({where:{id}});expect(await cleanup.run((await db.$transaction(tx=>queueMediaCleanupWithinTransaction(tx,row.id)))!)).toMatchObject({kind:"complete"});}}
+ async function purge(id:string,controller:ReturnType<typeof driver>["controller"],registrations:string[][],start:string){let current=(await readExecutionDispatch(db,start))!.reference;for(let i=0;i<12&&!current.subject.id.includes(".await");i++){await controller.run(current);current=(await readExecutionDispatch(db,registrations.at(-1)!.at(-1)!))!.reference;}expect(current.subject.id).toContain(".await");const open=await db.mediaCleanupObligation.findMany({where:{projectId:id,completedAt:null}});await db.mediaCleanupObligation.updateMany({where:{projectId:id},data:{nextAttemptAt:new Date(0)}});await complete(open.map(row=>row.id));return controller.run(current);}
+ test("no restricting foreign key can stop a Project delete after its media is gone",async()=>{
+  const schema=process.env.SERVERLESS_TEST_DATABASE_SCHEMA!,blocking=await db.$queryRawUnsafe<Array<{conname:string}>>(`WITH RECURSIVE edges AS (SELECT c.conname,c.conrelid AS child,c.confrelid AS parent,c.confdeltype AS action FROM pg_constraint c WHERE c.contype='f' AND c.connamespace='"${schema}"'::regnamespace),reach AS (SELECT '"${schema}"."Project"'::regclass::oid AS t UNION SELECT e.child FROM edges e JOIN reach r ON e.parent=r.t WHERE e.action='c') SELECT e.conname::text FROM edges e WHERE e.parent IN (SELECT t FROM reach) AND e.action IN ('r','a') ORDER BY 1`);
+  expect(blocking.map(row=>row.conname)).toEqual(["RenderGroup_attemptToken_id_fkey"]);
+ });
+ test("a published, reviewed Project deletes after retention, and its Workspace deletes with it",async()=>{
+  const {workspace,project}=await publishedProject();await db.project.delete({where:{id:project.id}});expect(await db.project.findUnique({where:{id:project.id}})).toBeNull();
+  const second=await publishedProject();await db.workspace.delete({where:{id:second.workspace.id}});expect(await db.project.findUnique({where:{id:second.project.id}})).toBeNull();await db.workspace.delete({where:{id:workspace.id}});
+ });
+ test("a user delete purges through the retention pipeline, covers unpinned uploads and raw transcripts, and no plan change undoes it",async()=>{
+  const {workspace,project,epoch}=await publishedProject(),upload=`uploads/${crypto.randomUUID()}/source.mp4`,raw=`projects/${project.id}/transcripts/raw.json`;
+  await db.project.update({where:{id:project.id},data:{sourceStorageKey:upload}});await db.transcript.update({where:{projectId:project.id},data:{rawStorageKey:raw,sourceAudioId:null}});await db.sourceAudio.deleteMany({where:{projectId:project.id}});
+  const writes:string[]=[],{registrations,controller}=driver(writes);
+  await db.$transaction(async tx=>{await lockExecutionRecoveryParents(tx,[{workspaceId:workspace.id,projectId:project.id}]);await beginUserProjectPurge(tx,project.id,epoch);});
+  const marked=await db.project.findUniqueOrThrow({where:{id:project.id}});expect(marked).toMatchObject({retentionPolicyKey:"user_deleted_v1"});expect(marked.purgeStartedAt).toEqual(marked.expiresAt);
+  await db.$transaction(tx=>projectRetentionService.applyWorkspaceTierTransition(tx,{workspaceId:workspace.id,previousTier:"free",nextTier:"business",effectiveAt:new Date(marked.expiresAt!.getTime()-60000)}));
+  expect((await db.project.findUniqueOrThrow({where:{id:project.id}})).purgeStartedAt).toEqual(marked.purgeStartedAt);
+  const start=await db.executionDispatch.findFirstOrThrow({where:{subjectKind:"maintenance",subjectId:{startsWith:`pr1.${project.id}.`}}});
+  await purge(project.id,controller,registrations,start.id);
+  const obligations=await db.mediaCleanupObligation.findMany({where:{projectId:project.id},select:{objectKey:true,cleanupClass:true,completedAt:true}});expect(obligations.map(row=>[row.objectKey,row.cleanupClass]).sort()).toEqual([[raw,"transcript_raw"],[upload,"upload_source"]].sort());expect(obligations.every(row=>row.completedAt)).toBe(true);
+  expect(writes).toHaveLength(1);expect(await db.project.findUnique({where:{id:project.id}})).toBeNull();await db.workspace.delete({where:{id:workspace.id}});
  });
 });

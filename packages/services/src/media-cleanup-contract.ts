@@ -28,6 +28,7 @@ export const MEDIA_CLEANUP_CLASSES = [
   "generated_asset",
   "thumbnail_asset",
   "upload_source",
+  "transcript_raw",
   "execution_input",
   "publication_private",
   "assigned_artifact",

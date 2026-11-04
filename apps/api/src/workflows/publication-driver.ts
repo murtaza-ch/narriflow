@@ -10,6 +10,7 @@ interface Ports {
   prepare(reference: ExecutionDispatchReference): Promise<PublicationPreparation>;
   expire(deadline: ExecutionDeadline, deliveryId: string): Promise<ExecutorExpiryResult>;
   deliver(ids: readonly string[]): Promise<readonly ExecutionDispatchDeliveryResult[]>;
+  watchAcquisition?(deadline: ExecutionDeadline): Promise<void>;
 }
 /** External pauses have no executor claim or product timeout. Targeted export
  * and grant changes wake this reference, including via independent delivery.

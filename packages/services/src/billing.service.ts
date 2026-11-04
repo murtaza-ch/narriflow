@@ -49,7 +49,6 @@ const billingFailureCatalog = {
   checkout_session_conflict: "conflict",
   customer_collection_unbounded: "unavailable",
   customer_identity_conflict: "conflict",
-  customer_missing: "missing",
   invalid_signature: "forbidden",
   portal_not_configured: "unavailable",
   price_not_configured: "unavailable",
@@ -87,7 +86,6 @@ const billingSafeMessages: Record<BillingErrorCode, string> = {
   checkout_session_conflict: "Checkout ownership could not be verified. Contact support",
   customer_collection_unbounded: "Billing is temporarily unavailable",
   customer_identity_conflict: "The billing account needs support before it can be changed",
-  customer_missing: "The billing customer could not be found",
   invalid_signature: "The billing signature is invalid",
   portal_not_configured: "The billing portal is temporarily unavailable",
   price_not_configured: "This plan is temporarily unavailable",
@@ -346,8 +344,10 @@ export class BillingService {
     };
     consumeCall();
     const customer = await stripe.customers.retrieve(customerId);
+    // Only Stripe's own deletion marker counts. A 404 can also mean the wrong
+    // key or mode, which must retry and never remove paid access.
     if (customer.deleted) {
-      throw new BillingError("customer_missing");
+      return { customerId, ownership: { kind: "customer_deleted" }, subscriptions: [] };
     }
     const subscriptions: Stripe.Subscription[] = [];
     let startingAfter: string | undefined;

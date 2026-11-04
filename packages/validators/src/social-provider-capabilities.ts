@@ -45,3 +45,48 @@ export function socialProviderAcceptsMedia(input: {
     input.durationSec >= capability.durationSec.min &&
     input.durationSec <= capability.durationSec.max;
 }
+
+/** X counts a post in weighted units: most Latin text is 1, CJK and other wide
+ * scripts are 2, an emoji is 2 and a link is always 23 (twitter-text's config).
+ * A link is `http(s)://...` or a bare domain on a generic TLD (or `co`/`tv`);
+ * any other two-letter TLD counts only with a path, as twitter-text does. The
+ * sentence punctuation that trails a link stays ordinary text. */
+const X_LIGHT_CODE_POINTS = [[0, 4351], [8192, 8205], [8208, 8223], [8242, 8247]] as const;
+const X_LINK_WEIGHT = 23;
+const X_GENERIC_TLDS = "com|net|org|edu|gov|mil|int|info|biz|name|pro|mobi|app|dev|io|ai|xyz|online|site|tech|store|shop|blog|news|live|link|page|cloud|co|tv";
+const X_LINK = new RegExp(
+  `(?<![\\p{L}\\p{N}_@.#$/-])(?:https?:\\/\\/[^\\s]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.){1,5}(?:(?:${X_GENERIC_TLDS})(?![a-z0-9-])|[a-z]{2}(?=\\/))(?::\\d{1,5})?(?:\\/[^\\s]*)?)`,
+  "giu",
+);
+const X_EMOJI = /\p{RI}{2}|(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)\p{Emoji_Modifier}?(?:\u200D(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?)\p{Emoji_Modifier}?)*|[0-9#*]\uFE0F\u20E3/gu;
+
+/** The punctuation at the end of a matched link that belongs to the sentence. A
+ * closing parenthesis stays with the link while it balances one inside it. */
+function xLinkTail(link: string): string {
+  let end = link.length, open = 0, close = 0;
+  for (const c of link) { if (c === "(") open += 1; else if (c === ")") close += 1; }
+  for (;;) {
+    const last = link[end - 1];
+    if (last && ".,;:!?'\"".includes(last)) end -= 1;
+    else if (last === ")" && close > open) { end -= 1; close -= 1; }
+    else break;
+  }
+  return link.slice(end);
+}
+
+export function xWeightedLength(text: string): number {
+  let weight = 0;
+  const plain = text.normalize("NFC")
+    .replace(X_LINK, (link) => { weight += X_LINK_WEIGHT; return xLinkTail(link); })
+    .replace(X_EMOJI, () => { weight += 2; return ""; });
+  for (const character of plain) {
+    const point = character.codePointAt(0)!;
+    weight += X_LIGHT_CODE_POINTS.some(([from, to]) => point >= from && point <= to) ? 1 : 2;
+  }
+  return weight;
+}
+
+/** A caption's length in the units the platform's limit is written in. */
+export function socialCaptionLength(platform: SocialProviderCapabilityPlatform, text: string): number {
+  return platform === "x" ? xWeightedLength(text) : text.length;
+}

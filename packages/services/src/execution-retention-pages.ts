@@ -24,7 +24,7 @@ function result(selected: MaintenancePosition[], all: MaintenancePosition[], pag
 function old(cutoff: Date, days: number) { return new Date(Math.max(0, cutoff.getTime() - days * DAY)); }
 export const expireWorkflowEventPage: MaintenancePhaseHandler = async (tx, page) => {
   const all = await rows(tx, page, "WorkflowEvent", "emittedAt", Prisma.sql`(NOT "notificationRequired" OR "notificationDeliveredAt" IS NOT NULL)
-    AND (NOT "progressRequired" OR "progressPublishedAt" IS NOT NULL) AND (NOT "analyticsRequired" OR "analyticsPublishedAt" IS NOT NULL)`, old(page.cutoff, EXECUTION_RETENTION_DAYS.workflowEvents));
+    AND (NOT "progressRequired" OR "progressPublishedAt" IS NOT NULL)`, old(page.cutoff, EXECUTION_RETENTION_DAYS.workflowEvents));
   const selected = all.slice(0, page.limit);
   if (selected.length) await tx.workflowEvent.deleteMany({ where: { id: { in: selected.map(row => row.id) }, OR: [{ notificationRequired: false }, { notificationDeliveredAt: { not: null } }] } });
   return result(selected, all, page);

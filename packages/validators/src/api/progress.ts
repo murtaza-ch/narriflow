@@ -25,18 +25,6 @@ export function parseSinceSeq(value: string | null | undefined): number {
   return normalizeWorkflowSeq(Number(value)) ?? 0;
 }
 
-/** True when `value` is a valid sequence strictly after `cursor`. */
-export function isAfterWorkflowCursor(cursor: number, value: unknown): boolean {
-  const sequence = normalizeWorkflowSeq(value);
-  return sequence !== null && sequence > cursor;
-}
-
-/** The larger of `cursor` and a valid `value`. */
-export function advanceWorkflowCursor(cursor: number, value: unknown): number {
-  const sequence = normalizeWorkflowSeq(value);
-  return sequence !== null && sequence > cursor ? sequence : cursor;
-}
-
 export const PROGRESS_CONNECT_TICKET_MS = 30_000;
 export const PROGRESS_SUBSCRIPTION_MAX_MS = 60_000;
 export const PROGRESS_REPLAY_LIMIT = 500;

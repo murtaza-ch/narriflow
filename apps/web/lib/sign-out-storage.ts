@@ -2,7 +2,8 @@
  * Browser storage a person leaves behind that only makes sense while they are
  * signed in. Unsaved work is deliberately not listed: Studio Device Drafts
  * live in IndexedDB and Publishing Drafts under `narriflow:publishing:`, so
- * signing out never costs anyone their edits.
+ * signing out never costs anyone their edits. Studio Device Drafts are keyed
+ * by user, so on a shared browser the next person is never offered them.
  */
 const LOCAL_PREFIXES = [
   "narriflow:workspace:",

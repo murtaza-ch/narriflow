@@ -5,6 +5,7 @@ import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { ExecutionMaintenanceService, HOURLY_MAINTENANCE_PHASES, DAILY_MAINTENANCE_PHASES } from "./execution-maintenance";
 import { expireMcpTaskPage, recoverPendingDispatchPage, recoverExecutionDeadlinePage, expireExecutionInboxPage } from "./execution-maintenance-pages";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { recoverIngestWakePage, recoverRenderGroupWakePage } from "./execution-safety-pages";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -70,6 +71,82 @@ suite("Durable bounded execution maintenance", () => {
     expect(await database.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "maintenance-page", deliveryId: reference.dispatchId } } })).toMatchObject({ wakeDispatchIds: replay.dispatchIds, disposition: { kind: "continue", processed: 2 } });
     await database.mcpTask.deleteMany({ where: { ownerUserId: marker } });
   });
+  test("one render group without a domain registration is skipped and logged, never failing its page", async () => {
+    const user = await database.user.create({ data: { clerkId: `safety-page:${crypto.randomUUID()}` } });
+    const workspace = await database.workspace.create({ data: { name: "Safety page", ownerUserId: user.id } });
+    const project = await database.project.create({ data: { workspaceId: workspace.id, title: "Waiting for video", sourceMediaUrl: "r2://gate/source", ingestStatus: "downloading" } });
+    const epoch = (await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
+    const run = await database.workflowRun.create({ data: { projectId: project.id, stage: "clip_rendering", status: "waiting", idempotencyKey: crypto.randomUUID(), renderWorkSetGeneration: crypto.randomUUID(), renderWorkSetFrozenAt: new Date(), deploymentEpoch: epoch } });
+    const clip = await database.clip.create({ data: { projectId: project.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, hookText: "gate", reasoning: "gate", category: "hook", transcriptSlice: [], viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "gate", llmModel: "gate", editorRevision: 1 } });
+    const group = (exportIdentity: string) => database.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration: run.renderWorkSetGeneration!, clipId: clip.id, exportIdentity, deploymentEpoch: epoch, createdAt: new Date("2026-10-30T00:00:00.000Z") } });
+    const [waiting, registered] = await Promise.all([group("unregistered"), group("registered")]);
+    const dispatch = await database.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "render_group", id: registered.id }, inputHash: "a".repeat(64), dueAt: new Date(0) }));
+    const warnings: string[] = [], warn = console.warn;
+    console.warn = (line: string) => { warnings.push(line); };
+    try {
+      const cutoff = new Date("2026-10-31T10:00:00.000Z");
+      const result = await database.$transaction(tx => recoverRenderGroupWakePage(tx, { deploymentEpoch: epoch, cutoff, after: null, limit: 100 }));
+      expect(result.processed).toBeGreaterThanOrEqual(2);
+      const wakes = await database.executionDispatch.findMany({ where: { subjectId: { in: [waiting.id, registered.id] }, wakeKind: `hourly_${cutoff.getTime()}` } });
+      expect(wakes.map(row => row.subjectId)).toEqual([registered.id]);
+      expect(wakes[0]!.inputHash).toBe(dispatch.reference.inputHash);
+      expect(warnings.some(line => line.includes("maintenance_domain_registration_missing") && line.includes(waiting.id))).toBe(true);
+    } finally {
+      console.warn = warn;
+      await database.executionDispatch.deleteMany({ where: { subjectId: { in: [waiting.id, registered.id] } } });
+      await database.workspace.delete({ where: { id: workspace.id } });
+      await database.user.delete({ where: { id: user.id } });
+    }
+  });
+  test("an undeliverable recovered wake cannot stall the next phase of the sweep", async () => {
+    const epoch = (await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
+    const stuck = await database.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "maintenance", id: `fixture-${crypto.randomUUID()}` }, inputHash: "a".repeat(64), dueAt: new Date(0) }));
+    const healthy = await database.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "maintenance", id: `fixture-${crypto.randomUUID()}` }, inputHash: "a".repeat(64), dueAt: new Date(0) }));
+    const delivered: string[][] = [], warn = console.warn;
+    const ids = [stuck.reference.dispatchId, ...Array.from({ length: 3 }, () => crypto.randomUUID()), healthy.reference.dispatchId];
+    const service = new ExecutionMaintenanceService({ database, limit: 8, register: async batch => { delivered.push([...batch]); if (batch.includes(stuck.reference.dispatchId)) throw new Error("Undeliverable"); },
+      phases: { ...Object.fromEntries(HOURLY_MAINTENANCE_PHASES.map(phase => [phase, async () => ({ processed: 0, next: null })])), dispatches: async () => ({ processed: 1, next: null, dispatchIds: ids }) } });
+    console.warn = () => {};
+    try {
+      const reference = await service.start({ cadence: "hourly", scheduledAt: new Date("2026-08-14T12:00:00.000Z") });
+      const result = await service.run(reference);
+      const continuation = result.dispatchIds.at(-1)!;
+      expect(result.kind).toBe("continue");
+      expect(delivered[1]).toEqual([continuation]);
+      expect(delivered.at(-1)).toEqual([healthy.reference.dispatchId]);
+    } finally { console.warn = warn; }
+  });
+
+  test("hourly recovery leaves drafts and inaccessible Projects alone until they can make progress", async () => {
+    const user = await database.user.create({ data: { clerkId: `safety-draft:${crypto.randomUUID()}` } });
+    const workspace = await database.workspace.create({ data: { name: "Draft sweep", ownerUserId: user.id } });
+    const epoch = (await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
+    const createdAt = new Date("2026-08-01T00:00:00.000Z"), cutoff = new Date("2026-08-02T00:00:00.000Z");
+    const source = async (title: string, project: { expiresAt?: Date; purgeStartedAt?: Date } = {}) => {
+      const row = await database.project.create({ data: { workspaceId: workspace.id, title, sourceMediaUrl: "r2://gate/source", sourceStorageKey: "gate/source", ingestStatus: "ready", ...project } });
+      const job = await database.ingestJob.create({ data: { projectId: row.id, jobType: "upload_finalize", payload: {}, status: "completed", createdAt, deploymentEpoch: epoch } });
+      await database.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash: "a".repeat(64), dueAt: new Date(0) }));
+      return { project: row, job };
+    };
+    const pack = (projectId: string, draft: boolean) => database.contentPack.create({ data: { projectId, draft, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10, clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const draft = await source("Abandoned draft"), none = await source("No pack"), committed = await source("Committed pack"), expired = await source("Expired", { expiresAt: new Date(0) });
+    await Promise.all([pack(draft.project.id, true), pack(committed.project.id, false), pack(expired.project.id, false)]);
+    const jobs = [draft, none, committed, expired].map(row => row.job.id);
+    try {
+      await database.$transaction(tx => recoverIngestWakePage(tx, { deploymentEpoch: epoch, cutoff, after: null, limit: 100 }));
+      const wakes = await database.executionDispatch.findMany({ where: { subjectId: { in: jobs }, wakeKind: `hourly_${cutoff.getTime()}` } });
+      expect(wakes.map(row => row.subjectId)).toEqual([committed.job.id]);
+      await database.workspace.update({ where: { id: workspace.id }, data: { status: "restricted" } });
+      const later = new Date(cutoff.getTime() + 3_600_000);
+      await database.$transaction(tx => recoverIngestWakePage(tx, { deploymentEpoch: epoch, cutoff: later, after: null, limit: 100 }));
+      expect(await database.executionDispatch.count({ where: { subjectId: { in: jobs }, wakeKind: `hourly_${later.getTime()}` } })).toBe(0);
+    } finally {
+      await database.executionDispatch.deleteMany({ where: { subjectId: { in: jobs } } });
+      await database.workspace.delete({ where: { id: workspace.id } });
+      await database.user.delete({ where: { id: user.id } });
+    }
+  });
+
   test("hourly safety pages only due unacknowledged dispatches and confirms their persisted exact identities", async () => {
     const epoch = (await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
     const records = await database.$transaction(async tx => {
@@ -87,7 +164,8 @@ suite("Durable bounded execution maintenance", () => {
     expect(first).toMatchObject({ kind: "continue", processed: 1 });
     expect(records.slice(0, 2).map(row => row.reference.dispatchId)).toContain(first.dispatchIds[0]!);
     expect(first.dispatchIds).not.toContain(records[2]!.reference.dispatchId);
-    expect(registered.at(-1)).toEqual(first.dispatchIds);
+    expect(registered.at(-2)).toEqual([first.dispatchIds.at(-1)!]);
+    expect(registered.at(-1)).toEqual(first.dispatchIds.slice(0, -1));
     expect(await service.run(reference)).toEqual(first);
     await database.executionDispatch.updateMany({ where: { id: { in: records.map(row => row.reference.dispatchId) } }, data: { nextDeliveryAt: new Date("2099-01-01") } });
   });

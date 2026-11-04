@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import { editedToSource, groupCaptionTokens, sourceRangeToEdited, splitSpacedTokens } from "@narriflow/validators";
 import type { EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 
@@ -160,17 +159,4 @@ export function getCurrentCaptionState(
     cueIndex,
     activeWordIndex: estimatedActiveIdx,
   };
-}
-
-export function useCurrentCaption(
-  currentTime: number,
-  utterances: TranscriptUtterance[],
-  clipStartSec: number,
-  wordsPerCue: number,
-  editedTimeMap?: EditedTimeMap,
-): CaptionState | null {
-  return useMemo(
-    () => getCurrentCaptionState(currentTime, utterances, clipStartSec, wordsPerCue, editedTimeMap),
-    [currentTime, utterances, clipStartSec, wordsPerCue, editedTimeMap],
-  );
 }

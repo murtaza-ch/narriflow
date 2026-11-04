@@ -1,9 +1,9 @@
 
-import { getPrismaClient } from "@narriflow/db/client";
 
 import { finishingPicksSchema } from "@narriflow/validators";
 
 import { accessibleProjectWhere } from "./project-access";
+import { requirePrisma } from "./require-prisma";
 
 export type NotificationOutcome = "clips_ready" | "no_clips" | "generation_failed" | "import_failed" | "project_expiring" | "finishing_ready";
 
@@ -51,13 +51,6 @@ export interface NotificationMailResult {
 }
 
 export function createNotificationStore(): NotificationStore {
-    function requirePrisma() {
-        const prisma = getPrismaClient();
-        if (!prisma) {
-            throw new Error("Database client unavailable");
-        }
-        return prisma;
-    }
     return {
         async getProject(projectId) {
             const row = await requirePrisma().project.findFirst({
@@ -160,13 +153,6 @@ export async function buildNotificationMail(input: NotificationMailInput) {
             html: string;
             text: string;
         };
-        sendEmail: (input: {
-            to: string;
-            subject: string;
-            html: string;
-            text: string;
-            idempotencyKey: string;
-        }) => Promise<NotificationMailResult>;
     };
     const template = input.outcome === "project_expiring" && input.expiresAt
         ? email.projectExpiring({

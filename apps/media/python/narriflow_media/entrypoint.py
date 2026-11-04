@@ -107,6 +107,14 @@ async def invoke_native(value: object, function_name: str, *, client: ExecutionC
         except ExecutionControlError:
             pass
         return await _observe(session)
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        # Modal is stopping this container. The work did not fail, so its
+        # owner hands the attempt back instead of waiting out the lease.
+        try:
+            await asyncio.to_thread(session.command, "release", reason="shutdown")
+        except ExecutionControlError:
+            pass
+        return await _observe(session)
     except BaseException:
         # The domain sees a bounded error code, never an exception message that
         # could contain a signed grant, URL credential or source content.

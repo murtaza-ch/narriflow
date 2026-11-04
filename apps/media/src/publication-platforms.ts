@@ -1,4 +1,4 @@
-import type { SocialPlatform } from "@narriflow/validators";
+import { xWeightedLength, type SocialPlatform } from "@narriflow/validators";
 import type {
 	PublicationOperationPhase,
 	PublicationPlatform,
@@ -14,6 +14,8 @@ import {
 	createPublicationPlatformRegistry,
 } from "@narriflow/services/social-publication-platform";
 import { SOCIAL_PROVIDER_CAPABILITIES } from "@narriflow/services/social-publication-config";
+import { parseRetryAfterMs } from "@narriflow/services/retry-after";
+import { tiktokFailureCode } from "@narriflow/services/tiktok-failure-reasons";
 
 export type NativePublicationMedia = {
 	sizeBytes: number;
@@ -486,12 +488,7 @@ class ProviderHttpError extends Error {
 }
 
 function retryAfterMs(response: Response, now: Date) {
-	const value = response.headers.get("retry-after");
-	if (!value) return null;
-	const seconds = Number(value);
-	if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-	const date = Date.parse(value);
-	return Number.isFinite(date) ? Math.max(0, date - now.getTime()) : null;
+	return parseRetryAfterMs(response.headers.get("retry-after"), now);
 }
 
 function xRetryAfterMs(
@@ -699,6 +696,24 @@ function normalizedFailure(
 								? `${error.code.split("_")[0]}_rate_limit`
 								: error.code
 			: null;
+	// X answered POST /tweets with a refusal of the request itself (invalid,
+	// forbidden, or unprocessable): no Post exists, so it is not an unknown outcome.
+	if (
+		error instanceof ProviderHttpError &&
+		error.code === "x_post_failed" &&
+		[400, 403, 422].includes(error.status)
+	) {
+		return {
+			kind: "failed",
+			failure: {
+				code: providerCode!,
+				phase: error.phase,
+				disposition: "permanent",
+				retryAfterMs: null,
+				safeToRepublishAfterSubmission: true,
+			},
+		};
+	}
 	if (submitted) {
 		return {
 			kind: "unknown",
@@ -1775,7 +1790,10 @@ async function uploadTikTokChunks(
 ) {
 	for (let index = state.nextChunk; index < state.totalChunks; index += 1) {
 		const start = index * state.chunkBytes;
-		const end = Math.min(start + state.chunkBytes, local.sizeBytes);
+		const end =
+			index === state.totalChunks - 1
+				? local.sizeBytes
+				: start + state.chunkBytes;
 		await context.providerCall?.();
 		const upload = await dependencies.fetch(state.uploadUrl, {
 			method: "PUT",
@@ -1949,9 +1967,11 @@ function tiktokPlatform(
 						local.sizeBytes,
 						dependencies.config.tiktokChunkBytes,
 					);
+					// TikTok counts whole chunks (video_size / chunk_size, rounded down);
+					// the trailing bytes ride in the last chunk, which may exceed chunk_size.
 					const totalChunkCount = Math.max(
 						1,
-						Math.ceil(local.sizeBytes / chunkSize),
+						Math.floor(local.sizeBytes / chunkSize),
 					);
 					const initialized = await jsonRequest<{
 						data?: { upload_url?: string; publish_id?: string };
@@ -2103,21 +2123,12 @@ function tiktokPlatform(
 					return tiktokAccepted(input, publishId, status);
 				}
 				if (status.status === "FAILED") {
-					const failureCodes: Record<string, string> = {
-						spam_risk: "tiktok_spam_risk",
-						spam_risk_too_many_posts: "tiktok_rate_limit",
-						spam_risk_too_many_pending_share: "tiktok_pending_drafts_limit",
-						spam_risk_user_banned_from_posting: "tiktok_account_restricted",
-					};
 					const rateLimited =
 						status.failureReason === "spam_risk_too_many_posts";
 					return {
 						kind: "failed",
 						failure: {
-							code: status.failureReason
-								? (failureCodes[status.failureReason] ??
-									"tiktok_publish_failed")
-								: "tiktok_publish_failed",
+							code: tiktokFailureCode(status.failureReason),
 							phase: "reconciliation",
 							disposition: rateLimited ? "safe_retry" : "permanent",
 							retryAfterMs: rateLimited ? 60 * 60_000 : null,
@@ -2148,6 +2159,16 @@ function tiktokPlatform(
 			});
 		},
 	};
+}
+
+/** LinkedIn parses `commentary` as "little" text, where | { } @ [ ] ( ) < > # \ * _ ~
+ * are syntax. Every one is backslash-escaped so the caption posts as written,
+ * except a `#word` that starts a word: that stays a hashtag. */
+export function escapeLinkedInCommentary(text: string) {
+	return text.replace(
+		/(?<![^\s])#[\p{L}\p{N}_]+|[|{}@[\]()<>#\\*_~]/gu,
+		(match) => (match.length > 1 ? match : `\\${match}`),
+	);
 }
 
 type LinkedInUploadInstruction = {
@@ -2389,7 +2410,7 @@ async function submitLinkedInPost(
 		headers: linkedInHeaders(dependencies, account.accessToken),
 		body: JSON.stringify({
 			author: owner,
-			commentary: input.caption,
+			commentary: escapeLinkedInCommentary(input.caption),
 			visibility: stringSetting(settings, ["linkedinVisibility"], "PUBLIC"),
 			distribution: {
 				feedDistribution: "MAIN_FEED",
@@ -2828,7 +2849,7 @@ async function submitXPost(
 	});
 	markSubmitted();
 	const body: Record<string, unknown> = {
-		text: truncate(input.caption, 280),
+		text: input.caption,
 		media: { media_ids: [mediaId] },
 	};
 	if (booleanSetting(metadata(input), ["madeWithAi", "isAigc"])) {
@@ -3082,7 +3103,7 @@ function xPlatform(
 				if (
 					input.media.sizeBytes <= 0 ||
 					input.media.sizeBytes > dependencies.config.xMaxMediaBytes ||
-					input.caption.length > 280
+					xWeightedLength(input.caption) > SOCIAL_PROVIDER_CAPABILITIES.x.textLimit
 				) {
 					throw new PublicationPlatformConfigurationError(
 						"x_publication_invalid",

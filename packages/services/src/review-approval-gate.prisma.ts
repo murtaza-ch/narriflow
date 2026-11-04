@@ -1,4 +1,3 @@
-import { getPrismaClient } from "@narriflow/db/client";
 import { brandProfileSnapshotSchema } from "@narriflow/validators";
 import {
 	createReviewApprovalGate,
@@ -6,12 +5,7 @@ import {
 	type ReviewApprovalPolicy,
 } from "./review-approval-gate";
 import { workspaceService } from "./workspace.service";
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
+import { requirePrisma } from "./require-prisma";
 
 export function createProductionReviewApprovalGate() {
 	return createReviewApprovalGate({

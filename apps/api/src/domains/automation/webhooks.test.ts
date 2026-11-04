@@ -54,6 +54,27 @@ describe("Zoom webhook", () => {
     });
   });
 
+  test("the URL-validation challenge is not a signing oracle for forged events", async () => {
+    const app = appWith(new ZoomService({ config: () => config }));
+    const forged = JSON.stringify({ event: "app_deauthorized", event_ts: 1, payload: { account_id: "victim", user_id: "victim" } });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    // Step 1 of the replay: ask the unauthenticated CRC to HMAC `v0:<ts>:<body>`.
+    const oracle = await app.request("/api/webhooks/zoom", {
+      method: "POST",
+      body: JSON.stringify({ event: "endpoint.url_validation", payload: { plainToken: `v0:${timestamp}:${forged}` } }),
+    });
+    expect(oracle.status).toBe(400);
+    expect(JSON.stringify(await oracle.json())).not.toContain("encryptedToken");
+    // Step 2: the signature an attacker could compute without the oracle is rejected.
+    const forgedSignature = `v0=${createHmac("sha256", "guessed").update(`v0:${timestamp}:${forged}`).digest("hex")}`;
+    const event = await app.request("/api/webhooks/zoom", {
+      method: "POST",
+      headers: { "x-zm-request-timestamp": timestamp, "x-zm-signature": forgedSignature },
+      body: forged,
+    });
+    expect(event.status).toBe(401);
+  });
+
   test("an unsigned event never reaches storage", async () => {
     const app = appWith(new ZoomService({ config: () => config }));
     const response = await app.request("/api/webhooks/zoom", { method: "POST", body: JSON.stringify({ event: "recording.completed" }) });

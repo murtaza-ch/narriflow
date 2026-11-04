@@ -13,6 +13,7 @@ import { nativeValidationEvidenceSchema, type NativeValidationEvidence } from "@
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 import { brandOwnerForWorkspace } from "./brand-ownership";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 type ReadDb = Pick<Tx, "clipExportVariant" | "executionArtifact" | "workspace" | "workspaceMember" | "project">;
@@ -32,11 +33,6 @@ function view(row: Row, replayed = false) {
     status: row.status, attempt: row.attempt, errorCode: row.errorCode,
     asset: row.resultAsset ? { id: row.resultAsset.id, fingerprint: row.resultAsset.fingerprint, deleted: row.resultAsset.deletedAt !== null } : null,
     createdAt: row.createdAt, completedAt: row.completedAt, replayed };
-}
-async function clock(tx: Tx) {
-  const [row] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-  if (!row) throw new ThumbnailPreparationError("thumbnail_extraction_failed");
-  return row.now;
 }
 
 export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailFrameExecutionReference, NativeValidationCommit> {
@@ -76,7 +72,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`thumbnail-idempotency:${input.workspaceId}:${input.idempotencyKey}`},0)) IS NULL AS "locked"`;
       await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id"=${input.projectId}::uuid FOR UPDATE`;
       await this.authorize(tx, input);
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       const project = await tx.project.findFirst({ where: { id: input.projectId, workspaceId: input.workspaceId, ...accessibleProjectWhere(now) } });
       if (!project) throw new ThumbnailPreparationError("thumbnail_operation_not_found");
       const currentSource = await this.source(tx, input);
@@ -122,7 +118,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
       const job = await this.locked(tx, reference.subject.id);
       if (!job || job.generation !== reference.generation || job.deploymentEpoch !== reference.deploymentEpoch || thumbnailFrameExecutionInputHash(job) !== reference.inputHash) return { kind: "superseded" };
       if (["completed", "failed"].includes(job.status)) return { kind: "terminal" };
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       if (!job.operationDeadlineAt || job.operationDeadlineAt <= now) { await this.failed(tx, job, now, "thumbnail_deadline_expired"); return { kind: "terminal" }; }
       const token = job.claimId ?? randomUUID();
       const dispatch = await appendExecutionDispatch(tx, { kind: "modal_execution", subject: { kind: "thumbnail_frame", id: job.id }, deploymentEpoch: job.deploymentEpoch,
@@ -144,7 +140,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
     if (!job || job.generation !== reference.generation || job.deploymentEpoch !== reference.deploymentEpoch || thumbnailFrameExecutionInputHash(job) !== reference.inputHash || job.claimId !== attemptToken) return { kind: "terminal" as const, disposition: { disposition: "superseded" as const } };
     if (job.status === "completed") return { kind: "terminal" as const, disposition: { disposition: "completed" as const } };
     if (job.status === "failed") return { kind: "terminal" as const, disposition: { disposition: "failed" as const, failureCode: job.errorCode ?? "thumbnail_extraction_failed" } };
-    const now = await clock(tx);
+    const now = await databaseNow(tx);
     try {
       await this.authorize(tx, { workspaceId: job.workspaceId, actorUserId: job.createdByUserId });
       if (!await tx.project.findFirst({ where: { id: job.projectId, workspaceId: job.workspaceId, ...accessibleProjectWhere(now) } })) throw new Error("project inaccessible");
@@ -157,14 +153,14 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
   }
 
   private async owned(tx: Tx, ref: ThumbnailFrameExecutionReference, context: ExecutorMutationContext) {
-    const now = await clock(tx);
+    const now = await databaseNow(tx);
     const job = await tx.thumbnailFrameOperation.findFirst({ where: { id: ref.id, status: "processing", claimId: context.attemptToken, executorOwner: context.owner,
       generation: context.reference.generation, deploymentEpoch: context.reference.deploymentEpoch, claimExpiresAt: { gt: now }, operationDeadlineAt: { gt: now } } });
     if (!job || ref.attemptToken !== context.attemptToken) throw new ThumbnailPreparationError("thumbnail_claim_lost");
     return { job, now };
   }
   async acquireExecution(tx: Tx, ref: ThumbnailFrameExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
-    const job = await tx.thumbnailFrameOperation.findUniqueOrThrow({ where: { id: ref.id } }); const now = await clock(tx);
+    const job = await tx.thumbnailFrameOperation.findUniqueOrThrow({ where: { id: ref.id } }); const now = await databaseNow(tx);
     if (job.status !== "queued" || job.executorOwner || job.claimId !== context.attemptToken || job.attempt >= 3 || !job.operationDeadlineAt ||
       job.operationDeadlineAt <= now || job.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime()) throw new ThumbnailPreparationError("thumbnail_claim_lost");
     await tx.thumbnailFrameOperation.update({ where: { id: job.id }, data: { status: "processing", executorOwner: context.owner, claimExpiresAt: context.leaseExpiresAt, errorCode: null } });
@@ -222,7 +218,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
   async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
     const state = await this.lockExecution(tx, reference, attemptToken);
     if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
-    const job = await tx.thumbnailFrameOperation.findUniqueOrThrow({ where: { id: state.ref.id } }); const now = await clock(tx);
+    const job = await tx.thumbnailFrameOperation.findUniqueOrThrow({ where: { id: state.ref.id } }); const now = await databaseNow(tx);
     const due = observation.kind === "lease" ? job.claimExpiresAt : job.operationDeadlineAt;
     if (!due || due.getTime() !== observation.observedDeadlineAt.getTime()) return due && due > now ? { kind: "sleep", dueAt: due } : { kind: "superseded" };
     if (due > now) return { kind: "sleep", dueAt: due };
@@ -236,7 +232,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
       if (!epoch || !job || job.workspaceId !== workspaceId || job.projectId !== projectId) throw new ThumbnailPreparationError("thumbnail_operation_not_found");
       await this.authorize(tx, { workspaceId, actorUserId });
       if (job.status === "failed" && job.attempt >= 3) throw new ThumbnailPreparationError("thumbnail_retry_exhausted");
-      const now = await clock(tx);
+      const now = await databaseNow(tx);
       const row = job.status === "failed" ? await tx.thumbnailFrameOperation.update({ where: { id }, data: { status: "queued", generation: { increment: 1 }, deploymentEpoch: epoch.epoch,
         createdByUserId: actorUserId, errorCode: null, claimId: null, executorOwner: null, claimExpiresAt: null, completedAt: null, validationState: Prisma.DbNull,
         operationDeadlineAt: new Date(now.getTime() + 10 * 60_000) }, include }) : await tx.thumbnailFrameOperation.findUniqueOrThrow({ where: { id }, include });

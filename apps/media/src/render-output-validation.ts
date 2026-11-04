@@ -88,6 +88,10 @@ export interface RenderOutputExpectation {
 	variableFrameSpacing?: boolean;
 	audio: { sampleRate?: number; channels?: number } | null;
 	color: RenderColorExpectation;
+	/** A preview proxy's stream ends on its own clock, from source facts; null
+	 * where the source header names none. Absent on a render, which owes the
+	 * plan's exact timeline. */
+	previewStreamEnds?: { videoSec: number | null; audioSec: number | null };
 }
 
 export interface DecodedStreamFacts {
@@ -308,6 +312,44 @@ function averageRateMatches(
 	return ratio >= 1 - slack && ratio <= ceiling * (1 + slack);
 }
 
+/** Headers and cut points disagree by a few packets on ordinary sources. A read
+ * cut short by the network misses far more than this. */
+const PREVIEW_STREAM_END_SLACK_SEC = 0.5;
+
+/** A proxy cuts a source window without repairing it, so a short stream, a late
+ * stream or an audio hole is the source's and must not veto every variant. It
+ * still has to reach what the source says is there. */
+function previewTimelineCodes(
+	decoded: ValidatedRenderResult["decoded"],
+	expected: RenderOutputExpectation,
+	ends: NonNullable<RenderOutputExpectation["previewStreamEnds"]>,
+): string[] {
+	const { video, audio } = decoded;
+	const reached = (endSec: number, targetSec: number) =>
+		Math.abs(endSec - targetSec) <= PREVIEW_STREAM_END_SLACK_SEC;
+	const codes: string[] = [];
+	if (ends.videoSec !== null && !reached(video.endSec, ends.videoSec))
+		codes.push("output_video_duration_mismatch");
+	if (audio && !audio.monotonic) codes.push("output_audio_timestamps_invalid");
+	if (
+		expected.audio !== null &&
+		ends.audioSec !== null &&
+		!reached(audio?.endSec ?? 0, ends.audioSec)
+	)
+		codes.push("output_audio_duration_mismatch");
+	// A source header without stream ends still bounds the file as a whole. A
+	// stream that does name its end (a source shorter than the window) is the
+	// file's floor; the unnamed stream may run on to the window's end.
+	if (ends.videoSec === null || (expected.audio !== null && ends.audioSec === null)) {
+		const end = Math.max(video.endSec, audio?.endSec ?? 0);
+		const named = Math.max(ends.videoSec ?? 0, ends.audioSec ?? 0);
+		const floor = named > 0 ? Math.min(named, expected.durationSec) : expected.durationSec;
+		if (end < floor - PREVIEW_STREAM_END_SLACK_SEC || end > expected.durationSec + PREVIEW_STREAM_END_SLACK_SEC)
+			codes.push("output_container_duration_mismatch");
+	}
+	return codes;
+}
+
 function healthOrControl(error: unknown, signal: AbortSignal): void {
 	signal.throwIfAborted();
 	if (
@@ -428,7 +470,15 @@ export async function validateRenderOutput(input: {
 		(video.masteringDisplay || video.contentLight || video.dolbyVision)
 	)
 		codes.push("output_hdr_metadata_present");
-	if (media.audios.length !== (expected.audio === null ? 0 : 1))
+	// FFmpeg writes no track when the source's audio ends before a preview window.
+	const audioEndedBeforeWindow =
+		(expected.previewStreamEnds?.audioSec ?? Number.POSITIVE_INFINITY) <=
+		PREVIEW_STREAM_END_SLACK_SEC;
+	if (
+		audioEndedBeforeWindow
+			? media.audios.length > 1
+			: media.audios.length !== (expected.audio === null ? 0 : 1)
+	)
 		codes.push("output_audio_stream_missing_or_extra");
 	if (
 		audio &&
@@ -470,15 +520,6 @@ export async function validateRenderOutput(input: {
 		(!expected.variableFrameSpacing && picture.maxGapSec > epsilon)
 	)
 		codes.push("output_video_timestamps_invalid");
-	if (
-		Math.abs(picture.startSec) > tolerance ||
-		Math.abs(picture.endSec - expected.durationSec) > tolerance ||
-		Math.abs(picture.durationSec - expected.durationSec) > tolerance ||
-		(!expected.variableFrameSpacing &&
-			Math.abs(picture.frames - expected.durationSec / frameSec) >
-				1 + epsilon / frameSec)
-	)
-		codes.push("output_video_duration_mismatch");
 	if (video.frameCount !== null && video.frameCount !== picture.frames)
 		codes.push("output_video_frame_count_mismatch");
 	if (
@@ -486,42 +527,57 @@ export async function validateRenderOutput(input: {
 		Math.abs(video.durationSec - picture.durationSec) > tolerance
 	)
 		codes.push("output_video_header_duration_mismatch");
-	const packetSec = audio?.sampleRate ? 1024 / audio.sampleRate : 0;
-	const audioTolerance = tolerance + packetSec;
-	if (expected.audio !== null) {
-		const sound = decoded.audio;
+	if (expected.previewStreamEnds)
+		codes.push(
+			...previewTimelineCodes(decoded, expected, expected.previewStreamEnds),
+		);
+	else {
 		if (
-			!sound ||
-			!sound.monotonic ||
-			sound.maxGapSec > (audio?.sampleRate ? 1.1 / audio.sampleRate : epsilon)
+			Math.abs(picture.startSec) > tolerance ||
+			Math.abs(picture.endSec - expected.durationSec) > tolerance ||
+			Math.abs(picture.durationSec - expected.durationSec) > tolerance ||
+			(!expected.variableFrameSpacing &&
+				Math.abs(picture.frames - expected.durationSec / frameSec) >
+					1 + epsilon / frameSec)
 		)
-			codes.push("output_audio_timestamps_invalid");
-		// The decoder applies AAC priming/skip_samples. One final packet may
-		// contain padding beyond the edit list; no blanket millisecond allowance.
+			codes.push("output_video_duration_mismatch");
+		const packetSec = audio?.sampleRate ? 1024 / audio.sampleRate : 0;
+		const audioTolerance = tolerance + packetSec;
+		if (expected.audio !== null) {
+			const sound = decoded.audio;
+			if (
+				!sound ||
+				!sound.monotonic ||
+				sound.maxGapSec > (audio?.sampleRate ? 1.1 / audio.sampleRate : epsilon)
+			)
+				codes.push("output_audio_timestamps_invalid");
+			// The decoder applies AAC priming/skip_samples. One final packet may
+			// contain padding beyond the edit list; no blanket millisecond allowance.
+			if (
+				!sound ||
+				Math.abs(sound.startSec) > audioTolerance ||
+				Math.abs(sound.endSec - expected.durationSec) > audioTolerance ||
+				Math.abs(sound.durationSec - expected.durationSec) > audioTolerance ||
+				audio?.durationSec === null ||
+				(audio?.durationSec !== undefined &&
+					Math.abs(audio.durationSec - sound.durationSec) > audioTolerance)
+			)
+				codes.push("output_audio_duration_mismatch");
+		}
+		const formatEnd =
+			(media.format.startTimeSec ?? 0) + (media.format.durationSec ?? 0);
+		const streamEnd = Math.max(
+			picture.endSec,
+			audio?.endTimeSec ?? picture.endSec,
+		);
 		if (
-			!sound ||
-			Math.abs(sound.startSec) > audioTolerance ||
-			Math.abs(sound.endSec - expected.durationSec) > audioTolerance ||
-			Math.abs(sound.durationSec - expected.durationSec) > audioTolerance ||
-			audio?.durationSec === null ||
-			(audio?.durationSec !== undefined &&
-				Math.abs(audio.durationSec - sound.durationSec) > audioTolerance)
+			media.format.durationSec === null ||
+			Math.abs(media.format.startTimeSec ?? 0) > tolerance ||
+			Math.abs(formatEnd - streamEnd) > tolerance ||
+			Math.abs(formatEnd - expected.durationSec) > audioTolerance
 		)
-			codes.push("output_audio_duration_mismatch");
+			codes.push("output_container_duration_mismatch");
 	}
-	const formatEnd =
-		(media.format.startTimeSec ?? 0) + (media.format.durationSec ?? 0);
-	const streamEnd = Math.max(
-		picture.endSec,
-		audio?.endTimeSec ?? picture.endSec,
-	);
-	if (
-		media.format.durationSec === null ||
-		Math.abs(media.format.startTimeSec ?? 0) > tolerance ||
-		Math.abs(formatEnd - streamEnd) > tolerance ||
-		Math.abs(formatEnd - expected.durationSec) > audioTolerance
-	)
-		codes.push("output_container_duration_mismatch");
 	if (input.mixPeak && exceedsFullScale(input.mixPeak.measured))
 		codes.push("output_mix_peak_exceeded");
 	if (codes.length) return reject(codes);

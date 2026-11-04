@@ -14,7 +14,7 @@ export type TranscriptionControlResult =
 
 export interface TranscriptionControlPorts {
   admission: Pick<ReturnType<typeof createTranscriptionAdmission>, "admit">;
-  workflow: Pick<WorkflowRunLifecycle, "readProviderControl" | "recordProviderAcceptance" | "failProviderAttempt" | "expireProviderDeadline" | "observeProviderPending">;
+  workflow: Pick<WorkflowRunLifecycle, "readProviderControl" | "recordProviderAcceptance" | "extendUnconfirmedSubmission" | "failProviderAttempt" | "expireProviderDeadline" | "observeProviderPending">;
   /** Resolve keys lazily, after supplied/no-audio plans have completed. */
   provider(): Pick<ReturnType<typeof createScribeProvider>, "submit" | "result">;
   sourceAudioGrant(reference: ProviderAttemptReference, expiresAt: Date): Promise<{ sourceAudioId: string; url: string; expiresAt: Date }>;
@@ -111,7 +111,7 @@ export function createTranscriptionControl(ports: TranscriptionControlPorts) {
       try { accepted = await ports.provider().submit({ reference: key, sourceAudioUrl: grant.url, languageCode, signal: options.signal }); }
       catch (error) {
         options.signal?.throwIfAborted();
-        if (error instanceof ScribeSubmissionUnconfirmed) return { kind: "wait", dueAt: fresh.submissionDeadlineAt };
+        if (error instanceof ScribeSubmissionUnconfirmed) return settled(await ports.workflow.extendUnconfirmedSubmission(key));
         return settled(await ports.workflow.failProviderAttempt(key, workflowFailureFromUnknown(error)));
       }
       const result = await ports.workflow.recordProviderAcceptance(key, { ...accepted, nextPollAt: new Date(fresh.serverTime.getTime() + 30_000) });

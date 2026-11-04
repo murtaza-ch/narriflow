@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
+import { sha256Hex } from "./execution-hash";
+import { databaseNow } from "./execution-clock";
 
 type Tx = Prisma.TransactionClient;
 export type ExecutionPageAudience = "maintenance-page" | "restore-page";
@@ -16,14 +18,9 @@ function parse(disposition: unknown, ids: string[]): ExecutionPageOutcome {
   return { kind: value.kind as "complete" | "continue", processed: value.processed, dispatchIds: ids };
 }
 async function requestHash(reference: ExecutionDispatchReference, audience: ExecutionPageAudience) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+  return await sha256Hex(JSON.stringify([
     "execution-page-receipt-v1", audience, reference.dispatchId, reference.deploymentEpoch, reference.kind, reference.subject.kind, reference.subject.id, reference.generation, reference.inputHash,
-  ])))), byte => byte.toString(16).padStart(2, "0")).join("");
-}
-async function databaseNow(tx: Tx) {
-  const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
-  if (!clock) throw new ExecutionPageReceiptError("execution_page_receipt_invalid");
-  return clock.now;
+  ]));
 }
 async function read(tx: Tx, reference: ExecutionDispatchReference, audience: ExecutionPageAudience, hash: string, now: Date): Promise<ExecutionPageOutcome | null> {
   const prior = await tx.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience, deliveryId: reference.dispatchId } } });

@@ -1,6 +1,6 @@
 import type {
 	IngestStatus as PrismaIngestStatus,
-	Project,
+	Prisma,
 } from "@prisma/client";
 import { clipSourceEdgeSec } from "@narriflow/validators";
 import type { RetentionPolicyKey } from "./project-retention.service";
@@ -42,7 +42,16 @@ function bigintToNumber(value: bigint | number | null) {
 	return Number(value);
 }
 
-export function toProjectSnapshot(row: Project): ProjectSnapshot {
+/** Every Project column a snapshot reads. */
+export const projectSnapshotSelect = {
+	id: true, workspaceId: true, createdByUserId: true, folderId: true, title: true, sourceMediaUrl: true,
+	sourceType: true, sourceProvider: true, sourceInput: true, sourceStorageKey: true, sourceMimeType: true,
+	sourceSizeBytes: true, sourceDurationSeconds: true, sourceProbe: true, languageCode: true, brandProfileId: true,
+	brandTemplateId: true, ingestStatus: true, ingestErrorCode: true, ingestCompletedAt: true, notifyOnComplete: true,
+	retentionPolicyKey: true, expiresAt: true, createdAt: true,
+} satisfies Prisma.ProjectSelect;
+
+export function toProjectSnapshot(row: Prisma.ProjectGetPayload<{ select: typeof projectSnapshotSelect }>): ProjectSnapshot {
 	return {
 		id: row.id,
 		workspaceId: row.workspaceId,

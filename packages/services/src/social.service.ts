@@ -3,7 +3,6 @@ import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
 	type SocialPostSnapshot,
 	type WorkspaceAccessRole,
@@ -50,6 +49,7 @@ import {
 	ExpectedDomainFailureError,
 	type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 const socialServiceFailureCatalog = {
 	social_post_not_found: "missing",
@@ -66,14 +66,6 @@ export class SocialServiceError extends ExpectedDomainFailureError<SocialService
 		});
 		this.name = "SocialServiceError";
 	}
-}
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) {
-		throw new Error("Database client unavailable");
-	}
-	return prisma;
 }
 
 const socialPostSnapshotInclude = {

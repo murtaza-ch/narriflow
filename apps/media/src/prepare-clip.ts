@@ -7,7 +7,9 @@ import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, SCREEN_LAYOUT_VE
 import type { ClipPreparationInput, ClipPreparationResult } from "@narriflow/validators/clip-preparation";
 import { LayoutEvidence, type LayoutEvidenceDetectors, type LayoutEvidenceWrite } from "./layout-evidence";
 import { createLayoutEvidenceDetectors } from "./layout-evidence-runtime";
+import { hdrColorOf } from "./composition-ffmpeg-adapter";
 import type { RenderConfig } from "./render-config";
+import { renderEncodeDeadlineMs } from "./render-resource-budget";
 import { executorProcessFailure, resolveDisplayGeometry, type WorkerProcessModule } from "./worker-process";
 import { buildAudiogramPreviewArgs, buildClipPreviewArgs, clipPreviewOutputExpectation, encodeAndValidateClipPreview, generateClipPreviewPeaks } from "./tasks/clip-preview";
 import { renderFfmpegArgs } from "./ffmpeg-thread-policy";
@@ -39,12 +41,13 @@ export async function prepareClip(options: {
   if (window.durationSec <= 0) throw new Error("clip_preparation_window_invalid");
   const previewPath = join(options.work, "preview.mp4"), layoutPath = join(options.work, "layout.json");
   const geometry = resolveDisplayGeometry(probe);
-  const expected = clipPreviewOutputExpectation(probe, window.durationSec, policy.preview.maxHeight);
+  const expected = clipPreviewOutputExpectation(probe, window, policy.preview.maxHeight);
   const shared = { sourcePath: options.sourcePath, outputPath: previewPath, windowStartSec: window.startSec, windowDurationSec: window.durationSec, ...policy.preview };
   const args = probe.hasVideo ? buildClipPreviewArgs({ ...shared, hasAudio: probe.hasAudio, frameRate: expected.frameRate,
     ...(geometry.anamorphic ? { squarePixelAspect: geometry.width / geometry.height } : {}) })
     : buildAudiogramPreviewArgs({ ...shared, captionPreset: input.document.captionPreset });
-  await encodeAndValidateClipPreview({ workerProcess, signal, args, outputPath: previewPath, expected, deadlineMs: policy.preview.timeoutMs });
+  const deadlineMs = renderEncodeDeadlineMs({ editedDurationSec: window.durationSec, sourceWidth: probe.width, sourceHeight: probe.height, hdr: hdrColorOf(probe) !== null }, config);
+  await encodeAndValidateClipPreview({ workerProcess, signal, args, outputPath: previewPath, expected, deadlineMs });
   let peaksPath: string | null = null;
   if (probe.hasAudio) {
     try {

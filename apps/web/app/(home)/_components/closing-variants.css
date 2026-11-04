@@ -32,7 +32,7 @@
   color: var(--lx-dim);
 }
 
-/* ---------- 1. Any link ---------- */
+/* ---------- 1. A link ---------- */
 
 .lx-links__field {
   width: min(600px, 100%);

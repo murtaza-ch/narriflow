@@ -9,6 +9,10 @@ import type {
 // decision may use a process clock; callers supply time read inside their txn.
 export const RENDER_GROUP_MAX_ATTEMPTS = 3;
 export const RENDER_GROUP_RETRY_BASE_MS = 30_000;
+/** A failure before process start costs no charged attempt, so this separate
+ * budget stops a container that cannot start from retrying without end. */
+export const RENDER_GROUP_MAX_UNCHARGED_ATTEMPTS = 5;
+export const RENDER_GROUP_UNCHARGED_RETRY_BASE_MS = 5_000;
 
 export interface RenderGroupRef {
   readonly workflowRunId: string;
@@ -180,6 +184,8 @@ export function deriveRenderGroupSettlement(input: {
   chargedAttemptCount: number;
   databaseNow: Date;
   releaseNotBefore?: Date;
+  /** Finished uncharged attempts including this one; only the retry delay reads it. */
+  unchargedAttemptCount?: number;
 }): RenderGroupSettlement {
   assertAttemptCount(input.chargedAttemptCount);
   if (input.members.length === 0) throw new Error("Empty render group");
@@ -194,8 +200,9 @@ export function deriveRenderGroupSettlement(input: {
     (m.status === "failed" && m.failureDisposition === "retryable"));
   const failed = input.members.length - succeeded - superseded - retryable.length;
   if (retryable.length > 0 && input.chargedAttemptCount < RENDER_GROUP_MAX_ATTEMPTS) {
-    const delay = input.chargedAttemptCount === 0 ? 0 :
-      RENDER_GROUP_RETRY_BASE_MS * 2 ** (input.chargedAttemptCount - 1);
+    const uncharged = input.unchargedAttemptCount ?? 0;
+    const delay = Math.max(input.chargedAttemptCount === 0 ? 0 : RENDER_GROUP_RETRY_BASE_MS * 2 ** (input.chargedAttemptCount - 1),
+      uncharged === 0 ? 0 : RENDER_GROUP_UNCHARGED_RETRY_BASE_MS * 2 ** (uncharged - 1));
     return {
       status: "queued", requested: input.members.length, succeeded, failed, superseded,
       retryVariantIds: retryable.map((m) => m.clipRenderId),
@@ -296,6 +303,18 @@ export interface FinishRenderGroupExecution extends RenderGroupAttemptRef {
   readonly result: RenderGroupExecutionResult;
   readonly errorCode: string | null;
   readonly failureDisposition: ClipRenderFailureDisposition | null;
+}
+
+/** Workflow and render group transactions retry the same conflicts. */
+export function retryableTransactionFailure(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    const detail = current as { code?: string; originalCode?: string; cause?: unknown; meta?: { modelName?: string } };
+    if (["P2034", "40001", "40P01"].includes(detail.code ?? "") || ["40001", "40P01"].includes(detail.originalCode ?? "") ||
+      (detail.code === "P2002" && detail.meta?.modelName === "WorkflowEvent")) return true;
+    current = detail.cause;
+  }
+  return false;
 }
 
 function terminalStatus(succeeded: number, failed: number): "completed" | "partial" | "failed" {

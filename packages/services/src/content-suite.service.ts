@@ -10,6 +10,7 @@ import {
   type ContentAsset,
   type TextOutputType,
 } from "@narriflow/validators";
+import { OpenAiResponsesError, requestOpenAiText } from "./openai-responses";
 import { workspaceService } from "./workspace.service";
 import { requirePlanFeature } from "./plan-features";
 import {
@@ -23,6 +24,7 @@ const contentSuiteFailureCatalog = {
   not_found: "missing",
   openai_bad_output: "unavailable",
   openai_not_configured: "unavailable",
+  openai_rate_limited: "rate_limited",
   openai_request_failed: "unavailable",
   transcript_not_ready: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -35,6 +37,7 @@ const contentSuiteSafeMessages: Record<ContentSuiteFailureCode, string> = {
   not_found: "Project not found",
   openai_bad_output: "Content generation is temporarily unavailable",
   openai_not_configured: "Content generation is temporarily unavailable",
+  openai_rate_limited: "Content generation is busy. Try again in a minute",
   openai_request_failed: "Content generation is temporarily unavailable",
   transcript_not_ready: "The transcript is not ready yet",
 };
@@ -55,6 +58,10 @@ function requirePrisma() {
   }
   return prisma;
 }
+
+// Every asset type in one structured answer, with the model's reasoning counted in the budget.
+const CONTENT_MAX_OUTPUT_TOKENS = 16_000;
+const CONTENT_TIMEOUT_MS = 120_000;
 
 // Bound the prompt size so a very long transcript can't blow the token budget.
 const MAX_TRANSCRIPT_CHARS = 48_000;
@@ -161,20 +168,6 @@ function jsonSchemaForTypes(types: TextOutputType[]) {
   };
 }
 
-function extractResponseText(payload: unknown): string | null {
-  const response = payload as {
-    output_text?: unknown;
-    output?: Array<{ content?: Array<{ text?: unknown }> }>;
-  };
-  if (typeof response.output_text === "string") return response.output_text;
-  const parts =
-    response.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((content) => content.text)
-      .filter((text): text is string => typeof text === "string") ?? [];
-  return parts.length > 0 ? parts.join("") : null;
-}
-
 function toSnapshot(row: {
   id: string;
   projectId: string;
@@ -259,50 +252,44 @@ export class ContentSuiteService {
     const model = readServiceEnvironment().OPENAI_CONTENT_MODEL ?? readServiceEnvironment().OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
 
     await prisma.$transaction(requireExecutionAdmissionOpen);
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        input: [
-          { role: "system", content: buildSystemPrompt() },
-          {
-            role: "user",
-            content: buildUserPrompt(
-              project.title,
-              transcript.text,
-              types,
-              transcript.languageCode,
-            ),
-          },
-        ],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "content_suite",
-            strict: true,
-            schema: jsonSchemaForTypes(types),
+    let content: string;
+    try {
+      content = await requestOpenAiText({
+        apiKey,
+        maxOutputTokens: CONTENT_MAX_OUTPUT_TOKENS,
+        timeoutMs: CONTENT_TIMEOUT_MS,
+        body: {
+          model,
+          input: [
+            { role: "system", content: buildSystemPrompt() },
+            {
+              role: "user",
+              content: buildUserPrompt(
+                project.title,
+                transcript.text,
+                types,
+                transcript.languageCode,
+              ),
+            },
+          ],
+          text: {
+            format: {
+              type: "json_schema",
+              name: "content_suite",
+              strict: true,
+              schema: jsonSchemaForTypes(types),
+            },
           },
         },
-      }),
-    });
-
-    const payload = (await response.json().catch(() => null)) as
-      | { error?: { message?: string } }
-      | null;
-    if (!response.ok || !payload) {
+      });
+    } catch (error) {
+      if (!(error instanceof OpenAiResponsesError)) throw error;
       throw new ContentSuiteError(
-        "openai_request_failed",
-      );
-    }
-
-    const content = extractResponseText(payload);
-    if (!content) {
-      throw new ContentSuiteError(
-        "openai_request_failed",
+        error.code === "openai_rate_limited"
+          ? "openai_rate_limited"
+          : error.code === "openai_incomplete"
+            ? "openai_bad_output"
+            : "openai_request_failed",
       );
     }
 

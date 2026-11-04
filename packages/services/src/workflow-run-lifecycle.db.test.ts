@@ -2044,7 +2044,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       await retry.lifecycle.completeClipRenderVariant(retry.attempt, render.id, { storageKey: "tests/retry-success.mp4", sizeBytes: 100, durationSec: 5 });
       await retry.lifecycle.settleRenderWorkSet(retry.attempt);
     }
-    await prisma.completionCallback.update({ where: { id: callback.id }, data: { nextObservationAt: new Date(Date.now() - 1000) } });
     expect((await observer.prepareCompletion(callback.id)).kind).toBe("accepted");
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } })).toMatchObject({ status: ending === "retry success" ? "ready" : "failed", completedAt: expect.any(Date) });
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).toMatchObject({ state: "pending", payload: { data: { state: ending === "retry success" ? "completed" : "failed" } } });
@@ -2292,6 +2291,47 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       expect(await providerReply(accepted.worker.expireProviderDeadline(accepted.attempt, { kind: "submission", observedDeadlineAt: accepted.deadline }))).toEqual({ kind: "stale", reason: "submission_confirmed" });
     })));
 
+    test("an unconfirmed submission keeps the attempt waiting until the result deadline so a late webhook completes it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+      // The POST was accepted but our client timed out; the 10 minute submission deadline has already passed.
+      const { run, project, worker, api, attempt, deadline } = await begun(new Date(Date.now() - 1_000));
+      const submittedAt = (await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerSubmittedAt!;
+      const extended = await worker.extendUnconfirmedSubmission(attempt);
+      const holdUntil = new Date(submittedAt.getTime() + 2 * 60 * 60_000);
+      expect(extended).toMatchObject({ kind: "sleep", dueAt: holdUntil });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({ providerJobId: null, providerSubmissionDeadlineAt: holdUntil });
+      expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).nextPollAt).toEqual(holdUntil);
+      // The new deadline has its own dispatch obligation, and extending twice is idempotent.
+      expect(await prisma.executionDispatch.count({ where: { subjectKind: "workflow_run", subjectId: run.id, deadlineKind: "provider_submission", observedDeadlineAt: holdUntil } })).toBe(1);
+      expect(await worker.extendUnconfirmedSubmission(attempt)).toMatchObject({ kind: "sleep", dueAt: holdUntil });
+      expect(await prisma.executionDispatch.count({ where: { subjectKind: "workflow_run", subjectId: run.id, deadlineKind: "provider_submission", observedDeadlineAt: holdUntil } })).toBe(1);
+      // The original deadline wake no longer fails the attempt, so no second paid POST is queued.
+      expect(await providerReply(worker.expireProviderDeadline(attempt, { kind: "submission", observedDeadlineAt: deadline }))).toEqual({ kind: "stale", reason: "submission_pending" });
+      expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("waiting");
+      // A webhook for another attempt is still fenced out; the metadata-matched one completes this attempt.
+      expect(await providerReply(api.completeProviderTranscript({ ...attempt, attemptId: randomUUID() }, transcriptInput("tr-1", "req-1")))).toEqual({ kind: "stale", reason: "attempt_superseded" });
+      expect(await providerReply(api.completeProviderTranscript(attempt, transcriptInput("tr-1", "req-1")))).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "completed", attemptId: attempt.attemptId });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({ status: "completed", providerJobId: "tr-1", workflowAttemptId: attempt.attemptId });
+    })));
+
+    test("an unconfirmed submission that never gets a webhook fails and retries only at the extended deadline", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+      const { run, project, worker, attempt } = await begun();
+      const extended = await worker.extendUnconfirmedSubmission(attempt);
+      if (extended.kind !== "sleep") throw Error(`Expected a sleep, got ${extended.kind}`);
+      expect(await providerReply(worker.expireProviderDeadline(attempt, { kind: "submission", observedDeadlineAt: extended.dueAt }))).toEqual({ kind: "sleep", dueAt: extended.dueAt });
+      await prisma.transcript.update({ where: { projectId: project.id }, data: { providerSubmissionDeadlineAt: new Date(Date.now() - 1_000) } });
+      const lapsed = (await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerSubmissionDeadlineAt!;
+      expect(await providerReply(worker.expireProviderDeadline(attempt, { kind: "submission", observedDeadlineAt: lapsed }))).toEqual({ kind: "applied" });
+      expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("queued");
+    })));
+
+    test("a submission accepted before the unconfirmed report is not re-timed", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+      const { project, worker, api, attempt } = await begun();
+      await api.recordProviderAcceptance(attempt, { requestId: "r", transcriptionId: "t", nextPollAt: new Date() });
+      expect(await worker.extendUnconfirmedSubmission(attempt)).toEqual({ kind: "stale", reason: "submission_confirmed" });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({ providerJobId: "t", providerSubmissionDeadlineAt: null });
+    })));
+
     test("a completion that omits provider ids keeps the accepted ones", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const omitting = { ...transcriptInput("x", "y"), providerJobId: null, providerRequestId: null };
       const { project, api, attempt } = await begun();
@@ -2462,7 +2502,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { project, run } = await fixture("moment_detection");
     await Promise.all(Array.from({ length: 8 }, (_, index) => prisma.$transaction(tx => appendWorkflowEvent(tx, {
       projectId: project.id, workflowRunId: run.id, attemptId: randomUUID(), stage: "moment_detection", status: "waiting", progress: index,
-      errorCode: null, transition: "sequence" }, { progressRequired: true, analyticsEnabled: false }))));
+      errorCode: null, transition: "sequence" }))));
     const events = await prisma.workflowEvent.findMany({ where: { projectId: project.id }, orderBy: { seq: "asc" }, select: { seq: true } });
     expect(events.map(event => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   })));

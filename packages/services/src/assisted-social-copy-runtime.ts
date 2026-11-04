@@ -2,7 +2,6 @@ import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-envir
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import { brandProfileSnapshotSchema } from "@narriflow/validators";
 import {
 	AssistedSocialCopyError,
@@ -19,6 +18,7 @@ import {
 import { requirePlanFeature } from "./plan-features";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
+import { requirePrisma } from "./require-prisma";
 
 const generationInclude = {
 	variants: { orderBy: { platform: "asc" as const } },
@@ -27,12 +27,6 @@ const generationInclude = {
 type GenerationRow = Prisma.AssistedCopyGenerationGetPayload<{
 	include: typeof generationInclude;
 }>;
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
 
 function stringArray(value: Prisma.JsonValue): string[] {
 	return Array.isArray(value)

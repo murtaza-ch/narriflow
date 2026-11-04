@@ -1,33 +1,24 @@
 # Project-retention restore runbook
 
-Use this procedure after restoring the application Postgres database to an earlier point in time. Do not reopen web, API, MCP, or worker traffic until the tombstone replay completes successfully.
+Use this after restoring the application Postgres database to an earlier point in time. The general restore order (fence, attest, begin, redispatch, resume) is [the execution restore procedure](execution-restore.md); this page covers only what project retention adds. Do not reopen intake until the redispatch receipts and platform checks in that procedure pass.
 
-## Preconditions
+## What survives a restore
 
-- The restored database is reachable through `DATABASE_URL`.
-- The worker has read/write access to the production R2 bucket.
-- API, web and worker deployments are stopped or otherwise prevented from serving traffic.
-- The R2 `retention-receipts/v1/` prefix has not been altered.
+- Project purge is a durable, Workflow-driven page chain (`packages/services/src/project-retention-execution.ts`). A restored Project whose `expiresAt` has passed is purged again by the `redispatch_retention` restore phase and the daily retention schedule.
+- When a Project is purged, a content-free deletion receipt is written to R2 at `retention-receipts/v1/<sha256(projectId)>.json` and recorded in `ProjectDeletionReceipt`. These tombstones are the only record of a deletion that happened after the restored snapshot.
 
-## Replay
+## Known gap
 
-From `apps/worker`, with its normal production environment loaded, run:
+The earlier `retention:replay-tombstones` command belonged to the retired worker and has no replacement in this repository. Nothing reads the R2 tombstones back into a restored database. A Project deleted after the snapshot reappears until a person deletes it again. Until a replay exists, treat this as a manual check before reopening intake:
 
-```bash
-bun run retention:replay-tombstones
-```
-
-The command reads unexpired, content-free R2 tombstones, hashes every restored project ID, recreates missing database receipts, and hard-deletes any project that had already expired before the restore. It never restores or reads project media.
-
-Treat any invalid tombstone as a blocking warning. Investigate the named operational log event `retention_tombstones_replayed` and do not reopen traffic until the receipt prefix and credentials are verified and the replay reports zero invalid tombstones.
+1. List the R2 `retention-receipts/v1/` prefix (read only; never alter it).
+2. Hash each restored Project ID with SHA-256 and compare against the listed receipt names.
+3. For any match that still exists in `Project`, delete it through the normal user-delete path so storage and rows are purged again.
 
 ## Verification
 
-1. Run the replay a second time; `projectsRemoved` must be `0`.
-2. Confirm no project whose SHA-256 ID hash appears in an unexpired tombstone exists in `Project`.
-3. Confirm the worker health endpoint is healthy with retention maintenance still stopped.
-4. Re-enable the worker, then the API and web deployments.
-5. Monitor `expired_project_purge_failed`, `project_retention_maintenance`, and project-not-found rates for at least 30 minutes.
+1. Confirm no Project whose SHA-256 ID hash appears in an unexpired tombstone exists in `Project`.
+2. After reopening, watch the maintenance Workflow for failed retention pages and the project-not-found rate for at least 30 minutes.
 
 ## Backup policy
 

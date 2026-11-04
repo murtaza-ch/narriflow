@@ -526,7 +526,7 @@ model ProjectDeletionReceipt {
   deleteAfter         DateTime
   createdAt           DateTime @default(now())
 
-  @@index([deleteAfter])
+  @@index([deleteAfter, id], map: "ProjectDeletionReceipt_retention_page_idx")
 }
 
 /// Repurposed text outputs generated from the transcript (blog, thread,
@@ -595,6 +595,8 @@ model ContentPack {
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workflowRuns WorkflowRun[]
+
+  @@index([projectId, createdAt(sort: Desc), id])
 }
 
 model WorkflowRun {
@@ -659,6 +661,7 @@ model WorkflowRun {
   @@index([status, leaseExpiresAt])
   @@index([status, nextPollAt])
   @@index([projectId, deploymentEpoch, status, errorCode, updatedAt, id], map: "WorkflowRun_source_cancellation_page_idx")
+  @@index([contentPackId])
 }
 
 enum RenderGroupStatus {
@@ -694,7 +697,7 @@ model RenderGroup {
   inputEtag             String?           @db.VarChar(160)
   inputByteLength       BigInt?
   inputChecksumSha256   String?           @db.Char(64)
-  preparation           ClipPreparation?  @relation(fields: [preparationId], references: [id], onDelete: NoAction, onUpdate: Restrict)
+  preparation           ClipPreparation?  @relation(fields: [preparationId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   id                    String            @id @default(uuid()) @db.Uuid
   deploymentEpoch       Int               @default(1)
   generation            Int               @default(1)
@@ -869,7 +872,7 @@ model Transcript {
   createdAt                    DateTime            @default(now())
   updatedAt                    DateTime            @updatedAt
   project                      Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceAudio                  SourceAudio?        @relation(fields: [sourceAudioId, projectId, sourceRevision], references: [id, projectId, sourceRevision], onDelete: NoAction)
+  sourceAudio                  SourceAudio?        @relation(fields: [sourceAudioId, projectId, sourceRevision], references: [id, projectId, sourceRevision], onDelete: Cascade)
   selectionWindows             ClipSelectionWindow[]
   passages                     TranscriptPassage[]
 
@@ -888,7 +891,8 @@ model Transcript {
 /// The cosine HNSW index on `embedding` is created by the migration only:
 /// `CREATE INDEX "TranscriptPassage_embedding_idx" ON "TranscriptPassage"
 /// USING hnsw ("embedding" public.vector_cosine_ops)`. Prisma cannot express it,
-/// so it is the one index that `prisma migrate diff` will not list.
+/// so `prisma migrate diff` proposes to drop it. `test:schema-drift:db` allows
+/// that one entry and fails on anything else.
 model TranscriptPassage {
   id             String                      @id @default(uuid()) @db.Uuid
   workspaceId    String                      @db.Uuid
@@ -1002,6 +1006,7 @@ model IngestJob {
   @@index([status, generationHandoffAt])
   @@index([status, generationHandoffRetryAt])
   @@index([projectId, status, createdAt])
+  @@index([generationRunId])
 }
 
 model WorkflowEvent {
@@ -1018,30 +1023,18 @@ model WorkflowEvent {
   dedupeKey               String    @unique
   eventType               String    @default("workflow.stage.updated")
   payload                 Json?
-  availableAt             DateTime  @default(now())
-  deliveryLeaseOwner      String?
-  deliveryLeaseExpiresAt  DateTime?
-  deliveryAttempts        Int       @default(0)
-  nextDeliveryAt          DateTime  @default(now())
   progressRequired           Boolean   @default(false)
   progressPublishedAt        DateTime?
-  analyticsRequired       Boolean   @default(false)
-  analyticsPublishedAt    DateTime?
   /// Terminal render and ingest events use this event as their durable notification
   /// intent. Delivery is acknowledged only after the send-once ledger has
   /// durably accepted the handoff.
   notificationRequired    Boolean   @default(false)
   notificationDeliveredAt DateTime?
-  deadLetteredAt          DateTime?
-  lastDeliveryError       String?
   createdAt               DateTime  @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, seq])
-  @@index([projectId, seq])
-  @@index([nextDeliveryAt, deliveryLeaseExpiresAt])
-  @@index([notificationRequired, notificationDeliveredAt, nextDeliveryAt])
 }
 
 model User {
@@ -1092,7 +1085,6 @@ model User {
   audioAssetFavorites             AudioAssetFavorite[]
   publicationManualDecisions      PublicationManualDecision[]
 
-  @@index([clerkId])
 }
 
 /// A Clerk identity that Clerk has deleted. Clerk ids are never reused, so the
@@ -1172,6 +1164,7 @@ model Workspace {
   webhookDisabledNotifications WebhookDisabledNotificationLedger[]
   reviewerOptOuts            ReviewerOptOut[]
   billingAccount             WorkspaceBillingAccount?
+  outboundDeliveries         OutboundDelivery[]
 
   @@index([ownerUserId])
   @@index([status, pricingTier])
@@ -1214,6 +1207,8 @@ model WorkspaceBillingAccount {
 
   @@index([nextReconcileAt, id])
   @@index([leaseExpiresAt])
+  @@index([reconciliationEpoch, nextReconcileAt, id], map: "WorkspaceBillingAccount_recovery_page_idx")
+  @@index([createdAt, id, reconciliationEpoch], map: "WorkspaceBillingAccount_restore_page_idx")
 }
 
 model WorkspaceCheckoutAttempt {
@@ -1388,6 +1383,7 @@ model AutopilotRule {
   @@index([status, nextRunAt, leaseExpiresAt])
   @@index([recipeId])
   @@index([zoomConnectionId, status])
+  @@index([createdAt, id], map: "AutopilotRule_execution_restore_idx")
 }
 
 /// One member's user-managed Zoom authorization in a Workspace. Disconnection
@@ -1456,6 +1452,7 @@ model ZoomWebhookJob {
   completedAt    DateTime?
 
   @@index([status, availableAt, leaseExpiresAt])
+  @@index([createdAt, id], map: "ZoomWebhookJob_execution_restore_idx")
 }
 
 /// Named, revisioned Workspace settings that Autopilot rules and integration
@@ -1625,6 +1622,7 @@ model WebhookDeliveryLog {
   @@unique([provider, eventId])
   @@index([provider, eventType, createdAt])
   @@index([workspaceBillingAccountId, createdAt])
+  @@index([createdAt, id], map: "WebhookDeliveryLog_retention_page_idx")
 }
 
 model Clip {
@@ -1699,9 +1697,6 @@ model Clip {
   // stale workers and the lease lets another replica recover abandoned work
   // without two healthy replicas paying for the same download/detection.
   autoLayoutStatus         ClipAutoLayoutStatus @default(pending)
-  autoLayoutClaimToken     String?              @db.Uuid
-  autoLayoutLeaseExpiresAt DateTime?
-  autoLayoutAttemptCount   Int                  @default(0)
 
   // Lightweight 540p faststart proxy covering this clip's range (plus padding
   // for boundary tweaks). The studio and the clip cards play this instead of
@@ -1745,7 +1740,6 @@ model Clip {
   @@unique([id, projectId])
   @@unique([projectId, workflowRunId, index])
   @@index([projectId, viralityScore(sort: Desc)])
-  @@index([autoLayoutStatus, autoLayoutLeaseExpiresAt])
 }
 
 /// Durable, fenced exact-key deletion work admitted by approved media producers.
@@ -1770,7 +1764,9 @@ model MediaCleanupObligation {
   @@unique([origin, cleanupClass, objectKey])
   @@index([completedAt, nextAttemptAt, claimExpiresAt])
   @@index([clipId, completedAt])
+  @@index([objectKey])
   @@index([createdAt, id])
+  @@index([projectId, createdAt, id], map: "MediaCleanupObligation_project_inventory_idx")
 }
 
 model ClipRender {
@@ -1817,7 +1813,6 @@ model ClipRender {
   exportVariant ClipExportVariant? @relation(fields: [exportVariantId], references: [id], onDelete: Cascade)
   workflowRun   WorkflowRun?       @relation(fields: [workflowRunId], references: [id], onDelete: SetNull)
 
-  @@index([clipId])
   @@index([clipId, aspectRatio])
   @@index([workflowRunId, createdAt, id])
 }
@@ -2040,7 +2035,7 @@ model ReviewRoundContext {
   createdAt       DateTime @default(now())
 
   reviewRound   ReviewRound   @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
-  sourceComment ReviewComment @relation(fields: [sourceCommentId], references: [id], onDelete: Restrict)
+  sourceComment ReviewComment @relation(fields: [sourceCommentId], references: [id], onDelete: Cascade)
 
   @@unique([reviewRoundId, sourceCommentId])
   @@index([sourceCommentId])
@@ -2089,13 +2084,14 @@ model ReviewRoundItem {
   createdAt          DateTime @default(now())
 
   reviewRound ReviewRound      @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
-  clip        Clip             @relation(fields: [clipId], references: [id], onDelete: Restrict)
-  export      ClipExport       @relation(fields: [exportId], references: [id], onDelete: Restrict)
+  clip        Clip             @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  export      ClipExport       @relation(fields: [exportId], references: [id], onDelete: Cascade)
   comments    ReviewComment[]
   decisions   ReviewDecision[]
 
   @@unique([reviewRoundId, clipId])
   @@index([exportId])
+  @@index([clipId])
 }
 
 model ReviewComment {
@@ -2123,6 +2119,7 @@ model ReviewComment {
 
   @@index([reviewRoundId, createdAt])
   @@index([parentId])
+  @@index([itemId])
 }
 
 model ReviewDecision {
@@ -2142,6 +2139,7 @@ model ReviewDecision {
   actorGuest  ReviewGuest?     @relation(fields: [actorGuestId], references: [id], onDelete: SetNull)
 
   @@index([reviewRoundId, createdAt(sort: Desc)])
+  @@index([itemId])
 }
 
 /// Immutable audit proof that an authorized Workspace user bypassed review
@@ -2160,7 +2158,7 @@ model ReviewApprovalOverride {
 
   workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project                Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  export                 ClipExport              @relation(fields: [exportId], references: [id], onDelete: Restrict)
+  export                 ClipExport              @relation(fields: [exportId], references: [id], onDelete: Cascade)
   reviewRound            ReviewRound?            @relation(fields: [reviewRoundId], references: [id], onDelete: SetNull)
   socialPosts            SocialPost[]
   campaignOperationItems CampaignOperationItem[]
@@ -2471,6 +2469,7 @@ model GeneratedMediaJob {
   @@index([projectId, clipId, createdAt])
   @@index([resultAssetId])
   @@index([promptExpiresAt])
+  @@index([clipId])
 }
 
 model AssistedCopyGeneration {
@@ -2501,6 +2500,7 @@ model AssistedCopyGeneration {
   @@unique([workspaceId, idempotencyKey])
   @@index([projectId, clipId, createdAt(sort: Desc)])
   @@index([status, createdAt])
+  @@index([clipId])
 }
 
 model AssistedCopyVariant {
@@ -2561,6 +2561,7 @@ model ThumbnailFrameOperation {
   @@index([status, claimExpiresAt, createdAt])
   @@index([projectId, clipId, createdAt(sort: Desc)])
   @@index([resultAssetId])
+  @@index([clipId])
 }
 
 enum GenerationUsageKind {
@@ -2831,7 +2832,6 @@ model SocialPost {
   @@index([socialAccountId, scheduledFor])
   @@index([status, scheduledFor])
   @@index([clipId])
-  @@index([socialAccountId])
   @@index([reviewApprovalOverrideId])
   @@index([standingGrantId])
   @@index([deploymentEpoch,standingGrantId,id])
@@ -2864,14 +2864,13 @@ model FrozenPublicationState {
 
   socialPost        SocialPost?                @relation("CurrentPublicationState", fields: [socialPostId], references: [id], onDelete: Cascade)
   retiredForPost    SocialPost?                @relation("RetiredPublicationStates", fields: [retiredForPostId], references: [id], onDelete: Cascade)
-  clipExport        ClipExport                 @relation(fields: [clipExportId], references: [id], onDelete: Restrict)
-  clipExportVariant ClipExportVariant          @relation(fields: [clipExportVariantId], references: [id], onDelete: Restrict)
+  clipExport        ClipExport                 @relation(fields: [clipExportId], references: [id], onDelete: Cascade)
+  clipExportVariant ClipExportVariant          @relation(fields: [clipExportVariantId], references: [id], onDelete: Cascade)
   socialAccount     SocialAccount?             @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
   attempts          SocialPublicationAttempt[]
 
   @@index([retiredForPostId,confirmedScheduleRevision], map: "FrozenPublicationState_retired_confirmation_idx")
   @@index([clipExportId])
-  @@index([clipExportVariantId])
   @@index([clipExportVariantId,socialPostId])
   @@index([socialAccountId])
 }
@@ -2931,8 +2930,8 @@ model SocialPublicationAttempt {
   updatedAt              DateTime                       @updatedAt
 
   socialPost      SocialPost                  @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
-  frozenState     FrozenPublicationState      @relation(fields: [frozenStateId], references: [id], onDelete: Restrict)
-  priorAttempt    SocialPublicationAttempt?   @relation("PublicationAttemptLineage", fields: [priorAttemptId], references: [id], onDelete: Restrict)
+  frozenState     FrozenPublicationState      @relation(fields: [frozenStateId], references: [id], onDelete: Cascade)
+  priorAttempt    SocialPublicationAttempt?   @relation("PublicationAttemptLineage", fields: [priorAttemptId], references: [id], onDelete: Cascade)
   laterAttempts   SocialPublicationAttempt[]  @relation("PublicationAttemptLineage")
   claims          PublicationClaim[]
   receipt         ProviderReceipt?
@@ -2942,6 +2941,8 @@ model SocialPublicationAttempt {
   @@unique([socialPostId, attemptNumber])
   @@index([phase, nextActionAt, id])
   @@index([socialPostId, createdAt])
+  @@index([frozenStateId])
+  @@index([priorAttemptId])
 }
 
 model PublicationManualDecision {
@@ -2959,9 +2960,9 @@ model PublicationManualDecision {
   ownershipValidated Boolean                       @default(false)
   createdAt          DateTime                      @default(now())
 
-  socialPost SocialPost               @relation(fields: [socialPostId], references: [id], onDelete: Restrict)
-  attempt    SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
-  workspace  Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  socialPost SocialPost               @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  attempt    SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  workspace  Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   actor      User                     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
 
   @@index([socialPostId, createdAt])
@@ -3010,7 +3011,7 @@ model ProviderReceipt {
   createdAt                     DateTime           @default(now())
   enrichedAt                    DateTime?
 
-  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
 
   @@unique([platform, receiptId])
   @@index([platform, platformPostId])
@@ -3027,7 +3028,7 @@ model PublicationAnalyticsIntent {
   deliveredAt  DateTime?
   createdAt    DateTime  @default(now())
 
-  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
 
   @@index([deliveredAt, createdAt])
   @@index([projectId, createdAt])
@@ -3061,7 +3062,6 @@ model TrackedVideo {
 
   @@unique([workspaceId, platform, platformPostId])
   @@index([workspaceId, publishedAt])
-  @@index([socialPostId])
   @@index([socialPostId,id])
 }
 
@@ -3144,6 +3144,7 @@ model ProgramAnalyticsEvent {
   @@index([workspaceId, createdAt])
   @@index([projectId, createdAt])
   @@index([type, createdAt])
+  @@index([createdAt, id])
 }
 
 model PublishedSocialVideo {
@@ -3177,6 +3178,7 @@ model OperationReceipt {
   @@unique([workspaceId, actorUserId, command, clientIdempotencyKey], map: "OperationReceipt_identity_key")
   @@index([resourceType, resourceId])
   @@index([workspaceId, createdAt])
+  @@index([createdAt, id])
 }
 
 /// Completion Callback: a signed, at-least-once notification delivered to a
@@ -3199,7 +3201,6 @@ model CompletionCallback {
   /// waiting | pending | delivered | failed | cancelled
   state              String    @default("waiting")
   observationCount   Int       @default(0)
-  nextObservationAt  DateTime  @default(now())
   attempts           Int       @default(0)
   nextAttemptAt      DateTime?
   leaseOwner         String?
@@ -3212,8 +3213,8 @@ model CompletionCallback {
   updatedAt          DateTime  @updatedAt
   workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@index([state, nextObservationAt])
   @@index([state, nextAttemptAt])
+  @@index([updatedAt, id])
   @@index([workspaceId, operationKind, operationId])
 }
 
@@ -3248,7 +3249,7 @@ model WorkspaceEvent {
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, seq])
-  @@index([createdAt])
+  @@index([createdAt, id], map: "WorkspaceEvent_retention_page_idx")
 }
 
 /// The durable memory that a transition already has its Workspace Event. The
@@ -3504,13 +3505,14 @@ model ExecutionDispatch {
   observedDeadlineAt     DateTime?
   deadLetteredAt         DateTime?
   errorCode              String?   @db.VarChar(100)
-  createdAt              DateTime  @default(dbgenerated("(clock_timestamp() AT TIME ZONE 'UTC')"))
+  createdAt              DateTime  @default(dbgenerated("(clock_timestamp() AT TIME ZONE 'UTC'::text)"))
   updatedAt              DateTime  @updatedAt
   attempts               ExecutionAttempt[]
 
   @@unique([id, deploymentEpoch, generation, inputHash])
   @@index([acknowledgedAt, deadLetteredAt, nextDeliveryAt, deliveryLeaseExpiresAt])
   @@index([deploymentEpoch, subjectKind, subjectId, generation])
+  @@index([subjectKind, subjectId, id], map: "ExecutionDispatch_subject_inventory_idx")
 }
 
 /// Executor ownership for an already-admitted domain token, never a retry or charge budget.
@@ -3676,7 +3678,7 @@ model ClipSelectionWindow {
   tokensUsed               Int?
   completedAt              DateTime?
   createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  updatedAt                DateTime @default(now()) @updatedAt
   workflowRun              WorkflowRun @relation(fields: [workflowRunId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Restrict)
   transcript               Transcript @relation(fields: [transcriptId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Restrict)
 
@@ -3755,7 +3757,7 @@ model OutboundProbe {
   updatedAt DateTime @updatedAt
   completedAt DateTime?
 
-  @@unique([workspaceId, createdByUserId, requestFingerprint])
+  @@unique([workspaceId, createdByUserId, requestFingerprint], map: "OutboundProbe_workspaceId_createdByUserId_requestFingerprint_ke")
   @@index([status, retryAt, createdAt])
 }
 
@@ -3800,8 +3802,11 @@ model OutboundDelivery {
   updatedAt DateTime @updatedAt
   completedAt DateTime?
 
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
   @@index([targetKind, targetId, createdAt])
   @@index([status, retryAt])
+  @@index([status, expiresAt])
   @@index([bodyStorageKey])
 }
 
@@ -3837,7 +3842,7 @@ model ClipPreparation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   completedAt DateTime?
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([clipId, bindingHash, deploymentEpoch])
   @@index([projectId, status])
@@ -3868,11 +3873,11 @@ model GrantPauseNotificationLedger {
  sentAt DateTime?
  createdAt DateTime @default(now())
  updatedAt DateTime @updatedAt
- workspace Workspace @relation(fields:[workspaceId],references:[id],onDelete:Cascade)
- grant StandingGrant @relation(fields:[grantId],references:[id],onDelete:Cascade)
- pauseEvent StandingGrantEvent @relation(fields:[pauseEventId],references:[id],onDelete:Cascade)
+ workspace Workspace @relation(fields:[workspaceId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+ grant StandingGrant @relation(fields:[grantId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+ pauseEvent StandingGrantEvent @relation(fields:[pauseEventId],references:[id],onDelete:Cascade,onUpdate:NoAction)
  @@unique([grantId,grantRevision])
- @@index([deploymentEpoch,createdAt,id])
+ @@index([deploymentEpoch,createdAt,id],map:"GrantPauseNotificationLedger_recovery_cursor")
 }
 
 /// One notice per accepted disabled-subscription cycle. The shared mail executor
@@ -3901,8 +3906,8 @@ model WebhookDisabledNotificationLedger {
  sentAt DateTime?
  createdAt DateTime @default(now())
  updatedAt DateTime @updatedAt
- workspace Workspace @relation(fields:[workspaceId],references:[id],onDelete:Cascade)
- webhook WebhookSubscription @relation(fields:[webhookId],references:[id],onDelete:Cascade)
+ workspace Workspace @relation(fields:[workspaceId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+ webhook WebhookSubscription @relation(fields:[webhookId],references:[id],onDelete:Cascade,onUpdate:NoAction)
  @@unique([webhookId,disableRevision])
- @@index([deploymentEpoch,createdAt,id])
+ @@index([deploymentEpoch,createdAt,id],map:"WebhookDisabledNotificationLedger_recovery_cursor")
 }

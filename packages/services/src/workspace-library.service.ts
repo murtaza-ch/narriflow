@@ -13,7 +13,7 @@ import {
 	type ProjectListProgress,
 	type SocialPostSnapshot,
 } from "@narriflow/validators";
-import { toProjectSnapshot, type ProjectSnapshot } from "./project-snapshot";
+import { projectSnapshotSelect, toProjectSnapshot, type ProjectSnapshot } from "./project-snapshot";
 import {
 	projectProgressStatusSql,
 	projectProgressWorkflowOrderSql,
@@ -208,18 +208,30 @@ function emptyProjectStatusCounts(): Record<ProjectListStatusFilter, number> {
 	return { all: 0, ready: 0, processing: 0, queued: 0, failed: 0 };
 }
 
+interface ProjectListOptions {
+	limit?: number;
+	cursor?: string | null;
+	folderId?: string;
+	query?: string;
+	status?: ProjectListStatusFilter;
+	source?: ProjectListSourceFilter;
+	sort?: ProjectListSort;
+}
+
 export class WorkspaceLibraryService {
-	async listProjects(
+	async listProjects(scope: ActorScope, options: ProjectListOptions = {}): Promise<ProjectListPage> {
+		return this.readProjects(scope, options, true);
+	}
+
+	/** A short list for a page with no filters or totals, so it skips the counts. */
+	async listRecentProjects(scope: ActorScope, limit: number): Promise<ProjectListPage["items"]> {
+		return (await this.readProjects(scope, { limit }, false)).items;
+	}
+
+	private async readProjects(
 		scope: ActorScope,
-		options: {
-			limit?: number;
-			cursor?: string | null;
-			folderId?: string;
-			query?: string;
-			status?: ProjectListStatusFilter;
-			source?: ProjectListSourceFilter;
-			sort?: ProjectListSort;
-		} = {},
+		options: ProjectListOptions,
+		counted: boolean,
 	): Promise<ProjectListPage> {
 		const limit = clampProjectPageSize(options.limit);
 		const offset = decodeProjectCursor(options.cursor);
@@ -323,17 +335,19 @@ export class WorkspaceLibraryService {
 				ORDER BY ${orderBy}
 				OFFSET ${offset} LIMIT ${limit + 1}
 			`),
-			prisma.$queryRaw<
-				Array<{
-					progressStatus: Exclude<ProjectListStatusFilter, "all">;
-					count: bigint;
-				}>
-			>(Prisma.sql`
-				${progressCte}
-				SELECT "progressStatus", COUNT(*)::bigint AS count
-				FROM listed
-				GROUP BY "progressStatus"
-			`),
+			counted
+				? prisma.$queryRaw<
+						Array<{
+							progressStatus: Exclude<ProjectListStatusFilter, "all">;
+							count: bigint;
+						}>
+					>(Prisma.sql`
+						${progressCte}
+						SELECT "progressStatus", COUNT(*)::bigint AS count
+						FROM listed
+						GROUP BY "progressStatus"
+					`)
+				: [],
 		]);
 		const statusCounts = emptyProjectStatusCounts();
 		for (const row of countRows) {
@@ -357,6 +371,7 @@ export class WorkspaceLibraryService {
 					workspaceId,
 					...accessibleProjectWhere(),
 				},
+				select: projectSnapshotSelect,
 			}),
 			prisma.clip.groupBy({
 				by: ["projectId"],
@@ -456,11 +471,7 @@ export class WorkspaceLibraryService {
 			}),
 			prisma.workspaceFolder.findMany({
 				where: { workspaceId: scope.workspaceId, name: { contains: q, mode: "insensitive" } },
-				select: {
-					id: true,
-					name: true,
-					_count: { select: { projects: true } },
-				},
+				select: { id: true, name: true },
 				orderBy: { updatedAt: "desc" },
 				take: 6,
 			}),
@@ -484,6 +495,8 @@ export class WorkspaceLibraryService {
 			}),
 		]);
 
+		const folderCounts = await this.folderProjectCounts(scope.workspaceId, folders.map((folder) => folder.id));
+
 		return [
 			...projects.map((project) => ({
 				id: project.id,
@@ -492,13 +505,16 @@ export class WorkspaceLibraryService {
 				subtitle: project.sourceType,
 				href: `/projects/${project.id}`,
 			})),
-			...folders.map((folder) => ({
-				id: folder.id,
-				type: "folder" as const,
-				title: folder.name,
-				subtitle: `${folder._count.projects} project${folder._count.projects === 1 ? "" : "s"}`,
-				href: `/projects?folder=${folder.id}`,
-			})),
+			...folders.map((folder) => {
+				const count = folderCounts.get(folder.id) ?? 0;
+				return {
+					id: folder.id,
+					type: "folder" as const,
+					title: folder.name,
+					subtitle: `${count} project${count === 1 ? "" : "s"}`,
+					href: `/projects?folder=${folder.id}`,
+				};
+			}),
 			...clips.map((clip) => ({
 				id: clip.id,
 				type: "clip" as const,
@@ -511,16 +527,24 @@ export class WorkspaceLibraryService {
 
 	async listFolders(scope: ActorScope) {
 		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
-		return requiredPrisma().workspaceFolder.findMany({
+		const folders = await requiredPrisma().workspaceFolder.findMany({
 			where: { workspaceId: scope.workspaceId },
-			select: {
-				id: true,
-				name: true,
-				createdAt: true,
-				_count: { select: { projects: true } },
-			},
+			select: { id: true, name: true, createdAt: true },
 			orderBy: { name: "asc" },
 		});
+		const counts = await this.folderProjectCounts(scope.workspaceId, folders.map((folder) => folder.id));
+		return folders.map((folder) => ({ ...folder, _count: { projects: counts.get(folder.id) ?? 0 } }));
+	}
+
+	/** Reachable Projects per folder, read through the Workspace's own index. */
+	private async folderProjectCounts(workspaceId: string, folderIds: string[]) {
+		if (folderIds.length === 0) return new Map<string, number>();
+		const rows = await requiredPrisma().project.groupBy({
+			by: ["folderId"],
+			where: { workspaceId, folderId: { in: folderIds }, ...accessibleProjectWhere() },
+			_count: { _all: true },
+		});
+		return new Map(rows.map((row) => [row.folderId as string, row._count._all]));
 	}
 
 	async createFolder(scope: ActorScope, name: string) {

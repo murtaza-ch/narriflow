@@ -5,17 +5,16 @@ import { operationFingerprint } from "./operation-receipt";
 import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 import { queueZoomNotification, ZOOM_NOTIFICATION_DEADLINE_MS } from "./zoom-execution";
 import { randomBytes } from "node:crypto";
-import { getPrismaClient } from "@narriflow/db/client";
 import { workspaceAllowsCapability, type ZoomConnectionSnapshot } from "@narriflow/validators";
 import type { ActorScope } from "./actor-scope";
 import { workspaceService, WorkspaceOperationError } from "./workspace.service";
-import { createZoomApi, type ZoomApi } from "./zoom-api";
+import { createZoomApi, ZoomRefusal, type ZoomApi } from "./zoom-api";
+import { TokenExchangeRejected } from "./token-exchange-rejected";
 import { createZoomTokenCipher, parseZoomNotification, verifyZoomSignature, zoomConfig, zoomStateHash, zoomValidationChallenge, ZoomError, ZOOM_CALLBACK_PATH, ZOOM_SCOPES, ZOOM_WEBHOOK_MAX_BYTES } from "./zoom";
 import { pauseGrantsWhoseRuleChanged } from "./standing-grant";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { requirePlanFeature } from "./plan-features";
-
-function db() { const prisma = getPrismaClient(); if (!prisma) throw new Error("Database client unavailable"); return prisma; }
+import { requirePrisma } from "./require-prisma";
 
 export class ZoomService {
   constructor(private readonly deps: { api?: ZoomApi; config?: typeof zoomConfig; now?: () => Date; register?: (ids: readonly string[]) => Promise<void> } = {}) {}
@@ -27,14 +26,14 @@ export class ZoomService {
   async listConnections(scope: ActorScope): Promise<ZoomConnectionSnapshot[]> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const admin = workspaceAllowsCapability(actor, "workspace.manage");
-    const rows = await db().zoomConnection.findMany({ where: { workspaceId: scope.workspaceId }, orderBy: { createdAt: "asc" } });
+    const rows = await requirePrisma().zoomConnection.findMany({ where: { workspaceId: scope.workspaceId }, orderBy: { createdAt: "asc" } });
     return rows.map((row) => ({ id: row.id, userId: row.userId, displayName: row.displayName, revoked: row.revokedAt !== null || row.refreshOutcomeUnknown, canDisconnect: admin || row.userId === scope.actorUserId }));
   }
 
   async requireConnection(scope: ActorScope, connectionId: string) {
     this.config();
     if (!connectionId) throw new ZoomError("zoom_connection_unavailable");
-    const connection = await db().zoomConnection.findFirst({ where: { id: connectionId, workspaceId: scope.workspaceId, revokedAt: null } });
+    const connection = await requirePrisma().zoomConnection.findFirst({ where: { id: connectionId, workspaceId: scope.workspaceId, revokedAt: null } });
     if (!connection || connection.refreshOutcomeUnknown) throw new ZoomError("zoom_connection_unavailable");
     // A rule can use a connected Workspace member's source, but it can't keep
     // using their recordings after they lose Workspace access.
@@ -52,8 +51,8 @@ export class ZoomService {
     const config = this.config();
     const state = randomBytes(32).toString("base64url");
     const redirectUri = new URL(ZOOM_CALLBACK_PATH, origin).href;
-    await db().zoomOAuthState.deleteMany({ where: { expiresAt: { lte: this.now() } } });
-    await db().zoomOAuthState.create({ data: { workspaceId: scope.workspaceId, userId: scope.actorUserId, stateHash: zoomStateHash(state), redirectUri, expiresAt: new Date(this.now().getTime() + 10 * 60_000) } });
+    await requirePrisma().zoomOAuthState.deleteMany({ where: { expiresAt: { lte: this.now() } } });
+    await requirePrisma().zoomOAuthState.create({ data: { workspaceId: scope.workspaceId, userId: scope.actorUserId, stateHash: zoomStateHash(state), redirectUri, expiresAt: new Date(this.now().getTime() + 10 * 60_000) } });
     const url = new URL("https://zoom.us/oauth/authorize");
     url.search = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: redirectUri, state, scope: ZOOM_SCOPES.join(" ") }).toString();
     return url.href;
@@ -69,7 +68,7 @@ export class ZoomService {
   async handleCallback(input: { state: string; code: string; origin: string }): Promise<void> {
     if (!/^[A-Za-z0-9_-]{43}$/.test(input.state)) throw new ZoomError("zoom_oauth_state_invalid");
     const redirectUri = new URL(ZOOM_CALLBACK_PATH, input.origin).href;
-    const state = await db().$transaction(async (tx) => {
+    const state = await requirePrisma().$transaction(async (tx) => {
       const row = await tx.zoomOAuthState.findUnique({ where: { stateHash: zoomStateHash(input.state) } });
       if (!row || row.redirectUri !== redirectUri || row.expiresAt <= this.now()) throw new ZoomError("zoom_oauth_state_invalid");
       const consumed = await tx.zoomOAuthState.deleteMany({ where: { id: row.id } });
@@ -82,13 +81,13 @@ export class ZoomService {
     // Recheck after network work; the member may have been removed meanwhile.
     await workspaceService.requireActor(state.userId, state.workspaceId, "content.edit");
     const data = { zoomAccountId: identity.account_id, displayName: identity.displayName, accessTokenEncrypted: this.cipher().seal(tokens.access_token), refreshTokenEncrypted: this.cipher().seal(tokens.refresh_token), expiresAt: new Date(this.now().getTime() + tokens.expires_in * 1000), scopes: tokens.scope.split(" "), revokedAt: null, authorizedAt:this.now(),refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null,refreshOutcomeUnknown:false };
-    await db().zoomConnection.upsert({ where: { workspaceId_userId_zoomUserId: { workspaceId: state.workspaceId, userId: state.userId, zoomUserId: identity.id } }, create: { workspaceId: state.workspaceId, userId: state.userId, zoomUserId: identity.id, ...data }, update: data });
+    await requirePrisma().zoomConnection.upsert({ where: { workspaceId_userId_zoomUserId: { workspaceId: state.workspaceId, userId: state.userId, zoomUserId: identity.id } }, create: { workspaceId: state.workspaceId, userId: state.userId, zoomUserId: identity.id, ...data }, update: data });
     // Reconnecting never resumes rules or grants without a person's choice.
   }
 
   async disconnect(scope: ActorScope, id: string) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
-    const row = await db().zoomConnection.findFirst({ where: { id, workspaceId: scope.workspaceId } });
+    const row = await requirePrisma().zoomConnection.findFirst({ where: { id, workspaceId: scope.workspaceId } });
     if (!row) throw new ZoomError("zoom_connection_unavailable");
     if (row.userId !== scope.actorUserId && !workspaceAllowsCapability(actor, "workspace.manage")) throw new ZoomError("zoom_connection_forbidden");
     const revoked = await this.revokeConnection(id);
@@ -100,7 +99,7 @@ export class ZoomService {
   }
 
   private async revokeConnection(id: string, before?: Date, onlyUnknown=false) {
-    return db().$transaction(async (tx) => {
+    return requirePrisma().$transaction(async (tx) => {
       await readExecutionAdmission(tx);
       // A connection belongs to one Workspace, whose hard rule budget is10.
       // Match the rule-then-connection order used by intake and rule saves.
@@ -140,7 +139,7 @@ export class ZoomService {
     verifyZoomSignature({ ...input, secret: config.webhookSecret, nowMs: this.now().getTime() });
     const parsed = parseZoomNotification(body);
     if (!parsed) return { accepted: true };
-    const ids = await db().$transaction(async tx => {
+    const ids = await requirePrisma().$transaction(async tx => {
       const admission=await readExecutionAdmission(tx);
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`zoom-notification:${parsed.eventKey}`},0)) IS NULL AS locked`;
       const known=await tx.zoomWebhookJob.findUnique({where:{eventKey:parsed.eventKey}});
@@ -162,12 +161,12 @@ export class ZoomService {
   /** A fresh recording URL and access token, kept in memory for this download.
    * Refresh tokens rotate under the connection row lock across all workers. */
   async recordingDownload(input: { connectionId: string; projectId: string; meetingUuid: string; recordingId: string }) {
-    const project = await db().project.findUnique({ where: { id: input.projectId }, select: { workspaceId: true } });
+    const project = await requirePrisma().project.findUnique({ where: { id: input.projectId }, select: { workspaceId: true } });
     if (!project) throw new ZoomError("zoom_recording_unavailable");
     const connection = await this.requireConnection({ actorUserId: "", workspaceId: project.workspaceId }, input.connectionId);
     try {
-      const current=await refreshZoomConnectionToken({database:db(),connectionId:connection.id,exchange:async row=>{
-        const refreshed=await this.api().refresh(this.cipher().open(row.refreshTokenEncrypted!));
+      const current=await refreshZoomConnectionToken({database:requirePrisma(),connectionId:connection.id,exchange:async row=>{
+        const refreshed=await this.api().refresh(this.cipher().open(row.refreshTokenEncrypted!)).catch(error=>{throw error instanceof ZoomRefusal?new TokenExchangeRejected(error):error;});
         return {accessTokenEncrypted:this.cipher().seal(refreshed.access_token),refreshTokenEncrypted:this.cipher().seal(refreshed.refresh_token),expiresInSeconds:refreshed.expires_in,scopes:refreshed.scope.split(" ")};
       }});
       const accessToken=this.cipher().open(current.accessTokenEncrypted!);

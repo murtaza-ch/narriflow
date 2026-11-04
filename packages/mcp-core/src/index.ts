@@ -20,7 +20,8 @@ import { workspaceLibraryService } from "@narriflow/services/workspace-library.s
 import { getOperationReceiptExecutor } from "@narriflow/services/operation-receipt-runtime";
 import { librarySearchService } from "@narriflow/services/library-search-runtime";
 import { listEvents, createCaptionedVideo, captionedVideoSettings, submitVideo, generateClips, createClipExport, proposeSocialPost, requireQueueDeliveryScope, socialAccountsView, projectView, clipView, exportView, integrationUploadSessions, recipesView } from "@narriflow/services/integration-commands";
-import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { ExpectedDomainFailureError, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
+import { logFailure } from "@narriflow/services/log-failure";
 import { recipeService } from "@narriflow/services/recipe.service";
 import { type IntegrationMutation } from "@narriflow/services/operation-receipt";
 import * as schemas from "@narriflow/validators";
@@ -87,6 +88,8 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
       recordMcpDiagnostic({ event: "tool", outcome: "success", tool, durationMs: Date.now() - started, transport: options.authenticatePrincipal ? "stdio" : "http", operationId: (result._meta?.["narriflow/operation"] as {domainId?:string}|undefined)?.domainId });
       return { content: [{ type: "text" as const, text: JSON.stringify(data) }], structuredContent: { data }, ttlMs: 0, cacheScope: "private" as const, _meta: result._meta };
     } catch (error) {
+      // Expected refusals are the tool's answer; anything else is a defect the client is told nothing about.
+      if (!isExpectedDomainFailure(error)) logFailure("mcp_tool_failed", error, { tool });
       const result = mcpToolFailure(error);
       recordMcpDiagnostic({ event: "tool", outcome: "failure", tool, durationMs: Date.now() - started, transport: options.authenticatePrincipal ? "stdio" : "http" });
       return { ...result, ttlMs: 0, cacheScope: "private" as const };

@@ -43,6 +43,8 @@ export interface BearerAuthenticatorOptions {
   client: SessionTokenVerifier;
   /** Full frontend origins allowed in the session token's `azp` claim. */
   authorizedParties: readonly string[];
+  /** PEM public key for networkless verification; without it Clerk's JWKS endpoint is used. */
+  jwtKey?: string;
 }
 
 const MAX_BEARER_LENGTH = 8 * 1024;
@@ -109,7 +111,7 @@ export function createBearerAuthenticator(
     try {
       const state = await options.client.authenticateRequest(
         new Request(request.url, { headers: { authorization: `Bearer ${token}` } }),
-        { acceptsToken: "session_token", authorizedParties },
+        { acceptsToken: "session_token", authorizedParties, ...(options.jwtKey ? { jwtKey: options.jwtKey } : {}) },
       );
 
       if (state.status === "signed-in" && state.tokenType === "session_token") {

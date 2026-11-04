@@ -19,6 +19,7 @@ import { Switch } from "@narriflow/ui/components/switch";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import { clipAspectRatioOptions, type ClipLengthPreset, type ContentPack, type RecipeSnapshot, recipeWarningSchema, type SocialPlatform } from "@narriflow/validators";
+import { intentFor } from "@/lib/clip-media";
 import { docsUrl } from "@/lib/docs-url";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { FeatureHero } from "../_components/feature-hero";
@@ -107,8 +108,7 @@ export function RecipesPanel({
   const duplicateIntents = useRef(new Map<string, Intent<string>>());
   const duplicate = useMutation({
     mutationFn: (recipe: RecipeSnapshot) => {
-      const intent = duplicateIntents.current.get(recipe.id) ?? api.createIntent<string>();
-      duplicateIntents.current.set(recipe.id, intent);
+      const intent = intentFor(duplicateIntents.current, recipe.id, api);
       return api.actions.duplicate(recipe.id, intent.keyFor(recipe.id));
     },
     onSuccess: async (_copy, recipe) => {

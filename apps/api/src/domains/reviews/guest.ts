@@ -1,4 +1,5 @@
 import { deriveReviewRoundStatus, hashReviewAccessToken, reviewGuestCanEditComment, ReviewServiceError, verifyReviewSession } from "@narriflow/services/review.service";
+import { bearerCredential } from "@narriflow/validators/identifiers";
 import type { MiddlewareHandler } from "hono";
 import type { ApiEnv } from "../../http/env";
 import type { ReviewsRouteDeps } from "./routes";
@@ -17,9 +18,8 @@ export function reviewOrigin(allowedOrigins: readonly string[]): MiddlewareHandl
 
 /** Cookie path separation is replaced by a signed full token digest plus round binding. */
 export function guestSession(c: { req: { header(name: string): string | undefined; param(name: string): string | undefined } }, secret: string): string {
-  const match = /^Bearer ([^\s,]+)$/i.exec(c.req.header("Authorization") ?? "");
-  if (!match) throw new ReviewServiceError("review_session_invalid", "Review session is missing or invalid");
-  const session = match[1]!;
+  const session = bearerCredential(c.req.header("Authorization"));
+  if (!session) throw new ReviewServiceError("review_session_invalid", "Review session is missing or invalid");
   const claims = verifyReviewSession(session, secret);
   if (claims.grant !== hashReviewAccessToken(c.req.param("token") ?? "")) throw new ReviewServiceError("review_session_invalid", "Review session does not belong to this review link");
   return session;

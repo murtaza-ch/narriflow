@@ -2,14 +2,14 @@ import {runWorkflowCommand} from "./dispatch-retry";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { createDatabaseScope, withDatabaseScope, type DatabaseScope } from "@narriflow/db/client";
-import { executionDispatchIdentity } from "@narriflow/services/execution-dispatch";
+import { executionDispatchIdentity, executionDispatchRetryId } from "@narriflow/services/execution-dispatch";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { withWorkerServices, workerServiceEnvironment } from "../worker-services";
 import { withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import { canRunWhileFenced } from "./execution-fence";
 import type { ApiWorkerBindings } from "../worker-bindings";
-import { workflowDomainRegistry } from "./domain-runtime";
-import { assertMetadataBound, dispatchContinuationInstanceId, workflowDirectiveSchema, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT, type WorkflowHandlerRegistry, type WorkflowKind, type WorkflowWake } from "./protocol";
+import { workflowDispatchRedelivery, workflowDomainRegistry } from "./domain-runtime";
+import { assertMetadataBound, dispatchContinuationInstanceId, workflowDirectiveSchema, workflowDispatchEventSchema, WORKFLOW_COMMAND_STEP, WORKFLOW_DISPATCH_EVENT, type WorkflowHandlerRegistry, type WorkflowKind, type WorkflowWake } from "./protocol";
 
 const MAX_COMMAND_STEPS = 512;
 /** Only one command is inside a scope. Workflows, not JavaScript timers, owns
@@ -24,17 +24,18 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
     try { assertMetadataBound(event.payload); reference = executionDispatchReferenceSchema.parse(event.payload); }
     catch { throw new NonRetryableError("invalid_workflow_reference"); }
     if (this.env.ADMISSION_STATE === "fenced" && !canRunWhileFenced(reference)) throw new NonRetryableError("execution_fenced");
-    const continuation = this.workflowKind === "maintenance" && event.instanceId === dispatchContinuationInstanceId(reference);
+    const redelivery = this.workflowKind === "maintenance" && event.instanceId === executionDispatchRetryId(reference);
+    const continuation = redelivery || (this.workflowKind === "maintenance" && event.instanceId === dispatchContinuationInstanceId(reference));
     if (!continuation && reference.kind !== this.workflowKind && !(this.workflowKind === "maintenance" && reference.kind === "project_progress")) throw new NonRetryableError("wrong_workflow_entrypoint");
     if (!continuation && event.instanceId !== (await executionDispatchIdentity(reference)).instanceId) throw new NonRetryableError("wrong_workflow_instance");
     let wake: WorkflowWake = { type: "start" };
     for (let index = 0; index < MAX_COMMAND_STEPS; index++) {
       const input = { reference, wake };
-      const directive = await step.do(`command-${index}`, { retries: { limit: 3, delay: "1 second", backoff: "exponential" }, timeout: "2 minutes" }, () => runWorkflowCommand(() =>
+      const directive = await step.do(`command-${index}`, WORKFLOW_COMMAND_STEP, () => runWorkflowCommand(() =>
         withWorkerServices(this.env, workerServiceEnvironment(this.env), () => withDatabaseScope(this.scope(), () => withExecutionDispatches(async () => {
           // Construct the registry after entering the new scope. A factory may
           // resolve service ports here but cannot retain a prior step's client.
-          const handler = this.registry()[reference.kind]?.[reference.subject.kind];
+          const handler = redelivery ? workflowDispatchRedelivery(this.env) : this.registry()[reference.kind]?.[reference.subject.kind];
           if (!handler) throw new NonRetryableError(`unsupported_workflow_subject:${reference.kind}:${reference.subject.kind}`);
           const output = await handler(input);
           try { assertMetadataBound(output); return workflowDirectiveSchema.parse(output); }

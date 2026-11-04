@@ -3,11 +3,16 @@ import { type ActorScope } from "@narriflow/services/actor-scope";
 import { type IntegrationUploadSessions } from "@narriflow/services/integration-commands";
 import { isExpectedDomainFailure, boundedExpectedDomainFailureDetails } from "@narriflow/services/expected-domain-failure";
 import { mcpFailureMessage } from "@narriflow/mcp-core";
+import { type AuthFailureThrottle } from "@narriflow/services/auth-failure-throttle";
+import { logFailure } from "@narriflow/services/log-failure";
+import { domainFailureHttpStatus } from "../../http/errors";
 import { createUploadSessionHttpRoutes } from "../ingest/upload-session-http";
 
 export interface McpUploadHttpDependencies {
   admit(request: Request, workspaceId: string): Promise<{ actor: ActorScope; beforeAccept: () => void; credential?: { scopes: readonly string[] } }>;
   authenticationFailure(error: unknown): Response | null;
+  /** Failed-credential budget of the caller's address; consulted before any credential lookup. */
+  authFailureThrottle(request: Request, socketAddress?: string): AuthFailureThrottle;
   service: IntegrationUploadSessions;
 }
 
@@ -15,10 +20,20 @@ export interface McpUploadHttpDependencies {
  * durable intake state machine. All requests retain the authenticated request
  * budget; only new mutations pause during a limiter outage. */
 export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependencies) {
-  return async (request: Request, workspaceId: string) => {
+  return async (request: Request, workspaceId: string, socketAddress?: string) => {
+    const failures = dependencies.authFailureThrottle(request, socketAddress);
+    if (await failures.exhausted()) {
+      return Response.json({ error: "rate_limited", message: "Too many failed authentication attempts from this address" },
+        { status: 429, headers: { "Cache-Control": "private, no-store", "Retry-After": String(failures.retryAfterSeconds) } });
+    }
     let admitted: Awaited<ReturnType<McpUploadHttpDependencies["admit"]>>;
     try { admitted = await dependencies.admit(request, workspaceId); }
-    catch (error) { return failure(error); }
+    catch (error) {
+      const response = failure(error);
+      // A rejected credential spends the failure budget; a bad workspace or plan does not.
+      if (response.status === 401) await failures.recordFailure().catch(() => undefined);
+      return response;
+    }
     const routes = new Hono();
     routes.onError((error) => failure(error));
     routes.route(`/mcp/integrations/${workspaceId}`, createUploadSessionHttpRoutes({
@@ -39,10 +54,11 @@ export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependenci
     const auth = dependencies.authenticationFailure(error);
     if (auth) return auth;
     if (isExpectedDomainFailure(error)) {
-      const status = { missing: 404, invalid: 400, forbidden: 403, unauthenticated: 401, conflict: 409, unavailable: 503, payment_required: 402, unprocessable: 422, rate_limited: 429 }[error.kind] ?? 400;
+      const status = domainFailureHttpStatus(error.kind);
       return Response.json({ error: error.code, message: mcpFailureMessage(error), details: boundedExpectedDomainFailureDetails(error.details) }, { status, headers: { "Cache-Control": "private, no-store", ...(status === 503 || status === 429 ? { "Retry-After": String(error.retryAfterSeconds ?? 5) } : {}), ...(error.code === "scope_required" ? { "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="processing:write"' } : {}) } });
     }
-    console.warn(JSON.stringify({ level: "error", message: "mcp_upload_request_failed" }));
-    return Response.json({ error: "mcp_upload_unavailable", message: "Upload is temporarily unavailable" }, { status: 503, headers: { "Cache-Control": "private, no-store", "Retry-After": "5" } });
+    // Not an expected refusal: an internal defect, so a retry would only repeat it.
+    logFailure("mcp_upload_request_failed", error);
+    return Response.json({ error: "internal_error", message: "Upload could not be completed. Try again or contact support." }, { status: 500, headers: { "Cache-Control": "private, no-store" } });
   }
 }

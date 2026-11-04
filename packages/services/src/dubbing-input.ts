@@ -1,9 +1,10 @@
 import { dubbingExecutionInputSchema, type DubbingExecutionInput } from "@narriflow/validators/dubbing-execution";
 import { canonicalDubbingJson, frozenDubbingRequestHash } from "./dubbing-policy";
 import type { PrivateJsonObject } from "./private-json-storage";
+import { sha256Hex } from "./execution-hash";
 
 async function digest(bytes: Uint8Array) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(new Uint8Array(bytes));
 }
 export async function dubbingInputBinding(input: Omit<DubbingExecutionInput, "bindingHash">) {
   return digest(new TextEncoder().encode(canonicalDubbingJson(input)));

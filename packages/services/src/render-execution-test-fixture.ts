@@ -69,7 +69,8 @@ async function prepareSource(db: PrismaClient, projectId: string) {
       frameCount: null, bitRate: null, sampleRate: 48000, channels: 2, channelLayout: "stereo", sampleFormat: "fltp", initialPadding: null, trailingPadding: null }],
   } };
   const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
-  const job = await db.ingestJob.create({ data: { projectId, deploymentEpoch: epoch, jobType: "upload_finalize", payload: { acquisition: { audioPolicy: "none" } } } });
+  const job = await db.ingestJob.create({ data: { projectId, deploymentEpoch: epoch, jobType: "upload_finalize", payload: { acquisition: { audioPolicy: "none" }, uploadSessionId: randomUUID(), storageKey: `projects/${projectId}/source/original.webm`,
+    verifiedEtag: '"fixture-source"', verifiedSizeBytes: bytes.byteLength, verifiedContentType: "video/webm" } } });
   const workflow = new WorkflowRunLifecycle({ prisma: db });
   const domain = new IngestJobLifecycle({ prisma: db, workflow, usage: new ProcessingUsage({ prisma: db, log: () => {} }),
     executionInputHash: input => ingestExecutionInputHash(input, fingerprint), validateVideo: async () => ({ kind: "accepted" }), requireRetryActor: async () => { throw Error("No retry admission in source fixture"); } });

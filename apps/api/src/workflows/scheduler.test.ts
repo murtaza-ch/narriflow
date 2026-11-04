@@ -1,14 +1,20 @@
 import { expect, test } from "bun:test";
-import { executionDispatchIdentity } from "@narriflow/services/execution-dispatch";
+import { DatabaseScope } from "@narriflow/db/client";
+import { executionDispatchIdentity, executionDispatchRetryId } from "@narriflow/services/execution-dispatch";
+import { withExecutionDispatchScheduler } from "@narriflow/services/execution-dispatch-runtime";
+import { withServiceEnvironment } from "@narriflow/services/runtime-environment";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
+import type { PrismaClient } from "@prisma/client";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { dispatchContinuationInstanceId } from "./protocol";
-import { createWorkerExecutionScheduler } from "./scheduler";
+import { createExecutorWakeDelivery, createWorkerExecutionScheduler, deliverLocalFetchReference } from "./scheduler";
 import { canRunWhileFenced } from "./execution-fence";
 import { EXECUTION_RESTORE_PHASES } from "@narriflow/services/execution-restore";
 
 const reference: ExecutionDispatchReference = { dispatchId: crypto.randomUUID(), kind: "operation_driver", subject: { kind: "native_validation", id: crypto.randomUUID() }, deploymentEpoch: 1, generation: 1, inputHash: "a".repeat(64) };
 async function delivery() { return { reference, ...await executionDispatchIdentity(reference), dueAt: new Date(), mode: "wake" as const, wakeKind: "native.completed", deadlineKind: null, observedDeadlineAt: null }; }
+
+function scoped(client: PrismaClient) { return new DatabaseScope({ createClient: () => ({ client, dispose: async () => {} }) }); }
 
 test("registration requires creation or an independently confirmed existing instance", async () => {
   let exists = false;
@@ -79,4 +85,24 @@ test("the restore metadata boundary refuses every redispatch page before remote 
  }
  expect(remoteCalls).toBe(0);
  for(const id of ["rs2.not-a-page","rs2.3.3.4.1793440800000.unknown","rs2.3.2.4.1793440800000.attempts","rs2.3.3.5.1793440800000.attempts"]){expect(canRunWhileFenced({...reference,deploymentEpoch:4,kind:"maintenance",subject:{kind:"maintenance",id}})).toBe(false);}
+});
+
+test("a transient executor wake failure continues in a retry Workflow instead of waiting for the hourly sweep", async () => {
+  const created: string[] = [], id = crypto.randomUUID();
+  const ledger = { ...reference, dispatchId: id };
+  const row = { id, deploymentEpoch: ledger.deploymentEpoch, kind: ledger.kind, subjectKind: ledger.subject.kind, subjectId: ledger.subject.id, generation: ledger.generation, inputHash: ledger.inputHash, deliveryKey: "ed_x", dueAt: new Date(0), nextDeliveryAt: new Date(), deliveryAttempts: 1, acknowledgedAt: null, destinationId: null, wakeKind: "execution_finished", deadlineKind: null, observedDeadlineAt: null, deadLetteredAt: null, errorCode: null };
+  const database = { $queryRaw: async () => [row], $transaction: async () => { throw new Error("Scheduler down"); } } as unknown as PrismaClient;
+  const bindings = { MAINTENANCE: { create: async (input: { id: string }) => { created.push(input.id); return { id: input.id }; } } } as unknown as ApiWorkerBindings;
+  await withExecutionDispatchScheduler({ deliver: async () => { throw new Error("Unreachable"); } }, () => scoped(database).run(() => createExecutorWakeDelivery(bindings)([id])));
+  expect(created).toEqual([executionDispatchRetryId({ dispatchId: id })]);
+});
+
+test("a local fetch spawn is acknowledged as a registration", async () => {
+  const id = crypto.randomUUID(), jobId = crypto.randomUUID(), workspaceId = crypto.randomUUID(), attemptToken = crypto.randomUUID();
+  const local = { ...reference, dispatchId: id, kind: "local_fetch" as const, subject: { kind: "ingest_job" as const, id: jobId } };
+  const database = { ingestJob: { findUnique: async () => ({ deploymentEpoch: local.deploymentEpoch, generation: local.generation, status: "queued", jobType: "link_import", payload: { provider: "youtube" }, project: { workspaceId } }) },
+    executionAttempt: { findMany: async () => [{ attemptToken, inputHash: local.inputHash, functionName: "fetch_source" }] } } as unknown as PrismaClient;
+  const bindings = { LOCAL_FETCH_MAILBOX: { getByName: () => ({ deliver: async () => ({ destinationId: `local-fetch:${workspaceId}` }) }) } } as unknown as ApiWorkerBindings;
+  const confirmed = await scoped(database).run(() => withServiceEnvironment({ APP_ENV: "development", YOUTUBE_FETCH_MODE: "local", LOCAL_FETCH_WORKSPACE_IDS_JSON: JSON.stringify([workspaceId]) }, () => deliverLocalFetchReference(local, bindings)));
+  expect(confirmed.status).toBe("confirmed_created");
 });

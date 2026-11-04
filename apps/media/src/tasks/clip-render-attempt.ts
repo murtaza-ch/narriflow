@@ -61,8 +61,6 @@ import {
 	estimateRenderOutputBytes,
 	renderEncodeDeadlineMs,
 	renderResourceBudgetFor,
-	startTransferWatchdog,
-	transferDeadlineMs,
 	type BudgetEnvironment,
 	type RenderReservation,
 	type ReservationRequest,
@@ -365,7 +363,6 @@ export interface ClipRenderAttemptAdapters {
 	};
 	storage: {
 		deleteObject: typeof productionDeleteObject;
-		sourceSizeBytes(key: string, signal: AbortSignal): Promise<number>;
 		downloadObjectToFile: productionDownloadObjectToFile;
 		presignDownloadUrl: typeof productionPresignDownloadUrl;
 		putFileFromPath: productionPutFileFromPath;
@@ -727,10 +724,10 @@ export function normalizeRenderProcessFailure(error: unknown): unknown {
 	);
 }
 
-/** Only demonstrated ranged transport limitations warrant a full-object read.
- * A generic deadline, corrupt input, or failed process start proves nothing
- * about HTTP range support. These diagnostics come from the sole process owner. */
-export function isRecoverableRangedSourceFailure(error: unknown): boolean {
+/** A failed source read says nothing about the media. Only these transport
+ * diagnostics, from the sole process owner, keep a probe failure retryable
+ * instead of calling the frozen source invalid. */
+function isSourceTransportFailure(error: unknown): boolean {
 	if (
 		error instanceof WorkflowFailure &&
 		error.code === "source_media_invalid" &&
@@ -814,16 +811,6 @@ function currentRenderAdapters(): ClipRenderAttemptAdapters {
 
 function currentTimeMs(): number {
 	return currentRenderAdapters().clock.nowMs();
-}
-
-function renderStorageSignal(): AbortSignal {
-	const timeoutSignal = AbortSignal.timeout(
-		currentRenderConfig().storageOperationTimeoutMs,
-	);
-	const attemptSignal = currentRenderSignal();
-	return attemptSignal
-		? AbortSignal.any([attemptSignal, timeoutSignal])
-		: timeoutSignal;
 }
 
 /**
@@ -1454,8 +1441,8 @@ async function execCommand(
  *  the clip windows instead of the whole object — clip-preview.ts measured
  *  11.72s wall for a 38s cut off a 531MB 4K source with this exact pattern.
  *  For a 2h podcast, 6-10 clips read ~5-8% of the source bytes vs 100% for
- *  the old full-file download. `WORKER_RENDER_SOURCE_MODE=download` restores
- *  the old behavior. Only demonstrated ranged transport failures permit recovery. */
+ *  the old full-file download. Only demonstrated ranged transport failures
+ *  permit recovery. */
 const RENDER_SOURCE_URL_TTL_SEC = 12 * 60 * 60;
 
 function isHttpSource(input: string): boolean {
@@ -1472,11 +1459,7 @@ async function probeSource(sourcePath: string): Promise<SourceProbe> {
 	});
 }
 
-type RequiredSourceOperation =
-	| "source_presign"
-	| "ranged_probe"
-	| "source_download"
-	| "local_probe";
+type RequiredSourceOperation = "source_presign" | "ranged_probe";
 
 function diagnoseRequiredSourceOperation(input: {
 	attempt: ClipRenderingWorkflowAttempt;
@@ -1511,9 +1494,7 @@ function diagnoseRequiredSourceOperation(input: {
 async function resolveRequiredSource(input: {
 	sourceStorageKey: string | null;
 	sourceSizeBytes: number | null;
-	tempDir: string;
 	attempt: ClipRenderingWorkflowAttempt;
-	scratch: RunScratch;
 }): Promise<{ sourcePath: string; probe: SourceProbe }> {
 	const sourceStorageKey = input.sourceStorageKey;
 	if (!sourceStorageKey) {
@@ -1524,214 +1505,104 @@ async function resolveRequiredSource(input: {
 		);
 	}
 
-	const sourceExt = extname(sourceStorageKey) || ".bin";
-	const localSourcePath = join(input.tempDir, `source${sourceExt}`);
 	currentRenderSignal()?.throwIfAborted();
-	if (currentRenderConfig().sourceMode !== "download") {
-		let presignedUrl: string | null = null;
-		const presignStartedAtMs = currentTimeMs();
-		try {
-			presignedUrl = await withRenderOperationDeadline({
-				operation: () =>
-					currentRenderAdapters().storage.presignDownloadUrl({
-						key: sourceStorageKey,
-						expiresIn: RENDER_SOURCE_URL_TTL_SEC,
-					}),
-				deadlineMs: currentRenderConfig().storageOperationTimeoutMs,
-				timeoutFailure: () =>
-					new WorkflowFailure(
-						"source_presign_timeout",
-						"retryable",
-						"Required source presigning timed out",
-					),
-			});
-			currentRenderSignal()?.throwIfAborted();
-			diagnoseRequiredSourceOperation({
-				attempt: input.attempt,
-				operation: "source_presign",
-				startedAtMs: presignStartedAtMs,
-			});
-		} catch (error) {
-			rethrowRenderControlFlow(error);
-			const failure =
-				error instanceof WorkflowFailure
-					? error
-					: new WorkflowFailure(
-							"source_presign_failed",
-							"retryable",
-							"Required source could not be presigned",
-						);
-			diagnoseRequiredSourceOperation({
-				attempt: input.attempt,
-				operation: "source_presign",
-				startedAtMs: presignStartedAtMs,
-				failure,
-			});
-			throw failure;
-		}
-
-		if (!presignedUrl || !isHttpSource(presignedUrl)) {
-			throw new WorkflowFailure(
-				"source_presign_failed",
-				"retryable",
-				"Required source access location is unavailable",
-			);
-		}
-
-		if (presignedUrl) {
-			currentRenderSignal()?.throwIfAborted();
-			const probeStartedAtMs = currentTimeMs();
-			// The signed URL is always fresh; only the probe of the immutable
-			// object behind it is reused.
-			const facts = currentRenderAdapters().facts;
-			const probeIdentity = sourceProbeIdentity(
-				sourceStorageKey,
-				input.sourceSizeBytes,
-			);
-			const cachedProbe = facts.sourceProbe(probeIdentity);
-			if (cachedProbe) {
-				diagnoseRequiredSourceOperation({
-					attempt: input.attempt,
-					operation: "ranged_probe",
-					startedAtMs: probeStartedAtMs,
-					cacheHit: true,
-				});
-				return { sourcePath: presignedUrl, probe: cachedProbe };
-			}
-			try {
-				const probe = await probeSource(presignedUrl);
-				currentRenderSignal()?.throwIfAborted();
-				facts.rememberSourceProbe(probeIdentity, probe);
-				diagnoseRequiredSourceOperation({
-					attempt: input.attempt,
-					operation: "ranged_probe",
-					startedAtMs: probeStartedAtMs,
-				});
-				return { sourcePath: presignedUrl, probe };
-			} catch (error) {
-				rethrowRenderControlFlow(error);
-				diagnoseRequiredSourceOperation({
-					attempt: input.attempt,
-					operation: "ranged_probe",
-					startedAtMs: probeStartedAtMs,
-					failure: workflowFailureFromUnknown(error),
-				});
-				if (!isRecoverableRangedSourceFailure(error)) throw error;
-			}
-		}
-	}
-
-	let downloadSizeBytes: number | null = input.sourceSizeBytes;
-	if (currentRenderConfig().sourceMode !== "download") {
-		const sizeBytes =
-			input.sourceSizeBytes ??
-			(await withRenderOperationDeadline({
-				operation: () =>
-					currentRenderAdapters().storage.sourceSizeBytes(
-						sourceStorageKey,
-						renderStorageSignal(),
-					),
-				deadlineMs: currentRenderConfig().storageOperationTimeoutMs,
-				timeoutFailure: () =>
-					new WorkflowFailure(
-						"source_metadata_timeout",
-						"retryable",
-						"Source metadata lookup timed out",
-					),
-			}));
-		if (!sizeBytes || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0)
-			throw new WorkflowFailure(
-				"source_download_size_unavailable",
-				"retryable",
-				"Source download requires a known object size",
-			);
-		downloadSizeBytes = sizeBytes;
-	}
-	if (downloadSizeBytes) {
-		// Held until the run ends. Waits with backoff for space; an object that can
-		// never fit is rejected here, before a byte is transferred.
-		await reserveScratch(input.scratch, {
-			directory: input.tempDir,
-			bytes: downloadSizeBytes,
-			kind: "source",
-		});
-	}
-
-	currentRenderSignal()?.throwIfAborted();
-	const downloadStartedAtMs = currentTimeMs();
-	const downloadAdapters = currentRenderAdapters();
-	const downloadConfig = currentRenderConfig();
-	const watchdog = startTransferWatchdog({
-		parent: currentRenderSignal(),
-		deadlineMs: transferDeadlineMs(downloadSizeBytes, downloadConfig),
-		noProgressMs: downloadConfig.transferNoProgressMs,
-		measureBytes: async () =>
-			Number((await downloadAdapters.workspace.stat(localSourcePath)).size),
-		clock: downloadAdapters.clock,
-		codePrefix: "source_download",
-	});
+	let presignedUrl: string | null = null;
+	const presignStartedAtMs = currentTimeMs();
 	try {
-		await downloadAdapters.storage.downloadObjectToFile({
-			key: sourceStorageKey,
-			filePath: localSourcePath,
-			signal: watchdog.signal,
+		presignedUrl = await withRenderOperationDeadline({
+			operation: () =>
+				currentRenderAdapters().storage.presignDownloadUrl({
+					key: sourceStorageKey,
+					expiresIn: RENDER_SOURCE_URL_TTL_SEC,
+				}),
+			deadlineMs: currentRenderConfig().storageOperationTimeoutMs,
+			timeoutFailure: () =>
+				new WorkflowFailure(
+					"source_presign_timeout",
+					"retryable",
+					"Required source presigning timed out",
+				),
 		});
 		currentRenderSignal()?.throwIfAborted();
 		diagnoseRequiredSourceOperation({
 			attempt: input.attempt,
-			operation: "source_download",
-			startedAtMs: downloadStartedAtMs,
+			operation: "source_presign",
+			startedAtMs: presignStartedAtMs,
 		});
 	} catch (error) {
 		rethrowRenderControlFlow(error);
 		const failure =
-			watchdog.failure() ??
-			new WorkflowFailure(
-				"source_download_failed",
-				"retryable",
-				"Failed to download required source",
-			);
+			error instanceof WorkflowFailure
+				? error
+				: new WorkflowFailure(
+						"source_presign_failed",
+						"retryable",
+						"Required source could not be presigned",
+					);
 		diagnoseRequiredSourceOperation({
 			attempt: input.attempt,
-			operation: "source_download",
-			startedAtMs: downloadStartedAtMs,
+			operation: "source_presign",
+			startedAtMs: presignStartedAtMs,
 			failure,
 		});
 		throw failure;
-	} finally {
-		watchdog.stop();
+	}
+
+	if (!presignedUrl || !isHttpSource(presignedUrl)) {
+		throw new WorkflowFailure(
+			"source_presign_failed",
+			"retryable",
+			"Required source access location is unavailable",
+		);
 	}
 
 	currentRenderSignal()?.throwIfAborted();
 	const probeStartedAtMs = currentTimeMs();
-	try {
-		const probe = await probeSource(localSourcePath);
-		currentRenderSignal()?.throwIfAborted();
+	// The signed URL is always fresh; only the probe of the immutable
+	// object behind it is reused.
+	const facts = currentRenderAdapters().facts;
+	const probeIdentity = sourceProbeIdentity(
+		sourceStorageKey,
+		input.sourceSizeBytes,
+	);
+	const cachedProbe = facts.sourceProbe(probeIdentity);
+	if (cachedProbe) {
 		diagnoseRequiredSourceOperation({
 			attempt: input.attempt,
-			operation: "local_probe",
+			operation: "ranged_probe",
+			startedAtMs: probeStartedAtMs,
+			cacheHit: true,
+		});
+		return { sourcePath: presignedUrl, probe: cachedProbe };
+	}
+	try {
+		const probe = await probeSource(presignedUrl);
+		currentRenderSignal()?.throwIfAborted();
+		facts.rememberSourceProbe(probeIdentity, probe);
+		diagnoseRequiredSourceOperation({
+			attempt: input.attempt,
+			operation: "ranged_probe",
 			startedAtMs: probeStartedAtMs,
 		});
-		return { sourcePath: localSourcePath, probe };
+		return { sourcePath: presignedUrl, probe };
 	} catch (error) {
 		rethrowRenderControlFlow(error);
-		const originalFailure = workflowFailureFromUnknown(error);
-		const failure =
-			originalFailure.code === "worker_command_input_invalid"
-				? new WorkflowFailure(
-						"source_media_invalid",
-						"permanent",
-						"Required source media could not be read",
-						error instanceof Error ? { cause: error } : undefined,
-					)
-				: originalFailure;
+		const transport = isSourceTransportFailure(error);
+		const failure = transport
+			? new WorkflowFailure(
+					"source_download_failed",
+					"retryable",
+					"Failed to read required source",
+					error instanceof Error ? { cause: error } : undefined,
+				)
+			: workflowFailureFromUnknown(error);
 		diagnoseRequiredSourceOperation({
 			attempt: input.attempt,
-			operation: "local_probe",
+			operation: "ranged_probe",
 			startedAtMs: probeStartedAtMs,
 			failure,
 		});
-		throw failure;
+		throw transport ? failure : error;
 	}
 }
 
@@ -1774,8 +1645,9 @@ function resolveBackgroundPlanForDownloadedImage(params: {
  *  - `schedule` never throws. Task rejection is recorded immediately, every
  *    later task still gets its turn, and `drain()` rethrows the first error
  *    only after the complete scheduled set has settled.
- *  - Attempt cancellation rejects queued tasks without starting them. Active
- *    tasks receive the same signal through their storage adapter.
+ *  - Attempt cancellation rejects queued tasks without starting them. An active
+ *    upload belongs to the signed control server, whose transfer stops with the
+ *    session.
  *  - `drain()` resolves only when every scheduled task (including ones
  *    scheduled after a previous drain) has settled. Idempotent; safe to call
  *    from both the success path and `finally`.
@@ -1980,17 +1852,6 @@ function encodeDeadlineFor(
 	);
 }
 
-/** Size-derived deadline for moving one output file; the attempt signal still cancels it. */
-function renderTransferSignal(bytes: number): AbortSignal {
-	const timeoutSignal = AbortSignal.timeout(
-		transferDeadlineMs(bytes, currentRenderConfig()),
-	);
-	const attemptSignal = currentRenderSignal();
-	return attemptSignal
-		? AbortSignal.any([attemptSignal, timeoutSignal])
-		: timeoutSignal;
-}
-
 /** Upload concurrency for the Clip Render Attempt's bounded queue —
  *  2 keeps one upload streaming while a burst finishes, without letting a
  *  slow uplink stack every clip's file into concurrent connections. */
@@ -2140,7 +2001,6 @@ async function uploadRenderedOutput(params: {
 			format: params.output.aspectRatio,
 			...(params.brollCredits ? { broll_credits: params.brollCredits } : {}),
 		},
-		signal: renderTransferSignal(params.validated.sizeBytes),
 	});
 	const uploadMs = currentTimeMs() - uploadStartedAtMs;
 
@@ -3346,7 +3206,6 @@ async function renderClipGroup(input: {
 			await currentRenderAdapters().storage.downloadObjectToFile({
 				key: asset.storageKey,
 				filePath: path,
-				signal: renderStorageSignal(),
 			});
    const windows = compositionDocument.sceneBlocks.flatMap((block) =>
     block.content.kind === "video" && block.content.asset.id === asset.id
@@ -3413,7 +3272,6 @@ async function renderClipGroup(input: {
 			await currentRenderAdapters().storage.downloadObjectToFile({
 				key: font.storageKey,
 				filePath: path,
-				signal: renderStorageSignal(),
 			});
 			resolvedSceneFonts[
 				compositionAssetRef("brand_font", `${font.id}:${font.fingerprint}`)
@@ -3423,7 +3281,7 @@ async function renderClipGroup(input: {
  const customFonts = await resolveRenderBrandFonts({
    references: customFontReferences, fonts: sceneSources.fonts, directory: tempDir, signal: currentRenderSignal(),
    download: async (key, filePath) => {
-     await currentRenderAdapters().storage.downloadObjectToFile({ key, filePath, signal: renderStorageSignal() });
+     await currentRenderAdapters().storage.downloadObjectToFile({ key, filePath });
    },
    cache: currentRenderAdapters().facts,
  });
@@ -4376,9 +4234,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		const { sourcePath, probe } = await resolveRequiredSource({
 			sourceStorageKey: frozenState.sourceStorageKey,
 			sourceSizeBytes: frozenState.sourceSizeBytes,
-			tempDir,
 			attempt,
-			scratch,
 		});
 
 		log("info", "clip_rendering_source_probed", {
@@ -4414,7 +4270,6 @@ async function executeClipRenderAttemptInScratch(params: {
 						await currentRenderAdapters().storage.downloadObjectToFile({
 							key: snapshot.logoStorageKey,
 							filePath: logoPath,
-							signal: renderStorageSignal(),
 						});
 						const decodable =
 							await currentRenderAdapters().optionalAssets.validateOptionalMedia(
@@ -4652,7 +4507,6 @@ async function executeClipRenderAttemptInScratch(params: {
 			renderedVariantCount,
 			failedVariantCount: pendingRenders.length - renderedVariantCount,
 			totalMs: currentTimeMs() - runStartedAtMs,
-			sourceMode: isHttpSource(sourcePath) ? "ranged" : "download",
 			encoder: "libx264",
 			preset: x264Preset(),
 			status: outcome.status,

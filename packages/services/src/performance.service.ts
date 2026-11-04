@@ -1,4 +1,3 @@
-import { getPrismaClient } from "@narriflow/db/client";
 import type { ActorScope } from "./actor-scope";
 import { readGuidanceView, type GuidanceView } from "./performance-guidance";
 import {
@@ -7,12 +6,7 @@ import {
 	type PerformanceSummary,
 } from "./performance-summary";
 import { workspaceService } from "./workspace.service";
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
+import { requirePrisma } from "./require-prisma";
 
 export class PerformanceService {
 	/**

@@ -42,7 +42,7 @@ suite("Durable progress delivery and revocation", () => {
   const scoped = <T>(operation: () => Promise<T>) => withServiceEnvironment({}, () => withDatabaseScope(createDatabaseScope({ createClient: () => ({ client: database, dispose: async () => {} }) }), operation));
   async function event() {
     const key = crypto.randomUUID();
-    await database.$transaction((tx) => appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: key, stage: "stt", status: "running", progress: 10, errorCode: null, transition: "gate" }, { progressRequired: true, analyticsEnabled: false }));
+    await database.$transaction((tx) => appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: key, stage: "stt", status: "running", progress: 10, errorCode: null, transition: "gate" }));
     const row = await database.workflowEvent.findFirstOrThrow({ where: { projectId }, orderBy: { seq: "desc" } });
     return { row, dispatch: await database.executionDispatch.findFirstOrThrow({ where: { kind: "project_progress", subjectId: row.id } }) };
   }
@@ -50,7 +50,7 @@ suite("Durable progress delivery and revocation", () => {
 
   test("a transaction exposes one progress drain and confirms bounded continuation pages", async () => {
     const ids = await database.$transaction(async tx => {
-      for (let index = 0; index < 101; index++) await appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: crypto.randomUUID(), stage: "stt", status: "running", progress: 10, errorCode: null, transition: "page" }, { progressRequired: true, analyticsEnabled: false });
+      for (let index = 0; index < 101; index++) await appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: crypto.randomUUID(), stage: "stt", status: "running", progress: 10, errorCode: null, transition: "page" });
       const drains = await flushProjectProgressDrains(tx);
       expect(await flushProjectProgressDrains(tx)).toEqual([]);
       return drains;
@@ -66,9 +66,24 @@ suite("Durable progress delivery and revocation", () => {
     expect(await database.workflowEvent.count({ where: { projectId, progressPublishedAt: null } })).toBe(0);
   }, 60_000);
 
+  test("a page publishes in sequence order, so a slow event cannot reset the socket", async () => {
+    const published: number[] = [];
+    let drain = "";
+    await database.$transaction(async tx => {
+      for (let index = 0; index < 9; index++) await appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: crypto.randomUUID(), stage: "stt", status: "running", progress: 10, errorCode: null, transition: `ordered:${index}` });
+      drain = (await flushProjectProgressDrains(tx))[0]!;
+    });
+    const row = await database.executionDispatch.findUniqueOrThrow({ where: { id: drain } });
+    const reference = { dispatchId: row.id, deploymentEpoch: row.deploymentEpoch, kind: "project_progress" as const, subject: { kind: "maintenance" as const, id: row.subjectId }, generation: row.generation, inputHash: row.inputHash };
+    await withProgressDelivery({ publish: async (_scope, event) => { await Bun.sleep(event.seq % 4 === 1 ? 15 : 0); published.push(event.seq); }, revoke: async () => {}, registerContinuations: async () => {} },
+      () => deliverProgressDispatch(database, reference));
+    expect(published).toEqual([...published].sort((a, b) => a - b));
+    expect(published.length).toBe(9);
+  });
+
   test("event and destination obligation commit together; rollback leaves neither", async () => {
     const initial = await event(); expect(initial.dispatch.acknowledgedAt).toBeNull();
-    await expect(database.$transaction(async (tx) => { await appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: crypto.randomUUID(), stage: "stt", status: "running", progress: 50, errorCode: null, transition: "rollback" }, { progressRequired: true, analyticsEnabled: false }); throw new Error("rollback gate"); })).rejects.toThrow("rollback gate");
+    await expect(database.$transaction(async (tx) => { await appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: crypto.randomUUID(), stage: "stt", status: "running", progress: 50, errorCode: null, transition: "rollback" }); throw new Error("rollback gate"); })).rejects.toThrow("rollback gate");
     const replay = await readProgressReplay(database, { projectId, workspaceId }, 0); expect(replay?.events.map((row) => row.seq)).toEqual([1]); expect(replay?.reset).toBe(false);
     expect(await database.executionDispatch.count({ where: { kind: "project_progress", subjectKind: "workflow_event", subjectId: initial.row.id } })).toBe(1);
   }, 60_000);

@@ -1,4 +1,5 @@
 import { type acceptTikTokPublicationWebhook, type TikTokPublicationWebhookError } from "@narriflow/services/social-publication-tiktok-webhook";
+import { logFailure } from "@narriflow/services/log-failure";
 import { createRouteApp } from "../../http/admission";
 import { publishingAdmission } from "./admission";
 
@@ -40,13 +41,7 @@ export function createPublishingWebhookRoutes(deps: PublishingWebhookDeps) {
         const status = error.code === "tiktok_webhook_payload_invalid" ? 400 : 401;
         return c.json({ error: error.code }, status);
       }
-      console.warn(
-        JSON.stringify({
-          level: "error",
-          message: "social_publication_tiktok_webhook_failed",
-          errorCode: "tiktok_webhook_persistence_failed",
-        }),
-      );
+      logFailure("social_publication_tiktok_webhook_failed", error, { errorCode: "tiktok_webhook_persistence_failed" });
       return c.json({ error: "tiktok_webhook_persistence_failed" }, 500);
     }
   });

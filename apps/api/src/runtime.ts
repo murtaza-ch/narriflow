@@ -37,7 +37,7 @@ import { createLibraryRouteDeps } from "./domains/library/runtime";
 import { createLibraryRoutes } from "./domains/library/routes";
 import { createClerkWebhookDependencies } from "./domains/platform/clerk/runtime";
 import { createDatabaseReadiness, expectedDatabaseMigrations } from "./domains/platform/database-readiness";
-import type { HealthDependencies } from "./domains/platform/health";
+import type { HealthDependencies, ReadinessCache } from "./domains/platform/health";
 import { createProgressSocketRoutes } from "./domains/progress/socket";
 import { createProgressSocketDeps, createProgressRouteDeps } from "./domains/progress/runtime";
 import { createProgressRoutes } from "./domains/progress/routes";
@@ -70,8 +70,12 @@ function requireSetting(name: string): string {
   return value;
 }
 
+/** One per isolate: the app is rebuilt per request, so the answer must outlive it. */
+const isolateReadiness: ReadinessCache = {};
+
 function createHealthDependencies(environment: ServiceEnvironment): HealthDependencies {
   return {
+    readiness: isolateReadiness,
     version: environment.DEPLOYMENT_VERSION?.slice(0, 64) ?? "dev",
     isDraining: () => environment.ADMISSION_STATE === "closed" || environment.ADMISSION_STATE === "fenced",
     admissionState: () => environment.ADMISSION_STATE === "fenced" ? "fenced" : environment.ADMISSION_STATE === "closed" ? "closed" : "open",
@@ -119,6 +123,7 @@ export function createExternalRoutes(
   config: ApiConfig,
   clerkClient?: ReturnType<typeof createServerClerkClient>,
   runInRequestScope?: WorkerInvocation,
+  jwtKey?: string,
 ): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp" | "progressSocket" | "execution"> {
   return {
     webhooks: {
@@ -130,7 +135,7 @@ export function createExternalRoutes(
     progressSocket: createProgressSocketRoutes(createProgressSocketDeps(config)),
     execution: new Hono<ApiEnv>().route("/", createExecutionRoutes(createWorkerExecutionDependencies())).route("/", createLocalDeviceRoutes()),
     rest: createRestRoutes(createRestRouteDeps(config)),
-    mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient, runInRequestScope)),
+    mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient, runInRequestScope, jwtKey)),
   };
 }
 
@@ -143,10 +148,12 @@ export function createProductionApp(config: ApiConfig, environment: ServiceEnvir
     secretKey: config.clerk.secretKey,
     publishableKey: config.clerk.publishableKey,
   });
+  const jwtKey = environment.CLERK_JWT_KEY?.trim() || undefined;
   const policyRuntime = createProductionRequestPolicyRuntime({
     authenticate: createBearerAuthenticator({
       client: clerkClient,
       authorizedParties: config.clerk.authorizedParties,
+      jwtKey,
     }),
     clerkClient,
     staffAllowlist: config.staffAllowlist,
@@ -161,7 +168,7 @@ export function createProductionApp(config: ApiConfig, environment: ServiceEnvir
       clerkClient,
     }),
     domains: createDomainRoutes(config),
-    ...createExternalRoutes(config, clerkClient, runInRequestScope),
+    ...createExternalRoutes(config, clerkClient, runInRequestScope, jwtKey),
     admin: {
       rateLimit: ({ key, limit, windowSeconds }) => checkRateLimit(key, limit, windowSeconds),
     },

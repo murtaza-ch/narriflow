@@ -1,4 +1,3 @@
-import { getPrismaClient } from "@narriflow/db/client";
 import type { TimelineFormat } from "@narriflow/validators";
 import type { ActorScope } from "./actor-scope";
 import { clipTimelineFiles, clipTimelineSource } from "./clip-timeline";
@@ -8,14 +7,9 @@ import { requirePlanFeature } from "./plan-features";
 import { presignDownloadUrl } from "./r2-storage";
 import { storeZip } from "./store-zip";
 import { workspaceService } from "./workspace.service";
+import { requirePrisma } from "./require-prisma";
 
 const SOURCE_DOWNLOAD_TTL_SECONDS = 15 * 60;
-
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
 
 /** Editor Timelines and their source grants are a Pro feature on every surface
  * (browser, REST, MCP). Already-issued grants keep working until they expire. */

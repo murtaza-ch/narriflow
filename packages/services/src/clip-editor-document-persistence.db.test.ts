@@ -156,7 +156,6 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const stored = await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } });
     expect(stored.autoLayoutStatus).toBe("completed");
     expect(stored.autoLayoutAnalysis).toEqual(unknownEvidence);
-    expect(stored.autoLayoutClaimToken).toBeNull();
   }));
 
   test("document, revision, original, render retirement, and cleanup commit together", scopedDatabase.bind(async () => {

@@ -1,5 +1,8 @@
 import { bearerAuthChallengeResponse, createMcpHandler, hostHeaderValidationResponse, OAuthError, OAuthErrorCode,
   verifyBearerToken, type McpServer, type Server, type OAuthTokenVerifier } from "@modelcontextprotocol/server";
+import { bearerCredential } from "@narriflow/validators/identifiers";
+import { type AuthFailureThrottle } from "@narriflow/services/auth-failure-throttle";
+import { logFailure } from "@narriflow/services/log-failure";
 import { type RateLimitResult } from "@narriflow/services/rate-limit";
 import { McpAuthUnavailableError, principalFromMcpAuth } from "./mcp-auth";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
@@ -25,6 +28,8 @@ export interface NarriflowMcpHttpDependencies {
   allowedOrigins(): string[];
   resourceMetadataUrl(): string;
   checkRateLimit(key: string, limit: number, window: number): Promise<RateLimitResult>;
+  /** Failed-credential budget of the caller's address; consulted before any token lookup. */
+  authFailureThrottle(request: Request, socketAddress?: string): AuthFailureThrottle;
   buildServer(principal: NarriflowMcpPrincipal, options: { protocolEra: "modern" | "legacy"; assertNewMutationAllowed(): void }): McpServer | Server | Promise<McpServer | Server>;
   diagnostic?: typeof recordMcpDiagnostic;
 }
@@ -35,7 +40,7 @@ export function createNarriflowMcpHttpHandler(deps: NarriflowMcpHttpDependencies
     const limiter = authInfo?.extra?.mcpLimiter as RateLimitResult;
     return deps.buildServer(principalFromMcpAuth(authInfo), { protocolEra: era, assertNewMutationAllowed: () => requireNewMutationAllowed(limiter) });
   });
-  return async (input: Request): Promise<Response> => {
+  return async (input: Request, socketAddress?: string): Promise<Response> => {
     const started = performance.now();
     const origins = deps.allowedOrigins();
     const finish = (response: Response) => {
@@ -48,10 +53,15 @@ export function createNarriflowMcpHttpHandler(deps: NarriflowMcpHttpDependencies
     if (input.method === "OPTIONS") return finish(new Response(null, { status: 204 }));
     const bounded = await boundedMcpRequest(input);
     if (bounded instanceof Response) return finish(bounded);
+    const failures = deps.authFailureThrottle(input, socketAddress);
+    if (await failures.exhausted()) {
+      return finish(Response.json({ error: "rate_limited", message: "Too many failed authentication attempts from this address" },
+        { status: 429, headers: { "Retry-After": String(failures.retryAfterSeconds), "Cache-Control": "no-store" } }));
+    }
     let requiredScopes: string[] = [];
     try {
       const header = bounded.headers.get("authorization") ?? "";
-      if (!/^Bearer [^\s,]+$/i.test(header)) throw new OAuthError(OAuthErrorCode.InvalidToken, "Expected one Bearer credential");
+      if (bearerCredential(header) === null) throw new OAuthError(OAuthErrorCode.InvalidToken, "Expected one Bearer credential");
       const auth = await verifyBearerToken(header, { verifier: deps.verifier });
       const principal = principalFromMcpAuth(auth);
       diagnostic({ event: "authentication", transport: "http", outcome: "accepted", durationMs: performance.now() - started });
@@ -84,8 +94,18 @@ export function createNarriflowMcpHttpHandler(deps: NarriflowMcpHttpDependencies
         { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } }));
       return finish(await handler.fetch(bounded, { authInfo: { ...auth, extra: { ...auth.extra, mcpLimiter: limiter } } }));
     } catch (error) {
-      diagnostic({ event: "authentication", transport: "http", outcome: error instanceof McpAuthUnavailableError ? "unavailable" : "denied",
-        durationMs: performance.now() - started });
+      const unavailable = error instanceof McpAuthUnavailableError;
+      // Only a credential the caller got wrong spends the failure budget. An OAuthError from the
+      // scope check also means a valid token; anything else is our own defect, never an auth denial.
+      const rejected = error instanceof OAuthError;
+      if (rejected && error.code === OAuthErrorCode.InvalidToken) await failures.recordFailure().catch(() => undefined);
+      if (!unavailable && !rejected) {
+        logFailure("mcp_http_request_failed", error);
+        diagnostic({ event: "request", transport: "http", outcome: "failure", durationMs: performance.now() - started });
+      } else {
+        diagnostic({ event: "authentication", transport: "http", outcome: unavailable ? "unavailable" : "denied",
+          durationMs: performance.now() - started });
+      }
       return finish(mcpAuthFailureResponse(error, deps.resourceMetadataUrl(), requiredScopes));
     }
   };

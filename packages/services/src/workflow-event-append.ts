@@ -25,23 +25,16 @@ export interface WorkflowEventInput {
   generationRenderResults?: NonNullable<WorkflowStageUpdatedEvent["generationRenderResults"]>;
   generationExport?: NonNullable<WorkflowStageUpdatedEvent["generationExport"]>;
   generationExportResult?: NonNullable<WorkflowStageUpdatedEvent["generationExportResult"]>;
-  analyticsRequired?: boolean;
   notification?: RenderTerminalNotificationPayload;
-}
-
-/** Which deliveries the event is owed: Durable Objects for live progress, analytics for
- * terminal runs. A record that only history reads needs neither. */
-export interface WorkflowEventDelivery {
-  progressRequired: boolean;
-  analyticsEnabled: boolean;
 }
 
 /**
  * Appends one Workflow Event, once per `workflowRunId:attemptId:transition`.
  * The Project's event counter orders it, so the caller's transaction holds the
- * Project row from here to commit.
+ * Project row from here to commit. Every event is owed to live progress (the
+ * socket needs contiguous sequence numbers), so there is nothing to opt out of.
  */
-export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, delivery: WorkflowEventDelivery) {
+export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput) {
   const emittedAt = new Date();
   const dedupeKey = `${input.workflowRunId}:${input.attemptId}:${input.transition}`;
   const existing = await tx.workflowEvent.findUnique({
@@ -108,10 +101,7 @@ export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, del
       dedupeKey,
       eventType: payload.event,
       payload: payload as unknown as Prisma.InputJsonValue,
-      availableAt: emittedAt,
-      nextDeliveryAt: emittedAt,
       progressRequired: true,
-      analyticsRequired: (input.analyticsRequired ?? false) && delivery.analyticsEnabled,
       notificationRequired: Boolean(input.notification),
       notificationDeliveredAt: input.notification ? emittedAt : null,
     },

@@ -9,6 +9,7 @@ import {createNotificationStore,buildNotificationMail,type NotificationOutcome} 
 import {createReviewNotificationStore,buildReviewNotificationMail} from "./review-notification.service";
 import {encryptReviewValue,decryptReviewValue,reviewDeliverySecret} from "./review.service";
 import {readServiceEnvironment} from "./runtime-environment";
+import {logFailure} from "./log-failure";
 import {deliverExecutionDispatches} from "./execution-dispatch-runtime";
 function database(){const value=getPrismaClient();if(!value)throw Error('notification_database_unavailable');return value;}
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -64,8 +65,10 @@ export async function prepareNotificationDelivery(target:NotificationTarget,prev
 export function getNotificationExecution(){
  return createNotificationExecution({database:database(),register:deliverExecutionDispatches,prepare:prepareNotificationDelivery,
   async send(_target,sealed,key){
-   const email=await import('@narriflow/email/worker');
-   const result=await email.sendEmail({...open(sealed).request,idempotencyKey:key});
-   return{sent:result.sent,...(result.id?{providerMessageId:result.id}:{})};
+   try{
+    const email=await import('@narriflow/email/worker');
+    const result=await email.sendEmail({...open(sealed).request,idempotencyKey:key},email.mailerConfig(readServiceEnvironment()));
+    return{sent:result.sent,...(result.id?{providerMessageId:result.id}:{})};
+   }catch(cause){logFailure('notification_send_failed',cause);throw cause;}
   }});
 }

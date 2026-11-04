@@ -5,7 +5,6 @@ export interface RenderConfigWarning {
 }
 
 export interface RenderConfig {
-  readonly sourceMode: "ranged" | "download";
   readonly uploadConcurrency: number;
   readonly x264Preset: string;
   readonly x264Crf: string;
@@ -30,10 +29,6 @@ export interface RenderConfig {
   readonly renderDeadlineRealtimeFactor: number;
   /** Size-aware transfer deadline = clamp(30s + bytes / minBytesPerSec, floor, ceiling),
    *  plus a no-progress bound for downloads. */
-  readonly transferDeadlineFloorMs: number;
-  readonly transferDeadlineCeilingMs: number;
-  readonly transferMinBytesPerSec: number;
-  readonly transferNoProgressMs: number;
   /** Finished outputs waiting for an upload slot, per replica. */
   readonly uploadMaxWaitingJobs: number;
   readonly uploadMaxWaitingBytes: number;
@@ -101,13 +96,6 @@ export function parseRenderConfig(
   environment: RenderEnvironment,
   warn: (warning: RenderConfigWarning) => void = () => {},
 ): Readonly<RenderConfig> {
-  const sourceMode = environment.WORKER_RENDER_SOURCE_MODE?.trim() || "ranged";
-  if (sourceMode !== "ranged" && sourceMode !== "download") {
-    throw new Error(
-      "WORKER_RENDER_SOURCE_MODE must be either ranged or download",
-    );
-  }
-
   const configuredUploadConcurrency = positiveNumber(
     environment,
     "WORKER_UPLOAD_CONCURRENCY",
@@ -192,24 +180,14 @@ export function parseRenderConfig(
   if (renderDeadlineFloorMs > renderCommandTimeoutMs) {
     throw new Error("WORKER_RENDER_DEADLINE_FLOOR_MS must not exceed WORKER_RENDER_FFMPEG_TIMEOUT_MS");
   }
-  const transferDeadlineFloorMs = boundedInteger(environment, "WORKER_TRANSFER_DEADLINE_FLOOR_MS", 120_000, 1_000);
-  const transferDeadlineCeilingMs = boundedInteger(environment, "WORKER_TRANSFER_DEADLINE_CEILING_MS", 1_800_000, 1_000);
-  if (transferDeadlineFloorMs > transferDeadlineCeilingMs) {
-    throw new Error("WORKER_TRANSFER_DEADLINE_FLOOR_MS must not exceed WORKER_TRANSFER_DEADLINE_CEILING_MS");
-  }
 
   return Object.freeze({
-    sourceMode,
     uploadConcurrency,
     x264Preset,
     x264Crf,
     renderCommandTimeoutMs,
     renderDeadlineFloorMs,
     renderDeadlineRealtimeFactor: boundedFraction(environment, "WORKER_RENDER_DEADLINE_FACTOR", 20, 1, 1_000),
-    transferDeadlineFloorMs,
-    transferDeadlineCeilingMs,
-    transferMinBytesPerSec: boundedInteger(environment, "WORKER_TRANSFER_MIN_BYTES_PER_SEC", 1024 * 1024, 1_024),
-    transferNoProgressMs: boundedInteger(environment, "WORKER_TRANSFER_NO_PROGRESS_MS", 30_000, 1_000),
     uploadMaxWaitingJobs: boundedInteger(environment, "WORKER_UPLOAD_MAX_WAITING_JOBS", 2, 1, 16),
     uploadMaxWaitingBytes: boundedInteger(environment, "WORKER_UPLOAD_MAX_WAITING_BYTES", 512 * 1024 ** 2, 1_048_576),
     diskMinFreeBytes: boundedInteger(environment, "WORKER_DISK_MIN_FREE_BYTES", 1024 ** 3, 0),

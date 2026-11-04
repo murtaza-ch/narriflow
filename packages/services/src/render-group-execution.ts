@@ -14,6 +14,7 @@ import { createExecutionTransfer } from "./execution-transfer";
 import type { createExecutionStorage } from "./execution-storage";
 import { isExecutionInputKey } from "./execution-input-key";
 import type { VerifiedExecutionRequest } from "./execution-signature";
+import { sha256Hex } from "./execution-hash";
 
 export interface RenderGroupExecutionDependencies {
   toolchainFingerprint: string;
@@ -105,7 +106,7 @@ export function createRenderGroupExecution(options: {
     prepareContext: async attempt => {
       const input = await service.loadInput(attempt);
       const raw = new TextEncoder().encode(`${input.preparation.source.storageKey}#${input.preparation.source.byteLength}`);
-      const source = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", raw)), byte => byte.toString(16).padStart(2, "0")).join("");
+      const source = await sha256Hex(raw);
       return { source, analysis: input.preparation.bindingHash, toolchain: input.preparation.toolchainFingerprint };
     }, artifacts: { head: options.artifacts.head, prepare: async (assignment, artifact, reported) => {
       const attempt = await database.executionAttempt.findUniqueOrThrow({ where: { attemptToken: assignment.attemptToken } });

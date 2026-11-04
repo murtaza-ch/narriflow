@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { clipAspectRatioSchema } from "./clip";
 import { postingScheduleSchema } from "./posting-schedule";
-import { SOCIAL_PROVIDER_CAPABILITIES } from "./social-provider-capabilities";
+import { SOCIAL_PROVIDER_CAPABILITIES, socialCaptionLength } from "./social-provider-capabilities";
 
 export const socialPlatformSchema = z.enum([
 	"tiktok",
@@ -180,11 +180,11 @@ export const scheduleSocialPostSchema = z
 				message: "Aspect ratio is not supported by this provider",
 			});
 		}
-		if (value.caption.length > capability.textLimit) {
+		if (socialCaptionLength(value.platform, value.caption) > capability.textLimit) {
 			context.addIssue({
 				code: "custom",
 				path: ["caption"],
-				message: `Caption exceeds the ${capability.textLimit}-character provider limit`,
+				message: `Caption exceeds the ${capability.textLimit}-${value.platform === "x" ? "unit" : "character"} provider limit`,
 			});
 		}
 		const thumbnailType = value.providerSettings.thumbnailType;

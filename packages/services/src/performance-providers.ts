@@ -1,4 +1,5 @@
 import { SOCIAL_PROVIDER_CAPABILITIES } from "@narriflow/validators";
+import { parseRetryAfterMs } from "./retry-after";
 
 /** Public counts for one video. A count the platform doesn't report is null. */
 export type PlatformCounts = {
@@ -66,15 +67,6 @@ export function msUntilQuotaReset(now: Date) {
 	return 86_400_000 - elapsedMs + 60_000;
 }
 
-function retryAfterMs(response: Response, now: Date) {
-	const value = response.headers.get("retry-after");
-	if (!value) return null;
-	const seconds = Number(value);
-	if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-	const date = Date.parse(value);
-	return Number.isFinite(date) ? Math.max(0, date - now.getTime()) : null;
-}
-
 type ReadInput = {
 	fetch: typeof fetch;
 	accessToken: string;
@@ -112,7 +104,7 @@ export async function readYouTubeStatistics(
 			return { kind: "grant_unusable", reason: "authentication_required" };
 		}
 		if (response.status === 429) {
-			return { kind: "rate_limited", retryAfterMs: retryAfterMs(response, input.now) };
+			return { kind: "rate_limited", retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"), input.now) };
 		}
 		if (response.status === 403) {
 			const reason = object(
@@ -126,7 +118,7 @@ export async function readYouTubeStatistics(
 				};
 			}
 			return reason === "rateLimitExceeded"
-				? { kind: "rate_limited", retryAfterMs: retryAfterMs(response, input.now) }
+				? { kind: "rate_limited", retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"), input.now) }
 				: { kind: "grant_unusable", reason: "permission_required" };
 		}
 		return { kind: "unavailable" };
@@ -177,7 +169,7 @@ export async function readTikTokStatistics(
 	const body = await bodyOf(response);
 	const code = object(body?.error)?.code;
 	if (response.status === 429 || code === "rate_limit_exceeded") {
-		return { kind: "rate_limited", retryAfterMs: retryAfterMs(response, input.now) };
+		return { kind: "rate_limited", retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"), input.now) };
 	}
 	if (
 		response.status === 401 ||

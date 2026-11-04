@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import type { Root } from "react-dom/client";
 let createRoot: typeof import("react-dom/client").createRoot;
-let useInternalReviews: typeof import("../../(app)/projects/[projectId]/review-panel").useInternalReviews;
+let useInternalReviews: typeof import("../../(app)/projects/[projectId]/internal-reviews").useInternalReviews;
 let internalRuntime: import("@narriflow/api-client/core").ApiRuntime;
 const internalScope = { userId: "clerk-user", workspaceId: "workspace-test" };
 mock.module("../../_components/api-provider", () => ({ useApiRuntime: () => internalRuntime, useWorkspaceScope: () => internalScope }));
@@ -76,7 +76,7 @@ beforeAll(async () => {
   ({ system } = await import("@narriflow/ui/theme"));
   ({ SharedExportPageClient } = await import("../../share/[token]/shared-export-client"));
   ({ default: ReviewOptOutPage } = await import("../opt-out/page"));
-  ({ useInternalReviews } = await import("../../(app)/projects/[projectId]/review-panel"));
+  ({ useInternalReviews } = await import("../../(app)/projects/[projectId]/internal-reviews"));
 });
 
 afterEach(async () => {

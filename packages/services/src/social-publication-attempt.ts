@@ -2,7 +2,6 @@ import {appendYouTubeReceiptEnrichment,trackPublishedVideo} from "./publication-
 import { lockPublicationAttempt } from "./publication-locks";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import { emitSocialPostFinished } from "./social-post-finished";
 
 export * from "./social-publication-driver";
@@ -12,6 +11,7 @@ import {
  type PublicationAttemptExecutionResult,type LoadedPublicationAttempt,type SocialPublicationAttemptStore,
  type OwnedPublicationAttempt,
 } from "./social-publication-driver";
+import { requirePrisma } from "./require-prisma";
 
 type InMemoryRecord = LoadedPublicationAttempt & {
 	receipt: {
@@ -342,12 +342,6 @@ const publicationAttemptInclude = {
 type PublicationAttemptRow = Prisma.SocialPublicationAttemptGetPayload<{
 	include: typeof publicationAttemptInclude;
 }>;
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
 
 function rowExecutionResult(
 	row: PublicationAttemptRow,

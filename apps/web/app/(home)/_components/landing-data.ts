@@ -182,7 +182,7 @@ export const DEMOS: Demo[] = [
     position: "50% 22%",
     title: "Launch keynote",
     length: "48:12",
-    link: "vimeo.com/launch-keynote",
+    link: "youtube.com/watch?v=launch-keynote",
     cuts: [
       { src: moment("keynote", 1), title: "The accidental customer", at: "4:31", caption: "Our first customer found us by accident", score: 93, duration: "0:38", presetId: "spotlight" },
       { src: moment("keynote", 2), title: "One engineer, one launch", at: "17:48", caption: "We shipped it with one engineer", score: 90, duration: "0:44", presetId: "glass" },
@@ -234,7 +234,7 @@ export const MOMENTS = [
 export const STEPS = [
   {
     title: "Paste a link or upload",
-    body: "YouTube, Vimeo, a podcast feed or a file from your drive. Narriflow transcribes it in any of 99 languages.",
+    body: "A YouTube or Dropbox link, a podcast feed or a file from your drive. Narriflow transcribes it in any of 99 languages.",
   },
   {
     title: "Get the moments that land",
@@ -284,7 +284,7 @@ export const FAQS = [
   },
   {
     q: "Which videos can I bring?",
-    a: "Upload a file, or paste a YouTube, Vimeo or other supported video link. Podcast RSS feeds work too, and on Pro, Autopilot can clip new episodes as they arrive.",
+    a: "Upload a file, or paste a YouTube or Dropbox link. Podcast RSS feeds work too, and on Pro, Autopilot can clip new episodes as they arrive.",
   },
   {
     q: "Which languages does it understand?",

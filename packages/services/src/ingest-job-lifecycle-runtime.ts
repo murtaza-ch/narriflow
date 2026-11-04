@@ -14,7 +14,6 @@ export function getIngestJobLifecycle(): IngestJobLifecycle {
       prisma,
       workflow: getWorkflowRunLifecycle(),
       validateVideo: createSourceVideoValidator(getProcessingUsage()),
-      progressRequired: true,
       sourceBucket: readServiceEnvironment().R2_BUCKET ?? "unknown-bucket",
       executionInputHash: job => {
         const payload = job.payload;

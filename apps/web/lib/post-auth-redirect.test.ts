@@ -45,7 +45,7 @@ describe("resolvePostAuthRedirect", () => {
       "https://accounts.example.com",
     ).href).toBe("http://localhost:3000/home");
   });
-  test.each([null, "/?auth=sign-in", "/?auth=sign-up&redirect_url=/home", "/auth/continue", "/auth/continue/", "/%61uth/continue", "/sso-callback", "/sign-in", "/sign-up/continue", "/onboarding", "javascript:alert(1)", "//evil.example/home", "https://user:password@localhost:3000/home"])("defaults to home for missing or unsafe destination %s", (destination) => {
+  test.each([null, "/?auth=sign-in", "/?auth=sign-up&redirect_url=/home", "/auth/continue", "/auth/continue/", "/%61uth/continue", "/sso-callback", "/sign-in", "/sign-up/continue", "/onboarding", "javascript:alert(1)", "//evil.example/home", "/.//evil.example/x", "/\\evil.example/x", "/home\\..\\x", "https://user:password@localhost:3000/home"])("defaults to home for missing or unsafe destination %s", (destination) => {
     expect(resolvePostAuthRedirect(destination, appOrigin, clerkIssuer).href).toBe(`${appOrigin}/home`);
   });
   test("preserves project query parameters and fragments", () => {

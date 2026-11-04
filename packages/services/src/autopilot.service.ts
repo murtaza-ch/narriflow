@@ -9,7 +9,6 @@ import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import type { ActorScope } from "./actor-scope";
 import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   autopilotRuleInputSchema,
   autopilotRuleUpdateSchema,
@@ -28,6 +27,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { requirePrisma } from "./require-prisma";
 
 export const MAX_AUTOPILOT_RULES_PER_WORKSPACE = 10;
 
@@ -54,11 +54,6 @@ export class AutopilotError extends ExpectedDomainFailureError<AutopilotFailureC
   }
 }
 
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Database client unavailable");
-  return prisma;
-}
 
 async function queueRuleExecution(tx:Prisma.TransactionClient,id:string,repairOnly=false){
   await queueAutopilotRule(tx,id);

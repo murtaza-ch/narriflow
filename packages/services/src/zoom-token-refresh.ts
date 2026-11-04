@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient, ZoomConnection } from "@prisma/client";
 import { workspaceAllowsCapability } from "@narriflow/validators";
 import { readExecutionAdmission } from "./execution-admission";
+import { TokenExchangeRejected } from "./token-exchange-rejected";
 type Tx=Prisma.TransactionClient;
 export class ZoomTokenRefreshError extends Error {
   constructor(readonly code:"unavailable"|"busy"|"unconfirmed"){super(`zoom_refresh_${code}`);}
@@ -24,7 +25,9 @@ function same(a:ZoomConnection,b:ZoomConnection){return a.workspaceId===b.worksp
 const unavailable={error:"unavailable" as const},busy={error:"busy" as const};
 async function unknown(tx:Tx,id:string){await tx.zoomConnection.update({where:{id},data:{refreshOutcomeUnknown:true,refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null}});return {error:"unconfirmed" as const};}
 /** A token can rotate once after the started marker. The SQL lock ends before
- * exchange; uncertainty remains unusable until an explicit OAuth reconnect. */
+ * exchange; uncertainty remains unusable until an explicit OAuth reconnect.
+ * An exchange that throws `TokenExchangeRejected` proves nothing rotated: the
+ * claim is released and the cause is rethrown for the caller to retry. */
 export async function refreshZoomConnectionToken(options:{database:PrismaClient;connectionId:string;exchange(snapshot:Readonly<ZoomConnection>):Promise<ZoomTokenReplacement>}):Promise<ZoomConnection>{
   const db=options.database;
   const admitted=await db.$transaction(async tx=>{
@@ -50,16 +53,18 @@ export async function refreshZoomConnectionToken(options:{database:PrismaClient;
     return {started:true};
   });
   if("error" in started)throw new ZoomTokenRefreshError(started.error);
-  let replacement:ZoomTokenReplacement|undefined;
-  try{replacement=await options.exchange(claim.row);}catch{/* A missing ACK cannot prove that the provider kept its old refresh token. */}
+  let replacement:ZoomTokenReplacement|undefined,rejected:TokenExchangeRejected|undefined;
+  try{replacement=await options.exchange(claim.row);}catch(error){/* A missing ACK cannot prove that the provider kept its old refresh token. */if(error instanceof TokenExchangeRejected)rejected=error;}
   const outcome=await db.$transaction(async tx=>{
     const observed=await clock(tx),row=await locked(tx,options.connectionId);
     if(!row||row.revokedAt||row.refreshOutcomeUnknown)return unavailable;
     if(observed.epoch!==claim.epoch||row.refreshClaimId!==claim.owner||!same(row,claim.row))return busy;
+    if(rejected){await tx.zoomConnection.update({where:{id:row.id},data:{refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null}});return {rejected};}
     if(!replacement||!replacement.accessTokenEncrypted||!replacement.refreshTokenEncrypted||!Number.isFinite(replacement.expiresInSeconds)||replacement.expiresInSeconds<=0||!row.refreshStartedAt||!row.refreshLeaseExpiresAt||row.refreshLeaseExpiresAt<=observed.now)return unknown(tx,row.id);
     const stored=await tx.zoomConnection.update({where:{id:row.id},data:{accessTokenEncrypted:replacement.accessTokenEncrypted,refreshTokenEncrypted:replacement.refreshTokenEncrypted,expiresAt:new Date(observed.now.getTime()+replacement.expiresInSeconds*1000),scopes:replacement.scopes,refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null}});
     return {row:stored};
   });
+  if("rejected" in outcome)throw outcome.rejected!.cause;
   if("error" in outcome)throw new ZoomTokenRefreshError(outcome.error!);
   return outcome.row!;
 }

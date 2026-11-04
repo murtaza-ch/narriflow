@@ -5,7 +5,7 @@ import {
   ListMultipartUploadsCommand, ListPartsCommand, S3Client, UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import { createFetchR2Client } from "./r2-fetch-client";
 import { MAX_CONDITIONAL_COPY_SIZE_BYTES, MAX_UPLOAD_SIZE_BYTES } from "@narriflow/validators";
 
 export const EXECUTION_PART_SIZE_BYTES = 16 * 1024 * 1024;
@@ -80,10 +80,7 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
   if (!/^[a-f0-9]{32}$/.test(config.accountId) || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.bucket) ||
     typeof config.accessKeyId !== "string" || !config.accessKeyId || typeof config.secretAccessKey !== "string" || !config.secretAccessKey) throw new ExecutionStorageError("storage_configuration_invalid");
   const now = options.now ?? (() => new Date());
-  const client = options.client ?? new S3Client({ region: "auto", endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
-    requestHandler: new FetchHttpHandler({ requestTimeout: REQUEST_TIMEOUT_MS }), maxAttempts: 3,
-    requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED" });
+  const client = options.client ?? createFetchR2Client(config, { requestTimeoutMs: REQUEST_TIMEOUT_MS, maxAttempts: 3 });
   const bucket = config.bucket;
   const metadata = (value: ExecutionStorageObject) => ({ "execution-artifact-id": value.artifactId, "execution-binding-hash": value.bindingHash });
   async function provider<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal, completing = false): Promise<T> {

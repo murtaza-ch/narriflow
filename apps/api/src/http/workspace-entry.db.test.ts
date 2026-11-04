@@ -37,7 +37,7 @@ const clerkDirectory = { users: { getUser: getClerkUser } } as unknown as ClerkU
 if (enabled) {
   mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => failProvisioning ? { ...prisma, workspace: { ...prisma.workspace, upsert: async () => { throw new Error("Injected database outage"); } } } : prisma }));
 }
-const { ClerkDirectoryUnavailableError, getAppUserForClerkIdentity, syncClerkUserPayload, markUserDeletedByClerkId } = enabled
+const { ClerkDirectoryUnavailableError, ClerkEmailConflictError, getAppUserForClerkIdentity, syncClerkUserPayload, markUserDeletedByClerkId } = enabled
   ? await import("@narriflow/auth")
   : ({} as typeof import("@narriflow/auth"));
 /** What the API runs for a verified session token: lookup, first-login sync, personal Workspace. */
@@ -141,7 +141,7 @@ dbDescribe("automatic workspace entry before webhook delivery", () => {
     const identityCount = await prisma.authIdentity.count({ where: { userId: oldUser!.id } });
     expect(identityCount).toBeGreaterThan(0);
     const next = clerkProfile(); next.emailAddresses[0].emailAddress = previous.emailAddresses[0].emailAddress; payload = next;
-    await expect(getCurrentAppUser()).rejects.toMatchObject({ code: "P2002" });
+    await expect(getCurrentAppUser()).rejects.toBeInstanceOf(ClerkEmailConflictError);
     previousIdentityLookup = async () => { throw new ClerkAPIResponseError("Clerk unavailable", { status: 503, data: [] }); };
     // A directory outage is a retryable 503 for the API, never a sign-out.
     await expect(getCurrentAppUser()).rejects.toBeInstanceOf(ClerkDirectoryUnavailableError);

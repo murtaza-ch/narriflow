@@ -4,6 +4,10 @@ import { executionDispatchContinuationId } from "@narriflow/services/execution-d
 
 export const WORKFLOW_METADATA_MAX_BYTES = 64 * 1024;
 export const WORKFLOW_DISPATCH_EVENT = "dispatch";
+/** Retries wait 6, 12 ... 60 seconds, about 5.5 minutes in all, so a short database
+ * or scheduler outage does not close the instance. Commands are safe to repeat:
+ * each one re-reads the ledger and mutates only behind its receipt or fence. */
+export const WORKFLOW_COMMAND_STEP = { retries: { limit: 10, delay: "6 seconds", backoff: "linear" }, timeout: "2 minutes" } as const;
 export type WorkflowKind = "import_pipeline" | "render_run" | "operation_driver" | "maintenance";
 /** Independent continuations must remain runnable after their domain's main
  * Workflow has completed. The dispatch UUID is their durable identity. */

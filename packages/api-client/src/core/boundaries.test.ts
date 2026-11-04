@@ -6,7 +6,7 @@ const entry = resolve(repoRoot, "packages/api-client/src/core/index.ts");
 
 // The core is shared with the future Expo app: no framework, no Clerk, no backend.
 const FORBIDDEN_PACKAGES =
-  /node_modules\/\.bun\/(next@|react@|react-dom@|server-only@|@clerk\+|hono@|@prisma\+|stripe@|ioredis@)/;
+  /node_modules\/\.bun\/(next@|react@|react-dom@|server-only@|@clerk\+|hono@|@prisma\+|stripe@)/;
 const FORBIDDEN_WORKSPACES =
   /(^|\/)(apps\/api|apps\/web|packages\/(services|db|auth|email|mcp-core|ui))\//;
 

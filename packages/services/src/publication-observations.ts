@@ -40,6 +40,7 @@ import {
 } from "./performance-guidance";
 import { readComparedVideos } from "./performance-summary";
 import { executeExecutionPage } from "./execution-page-receipt";
+import { databaseNow } from "./execution-clock";
 type Tx = Prisma.TransactionClient;
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}",
 	duePattern = new RegExp(`^po1\\.([yc])\\.(${uuid})\\.([a-f0-9]{32})$`),
@@ -52,12 +53,6 @@ const restorePattern = new RegExp(`^po1\\.r\\.(${uuid})\\.(0|${uuid})$`);
 const DAY = 86400000,
 	hash = (v: unknown) =>
 		createHash("sha256").update(JSON.stringify(v)).digest("hex");
-const clock = async (tx: Tx) =>
-	(
-		await tx.$queryRaw<
-			Array<{ now: Date }>
-		>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`
-	)[0]!.now;
 const receiptInclude = {
 	attempt: { include: { socialPost: true, frozenState: true } },
 } satisfies Prisma.ProviderReceiptInclude;
@@ -144,7 +139,7 @@ export async function appendPerformanceGuidance(
 	dueAt?: Date,
 ) {
 	const at =
-		dueAt ?? new Date(Math.ceil((await clock(tx)).getTime() / DAY) * DAY);
+		dueAt ?? new Date(Math.ceil((await databaseNow(tx)).getTime() / DAY) * DAY);
 	return append(tx, `po1.g.${workspaceId}.${at.getTime()}`, at);
 }
 /** Called only for a provider-verified PublishedSocialVideo. Freezes facts and
@@ -178,7 +173,7 @@ export async function trackPublishedVideo(
 		select: { id: true },
 	});
 	if (visibility) return null;
-	const at = await clock(tx);
+	const at = await databaseNow(tx);
 	if (
 		published.publishedAt.getTime() +
 			Math.max(...CAPTURE_OFFSETS_MINUTES) * 60000 <
@@ -328,7 +323,7 @@ export function createPublicationObservations(options: {
 				where: { id },
 				include: receiptInclude,
 			}),
-			at = await clock(tx);
+			at = await databaseNow(tx);
 		return row &&
 			row.enrichmentClaimId === owner &&
 			row.enrichmentLeaseExpiresAt &&
@@ -356,7 +351,7 @@ export function createPublicationObservations(options: {
 				where: { id },
 				include: { trackedVideo: true },
 			}),
-			at = await clock(tx);
+			at = await databaseNow(tx);
 		return row &&
 			row.state === "scheduled" &&
 			row.leaseOwner === owner &&
@@ -374,7 +369,7 @@ export function createPublicationObservations(options: {
 		return db.$transaction(async (tx) => {
 			const row = await ownedReceipt(tx, id, owner, epoch);
 			if (!row) return [];
-			const at = await clock(tx),
+			const at = await databaseNow(tx),
 				retry = outcome.kind === "retry";
 			const data: Prisma.ProviderReceiptUpdateInput = {
 				enrichmentClaimId: null,
@@ -549,7 +544,7 @@ export function createPublicationObservations(options: {
 		return db.$transaction(async (tx) => {
 			const row = await ownedCapture(tx, id, owner, epoch);
 			if (!row) return [];
-			const at = await clock(tx);
+			const at = await databaseNow(tx);
 			let skip: string | null = null,
 				retry = false,
 				quota = false,
@@ -625,7 +620,7 @@ export function createPublicationObservations(options: {
             const observed=await db.$transaction(async tx=>{
               if(!await ownedCapture(tx,row.id,row.leaseOwner!,epoch))return null;
               const active=await tx.socialAccount.findFirst({where:{id:accountId,status:'active'},select:{id:true}});
-              return active?clock(tx):null;
+              return active?databaseNow(tx):null;
             });
             if(!observed)return {kind:'skip',reason:'account_disconnected'};
 
@@ -666,7 +661,7 @@ export function createPublicationObservations(options: {
 					!samePublicationDispatch(ledger.reference, reference)
 				)
 					return { kind: "superseded" as const, dispatchIds: [] };
-				const at = await clock(tx);
+				const at = await databaseNow(tx);
 				if (ledger.dueAt > at)
 					return {
 						kind: "sleep" as const,

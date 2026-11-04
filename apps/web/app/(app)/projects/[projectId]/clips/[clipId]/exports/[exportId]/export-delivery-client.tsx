@@ -44,7 +44,8 @@ import { Progress } from "@narriflow/ui/components/progress";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import type { ClipExportSnapshot } from "@narriflow/validators";
-import { formatDateTime, formatDuration } from "@/lib/format";
+import { downloadUrl, saveBlob } from "@/lib/download";
+import { formatDateTime, formatDuration, formatFileSize } from "@/lib/format";
 
 const ACTIVE_STATUSES = new Set(["queued", "rendering", "partial_ready"]);
 
@@ -60,21 +61,6 @@ type TimelineTarget = (typeof TIMELINE_DOWNLOADS)[number]["format"] | "source";
 const SNAPSHOT_RESUME_AGE_MS = 10 * 60_000;
 /** The stream is the signal; this only covers a stream that is down or a change it does not publish. */
 const ACTIVE_FALLBACK_POLL_MS = 10_000;
-
-function saveFile(url: string, fileName: string) {
-	const link = document.createElement("a");
-	link.href = url;
-	link.download = fileName;
-	document.body.appendChild(link);
-	link.click();
-	link.remove();
-}
-
-function formatBytes(value: number | null): string {
-	if (value === null || value < 0) return "—";
-	if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
-	return `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
-}
 
 function statusCopy(status: ClipExportSnapshot["status"]) {
 	switch (status) {
@@ -303,9 +289,7 @@ export function ExportDeliveryClient({
 		setActionError(null);
 		try {
 			const file = await fetchSubtitleFile(client, projectId, clipId, data.id, format);
-			const url = URL.createObjectURL(file.blob);
-			saveFile(url, file.fileName);
-			setTimeout(() => URL.revokeObjectURL(url), 60_000);
+			saveBlob(file.blob, file.fileName);
 		} catch {
 			setActionError("The subtitles could not be downloaded. Try again.");
 		} finally {
@@ -323,14 +307,12 @@ export function ExportDeliveryClient({
 		try {
 			if (target === "source") {
 				const grant = await exportCommands.timelineSourceGrant(client, projectId, clipId);
-				saveFile(grant.downloadUrl, grant.fileName);
+				downloadUrl(grant.downloadUrl, grant.fileName);
 				setTimelineNote(`Downloading ${grant.fileName}.`);
 				return;
 			}
 			const archive = await fetchTimelineArchive(client, projectId, clipId, target);
-			const url = URL.createObjectURL(archive.blob);
-			saveFile(url, archive.fileName);
-			setTimeout(() => URL.revokeObjectURL(url), 60_000);
+			saveBlob(archive.blob, archive.fileName);
 			setTimelineNote(
 				`Downloaded ${archive.fileName}${archive.editorRevision !== null ? `, cut from edit v${archive.editorRevision}` : ""}.`,
 			);
@@ -365,7 +347,7 @@ export function ExportDeliveryClient({
 		selected?.aspectRatio,
 		data.resolution,
 		selected?.durationSec ? formatDuration(selected.durationSec) : null,
-		selected?.sizeBytes ? formatBytes(selected.sizeBytes) : null,
+		formatFileSize(selected?.sizeBytes ?? null),
 		data.watermark ? "Watermark" : null,
 	].filter((fact): fact is string => Boolean(fact));
 

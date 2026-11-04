@@ -423,19 +423,20 @@ export class WorkspaceService {
   ): Promise<Record<string, string | null>> {
     const memberships = await requiredPrisma().workspaceMember.findMany({
       where: { userId, workspaceId: { in: workspaceIds } },
-      select: {
-        workspaceId: true,
-        workspace: { select: { avatarStorageKey: true } },
-      },
+      select: { workspace: { select: { id: true, avatarStorageKey: true } } },
     });
+    return this.presignAvatarUrls(memberships.map((membership) => membership.workspace));
+  }
+
+  /** Signs avatars of Workspaces the caller already read through a membership. */
+  async presignAvatarUrls(
+    workspaces: ReadonlyArray<{ id: string; avatarStorageKey: string | null }>,
+  ): Promise<Record<string, string | null>> {
     const entries = await Promise.all(
-      memberships.map(async (membership) => [
-        membership.workspaceId,
-        membership.workspace.avatarStorageKey
-          ? await presignDownloadUrl({
-              key: membership.workspace.avatarStorageKey,
-              expiresIn: 60 * 60,
-            }).catch(() => null)
+      workspaces.map(async (workspace) => [
+        workspace.id,
+        workspace.avatarStorageKey
+          ? await presignDownloadUrl({ key: workspace.avatarStorageKey, expiresIn: 60 * 60 }).catch(() => null)
           : null,
       ] as const),
     );
@@ -491,13 +492,14 @@ export class WorkspaceService {
       actorRole: actor.role,
       invitedRole: input.role,
     });
-    return this.issueInvite(requiredPrisma(), userId, workspaceId, input);
+    return requiredPrisma().$transaction((tx) => this.issueInvite(tx, userId, workspaceId, input));
   }
 
   /**
-   * Writes the invite and returns it with its one-time raw token. The caller
-   * has already admitted the actor and checked the entitlement; `db` is a
-   * transaction when a receipt-backed command accepts the invite atomically.
+   * Replaces any pending invite for the email and returns the new one with its
+   * one-time raw token. The caller has already admitted the actor and checked
+   * the entitlement. `db` must be a transaction: the lock serializes concurrent
+   * invites, and `WorkspaceInvite_pending_email_key` enforces the outcome.
    */
   async issueInvite(
     db: Prisma.TransactionClient,
@@ -527,6 +529,7 @@ export class WorkspaceService {
         );
       }
     }
+    await db.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`workspace_invite:${workspaceId}:${email}`}, 0)) IS NULL AS locked`;
     await db.workspaceInvite.updateMany({
       where: { workspaceId, email: { equals: email, mode: "insensitive" }, acceptedAt: null, revokedAt: null },
       data: { revokedAt: new Date() },

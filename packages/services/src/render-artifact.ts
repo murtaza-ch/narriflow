@@ -3,9 +3,10 @@ import type { ExecutionArtifact } from "@narriflow/validators/execution";
 import type { ExecutorArtifactCommit } from "./executor-domain-control";
 import type { RenderGroupArtifactCommit } from "./render-group-lifecycle";
 import type { BrollAttribution } from "./pexels-contract";
+import { sha256Hex } from "./execution-hash";
 
 async function digest(bytes: Uint8Array): Promise<string> {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes))), byte => byte.toString(16).padStart(2, "0")).join("");
+  return await sha256Hex(Uint8Array.from(bytes));
 }
 export async function renderArtifactBindingHash(input: { inputHash: string; renderId: string; role: "render_variant" | "render_outcome" }): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(input.inputHash) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.renderId) || !["render_variant", "render_outcome"].includes(input.role)) throw new Error("render_artifact_invalid");

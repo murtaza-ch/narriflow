@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from narriflow_media.manifest import YouTubeSource
 from narriflow_media.fetch import DownloadedSource, ExistingSourceAudio, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure, fetch_source
 
 
@@ -30,7 +31,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                 async def video_ready(self,artifact,audio):
                     if audio is not None:raise AssertionError('SourceAudio was fabricated')
                     calls.append('original')
-            result=await fetch_source('_123456789-',source_revision=2,mode='local',development=True,work_directory=root,
+            result=await fetch_source(YouTubeSource('_123456789-'),source_revision=2,mode='local',development=True,work_directory=root,
                 runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64,acquire_audio=False)
             self.assertIsNone(result.audio);self.assertEqual(calls,['original','closed'])
 
@@ -49,7 +50,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                 async def video_ready(self,artifact,audio):
                     if audio is not None or artifact.manifest['audioTrack'] is not None:raise AssertionError('Fabricated audio')
                     calls.append('original')
-            result=await fetch_source('_123456789-',source_revision=2,mode='local',development=True,work_directory=root,
+            result=await fetch_source(YouTubeSource('_123456789-'),source_revision=2,mode='local',development=True,work_directory=root,
                 runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64)
             self.assertIsNone(result.audio);self.assertEqual(calls,['original','closed'])
 
@@ -90,7 +91,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                     events.append(("video", audio.manifest["sha256"]))
 
             task = asyncio.create_task(fetch_source(
-                "_123456789-", source_revision=2, mode="local", development=True,
+                YouTubeSource("_123456789-"), source_revision=2, mode="local", development=True,
                 work_directory=root, runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64,
             ))
             await asyncio.wait_for(video_started.wait(), 1)
@@ -140,7 +141,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                     commits.append("audio")
                 async def video_ready(self, artifact, audio):
                     commits.append("video")
-            await fetch_source("_123456789-", source_revision=2, mode="proxy", development=False,
+            await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
                                proxy_template="http://sticky-{session}:test-only@proxy.example:8080",
                                work_directory=root, runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
             self.assertEqual(len(set(resolved)), 3)
@@ -176,14 +177,14 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                 async def video_ready(self, artifact, audio):
                     commits.append("video")
             with self.assertRaises(SourceFetchFailure) as failure:
-                await fetch_source("_123456789-", source_revision=2, mode="local", development=True,
+                await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="local", development=True,
                                    work_directory=root, runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
             self.assertEqual(failure.exception.code, "source_audio_video_mismatch")
             self.assertEqual(commits, ["audio"])
             self.assertEqual(len(closed), 1)
             self.assertEqual(audio_file.read_bytes(), b"a")
 
-    async def test_a_credit_difference_inside_probe_tolerance_stops_the_video_after_early_audio(self):
+    async def test_audio_extracted_past_a_minute_boundary_still_publishes_its_video(self):
         events=[]
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);audio=root/'audio.m4a';video=root/'video.mp4';audio.write_bytes(b'a');video.write_bytes(b'v')
@@ -191,14 +192,13 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                 async def resolve(self,source,session,work):return ResolvedSource(source.media_id,'140','137',None,work/'metadata')
                 async def download_audio(self,selected,session,work):return DownloadedSource(audio,selected.media_id,'140')
                 async def download_video(self,selected,session,work):return DownloadedSource(video,selected.media_id,'140')
-                async def probe(self,path):return {**probe(path==video),'durationSec':60.0 if path==video else 60.01}
+                async def probe(self,path):return {**probe(path==video),'durationSec':60.0 if path==video else 60.011}
                 async def end_session(self,work):pass
             class Sink:
                 async def audio_ready(self,artifact):events.append('audio')
                 async def video_ready(self,*args):events.append('video')
-            with self.assertRaisesRegex(SourceFetchFailure,'source_audio_video_mismatch'):
-                await fetch_source('_123456789-',source_revision=1,mode='local',development=True,work_directory=root,runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64)
-            self.assertEqual(events,['audio'])
+            await fetch_source(YouTubeSource('_123456789-'),source_revision=1,mode='local',development=True,work_directory=root,runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64)
+            self.assertEqual(events,['audio','video'])
 
     async def test_a_sealed_existing_audio_binding_is_reused_without_a_second_download_or_commit(self):
         binding = {
@@ -235,7 +235,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                     if audio is not seed:
                         raise AssertionError("video lost its sealed audio binding")
                     calls.append("video_commit")
-            result = await fetch_source("_123456789-", source_revision=2, project_id=binding["projectId"],
+            result = await fetch_source(YouTubeSource("_123456789-"), source_revision=2, project_id=binding["projectId"],
                                         existing_audio=seed, mode="local", development=True, work_directory=root,
                                         runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
             self.assertIs(result.audio, seed)
@@ -247,14 +247,14 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(seed.binding["audioTrack"]["id"], "140")
             for project_id, revision in [("00000000-0000-4000-8000-000000000003", 2), (binding["projectId"], 3)]:
                 with self.assertRaises(SourceFetchFailure) as changed:
-                    await fetch_source("_123456789-", source_revision=revision, project_id=project_id,
+                    await fetch_source(YouTubeSource("_123456789-"), source_revision=revision, project_id=project_id,
                                        existing_audio=seed, mode="local", development=True, work_directory=root,
                                        runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
                 self.assertEqual(changed.exception.code, "source_audio_video_mismatch")
             self.assertEqual(calls, ["resolve", "video", "video_commit", "closed"])
             video_available = False
             with self.assertRaises(SourceFetchFailure) as missing_video:
-                await fetch_source("_123456789-", source_revision=2, project_id=binding["projectId"],
+                await fetch_source(YouTubeSource("_123456789-"), source_revision=2, project_id=binding["projectId"],
                                    existing_audio=seed, mode="local", development=True, work_directory=root,
                                    runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
             self.assertEqual(missing_video.exception.code, "source_audio_video_mismatch")

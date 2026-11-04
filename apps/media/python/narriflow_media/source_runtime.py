@@ -47,6 +47,8 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         raise SourceFetchFailure("source_runtime_invalid")
     if command["kind"]=="youtube_source" and (mode not in {"local", "proxy"} or mode == "local" and not development or mode == "proxy" and not proxy_template):
         raise SourceFetchFailure("source_fetch_mode_forbidden")
+    if command["kind"]=="youtube_source" and (type(command.get("maxSourceSeconds")) is not int or command["maxSourceSeconds"]<=0):
+        raise SourceFetchFailure("source_runtime_invalid")
     fingerprint = await verify_runtime(session, bun_executable=bun_executable)
     if fingerprint != command.get("toolchainFingerprint"):
         raise SourceFetchFailure("source_runtime_invalid", True)
@@ -65,7 +67,7 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
             return selected
     runtime = SourceRuntime(token_server_home=token_server_home, on_process_start=session.on_process_start,
         deadline_seconds=min(2700, session.remaining_seconds), bun_executable=bun_executable,
-        cancel_event=session.cancel_event, assert_owned=session.assert_live)
+        cancel_event=session.cancel_event, assert_owned=session.assert_live, max_source_seconds=command["maxSourceSeconds"])
     await fetch(YouTubeSource(command["mediaId"]), source_revision=command["sourceRevision"], mode=mode,
         development=development, work_directory=work, runtime=runtime, sink=sink,
         toolchain_fingerprint=fingerprint, proxy_template=proxy_template,

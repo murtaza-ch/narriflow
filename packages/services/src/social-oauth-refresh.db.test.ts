@@ -19,6 +19,13 @@ import { publicationPlanRefusal, requirePublishableSocialAccount } from "./socia
 process.env.SOCIAL_TOKEN_ENCRYPTION_KEY ??= "social-oauth-refresh-test-key-not-a-secret";
 process.env.TIKTOK_CLIENT_KEY ??= "test-client-key";
 process.env.TIKTOK_CLIENT_SECRET ??= "test-client-secret";
+process.env.GOOGLE_CLIENT_ID ??= "test-google-id";
+process.env.GOOGLE_CLIENT_SECRET ??= "test-google-secret";
+process.env.LINKEDIN_CLIENT_ID ??= "test-linkedin-id";
+process.env.LINKEDIN_CLIENT_SECRET ??= "test-linkedin-secret";
+process.env.X_CLIENT_ID ??= "test-x-id";
+process.env.META_CLIENT_ID ??= "test-meta-id";
+process.env.META_CLIENT_SECRET ??= "test-meta-secret";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
 const databaseSchema = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA;
@@ -66,8 +73,8 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 		await pool?.end();
 	})));
 
-	/** A TikTok account whose access token is about to expire, so the next read refreshes it. */
-	async function expiringAccount() {
+	/** An account whose access token is about to expire, so the next read refreshes it. */
+	async function expiringAccount(platform: "tiktok" | "youtube_shorts" | "linkedin" | "x" = "tiktok", expiresInMs = 10_000) {
 		const user = await prisma.user.create({ data: { clerkId: `oauth-refresh:${randomUUID()}` } });
 		const workspace = await prisma.workspace.create({
 			data: {
@@ -83,20 +90,20 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			socialOAuthService as unknown as {
 				upsertAccount(
 					scope: { actorUserId: string; workspaceId: string; credentialOwnerUserId: string },
-					platform: "tiktok",
+					platform: "tiktok" | "youtube_shorts" | "linkedin" | "x",
 					input: Record<string, unknown>,
 				): Promise<{ id: string }>;
 			}
 		).upsertAccount.bind(socialOAuthService);
 		const account = await upsert(
 			{ actorUserId: user.id, workspaceId: workspace.id, credentialOwnerUserId: user.id },
-			"tiktok",
+			platform,
 			{
 				providerAccountId: randomUUID(),
 				displayName: "TikTok",
 				accessToken: "access-0",
 				refreshToken: "refresh-0",
-				expiresAt: new Date(Date.now() + 10_000),
+				expiresAt: new Date(Date.now() + expiresInMs),
 				scopes: ["video.list"],
 			},
 		);
@@ -134,17 +141,178 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 		expect(calls).toBe(1);
 	})));
 
-	test("a failed started refresh keeps the old tokens unusable and requires reconnect instead of another POST", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test.each([
+		["a 5xx", async () => new Response("bad gateway", { status: 502 })],
+		["a transport failure", async () => { throw new Error("socket closed"); }],
+	])("a rotating provider's started refresh ending in %s keeps the old tokens unusable and requires reconnect instead of another POST", bindServiceTestEnvironment(prismaGlobal.bind(async (_name, answer) => {
 		const id = await expiringAccount();
 		const before = await stored(id);
-		globalThis.fetch = (async () =>
-			new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })) as typeof fetch;
+		globalThis.fetch = answer as unknown as typeof fetch;
 
 		const failure = await socialOAuthService.getPublishAccount(id).catch((error) => error);
 		expect(failure).toBeInstanceOf(SocialOAuthError);
 		expect(failure).toMatchObject({code:"social_account_refresh_unconfirmed",status:409});
     expect(await stored(id)).toEqual({...before,status:"expired"});
     await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject({code:"social_account_refresh_in_progress"});
+	})));
+
+	test.each([400, 401, 429])("an HTTP %d refusal that is not a dead grant proves nothing rotated: the account stays active and the next read retries", bindServiceTestEnvironment(prismaGlobal.bind(async (status) => {
+		const id = await expiringAccount();
+		let calls = 0;
+		const bodies: string[] = [];
+		globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+			calls += 1;
+			bodies.push(String(init?.body));
+			return calls === 1 ? new Response(JSON.stringify({ error: "refused" }), { status }) : tokenResponse(calls);
+		}) as typeof fetch;
+
+		await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject({ code: "social_oauth_http_failed", status });
+		expect((await stored(id)).status).toBe("active");
+		const marker = await prisma.socialAccount.findUniqueOrThrow({ where: { id }, select: { tokenRefreshOwner: true, tokenRefreshLeaseExpiresAt: true, tokenRefreshStartedAt: true } });
+		expect(marker).toEqual({ tokenRefreshOwner: null, tokenRefreshLeaseExpiresAt: null, tokenRefreshStartedAt: null });
+
+		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe("access-2");
+		expect(calls).toBe(2);
+		// The retry still presents the original refresh token.
+		expect(bodies[1]).toContain("refresh_token=refresh-0");
+	})));
+
+	/** What each provider documents or is observed to answer for a refresh token that is dead. */
+	const deadGrants: Array<[string, "tiktok" | "youtube_shorts" | "linkedin" | "x", number, Record<string, unknown>]> = [
+		["TikTok invalid_grant", "tiktok", 400, { error: "invalid_grant", error_description: "Refresh token is invalid or expired.", log_id: "x" }],
+		["Google invalid_grant", "youtube_shorts", 400, { error: "invalid_grant", error_description: "Token has been expired or revoked." }],
+		["LinkedIn revoked refresh token", "linkedin", 400, { error: "invalid_request", error_description: "The provided authorization grant or refresh token is invalid, expired or revoked" }],
+		["X consumed refresh token", "x", 400, { error: "invalid_request", error_description: "Value passed for the token was invalid." }],
+		["an RFC 6750 invalid_token", "x", 401, { error: "invalid_token" }],
+	];
+	test.each(deadGrants)("%s expires the account, releases the claim and tells the user to reconnect", bindServiceTestEnvironment(prismaGlobal.bind(async (_name, platform, status, body) => {
+		const id = await expiringAccount(platform);
+		let calls = 0;
+		globalThis.fetch = (async () => { calls += 1; return new Response(JSON.stringify(body), { status }); }) as typeof fetch;
+		const failure = await socialOAuthService.getPublishAccount(id).catch((error) => error);
+		expect(failure).toBeInstanceOf(SocialOAuthError);
+		expect(failure).toMatchObject({ code: "social_account_expired" });
+		expect(failure.message).toContain("Reconnect");
+		expect((await stored(id)).status).toBe("expired");
+		const marker = await prisma.socialAccount.findUniqueOrThrow({ where: { id }, select: { tokenRefreshOwner: true, tokenRefreshLeaseExpiresAt: true, tokenRefreshStartedAt: true } });
+		expect(marker).toEqual({ tokenRefreshOwner: null, tokenRefreshLeaseExpiresAt: null, tokenRefreshStartedAt: null });
+		expect(calls).toBe(1);
+	})));
+
+	test("a provider that answers 200 with an OAuth error body is a refusal too", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const id = await expiringAccount("tiktok");
+		globalThis.fetch = (async () => Response.json({ error: "invalid_grant", error_description: "Refresh token is invalid or expired." })) as typeof fetch;
+		await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject({ code: "social_account_expired" });
+		expect((await stored(id)).status).toBe("expired");
+	})));
+
+	/** Everything that is not a dead grant keeps the account usable. */
+	const notDead: Array<[string, "tiktok" | "youtube_shorts" | "linkedin" | "x", () => Response | Promise<never>, number | undefined]> = [
+		["TikTok misconfigured client", "tiktok", () => new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 }), 401],
+		["LinkedIn missing parameter", "linkedin", () => new Response(JSON.stringify({ error: "invalid_request", error_description: 'A required parameter "refresh_token" is missing' }), { status: 400 }), 400],
+		["X throttling", "x", () => new Response(JSON.stringify({ title: "Too Many Requests" }), { status: 429 }), 429],
+		["Google throttling", "youtube_shorts", () => new Response(JSON.stringify({ error: "rate_limit_exceeded" }), { status: 429 }), 429],
+		["Google 503", "youtube_shorts", () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 503 }), 503],
+		["Google transport failure", "youtube_shorts", () => { throw new Error("socket closed"); }, undefined],
+		["Google 200 without a token", "youtube_shorts", () => Response.json({ expires_in: 3_600 }), undefined],
+	];
+	test.each(notDead)("%s never expires the account and keeps the provider's answer as the cause", bindServiceTestEnvironment(prismaGlobal.bind(async (_name, platform, answer, status) => {
+		const id = await expiringAccount(platform);
+		globalThis.fetch = (async () => answer()) as typeof fetch;
+		const failure = await socialOAuthService.getPublishAccount(id).catch((error) => error);
+		expect(failure.code).not.toBe("social_account_expired");
+		if (status !== undefined) expect(failure).toMatchObject({ code: "social_oauth_http_failed", status });
+		expect((await stored(id)).status).toBe("active");
+	})));
+
+	test.each(["a 5xx", "a transport failure"])("Google never rotates, so %s leaves the account active for a retry", bindServiceTestEnvironment(prismaGlobal.bind(async (kind) => {
+		const id = await expiringAccount("youtube_shorts");
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls += 1;
+			if (calls > 1) return Response.json({ access_token: "access-2", expires_in: 3_600 });
+			if (kind === "a 5xx") return new Response("unavailable", { status: 503 });
+			throw new Error("socket closed");
+		}) as typeof fetch;
+
+		await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject(kind === "a 5xx" ? { code: "social_oauth_http_failed", status: 503 } : { message: "socket closed" });
+		expect((await stored(id)).status).toBe("active");
+		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe("access-2");
+		expect(calls).toBe(2);
+	})));
+
+	test("a token that expires within the publication window is refreshed before the publish starts", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const id = await expiringAccount("tiktok", 5 * 60_000);
+		let calls = 0;
+		globalThis.fetch = (async () => tokenResponse(++calls)) as typeof fetch;
+		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe("access-1");
+		expect(calls).toBe(1);
+
+		const later = await expiringAccount("tiktok", 8 * 60_000);
+		expect((await socialOAuthService.getPublishAccount(later)).accessToken).toBe("access-0");
+		expect(calls).toBe(1);
+	})));
+
+	/** An Instagram callback served by a fake Meta; `pages` is how many Pages `/me/accounts` lists, 100 per request. */
+	async function instagramCallback(options: { pages?: number; longLived?: "ok" | "fail" } = {}) {
+		const user = await prisma.user.create({ data: { clerkId: `oauth-instagram:${randomUUID()}` } });
+		const workspace = await prisma.workspace.create({
+			data: { name: "Instagram", ownerUserId: user.id, personalOwnerUserId: user.id, pricingTier: "pro", members: { create: { userId: user.id, role: "owner" } } },
+		});
+		const state = `state-${randomUUID()}`;
+		await prisma.socialOAuthState.create({ data: { userId: user.id, workspaceId: workspace.id, createdByUserId: user.id, platform: "instagram_reels", state, expiresAt: new Date(Date.now() + 60_000) } });
+		const total = options.pages ?? 1;
+		const requests: URL[] = [];
+		globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+			const url = new URL(String(input));
+			requests.push(url);
+			if (url.pathname.endsWith("/oauth/access_token")) {
+				if (url.searchParams.get("grant_type") === "fb_exchange_token") {
+					return options.longLived === "fail" ? new Response("{}", { status: 500 }) : Response.json({ access_token: "long-user-token", token_type: "bearer", expires_in: 5_183_944 });
+				}
+				// Meta's code exchange has no `scope`.
+				return Response.json({ access_token: "short-user-token", token_type: "bearer", expires_in: 3_600 });
+			}
+			if (url.pathname.endsWith("/me/permissions")) {
+				return Response.json({ data: [{ permission: "instagram_content_publish", status: "granted" }, { permission: "pages_show_list", status: "granted" }, { permission: "business_management", status: "declined" }] });
+			}
+			if (url.pathname.endsWith("/me/accounts")) {
+				const offset = Number(url.searchParams.get("offset") ?? 0);
+				const limit = Number(url.searchParams.get("limit"));
+				const data = Array.from({ length: Math.min(limit, total - offset) }, (_, i) => ({
+					id: `page-${offset + i}`, name: `Page ${offset + i}`, access_token: `page-token-${offset + i}`,
+					instagram_business_account: { id: `ig-${offset + i}`, username: `user${offset + i}` },
+				}));
+				const next = offset + limit < total ? new URL(url) : null;
+				next?.searchParams.set("offset", String(offset + limit));
+				return Response.json({ data, paging: next ? { next: next.toString() } : {} });
+			}
+			throw new Error(`unexpected request ${url}`);
+		}) as typeof fetch;
+		const result = await socialOAuthService.handleCallback({ state, code: "code", origin: "https://api.example.test" });
+		return { result, requests, workspaceId: workspace.id };
+	}
+
+	test("an Instagram account stores the permissions Meta reports and no user-token expiry, so it can publish", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const { result, requests } = await instagramCallback();
+		expect(result.accounts).toHaveLength(1);
+		const account = await socialOAuthService.getPublishAccount(result.accounts[0]!.id);
+		expect(account.scopes).toEqual(["instagram_content_publish", "pages_show_list"]);
+		expect(account.accessToken).toBe("page-token-0");
+		expect(result.accounts[0]!.expiresAt).toBeNull();
+		expect(requests.find((url) => url.pathname.endsWith("/me/accounts"))!.searchParams.get("limit")).toBe("100");
+	})));
+
+	test("Pages beyond the first Meta response are requested, 100 at a time", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const { requests } = await instagramCallback({ pages: 230 });
+		const listings = requests.filter((url) => url.pathname.endsWith("/me/accounts"));
+		expect(listings.map((url) => url.searchParams.get("offset"))).toEqual([null, "100", "200"]);
+	})));
+
+	test("a failed long-lived exchange refuses the connection instead of storing the short-lived token", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const user = await prisma.socialAccount.count();
+		await expect(instagramCallback({ longLived: "fail" })).rejects.toMatchObject({ code: "social_oauth_http_failed", status: 500 });
+		expect(await prisma.socialAccount.count()).toBe(user);
 	})));
 
 	test.each([{}, { access_token: "" }])("a response with no access token never overwrites a good token: %j", bindServiceTestEnvironment(prismaGlobal.bind(async (token) => {

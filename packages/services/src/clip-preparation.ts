@@ -550,7 +550,7 @@ export class ClipPreparationService {
       await tx.clip.update({ where: { id: clip.id }, data: { previewStorageKey: ready.preview.storageKey, previewStartSec: result.preview.startSec, previewDurationSec: result.preview.durationSec,
         autoLayoutAnalysis: result.layout.automatic && !("state" in result.layout.automatic) ? result.layout.automatic as Prisma.InputJsonValue : Prisma.DbNull,
         layoutAnalysis: result.layout.screen as Prisma.InputJsonValue ?? Prisma.DbNull, splitLayoutAnalysis: result.layout.split as Prisma.InputJsonValue ?? Prisma.DbNull,
-        autoLayoutStatus: "completed", autoLayoutClaimToken: null, autoLayoutLeaseExpiresAt: null } });
+        autoLayoutStatus: "completed" } });
     }
     const completed = await tx.clipPreparation.update({ where: { id: job.id }, data: { status: "completed", completedAt: clock, executorOwner: null, leaseExpiresAt: null,
       errorCode: null, retryAt: null, result: result as Prisma.InputJsonValue, readyObjects: clipPreparationReadyObjectsSchema.parse({ preview: ready.preview, peaks: ready.peaks, manifest: ready.manifest }) as Prisma.InputJsonValue } });

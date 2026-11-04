@@ -52,7 +52,7 @@ function context(role: WorkspaceActorContext["role"]): WorkspaceActorContext {
   } as WorkspaceActorContext;
 }
 
-function policyRuntime(role: WorkspaceActorContext["role"] = "owner") {
+function policyRuntime(role: WorkspaceActorContext["role"] = "owner", rateAllowed = true) {
   return createRequestPolicyRuntime({
     authenticate: async (request) =>
       request.headers.get("authorization") === "Bearer good"
@@ -63,7 +63,7 @@ function policyRuntime(role: WorkspaceActorContext["role"] = "owner") {
     staffAllowlist: new Set(),
     policy: {
       resolveProject: async () => ({ kind: "inaccessible" }) as never,
-      rateLimit: async () => ({ allowed: true }),
+      rateLimit: async () => (rateAllowed ? { allowed: true } : { allowed: false, retryAfterSeconds: 30 }),
       now: () => 1_000,
     },
   });
@@ -106,9 +106,9 @@ function service(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function appFor(billing: ReturnType<typeof service>, role: WorkspaceActorContext["role"] = "owner") {
+function appFor(billing: ReturnType<typeof service>, role: WorkspaceActorContext["role"] = "owner", rateAllowed = true) {
   const deps = { billingService: billing, webOrigin: WEB } as unknown as BillingRouteDeps;
-  return createBillingTestApp({ policyRuntime: policyRuntime(role), routes: createBillingRoutes(deps) });
+  return createBillingTestApp({ policyRuntime: policyRuntime(role, rateAllowed), routes: createBillingRoutes(deps) });
 }
 
 function post(path: string, body?: unknown, extra: Record<string, string> = {}) {
@@ -486,6 +486,15 @@ describe("New-Workspace checkout", () => {
       ...recovery,
       returnDestination: `${WEB}/settings/billing`,
     });
+  });
+
+  test("resuming a pending Workspace spends the request budget like creating one", async () => {
+    const billing = service();
+    const recovery = { workspaceId: "ws-pending", interval: "monthly", checkoutIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc21" };
+    const request = post("/workspaces/business-checkout", recovery, { "idempotency-key": "intent-4" });
+    const response = await appFor(billing, "owner", false).request(request.path, request.init);
+    expect(response.status).toBe(429);
+    expect(billing.startBusinessWorkspaceCheckout).not.toHaveBeenCalled();
   });
 
   test("refuses a bad name, interval or unknown field before the service", async () => {

@@ -1,7 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
 import { Hono } from "hono";
-import { createLifecycle, disableIdleTimeout, getLifecycle } from "./server-hooks";
 import { bodyClass } from "./body-limits";
 import { createRouteApp, getActor } from "./http/admission";
 import type { ApiEnv } from "./http/env";
@@ -77,12 +76,27 @@ describe("ingress", () => {
     });
     expect((await slow.request("/api/ready")).status).toBe(503);
 
-    const lifecycle = createLifecycle();
-    const draining = createInventoryApp({ health: { isDraining: () => lifecycle.draining } });
-    await lifecycle.beginDrain();
+    const draining = createInventoryApp({ health: { isDraining: () => true } });
     const drained = await draining.request("/api/ready");
     expect(drained.status).toBe(503);
     expect(await drained.json()).toEqual({ ok: false, status: "draining" });
+  });
+
+  test("readiness shares one cached answer across rebuilt apps and is rate limited per address", async () => {
+    let probes = 0;
+    const readiness = {};
+    const health = { checkDatabase: async () => { probes++; }, readiness };
+    // The Worker rebuilds the app per request; the shared cache must make that invisible.
+    for (let request = 0; request < 3; request++) {
+      expect((await createInventoryApp({ health }).request("/api/ready")).status).toBe(200);
+    }
+    expect(probes).toBe(1);
+
+    const keys: string[] = [];
+    const limited = createInventoryApp({ admin: { rateLimit: async ({ key }) => { keys.push(key); return { allowed: false, retryAfterSeconds: 30 } as never; } } });
+    const refused = await limited.request("/api/ready");
+    expect(refused.status).toBe(429);
+    expect(keys).toEqual([expect.stringMatching(/^ready:/)]);
   });
 
   test("restore fencing closes callbacks and readiness before database and domain handlers", async () => {
@@ -259,45 +273,6 @@ describe("partitioned handlers behind the real policy", () => {
   });
 });
 
-describe("server hooks", () => {
-  test("an admitted stream can lift Bun's idle timeout for its own request only", async () => {
-    const timeout = mock((_request: Request, _seconds: number) => {});
-    const app = new Hono<ApiEnv>().get("/stream", (c) => {
-      disableIdleTimeout(c);
-      return c.text("ok");
-    });
-    const request = new Request("http://localhost/stream");
-    await app.fetch(request, { server: { timeout, requestIP: () => null } });
-    expect(timeout).toHaveBeenCalledTimes(1);
-    expect(timeout.mock.calls[0]?.[0]).toBe(request);
-    expect(timeout.mock.calls[0]?.[1]).toBe(0);
-  });
-
-  test("without a server binding the hook does nothing", async () => {
-    const app = new Hono<ApiEnv>().get("/stream", (c) => {
-      disableIdleTimeout(c);
-      return c.text("ok");
-    });
-    expect((await app.request("/stream")).status).toBe(200);
-  });
-
-  test("draining closes registered subscribers once and skips ones that already ended", async () => {
-    const lifecycle = createLifecycle();
-    const closed: string[] = [];
-    lifecycle.onDrain(() => void closed.push("a"));
-    const unregister = lifecycle.onDrain(() => void closed.push("b"));
-    lifecycle.onDrain(async () => {
-      throw new Error("a failing closer must not stop the others");
-    });
-    unregister();
-    expect(lifecycle.draining).toBe(false);
-    await lifecycle.beginDrain();
-    await lifecycle.beginDrain();
-    expect(lifecycle.draining).toBe(true);
-    expect(closed).toEqual(["a"]);
-  });
-});
-
 describe("draining", () => {
   test("a paused browser can preflight before receiving the typed maintenance refusal", async () => {
     const app = createInventoryApp({ health: { isDraining: () => true } });
@@ -314,45 +289,11 @@ describe("draining", () => {
     expect(await response.json()).toMatchObject({ error: "server_draining" });
   });
 
-  test("a closer registered after the drain began runs at once and never waits for a drain that already happened", async () => {
-    const lifecycle = createLifecycle();
-    const closed: string[] = [];
-    await lifecycle.beginDrain();
-    const unregister = lifecycle.onDrain(() => void closed.push("late"));
-    expect(closed).toEqual(["late"]);
-    unregister();
-    // Also while the earlier closers are still running.
-    const slow = createLifecycle();
-    let release!: () => void;
-    slow.onDrain(() => new Promise<void>((resolve) => (release = resolve)));
-    const draining = slow.beginDrain();
-    slow.onDrain(() => void closed.push("during"));
-    expect(closed).toEqual(["late", "during"]);
-    release();
-    await draining;
-  });
-
-  test("every closer runs even when one throws synchronously or rejects, and a second drain shares the first", async () => {
-    const lifecycle = createLifecycle();
-    const closed: string[] = [];
-    lifecycle.onDrain(() => {
-      throw new Error("sync failure");
-    });
-    lifecycle.onDrain(async () => {
-      throw new Error("async failure");
-    });
-    lifecycle.onDrain(() => void closed.push("after"));
-    const first = lifecycle.beginDrain();
-    expect(lifecycle.beginDrain()).toBe(first);
-    await first;
-    expect(closed).toEqual(["after"]);
-  });
-
   test("once draining, a first-party request is a 503 envelope with Retry-After and CORS", async () => {
-    const lifecycle = createLifecycle();
-    const app = createInventoryApp({ health: { isDraining: () => lifecycle.draining } });
+    let draining = false;
+    const app = createInventoryApp({ health: { isDraining: () => draining } });
     expect((await app.request("/api/recipes", { headers: { origin: WEB } })).status).toBe(401);
-    await lifecycle.beginDrain();
+    draining = true;
     const response = await app.request("/api/recipes", {
       headers: { origin: WEB, "x-request-id": "req-drain" },
     });
@@ -367,34 +308,6 @@ describe("draining", () => {
     // Readiness is how the platform learns; liveness stays up.
     expect((await app.request("/api/health")).status).toBe(200);
     expect((await app.request("/api/ready")).status).toBe(503);
-  });
-
-  test("a request paused before it registers its stream closer is closed when SIGTERM begins the drain", async () => {
-    const lifecycle = createLifecycle();
-    let proceed!: () => void;
-    const paused = new Promise<void>((resolve) => (proceed = resolve));
-    const reached = mock(() => {});
-    const closer = mock(() => {});
-    const stream = createRouteApp({ "GET /stream": { trust: "public_share_token" } }).get("/stream", async (c) => {
-      reached();
-      await paused;
-      getLifecycle(c)?.onDrain(closer);
-      return c.text("subscribed");
-    });
-    const app = createInventoryApp({
-      domains: { progress: stream },
-      health: { isDraining: () => lifecycle.draining },
-    });
-    const inflight = app.request("/api/stream", {}, { lifecycle });
-    while (reached.mock.calls.length === 0) await Promise.resolve();
-
-    const drain = lifecycle.beginDrain();
-    // New admission is already refused while the paused request is still in flight.
-    expect((await app.request("/api/stream", {}, { lifecycle })).status).toBe(503);
-    proceed();
-    expect((await inflight).status).toBe(200);
-    await drain;
-    expect(closer).toHaveBeenCalledTimes(1);
   });
 });
 

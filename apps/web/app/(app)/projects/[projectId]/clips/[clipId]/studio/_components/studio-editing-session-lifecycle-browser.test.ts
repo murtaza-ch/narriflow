@@ -106,3 +106,16 @@ test("cancels a deferred Strict Mode close when the adapter remounts", () => {
   expect(harness.timers.size).toBe(0);
   expect(harness.operations).toEqual([{ type: "start" }, { type: "start" }]);
 });
+
+test("unmounting after the Studio already waited to leave closes without waiting again", async () => {
+  const harness = makeHarness();
+  const lifecycle = createBrowserStudioSessionLifecycle(harness.session, harness.browser);
+
+  lifecycle.mount();
+  lifecycle.markLeaving();
+  lifecycle.unmount();
+  for (const callback of harness.timers.values()) callback();
+  await Promise.resolve();
+
+  expect(harness.operations.at(-1)).toEqual({ type: "close", reason: "navigation" });
+});

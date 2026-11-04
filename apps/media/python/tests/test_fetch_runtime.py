@@ -10,12 +10,39 @@ import threading
 import unittest
 import wave
 
-from narriflow_media.fetch import ResolvedSource
+from narriflow_media.fetch import ResolvedSource, SourceFetchFailure
 from narriflow_media.fetch_runtime import YtDlpSourceRuntime
+from narriflow_media.manifest import YouTubeSource
 from narriflow_media.proxy import bind_proxy_session
 
 
 class NativeSourceRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def resolved(self, facts, *, max_source_seconds=3600, failure=None):
+        class Runtime(YtDlpSourceRuntime):
+            async def _yt_dlp(self, args, session):
+                if failure is not None:
+                    raise failure
+                (work / "metadata.info.json").write_text(json.dumps({"id": source.media_id, "format_id": "18", "acodec": "aac", "vcodec": "h264", **facts}))
+                return json.dumps(source.media_id).encode()
+        source = YouTubeSource("_123456789-")
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            runtime = Runtime(token_provider_url="http://127.0.0.1:4416", on_process_start=lambda pid: None, max_source_seconds=max_source_seconds)
+            return await runtime.resolve(source, None, work)
+
+    async def test_metadata_refuses_a_live_or_overlong_video_before_any_download(self):
+        for facts in ({"is_live": True}, {"live_status": "is_live"}, {"live_status": "is_upcoming"}):
+            with self.assertRaises(SourceFetchFailure) as failure:
+                await self.resolved(facts)
+            self.assertEqual((failure.exception.code, failure.exception.retryable), ("source_live_unsupported", False))
+        with self.assertRaises(SourceFetchFailure) as failure:
+            await self.resolved({"duration": 3601})
+        self.assertEqual((failure.exception.code, failure.exception.retryable), ("ingest_max_duration_exceeded", False))
+
+    async def test_a_finished_stream_or_a_video_at_the_limit_resolves(self):
+        selected = await self.resolved({"duration": 3600, "live_status": "was_live", "is_live": False})
+        self.assertEqual(selected.media_id, "_123456789-")
+
     async def test_frozen_info_download_uses_the_bound_proxy_and_normalized_probe(self):
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as writer:

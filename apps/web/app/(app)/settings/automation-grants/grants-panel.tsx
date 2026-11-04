@@ -33,10 +33,8 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
+import { formatUtcDateTime } from "@/lib/format";
 
-// A fixed locale and zone keep server and client renders identical.
-const formatTime = (iso: string) =>
-	`${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(iso))} UTC`;
 const formatDay = (iso: string) => new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(iso));
 
 const STATUS_LABELS: Record<StandingGrantStatus, string> = { active: "Active", paused: "Paused", expired: "Expired", revoked: "Revoked" };
@@ -131,7 +129,7 @@ function History({ grant }: { grant: StandingGrantView }) {
 								<Text as="span" color="fg">
 									{eventText(event)}
 								</Text>
-								<Text as="span">{formatTime(event.at)}</Text>
+								<Text as="span">{formatUtcDateTime(event.at)}</Text>
 							</Flex>
 						))}
 					</Stack>
@@ -151,7 +149,7 @@ function History({ grant }: { grant: StandingGrantView }) {
 											{item.label}
 										</Text>
 									</Link>
-									<Text as="span">{formatTime(item.at)}</Text>
+									<Text as="span">{formatUtcDateTime(item.at)}</Text>
 								</Flex>
 							))
 						)}

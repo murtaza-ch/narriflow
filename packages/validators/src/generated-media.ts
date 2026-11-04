@@ -38,11 +38,4 @@ export const createGeneratedImageSchema = z.object({
   }
 });
 
-export const listGeneratedMediaJobsSchema = z.object({
-  projectId: z.string().uuid(),
-  clipId: z.string().uuid().optional(),
-}).strict();
-
-export const generatedMediaJobIdSchema = z.string().uuid();
-
 export type CreateGeneratedImageInput = z.infer<typeof createGeneratedImageSchema>;

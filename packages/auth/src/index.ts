@@ -13,6 +13,7 @@ export {
 } from "./clerk";
 export {
   claimWebhookDelivery,
+  ClerkEmailConflictError,
   ClerkIdentityDeletedError,
   getAppUserByClerkId,
   getAppUserForClerkIdentity,
@@ -43,6 +44,7 @@ export {
   listUserWorkspaces,
   resolveScopedWorkspaceContext,
   resolveWorkspaceContext,
+  selectListedWorkspace,
   selectWorkspaceForActor,
   type WorkspaceActorContext,
 } from "./workspace";
