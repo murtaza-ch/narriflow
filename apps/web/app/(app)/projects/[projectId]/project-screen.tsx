@@ -160,6 +160,7 @@ function ProjectBody({
 				projectId={projectId}
 				initialSeq={detail.snapshot.lastSeq}
 				initialEvents={detail.workflowHistory}
+				working={view.showProcessingPanel}
 			>
 				<Link data-project-back href="/projects" aria-label="Back to projects">
 					<Flex align="center" gap="2" color="fg.muted" fontSize="xs" w="fit-content" _hover={{ color: "fg" }}>

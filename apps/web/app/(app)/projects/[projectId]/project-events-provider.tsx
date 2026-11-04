@@ -12,7 +12,11 @@ import {
 } from "react";
 import { CLIENT_ERROR_CODES } from "@narriflow/api-client/core";
 import { clearProjectAccess, invalidateProject } from "@narriflow/api-client/projects";
-import { useProgressStream } from "@narriflow/api-client/progress";
+import {
+  invalidateAfterProgress,
+  invalidateAfterTerminalProgress,
+  useProgressStream,
+} from "@narriflow/api-client/progress";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import { useDocumentVisible } from "@/lib/use-document-visible";
@@ -21,6 +25,22 @@ import {
   rememberBoundedIdentity,
   workflowEventRowIdentity,
 } from "@/lib/project-state";
+
+/** How often a page with work in progress re-reads the Project while it has no stream. */
+const REFRESH_WITHOUT_STREAM_MS = 8_000;
+
+/**
+ * Firewalls, proxies and browser extensions can block WebSockets, so progress
+ * cannot depend on one. An open stream makes this unnecessary, and an idle page
+ * or a hidden tab has nothing to keep current.
+ */
+export function shouldRefreshWithoutStream(state: {
+  working: boolean;
+  visible: boolean;
+  streamOpen: boolean;
+}): boolean {
+  return state.working && state.visible && !state.streamOpen;
+}
 
 function sortAndCapEvents(
   events: readonly WorkflowStageUpdatedEvent[],
@@ -69,12 +89,15 @@ const ProjectEventsContext = createContext<ProjectEventsContextValue | null>(
  * The socket is open whenever the tab is visible, so work started from another
  * tab, device or integration shows up on a page that was idle. A hidden tab
  * keeps none. Coming back to the tab refetches the Project, and the stream
- * resumes from the newest event this page holds.
+ * resumes from the newest event this page holds. While work is in progress and
+ * the stream is down, the page re-reads the Project on a timer instead.
  */
 export function ProjectEventsProvider(props: {
   projectId: string;
   initialSeq: number;
   initialEvents: WorkflowStageUpdatedEvent[];
+  /** The Project has work in progress, so the page must keep updating. */
+  working: boolean;
   children: ReactNode;
 }) {
   // A different Project starts from its own history.
@@ -85,11 +108,13 @@ function ProjectEventsState({
   projectId,
   initialSeq,
   initialEvents,
+  working,
   children,
 }: {
   projectId: string;
   initialSeq: number;
   initialEvents: WorkflowStageUpdatedEvent[];
+  working: boolean;
   children: ReactNode;
 }) {
   const runtime = useApiRuntime();
@@ -101,6 +126,7 @@ function ProjectEventsState({
     Record<string, WorkflowStageUpdatedEvent>
   >(() => latestStageMap(initialEvents));
   const visible = useDocumentVisible();
+  const [streamOpen, setStreamOpen] = useState(false);
   // The newest event this page holds, so a resumed stream replays only what it missed.
   const cursor = useRef(initialSeq);
   const seenEventRows = useRef<Set<string> | null>(null);
@@ -151,6 +177,7 @@ function ProjectEventsState({
     enabled: visible,
     sinceSeq: Math.max(initialSeq, cursor.current),
     onEvent,
+    onStatus: (status) => setStreamOpen(status.state === "open"),
     onRevoked: reread,
     onFatal: (error) => {
       if (error.code !== CLIENT_ERROR_CODES.scopeChanged) reread();
@@ -164,6 +191,23 @@ function ProjectEventsState({
     wasVisible.current = visible;
     if (returned && scope) void invalidateProject(runtime.queryClient, scope, projectId);
   }, [visible, runtime, scope, projectId]);
+
+  useEffect(() => {
+    if (!scope || !shouldRefreshWithoutStream({ working, visible, streamOpen })) return;
+    const timer = setInterval(() => {
+      void invalidateProject(runtime.queryClient, scope, projectId);
+      void invalidateAfterProgress(runtime.queryClient, scope, projectId);
+    }, REFRESH_WITHOUT_STREAM_MS);
+    return () => clearInterval(timer);
+  }, [working, visible, streamOpen, runtime, scope, projectId]);
+
+  // No stream means no terminal event, so finished work brings in its own results.
+  const wasWorking = useRef(working);
+  useEffect(() => {
+    const finished = wasWorking.current && !working;
+    wasWorking.current = working;
+    if (finished && !streamOpen && scope) void invalidateAfterTerminalProgress(runtime.queryClient, scope, projectId);
+  }, [working, streamOpen, runtime, scope, projectId]);
 
   const value = useMemo<ProjectEventsContextValue>(
     () => ({ events, latestByStage }),
