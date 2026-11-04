@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 let visible = true;
 const streams: Array<{ enabled?: boolean }> = [];
 mock.module("@narriflow/api-client/progress", () => ({
+  invalidateAfterProgress: async () => {},
+  invalidateAfterTerminalProgress: async () => {},
   useProgressStream: (_runtime: unknown, _scope: unknown, _projectId: unknown, options: { enabled?: boolean }) => {
     streams.push(options);
   },
