@@ -21,3 +21,37 @@ export function narriflowProgressRequest(payload: Record<string, unknown>, input
   if (!projectId) throw new Error("Project status is unavailable. Open Narriflow to review this operation.");
   return { name: "narriflow_get_project", arguments: { ...(workspaceId ? { workspaceId } : {}), projectId } };
 }
+
+const SETTLED_OPERATION_STATES = ["completed", "partial", "failed", "cancelled"];
+const SETTLED_EXPORT_STATUSES = ["ready", "failed"];
+const SETTLED_PROJECT_STATUSES = ["ready", "completed", "failed", "cancelled"];
+
+/** Whether this snapshot can still change. A `partial_ready` export counts as
+ * live: Operation Status decides that one on the next read. */
+export function progressIsLive(payload: Record<string, unknown>) {
+  if (typeof payload.state === "string") return !SETTLED_OPERATION_STATES.includes(payload.state);
+  if (payload.export) return !SETTLED_EXPORT_STATUSES.includes(String(record(payload.export).status));
+  const status = record(payload.progress).status ?? payload.status;
+  return typeof status === "string" && !SETTLED_PROJECT_STATUSES.includes(status);
+}
+
+function workId(payload: Record<string, unknown>) {
+  return record(payload.operation).id ?? record(payload.export).exportId;
+}
+
+/** The host keeps the tool's original result and can deliver it again whenever it
+ * re-renders the card. That old snapshot must not undo a finished state. */
+export function isStaleProgressReplay(current: Record<string, unknown>, incoming: Record<string, unknown>) {
+  const id = workId(current);
+  return id !== undefined && id === workId(incoming) && !progressIsLive(current) && progressIsLive(incoming);
+}
+
+const PROGRESS_FAST_ATTEMPTS = 20;
+const PROGRESS_MAX_ATTEMPTS = 200;
+/** Read at once, because the card may be replaying an old result. Then quickly for
+ * a minute, then gently. Null stops following: the button still works. */
+export function progressRefreshDelayMs(attempt: number): number | null {
+  if (attempt === 0) return 0;
+  if (attempt >= PROGRESS_MAX_ATTEMPTS) return null;
+  return attempt <= PROGRESS_FAST_ATTEMPTS ? 3_000 : 15_000;
+}

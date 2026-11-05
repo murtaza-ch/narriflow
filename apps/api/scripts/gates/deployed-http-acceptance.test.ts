@@ -39,7 +39,7 @@ function fixture(task = true) {
       let result: any;
       if (method === "initialize") result = { protocolVersion: "2025-11-25" };
       else if (method === "tools/list") result = { tools: [{ name: "narriflow_get_project" }] };
-      else if (method === "resources/list") result = { resources: ["upload", "progress", "clip-review", "publication-confirmation"].map(view => ({ uri: `ui://narriflow/v2/${view}.html` })) };
+      else if (method === "resources/list") result = { resources: ["upload", "progress", "clip-review", "publication-confirmation"].map(view => ({ uri: `ui://narriflow/v3/${view}.html` })) };
       else if (method === "resources/read") {
         const view = params.uri.split("/").at(-1).slice(0, -5);
         result = { contents: [{ mimeType: "text/html;profile=mcp-app", text: `<html data-view="${view}">fixture template</html>`, _meta: { ui: { csp: { connectDomains: [input.apiOrigin] } } } }] };

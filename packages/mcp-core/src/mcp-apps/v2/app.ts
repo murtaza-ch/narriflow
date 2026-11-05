@@ -1,7 +1,7 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
 import { clipView, uploadView, progressView, confirmationView, record, text, fileSize } from "./views";
 import { waitForUploadAcceptance, notifyUploadAcceptance } from "./upload-progress";
-import { narriflowProgressRequest } from "./progress";
+import { isStaleProgressReplay, narriflowProgressRequest, progressIsLive, progressRefreshDelayMs } from "./progress";
 import { createPublicationDecision, isPublicationDeclined } from "./publication-decision";
 
 const app = new App({ name: "Narriflow", version: "2.0.0" });
@@ -20,6 +20,8 @@ let metadata: Record<string, unknown> = {};
 let arguments_: Record<string, unknown> = {};
 let uploadContext: Record<string, unknown> = {};
 let busy = false;
+let progressTimer: ReturnType<typeof setTimeout> | undefined;
+let progressAttempt = 0;
 const publicationDecision = createPublicationDecision();
 let publicationReceipt: unknown;
 
@@ -129,6 +131,23 @@ function link() {
 }
 async function openLink() { const url = link(); if (url) await app.openLink({ url }); }
 
+async function refreshProgress() {
+  const request = narriflowProgressRequest(payload, arguments_, metadata);
+  render(await call(request.name, request.arguments));
+}
+/** The tool result is a snapshot from when the work was accepted, so a card reads
+ * live status itself until the work settles. A failed read waits for the next one. */
+function followProgress() {
+  clearTimeout(progressTimer);
+  if (view !== "progress" || !progressIsLive(payload)) return;
+  const delay = progressRefreshDelayMs(progressAttempt++);
+  if (delay === null) return;
+  progressTimer = setTimeout(async () => {
+    if (!busy) { try { await refreshProgress(); } catch { /* Retried below or by the button. */ } }
+    followProgress();
+  }, delay);
+}
+
 async function acceptedUpload(result: Awaited<ReturnType<typeof call>>) {
   render(result);
   const capabilities = app.getHostCapabilities();
@@ -200,7 +219,14 @@ async function put(url: string, bytes: Blob, contentType?: string) {
 }
 
 app.ontoolinput = ({ arguments: input }) => { arguments_ = record(input); };
-app.ontoolresult = (result) => { try { render(result); } catch (error) { setStatus(error instanceof Error ? error.message : "Unable to display this result", true); } };
+app.ontoolresult = (result) => {
+  try {
+    const incoming = record(result.structuredContent);
+    if (view === "progress" && !result.isError && isStaleProgressReplay(payload, record(incoming.data ?? incoming))) return;
+    render(result);
+    followProgress();
+  } catch (error) { setStatus(error instanceof Error ? error.message : "Unable to display this result", true); }
+};
 app.ontoolcancelled = () => { setStatus("Request cancelled"); action.disabled = true; };
 
 action.addEventListener("click", async () => {
@@ -209,8 +235,8 @@ action.addEventListener("click", async () => {
   try {
     if (view === "upload") { if (uploadAccepted()) await openLink(); else await upload(); }
     else if (view === "progress") {
-      const request = narriflowProgressRequest(payload, arguments_, metadata);
-      render(await call(request.name, request.arguments));
+      await refreshProgress();
+      followProgress();
     }
     else if (view === "publication-confirmation") {
       await publicationDecision.decide(true, async (markSchedulingAttempted) => {
