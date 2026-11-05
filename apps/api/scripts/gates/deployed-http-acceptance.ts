@@ -205,13 +205,13 @@ export async function runDeployedHttpAcceptance(input: AcceptanceInput, dependen
     const tools = await rpc("tools/list", {}, modern);
     requireFact(Array.isArray(tools.result?.tools) && tools.result.tools.some((tool: any) => tool.name === "narriflow_get_project"), "mcp_tools_catalog");
     const resources = await rpc("resources/list", {}, modern);
-    requireFact(Array.isArray(resources.result?.resources) && VIEWS.every(view => resources.result.resources.some((resource: any) => resource.uri === `ui://narriflow/v3/${view}.html`)), "mcp_resource_catalog");
+    requireFact(Array.isArray(resources.result?.resources) && VIEWS.every(view => resources.result.resources.some((resource: any) => resource.uri === `ui://narriflow/v4/${view}.html`)), "mcp_resource_catalog");
     const read = await rpc("tools/call", { name: "narriflow_get_project", arguments: { workspaceId: input.workspaceId, projectId: input.projectId } }, modern);
     requireFact(!read.result?.isError && read.result?.structuredContent?.data?.project?.projectId === input.projectId, "mcp_owned_project_identity");
     if (modern) requireFact(read.result.cacheScope === "private" && read.result.ttlMs === 0, "mcp_private_zero_ttl");
     checks.push(`mcp_${era}_catalog_resources_and_owned_tool_read`);
     for (const view of VIEWS) {
-      const app = await rpc("resources/read", { uri: `ui://narriflow/v3/${view}.html` }, modern);
+      const app = await rpc("resources/read", { uri: `ui://narriflow/v4/${view}.html` }, modern);
       const content = app.result?.contents?.[0];
       requireFact(content?.mimeType === "text/html;profile=mcp-app" && typeof content.text === "string" && content.text.includes(`data-view="${view}"`), "mcp_apps_template");
       requireFact(content._meta?.ui?.csp?.connectDomains?.includes(input.apiOrigin), "mcp_apps_csp");

@@ -219,7 +219,7 @@ helper needs only its key and Narriflow URL, without service credentials.
 
 ## Extensions and verification
 
-Versioned `ui://narriflow/v3/` resources use the standard MCP Apps bridge for
+Versioned `ui://narriflow/v4/` resources use the standard MCP Apps bridge for
 upload, progress, clip review and exact-post confirmation. App-only actions
 use their public workflow's grants. Static templates can be public-cacheable;
 private results use zero TTL. CSP explicitly declares app/storage/media origins.

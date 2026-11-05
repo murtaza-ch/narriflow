@@ -160,6 +160,7 @@ function mountPlayer(host: Element, source: { url: string; label: string; start?
   toggle.type = "button";
   toggle.className = "play";
   toggle.setAttribute("aria-label", "Play");
+  toggle.innerHTML = '<svg class="play-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8.5 5.6c0-.8.9-1.3 1.6-.9l10 6.4c.6.4.6 1.3 0 1.7l-10 6.4c-.7.4-1.6-.1-1.6-.9z"/></svg><svg class="pause-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>';
   const rail = document.createElement("div");
   rail.className = "rail";
   const fill = rail.appendChild(document.createElement("i"));

@@ -1,6 +1,7 @@
 import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { isStaleProgressReplay, narriflowProgressRequest, progressIsLive, progressOutcomeRequest, progressRefreshDelayMs } from "./mcp-apps/v2/progress";
+import { platformLogos } from "./mcp-apps/v2/platform-logos";
 import { clipView, confirmationView, progressView } from "./mcp-apps/v2/views";
 
 describe("App operation progress", () => {
@@ -117,5 +118,15 @@ describe("App operation progress", () => {
     const visible = card.html.slice(0, card.html.indexOf("<details"));
     for (const fact of ["Demo", "TikTok", "Hello", "Publish at", "Nov 9, 2026", "9:16 / 1080p / Version 4", "Send to inbox"]) expect(visible).toContain(fact);
     expect(card.html.match(/Hello/g)).toHaveLength(1);
+  });
+  test("platform marks are isolated, so they survive sharing one document", () => {
+    const ids = Object.values(platformLogos).flatMap((svg) => [...svg.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const [name, svg] of Object.entries(platformLogos)) {
+      expect(svg).toStartWith('<svg class="logo"');
+      expect(svg).not.toContain("<style");
+      expect(svg).not.toContain("class=\"cls-");
+      expect(name === "tiktok" || name === "x" ? svg.includes("currentColor") : true).toBe(true);
+    }
   });
 });

@@ -10,7 +10,7 @@ export type NarriflowUploadAction = "open" | "status" | "grants" | "finalize" | 
 const views: NarriflowAppView[] = ["upload", "progress", "clip-review", "publication-confirmation"];
 
 export function getNarriflowAppToolMeta(view: NarriflowAppView) {
-  return { ui: { resourceUri: `ui://narriflow/v3/${view}.html`, visibility: ["model", "app"] as Array<"model" | "app"> } };
+  return { ui: { resourceUri: `ui://narriflow/v4/${view}.html`, visibility: ["model", "app"] as Array<"model" | "app"> } };
 }
 export function supportsNarriflowApps(capabilities?: ClientCapabilities | null, protocolEra: "modern" | "legacy" = "modern") {
   // Stateless legacy requests cannot retain initialize capabilities. Their host
@@ -50,7 +50,7 @@ export function registerNarriflowMcpApps(server: McpServer, options: NarriflowMc
   const apiDomains = options.apiOrigin ? [origin(options.apiOrigin)] : [];
   const csp = { connectDomains: [...new Set([...apiDomains, ...storageDomains, ...(options.connectDomains ?? []).map(origin)])], resourceDomains: [...new Set([...apiDomains, ...storageDomains, ...(options.resourceDomains ?? []).map(origin)])], frameDomains: [] };
   for (const view of views) {
-    const uri = `ui://narriflow/v3/${view}.html`;
+    const uri = `ui://narriflow/v4/${view}.html`;
     const resourceConfig = { cacheHint: { cacheScope: "public" as const, ttlMs: 86_400_000 }, _meta: { ui: { csp } } };
     registerAppResource(server, `narriflow-${view}-v2`, uri, resourceConfig, async () => {
       return { contents: [{ uri, mimeType: RESOURCE_MIME_TYPE, text: narriflowAppHtml(view, appOrigin), _meta: { ui: { csp } } }] };
@@ -60,13 +60,13 @@ export function registerNarriflowMcpApps(server: McpServer, options: NarriflowMc
     const schemas = { open: openUploadSessionSchema, status: readUploadSessionSchema, grants: grantUploadPartsSchema, finalize: finalizeUploadSessionSchema, discard: discardUploadSessionSchema };
     for (const action of Object.keys(schemas) as NarriflowUploadAction[]) {
       const inputSchema = schemas[action].extend({ workspaceId: z.string().uuid() });
-      registerAppTool(server, `narriflow_upload_${action}`, { description: "Upload Session transfer for the embedded picker", inputSchema, outputSchema: mcpAppTransferResultSchema, annotations: { readOnlyHint: action === "status", destructiveHint: action === "discard", idempotentHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: "ui://narriflow/v3/upload.html", visibility: ["app"] } } }, async (input: Record<string, unknown>, context: ServerContext) => {
+      registerAppTool(server, `narriflow_upload_${action}`, { description: "Upload Session transfer for the embedded picker", inputSchema, outputSchema: mcpAppTransferResultSchema, annotations: { readOnlyHint: action === "status", destructiveHint: action === "discard", idempotentHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: "ui://narriflow/v4/upload.html", visibility: ["app"] } } }, async (input: Record<string, unknown>, context: ServerContext) => {
         if (!supportsNarriflowApps(requestCapabilities(context, server), options.protocolEra)) throw new ProtocolError(-32602, "MCP Apps capability is required");
         return options.callUpload!(action, input);
       });
     }
   }
-  if (options.acceptPublication) registerAppTool(server, "narriflow_accept_social_post_intent", { description: "Record the user's exact-post decision from the confirmation card", inputSchema: mcpAppConfirmIntentSchema, outputSchema: mcpAppConfirmationResultSchema, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: "ui://narriflow/v3/publication-confirmation.html", visibility: ["app"] } } }, async (input, context) => {
+  if (options.acceptPublication) registerAppTool(server, "narriflow_accept_social_post_intent", { description: "Record the user's exact-post decision from the confirmation card", inputSchema: mcpAppConfirmIntentSchema, outputSchema: mcpAppConfirmationResultSchema, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: "ui://narriflow/v4/publication-confirmation.html", visibility: ["app"] } } }, async (input, context) => {
     if (!supportsNarriflowApps(requestCapabilities(context, server), options.protocolEra)) throw new ProtocolError(-32602, "MCP Apps capability is required");
     return options.acceptPublication!(input);
   });

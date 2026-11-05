@@ -1,3 +1,5 @@
+import { platformLogos } from "./platform-logos";
+
 type Facts = Record<string, unknown>;
 export function record(value: unknown): Facts {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Facts : {};
@@ -52,15 +54,6 @@ function scoreBar(name: string, value: number, index: number) {
   return `<div class="score-row"><span>${name}</span><div class="track" role="meter" aria-label="${name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><i data-strength="${value >= 80 ? "high" : "low"}" style="--value:${value}%;--delay:${index * 60}ms"></i></div><strong>${value}</strong></div>`;
 }
 
-const logo = (background: string, mark: string) => `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="7" fill="${background}"/>${mark}</svg>`;
-const platformLogos: Record<string, string> = {
-  tiktok: logo("#000", '<path fill="#fff" d="M13.4 5h2.2c.2 1.6 1.2 2.8 3 3v2.2c-1.1 0-2.1-.3-3-.9v4.8a4.5 4.5 0 1 1-3.9-4.5v2.3a2.2 2.2 0 1 0 1.7 2.2z"/>'),
-  youtube: logo("#f00", '<path fill="#fff" d="M9.6 8.2v7.6l6.4-3.8z"/>'),
-  instagram: logo("#d6249f", '<rect x="6" y="6" width="12" height="12" rx="3.6" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="12" cy="12" r="2.8" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="15.6" cy="8.4" r=".9" fill="#fff"/>'),
-  facebook: logo("#1877f2", '<path fill="#fff" d="M13.2 19v-6.2h2.1l.3-2.4h-2.4V8.9c0-.7.2-1.2 1.2-1.2h1.3V5.5c-.2 0-1-.1-1.9-.1-1.9 0-3.1 1.1-3.1 3.2v1.8H8.6v2.4h2.1V19z"/>'),
-  linkedin: logo("#0a66c2", '<path fill="#fff" d="M7 10h2.4v7.5H7zM8.2 6.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8m2.9 3.5h2.3v1c.3-.6 1.1-1.2 2.3-1.2 2.4 0 2.8 1.6 2.8 3.6v4.1h-2.4v-3.7c0-.9 0-2-1.2-2s-1.4 1-1.4 1.9v3.8h-2.4z"/>'),
-  x: logo("#000", '<path fill="#fff" d="m13.2 11 4.5-5.2h-1.1l-3.9 4.5-3.1-4.5H6l4.7 6.9L6 18.2h1.1l4.1-4.8 3.3 4.8H18zm-1.5 1.7-.5-.7L7.5 6.6h1.6l3.1 4.4.5.7 4 5.7h-1.6z"/>'),
-};
 function platformLogo(value: unknown) {
   const key = text(value).replace(/_(?:shorts|reels)$/, "");
   return platformLogos[key] ?? "";
