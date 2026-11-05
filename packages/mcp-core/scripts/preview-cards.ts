@@ -17,7 +17,7 @@ const status = (state: string, progress: number, stage = "rendering", kind = "ex
 const files = { exportId: "export-1", variants: [{ variantId: "v", aspectRatio: "1:1", resolution: "720p", watermark: false, fileName: "clip.mp4", sizeBytes: 5_991_195, downloadUrl: "/video.mp4" }], subtitles: [] };
 const titles = ["The Last Heart-Pounding Moment", "Would You Trust Your Kids In an AI World?", "Why People Don’t Take Moonshots", "Why he wants more pushback, not more yes-men", "The version of me that died"];
 const clips = { items: titles.map((title, index) => ({ title, durationSec: 39 + index * 6, category: ["emotional", "insight"][index % 2], scores: { virality: 87 - index * 3 }, reviewUrl: "https://narriflow.example/studio" })), nextCursor: null };
-const intent = { caption: "Clarity attracts talent. Conviction doesn’t mean rigidity.\n\n#founders #startups", platform: "tiktok", aspectRatio: "9:16", resolution: "1080p", expectedEditorRevision: 4, scheduledFor: "2026-11-09T14:00:00Z", deliveryMode: "direct", providerSettings: { disableComments: true } };
+const intent = { caption: "Clarity attracts talent. Conviction doesn’t mean rigidity.\n\n#founders #startups", platform: "tiktok", aspectRatio: "9:16", resolution: "1080p", expectedEditorRevision: 4, scheduledFor: "2026-11-09T14:00:00Z", deliveryMode: "direct", clipExportId: "export-1", providerSettings: { disableComments: true } };
 
 interface Scenario { view: "upload" | "progress" | "clip-review" | "publication-confirmation"; label: string; data: unknown; meta?: unknown; tools?: Record<string, unknown[]>; }
 const scenarios: Record<string, Scenario> = {
@@ -28,7 +28,7 @@ const scenarios: Record<string, Scenario> = {
   clip: { view: "clip-review", label: "Clip review with in-card export", data: { clip }, meta: { workspaceId: "w", previewMediaUrl: "/video.mp4", previewStartSec: clip.startSec, previewDurationSec: 61 }, tools: { narriflow_create_clip_export: [queued], narriflow_get_operation: [status("working", 0.4), status("completed", 1)], narriflow_get_export_download: [files] } },
   upload: { view: "upload", label: "Upload", data: {}, meta: { uploadContext: { workspaceId: "w", generationContext: { contentPack: { defaultAspectRatio: "9:16", clipLengthPreset: "auto", captionPreset: "brand_default" } } } } },
   uploaded: { view: "upload", label: "Upload received", data: {}, meta: { uploadTransfer: { outcome: "queued_for_ingest", projectId: "project-1" } } },
-  publish: { view: "publication-confirmation", label: "Confirm a post", data: { accountDisplayName: "Narriflow demo", intent } },
+  publish: { view: "publication-confirmation", label: "Confirm a post", data: { accountDisplayName: "Narriflow demo", intent }, tools: { narriflow_get_export_download: [files] } },
   scheduled: { view: "publication-confirmation", label: "Post scheduled", data: { status: "scheduled" } },
 };
 const video = process.env.CARD_PREVIEW_VIDEO;
@@ -48,7 +48,11 @@ createServer(async (request, response) => {
   const scenario = id ? scenarios[id] : undefined;
   if (url.pathname === "/video.mp4") {
     if (!video) { response.writeHead(404).end(); return; }
-    response.writeHead(200, { "content-type": "video/mp4" }).end(await readFile(video));
+    const bytes = await readFile(video);
+    const range = request.headers.range?.match(/bytes=(\d+)-(\d*)/);
+    if (!range) { response.writeHead(200, { "content-type": "video/mp4", "accept-ranges": "bytes", "content-length": bytes.length }).end(bytes); return; }
+    const start = Number(range[1]), end = range[2] ? Number(range[2]) : bytes.length - 1;
+    response.writeHead(206, { "content-type": "video/mp4", "accept-ranges": "bytes", "content-range": `bytes ${start}-${end}/${bytes.length}`, "content-length": end - start + 1 }).end(bytes.subarray(start, end + 1));
     return;
   }
   response.writeHead(200, { "content-type": "text/html" });

@@ -1,7 +1,7 @@
 import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { isStaleProgressReplay, narriflowProgressRequest, progressIsLive, progressOutcomeRequest, progressRefreshDelayMs } from "./mcp-apps/v2/progress";
-import { progressView } from "./mcp-apps/v2/views";
+import { clipView, confirmationView, progressView } from "./mcp-apps/v2/views";
 
 describe("App operation progress", () => {
   test("refreshes accepted work through its exact Operation Status", bindServiceTestEnvironment(() => {
@@ -102,5 +102,20 @@ describe("App operation progress", () => {
     const file = { aspectRatio: "1:1", resolution: "720p", sizeBytes: 1_000_000, watermark: false };
     expect(progressView(done, { variants: [file] }).html).not.toContain("data-download");
     expect(progressView(done, { variants: [file, { ...file, aspectRatio: "9:16" }] }).html).toContain('data-download="1"');
+  });
+  test("clip review shows a verdict, real platform marks and the chosen format", () => {
+    const card = clipView({ clip: { title: "T", startSec: 0, endSec: 60, durationSec: 60, platformFit: ["tiktok", "youtube_shorts", "instagram_reels"], scores: { virality: 77, hookStrength: 84, emotionalIntensity: 39 } } }, { aspectRatio: "16:9", resolution: "720p" });
+    expect(card.html).toContain("Strong");
+    expect(card.html.match(/class="logo"/g)).toHaveLength(3);
+    expect(card.html).toContain('data-value="16:9" aria-pressed="true"');
+    expect(card.html).toContain('data-value="720p" aria-pressed="true"');
+    expect(card.html).toContain("data-dock");
+    expect(card.html).toContain('data-strength="low"');
+  });
+  test("every fact of a post approval stays on the card, outside any disclosure", () => {
+    const card = confirmationView({ accountDisplayName: "Demo", intent: { caption: "Hello", platform: "tiktok", aspectRatio: "9:16", resolution: "1080p", expectedEditorRevision: 4, scheduledFor: "2026-11-09T14:00:00Z", deliveryMode: "inbox", providerSettings: { disableComments: true } } }, "en-US");
+    const visible = card.html.slice(0, card.html.indexOf("<details"));
+    for (const fact of ["Demo", "TikTok", "Hello", "Publish at", "Nov 9, 2026", "9:16 / 1080p / Version 4", "Send to inbox"]) expect(visible).toContain(fact);
+    expect(card.html.match(/Hello/g)).toHaveLength(1);
   });
 });

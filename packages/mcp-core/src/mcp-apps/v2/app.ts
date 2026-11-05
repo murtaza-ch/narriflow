@@ -1,5 +1,5 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
-import { clipView, uploadView, progressView, confirmationView, record, text, fileSize } from "./views";
+import { clipView, clock, uploadView, progressView, confirmationView, record, text, fileSize } from "./views";
 import { waitForUploadAcceptance, notifyUploadAcceptance } from "./upload-progress";
 import { isStaleProgressReplay, narriflowProgressRequest, progressIsLive, progressOutcomeRequest, progressRefreshDelayMs } from "./progress";
 import { createPublicationDecision, isPublicationDeclined } from "./publication-decision";
@@ -27,6 +27,9 @@ let outcomeFor = "";
 let barPercent = 0;
 const exportChoice = { aspectRatio: "9:16", resolution: "1080p" };
 let exportKey: string | undefined;
+let postPreviewUrl = "";
+let postPreviewFor = "";
+const footer = action.parentElement!;
 const publicationDecision = createPublicationDecision();
 let publicationReceipt: unknown;
 
@@ -40,7 +43,7 @@ function syncControls() {
   secondary.disabled = busy || !hasResult;
   if (file) file.disabled = busy;
   if (view === "upload") action.textContent = uploadAccepted() ? "Open project" : busy ? "Uploading…" : "Upload and generate clips";
-  if (view === "clip-review") action.textContent = busy ? "Starting export…" : "Export clip";
+  if (view === "clip-review") { action.textContent = busy ? "Starting export…" : "Export clip"; secondary.hidden = true; }
   if (view === "progress") syncProgressAction();
   renderPublicationDecision();
 }
@@ -78,7 +81,9 @@ function paint() {
   title.textContent = rendered.title;
   badge.textContent = rendered.badge;
   document.body.dataset.tone = rendered.tone ?? "";
+  footer.prepend(action); // The clip card docks it; it must survive the rebuild below.
   details.innerHTML = rendered.html;
+  details.querySelector("[data-dock]")?.append(action);
   bindCard();
   details.querySelector("#open-result")?.addEventListener("click", () => { void openLink(); });
   details.querySelector("#review-export")?.addEventListener("click", async () => {
@@ -99,23 +104,15 @@ function paint() {
     if (!busy && file && event.dataTransfer?.files.length) { file.files = event.dataTransfer.files; updateFileSelection(); }
   });
   const previewUrl = text(metadata.previewMediaUrl);
-  const source = record(payload.clip);
-  if (view === "clip-review" && previewUrl) {
-    const player = document.createElement("video");
-    player.controls = true;
-    player.preload = "metadata";
-    player.playsInline = true;
-    player.setAttribute("aria-label", "Selected clip preview");
-    player.src = previewUrl;
-    const clipStart = Number(source.startSec);
-    const clipEnd = Number(source.endSec);
+  const stage = details.querySelector("#preview");
+  if (view === "clip-review" && previewUrl && stage) {
     const previewStart = Number(metadata.previewStartSec ?? 0);
-    const localStart = Math.max(0, clipStart - previewStart);
-    const localEnd = clipEnd - previewStart;
-    if (Number.isFinite(localStart)) player.addEventListener("loadedmetadata", () => { player.currentTime = Math.min(localStart, player.duration || localStart); }, { once: true });
-    if (Number.isFinite(localEnd) && localEnd > localStart) player.addEventListener("timeupdate", () => { if (player.currentTime >= localEnd) player.pause(); });
-    details.querySelector("#preview")?.replaceChildren(player);
+    const source = record(payload.clip);
+    mountPlayer(stage, { url: previewUrl, label: "Selected clip preview", start: Math.max(0, Number(source.startSec) - previewStart), end: Number(source.endSec) - previewStart });
   }
+  const postStage = details.querySelector("#post-preview");
+  if (postStage && postPreviewUrl) mountPlayer(postStage, { url: postPreviewUrl, label: "The export this post will publish" });
+  if (view === "publication-confirmation") void loadPostPreview();
   hasResult = true;
   setStatus("");
   syncControls();
@@ -149,15 +146,64 @@ function bindCard() {
   });
   const slot = details.querySelector("#result-video");
   const file = record(Array.isArray(outcome.variants) ? outcome.variants[0] : null);
-  if (slot && file.downloadUrl) {
-    const player = document.createElement("video");
-    player.controls = true;
-    player.preload = "metadata";
-    player.playsInline = true;
-    player.setAttribute("aria-label", "Exported clip");
-    player.src = text(file.downloadUrl);
-    slot.replaceChildren(player);
-  }
+  if (slot && file.downloadUrl) mountPlayer(slot, { url: text(file.downloadUrl), label: "Exported clip" });
+}
+
+/** One player for every card: play, a thin playhead, and the time left. */
+function mountPlayer(host: Element, source: { url: string; label: string; start?: number; end?: number }) {
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.src = source.url;
+  video.setAttribute("aria-label", source.label);
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "play";
+  toggle.setAttribute("aria-label", "Play");
+  const rail = document.createElement("div");
+  rail.className = "rail";
+  const fill = rail.appendChild(document.createElement("i"));
+  const time = document.createElement("span");
+  time.className = "time";
+  const start = Number.isFinite(source.start) ? source.start! : 0;
+  const end = () => Number.isFinite(source.end) && source.end! > start ? source.end! : video.duration;
+  const show = () => {
+    const length = end() - start;
+    if (!(length > 0)) return;
+    fill.style.width = `${Math.min(100, Math.max(0, (video.currentTime - start) / length * 100))}%`;
+    time.textContent = clock(end() - Math.max(start, video.currentTime));
+  };
+  const flip = () => { if (video.paused) void video.play(); else video.pause(); };
+  video.addEventListener("loadedmetadata", () => { video.currentTime = Math.min(start, video.duration || start); show(); });
+  video.addEventListener("timeupdate", () => { if (video.currentTime >= end()) { video.pause(); video.currentTime = start; } show(); });
+  for (const [event, playing] of [["play", true], ["pause", false]] as const) video.addEventListener(event, () => {
+    (host as HTMLElement).dataset.playing = String(playing);
+    toggle.setAttribute("aria-label", playing ? "Pause" : "Play");
+  });
+  video.addEventListener("click", flip);
+  toggle.addEventListener("click", flip);
+  rail.addEventListener("click", (event) => {
+    const bounds = rail.getBoundingClientRect();
+    video.currentTime = start + (event.clientX - bounds.left) / bounds.width * (end() - start);
+  });
+  host.replaceChildren(video, toggle, rail, time);
+}
+
+/** The post previews the file it will publish. Without one, the card still works. */
+async function loadPostPreview() {
+  const intent = record(payload.intent);
+  const exportId = text(intent.clipExportId);
+  if (!exportId || postPreviewFor === exportId) return;
+  postPreviewFor = exportId;
+  const workspaceId = text(intent.workspaceId ?? arguments_.workspaceId);
+  try {
+    const result = await call("narriflow_get_export_download", { ...(workspaceId ? { workspaceId } : {}), exportId });
+    const variants = record(record(result.structuredContent).data).variants;
+    const files = Array.isArray(variants) ? variants.map(record) : [];
+    postPreviewUrl = text((files.find((file) => file.aspectRatio === intent.aspectRatio) ?? files[0])?.downloadUrl);
+    const stage = details.querySelector("#post-preview");
+    if (stage && postPreviewUrl) mountPlayer(stage, { url: postPreviewUrl, label: "The export this post will publish" });
+  } catch { /* The link below still opens it. */ }
 }
 
 /** Links last fifteen minutes, so each download asks for a fresh one. */
@@ -198,6 +244,7 @@ async function exportClip() {
   view = "progress";
   document.body.dataset.view = view;
   secondary.textContent = "Open in Narriflow";
+  secondary.hidden = false;
   barPercent = 0;
   render(result);
   followProgress();

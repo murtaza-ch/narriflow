@@ -49,7 +49,32 @@ function segmented(name: string, label_: string, options: string[], selected: st
     `<button type="button" data-segment="${escapeHtml(name)}" data-value="${escapeHtml(option)}" aria-pressed="${option === selected}">${escapeHtml(option)}</button>`).join("")}</div>`;
 }
 function scoreBar(name: string, value: number, index: number) {
-  return `<div class="score-row"><span>${name}</span><div class="track" role="meter" aria-label="${name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><i style="--value:${value}%;--delay:${index * 60}ms"></i></div><strong>${value}</strong></div>`;
+  return `<div class="score-row"><span>${name}</span><div class="track" role="meter" aria-label="${name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><i data-strength="${value >= 80 ? "high" : "low"}" style="--value:${value}%;--delay:${index * 60}ms"></i></div><strong>${value}</strong></div>`;
+}
+
+const logo = (background: string, mark: string) => `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="7" fill="${background}"/>${mark}</svg>`;
+const platformLogos: Record<string, string> = {
+  tiktok: logo("#000", '<path fill="#fff" d="M13.4 5h2.2c.2 1.6 1.2 2.8 3 3v2.2c-1.1 0-2.1-.3-3-.9v4.8a4.5 4.5 0 1 1-3.9-4.5v2.3a2.2 2.2 0 1 0 1.7 2.2z"/>'),
+  youtube: logo("#f00", '<path fill="#fff" d="M9.6 8.2v7.6l6.4-3.8z"/>'),
+  instagram: logo("#d6249f", '<rect x="6" y="6" width="12" height="12" rx="3.6" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="12" cy="12" r="2.8" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="15.6" cy="8.4" r=".9" fill="#fff"/>'),
+  facebook: logo("#1877f2", '<path fill="#fff" d="M13.2 19v-6.2h2.1l.3-2.4h-2.4V8.9c0-.7.2-1.2 1.2-1.2h1.3V5.5c-.2 0-1-.1-1.9-.1-1.9 0-3.1 1.1-3.1 3.2v1.8H8.6v2.4h2.1V19z"/>'),
+  linkedin: logo("#0a66c2", '<path fill="#fff" d="M7 10h2.4v7.5H7zM8.2 6.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8m2.9 3.5h2.3v1c.3-.6 1.1-1.2 2.3-1.2 2.4 0 2.8 1.6 2.8 3.6v4.1h-2.4v-3.7c0-.9 0-2-1.2-2s-1.4 1-1.4 1.9v3.8h-2.4z"/>'),
+  x: logo("#000", '<path fill="#fff" d="m13.2 11 4.5-5.2h-1.1l-3.9 4.5-3.1-4.5H6l4.7 6.9L6 18.2h1.1l4.1-4.8 3.3 4.8H18zm-1.5 1.7-.5-.7L7.5 6.6h1.6l3.1 4.4.5.7 4 5.7h-1.6z"/>'),
+};
+function platformLogo(value: unknown) {
+  const key = text(value).replace(/_(?:shorts|reels)$/, "");
+  return platformLogos[key] ?? "";
+}
+function verdict(value: number) {
+  return value >= 85 ? "Outstanding" : value >= 70 ? "Strong" : value >= 50 ? "Promising" : "Needs work";
+}
+const RATIO_ICON = 24;
+function ratioTiles(selected: string) {
+  return `<div class="ratios" role="group" aria-label="Format">${ASPECT_RATIOS.map((ratio) => {
+    const [width, height] = ratio.split(":").map(Number) as [number, number];
+    const scale = RATIO_ICON / Math.max(width, height);
+    return `<button type="button" data-segment="aspectRatio" data-value="${ratio}" aria-pressed="${ratio === selected}"><i style="width:${Math.round(width * scale)}px;height:${Math.round(height * scale)}px"></i><span>${ratio}</span></button>`;
+  }).join("")}</div>`;
 }
 
 export function clipView(payload: Facts, choice: ExportChoice = { aspectRatio: "9:16", resolution: "1080p" }): CardView {
@@ -59,20 +84,20 @@ export function clipView(payload: Facts, choice: ExportChoice = { aspectRatio: "
   const metrics: Array<[string, string]> = [["hookStrength", "Hook"], ["pacing", "Pacing"], ["storyCompleteness", "Story"], ["emotionalIntensity", "Emotion"], ["durationOptimality", "Length"]];
   const tabs = [clip.reasoning ? ["why", "Why it works", `<p>${escapeHtml(clip.reasoning)}</p>`] : null,
     clip.transcriptExcerpt ? ["transcript", "Transcript", `<p>${escapeHtml(clip.transcriptExcerpt)}</p>`] : null].filter((tab): tab is string[] => Boolean(tab));
+  const platforms = Array.isArray(clip.platformFit) ? clip.platformFit.map((value) => `<span class="platform" title="${escapeHtml(label(value))}">${platformLogo(value) || escapeHtml(label(value))}</span>`).join("") : "";
   return {
     title: text(clip.title) || "Review your clip", badge: label(clip.status) || "Clip review",
-    html: `<div class="meta"><span>${clock(clip.durationSec)}</span><span>${clock(clip.startSec)}–${clock(clip.endSec)} in source</span>${clip.category ? `<span>${escapeHtml(label(clip.category))}</span>` : ""}<span>Version ${number(clip.editorRevision)}</span>${Array.isArray(clip.platformFit) && clip.platformFit.length ? `<span>${escapeHtml(clip.platformFit.map(label).join(", "))}</span>` : ""}</div>
+    html: `<div class="meta"><span>${clock(clip.startSec)}–${clock(clip.endSec)} in source</span>${clip.category ? `<span>${escapeHtml(label(clip.category))}</span>` : ""}${platforms ? `<span class="platforms" aria-label="Best on ${escapeHtml(Array.isArray(clip.platformFit) ? clip.platformFit.map(label).join(", ") : "")}">${platforms}</span>` : ""}</div>
       <div class="review"><section aria-label="Clip preview"><div id="preview" class="media"><span>Preview available in Narriflow</span></div></section>
       <section class="scores" aria-label="Clip scores">
-        <div class="ring-row"><div class="ring" role="img" aria-label="Virality ${virality} out of 100"><svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="40" r="34"/><circle class="ring-value" cx="40" cy="40" r="34" style="--ring-empty:${RING_LENGTH};--ring-full:${RING_LENGTH * (1 - virality / 100)}"/></svg><strong>${virality}</strong></div><div><h2>Virality</h2><p class="subtle">Out of 100</p></div></div>
-        ${metrics.map(([key, name], index) => scoreBar(name, score(scores[key]), index)).join("")}
+        <div class="ring-row"><div class="ring" role="img" aria-label="Virality ${virality} out of 100"><svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="40" r="34"/><circle class="ring-value" cx="40" cy="40" r="34" style="--ring-empty:${RING_LENGTH};--ring-full:${RING_LENGTH * (1 - virality / 100)}"/></svg><strong>${virality}</strong></div><div><h2>${verdict(virality)}</h2><p class="subtle">Virality score</p></div></div>
+        <div class="bars">${metrics.map(([key, name], index) => scoreBar(name, score(scores[key]), index)).join("")}</div>
       </section></div>
       ${clip.hookText ? `<blockquote class="hook">${escapeHtml(clip.hookText)}</blockquote>` : ""}
-      ${tabs.length ? `<section class="tabs"><div class="tablist" role="tablist">${tabs.map(([id, name], index) => `<button type="button" role="tab" data-tab="${id}" aria-selected="${index === 0}">${name}</button>`).join("")}</div>${tabs.map(([id, , html], index) => `<div class="tabpanel" role="tabpanel" data-panel="${id}"${index === 0 ? "" : " hidden"}>${html}</div>`).join("")}</section>` : ""}
-      <section class="export-panel" aria-label="Export this clip"><div><h2>Format</h2>${segmented("aspectRatio", "Format", ASPECT_RATIOS, choice.aspectRatio)}</div><div><h2>Quality</h2>${segmented("resolution", "Quality", RESOLUTIONS, choice.resolution)}</div></section>`,
+      ${tabs.length ? `<section class="tabs"><div class="tablist" role="tablist">${tabs.map(([id, name], index) => `<button type="button" role="tab" data-tab="${id}" aria-selected="${index === 0}">${name}</button>`).join("")}<button type="button" class="text-link tab-link" id="open-result">Open in Studio</button></div>${tabs.map(([id, , html], index) => `<div class="tabpanel" role="tabpanel" data-panel="${id}"${index === 0 ? "" : " hidden"}>${html}</div>`).join("")}</section>` : '<button type="button" class="text-link" id="open-result">Open in Studio</button>'}
+      <section class="dock" aria-label="Export this clip">${ratioTiles(choice.aspectRatio)}${segmented("resolution", "Quality", RESOLUTIONS, choice.resolution)}<div class="dock-action" data-dock></div></section>`,
   };
 }
-
 export function uploadView(payload: Facts, context: Facts): CardView {
   const generation = record(record(context.generationContext).contentPack);
   if (payload.outcome === "queued_for_ingest") return {
@@ -190,13 +215,19 @@ export function confirmationView(payload: Facts, locale?: string): CardView {
   const scheduled = validDate ? new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(when) : "Time unavailable";
   const zone = validDate ? new Intl.DateTimeFormat(locale, { timeZoneName: "short" }).formatToParts(when).find((part) => part.type === "timeZoneName")?.value : "";
   const settings = Object.entries(record(intent.providerSettings)).map(([key, value]) => fact(label(key), typeof value === "boolean" ? value ? "On" : "Off" : value ?? "Default")).join("");
+  const month = validDate ? new Intl.DateTimeFormat(locale, { month: "short" }).format(when) : "";
+  const day = validDate ? new Intl.DateTimeFormat(locale, { day: "numeric" }).format(when) : "";
+  // Every fact of the approval stays on the card, never behind a disclosure.
   return {
     title: "Review before scheduling", badge: "Confirmation required",
-    html: `<div class="post"><div class="phone" aria-hidden="true"><span class="phone-play"></span><p>${escapeHtml(text(intent.caption).slice(0, 90))}</p></div>
-      <div class="post-copy"><p class="intro">This post goes out only after you confirm it.</p>
-      <dl class="facts stacked">${fact("Destination", payload.accountDisplayName)}${fact("Platform", label(intent.platform))}${fact("Publish at", `${scheduled}${zone ? ` ${zone}` : ""}`)}${fact("Reviewed output", `${text(intent.aspectRatio)} / ${text(intent.resolution)} / Version ${number(intent.expectedEditorRevision)}`)}${fact("Delivery", intent.deliveryMode === "inbox" ? "Send to inbox" : "Direct publication")}</dl>
-      <button type="button" class="text-link" id="review-export">Preview the selected export</button></div></div>
-      <section class="caption"><h2>Caption</h2><p>${escapeHtml(intent.caption) || '<span class="subtle">No caption</span>'}</p></section>
-      ${settings ? `<details class="more"><summary>Publishing settings</summary><dl class="facts">${settings}</dl></details>` : ""}`,
+    html: `<div class="post"><div class="phone" id="post-preview" style="--ratio:${escapeHtml(text(intent.aspectRatio).replace(":", "/") || "9/16")}"><span class="phone-mark" aria-hidden="true"></span></div>
+      <div class="post-body">
+        <div class="destination">${platformLogo(intent.platform)}<div><strong>${escapeHtml(payload.accountDisplayName)}</strong><span>${escapeHtml(label(intent.platform))}</span></div></div>
+        <section class="caption" aria-label="Caption"><p>${escapeHtml(intent.caption) || '<span class="subtle">No caption</span>'}</p></section>
+        <div class="when">${validDate ? `<div class="calendar" aria-hidden="true"><span>${escapeHtml(month)}</span><strong>${escapeHtml(day)}</strong></div>` : ""}<div class="fact"><dt>Publish at</dt><dd>${escapeHtml(`${scheduled}${zone ? ` ${zone}` : ""}`)}</dd></div></div>
+        <dl class="facts">${fact("Reviewed output", `${text(intent.aspectRatio)} / ${text(intent.resolution)} / Version ${number(intent.expectedEditorRevision)}`)}${fact("Delivery", intent.deliveryMode === "inbox" ? "Send to inbox" : "Direct publication")}</dl>
+        <button type="button" class="text-link" id="review-export">Open the selected export</button>
+        ${settings ? `<details class="more"><summary>Publishing settings</summary><dl class="facts">${settings}</dl></details>` : ""}
+      </div></div>`,
   };
 }
