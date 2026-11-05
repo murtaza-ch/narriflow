@@ -2,7 +2,16 @@ import { expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fingerprintDifferences, fingerprintId, leanFingerprintId, SCRIPT_SPECIMENS, scriptSpecimenFingerprint, type RuntimeFingerprint } from "./check-render-environment";
+import { fingerprintDifferences, fingerprintId, leanFingerprintId, loadLock, SCRIPT_SPECIMENS, scriptSpecimenFingerprint, type RuntimeFingerprint } from "./check-render-environment";
+
+// A pass on another Bun says nothing about production: 1.4.2 passes the upload
+// stall 1.3.6 hit. Turbo's cache key ignores the Bun version, so that pass would
+// also replay as green in the pre-push gate. Failing here keeps it out of the
+// cache, and the gate's packageManager check ties that version to this one.
+test("the media suite runs on the Bun the image runs", () => {
+  const imageBun = loadLock().images.bun!.ref.split(":").at(-1)!;
+  expect(process.versions.bun, `Run media tests on Bun ${imageBun}: git config --get narriflow.bunPath`).toBe(imageBun);
+});
 
 function runtime(packages: Record<string, string>): RuntimeFingerprint {
   return {

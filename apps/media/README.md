@@ -16,6 +16,8 @@ bun test apps/media/src apps/media/scripts
 PYTHONPATH=apps/media/python uv run --project apps/media --frozen python -m unittest discover -s apps/media/python/tests -v
 ```
 
+The suite fails on any Bun but the image's, so run it with the pinned binary the pre-push hook uses (`git config --get narriflow.bunPath`). A newer Bun can pass bugs production hits.
+
 Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face_yunet.onnx`. Download only the immutable source recorded in `runtime-lock.json` and verify its SHA-256. Model bytes are ignored locally and are baked into the render image from that same pin. Golden fixture documents, evidence, expectations and source pins are unchanged by the move.
 
 `probe-cli.ts` reads one bounded JSON object from stdin with an absolute local `sourcePath`, then emits the existing normalized probe. Python acquisition uses this CLI instead of parsing ffprobe independently.
