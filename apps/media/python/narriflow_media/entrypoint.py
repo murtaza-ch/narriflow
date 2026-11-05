@@ -115,9 +115,12 @@ async def invoke_native(value: object, function_name: str, *, client: ExecutionC
         except ExecutionControlError:
             pass
         return await _observe(session)
-    except BaseException:
+    except BaseException as error:
         # The domain sees a bounded error code, never an exception message that
         # could contain a signed grant, URL credential or source content.
+        _logger.warning(json.dumps({"level": "warn", "message": "native_operation_failed",
+            "functionName": function_name, "stage": stage, "errorType": type(error).__name__},
+            separators=(",", ":")))
         try:
             await asyncio.to_thread(session.command, "fail", failureCode="media_execution_failed", retryable=True)
         except ExecutionControlError:

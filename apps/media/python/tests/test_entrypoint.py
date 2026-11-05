@@ -97,8 +97,12 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
     async def test_unexpected_failures_export_only_a_fixed_code(self):
         invocation, client, state, calls = self.fixture()
         async def operation(*args): raise RuntimeError("private signed grant and credential")
-        result = await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        with self.assertLogs("narriflow_media.entrypoint", level="WARNING") as logs:
+            result = await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
         self.assertEqual(result, {"disposition": "failed"})
+        self.assertEqual(json.loads(logs.records[0].getMessage()), {"level": "warn", "message": "native_operation_failed",
+            "functionName": "asset_validation", "stage": "operation", "errorType": "RuntimeError"})
+        self.assertNotIn("private", logs.output[0])
         self.assertNotIn("private", json.dumps(calls))
         self.assertEqual(next(call for call in calls if call["action"] == "fail")["failureCode"], "media_execution_failed")
 

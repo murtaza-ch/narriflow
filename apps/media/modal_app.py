@@ -189,7 +189,7 @@ async def render_group(invocation: dict) -> dict:
               max_containers=32, restrict_modal_access=True, **LEAN_RESOURCES)
 async def publication(invocation: dict) -> dict:
     from narriflow_media.entrypoint import invoke_native, native_client
-    from narriflow_media.publication_runtime import run_publication
+    from narriflow_media.native_runtime import run_publication
     return await invoke_native(invocation, "publication", client=native_client(os.environ),
                                operation=run_publication, max_operation_seconds=900)
 
