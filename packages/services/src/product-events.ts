@@ -71,8 +71,11 @@ export function toProductEvent(row: ProductEventRow): ProductEvent | null {
   if (row.platform) properties.platform = row.platform;
   if (row.planTier) {
     properties.plan_tier = row.planTier;
-    properties.$set = { plan_tier: row.planTier };
+    // One person can own several Workspaces and every new one starts Free, so only a
+    // billing change moves their plan; anything else fills it in for a new person.
+    properties[row.source === "billing" ? "$set" : "$set_once"] = { plan_tier: row.planTier };
   }
+  if (row.source === "billing" && row.detail) properties.previous_tier = row.detail;
   if (row.source === "project" && row.detail) properties.source_type = row.detail;
   return { uuid: row.id, event, distinctId: row.distinctId, timestamp: row.at, properties };
 }
@@ -92,7 +95,7 @@ export async function readProductEvents(database: Pick<PrismaClient, "$queryRaw"
         NULL::text AS "workspaceId", NULL::text AS "projectId", NULL::text AS "clipId", NULL::text AS platform, NULL::text AS "planTier"
       FROM "User" u WHERE u."deletedAt" IS NULL AND ${inWindow(Prisma.sql`u."createdAt"`)}
       UNION ALL
-      SELECT w.id::text, 'workspace', NULL, NULL, w."createdAt", u."clerkId", w.id::text, NULL, NULL, NULL, w."pricingTier"::text
+      SELECT w.id::text, 'workspace', NULL, NULL, w."createdAt", u."clerkId", w.id::text, NULL, NULL, NULL, 'free'
       FROM "Workspace" w JOIN "User" u ON u.id = w."ownerUserId" WHERE ${inWindow(Prisma.sql`w."createdAt"`)}
       UNION ALL
       SELECT p.id::text, 'project', p."sourceType"::text, NULL, p."createdAt", u."clerkId", p."workspaceId"::text, p.id::text, NULL, NULL, w."pricingTier"::text

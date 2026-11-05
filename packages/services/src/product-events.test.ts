@@ -37,9 +37,9 @@ describe("toProductEvent", () => {
     expect(event.timestamp).toEqual(new Date("2026-11-06T10:30:00Z"));
     expect(event.distinctId).toBe("user_clerk");
   });
-  test("properties come from named columns and update the person's plan", () => {
+  test("properties come from named columns and fill in a new person's plan", () => {
     const event = toProductEvent(row({ source: "project", detail: "youtube", clipId: "c", platform: "tiktok" }))!;
-    expect(event.properties).toEqual({ workspace_id: "w", project_id: "p", clip_id: "c", platform: "tiktok", plan_tier: "pro", $set: { plan_tier: "pro" }, source_type: "youtube" });
+    expect(event.properties).toEqual({ workspace_id: "w", project_id: "p", clip_id: "c", platform: "tiktok", plan_tier: "pro", $set_once: { plan_tier: "pro" }, source_type: "youtube" });
   });
   test("an event with no plan or project leaves those properties out", () => {
     expect(toProductEvent(row({ source: "user", workspaceId: null, projectId: null, planTier: null }))!.properties).toEqual({});
@@ -71,4 +71,15 @@ describe("forwardProductEvents", () => {
     await expect(forwardProductEvents({ scheduledAt, database: database(new Error("down")), send: async () => undefined })).resolves.toBeUndefined();
     await expect(forwardProductEvents({ scheduledAt, database: database([row({ source: "user" })]), send: async () => { throw new Error("down"); } })).resolves.toBeUndefined();
   });
+});
+
+test("only a billing change moves a person's plan", () => {
+  const base = { id: "e1", detail: null, state: null, at: new Date(0), distinctId: "user_1", workspaceId: "w1", projectId: null, clipId: null, platform: null };
+  const created = toProductEvent({ ...base, source: "workspace", planTier: "free" });
+  expect(created?.properties.$set).toBeUndefined();
+  expect(created?.properties.$set_once).toEqual({ plan_tier: "free" });
+  const upgraded = toProductEvent({ ...base, source: "billing", detail: "creator", planTier: "business" });
+  expect(upgraded?.event).toBe("subscription_upgrade");
+  expect(upgraded?.properties).toMatchObject({ plan_tier: "business", previous_tier: "creator", $set: { plan_tier: "business" } });
+  expect(upgraded?.properties.$set_once).toBeUndefined();
 });

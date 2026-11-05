@@ -8,7 +8,8 @@ The catalog of product analytics events in PostHog. Change this file with the co
 - **Facts come from the server, intent from the browser.** Server events cannot be blocked and only exist if the work committed. They use different verbs from browser events, so nothing counts twice.
 - **Identity:** `distinct_id` is the Clerk user ID on both sides. Never an email.
 - **Properties:** IDs, plan and enums only. Never titles, captions, transcripts or links. Server events read named columns and never row `metadata`.
-- **Workspaces:** every event carries `workspace_id` and `plan_tier`. PostHog group analytics is a paid add-on, so it is not used.
+- **Workspaces:** every forwarded event carries `workspace_id` and `plan_tier`, the Workspace's tier when the event was forwarded. Browser events carry neither; join them through the person. PostHog group analytics is a paid add-on, so it is not used.
+- **Person plan:** `plan_tier` on a person changes only on a billing event. Other events fill it in once, for a new person.
 
 ## How server events reach PostHog
 
