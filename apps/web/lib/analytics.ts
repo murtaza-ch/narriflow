@@ -15,8 +15,13 @@ const CAPABILITY_ROUTE = /\/(review|share|invite)\/[^/?#]+/;
 export const isUntrackedPath = (pathname: string) => /^\/(review|share|invite)(\/|$)/.test(pathname);
 
 const scrubLink = (value: string) => value.replace(CAPABILITY_ROUTE, "/$1/[token]").replace(/[?#].*$/, "");
-const scrubLinks = (values: unknown) => Object.fromEntries(Object.entries(values as Record<string, unknown>)
-  .map(([key, value]) => [key, typeof value === "string" && /^(https?:\/\/|\/)/.test(value) ? scrubLink(value) : value]));
+/** Recursive, because PostHog copies the page URL into nested objects such as web vitals. */
+function scrubLinks(value: unknown): unknown {
+  if (typeof value === "string") return /^(https?:\/\/|\/)/.test(value) ? scrubLink(value) : value;
+  if (Array.isArray(value)) return value.map(scrubLinks);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubLinks(item)]));
+  return value;
+}
 
 /** Query strings hold Clerk handshakes and redirects, and a referrer can hold an invite
  * link. Campaign data survives, because PostHog copies UTM values into their own properties. */

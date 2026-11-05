@@ -17,6 +17,7 @@ import {
 import { formatUsdCents, PLAN_CATALOG } from "@narriflow/validators";
 import { useMutation } from "@tanstack/react-query";
 import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
+import { track } from "@/lib/analytics";
 import {
   apiErrorMessage,
   apiErrorSupportId,
@@ -51,8 +52,10 @@ export function CreateWorkspaceForm() {
   // One key per submission, kept through a lost response: the retry resumes the same pending Workspace.
   const intent = useMemo(() => runtime.createIntent<BusinessWorkspaceCheckoutRequest>(), [runtime]);
   const checkout = useMutation({
-    mutationFn: (input: BusinessWorkspaceCheckoutRequest) =>
-      startBusinessWorkspaceCheckout(runtime.transport, identity, input, intent.keyFor(input)),
+    mutationFn: (input: BusinessWorkspaceCheckoutRequest) => {
+      track("checkout_start", { target_tier: "business", billing_interval: input.interval });
+      return startBusinessWorkspaceCheckout(runtime.transport, identity, input, intent.keyFor(input));
+    },
     onSuccess: (started) => {
       intent.complete();
       // The new Workspace becomes the explicit selection before the person leaves for Stripe.

@@ -39,10 +39,18 @@ test("capability tokens and query strings never leave in a URL property", () => 
       $pathname: "/share/sharetoken",
       utm_source: "newsletter",
       count: 2,
+      $web_vitals_FCP_event: { navigationURL: "https://app.test/?secret=1", attribution: [{ url: "https://app.test/share/sharetoken?x=1" }] },
     },
     $set_once: { $initial_current_url: "https://app.test/?redirect_url=/review/reviewtoken" },
   });
-  expect(event.properties).toEqual({ $current_url: "https://app.test/home", $referrer: "https://app.test/invite/[token]", $pathname: "/share/[token]", utm_source: "newsletter", count: 2 });
+  expect(event.properties).toEqual({
+    $current_url: "https://app.test/home",
+    $referrer: "https://app.test/invite/[token]",
+    $pathname: "/share/[token]",
+    utm_source: "newsletter",
+    count: 2,
+    $web_vitals_FCP_event: { navigationURL: "https://app.test/", attribution: [{ url: "https://app.test/share/[token]" }] },
+  });
   expect(event.$set_once).toEqual({ $initial_current_url: "https://app.test/" });
   expect(scrubAnalyticsEvent(null)).toBeNull();
 });

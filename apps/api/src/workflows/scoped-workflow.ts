@@ -1,6 +1,7 @@
 import { ExecutionDispatchPendingError } from "@narriflow/services/execution-dispatch";
 import { isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
 import { logFailure } from "@narriflow/services/log-failure";
+import { WorkflowAttemptLost } from "@narriflow/services/workflow-attempt-contract";
 import {runWorkflowCommand} from "./dispatch-retry";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
@@ -45,8 +46,9 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
             try { assertMetadataBound(output); return workflowDirectiveSchema.parse(output); }
             catch { throw new NonRetryableError("invalid_workflow_directive"); }
           } catch (failure) {
-            // A pending delivery is a planned retry and a domain refusal is an answer. Neither is a fault.
-            if (!(failure instanceof ExecutionDispatchPendingError) && !isExpectedDomainFailure(failure)) logFailure("workflow_command_failed", failure, { kind: reference.kind, subjectKind: reference.subject.kind });
+            // A pending delivery is a planned retry, a domain refusal is an answer, and a lost
+            // attempt is the fence stopping a stale owner. None is a fault; the health check sees stuck work.
+            if (!(failure instanceof ExecutionDispatchPendingError) && !(failure instanceof WorkflowAttemptLost) && !isExpectedDomainFailure(failure)) logFailure("workflow_command_failed", failure, { kind: reference.kind, subjectKind: reference.subject.kind });
             throw failure;
           }
         })))),
