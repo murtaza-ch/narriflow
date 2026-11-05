@@ -55,3 +55,20 @@ export function progressRefreshDelayMs(attempt: number): number | null {
   if (attempt >= PROGRESS_MAX_ATTEMPTS) return null;
   return attempt <= PROGRESS_FAST_ATTEMPTS ? 3_000 : 15_000;
 }
+
+/** What a finished operation can show in place: an export's files or a run's ranked clips. */
+export function progressOutcomeRequest(payload: Record<string, unknown>, input: Record<string, unknown>, metadata: Record<string, unknown>) {
+  const reference = record(payload.operation);
+  const operation = record(metadata["narriflow/operation"]);
+  const results = record(payload.results);
+  const exported = record(payload.export);
+  const workspaceId = input.workspaceId ?? operation.workspaceId ?? metadata.workspaceId;
+  const scope = workspaceId ? { workspaceId } : {};
+  const finished = payload.state === "completed" || payload.state === "partial" || exported.status === "ready";
+  if (!finished) return null;
+  const exportId = results.exportId ?? exported.exportId;
+  if (exportId) return { name: "narriflow_get_export_download", arguments: { ...scope, exportId } };
+  const projectId = results.projectId ?? payload.projectId ?? operation.projectId;
+  if ((reference.kind ?? operation.domainKind) === "generation" && projectId) return { name: "narriflow_list_clips", arguments: { ...scope, projectId, limit: 10 } };
+  return null;
+}

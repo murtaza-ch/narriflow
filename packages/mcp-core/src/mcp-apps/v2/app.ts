@@ -1,11 +1,11 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
 import { clipView, uploadView, progressView, confirmationView, record, text, fileSize } from "./views";
 import { waitForUploadAcceptance, notifyUploadAcceptance } from "./upload-progress";
-import { isStaleProgressReplay, narriflowProgressRequest, progressIsLive, progressRefreshDelayMs } from "./progress";
+import { isStaleProgressReplay, narriflowProgressRequest, progressIsLive, progressOutcomeRequest, progressRefreshDelayMs } from "./progress";
 import { createPublicationDecision, isPublicationDeclined } from "./publication-decision";
 
 const app = new App({ name: "Narriflow", version: "2.0.0" });
-const view = document.body.dataset.view;
+let view = document.body.dataset.view;
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
 const details = document.querySelector<HTMLDivElement>("#details")!;
 const action = document.querySelector<HTMLButtonElement>("#action")!;
@@ -22,6 +22,11 @@ let uploadContext: Record<string, unknown> = {};
 let busy = false;
 let progressTimer: ReturnType<typeof setTimeout> | undefined;
 let progressAttempt = 0;
+let outcome: Record<string, unknown> = {};
+let outcomeFor = "";
+let barPercent = 0;
+const exportChoice = { aspectRatio: "9:16", resolution: "1080p" };
+let exportKey: string | undefined;
 const publicationDecision = createPublicationDecision();
 let publicationReceipt: unknown;
 
@@ -35,6 +40,8 @@ function syncControls() {
   secondary.disabled = busy || !hasResult;
   if (file) file.disabled = busy;
   if (view === "upload") action.textContent = uploadAccepted() ? "Open project" : busy ? "Uploading…" : "Upload and generate clips";
+  if (view === "clip-review") action.textContent = busy ? "Starting export…" : "Export clip";
+  if (view === "progress") syncProgressAction();
   renderPublicationDecision();
 }
 function updateFileSelection() {
@@ -48,16 +55,31 @@ function updateFileSelection() {
   setStatus("");
   syncControls();
 }
+/** Cards follow live status by themselves, so the main button is the next useful
+ * step: nothing while work runs, then the result. Manual refresh is the fallback. */
+function syncProgressAction() {
+  const files = Array.isArray(outcome.variants) ? outcome.variants : [];
+  const clips = Array.isArray(outcome.items) ? outcome.items : [];
+  const live = progressIsLive(payload);
+  const stalled = live && progressRefreshDelayMs(progressAttempt) === null;
+  action.hidden = !stalled && !files.length && !clips.length;
+  action.textContent = stalled ? "Refresh progress" : files.length ? "Download" : "Review clips";
+}
 function render(result: { structuredContent?: unknown; _meta?: Record<string, unknown>; isError?: boolean }) {
   const structured = record(result.structuredContent);
   if (result.isError) throw new Error(text(record(structured.data).message) || "Narriflow could not complete this action. Open Narriflow to review the request.");
   payload = record(structured.data ?? structured);
   metadata = record(result._meta);
   if (metadata.uploadContext) uploadContext = record(metadata.uploadContext);
-  const rendered = view === "clip-review" ? clipView(payload) : view === "upload" ? uploadView({ ...payload, outcome: record(metadata.uploadTransfer).outcome }, uploadContext) : view === "publication-confirmation" ? confirmationView(payload, app.getHostContext()?.locale) : progressView(payload);
+  paint();
+}
+function paint() {
+  const rendered = view === "clip-review" ? clipView(payload, exportChoice) : view === "upload" ? uploadView({ ...payload, outcome: record(metadata.uploadTransfer).outcome }, uploadContext) : view === "publication-confirmation" ? confirmationView(payload, app.getHostContext()?.locale) : progressView(payload, outcome);
   title.textContent = rendered.title;
   badge.textContent = rendered.badge;
+  document.body.dataset.tone = rendered.tone ?? "";
   details.innerHTML = rendered.html;
+  bindCard();
   details.querySelector("#open-result")?.addEventListener("click", () => { void openLink(); });
   details.querySelector("#review-export")?.addEventListener("click", async () => {
     const intent = record(payload.intent);
@@ -97,6 +119,88 @@ function render(result: { structuredContent?: unknown; _meta?: Record<string, un
   hasResult = true;
   setStatus("");
   syncControls();
+}
+
+/** The markup is rebuilt on each read, so interactions bind here and the bar
+ * resumes from its last width instead of restarting. */
+function bindCard() {
+  const fill = details.querySelector<HTMLElement>("[data-percent]");
+  if (fill) {
+    const target = Number(fill.dataset.percent);
+    fill.style.width = `${barPercent}%`;
+    void fill.offsetWidth;
+    fill.style.width = `${target}%`;
+    barPercent = target;
+  }
+  for (const button of details.querySelectorAll<HTMLButtonElement>("[data-segment]")) button.addEventListener("click", () => {
+    const name = button.dataset.segment as keyof typeof exportChoice;
+    exportChoice[name] = button.dataset.value ?? exportChoice[name];
+    exportKey = undefined;
+    for (const peer of details.querySelectorAll<HTMLButtonElement>(`[data-segment="${name}"]`)) peer.setAttribute("aria-pressed", String(peer === button));
+  });
+  for (const tab of details.querySelectorAll<HTMLButtonElement>("[data-tab]")) tab.addEventListener("click", () => {
+    for (const peer of details.querySelectorAll<HTMLButtonElement>("[data-tab]")) peer.setAttribute("aria-selected", String(peer === tab));
+    for (const panel of details.querySelectorAll<HTMLElement>("[data-panel]")) panel.hidden = panel.dataset.panel !== tab.dataset.tab;
+  });
+  for (const button of details.querySelectorAll<HTMLButtonElement>("[data-download]")) button.addEventListener("click", () => { void downloadFile(Number(button.dataset.download)); });
+  for (const button of details.querySelectorAll<HTMLButtonElement>("[data-open-clip]")) button.addEventListener("click", () => {
+    const clip = record((outcome.items as unknown[])[Number(button.dataset.openClip)]);
+    if (clip.reviewUrl) void app.openLink({ url: text(clip.reviewUrl) });
+  });
+  const slot = details.querySelector("#result-video");
+  const file = record(Array.isArray(outcome.variants) ? outcome.variants[0] : null);
+  if (slot && file.downloadUrl) {
+    const player = document.createElement("video");
+    player.controls = true;
+    player.preload = "metadata";
+    player.playsInline = true;
+    player.setAttribute("aria-label", "Exported clip");
+    player.src = text(file.downloadUrl);
+    slot.replaceChildren(player);
+  }
+}
+
+/** Links last fifteen minutes, so each download asks for a fresh one. */
+async function downloadFile(index: number) {
+  try {
+    const request = progressOutcomeRequest(payload, arguments_, metadata);
+    if (!request) return;
+    const fresh = record(record(record(await call(request.name, request.arguments)).structuredContent).data);
+    const url = text(record(Array.isArray(fresh.variants) ? fresh.variants[index] : null).downloadUrl);
+    if (url) await app.openLink({ url });
+  } catch (error) { setStatus(error instanceof Error ? error.message : "Open Narriflow to download this export.", true); }
+}
+
+/** A finished card shows the work itself, once per operation. */
+async function loadOutcome() {
+  const key = text(record(payload.operation).id ?? record(payload.export).exportId);
+  const request = view === "progress" && key && key !== outcomeFor ? progressOutcomeRequest(payload, arguments_, metadata) : null;
+  if (!request) return;
+  outcomeFor = key;
+  try {
+    const result = await call(request.name, request.arguments);
+    const structured = record(result.structuredContent);
+    outcome = record(structured.data ?? structured);
+    paint();
+  } catch { outcomeFor = ""; }
+}
+
+/** Keeps its idempotency key across retries of the same choice, so a lost
+ * response cannot start the export twice. */
+async function exportClip() {
+  const clip = record(payload.clip);
+  const workspaceId = text(arguments_.workspaceId ?? metadata.workspaceId);
+  if (!workspaceId) throw new Error("Ask your assistant to export this clip.");
+  exportKey ??= crypto.randomUUID();
+  const result = await call("narriflow_create_clip_export", { workspaceId, projectId: clip.projectId, clipId: clip.clipId, expectedRevision: clip.editorRevision,
+    aspectRatios: [exportChoice.aspectRatio], resolution: exportChoice.resolution, clientIdempotencyKey: exportKey });
+  arguments_ = { ...arguments_, workspaceId };
+  view = "progress";
+  document.body.dataset.view = view;
+  secondary.textContent = "Open in Narriflow";
+  barPercent = 0;
+  render(result);
+  followProgress();
 }
 
 function renderPublicationDecision() {
@@ -139,9 +243,11 @@ async function refreshProgress() {
  * live status itself until the work settles. A failed read waits for the next one. */
 function followProgress() {
   clearTimeout(progressTimer);
-  if (view !== "progress" || !progressIsLive(payload)) return;
-  const delay = progressRefreshDelayMs(progressAttempt++);
-  if (delay === null) return;
+  if (view !== "progress") return;
+  if (!progressIsLive(payload)) { void loadOutcome(); return; }
+  const delay = progressRefreshDelayMs(progressAttempt);
+  if (delay === null) { syncControls(); return; }
+  progressAttempt++;
   progressTimer = setTimeout(async () => {
     if (!busy) { try { await refreshProgress(); } catch { /* Retried below or by the button. */ } }
     followProgress();
@@ -235,9 +341,14 @@ action.addEventListener("click", async () => {
   try {
     if (view === "upload") { if (uploadAccepted()) await openLink(); else await upload(); }
     else if (view === "progress") {
-      await refreshProgress();
-      followProgress();
+      if (progressIsLive(payload)) {
+        progressAttempt = 0;
+        await refreshProgress();
+        followProgress();
+      } else if (Array.isArray(outcome.variants)) await downloadFile(0);
+      else await openLink();
     }
+    else if (view === "clip-review") await exportClip();
     else if (view === "publication-confirmation") {
       await publicationDecision.decide(true, async (markSchedulingAttempted) => {
         const intent = record(payload.intent);

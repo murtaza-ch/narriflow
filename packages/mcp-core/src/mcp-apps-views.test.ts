@@ -10,7 +10,7 @@ describe("Assistant card product projections", () => {
     expect(card.html).not.toContain("private-");
     expect(card.html).not.toContain("onerror");
     expect(card.html).toContain("0:47–1:06");
-    expect(card.html).toContain('value="96"');
+    expect(card.html).toContain('aria-valuenow="96"');
   }));
   test("upload displays choices without exposing signed continuations or replay identity", bindServiceTestEnvironment(() => {
     const card = uploadView({ workspaceId: "private-workspace", handoffUrl: "https://narriflow.test/?intent=private-token", localUploadCommand: "private-command" }, { clientIdempotencyKey: "private-key", generationContext: { contentPack: { defaultAspectRatio: "9:16", clipLengthPreset: "under_30s", captionPreset: "minimal" } } });

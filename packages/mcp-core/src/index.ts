@@ -131,7 +131,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     const actor = await workspace("narriflow_get_clip", current, input.workspaceId);
     const facts = await clipService.getClipReviewFacts(actor, input.projectId, input.clipId, input);
     const preview = supportsNarriflowApps(server.server.getClientCapabilities(), options.protocolEra) && facts.hasPreview ? await clipService.getClipPreviewSource(actor, input.projectId, input.clipId) : null;
-    return { data: { clip: clipView(facts, appOrigin, input.includeTranscriptExcerpt) }, ...(preview?.previewUrl ? { _meta: { previewMediaUrl: preview.previewUrl, previewStartSec: preview.previewStartSec, previewDurationSec: preview.previewDurationSec } } : {}) };
+    return { data: { clip: clipView(facts, appOrigin, input.includeTranscriptExcerpt) }, _meta: { workspaceId: actor.workspaceId, ...(preview?.previewUrl ? { previewMediaUrl: preview.previewUrl, previewStartSec: preview.previewStartSec, previewDurationSec: preview.previewDurationSec } : {}) } };
   }));
   server.registerTool("narriflow_submit_video", { ...config("Submit a video link", "Atomically import supported media with committed clip generation settings, sent inline or named by recipeId", schemas.mcpOperationSchema, write, "progress"), inputSchema: schemas.mcpSubmitVideoSchema }, (input) => execute("narriflow_submit_video", schemas.mcpOperationSchema, async (current) => {
     const actor = await workspace("narriflow_submit_video", current, input.workspaceId);
