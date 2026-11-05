@@ -284,13 +284,12 @@ test("reconciliation drops ineligible destination selection but retains editable
 	expect(state.getSnapshot().timing.timeZone).toBe("UTC");
 });
 
-test("a connected account whose provider publishing is off is never auto-selected or selectable", () => {
+test("a connected Facebook Page can be selected for publishing", () => {
 	const facebook = { ...otherAccount, platform: "facebook_reels" } as SocialAccountSnapshot;
 	const state = session();
 	state.open([clip.id], { ...facts, accounts: [account, facebook] });
-	expect(state.getSnapshot().accountIds).toEqual([account.id]);
 	state.selectAccounts([account.id, facebook.id]);
-	expect(state.getSnapshot().accountIds).toEqual([account.id]);
+	expect(state.getSnapshot().accountIds).toEqual([account.id, facebook.id]);
 });
 
 test("missing saved cover clears only the matching entire selection and keeps copy", async () => {

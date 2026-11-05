@@ -96,7 +96,7 @@ function harness(
 			attributes?: Record<string, string | number | boolean | undefined>,
 		): void;
 	},
-	// Production reads the catalog, which keeps Facebook off; these tests prove the flow.
+	// Production reads the catalog; the disabled path stays covered for a future refusal.
 	facebookReelsPublishingEnabled = true,
 ) {
 	const requests: Array<{ url: string; init?: RequestInit }> = [];

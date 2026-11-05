@@ -62,6 +62,20 @@ Scribe uses `ELEVENLABS_API_KEY` and `ELEVENLABS_WEBHOOK_ID` in the API control 
 
 Social OAuth callbacks use `${API_ORIGIN}/api/social/oauth/callback`. Clerk, Stripe, Scribe, Zoom, MCP audience and integration clients must all use the selected API origin. Vercel builds with that same `NEXT_PUBLIC_API_URL` and the matching WebSocket CSP.
 
+Social provider applications for the development API (set up 2026-11-05). Local and deployed development share these credentials. Changing the API origin means updating every redirect below, plus the TikTok webhook.
+
+| Provider | Application | Access today | Registered redirects |
+| --- | --- | --- | --- |
+| TikTok | App `7683396282354599957`, sandbox "Local development" | Sandbox target user only. The production app is an unsubmitted draft. | Deployed API only; TikTok has no localhost redirect here. Webhook: `${API_ORIGIN}/api/webhooks/tiktok/publication`. |
+| YouTube | Google Cloud `narrifllow-dev`, client `narriflow-dev` | Testing mode, listed test users only. | Deployed API and `http://localhost:4000`. |
+| LinkedIn | App `265076568`, Company Page `145410479` | Share on LinkedIn and OpenID Connect are live. | Deployed API and `http://localhost:4000`. |
+| X | App `33611538`, pay-per-use project | Prepaid credits; posts fail at $0 balance. | Deployed API and `http://localhost:4000`. |
+| Meta | App `1420111250164816`, Facebook Login for Business | Unpublished. People with an app role only. No business portfolio yet. | Deployed API only. |
+
+Worker secrets belong to a version. `wrangler rollback` to a version older than a secret change removes that secret from the live Worker, while `wrangler secret list` still shows it, because the list reads the latest version. After a rollback, check the active version with `wrangler versions view <id> --json`. To recover, run a normal `wrangler deploy` from a clean tree: it keeps the rolled-back code and inherits secrets from the latest version. Do not use `wrangler secret put` after a rollback, because it starts from the latest version.
+
+Meta's Instagram and Pages use cases do not enable permissions on their own: each permission Narriflow requests must be added under Use cases → Customize, or the login dialog reports it as an invalid scope. Instagram uses the Facebook-login permissions (`instagram_basic`, `instagram_content_publish`), not `instagram_business_*`.
+
 Native binaries, fonts and models are pinned by `apps/media/runtime-lock.json` and checked at build/start. Use `apps/media/images/Dockerfile` with the appropriate profile ignore file. Deploy from an immutable tracked archive; a live checkout changing during Modal upload invalidates that build. [Native CI](../../apps/media/scripts/gates/native-ci.md) runs without host environment files or external network.
 
 YouTube development uses one allowlisted device session, the outbound LocalFetchMailbox socket and the pinned lean image. Keep the session JSON mode0600 and run `bun run fetch:local --session /absolute/private/device-session.json`. The agent checks the fingerprint before connecting. Production routes cannot use device execution. The sticky HTTP proxy path remains configured for launch; purchase is deferred.

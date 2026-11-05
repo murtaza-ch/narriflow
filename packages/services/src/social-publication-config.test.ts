@@ -28,15 +28,15 @@ const valid = {
 };
 
 describe("Social Publication configuration", () => {
-  test("keeps Facebook connection metadata visible while publishing awaits sandbox evidence", () => {
+  test("enables Facebook Reels publishing on the pinned Graph version", () => {
     expect(SOCIAL_PROVIDER_CAPABILITIES.facebook_reels).toMatchObject({
       apiVersion: "v24.0",
       connectionEnabled: true,
-      publishingEnabled: false,
+      publishingEnabled: true,
       requiredScopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
     });
     expect(socialPublicationCapabilityVersion("facebook_reels")).toBe("facebook-reels-2026-08-31");
-    expect(isSocialProviderPublishingEnabled("facebook_reels")).toBe(false);
+    expect(isSocialProviderPublishingEnabled("facebook_reels")).toBe(true);
     expect(isSocialProviderPublishingEnabled("youtube_shorts")).toBe(true);
   });
 

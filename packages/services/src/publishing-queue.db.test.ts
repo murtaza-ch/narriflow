@@ -123,12 +123,6 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect(events.data.map((event) => event.subject)).toEqual([{ socialPostId: proposal.proposalId, projectId: f.project.id, clipId: f.clip.id, socialAccountId: f.account.id, platform: "youtube_shorts" }]);
 	})));
 
-	test("a platform whose publishing isn't available yet refuses the proposal up front", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		const f = await fixture({ platform: "facebook_reels" });
-		await expect(propose(f)).rejects.toMatchObject({ code: "social_provider_publishing_disabled" });
-		expect(await prisma.socialPost.count({ where: { socialAccountId: f.account.id } })).toBe(0);
-	})));
-
 	test("proposals never reach the scheduler or recovery", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);

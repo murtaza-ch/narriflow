@@ -49,9 +49,9 @@ test("empty state has six labeled connect buttons in platform order", async () =
   const dom = await render();
   expect(dom.textContent).toContain("Connect your first social account");
   const tiles = [...dom.querySelectorAll("button")];
-  expect(tiles.map((tile) => tile.getAttribute("aria-label"))).toEqual(["Connect TikTok account", "Connect YouTube account", "Connect Instagram account", "Connect Facebook account (publishing coming soon)", "Connect X account", "Connect LinkedIn account"]);
+  expect(tiles.map((tile) => tile.getAttribute("aria-label"))).toEqual(["Connect TikTok account", "Connect YouTube account", "Connect Instagram account", "Connect Facebook account", "Connect X account", "Connect LinkedIn account"]);
   expect(dom.querySelectorAll("a").length).toBe(0);
-  expect(tiles[3]?.textContent).toContain("Publishing coming soon");
+  expect(tiles[3]?.textContent).not.toContain("Publishing coming soon");
 });
 test("connecting asks the API first and only then navigates to the provider", async () => {
   const dom = await render({ returnTo: "/projects/abc?publishClips=def" });
@@ -66,10 +66,10 @@ test("a refused connection stays on the page with the reason", async () => {
   expect(api.navigate).not.toHaveBeenCalled();
   expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Connection failed" }));
 });
-test("a connected Facebook Page shows publishing as coming soon", async () => {
+test("a connected Facebook Page can publish", async () => {
   const dom = await render({ accounts: [{ ...account, id: "facebook", platform: "facebook_reels", displayName: "Brand Page" }] });
   const card = [...dom.querySelectorAll("p")].find((node) => node.textContent === "Brand Page")?.parentElement;
-  expect(card?.textContent).toContain("Publishing coming soon");
+  expect(card?.textContent).not.toContain("Publishing coming soon");
 });
 test("multiple profiles precede add cards and read-only users cannot manage", async () => {
   const dom = await render({ accounts: [account, { ...account, id: "two", displayName: "Second channel", status: "expired" }], canManage: false, access: { role: "viewer", status: "active" } });

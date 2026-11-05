@@ -9,12 +9,11 @@ export const SOCIAL_PROVIDER_CAPABILITIES = {
     connectionEnabled: true, publishingEnabled: true, aspectRatios: ["9:16", "1:1", "4:5"],
     durationSec: { min: 3, max: 900 }, textLimit: 2_200, thumbnailTypes: ["video_frame", "custom_image"], thumbnailSources: ["uploaded", "generated", "extracted_frame"], titleField: false, firstCommentField: false, providerPolling: true, scheduling: true,
   },
-  // Pages connect, but publishing stays off until a Meta sandbox run of the
-  // start-upload-finish flow is recorded; only mocked provider tests exist.
+  // No title field: the Reels finish call sends only the caption as its description.
   facebook_reels: {
     version: "facebook-reels-2026-08-31", apiVersion: "v24.0", requiredScopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
-    connectionEnabled: true, publishingEnabled: false, aspectRatios: ["9:16"],
-    durationSec: { min: 4, max: 60 }, textLimit: 2_200, thumbnailTypes: ["provider_default"], thumbnailSources: [], titleField: true, firstCommentField: false, providerPolling: true, scheduling: true,
+    connectionEnabled: true, publishingEnabled: true, aspectRatios: ["9:16"],
+    durationSec: { min: 4, max: 60 }, textLimit: 2_200, thumbnailTypes: ["provider_default"], thumbnailSources: [], titleField: false, firstCommentField: false, providerPolling: true, scheduling: true,
   },
   tiktok: {
     version: "tiktok-v2", apiVersion: "v2", requiredScopes: ["user.info.basic", "video.list", "video.upload", "video.publish"],
