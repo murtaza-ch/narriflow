@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createDatabaseScope, getPrismaClient } from "@narriflow/db/client";
+import { installFailureReporter } from "@narriflow/services/log-failure";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { createMaintenanceScheduledHandler } from "./maintenance-scheduled";
@@ -61,6 +62,38 @@ test("unconfirmed registration fails the scheduled invocation and still releases
   });
   await expect(scheduled(event("0 * * * *"), { ADMISSION_STATE: "open", HYPERDRIVE: { connectionString: "synthetic" } } as ApiWorkerBindings, context)).rejects.toThrow("scheduler_unavailable");
   expect(closed).toBe(true);
+});
+
+function monitored(run: () => Promise<void>) {
+  const order: string[] = [];
+  const scheduled = createMaintenanceScheduledHandler({
+    createScope: () => createDatabaseScope({ createClient: () => ({ client: {} as unknown as NonNullable<ReturnType<typeof getPrismaClient>>, dispose: async () => {} }) }),
+    createRuntime: async () => ({ scheduled: async () => { order.push("maintenance"); await run(); } }),
+    checkHealth: async () => { order.push("health"); },
+    forwardEvents: async () => { order.push("events"); },
+  });
+  return { order, invoke: (cron: string) => scheduled(event(cron), { ADMISSION_STATE: "open", HYPERDRIVE: { connectionString: "synthetic" } } as ApiWorkerBindings, context) };
+}
+
+test("the hourly run checks health only after maintenance is confirmed, and the daily run does not check at all", async () => {
+  const hourly = monitored(async () => {});
+  await hourly.invoke("0 * * * *");
+  expect(hourly.order).toEqual(["maintenance", "health", "events"]);
+  const daily = monitored(async () => {});
+  await daily.invoke("0 0 * * *");
+  expect(daily.order).toEqual(["maintenance"]);
+});
+
+test("a failed run sends no healthy ping, is reported, and still forwards its event window", async () => {
+  const reported: string[] = [];
+  installFailureReporter(message => reported.push(message));
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const { order, invoke } = monitored(async () => { throw Error("scheduler_unavailable"); });
+  await expect(invoke("0 * * * *")).rejects.toThrow("scheduler_unavailable");
+  warn.mockRestore();
+  installFailureReporter(undefined);
+  expect(order).toEqual(["maintenance", "events"]);
+  expect(reported).toEqual(["maintenance_cron_failed"]);
 });
 
 test("an unknown schedule or missing admission configuration cannot start maintenance", async () => {

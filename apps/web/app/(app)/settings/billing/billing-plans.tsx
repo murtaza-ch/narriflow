@@ -1,5 +1,6 @@
 "use client";
 
+import { track } from "@/lib/analytics";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -253,6 +254,7 @@ export function BillingPlans({
         interval,
         createKey: () => crypto.randomUUID(),
       });
+      track("checkout_start", { target_tier: tier, billing_interval: interval });
       const url = await api
         .startCheckout({ clientIdempotencyKey, tier, interval })
         .catch((error: unknown) => {

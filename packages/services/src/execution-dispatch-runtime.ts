@@ -1,3 +1,4 @@
+import { logFailure } from "./log-failure";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -138,6 +139,9 @@ export async function deliverExecutionDispatches(ids: readonly string[]): Promis
   const unique = [...new Set(ids)];
   for (let offset = 0; offset < unique.length; offset += 4) {
     const results = await Promise.allSettled(unique.slice(offset, offset + 4).map(id => dispatch.deliver(id)));
+    for (const result of results) if (result.status === "fulfilled" && result.value.status === "dead_lettered") {
+      logFailure("execution_dispatch_dead_lettered", Object.assign(new Error("A dispatch ran out of delivery attempts"), { code: result.value.errorCode }), { dispatchId: result.value.dispatchId });
+    }
     if(results.some(result=>result.status==="rejected" || !["acknowledged","superseded","pending"].includes(result.value.status)))throw new ExecutionDispatchError("scheduler_unavailable");
     const retryTimes=results.flatMap(result=>result.status==="fulfilled"&&result.value.status==="pending"?[result.value.retryAt.getTime()]:[]);
     if(retryTimes.length)throw new ExecutionDispatchPendingError(new Date(Math.min(...retryTimes)));

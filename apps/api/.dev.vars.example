@@ -150,3 +150,7 @@ YOUTUBE_FETCH_MODE=local
 LOCAL_FETCH_WORKSPACE_IDS_JSON=[]
 # YOUTUBE_PROXY_ACCEPTED=true only after the configured Modal proxy passes gates.
 # Proxy credentials belong only to the fetch_source Modal Secret at launch.
+
+# Optional. Each stays off until set. See docs/runbooks/alerting.md.
+# POSTHOG_PROJECT_TOKEN=
+# HEARTBEAT_URL=

@@ -1,3 +1,6 @@
+import { ExecutionDispatchPendingError } from "@narriflow/services/execution-dispatch";
+import { isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
+import { logFailure } from "@narriflow/services/log-failure";
 import {runWorkflowCommand} from "./dispatch-retry";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
@@ -35,11 +38,17 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
         withWorkerServices(this.env, workerServiceEnvironment(this.env), () => withDatabaseScope(this.scope(), () => withExecutionDispatches(async () => {
           // Construct the registry after entering the new scope. A factory may
           // resolve service ports here but cannot retain a prior step's client.
-          const handler = redelivery ? workflowDispatchRedelivery(this.env) : this.registry()[reference.kind]?.[reference.subject.kind];
-          if (!handler) throw new NonRetryableError(`unsupported_workflow_subject:${reference.kind}:${reference.subject.kind}`);
-          const output = await handler(input);
-          try { assertMetadataBound(output); return workflowDirectiveSchema.parse(output); }
-          catch { throw new NonRetryableError("invalid_workflow_directive"); }
+          try {
+            const handler = redelivery ? workflowDispatchRedelivery(this.env) : this.registry()[reference.kind]?.[reference.subject.kind];
+            if (!handler) throw new NonRetryableError(`unsupported_workflow_subject:${reference.kind}:${reference.subject.kind}`);
+            const output = await handler(input);
+            try { assertMetadataBound(output); return workflowDirectiveSchema.parse(output); }
+            catch { throw new NonRetryableError("invalid_workflow_directive"); }
+          } catch (failure) {
+            // A pending delivery is a planned retry and a domain refusal is an answer. Neither is a fault.
+            if (!(failure instanceof ExecutionDispatchPendingError) && !isExpectedDomainFailure(failure)) logFailure("workflow_command_failed", failure, { kind: reference.kind, subjectKind: reference.subject.kind });
+            throw failure;
+          }
         })))),
       );
       if (directive.type === "complete") return { reference, disposition: directive.disposition };

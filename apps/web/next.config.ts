@@ -64,8 +64,14 @@ const nextConfig: NextConfig = {
       { source: "/developers/api", destination: "/docs/api/introduction", permanent: true },
     ];
   },
+  // PostHog's API paths end in a slash, so the proxy must not redirect them.
+  skipTrailingSlashRedirect: true,
   async rewrites() {
     return [
+      // Same-origin analytics: the static routes must come before the catch-all.
+      { source: "/ingest/static/:path*", destination: "https://us-assets.i.posthog.com/static/:path*" },
+      { source: "/ingest/array/:path*", destination: "https://us-assets.i.posthog.com/array/:path*" },
+      { source: "/ingest/:path*", destination: "https://us.i.posthog.com/:path*" },
       // Every docs page is also served as Markdown: at its URL plus ".md",
       // and at its own URL for agents that ask for text/markdown.
       { source: "/docs.md", destination: "/docs-markdown" },

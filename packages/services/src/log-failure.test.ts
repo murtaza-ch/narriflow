@@ -4,6 +4,15 @@ import { describeFailure, logFailure } from "./log-failure";
 afterEach(() => { (console.warn as unknown as { mockRestore?: () => void }).mockRestore?.(); });
 
 describe("logFailure", () => {
+  test("a multi-line message cannot smuggle text past redaction through the stack", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    logFailure("failed", new Error("first line\nat sam@example.com said token=supersecretvalue"));
+    const output = String(warn.mock.calls[0]?.[0]);
+    warn.mockRestore();
+    expect(output).not.toContain("sam@example.com");
+    expect(output).not.toContain("supersecretvalue");
+  });
+
   test("records name, code, frames and the cause chain with secrets redacted", () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     const root = Object.assign(new Error("connect failed https://db.example/x?token=abc123 for jane@example.com"), { code: "ECONNRESET" });

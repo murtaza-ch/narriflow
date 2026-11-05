@@ -21,7 +21,7 @@ const auth = Object.assign(async () => ({ userId }), {
   })(...args),
 });
 mock.module("@clerk/nextjs/server", () => ({ clerkMiddleware: (handler: unknown) => handler, createRouteMatcher }));
-const { default: proxy } = await import("../proxy");
+const { clerkProxy: proxy, default: edgeProxy } = await import("../proxy");
 
 beforeEach(() => {
   userId = null;
@@ -39,6 +39,15 @@ async function runProxy(path: string, method = "GET", accept = "application/json
 
 // Identity continuation is a client flow now (`resolveAuthContinuation`, covered by
 // post-auth-redirect.test.ts); API requests no longer pass through this proxy.
+test("analytics requests leave without the Clerk session cookie", async () => {
+  const request = new NextRequest("https://web.test/ingest/e/", { headers: { cookie: "__session=jwt", "content-type": "text/plain" } });
+  const response = await edgeProxy(request, {} as never);
+  const forwarded = response?.headers.get("x-middleware-override-headers")?.split(",") ?? [];
+  expect(forwarded).toContain("content-type");
+  expect(forwarded).not.toContain("cookie");
+  expect(response?.headers.get("x-middleware-request-cookie")).toBeNull();
+});
+
 describe("authentication proxy page contracts with installed Clerk protect", () => {
   test("a signed-out application page opens the modal with its complete destination", async () => {
     const response = await runProxy("/projects/abc?clip=123", "GET", "text/html");

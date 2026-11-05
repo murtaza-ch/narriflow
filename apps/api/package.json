@@ -36,6 +36,7 @@
     "test:ingress:workerd": "node --experimental-strip-types scripts/run-ingress-runtime-gates.ts"
   },
   "dependencies": {
+    "@aws-sdk/xml-builder": "3.972.17",
     "@hono/zod-openapi": "^1.2.2",
     "@hono/zod-validator": "^0.7.6",
     "@modelcontextprotocol/server": "2.4.0",
@@ -48,9 +49,9 @@
     "@narriflow/validators": "workspace:*",
     "@prisma/client": "7.7.0",
     "hono": "^4.13.11",
+    "posthog-node": "5.62.0",
     "svix": "^1.86.0",
-    "zod": "^4.6.7",
-    "@aws-sdk/xml-builder": "3.972.17"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",

@@ -1,5 +1,6 @@
 "use client";
 
+import { track } from "@/lib/analytics";
 import { type ApiTransport, type WorkspaceScope } from "@narriflow/api-client/core";
 import { type IngestActions, createIngestActions, invalidateAfterIntake } from "@narriflow/api-client/ingest";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
@@ -16,13 +17,24 @@ export interface Intake {
 
 const IntakeContext = createContext<Intake | null>(null);
 
+/** Records the attempt only: the link itself stays out of analytics. */
+function trackedIngestActions(actions: IngestActions): IngestActions {
+  return {
+    ...actions,
+    commitLink: (...args) => { track("import_submit", { source: "link" }); return actions.commitLink(...args); },
+    commitDrive: (...args) => { track("import_submit", { source: "drive" }); return actions.commitDrive(...args); },
+    importRss: (...args) => { track("import_submit", { source: "rss" }); return actions.importRss(...args); },
+    uploadSessions: { ...actions.uploadSessions, open: (...args) => { track("import_submit", { source: "file" }); return actions.uploadSessions.open(...args); } },
+  };
+}
+
 export function IntakeProvider({ scope, children }: { scope: WorkspaceScope; children: ReactNode }) {
   const { transport, queryClient } = useApiRuntime();
   const intake = useMemo<Intake>(
     () => ({
       scope,
       transport,
-      actions: createIngestActions(transport, scope),
+      actions: trackedIngestActions(createIngestActions(transport, scope)),
       accepted: () => invalidateAfterIntake(queryClient, scope),
     }),
     [scope, transport, queryClient],

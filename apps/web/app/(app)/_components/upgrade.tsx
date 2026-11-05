@@ -1,5 +1,6 @@
 "use client";
 
+import { track } from "@/lib/analytics";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Box, chakra, Flex, RadioGroup, Stack, Text, type FlexProps } from "@chakra-ui/react";
@@ -69,6 +70,7 @@ export function UpgradeProvider({
       canManageBilling,
       openUpgrade: (next) => {
         if (!next.tier || next.tier === "free") return;
+        track("upgrade_prompt_view", { target_tier: next.tier });
         setPrompt(next);
         setOpen(true);
       },

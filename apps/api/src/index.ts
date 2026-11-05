@@ -1,8 +1,13 @@
+import { runOperationalHealthCheck } from "@narriflow/services/operational-health";
+import { forwardProductEvents } from "@narriflow/services/product-events";
 import { loadApiConfig } from "./config";
+import { installWorkerFailureReporter, sendProductEvents } from "./failure-reporter-runtime";
 import { createProductionApp } from "./runtime";
 import { createApiWorker } from "./worker";
 import { getWorkerMaintenanceRuntime } from "./workflows/maintenance-runtime";
 import { createMaintenanceScheduledHandler } from "./workflows/maintenance-scheduled";
+
+installWorkerFailureReporter();
 
 export default {
   ...createApiWorker({
@@ -10,7 +15,8 @@ export default {
       return createProductionApp(loadApiConfig(environment), environment, runInvocation);
     },
   }),
-  scheduled: createMaintenanceScheduledHandler({ createRuntime: getWorkerMaintenanceRuntime }),
+  scheduled: createMaintenanceScheduledHandler({ createRuntime: getWorkerMaintenanceRuntime, checkHealth: runOperationalHealthCheck,
+    forwardEvents: scheduledAt => forwardProductEvents({ scheduledAt, send: sendProductEvents }) }),
 };
 
 export { RateLimiter } from "./durable-objects/rate-limiter";

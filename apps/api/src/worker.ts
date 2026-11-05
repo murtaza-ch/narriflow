@@ -1,3 +1,4 @@
+import { withServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { createDatabaseScope, type DatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import { type ServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { withWorkerServices, workerServiceEnvironment } from "./worker-services";
@@ -75,7 +76,8 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
       } catch (error) {
         // Nothing below this line answered. Without this the runtime returns an opaque 1101 with no log.
         const requestId = crypto.randomUUID();
-        logFailure("worker_unhandled_failure", error, { requestId, method: request.method });
+        // Outside the invocation scope, so the reporter needs its settings restored.
+        withServiceEnvironment(workerServiceEnvironment(bindings), () => logFailure("worker_unhandled_failure", error, { requestId, method: request.method }));
         return jsonError(500, "internal_error", GENERIC_SERVER_MESSAGE, requestId, refusalHeaders(bindings, request));
       }
     },

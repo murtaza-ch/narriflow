@@ -32,7 +32,8 @@ export function redactFailureText(text: string): string {
 function frames(stack: unknown): string[] | undefined {
   if (typeof stack !== "string") return undefined;
   const lines = stack.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("at "));
-  return lines.length ? lines.slice(0, MAX_FRAMES).map((line) => line.slice(0, 200)) : undefined;
+  // A multi-line message can put its own text on a line that starts with "at ".
+  return lines.length ? lines.slice(0, MAX_FRAMES).map((line) => redactFailureText(line).slice(0, 200)) : undefined;
 }
 
 function record(value: unknown, withStack: boolean): FailureRecord {
@@ -65,5 +66,12 @@ export function describeFailure(cause: unknown): FailureRecord & { causes?: Fail
  * response generic; `context` is theirs to keep free of secrets.
  */
 export function logFailure(message: string, cause: unknown, context: Record<string, unknown> = {}): void {
-  console.warn(JSON.stringify({ level: "error", message, ...context, error: describeFailure(cause) }));
+  const error = describeFailure(cause);
+  console.warn(JSON.stringify({ level: "error", message, ...context, error }));
+  try { reporter?.(message, error, context); } catch { /* Reporting must never break the caller. */ }
 }
+
+export type FailureReporter = (message: string, failure: ReturnType<typeof describeFailure>, context: Record<string, unknown>) => void;
+let reporter: FailureReporter | undefined;
+/** The runtime chooses where failures go. This module stays free of vendors. */
+export function installFailureReporter(next: FailureReporter | undefined) { reporter = next; }

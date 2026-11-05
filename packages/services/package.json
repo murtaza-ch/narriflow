@@ -154,6 +154,14 @@
       "types": "./src/bounded-body.ts",
       "default": "./src/bounded-body.ts"
     },
+    "./product-events": {
+      "types": "./src/product-events.ts",
+      "default": "./src/product-events.ts"
+    },
+    "./operational-health": {
+      "types": "./src/operational-health.ts",
+      "default": "./src/operational-health.ts"
+    },
     "./log-failure": {
       "types": "./src/log-failure.ts",
       "default": "./src/log-failure.ts"

@@ -7,6 +7,7 @@ import { Archivo } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Provider } from "@narriflow/ui/provider";
 import { Toaster } from "@narriflow/ui/components/toaster";
+import { AnalyticsIdentity } from "./_components/analytics-identity";
 import { AuthModal } from "./_components/auth/auth-modal";
 import { captionFontVariables } from "./caption-fonts";
 import "./caption-script-fonts.css";
@@ -83,6 +84,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Provider>
           <ClerkProvider telemetry={false} signInUrl="/?auth=sign-in" signUpUrl="/?auth=sign-up" signInFallbackRedirectUrl="/auth/continue" signUpFallbackRedirectUrl="/auth/continue">
             {children}
+            <AnalyticsIdentity />
             <Suspense fallback={null}><AuthModal /></Suspense>
           </ClerkProvider>
           <Toaster />
