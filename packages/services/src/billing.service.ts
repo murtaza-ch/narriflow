@@ -2,6 +2,7 @@ import { readServiceEnvironment } from "./runtime-environment";
 import { getPrismaClient } from "@narriflow/db/client";
 import { createPendingBusinessWorkspaceService } from "./pending-business-workspace.service";
 import { randomUUID } from "node:crypto";
+import { logFailure } from "./log-failure";
 import Stripe from "stripe";
 import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./workspace-plan-change-stripe";
 import {
@@ -924,13 +925,7 @@ export class BillingService {
           ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
         });
       }
-      console.warn(
-        JSON.stringify({
-          level: "error",
-          message: "workspace_checkout_failed",
-          errorName: error instanceof Error ? error.name : typeof error,
-        }),
-      );
+      logFailure("workspace_checkout_failed", error);
       throw new ExpectedDomainFailureError({
         code: "workspace_checkout_failed",
         kind: "unavailable",

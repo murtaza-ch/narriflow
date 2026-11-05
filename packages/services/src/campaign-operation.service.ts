@@ -1,3 +1,4 @@
+import { logFailure } from "./log-failure";
 import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
@@ -109,13 +110,7 @@ async function settleFailedRenderBestEffort(operationId: string, settle: () => P
   try {
     await settle();
   } catch (error) {
-    console.warn(JSON.stringify({
-      level: "error",
-      message: "campaign_render_failure_settlement_failed",
-      operationId,
-      errorCode: error instanceof CampaignOperationError ? error.code : null,
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    logFailure("campaign_render_failure_settlement_failed", error, { operationId });
   }
 }
 

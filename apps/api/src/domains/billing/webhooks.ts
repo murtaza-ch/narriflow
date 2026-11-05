@@ -1,3 +1,4 @@
+import { logFailure } from "@narriflow/services/log-failure";
 import { createRouteApp } from "../../http/admission";
 import { billingAdmission } from "./admission";
 
@@ -35,13 +36,7 @@ export function createBillingWebhookRoutes(deps: BillingWebhookDeps) {
       if (errorCode(error) === "invalid_signature") {
         return c.json({ error: "invalid_signature" }, 400);
       }
-      console.warn(
-        JSON.stringify({
-          level: "error",
-          message: "stripe_delivery_acceptance_failed",
-          errorCode: errorCode(error) ?? "unknown",
-        }),
-      );
+      logFailure("stripe_delivery_acceptance_failed", error);
       return c.json({ error: "delivery_acceptance_failed" }, 500);
     }
   });

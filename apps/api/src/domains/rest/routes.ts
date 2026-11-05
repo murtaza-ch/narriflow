@@ -9,7 +9,7 @@ import { limitBody, trustedIngressIp } from "../../http/limits";
 import { socketAddress } from "../../server-hooks";
 import { REST_ENDPOINT_COMMANDS, type RestEndpoint } from "./admission";
 import { authFailureThrottle } from "@narriflow/services/auth-failure-throttle";
-import { describeFailure } from "@narriflow/services/log-failure";
+import { logFailure } from "@narriflow/services/log-failure";
 import { assertCompletionCallbackUrl, callbackEventId } from "@narriflow/services/completion-callback";
 import { boundedExpectedDomainFailureDetails, ExpectedDomainFailureError, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
 import { brandProfileService } from "@narriflow/services/brand-profile.service";
@@ -198,7 +198,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
         ? { "WWW-Authenticate": `Bearer realm="narriflow", error="insufficient_scope", scope="${(error.details as { scope: string }).scope}"` } : {};
       return respond(status, { error: error.code, message: error.message, details: boundedExpectedDomainFailureDetails(error.details), retryAfterSeconds }, insufficientScope);
     }
-    log({ level: "error", message: "rest_api_failed", requestId, route: c.req.routePath, error: describeFailure(error) });
+    logFailure("rest_api_failed", error, { requestId, route: c.req.routePath });
     return respond(500, { error: "internal_error", message: "Narriflow could not complete this request. Retry with the same idempotency key, or contact support with the request ID." });
   });
 
