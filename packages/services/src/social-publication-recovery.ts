@@ -44,6 +44,16 @@ type SocialPublicationActionRow = {
   workspace?: { status?: string } | null;
 };
 
+/** A retry reuses the frozen post, so these failures would only repeat. */
+const FROZEN_POST_FAILURES = new Set([
+  "tiktok_privacy_setting_changed",
+  "tiktok_creator_setting_changed",
+  "tiktok_creator_account_changed",
+  "tiktok_publication_invalid",
+  "publication_frozen_media_missing",
+  "publication_capability_version_mismatch",
+]);
+
 /** Every action the post's state allows, before the requesting member's role is considered. */
 function stateAllowedActions(row: SocialPublicationActionRow): SocialPublicationAction[] {
   const failureNamesAccount =
@@ -85,7 +95,9 @@ function stateAllowedActions(row: SocialPublicationActionRow): SocialPublication
   if (row.status === "failed" && reconnectRequired) return ["reconnect_account"];
   if (row.status === "posted" && reconnectRequired) return ["reconnect_account"];
   if (row.status !== "failed") return [];
-  return row.socialAccount?.status === "active" && row.workspace?.status === "active"
+  return row.socialAccount?.status === "active" &&
+    row.workspace?.status === "active" &&
+    !FROZEN_POST_FAILURES.has(row.errorCode ?? "")
     ? ["retry", "schedule_again"]
     : ["schedule_again"];
 }

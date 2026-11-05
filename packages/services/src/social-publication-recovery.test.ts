@@ -58,6 +58,19 @@ describe("Social Publication recovery actions", () => {
       .toEqual(["reconnect_account"]);
   });
 
+  test("a failure tied to what was frozen offers only a new post, because a retry repeats it", () => {
+    for (const code of [
+      "tiktok_privacy_setting_changed",
+      "tiktok_creator_setting_changed",
+      "tiktok_creator_account_changed",
+      "tiktok_publication_invalid",
+      "publication_frozen_media_missing",
+      "publication_capability_version_mismatch",
+    ]) {
+      expect(allowedSocialPublicationActions(failedPost(code, after), owner)).toEqual(["schedule_again"]);
+    }
+  });
+
   test("a restricted workspace cannot try again", () => {
     expect(allowedSocialPublicationActions({
       ...failedPost("tiktok_publish_failed", before),
