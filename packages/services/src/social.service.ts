@@ -71,7 +71,7 @@ export class SocialServiceError extends ExpectedDomainFailureError<SocialService
 const socialPostSnapshotInclude = {
 				publishedVideos: true,
 				socialAccount: {
-					select: { displayName: true, handle: true, status: true },
+					select: { displayName: true, handle: true, status: true, updatedAt: true },
 				},
 				workspace: { select: { status: true } },
 				publicationAttempts: {
@@ -230,6 +230,20 @@ export class SocialService {
 			socialPostId,
 			projectId,
 			...input,
+			mutation,
+		});
+	}
+
+	async retryFailedPublication(
+		scope: ActorScope,
+		socialPostId: string,
+		projectId?: string,
+		mutation?: IntegrationMutation,
+	) {
+		return socialPublicationRecovery.retryFailed({
+			...scope,
+			socialPostId,
+			projectId,
 			mutation,
 		});
 	}

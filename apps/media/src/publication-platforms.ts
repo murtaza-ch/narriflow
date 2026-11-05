@@ -527,12 +527,20 @@ async function jsonRequest<T>(
 				spam_risk_too_many_posts: ["tiktok_rate_limit", 429],
 				access_token_invalid: ["tiktok_authentication_required", 401],
 				scope_not_authorized: ["tiktok_permission_required", 403],
+				unaudited_client_can_only_post_to_private_accounts: [
+					"tiktok_audit_privacy_required",
+					400,
+				],
+				privacy_level_option_mismatch: ["tiktok_privacy_setting_changed", 400],
+				reached_active_user_cap: ["tiktok_rate_limit", 429],
 				rate_limit_exceeded: ["tiktok_rate_limit", 429],
 				internal_error: [errorCode, 500],
 			};
+			// TikTok sends most policy refusals as 403. Only scope_not_authorized
+			// means a missing grant, so an unknown one must not ask for a reconnect.
 			const [mapped, status] = known[code] ?? [
 				errorCode,
-				response.ok ? 400 : response.status,
+				response.ok || response.status === 403 ? 400 : response.status,
 			];
 			throw new ProviderHttpError(
 				mapped,

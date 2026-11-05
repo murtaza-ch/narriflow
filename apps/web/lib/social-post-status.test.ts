@@ -306,3 +306,22 @@ describe("socialPollDelayMs", () => {
     expect(socialPollDelayMs([post({ scheduledFor: null })], NOW)).toBe(3_000);
   });
 });
+
+describe("a failed post after its account changed", () => {
+  const failed = post({ status: "failed", platform: "tiktok", errorCode: "tiktok_permission_required" });
+
+  test("still asks for the reconnect until the account changes", () => {
+    expect(describeSocialPost({ ...failed, reconnectRequired: true }, NOW).error).toContain("Reconnect TikTok");
+  });
+
+  test("stops asking once the account changed, and says what to do next", () => {
+    expect(describeSocialPost({ ...failed, reconnectRequired: false }, NOW).error).toBe(
+      "Your TikTok connection was updated after this failed. Try this post again.",
+    );
+  });
+
+  test("keeps a failure that has nothing to do with the account", () => {
+    const refused = { ...failed, errorCode: "tiktok_audit_privacy_required", reconnectRequired: false };
+    expect(describeSocialPost(refused, NOW).error).toContain("private accounts");
+  });
+});

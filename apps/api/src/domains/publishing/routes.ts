@@ -66,6 +66,7 @@ export interface PublishingRouteDeps {
     | "recheckPublication"
     | "confirmPublication"
     | "republishPublication"
+    | "retryFailedPublication"
   >;
   bulkSocialSchedulingService: Pick<typeof bulkSocialSchedulingService, "preview" | "schedule">;
   publishingQueue: Pick<
@@ -523,6 +524,16 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
           await deps.socialService.republishPublication(getActor(c), postId, c.req.valid("json"), id, mutationOf(c)),
           201,
         );
+      },
+    )
+
+    .post(
+      "/projects/:id/social-posts/:postId/retry",
+      requireIdempotencyKey(),
+      postParams,
+      async (c) => {
+        const { id, postId } = c.req.valid("param");
+        return c.json(await deps.socialService.retryFailedPublication(getActor(c), postId, id, mutationOf(c)), 201);
       },
     );
 }

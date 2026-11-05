@@ -72,6 +72,21 @@ describe("publishing post actions", () => {
 		expect(html).not.toContain("Ask an owner or admin");
 	});
 
+	test("a failed post offers Try again beside Schedule again", () => {
+		const failed = {
+			...post,
+			status: "failed",
+			clipId: "44444444-4444-4444-8444-444444444444",
+			errorCode: "tiktok_audit_privacy_required",
+			reconnectRequired: false,
+			allowedActions: ["retry", "schedule_again"],
+		} as SocialPostSnapshot;
+		const html = render(failed, true);
+		expect(html).toContain("Try again");
+		expect(html).toContain("Schedule again");
+		expect(html).not.toContain("Reconnect account");
+	});
+
 	test("a viewer sees neither actions nor the request", () => {
 		const html = render({ ...post, allowedActions: [] }, false);
 		expect(html).not.toContain("Confirm published");

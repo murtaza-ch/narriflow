@@ -28,6 +28,43 @@ describe("Social Publication recovery actions", () => {
     ).toEqual(["schedule_again"]);
   });
 
+  const failedAt = new Date("2026-11-05T20:00:00Z");
+  const before = new Date("2026-11-05T19:00:00Z");
+  const after = new Date("2026-11-05T21:00:00Z");
+  const failedPost = (errorCode: string, accountUpdatedAt: Date, status = "active") => ({
+    status: "failed",
+    errorCode,
+    updatedAt: failedAt,
+    workspace: { status: "active" },
+    socialAccount: { status, updatedAt: accountUpdatedAt },
+  });
+
+  test("a definite failure can be tried again on the same post", () => {
+    expect(allowedSocialPublicationActions(failedPost("tiktok_publish_failed", before), owner))
+      .toEqual(["retry", "schedule_again"]);
+  });
+
+  test("a failure that names the account asks for a reconnect only until the account changes", () => {
+    for (const code of ["tiktok_permission_required", "tiktok_authentication_required"]) {
+      expect(allowedSocialPublicationActions(failedPost(code, before), owner)).toEqual(["reconnect_account"]);
+      expect(socialPublicationReconnectRequired(failedPost(code, before))).toBe(true);
+      expect(allowedSocialPublicationActions(failedPost(code, after), owner)).toEqual(["retry", "schedule_again"]);
+      expect(socialPublicationReconnectRequired(failedPost(code, after))).toBe(false);
+    }
+  });
+
+  test("an account that is not active still needs a reconnect, however recently it changed", () => {
+    expect(allowedSocialPublicationActions(failedPost("tiktok_publish_failed", after, "expired"), owner))
+      .toEqual(["reconnect_account"]);
+  });
+
+  test("a restricted workspace cannot try again", () => {
+    expect(allowedSocialPublicationActions({
+      ...failedPost("tiktok_publish_failed", before),
+      workspace: { status: "restricted" },
+    }, owner)).toEqual(["schedule_again"]);
+  });
+
   test("workspace restriction and account revocation stop new provider work", () => {
     expect(
       allowedSocialPublicationActions({

@@ -308,6 +308,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"TikTok is restricting uploads from this account. Resolve the restriction in TikTok before trying again.",
 	tiktok_permission_required:
 		"Reconnect TikTok and allow the permissions required for this delivery mode.",
+	tiktok_audit_privacy_required:
+		"TikTok only lets apps it hasn't reviewed post to private accounts. Make this TikTok account private and try again, or send the video to your TikTok inbox.",
+	tiktok_privacy_setting_changed:
+		"The privacy option chosen for this post is no longer available on TikTok. Schedule it again and choose another.",
 	tiktok_authentication_required:
 		"Your TikTok connection expired or was revoked. Reconnect the account before trying again.",
 	social_account_reconnect_required:

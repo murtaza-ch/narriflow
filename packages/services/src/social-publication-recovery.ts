@@ -39,18 +39,28 @@ const DEFAULT_RECONCILIATION_DEADLINE_MS = 24 * 60 * 60_000;
 type SocialPublicationActionRow = {
   status: string;
   errorCode: string | null;
-  socialAccount?: { status?: string } | null;
+  updatedAt?: Date;
+  socialAccount?: { status?: string; updatedAt?: Date } | null;
   workspace?: { status?: string } | null;
 };
 
 /** Every action the post's state allows, before the requesting member's role is considered. */
 function stateAllowedActions(row: SocialPublicationActionRow): SocialPublicationAction[] {
-  const reconnectRequired =
-    (row.socialAccount?.status !== undefined &&
-      row.socialAccount.status !== "active") ||
+  const failureNamesAccount =
     row.errorCode === "social_account_reconnect_required" ||
     row.errorCode?.includes("authentication") ||
     row.errorCode?.includes("permission");
+  // The stored code describes the moment the post failed. A later account
+  // change may have fixed it, and another failed attempt is the only cost of
+  // being wrong, so the account's current state decides.
+  const accountChangedSinceFailure =
+    row.updatedAt !== undefined &&
+    row.socialAccount?.updatedAt !== undefined &&
+    row.socialAccount.updatedAt > row.updatedAt;
+  const reconnectRequired =
+    (row.socialAccount?.status !== undefined &&
+      row.socialAccount.status !== "active") ||
+    (failureNamesAccount && !accountChangedSinceFailure);
   if (
     row.status === "draft" ||
     row.status === "preparing_video" ||
@@ -74,7 +84,10 @@ function stateAllowedActions(row: SocialPublicationActionRow): SocialPublication
   }
   if (row.status === "failed" && reconnectRequired) return ["reconnect_account"];
   if (row.status === "posted" && reconnectRequired) return ["reconnect_account"];
-  return row.status === "failed" ? ["schedule_again"] : [];
+  if (row.status !== "failed") return [];
+  return row.socialAccount?.status === "active" && row.workspace?.status === "active"
+    ? ["retry", "schedule_again"]
+    : ["schedule_again"];
 }
 
 /** Whether the post needs its account reconnected, whoever is looking. */
@@ -370,6 +383,148 @@ async function loadRecoveryTarget(
   return { post, attempt, frozen: post.frozenState };
 }
 
+/** Starts a new attempt on the same frozen post. An unknown outcome needs the
+ * person's reason and duplicate acknowledgement; a failed post has no provider
+ * post to duplicate, so it needs neither. */
+async function startReplacementAttempt(
+  input: {
+    workspaceId: string;
+    projectId?: string;
+    actorUserId: string;
+    socialPostId: string;
+    now?: Date;
+    mutation?: IntegrationMutation;
+  },
+  from: "needs_attention" | "failed",
+  parsed: { reason: string; duplicateRiskAcknowledged: boolean },
+) {
+  const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
+  // Publishing again is a new submission, so it needs the plan; recheck and confirm do not.
+  requirePlanFeature(actor.pricingTier, "publishing.schedule");
+  const now = input.now ?? new Date();
+  const mutate = async (tx: Prisma.TransactionClient) => {
+    const admission=await readExecutionAdmission(tx);
+    const { post, attempt, frozen } = await loadRecoveryTarget(tx, input);
+    assertExecutionAdmissionOpen(admission);
+    if (
+      post.status !== from ||
+      attempt.phase !== from ||
+      post.workspace?.status !== "active" ||
+      post.socialAccount?.status !== "active"
+    ) {
+      throw new SocialPublicationRecoveryError(
+        "social_publication_republish_blocked",
+        "Publishing again is blocked until the workspace and social account are active",
+      );
+    }
+    if (post.socialAccountId) {
+      await requirePublishableSocialAccount(tx, { workspaceId: input.workspaceId, accountId: post.socialAccountId, tier: actor.pricingTier });
+    }
+    const frozenSettings = frozen.providerSettings && typeof frozen.providerSettings === "object" && !Array.isArray(frozen.providerSettings)
+      ? (frozen.providerSettings as Prisma.JsonObject) : {};
+    if (hasCustomThumbnail(frozenSettings)) requirePlanFeature(actor.pricingTier, "publishing.customThumbnails");
+    const decisionId = randomUUID();
+    const nextAttemptId = randomUUID();
+    const fencedAttempt = await tx.socialPublicationAttempt.updateMany({
+      where: { id: attempt.id, phase: from },
+      data: { operationLookupHash: null },
+    });
+    if (fencedAttempt.count !== 1) {
+      throw new SocialPublicationRecoveryError(
+        "social_publication_transition_conflict",
+        "The publication changed before Publish again completed",
+      );
+    }
+    const updated = await tx.socialPost.updateMany({
+      where: { id: post.id, status: from },
+      data: {
+        status: "scheduled",
+        generation:{increment:1},
+        errorCode: null,
+        errorDisposition: null,
+        nextAttemptAt: now,
+      },
+    });
+    if (updated.count !== 1) {
+      throw new SocialPublicationRecoveryError(
+        "social_publication_transition_conflict",
+        "The publication changed before Publish again completed",
+      );
+    }
+    await tx.socialPublicationAttempt.create({
+      data: {
+        id: nextAttemptId,
+        socialPostId: post.id,
+        frozenStateId: frozen.id,
+        attemptNumber: attempt.attemptNumber + 1,
+        priorAttemptId: attempt.id,
+        executionActorUserId:input.actorUserId,
+        idempotencyKey: `${attempt.idempotencyKey}:manual:${decisionId}`,
+        phase: "retry_scheduled",
+        nextActionAt: now,
+        processingDeadline: new Date(now.getTime() + DEFAULT_PROCESSING_DEADLINE_MS),
+        reconciliationDeadline: new Date(now.getTime() + DEFAULT_RECONCILIATION_DEADLINE_MS),
+      },
+    });
+    await tx.publicationManualDecision.create({
+      data: {
+        id: decisionId,
+        socialPostId: post.id,
+        attemptId: attempt.id,
+        workspaceId: input.workspaceId,
+        actorUserId: input.actorUserId,
+        kind: "republish_requested",
+        reason: parsed.reason,
+      },
+    });
+    await appendPublicationDispatch(tx,post.id,{dueAt:now});
+    return {
+      socialPostId: post.id,
+      priorAttemptId: attempt.id,
+      attemptId: nextAttemptId,
+      status: "scheduled" as const,
+    };
+  };
+  const accepted = input.mutation
+    ? await getOperationReceiptExecutor().execute({
+        identity: {
+          workspaceId: input.workspaceId,
+          actorUserId: input.actorUserId,
+          command: "publish_social_publication_again",
+          clientIdempotencyKey: input.mutation.clientIdempotencyKey,
+        },
+        input: {
+          socialPostId: input.socialPostId,
+          projectId: input.projectId ?? null,
+          ...parsed,
+        },
+        authorize: async () => {
+          await workspaceService.requireActor(
+            input.actorUserId,
+            input.workspaceId,
+            "publishing.manage",
+          );
+        },
+        beforeAccept: input.mutation.beforeAccept,
+        mutate: async (tx) => {
+          const value = await mutate(tx);
+          return {
+            resourceType: "social_post",
+            resourceId: value.socialPostId,
+            value,
+          };
+        },
+      })
+    : { value: await requirePrisma().$transaction(mutate), replayed: false };
+  const result = accepted.value;
+  if (accepted.replayed) input.mutation?.onReplay?.();
+  if (!accepted.replayed)
+    structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
+      decision: "publish_again",
+    });
+  return result;
+}
+
 export const socialPublicationRecovery = {
   async inspect(input: {
     actorUserId: string;
@@ -397,7 +552,7 @@ export const socialPublicationRecovery = {
         errorDisposition: true,
         nextAttemptAt: true,
         workspace: { select: { status: true } },
-        socialAccount: { select: { status: true } },
+        socialAccount: { select: { status: true, updatedAt: true } },
         trackedVideos: latestCaptureInclude,
         publicationAttempts: {
           orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
@@ -808,135 +963,24 @@ export const socialPublicationRecovery = {
       mutation?: IntegrationMutation;
     } & RepublishSocialPublicationInput,
   ) {
-    const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
-    // Publishing again is a new submission, so it needs the plan; recheck and confirm do not.
-    requirePlanFeature(actor.pricingTier, "publishing.schedule");
-    const parsed = republishSocialPublicationSchema.parse({
+    return startReplacementAttempt(input, "needs_attention", republishSocialPublicationSchema.parse({
       reason: input.reason,
       duplicateRiskAcknowledged: input.duplicateRiskAcknowledged,
+    }));
+  },
+
+  async retryFailed(input: {
+    workspaceId: string;
+    projectId?: string;
+    actorUserId: string;
+    socialPostId: string;
+    now?: Date;
+    mutation?: IntegrationMutation;
+  }) {
+    return startReplacementAttempt(input, "failed", {
+      reason: "Tried a failed post again",
+      duplicateRiskAcknowledged: false,
     });
-    const now = input.now ?? new Date();
-    const mutate = async (tx: Prisma.TransactionClient) => {
-      const admission=await readExecutionAdmission(tx);
-      const { post, attempt, frozen } = await loadRecoveryTarget(tx, input);
-      assertExecutionAdmissionOpen(admission);
-      if (
-        post.status !== "needs_attention" ||
-        attempt.phase !== "needs_attention" ||
-        post.workspace?.status !== "active" ||
-        post.socialAccount?.status !== "active"
-      ) {
-        throw new SocialPublicationRecoveryError(
-          "social_publication_republish_blocked",
-          "Publishing again is blocked until the workspace and social account are active",
-        );
-      }
-      if (post.socialAccountId) {
-        await requirePublishableSocialAccount(tx, { workspaceId: input.workspaceId, accountId: post.socialAccountId, tier: actor.pricingTier });
-      }
-      const frozenSettings = frozen.providerSettings && typeof frozen.providerSettings === "object" && !Array.isArray(frozen.providerSettings)
-        ? (frozen.providerSettings as Prisma.JsonObject) : {};
-      if (hasCustomThumbnail(frozenSettings)) requirePlanFeature(actor.pricingTier, "publishing.customThumbnails");
-      const decisionId = randomUUID();
-      const nextAttemptId = randomUUID();
-      const fencedAttempt = await tx.socialPublicationAttempt.updateMany({
-        where: { id: attempt.id, phase: "needs_attention" },
-        data: { operationLookupHash: null },
-      });
-      if (fencedAttempt.count !== 1) {
-        throw new SocialPublicationRecoveryError(
-          "social_publication_transition_conflict",
-          "The publication changed before Publish again completed",
-        );
-      }
-      const updated = await tx.socialPost.updateMany({
-        where: { id: post.id, status: "needs_attention" },
-        data: {
-          status: "scheduled",
-          generation:{increment:1},
-          errorCode: null,
-          errorDisposition: null,
-          nextAttemptAt: now,
-        },
-      });
-      if (updated.count !== 1) {
-        throw new SocialPublicationRecoveryError(
-          "social_publication_transition_conflict",
-          "The publication changed before Publish again completed",
-        );
-      }
-      await tx.socialPublicationAttempt.create({
-        data: {
-          id: nextAttemptId,
-          socialPostId: post.id,
-          frozenStateId: frozen.id,
-          attemptNumber: attempt.attemptNumber + 1,
-          priorAttemptId: attempt.id,
-          executionActorUserId:input.actorUserId,
-          idempotencyKey: `${attempt.idempotencyKey}:manual:${decisionId}`,
-          phase: "retry_scheduled",
-          nextActionAt: now,
-          processingDeadline: new Date(now.getTime() + DEFAULT_PROCESSING_DEADLINE_MS),
-          reconciliationDeadline: new Date(now.getTime() + DEFAULT_RECONCILIATION_DEADLINE_MS),
-        },
-      });
-      await tx.publicationManualDecision.create({
-        data: {
-          id: decisionId,
-          socialPostId: post.id,
-          attemptId: attempt.id,
-          workspaceId: input.workspaceId,
-          actorUserId: input.actorUserId,
-          kind: "republish_requested",
-          reason: parsed.reason,
-        },
-      });
-      await appendPublicationDispatch(tx,post.id,{dueAt:now});
-      return {
-        socialPostId: post.id,
-        priorAttemptId: attempt.id,
-        attemptId: nextAttemptId,
-        status: "scheduled" as const,
-      };
-    };
-    const accepted = input.mutation
-      ? await getOperationReceiptExecutor().execute({
-          identity: {
-            workspaceId: input.workspaceId,
-            actorUserId: input.actorUserId,
-            command: "publish_social_publication_again",
-            clientIdempotencyKey: input.mutation.clientIdempotencyKey,
-          },
-          input: {
-            socialPostId: input.socialPostId,
-            projectId: input.projectId ?? null,
-            ...parsed,
-          },
-          authorize: async () => {
-            await workspaceService.requireActor(
-              input.actorUserId,
-              input.workspaceId,
-              "publishing.manage",
-            );
-          },
-          beforeAccept: input.mutation.beforeAccept,
-          mutate: async (tx) => {
-            const value = await mutate(tx);
-            return {
-              resourceType: "social_post",
-              resourceId: value.socialPostId,
-              value,
-            };
-          },
-        })
-      : { value: await requirePrisma().$transaction(mutate), replayed: false };
-    const result = accepted.value;
-    if (accepted.replayed) input.mutation?.onReplay?.();
-    if (!accepted.replayed)
-      structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
-        decision: "publish_again",
-      });
-    return result;
   },
 
 };

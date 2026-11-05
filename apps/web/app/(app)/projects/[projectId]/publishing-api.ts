@@ -48,6 +48,7 @@ export function createProjectPublishingApi(transport: ApiTransport, scope: Works
 		recheck: changesPosts(commands.recheck),
 		confirm: changesPosts(commands.confirm),
 		publishAgain: changesPosts(commands.publishAgain),
+		retry: changesPosts(commands.retry),
 
 		publishingOptions: async (projectId: string, accountId: string) =>
 			(await publishing.projects[":id"]["social-accounts"][":accountId"]["publishing-options"].$get({ param: { id: projectId, accountId } })).json(),

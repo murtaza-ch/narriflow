@@ -121,7 +121,7 @@ export function PublishingPosts({
 	filterable = false,
 	timeZone,
 }: {
-	api: Pick<ProjectPublishingApi, "cancelPost" | "refreshInbox" | "recheck" | "confirm" | "publishAgain">;
+	api: Pick<ProjectPublishingApi, "cancelPost" | "refreshInbox" | "recheck" | "confirm" | "publishAgain" | "retry">;
 	projectId: string;
 	posts: SocialPostSnapshot[];
 	clips: ClipSnapshot[];
@@ -153,6 +153,7 @@ export function PublishingPosts({
 		try {
 			if (action === "cancel") await api.cancelPost(projectId, post.id);
 			else if (action === "refresh-inbox") await api.refreshInbox(projectId, post.id);
+			else if (action === "retry") await api.retry(projectId, post.id, decision.current.keyFor({ action, postId: post.id }));
 			else if (action === "confirm_published") {
 				const input = {
 					reason,
@@ -490,6 +491,16 @@ export function PublishingPosts({
 									onClick={() => void act(post, "cancel")}
 								>
 									<X size={14} />
+								</Button>
+							)}
+							{post.allowedActions.includes("retry") && (
+								<Button
+									size="sm"
+									variant="subtle"
+									disabled={busy === post.id}
+									onClick={() => void act(post, "retry")}
+								>
+									{busy === post.id ? "Trying again…" : "Try again"}
 								</Button>
 							)}
 							{post.allowedActions.includes("schedule_again") &&

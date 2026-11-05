@@ -40,6 +40,7 @@ export const socialPublicationActionSchema = z.enum([
 	"recheck",
 	"confirm_published",
 	"publish_again",
+	"retry",
 	"reconnect_account",
 	"schedule_again",
 ]);

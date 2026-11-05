@@ -55,6 +55,8 @@ export function publishingCommands(client: PublishingClient) {
       (await client.projects[":id"]["social-posts"][":postId"].confirm.$post({ param: { id: projectId, postId }, json: input }, keyed(idempotencyKey))).json(),
     publishAgain: async (projectId: string, postId: string, input: RepublishInput, idempotencyKey: string) =>
       (await client.projects[":id"]["social-posts"][":postId"]["publish-again"].$post({ param: { id: projectId, postId }, json: input }, keyed(idempotencyKey))).json(),
+    retry: async (projectId: string, postId: string, idempotencyKey: string) =>
+      (await client.projects[":id"]["social-posts"][":postId"].retry.$post({ param: { id: projectId, postId } }, keyed(idempotencyKey))).json(),
   };
 }
 

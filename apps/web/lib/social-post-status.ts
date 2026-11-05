@@ -153,6 +153,7 @@ type SocialPostFeedbackInput = Pick<
 	| "nextAttemptAt"
 > & {
 	createdAt?: string | null;
+	reconnectRequired?: boolean;
 	deliveryMode?: "direct" | "tiktok_inbox";
 	providerProcessingStatus?: SocialPostSnapshot["providerProcessingStatus"];
 };
@@ -405,6 +406,9 @@ export function describeSocialPost(
 				post.errorCode === "publication_media_preparation_failed" ||
 				post.errorCode === "social_account_reconnect_required" ||
 				post.errorCode === "publication_capability_version_mismatch";
+			const accountFixed =
+				post.reconnectRequired === false &&
+				/reconnect|authentication|permission/.test(post.errorCode ?? "");
 			return {
 				label: SOCIAL_POST_STATUS_LABELS.failed,
 				tone: "danger",
@@ -414,9 +418,10 @@ export function describeSocialPost(
 				// Unmapped provider codes keep the raw code in the copy: it's the one
 				// thing that makes a support conversation about a platform-specific
 				// rejection (there are ~35 of them) actionable.
-				error:
-					publishFailureMessage(post.errorCode) ??
-					`${platformLabel} rejected this post. Schedule it again, or contact support if it keeps failing.`,
+				error: accountFixed
+					? `Your ${platformLabel} connection was updated after this failed. Try this post again.`
+					: (publishFailureMessage(post.errorCode) ??
+						`${platformLabel} rejected this post. Schedule it again, or contact support if it keeps failing.`),
 				isBusy: false,
 				isLive: false,
 			};

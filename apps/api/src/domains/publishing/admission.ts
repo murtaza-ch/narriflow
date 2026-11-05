@@ -46,4 +46,5 @@ export const publishingAdmission = {
   "POST /projects/:id/social-posts/:postId/recheck": { kind: "project", capability: "publishing.manage", projectParam: "id", deferRateRefusal: true },
   "POST /projects/:id/social-posts/:postId/confirm": { kind: "project", capability: "publishing.manage", projectParam: "id", deferRateRefusal: true },
   "POST /projects/:id/social-posts/:postId/publish-again": { kind: "project", capability: "publishing.manage", projectParam: "id", deferRateRefusal: true },
+  "POST /projects/:id/social-posts/:postId/retry": { kind: "project", capability: "publishing.manage", projectParam: "id", deferRateRefusal: true },
 } as const satisfies AdmissionTable;

@@ -73,6 +73,7 @@ function harness(options: { role?: WorkspaceActorContext["role"]; rateLimit?: ()
       recheckPublication: record("recheckPublication"),
       confirmPublication: record("confirmPublication"),
       republishPublication: record("republishPublication"),
+      retryFailedPublication: record("retryFailedPublication"),
     },
     bulkSocialSchedulingService: { preview: record("preview"), schedule: record("schedule") },
     publishingQueue: {
@@ -572,6 +573,16 @@ describe("project publishing", () => {
       expect(calls[0]!.args.slice(1, 4)).toEqual([POST_ID, body, PROJECT_ID]);
       expect((calls[0]!.args[4] as { clientIdempotencyKey: string }).clientIdempotencyKey).toBe(KEY);
     }
+  });
+
+  test("retrying a failed post needs a key, not a reason, and acts as the actual actor and project", async () => {
+    const { request, calls } = harness();
+    expect((await request(`${publicationPath}/retry`, { method: "POST" })).status).toBe(400);
+    expect(calls).toEqual([]);
+    expect((await request(`${publicationPath}/retry`, { method: "POST", key: KEY })).status).toBe(201);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.args.slice(1, 3)).toEqual([POST_ID, PROJECT_ID]);
+    expect((calls[0]!.args[3] as { clientIdempotencyKey: string }).clientIdempotencyKey).toBe(KEY);
   });
 
   test.each([

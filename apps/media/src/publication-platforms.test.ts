@@ -491,6 +491,27 @@ describe("native publication adapters", () => {
 		});
 	});
 
+
+	test.each([
+		["unaudited_client_can_only_post_to_private_accounts", 403, "tiktok_audit_privacy_required"],
+		["privacy_level_option_mismatch", 403, "tiktok_privacy_setting_changed"],
+		["reached_active_user_cap", 403, "tiktok_rate_limit"],
+		["a_refusal_tiktok_adds_later", 403, "tiktok_publish_init_failed"],
+		["scope_not_authorized", 401, "tiktok_permission_required"],
+	] as const)("TikTok init refusal %s reports its own cause", async (providerCode, status, code) => {
+		const state = harness([
+			json({ data: { privacy_level_options: ["SELF_ONLY"] }, error: { code: "ok" } }),
+			json({ error: { code: providerCode, message: "refused" } }, { status }),
+		], false);
+		const request = input("tiktok");
+		request.providerSettings = { ...request.providerSettings, tiktokPrivacyLevel: "SELF_ONLY" };
+		expect(
+			await state.registry.get("tiktok").publish(request, {
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			}),
+		).toMatchObject({ kind: "failed", failure: { code, disposition: code === "tiktok_rate_limit" ? "safe_retry" : "permanent" } });
+	});
 	test("maps Facebook role, token, upload, rate-limit, and processing failures to stable codes", async () => {
 		const missingRole = harness([], false);
 		const withoutRole = input("facebook_reels");
