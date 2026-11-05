@@ -134,7 +134,7 @@ export class ClipPreparationService {
     return this.inputForGroupIdentity(tx, { id: reference.subject.id, generation: reference.generation, deploymentEpoch: epoch.epoch });
   }
 
-  private async inputForGroupIdentity(tx: Tx, identity: { id: string; generation: number; deploymentEpoch: number }, locked?: { group: RenderGroup; projectId: string }) {
+  private async inputForGroupIdentity(tx: Tx, identity: { id: string; generation: number; deploymentEpoch: number }, locked?: { group: RenderGroup; projectId: string }, options: { readOnly?: boolean } = {}) {
     const epoch = { epoch: identity.deploymentEpoch }, reference = { subject: { id: identity.id }, generation: identity.generation };
     const initial = locked?.group ?? await tx.renderGroup.findUnique({ where: { id: reference.subject.id } });
     if (!initial) throw new ClipPreparationError("clip_preparation_input_invalid");
@@ -237,7 +237,8 @@ export class ClipPreparationService {
     // Never upgrade its shared group lock to initialize authority during a grant.
     if (locked && !group.operationDeadlineAt) throw new ClipPreparationError("clip_preparation_input_invalid");
     const groupDeadlineAt = group.operationDeadlineAt ?? new Date(clock.getTime() + deadlineMs);
-    if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: groupDeadlineAt } });
+    // A deadline holds a render slot, so restore only reads: it must not admit a waiting group.
+    if (!group.operationDeadlineAt && !options.readOnly) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: groupDeadlineAt } });
     return { input, groupId: group.id, deploymentEpoch: epoch.epoch, clock, groupDeadlineAt, permissionExpiresAt: project.expiresAt ?? undefined };
   }
 
@@ -247,7 +248,7 @@ export class ClipPreparationService {
     await assertExecutionRestorePage(tx,page);
     const group=await tx.renderGroup.findUniqueOrThrow({where:{id:groupId},select:{generation:true,deploymentEpoch:true}});
     if(group.deploymentEpoch!==page.deploymentEpoch)throw new ClipPreparationError("clip_preparation_input_invalid");
-    return this.inputForGroupIdentity(tx,{id:groupId,generation:group.generation,deploymentEpoch:group.deploymentEpoch});
+    return this.inputForGroupIdentity(tx,{id:groupId,generation:group.generation,deploymentEpoch:group.deploymentEpoch},undefined,{readOnly:true});
   }
 
   private async admission(tx: Tx, row: ClipPreparation, groupId: string): Promise<ClipPreparationAdmission> {

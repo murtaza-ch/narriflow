@@ -25,7 +25,7 @@ export interface NativeValidationReference { id: string; attemptToken: string; g
 export interface NativeValidationCommit extends ExecutorArtifactCommit { evidence?: NativeValidationEvidence }
 export type NativeValidationPreparation =
   | { kind: "terminal" | "superseded" }
-  | { kind: "sleep"; dueAt: Date }
+  | { kind: "sleep" | "capacity_wait"; dueAt: Date }
   | { kind: "dependency_wait"; dueAt: Date; deadlineDispatchId: string; dispatchIds: readonly string[] }
   | { kind: "waiting"; deadline: ExecutionDeadline; deliveryId: string; dispatchIds: readonly string[] };
 

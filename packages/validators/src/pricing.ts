@@ -56,6 +56,8 @@ export interface PlanLimits {
   maxSourceSeconds: number;
   /** Processing Capacity: new imports wait while this many videos are importing or processing (ADR 0012; checked at intake only). */
   processingCapacity: number;
+  /** Share of the render queue: a Workspace at weight 4 moves four times as fast as one at weight 1. */
+  renderQueueWeight: number;
   /** Hours a new Project is kept; `null` keeps it while the plan is paid. */
   projectRetentionHours: number | null;
   /** Active Brand Profiles in the owner scope. */
@@ -144,6 +146,7 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       monthlyCredits: 60,
       maxSourceSeconds: 60 * MINUTE,
       processingCapacity: 2,
+      renderQueueWeight: 1,
       projectRetentionHours: 72,
       brandProfiles: 0,
       brandTemplates: 0,
@@ -165,6 +168,7 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       monthlyCredits: 300,
       maxSourceSeconds: 120 * MINUTE,
       processingCapacity: 5,
+      renderQueueWeight: 2,
       projectRetentionHours: null,
       brandProfiles: 1,
       brandTemplates: 3,
@@ -186,6 +190,7 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       monthlyCredits: 900,
       maxSourceSeconds: 180 * MINUTE,
       processingCapacity: 10,
+      renderQueueWeight: 3,
       projectRetentionHours: null,
       brandProfiles: 4,
       brandTemplates: 10,
@@ -207,6 +212,7 @@ export const PLAN_CATALOG: Readonly<Record<PricingTier, PlanDefinition>> = {
       monthlyCredits: 1800,
       maxSourceSeconds: 180 * MINUTE,
       processingCapacity: 20,
+      renderQueueWeight: 4,
       projectRetentionHours: null,
       brandProfiles: 10,
       brandTemplates: 30,

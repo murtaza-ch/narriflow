@@ -42,6 +42,7 @@ describe("pricing tiers", () => {
     const numeric = (limits: PlanLimits) => [
       limits.maxSourceSeconds,
       limits.processingCapacity,
+      limits.renderQueueWeight,
       limits.brandProfiles,
       limits.brandTemplates,
       limits.socialDestinations,

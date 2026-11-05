@@ -131,10 +131,12 @@ dbDescribe("Targeted serverless domain execution", () => {
     const late = await db.clipRender.create({ data: { clipId: value.group.clipId, aspectRatio: "ratio_16_9", resolution: "1080p", editorRevision: 1 } });
     const pending = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
     expect(pending.kind === "settled" ? pending.outcome.status : pending.kind).toBe("pending");
-    expect(pending.kind === "settled" ? pending.wait?.deadlines.map(value => value.reference.subject.kind) : []).toEqual(["render_group"]);
+    // Not yet admitted to a render slot, so the parent has no group deadline to watch.
+    expect(pending.kind === "settled" ? pending.wait?.deadlines : null).toEqual([]);
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ status: "waiting", leaseOwner: null, attemptId: null, attemptCount: 0 });
-    const group = await db.renderGroup.findUniqueOrThrow({ where: { id: prepared.groups[0]!.groupId } });
     const driver = (await Promise.all(prepared.dispatchIds.map(id => readExecutionDispatch(db,id)))).find(record => record?.reference.kind === "operation_driver" && record.deadlineKind === null)!;
+    await new RenderGroupLifecycle({ prisma: db }).prepareInputDeadline(driver.reference);
+    const group = await db.renderGroup.findUniqueOrThrow({ where: { id: prepared.groups[0]!.groupId } });
     const modal = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "render_group", id: group.id },
       generation: group.generation, inputHash: driver.reference.inputHash, dueAt: driver.dueAt }));
     dispatches.push(modal.reference.dispatchId);

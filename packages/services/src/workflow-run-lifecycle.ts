@@ -41,6 +41,8 @@ import { appendExecutionDispatch, appendStableExecutionDispatch, readExecutionDi
 import { appendWorkflowRunDispatch, readWorkflowRunInputHash } from "./workflow-dispatch";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition, providerAttemptReferenceSchema, type ProviderAttemptReference } from "@narriflow/validators/execution";
+const RENDER_PARENT_RECHECK_MS = 15 * 60_000;
+
 export type { ProviderAttemptReference } from "@narriflow/validators/execution";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { appendExportBundleExpiry } from "./export-bundle-expiry";
@@ -2420,9 +2422,10 @@ export class WorkflowRunLifecycle {
       select: { id: true, generation: true, deploymentEpoch: true, operationDeadlineAt: true } });
     const keys: string[] = [];
     for (const group of groups) {
-      if (!group.operationDeadlineAt) return false;
       const identity = { deploymentEpoch: group.deploymentEpoch, kind: "operation_driver" as const, subject: { kind: "render_group" as const, id: group.id }, generation: group.generation };
-      keys.push((await executionDispatchIdentity(identity)).deliveryKey, (await executionDispatchIdentity({ ...identity, deadlineKind: "operation", observedDeadlineAt: group.operationDeadlineAt })).deliveryKey);
+      keys.push((await executionDispatchIdentity(identity)).deliveryKey);
+      // A group waiting for a slot has no watchdog yet, and that is not undispatched work.
+      if (group.operationDeadlineAt) keys.push((await executionDispatchIdentity({ ...identity, deadlineKind: "operation", observedDeadlineAt: group.operationDeadlineAt })).deliveryKey);
     }
     return await this.prisma.executionDispatch.count({ where: { deliveryKey: { in: keys }, acknowledgedAt: { not: null } } }) === keys.length;
   }
@@ -2473,11 +2476,13 @@ export class WorkflowRunLifecycle {
           inputHash: await renderGroupExecutionInputHash({ ...ref, parentInputHash: parent.reference.inputHash, exportIdentity: group.exportIdentity,
             memberIds: group.members.map(member => member.clipRenderId), configuration }),
           dueAt: group.nextAttemptAt ?? group.createdAt });
-        const acceptedExports = await tx.clipExport.findMany({ where: { retryCount: 0, variants: { some: { render: { id: { in: group.members.map(member => member.clipRenderId) } } } } }, select: { createdAt: true } });
-        const dueAt = group.operationDeadlineAt ?? new Date(Math.min(now.getTime() + 45 * 60_000, run.operationDeadlineAt?.getTime() ?? Infinity, ...acceptedExports.map(row => row.createdAt.getTime() + 45 * 60_000)));
-        if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: dueAt } });
-        const watchdog = await appendExecutionDispatch(tx, { ...identity, inputHash: dispatch.reference.inputHash, dueAt, deadlineKind: "operation", observedDeadlineAt: dueAt });
-        dispatchIds.push(watchdog.reference.dispatchId, dispatch.reference.dispatchId);
+        // The group's own driver sets its deadline when it is admitted to a render slot.
+        if (group.operationDeadlineAt) {
+          const dueAt = group.operationDeadlineAt;
+          const watchdog = await appendExecutionDispatch(tx, { ...identity, inputHash: dispatch.reference.inputHash, dueAt, deadlineKind: "operation", observedDeadlineAt: dueAt });
+          dispatchIds.push(watchdog.reference.dispatchId);
+        }
+        dispatchIds.push(dispatch.reference.dispatchId);
       }
       return { kind: "prepared", workSet, groups, dispatchIds };
     });
@@ -2499,7 +2504,8 @@ export class WorkflowRunLifecycle {
         const groups = await tx.renderGroup.findMany({ where: { workflowRunId: state.run.id, status: { in: ["queued", "running"] } }, orderBy: { id: "asc" } });
         const deadlines: { reference: ExecutionDispatchReference; observedDeadlineAt: Date }[] = [];
         for (const group of groups) {
-          if (!group.operationDeadlineAt) throw new Error("render_group_deadline_missing");
+          // Not yet admitted to a render slot: it has no deadline to watch.
+          if (!group.operationDeadlineAt) continue;
           const identity = { deploymentEpoch: group.deploymentEpoch, generation: group.generation, kind: "operation_driver" as const, subject: { kind: "render_group" as const, id: group.id } };
           const key = await executionDispatchIdentity(identity);
           const driver = await tx.executionDispatch.findUniqueOrThrow({ where: { deliveryKey: key.deliveryKey } });
@@ -2508,8 +2514,11 @@ export class WorkflowRunLifecycle {
           deadlines.push({ reference: watchdog.reference, observedDeadlineAt: group.operationDeadlineAt });
         }
         const last = deadlines.reduce<typeof deadlines[number] | null>((latest, value) => !latest || value.observedDeadlineAt > latest.observedDeadlineAt ? value : latest, null);
-        if (!last) throw new Error("render_parent_obligation_missing");
-        return { kind: "settled", outcome, dispatchIds, wait: { dueAt: last.observedDeadlineAt, deliveryId: last.reference.dispatchId, deadlines } };
+        if (!groups.length) throw new Error("render_parent_obligation_missing");
+        // Every live group may still be waiting for a slot. A group outcome wakes the
+        // parent sooner; this timer only keeps the wait bounded.
+        const wait = last ? { dueAt: last.observedDeadlineAt, deliveryId: last.reference.dispatchId } : { dueAt: new Date((await this.databaseNow(tx)).getTime() + RENDER_PARENT_RECHECK_MS), deliveryId: reference.dispatchId };
+        return { kind: "settled", outcome, dispatchIds, wait: { ...wait, deadlines } };
       }
       return { kind: "settled", outcome, dispatchIds };
     });

@@ -50,7 +50,11 @@ RENDER_RESOURCES = dict(cpu=(4, 4), memory=(8192, 8192),
 # The default ephemeral quota is already 512 GiB. Requesting disk explicitly
 # increases the billed memory request and is unnecessary for bounded scratch.
 # ASGI endpoints reject an explicit retries option, including 0.
-BRIDGE_RESOURCES = {key: value for key, value in LEAN_RESOURCES.items() if key != "retries"}
+# The bridge only awaits Modal's API, so one container serves a burst of spawns.
+# Staying up for a minute keeps a burst off cold starts and the Worker's 15s timeout.
+BRIDGE_RESOURCES = {**{key: value for key, value in LEAN_RESOURCES.items() if key != "retries"},
+                    "scaledown_window": 60}
+BRIDGE_MAX_INPUTS = 64
 
 
 def _verify(profile: str) -> dict:
@@ -182,7 +186,7 @@ async def render_group(invocation: dict) -> dict:
 
 
 @app.function(image=lean_image, secrets=[executor_secret], timeout=900,
-              max_containers=8, restrict_modal_access=True, **LEAN_RESOURCES)
+              max_containers=32, restrict_modal_access=True, **LEAN_RESOURCES)
 async def publication(invocation: dict) -> dict:
     from narriflow_media.entrypoint import invoke_native, native_client
     from narriflow_media.publication_runtime import run_publication
@@ -223,6 +227,7 @@ async def generated_image(invocation: dict) -> dict:
 
 
 @app.function(image=lean_image, secrets=[bridge_secret], timeout=30, **BRIDGE_RESOURCES)
+@modal.concurrent(max_inputs=BRIDGE_MAX_INPUTS)
 @modal.asgi_app(label="narriflow-media-dev-bridge")
 def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge

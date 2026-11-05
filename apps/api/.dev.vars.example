@@ -120,6 +120,7 @@ PEXELS_API_KEY=
 ELEVENLABS_API_KEY=
 ELEVENLABS_WEBHOOK_ID=
 # SCRIBE_MAX_CONCURRENT_UNITS=
+# RENDER_MAX_ADMITTED_GROUPS is set in wrangler.jsonc vars. Keep it within the Modal plan limit.
 
 # --- Upload tuning (optional; validated defaults apply) ---
 # UPLOAD_SINGLE_PUT_THRESHOLD_BYTES=

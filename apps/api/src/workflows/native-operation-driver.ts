@@ -19,6 +19,8 @@ export function createNativeOperationDriver(ports: Ports): WorkflowCommandHandle
   return async ({ reference }) => {
     const prepared = await ports.prepare(reference);
     if (prepared.kind === "sleep") return { type: "sleep", until: prepared.dueAt.toISOString() };
+    // A wait, not a sleep: a released render slot wakes this instance early.
+    if (prepared.kind === "capacity_wait") return { type: "wait", until: prepared.dueAt.toISOString(), deliveryId: reference.dispatchId };
     if (prepared.kind === "dependency_wait") {
       for (const ids of [[prepared.deadlineDispatchId], prepared.dispatchIds.filter(id => id !== prepared.deadlineDispatchId)]) {
         const results = await ports.deliver(ids);

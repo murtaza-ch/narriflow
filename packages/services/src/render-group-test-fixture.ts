@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { WorkflowRunLifecycle, type WorkflowAttemptRef, WorkflowAttemptLost } from "./workflow-run-lifecycle";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { readExecutionDispatch } from "./execution-dispatch";
+import { RenderGroupLifecycle } from "./render-group-lifecycle";
 import { acquireFixtureRenderGroup, prepareFixtureSource } from "./render-execution-test-fixture";
 
 export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
@@ -34,6 +35,13 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     await this.assertOwnership(attempt);
     const prepared = await this.prepareRenderRun(this.parents.get(attempt.attemptId)!);
     if (prepared.kind === "superseded") throw new WorkflowAttemptLost(attempt);
+    // Deadlines start at admission, in each group's own driver. Fixtures run no
+    // drivers, so take that step here.
+    for (const id of prepared.dispatchIds) {
+      const record = await readExecutionDispatch(this.fixturePrisma, id);
+      if (record?.reference.kind !== "operation_driver" || record.reference.subject.kind !== "render_group" || record.wakeKind || record.deadlineKind) continue;
+      await new RenderGroupLifecycle({ prisma: this.fixturePrisma }).prepareInputDeadline(record.reference);
+    }
     const run = await this.fixturePrisma.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId } });
     if (!run.renderWorkSetFrozenAt) throw Error("Render work set not prepared");
     return { workflowRunId: run.id, frozenAt: run.renderWorkSetFrozenAt,

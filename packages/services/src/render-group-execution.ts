@@ -18,6 +18,7 @@ import { sha256Hex } from "./execution-hash";
 
 export interface RenderGroupExecutionDependencies {
   toolchainFingerprint: string;
+  maxAdmittedGroups: number;
   preparation: Pick<ClipPreparationService, "admitForGroup" | "readReadyForGroup">;
   inputStorage: {
     write(key: string, bytes: Uint8Array): Promise<{ etag: string; byteLength: number; sha256: string }>;
@@ -32,7 +33,7 @@ export class RenderGroupExecutionService {
   readonly domain: RenderGroupLifecycle;
   constructor(private readonly database: PrismaClient, private readonly dependencies: RenderGroupExecutionDependencies) {
     if (!/^[a-f0-9]{64}$/.test(dependencies.toolchainFingerprint)) throw new Error("render_input_invalid");
-    this.domain = new RenderGroupLifecycle({ prisma: database });
+    this.domain = new RenderGroupLifecycle({ prisma: database, maxAdmittedGroups: dependencies.maxAdmittedGroups });
   }
   async loadInput(row: Pick<ExecutionAttempt, "inputStorageKey" | "inputEtag" | "inputByteLength" | "inputChecksumSha256">) {
     if (!row.inputStorageKey || !row.inputEtag || !row.inputByteLength || !row.inputChecksumSha256) throw new ExecutorControlError("invalid_reference");

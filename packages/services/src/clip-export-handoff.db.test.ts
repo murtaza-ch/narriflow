@@ -84,7 +84,8 @@ suite("Clip Export atomic scheduler handoff", () => {
     const parent = await f.lifecycle.renderParent(run.id);
     await f.lifecycle.beginRenderWorkSet(parent);
     const group = await db.renderGroup.findFirstOrThrow({ where: { workflowRunId: run.id } });
-    expect(group.operationDeadlineAt).toEqual(run.operationDeadlineAt);
+    // Queue time no longer spends the accepted export's budget: the clock starts at admission.
+    expect(group.operationDeadlineAt).not.toBeNull();
   }));
   test("late unowned replay is truthfully terminal without a new run, attempt, charge or budget", () => scoped(async () => {
     const f = await fixture(), old = await orphan(f);
@@ -111,7 +112,7 @@ suite("Clip Export atomic scheduler handoff", () => {
     const work = await f.lifecycle.beginRenderWorkSet(follow);
     expect(work.variantIds).toEqual([(await db.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id } })).id]);
     expect(await db.clipExport.findUniqueOrThrow({ where: { id: accepted.export.id } })).toMatchObject({ workflowRunId: follow.workflowRunId });
-    expect((await db.renderGroup.findFirstOrThrow({ where: { workflowRunId: follow.workflowRunId } })).operationDeadlineAt?.getTime()).toBe((await db.clipExport.findUniqueOrThrow({ where: { id: accepted.export.id } })).createdAt.getTime() + 45 * 60_000);
+    expect((await db.renderGroup.findFirstOrThrow({ where: { workflowRunId: follow.workflowRunId } })).operationDeadlineAt).not.toBeNull();
     expect(await db.clipRender.count({ where: { workflowRunId: active.id } })).toBe(0);
   }));
   test("receipt persistence failure rolls back export, membership and initial dispatch together", () => scoped(async () => {

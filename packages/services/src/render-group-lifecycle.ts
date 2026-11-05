@@ -31,6 +31,7 @@ import { clipPreparationObjectSchema, type ClipPreparationObject } from "@narrif
 import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import type { NativeValidationPreparation } from "./native-validation";
 import { appendExecutionDispatch, appendStableExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { admitRenderCapacityWithinTransaction, appendRenderCapacityWakesWithinTransaction } from "./render-capacity";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { appendWorkflowRunDispatch } from "./workflow-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationResult, ExecutorFailureInput, ExecutorMutationContext, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
@@ -75,7 +76,7 @@ export interface RenderGroupArtifactResult {
   renderGroup: RenderGroupOutcome;
 }
 export type RenderGroupInputPreparation = { kind: "ready"; group: RenderGroup; parent: WorkflowRun; deadlineAt: Date; deadlineDispatchId: string; dispatchIds: string[] }
-  | { kind: "terminal" | "superseded"; dispatchIds: string[] } | { kind: "sleep"; dueAt: Date; dispatchIds: string[] };
+  | { kind: "terminal" | "superseded"; dispatchIds: string[] } | { kind: "sleep" | "capacity_wait"; dueAt: Date; dispatchIds: string[] };
 
 /** The column value for a render's caption diagnostics: null when nothing was left out. */
 function captionDiagnosticsColumn(
@@ -388,14 +389,18 @@ async function groupOutcomeWake(groupId: string, generation: number, retry: bool
 
 export interface RenderGroupLifecycleDependencies {
   prisma?: PrismaClient;
+  /** Groups that may hold a deadline at once. Omitted only by tests that do not exercise admission. */
+  maxAdmittedGroups?: number;
 }
 export class RenderGroupLifecycle {
   private readonly prisma: PrismaClient;
+  private readonly maxAdmittedGroups: number | undefined;
   private readonly releaseGraceMs = 30_000;
   constructor(deps: RenderGroupLifecycleDependencies = {}) {
     const prisma = deps.prisma ?? getPrismaClient();
     if (!prisma) throw new Error("Database client unavailable");
     this.prisma = prisma;
+    this.maxAdmittedGroups = deps.maxAdmittedGroups;
   }
   private async transaction<T>(operation: (tx: Tx) => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
@@ -585,6 +590,8 @@ export class RenderGroupLifecycle {
     const parent = await appendWorkflowRunDispatch(tx, ref.workflowRunId);
     const parentWake = await appendExecutionDispatch(tx, { ...parent.reference, dueAt: now, wakeKind: await groupOutcomeWake(current.id, current.generation, retry) });
     const ids = [finished.reference.dispatchId, parentWake.reference.dispatchId];
+    if (!retry && this.maxAdmittedGroups !== undefined) ids.push(...await appendRenderCapacityWakesWithinTransaction(tx, {
+      releasedGroupId: ref.groupId, deploymentEpoch: ref.deploymentEpoch, maxAdmittedGroups: this.maxAdmittedGroups }));
     if (retry) {
       const queued = await appendExecutionDispatch(tx, { deploymentEpoch: current.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: current.id },
         generation: current.generation, inputHash: inputHash, dueAt: current.nextAttemptAt ?? now });
@@ -611,10 +618,24 @@ export class RenderGroupLifecycle {
     const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id } });
     const state = await this.executionState(tx, reference, initial?.attemptToken ?? reference.dispatchId);
     if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal", dispatchIds: await this.recordedExecutionWakes(tx, reference) };
-    const { group, parent, now, ref } = state;
-    const project = await tx.project.findFirst({ where: { id: parent.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } }, select: { id: true } });
+    const { parent, now, ref } = state;
+    let { group } = state;
+    const project = await tx.project.findFirst({ where: { id: parent.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } }, select: { id: true, workspaceId: true, workspace: { select: { pricingTier: true } } } });
     if (!project) return { kind: "superseded", dispatchIds: [] };
-    const deadlineAt = group.operationDeadlineAt ?? new Date(now.getTime()+45*60_000);
+    if (!group.operationDeadlineAt && group.status === "queued" && this.maxAdmittedGroups !== undefined) {
+      const unsettled = deriveRenderGroupSettlement({ members: await memberSnapshot(tx, ref), chargedAttemptCount: group.chargedAttemptCount, databaseNow: now }).status === "queued";
+      const slot = unsettled ? await admitRenderCapacityWithinTransaction(tx, { group, workspaceId: project.workspaceId, tier: project.workspace.pricingTier, maxAdmittedGroups: this.maxAdmittedGroups }) : null;
+      if (slot && !slot.admitted) {
+        // Only the group's own driver keeps the timer. Any other wake has done its job.
+        return registered.wakeKind ? { kind: "superseded", dispatchIds: [] } : { kind: "capacity_wait", dueAt: slot.retryAt, dispatchIds: [] };
+      }
+      if (slot?.admitted && group.capacityWaitSince) {
+        console.warn(JSON.stringify({ level: "info", message: "render_capacity_admitted", groupId: group.id, waitedMs: slot.waitedMs }));
+        group = { ...group, capacityWaitSince: null, nextAttemptAt: null };
+      }
+    }
+    // The clock starts at admission, so time spent waiting for a slot cannot fail the group.
+    const deadlineAt = group.operationDeadlineAt ?? new Date((await databaseNow(tx)).getTime()+45*60_000);
     if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: deadlineAt } });
     const watchdog = await appendExecutionDispatch(tx, { deploymentEpoch: group.deploymentEpoch, generation: group.generation, kind: "operation_driver", subject: reference.subject,
       inputHash: reference.inputHash, dueAt: deadlineAt, deadlineKind: "operation", observedDeadlineAt: deadlineAt });

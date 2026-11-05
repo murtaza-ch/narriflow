@@ -38,6 +38,7 @@ import {
  samePublicationDispatch,
 	publicationExecutionInputHash,
 	type PublicationSchedule,
+	publicationReleaseAt,
 } from "./publication-dispatch";
 import {
 	lockPublicationPost,
@@ -482,7 +483,7 @@ export class PublicationExecution
 				].includes(post.status)
 			)
 				return { kind: "terminal" as const };
-			const due = post.nextAttemptAt ?? post.scheduledFor ?? post.createdAt;
+			const due = publicationReleaseAt(post);
 			if (due > now) return { kind: "sleep" as const, dueAt: due };
    const exportState=await refreshPublicationExport(tx,post);
    if(exportState==="waiting")return {kind:"waiting_export" as const};

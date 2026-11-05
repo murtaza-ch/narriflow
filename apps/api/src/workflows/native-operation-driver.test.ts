@@ -74,3 +74,13 @@ test("the acquisition watch starts only after the heavy call is confirmed and ne
   await run("lease");
   expect(watched).toEqual([deadline.attemptToken]);
 });
+
+test("a render waiting for a slot waits for an event, so a released slot can wake it early", async () => {
+  const dueAt = new Date(now + 300_000);
+  const run = createNativeOperationDriver({ now: () => now,
+    prepare: async () => ({ kind: "capacity_wait", dueAt }),
+    expire: async () => { throw new Error("A waiting render has no deadline"); },
+    deliver: async () => { throw new Error("A waiting render dispatches nothing"); },
+  });
+  expect(await runWorkflowCommand(() => run({ reference, wake: { type: "start" } }))).toEqual({ type: "wait", until: dueAt.toISOString(), deliveryId: reference.dispatchId });
+});

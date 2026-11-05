@@ -702,6 +702,8 @@ model RenderGroup {
   deploymentEpoch       Int               @default(1)
   generation            Int               @default(1)
   operationDeadlineAt   DateTime?
+  /// Set while the group waits for a render slot. It has no deadline, owner or charge until admitted.
+  capacityWaitSince     DateTime?
   workflowRunId         String            @db.Uuid
   workSetGeneration     String            @db.Uuid
   clipId                String            @db.Uuid
@@ -730,6 +732,7 @@ model RenderGroup {
   @@unique([attemptToken, id])
   @@index([status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
+  @@index([deploymentEpoch, status, capacityWaitSince])
   @@index([workflowRunId, deploymentEpoch, status, errorCode, updatedAt, id], map: "RenderGroup_source_cancellation_page_idx")
 }
 

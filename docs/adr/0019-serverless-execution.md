@@ -39,6 +39,16 @@ An active TS execution budget is fixed within its generation (STT control uses t
 
 Scribe admission serializes the provider's measured duration weights, `min(4, ceil(SourceAudio.durationSeconds / 480))`, with a PostgreSQL advisory lock after ordinary run locks. The concurrency cap is required configuration (`SCRIBE_MAX_CONCURRENT_UNITS`), with no code default. Only current source-bound runs with live TS leases or live provider deadlines consume units. Capacity denial keeps an unowned, uncharged queued run and records the nearest known release deadline. Completion, failure, expiry and source cancellation append bounded waiter wakes. Each wake requires a fresh capacity count; it is never a permit. Full UUID cursors in persisted `stt_` and `cancel_` continuation wakes bound delivery pages without queue polling.
 
+## Render admission
+
+Render capacity is admitted before the Render Group deadline exists, under one advisory lock after the group's own locks. `RENDER_MAX_ADMITTED_GROUPS` is required configuration with no code default. It must leave room for publication and lean functions inside the Modal plan's container limit, and for `max_containers` on each render function, or admitted work queues in Modal with its deadline running. A group holds a slot from admission until it settles or its deadline passes, across preparation and render, because each uses one container at a time.
+
+A group without a slot stays queued with `capacityWaitSince` set and no deadline, owner or charge. Waiting therefore cannot fail it: overload delays work and never expires it. The absolute 45-minute deadline starts at admission and remains fixed across that group's retries. This replaces freezing every group's deadline when the parent prepares, so an accepted export no longer bounds its queue wait. Restore reads group inputs without writing a deadline, so it cannot admit a waiting group.
+
+Waiters are ranked by fair queuing: how much of the Workspace's work is ahead, divided by the plan's `renderQueueWeight`, less one place per ten minutes waited. A release wakes the next waiters as a hint and takes no capacity lock. Each waiter's Workflow also rechecks on a five-minute timer, which is the guarantee. A waiter whose timer lapsed fifteen minutes ago has lost its Workflow, so it holds no place in line and cannot block anyone; the hourly render wake restores it. A group in a restricted Workspace or an inaccessible Project also holds no place, and it waits without a deadline until reactivation or retention settles it.
+
+The parent keeps no deadline for an unadmitted group. If none of its groups has a deadline, it rechecks on a bounded timer and a group outcome wakes it sooner.
+
 ## Executor control and immutable artifacts
 
 [The strict schemas](../../packages/validators/src/execution.ts) define `acquire`, `renew`, `process-start`, `read-disposition`, `commit-artifact`, `fail`, `release` and `progress`. The 64 KiB command and reference envelope limit is enforced before parsing by adapters. No transcript, caption text, credentials, signed URLs or media goes into Workflow state, dispatch rows or diagnostics. A reference is `{dispatchId, deploymentEpoch, kind, subject: {kind, id}, generation, inputHash}`. A fence adds the existing domain `attemptToken` and invocation `owner`.

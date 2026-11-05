@@ -146,7 +146,7 @@ export async function acquireFixtureRenderGroup(db: PrismaClient, reference: Exe
   const group = await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id }, include: { workflowRun: true } });
   await prepareFixtureSource(db, group.workflowRun.projectId);
   const preparation = await preparationForGroup(db, reference);
-  const service = new RenderGroupExecutionService(db, { toolchainFingerprint: fingerprint, preparation: preparation.service, inputStorage: preparation.storage,
+  const service = new RenderGroupExecutionService(db, { maxAdmittedGroups: 1_000, toolchainFingerprint: fingerprint, preparation: preparation.service, inputStorage: preparation.storage,
     snapshot: createRenderInputSnapshot(db, { object: async () => null, pexelsConfigured: false, searchStock: async () => { throw Error("No stock search in fixture"); } }), register: ids => confirmed(db, ids) });
   const prepared = await service.prepareExecution(reference);
   if (prepared.kind !== "waiting") throw Error(`Fixture render not admitted: ${prepared.kind}`);

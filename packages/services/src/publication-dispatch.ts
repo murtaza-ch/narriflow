@@ -11,6 +11,21 @@ import { canonicalJson } from "./canonical-json";
 const scheduleInclude = {
 	frozenState: true,
 } satisfies Prisma.SocialPostInclude;
+const SCHEDULE_SPREAD_MS = 120_000;
+/** Planned posts land on whole minutes, and many on the hour. A stable per-post
+ * offset stops them all reaching the containers and provider APIs in one second. */
+export function spreadScheduledPublish(postId: string, scheduledFor: Date): Date {
+	const offset = createHash("sha256").update(postId).digest().readUInt32BE(0) % SCHEDULE_SPREAD_MS;
+	return new Date(scheduledFor.getTime() + offset);
+}
+/** When the driver may start a post. The registration keeps the exact schedule
+ * in its identity and sleeps here, so the offset never changes a dispatch row. */
+export function publicationReleaseAt(post: { id: string; nextAttemptAt: Date | null; scheduledFor: Date | null; createdAt: Date }): Date {
+	if (post.nextAttemptAt) return post.nextAttemptAt;
+	if (!post.scheduledFor) return post.createdAt;
+	// "Post now" is stamped with the current instant, so it keeps its exact time.
+	return post.scheduledFor.getTime() % 60_000 === 0 ? spreadScheduledPublish(post.id, post.scheduledFor) : post.scheduledFor;
+}
 export type PublicationSchedule = Prisma.SocialPostGetPayload<{
 	include: typeof scheduleInclude;
 }>;
@@ -167,7 +182,7 @@ export async function observePublicationSchedule(
 		const [clock] = await tx.$queryRaw<
 			Array<{ now: Date }>
 		>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
-		const dueAt = post.nextAttemptAt ?? post.scheduledFor ?? post.createdAt;
+		const dueAt = publicationReleaseAt(post);
 		if (dueAt > clock!.now) return { kind: "sleep", dueAt };
 		if (!post.frozenState) return { kind: "terminal" };
 		if (

@@ -104,7 +104,7 @@ export function createPreparationLinkRestore(service:ClipPreparationService):Exe
     await assertExecutionRestorePage(tx,page);
     const limit=Math.min(page.limit,8),after=page.after?Prisma.sql`AND (g."createdAt",g.id)>((${page.after.at}::timestamp),${page.after.id}::uuid)`:Prisma.empty;
     const rows=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string;workflowRunId:string}>>`SELECT g.id,g."createdAt" AS at,r."projectId",p."workspaceId",r.id AS "workflowRunId" FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id=g."workflowRunId" JOIN "Project" p ON p.id=r."projectId"
-      WHERE g."deploymentEpoch"=${page.deploymentEpoch} AND g.status='queued' AND g."preparationId" IS NULL AND g."attemptToken" IS NULL
+      WHERE g."deploymentEpoch"=${page.deploymentEpoch} AND g.status='queued' AND g."preparationId" IS NULL AND g."attemptToken" IS NULL AND g."operationDeadlineAt" IS NOT NULL
         AND p."ingestStatus"='ready' AND p."sourceStorageKey" IS NOT NULL AND p."purgeStartedAt" IS NULL
         AND (p."expiresAt" IS NULL OR p."expiresAt">(${page.cutoff}::timestamp))
         AND NOT EXISTS(SELECT 1 FROM "RenderGroupMember" m WHERE m."groupId"=g.id AND m."invalidatedAt" IS NOT NULL)

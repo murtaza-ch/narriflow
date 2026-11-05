@@ -162,6 +162,9 @@ _Avoid_: Processing minutes, minute quota, token, generation credit
 One Workspace-owned claim on a UTC month's credits for one intake, keyed by its Project ID. It stores whole credits as seconds (multiples of 60). It is reserved at admission, resized as duration facts arrive, settled from the probed duration before speech-to-text, and released if processing never starts. Settled usage is final for its month and survives Project deletion, retention purge, and member removal; only an audited operator refund changes it.
 _Avoid_: Quota row, usage counter, minutes balance, credit balance
 
+**Render Capacity**:
+The limit on Render Groups holding a deadline at once, set by `RENDER_MAX_ADMITTED_GROUPS`. A group without a slot waits unowned and uncharged, with no deadline, so overload delays renders instead of failing them. Waiters are ranked by fair queuing with each plan's render queue weight (ADR 0019).
+
 **Processing Capacity**:
 The number of a Workspace's videos in flight, derived under the Workspace usage lock from unsettled reservations plus Projects with an active Workflow Run or accepted export renders. Only intake admission is refused when it reaches the tier limit.
 _Avoid_: Concurrency counter
