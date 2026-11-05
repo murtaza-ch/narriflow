@@ -48,7 +48,7 @@ export function batchedDeadline(sqlDeadline:number,reportDeadline?:number){
 async function privateJson<T>(path:string):Promise<T>{const info=await stat(path);if(!isAbsolute(path)||info.mode&0o077||info.size>131072)throw fail();return JSON.parse(await readFile(path,"utf8"));}
 async function save(path:string,value:unknown){const temp=`${path}.${randomUUID()}.tmp`;await writeFile(temp,`${JSON.stringify(value,null,2)}\n`,{mode:0o600,flag:"wx"});await rename(temp,path);}
 async function main(){
- if(process.argv.length!==5||process.argv[2]!=="run"||process.argv[3]!=="--config"||process.versions.bun!=="1.3.6")throw fail();
+ if(process.argv.length!==5||process.argv[2]!=="run"||process.argv[3]!=="--config"||process.versions.bun!=="1.4.4")throw fail();
  const config=batchedAcceptanceConfig(await privateJson(process.argv[4]!)),folder=config.outputDirectory;
  const proof=await privateJson(config.qualifiedRestoreProofPath);batchedRestoreProof(proof);
  const restoreProofSha256=createHash("sha256").update(await readFile(config.qualifiedRestoreProofPath)).digest("hex");

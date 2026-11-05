@@ -139,8 +139,7 @@ describe("pinned environment", () => {
     for (const image of Object.values(lock.images)) expect(docker).toContain(`${image.ref.replace("docker.io/", "")}@${image.digest}`);
     const linux = lock.platforms["linux-x64"]!;
     for (const [name, version] of Object.entries(linux.apt.direct)) expect(docker).toContain(`${name}=${version}`);
-    expect(docker).toContain(`snapshot.debian.org/archive/debian/${linux.apt.snapshotTimestamp}/`);
-    expect(docker).toContain(`snapshot.debian.org/archive/debian-security/${linux.apt.snapshotTimestamp}/`);
+    for (const archive of linux.apt.archives) expect(docker).toContain(archive.uri);
     expect(docker).toContain(`raw/${linux.model.commit}/${linux.model.repoPath}`);
     expect(docker).toContain(`${linux.model.sha256}  ${linux.model.path}`);
     expect(docker).toContain("--require-hashes");

@@ -42,7 +42,7 @@ class SourceManifestTests(unittest.TestCase):
         self.assertNotIn("http", json.dumps(manifest))
         versions = toolchain_versions()
         self.assertEqual(versions["python"], "3.13.5")
-        self.assertEqual(versions["bun"], "1.3.6")
+        self.assertEqual(versions["bun"], "1.4.4")
         self.assertEqual(versions["yt-dlp"], "2026.8.19")
         self.assertEqual(versions["ffmpeg"], "7.1.5-0+deb13u1")
 

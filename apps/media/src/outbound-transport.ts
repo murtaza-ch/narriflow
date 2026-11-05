@@ -198,9 +198,9 @@ export const pinnedTransport: PinnedTransport = (url, request) =>
     else request.signal.addEventListener("abort", abort, { once: true });
     outgoing.on("close", () => request.signal.removeEventListener("abort", abort));
     outgoing.on("error", reject);
-    // The image's Bun 1.3.6 stalls a Blob piped into an HTTPS request after about
-    // 1.25 MiB, and write() swaps Content-Length for chunked encoding, which
-    // providers' ranged uploads need. end(bytes) keeps both, one chunk in memory.
+    // Bun 1.3.6 stalled a Blob piped into an HTTPS request after about 1.25 MiB, and
+    // write() swapped Content-Length for chunked encoding, which providers' ranged
+    // uploads need. end(bytes) keeps both, with one chunk in memory.
     if(request.body instanceof Blob){
       request.body.arrayBuffer().then(bytes=>outgoing.end(Buffer.from(bytes)),error=>outgoing.destroy(error));
     }else outgoing.end(request.body);

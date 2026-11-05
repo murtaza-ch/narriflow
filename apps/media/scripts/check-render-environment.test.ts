@@ -6,7 +6,7 @@ import { fingerprintDifferences, fingerprintId, leanFingerprintId, SCRIPT_SPECIM
 
 function runtime(packages: Record<string, string>): RuntimeFingerprint {
   return {
-    platform: "linux-x64", os: "debian trixie 13", bun: "1.3.6",
+    platform: "linux-x64", os: "debian trixie 13", bun: "1.4.4",
     ffmpeg: { path: "/usr/bin/ffmpeg", versionLine: "ffmpeg7.1.5", configuration: "pinned", libraries: [], sha256: "a".repeat(64) },
     ffprobe: { path: "/usr/bin/ffprobe", versionLine: "ffprobe7.1.5", sha256: "b".repeat(64) },
     linkedLibraries: [], filters: {}, encoders: {}, fontconfig: "fontconfig2.15.0", fontProbes: [],
@@ -28,7 +28,7 @@ test("runtime identity ignores Python distribution enumeration order but detects
 
 test("lean identity applies the same distribution ordering", () => {
   const python = runtime({ pip: "25.1.1", requests: "2.34.2" }).python;
-  const facts = { profile: "lean", bun: "1.3.6", python, ffmpeg: "7.1.5", ffprobe: "7.1.5", deno: "2.9.5", tokenImage: "locked" };
+  const facts = { profile: "lean", bun: "1.4.4", python, ffmpeg: "7.1.5", ffprobe: "7.1.5", deno: "2.9.5", tokenImage: "locked" };
   const reordered = { ...facts, python: { ...python, packages: { requests: "2.34.2", pip: "25.1.1" } } };
   expect(leanFingerprintId(facts)).toBe(leanFingerprintId(reordered));
   expect(leanFingerprintId(facts)).not.toBe(leanFingerprintId({ ...reordered, python: { ...python, packages: { requests: "2.34.3", pip: "25.1.1" } } }));

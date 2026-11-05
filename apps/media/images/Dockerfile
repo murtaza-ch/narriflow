@@ -4,7 +4,7 @@
 # baseline, and a reviewed reason. check-render-environment.ts enforces the lock
 # at build time and at start.
 FROM brainicism/bgutil-ytdlp-pot-provider:2.0.0-deno@sha256:a0b8b3a2926016ef15d9ff06b9b3f63b5f2785e63395be987114cee44ae66ac1 AS youtube_tokens
-FROM oven/bun:1.3.6@sha256:f20d9cf365ab35529384f1717687c739c92e6f39157a35a95ef06f4049a10e4a
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
 ARG MEDIA_PROFILE=render
 ARG MEDIA_THREADS=4
 
@@ -24,11 +24,11 @@ COPY apps/media/runtime-lock.json apps/media/scripts/check-render-environment.ts
 # scripts, while Noto CJK covers Chinese, Japanese and Korean glyphs. These
 # packages provide glyph coverage only; script-aware cue behavior is separate.
 # Caption display faces are vendored in packages/caption-fonts below.
-# Packages come from the dated Debian snapshot the deployed image was built
-# from; direct packages are version-pinned and every installed package is
-# verified against the lock afterwards. The snapshot CDN returns intermittent
-# 404s for indexes and packages it holds, and apt's own retry aborts on them.
-# Each pass keeps completed files and fetches only what is missing.
+# Direct packages are version-pinned and every installed package is verified
+# against the lock afterwards, so a mirror cannot change what ships: a package
+# Debian supersedes fails this build instead of changing pixels. Mirrors can
+# fail mid-fetch and apt's own retry aborts on it, so each pass keeps completed
+# files and fetches only what is missing.
 RUN set -eux; \
     case "$MEDIA_PROFILE" in render|lean) ;; *) exit 1 ;; esac; \
     media_font_packages=""; \
@@ -36,20 +36,20 @@ RUN set -eux; \
     rm -f /etc/apt/sources.list; \
     printf '%s\n' \
       'Types: deb' \
-      'URIs: http://snapshot.debian.org/archive/debian/20261024T172700Z/' \
+      'URIs: http://deb.debian.org/debian/' \
       'Suites: trixie trixie-updates' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       '' \
       'Types: deb' \
-      'URIs: http://snapshot.debian.org/archive/debian-security/20261024T172700Z/' \
+      'URIs: http://security.debian.org/debian-security/' \
       'Suites: trixie-security' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       > /etc/apt/sources.list.d/debian.sources; \
     media_packages="ffmpeg=7:7.1.5-0+deb13u1 fontconfig=2.15.0-2.3 curl=8.14.1-2+deb13u7 ca-certificates=20250419+deb13u1 python3=3.13.5-1 python3-pip=25.1.1+dfsg-1 $media_font_packages"; \
     for pass in 1 2 3 4 5 6 7 8 9 10 11 12; do \
-      apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=0 update \
+      apt-get -o Acquire::Retries=0 update \
         && apt-get install -y --no-install-recommends --download-only -o Acquire::Retries=0 $media_packages \
         && break; \
       sleep 10; \

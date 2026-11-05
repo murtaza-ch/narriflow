@@ -3,7 +3,7 @@
 Media executes in the pinned Linux x86_64 native image. Workers own admission,
 leases, artifact verification and settlement; the Render Run parent waits
 without a lease. Use the [native CI commands](../../apps/media/scripts/gates/native-ci.md)
-for a credential-free image check. Runtime versions are Bun 1.3.6,
+for a credential-free image check. Runtime versions are Bun 1.4.4,
 Python 3.13.5 and FFmpeg 7.1.5; enforce the runtime-lock fingerprint before
 interpreting media results.
 
