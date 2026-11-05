@@ -182,7 +182,11 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([action for action,_ in calls if action in {'commit-artifact','fail','upload-abort'}],['commit-artifact'])
                 self.assertEqual(list(uploads),[outputs[0]['artifactId']])
                 return
-            measured=await run_render_group(session,package,work,transport=Storage(),source_transport=Storage(),**({} if enforce_runtime else {'verify_runtime':verified_runtime}))
+            logs=StringIO()
+            with redirect_stderr(logs):
+                measured=await run_render_group(session,package,work,transport=Storage(),source_transport=Storage(),**({} if enforce_runtime else {'verify_runtime':verified_runtime}))
+            metrics=[json.loads(value) for value in logs.getvalue().splitlines() if 'render_group_metrics' in value]
+            self.assertEqual(len(metrics),1);self.assertIn('encode',metrics[0]['phaseMs']);self.assertEqual(metrics[0]['level'],'info')
             self.assertEqual(len(starts),1)
             self.assertEqual(measured['detectorExecutions'],0)
             commits=[fields['artifact'] for action,fields in calls if action=='commit-artifact']

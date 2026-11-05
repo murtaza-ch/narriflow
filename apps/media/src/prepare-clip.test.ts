@@ -36,6 +36,8 @@ test("native preparation produces a validated preview, peaks and all source obse
     const output = await prepareClip({ input, sourcePath: `http://127.0.0.1:${server.port}/original`, work, previewArtifactId: "1926d146-807b-4e55-8ef6-0ac87f95bea2", peaksArtifactId: "2cb10336-094a-424e-81ce-e967550d8b99", workerProcess: worker, config: parseRenderConfig({}), signal,
       detectors: { detectMultiFacePath: async () => { calls.multi++; return { samples: [] }; }, detectFacePath: async () => { calls.face++; return { samples: [] }; }, detectPipPath: async () => { calls.pip++; return { movingPxFrac: 0, insufficientSamples: false, candidates: [] }; }, detectSceneCuts: async () => { calls.cuts++; return []; } } });
     expect((await stat(output.previewPath)).size).toBeGreaterThan(1000);
+    expect(Object.keys(output.phaseMs).sort()).toEqual(["faces", "multiFaces", "peaks", "pip", "preview", "probe", "sceneCuts"]);
+    expect(Object.values(output.phaseMs).every(value => Number.isInteger(value) && value >= 0)).toBe(true);
     expect(output.peaksPath).not.toBeNull();
     expect(isClipPreviewPeaks(JSON.parse(await readFile(output.peaksPath!, "utf8")))).toBe(true);
     const result = clipPreparationResultSchema.parse(JSON.parse(await readFile(output.layoutPath, "utf8")));

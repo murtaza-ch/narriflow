@@ -26,6 +26,7 @@ async function main() {
   try {
     const result = await prepareClip({ input, sourcePath: command.sourcePath, work, previewArtifactId: command.previewArtifactId,
       peaksArtifactId: command.peaksArtifactId, workerProcess: productionWorkerProcessModule, config: parseRenderConfig(process.env), signal: controller.signal });
+    console.error(JSON.stringify({ level: "info", message: "clip_preparation_metrics", phaseMs: result.phaseMs }));
     process.stdout.write(JSON.stringify({ previewPath: result.previewPath, peaksPath: result.peaksPath, layoutPath: result.layoutPath })+"\n");
   } finally { clearTimeout(timer); process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
 }

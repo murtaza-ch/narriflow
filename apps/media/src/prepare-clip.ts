@@ -5,7 +5,7 @@ import { encodeClipPreparationInput, encodeClipPreparationResult } from "@narrif
 import { CLIP_PREPARATION_POLICY, clipPreparationEngineHash, clipPreparationTiming, clipPreparationPreviewWindow } from "@narriflow/services/clip-preparation-policy";
 import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, SCREEN_LAYOUT_VERSION, clipLayoutAnalysisFailureSchema, clipSplitLayoutFailureSchema, sourceProbeSchema } from "@narriflow/validators";
 import type { ClipPreparationInput, ClipPreparationResult } from "@narriflow/validators/clip-preparation";
-import { LayoutEvidence, type LayoutEvidenceDetectors, type LayoutEvidenceWrite } from "./layout-evidence";
+import { LayoutEvidence, type LayoutDetectionInput, type LayoutEvidenceDetectors, type LayoutEvidenceWrite } from "./layout-evidence";
 import { createLayoutEvidenceDetectors } from "./layout-evidence-runtime";
 import { hdrColorOf } from "./composition-ffmpeg-adapter";
 import type { RenderConfig } from "./render-config";
@@ -26,6 +26,11 @@ export async function prepareClip(options: {
   if (input.engineHash !== await clipPreparationEngineHash(input.toolchainFingerprint)) throw new Error("clip_preparation_engine_invalid");
   const { signal } = options;
   const native = options.workerProcess;
+  const phaseMs: Record<string, number> = {};
+  const timed = async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+    const startedAt = performance.now();
+    try { return await work(); } finally { phaseMs[phase] = (phaseMs[phase] ?? 0) + Math.round(performance.now() - startedAt); }
+  };
   const workerProcess: WorkerProcessModule = {
     execute: request => native.execute({ ...request, args: basename(request.command) === "ffmpeg" ? renderFfmpegArgs(request.args) : request.args }),
     inspectMedia: native.inspectMedia.bind(native), withScratchDirectory: native.withScratchDirectory.bind(native),
@@ -35,7 +40,7 @@ export async function prepareClip(options: {
     pipMotionThreshold: policy.observations.pipMotionThreshold, probeCommandTimeoutMs: policy.observations.probeTimeoutMs,
     reframePython: policy.observations.python, reframeModelPath: policy.observations.modelPath };
   signal.throwIfAborted();
-  const probe = await workerProcess.inspectMedia({ sourcePath: options.sourcePath, signal, deadlineMs: config.probeCommandTimeoutMs });
+  const probe = await timed("probe", () => workerProcess.inspectMedia({ sourcePath: options.sourcePath, signal, deadlineMs: config.probeCommandTimeoutMs }));
   if (JSON.stringify(sourceProbeSchema.parse(probe.sourceProbe)) !== JSON.stringify(sourceProbeSchema.parse(input.sourceProbe))) throw new Error("source_identity_mismatch");
   const window = clipPreparationPreviewWindow(input), timing = clipPreparationTiming(input);
   if (window.durationSec <= 0) throw new Error("clip_preparation_window_invalid");
@@ -47,12 +52,12 @@ export async function prepareClip(options: {
     ...(geometry.anamorphic ? { squarePixelAspect: geometry.width / geometry.height } : {}) })
     : buildAudiogramPreviewArgs({ ...shared, captionPreset: input.document.captionPreset });
   const deadlineMs = renderEncodeDeadlineMs({ editedDurationSec: window.durationSec, sourceWidth: probe.width, sourceHeight: probe.height, hdr: hdrColorOf(probe) !== null }, config);
-  await encodeAndValidateClipPreview({ workerProcess, signal, args, outputPath: previewPath, expected, deadlineMs });
+  await timed("preview", () => encodeAndValidateClipPreview({ workerProcess, signal, args, outputPath: previewPath, expected, deadlineMs }));
   let peaksPath: string | null = null;
   if (probe.hasAudio) {
     try {
-      const peaks = await generateClipPreviewPeaks({ workerProcess, signal, proxyFilePath: previewPath,
-        windowStartSec: window.startSec, windowDurationSec: window.durationSec, settings: policy.peaks });
+      const peaks = await timed("peaks", () => generateClipPreviewPeaks({ workerProcess, signal, proxyFilePath: previewPath,
+        windowStartSec: window.startSec, windowDurationSec: window.durationSec, settings: policy.peaks }));
       peaksPath = join(options.work, "preview.peaks.json");
       await writeFile(peaksPath, JSON.stringify(peaks));
     } catch (error) {
@@ -62,6 +67,7 @@ export async function prepareClip(options: {
   }
   const sourceIdentity = compositionAssetRef("source", input.projectId);
   const writes: LayoutEvidenceWrite[] = [];
+  const detectors = options.detectors ?? createLayoutEvidenceDetectors({ workerProcess, config, signal });
   const evidence = new LayoutEvidence({
     source: { identity: sourceIdentity, hasVideo: probe.hasVideo, width: geometry.width || 1, height: geometry.height || 1 },
     clip: { id: input.clipId, startSec: timing.startSec, endSec: timing.endSec, deletedRanges: input.document.deletedRanges,
@@ -72,7 +78,12 @@ export async function prepareClip(options: {
     getSegment: async () => ({ path: previewPath, startSec: Math.max(0, timing.startSec-window.startSec),
       durationSec: Math.max(0, window.durationSec-Math.max(0, timing.startSec-window.startSec)) }),
   }, {
-    detectors: options.detectors ?? createLayoutEvidenceDetectors({ workerProcess, config, signal }),
+    detectors: {
+      detectFacePath: (request: LayoutDetectionInput) => timed("faces", () => detectors.detectFacePath(request)),
+      detectMultiFacePath: (request: LayoutDetectionInput) => timed("multiFaces", () => detectors.detectMultiFacePath(request)),
+      detectPipPath: (request: LayoutDetectionInput) => timed("pip", () => detectors.detectPipPath(request)),
+      detectSceneCuts: (request: LayoutDetectionInput) => timed("sceneCuts", () => detectors.detectSceneCuts(request)),
+    },
     persist: async write => { writes.push(write); return true; }, now: Date.now,
     rethrowControl: () => signal.throwIfAborted(), diagnose: () => {},
   });
@@ -100,5 +111,5 @@ export async function prepareClip(options: {
   };
   const encoded = await encodeClipPreparationResult(result);
   await writeFile(layoutPath, encoded.bytes);
-  return { previewPath, peaksPath, layoutPath, result: encoded.result };
+  return { previewPath, peaksPath, layoutPath, result: encoded.result, phaseMs };
 }

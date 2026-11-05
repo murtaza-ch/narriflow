@@ -195,4 +195,6 @@ async def run_render_group(session,package,work:Path,*,transport=None,source_tra
             print(json.dumps({'level':'error','message':'render_native_child_unconfirmed','exitCode':result.returncode,'phaseMs':phases,
                 'controlOperations':control.operations,'sourceBytesTransferred':source_server.bytes_transferred,'sourceRequests':source_server.upstream_requests}),file=sys.stderr)
             raise NativeOperationFailure('render_result_unconfirmed',True)
+        print(json.dumps({'level':'info','message':'render_group_metrics','phaseMs':phases,'controlOperations':control.operations,
+            'sourceBytesTransferred':source_server.bytes_transferred,'sourceRequests':source_server.upstream_requests}),file=sys.stderr)
         return {'outcome':control.outcome,'bytesTransferred':source_server.bytes_transferred,'upstreamRequests':source_server.upstream_requests,'detectorExecutions':detector_executions}

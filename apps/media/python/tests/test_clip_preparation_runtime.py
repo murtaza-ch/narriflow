@@ -9,12 +9,17 @@ import threading
 import unittest
 from uuid import uuid4
 
-from narriflow_media.clip_preparation_runtime import run_prepare_clip
+from narriflow_media.clip_preparation_runtime import preparation_phases, run_prepare_clip
 from narriflow_media.multipart import TransferResponse
 from narriflow_media.transfer import load_work_package
 
 
 class ClipPreparationRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_only_known_finite_phases_leave_the_child_diagnostics(self):
+        line=json.dumps({'message':'clip_preparation_metrics','phaseMs':{'faces':12,'preview':float('nan'),'private':'https://signed.invalid/?token'}})
+        self.assertEqual(preparation_phases(b'not json\n'+line.encode()),{'faces':12})
+        self.assertEqual(preparation_phases(b'{"message":"other"}'),{})
+
     async def test_actual_bun_child_starts_before_conditional_source_reads_and_commits_real_outputs_in_order(self):
         await self.actual_operation()
 

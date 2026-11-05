@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from pathlib import Path
+import sys
+import time
 
 from .artifacts import AssignedArtifacts
 from .control import ExecutionControlError
@@ -12,6 +15,19 @@ from .process import MediaProcessError, run_owned_process_async, verified_runtim
 from .source_server import ScopedSourceServer
 
 LIMITS={'clip_preview':512*1024**2,'preview_peaks':256*1024,'layout_evidence':1024**2}
+PHASES=frozenset({'probe','preview','peaks','faces','multiFaces','pip','sceneCuts'})
+
+
+def preparation_phases(stderr):
+    """Only known phases and finite durations leave the child's diagnostics."""
+    for line in stderr.splitlines():
+        try:
+            diagnostic=json.loads(line)
+            if diagnostic.get('message')=='clip_preparation_metrics' and isinstance(diagnostic.get('phaseMs'),dict):
+                return {key:value for key,value in diagnostic['phaseMs'].items() if key in PHASES
+                    and type(value) in {int,float} and math.isfinite(value) and 0<=value<=36_000_000}
+        except (ValueError,AttributeError):pass
+    return {}
 
 
 def environment():
@@ -95,9 +111,11 @@ async def run_prepare_clip(session,package,work:Path,*,transport=None,source_tra
                 or (manifest.get('peaks',{}).get('state')=='ready')!=('preview_peaks' in paths)
                 or 'preview_peaks' in paths and manifest['peaks'].get('artifactId')!=outputs['preview_peaks']['artifactId']):
             raise NativeOperationFailure('native_result_invalid')
-        artifacts=AssignedArtifacts(session,package)
+        artifacts=AssignedArtifacts(session,package);upload_started=time.monotonic()
         for role in ('clip_preview','preview_peaks','layout_evidence'):
             if role not in paths:continue
             size,sha=await asyncio.to_thread(_file_facts,paths[role],session,outputs[role]['maxBytes'])
             await artifacts.upload(outputs[role]['artifactId'],paths[role],content_type=outputs[role]['contentType'],byte_length=size,sha256=sha,transport=transport)
+        print(json.dumps({'level':'info','message':'clip_preparation_metrics','phaseMs':{**preparation_phases(result.stderr),
+            'upload':round((time.monotonic()-upload_started)*1000)},'sourceBytesTransferred':sources.bytes_transferred,'sourceRequests':sources.upstream_requests}),file=sys.stderr)
         return {'bytesTransferred':sources.bytes_transferred,'upstreamRequests':sources.upstream_requests,'sourceBytes':original[0]['byteLength']}
