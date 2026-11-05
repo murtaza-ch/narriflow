@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   assertPublicHttpUrl,
   assertPublicHttpUrlResolved,
   guardedFetch,
+  pinnedTransport,
   readResponseBodyBounded,
   RemoteFetchError,
   type HostResolver,
@@ -488,3 +491,30 @@ test("malformed resolver addresses cannot bypass the public address policy", asy
     expect(calls).toBe(0);
   }
 });
+
+test("a Blob body reaches the server whole, with its Content-Length", async () => {
+  const size = 23_078_202;
+  let received = 0;
+  let declared: string | undefined;
+  const server = createServer((request, response) => {
+    declared = request.headers["content-length"];
+    request.on("data", (part: Buffer) => { received += part.length; });
+    request.on("end", () => { response.writeHead(201); response.end(); });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const response = await pinnedTransport(new URL(`http://127.0.0.1:${port}/upload`), {
+      method: "PUT",
+      headers: new Headers({ "Content-Type": "video/mp4" }),
+      body: new Blob([new Uint8Array(size)]),
+      addresses: [{ address: "127.0.0.1", family: 4 }],
+      signal: AbortSignal.timeout(20_000),
+    });
+    expect(response.status).toBe(201);
+    expect(received).toBe(size);
+    expect(declared).toBe(String(size));
+  } finally {
+    server.close();
+  }
+}, 25_000);
