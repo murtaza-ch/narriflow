@@ -363,6 +363,10 @@ export function classifyAuthenticatedRequestFailure(
       retryAfterSeconds: Math.max(1, Math.ceil(failure.retryAfterSeconds ?? 1)),
     };
   }
+  if (code === "scheduler_registration_pending") {
+    // The work is saved, and the same request safely picks it up again.
+    return { kind: "retry", preserveInput: true, message: "Your request was saved. Try again in a moment to continue." };
+  }
   if (
     code === "remote_fetch_timeout" ||
     code === "rss_download_failed" ||

@@ -1737,6 +1737,7 @@ export function createWorkspaceBillingModule(dependencies: {
   diagnostics: WorkspaceBillingDiagnostics;
   metrics?: WorkspaceBillingMetrics;
   random?: () => number;
+  wait?(ms: number): Promise<void>;
 }) {
   const wakeEventTypes = new Set<string>(WORKSPACE_BILLING_WAKE_EVENT_TYPES);
   const metrics: WorkspaceBillingMetrics = dependencies.metrics ?? {

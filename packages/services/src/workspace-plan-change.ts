@@ -47,17 +47,31 @@ export type { BillingInterval, BillingPlanChange, PaidPricingTier, PlanChangeQuo
 const itemPrices = (items: PlanChangeItem[]) => JSON.stringify(items.map(({ priceId, quantity }) => ({ priceId, quantity })).sort((a, b) => a.priceId.localeCompare(b.priceId)));
 const sourceIdentity = (value: PlanChangeSubscription) => JSON.stringify({ id: value.id, customerId: value.customerId, items: value.items.map(({ id, priceId, quantity }) => ({ id, priceId, quantity })).sort((a, b) => a.priceId.localeCompare(b.priceId)), periodStart: value.periodStart, periodEnd: value.periodEnd });
 
+const CLAIM_RETRIES = 8;
+const CLAIM_WAIT_MS = 1_000;
+
 /** Payment and timing policy; provider state remains the only entitlement authority. */
 export function createWorkspacePlanChanges(dependencies: {
   catalog: BillingCatalog;
   store: WorkspaceBillingStore;
   provider: WorkspaceBillingProvider;
   clock: { now(): Date };
+  wait?(ms: number): Promise<void>;
 }) {
   const { catalog, store, provider, clock } = dependencies;
+  const wait = dependencies.wait ?? (ms => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
+  /** Every claim queues a reconcile, which holds the account for a few seconds after a
+   * preview. A person who confirms promptly must wait that out, not be refused by it. */
+  async function claimWhenFree(workspaceId: string) {
+    for (let retry = 0; ; retry++) {
+      const claim = await store.claimAccount({ workspaceId, now: clock.now(), leaseMs: Math.max(catalog.worker.leaseMs, 120_000) });
+      if (claim || retry >= CLAIM_RETRIES) return claim;
+      await wait(CLAIM_WAIT_MS);
+    }
+  }
   async function exclusive<T>(input: { workspaceId: string; actorUserId: string }, wake: boolean, run: (renew: () => Promise<void>) => Promise<T>): Promise<T> {
     if ((await store.readBillingActor(input))?.role !== "owner") throw new WorkspaceBillingError("billing_forbidden");
-    const claim = await store.claimAccount({ workspaceId: input.workspaceId, now: clock.now(), leaseMs: Math.max(catalog.worker.leaseMs, 120_000) });
+    const claim = await claimWhenFree(input.workspaceId);
     if (!claim) throw new WorkspaceBillingError("plan_change_busy");
     try {
       return await run(async () => {

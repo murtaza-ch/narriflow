@@ -5,7 +5,7 @@ import { withWorkerServices, workerServiceEnvironment } from "./worker-services"
 export { workerServiceEnvironment } from "./worker-services";
 import { healthResponse } from "./domains/platform/health";
 import type { ApiWorkerBindings } from "./worker-bindings";
-import { executionRegistrationReceipt, ExecutionRegistrationPendingError, withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
+import { executionRegistrationReceipt, ExecutionRegistrationPendingError, settleExecutionDispatches, withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import { continuesAcceptedWork, drainingResponse } from "./http/drain";
 import { firstPartyRefusalHeaders } from "./http/cors";
 import { loadCorsAllowedOrigins } from "./config";
@@ -55,7 +55,7 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
           (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString), async () => {
             let result: T | undefined, returned = false;
             try {
-              return await withExecutionDispatches(async () => { result = await operation(); returned = true; return result; }, { independent });
+              return await withExecutionDispatches(async () => { result = await operation(); returned = true; return result; }, { independent, deliver: settleExecutionDispatches });
             } catch (cause) {
               if (!returned) throw cause;
               // A nested RPC already owns its typed registration failure.
@@ -71,6 +71,8 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
         try { return await invoke(async () => response = await dependencies.createApp(environment, runInvocation).fetch(request, bindings, context), false); }
         catch (error) {
           if (!(error instanceof ExecutionRegistrationPendingError) || !response) throw error;
+          const requestId = response.headers.get("X-Request-Id");
+          withServiceEnvironment(environment, () => logFailure("execution_registration_pending", error, { requestId, method: request.method }));
           return executionRegistrationFailureResponse(response, error);
         }
       } catch (error) {

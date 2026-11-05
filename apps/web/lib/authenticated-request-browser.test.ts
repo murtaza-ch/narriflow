@@ -388,3 +388,10 @@ describe("upgradePromptFromFailure", () => {
     ).toBeNull();
   });
 });
+
+test("a saved request whose scheduling is unconfirmed asks for a retry, not support", () => {
+  const failure = { ok: false, error: "scheduler_registration_pending", code: "scheduler_registration_pending", requestId: "req-1", message: "internal wording" } as const;
+  const recovery = classifyAuthenticatedRequestFailure(failure, "/workspaces/new");
+  expect(recovery).toMatchObject({ kind: "retry", preserveInput: true });
+  expect(authenticatedRequestFailureMessage(failure, "/workspaces/new", "Workspace checkout could not be started")).toBe("Your request was saved. Try again in a moment to continue.");
+});

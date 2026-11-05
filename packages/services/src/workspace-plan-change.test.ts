@@ -37,7 +37,7 @@ function fixture(price = "pro_monthly", desiredAdditionalSeats = 0) {
     cancelScheduledPlanChange: async () => { source.schedule = null; },
     cancelPendingPlanChange: async () => { source.pending = null; },
   };
-  const module = () => createWorkspaceBillingModule({ catalog, store, provider, clock: { now: () => now.value }, diagnostics: { record: () => undefined } });
+  const module = () => createWorkspaceBillingModule({ catalog, store, provider, clock: { now: () => now.value }, diagnostics: { record: () => undefined }, wait: async () => undefined });
   const billing = module();
   const input = { workspaceId, actorUserId, clientIdempotencyKey: randomUUID(), targetTier: "business" as const, interval: "monthly" as const };
   const reconcile = async (worker = module()) => {
@@ -182,6 +182,27 @@ describe("Workspace plan changes", () => {
     const { quote } = await f.billing.previewPlanChange({ ...f.input, interval: "annual" });
     const stored = await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id });
     expect(stored?.targetItems).toEqual([{ id: "si_base", priceId: "business_annual", quantity: 1 }, { priceId: "seat_annual", quantity: 2 }]);
+  });
+
+  test("a prompt confirm waits out the sync its own preview started, then upgrades", async () => {
+    const f = fixture();
+    const { quote } = await f.billing.previewPlanChange(f.input);
+    const claim = f.store.claimAccount;
+    let refused = 0;
+    f.store.claimAccount = async (input) => (++refused <= 3 ? null : claim(input));
+    await f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id });
+    expect(refused).toBe(4);
+    expect(f.mutations()).toBe(1);
+  });
+
+  test("a billing lock that never clears is still refused, after a bounded wait", async () => {
+    const f = fixture();
+    const { quote } = await f.billing.previewPlanChange(f.input);
+    let attempts = 0;
+    f.store.claimAccount = async () => { attempts++; return null; };
+    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toMatchObject({ code: "plan_change_busy" });
+    expect(attempts).toBe(9);
+    expect(f.mutations()).toBe(0);
   });
 
   test("a concurrent confirmation is refused while the first provider mutation is in flight", async () => {

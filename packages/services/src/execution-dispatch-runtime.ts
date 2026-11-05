@@ -73,6 +73,24 @@ export function executionRegistrationReceipt(value: unknown): ExecutionRegistrat
   return receipt;
 }
 
+const SETTLE_RETRIES = 4;
+const SETTLE_WAIT_MS = 500;
+
+/** For HTTP boundaries, after a handler has succeeded. A running Workflow can hold a
+ * dispatch's lease at that moment, and it clears within a second or two, so a request
+ * waits for it rather than failing work that is about to land. Workflows keep the plain
+ * delivery: they turn a pending dispatch into a durable sleep. */
+export async function settleExecutionDispatches(ids: readonly string[], dependencies: { deliver?(ids: readonly string[]): Promise<void>; wait?(ms: number): Promise<void> } = {}): Promise<void> {
+  const deliver = dependencies.deliver ?? deliverExecutionDispatches;
+  const wait = dependencies.wait ?? (ms => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
+  for (let retry = 0; ; retry++) {
+    try { return await deliver(ids); } catch (error) {
+      if (!(error instanceof ExecutionDispatchPendingError) || retry >= SETTLE_RETRIES) throw error;
+      await wait(SETTLE_WAIT_MS);
+    }
+  }
+}
+
 /** Only HTTP/RPC boundaries construct this after the handler has returned.
  * The ordinary service/Workflow collector preserves its original failure. */
 export class ExecutionRegistrationPendingError extends Error {
