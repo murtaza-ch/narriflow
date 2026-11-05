@@ -26,7 +26,9 @@ COPY apps/media/runtime-lock.json apps/media/scripts/check-render-environment.ts
 # Caption display faces are vendored in packages/caption-fonts below.
 # Packages come from the dated Debian snapshot the deployed image was built
 # from; direct packages are version-pinned and every installed package is
-# verified against the lock afterwards.
+# verified against the lock afterwards. The snapshot CDN returns intermittent
+# 404s for indexes and packages it holds, and apt's own retry aborts on them.
+# Each pass keeps completed files and fetches only what is missing.
 RUN set -eux; \
     case "$MEDIA_PROFILE" in render|lean) ;; *) exit 1 ;; esac; \
     media_font_packages=""; \
@@ -45,10 +47,14 @@ RUN set -eux; \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       > /etc/apt/sources.list.d/debian.sources; \
-    apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update; \
-    apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
-      ffmpeg=7:7.1.5-0+deb13u1 fontconfig=2.15.0-2.3 curl=8.14.1-2+deb13u7 \
-      ca-certificates=20250419+deb13u1 python3=3.13.5-1 python3-pip=25.1.1+dfsg-1 $media_font_packages; \
+    media_packages="ffmpeg=7:7.1.5-0+deb13u1 fontconfig=2.15.0-2.3 curl=8.14.1-2+deb13u7 ca-certificates=20250419+deb13u1 python3=3.13.5-1 python3-pip=25.1.1+dfsg-1 $media_font_packages"; \
+    for pass in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+      apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=0 update \
+        && apt-get install -y --no-install-recommends --download-only -o Acquire::Retries=0 $media_packages \
+        && break; \
+      sleep 10; \
+    done; \
+    apt-get install -y --no-install-recommends -o Acquire::Retries=0 $media_packages; \
     rm -rf /var/lib/apt/lists/*
 
 # Distribution packages lag YouTube extractor changes by months. Pin the
