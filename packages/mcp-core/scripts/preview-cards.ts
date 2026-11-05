@@ -1,6 +1,8 @@
 /** Local design harness: every App card, in every state, behind a fake MCP Apps host.
  * Run `bun run --cwd packages/mcp-core build:apps` first. CARD_PREVIEW_VIDEO is an
  * optional path to an mp4. Fixtures only: this never reaches an API. */
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { narriflowAppHtml } from "../src/mcp-apps/v2/document";
 
 const operation = { kind: "export", id: "export-1" };
@@ -40,11 +42,15 @@ if(m.method==="ui/notifications/size-changed"){frame.style.height=m.params.heigh
 if(m.method==="tools/call"){const key=frame.id+m.params.name,list=(s.tools??{})[m.params.name]??[],i=calls[key]=(calls[key]??-1)+1,data=list[Math.min(i,list.length-1)];setTimeout(()=>send({id:m.id,result:data?{structuredContent:{data}}:{isError:true,structuredContent:{}}}),150);return}
 if(m.method==="ui/open-link"){send({id:m.id,result:{}});return}if(m.id!==undefined)send({id:m.id,result:{}})});</script>`;
 
-Bun.serve({ port: Number(process.env.PORT ?? 4311), fetch(request) {
-  const url = new URL(request.url);
-  if (url.pathname === "/video.mp4" && video) return new Response(Bun.file(video), { headers: { "content-type": "video/mp4" } });
+createServer(async (request, response) => {
+  const url = new URL(request.url ?? "/", "http://localhost");
   const id = url.pathname.match(/^\/card\/(.+)$/)?.[1];
   const scenario = id ? scenarios[id] : undefined;
-  if (scenario) return new Response(narriflowAppHtml(scenario.view, "https://narriflow.example"), { headers: { "content-type": "text/html" } });
-  return new Response(page(url.searchParams.get("theme") !== "light"), { headers: { "content-type": "text/html" } });
-} });
+  if (url.pathname === "/video.mp4") {
+    if (!video) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { "content-type": "video/mp4" }).end(await readFile(video));
+    return;
+  }
+  response.writeHead(200, { "content-type": "text/html" });
+  response.end(scenario ? narriflowAppHtml(scenario.view, "https://narriflow.example") : page(url.searchParams.get("theme") !== "light"));
+}).listen(Number(process.env.PORT ?? 4311));

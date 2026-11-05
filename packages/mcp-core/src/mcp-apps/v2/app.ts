@@ -205,6 +205,8 @@ async function exportClip() {
 
 function renderPublicationDecision() {
   if (view !== "publication-confirmation") return;
+  // With no post to approve there is nothing to confirm or decline.
+  action.hidden = secondary.hidden = !payload.intent;
   action.disabled = busy || !hasResult || !payload.intent || !publicationDecision.canConfirm;
   secondary.disabled = busy || !hasResult || !publicationDecision.canDecline;
   action.textContent = busy ? "Scheduling…" : "Confirm and schedule";

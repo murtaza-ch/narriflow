@@ -31,9 +31,6 @@ function label(value: unknown) {
 function fact(name: string, value: unknown) {
   return `<div class="fact"><dt>${escapeHtml(name)}</dt><dd>${escapeHtml(value)}</dd></div>`;
 }
-function chips(values: unknown) {
-  return Array.isArray(values) ? values.map((value) => `<span class="chip">${escapeHtml(label(value))}</span>`).join("") : "";
-}
 const icon = (path: string, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 const uploadIcon = icon('<path d="M12 16V4m0 0L7 9m5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>', 26);
 const checkIcon = icon('<path d="m5 12.5 4.5 4.5L19 7.5"/>', 16);
@@ -64,14 +61,13 @@ export function clipView(payload: Facts, choice: ExportChoice = { aspectRatio: "
     clip.transcriptExcerpt ? ["transcript", "Transcript", `<p>${escapeHtml(clip.transcriptExcerpt)}</p>`] : null].filter((tab): tab is string[] => Boolean(tab));
   return {
     title: text(clip.title) || "Review your clip", badge: label(clip.status) || "Clip review",
-    html: `<div class="meta"><span>${clock(clip.durationSec)}</span><span>${clock(clip.startSec)}–${clock(clip.endSec)} in source</span>${clip.category ? `<span>${escapeHtml(label(clip.category))}</span>` : ""}<span>Version ${number(clip.editorRevision)}</span></div>
+    html: `<div class="meta"><span>${clock(clip.durationSec)}</span><span>${clock(clip.startSec)}–${clock(clip.endSec)} in source</span>${clip.category ? `<span>${escapeHtml(label(clip.category))}</span>` : ""}<span>Version ${number(clip.editorRevision)}</span>${Array.isArray(clip.platformFit) && clip.platformFit.length ? `<span>${escapeHtml(clip.platformFit.map(label).join(", "))}</span>` : ""}</div>
       <div class="review"><section aria-label="Clip preview"><div id="preview" class="media"><span>Preview available in Narriflow</span></div></section>
       <section class="scores" aria-label="Clip scores">
         <div class="ring-row"><div class="ring" role="img" aria-label="Virality ${virality} out of 100"><svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="40" r="34"/><circle class="ring-value" cx="40" cy="40" r="34" style="--ring-empty:${RING_LENGTH};--ring-full:${RING_LENGTH * (1 - virality / 100)}"/></svg><strong>${virality}</strong></div><div><h2>Virality</h2><p class="subtle">Out of 100</p></div></div>
         ${metrics.map(([key, name], index) => scoreBar(name, score(scores[key]), index)).join("")}
       </section></div>
       ${clip.hookText ? `<blockquote class="hook">${escapeHtml(clip.hookText)}</blockquote>` : ""}
-      <div class="chips">${chips(clip.platformFit)}</div>
       ${tabs.length ? `<section class="tabs"><div class="tablist" role="tablist">${tabs.map(([id, name], index) => `<button type="button" role="tab" data-tab="${id}" aria-selected="${index === 0}">${name}</button>`).join("")}</div>${tabs.map(([id, , html], index) => `<div class="tabpanel" role="tabpanel" data-panel="${id}"${index === 0 ? "" : " hidden"}>${html}</div>`).join("")}</section>` : ""}
       <section class="export-panel" aria-label="Export this clip"><div><h2>Format</h2>${segmented("aspectRatio", "Format", ASPECT_RATIOS, choice.aspectRatio)}</div><div><h2>Quality</h2>${segmented("resolution", "Quality", RESOLUTIONS, choice.resolution)}</div></section>`,
   };
@@ -181,7 +177,7 @@ function operationView(payload: Facts, outcome: Facts): CardView {
     badge: state === "working" && isExport && !percent ? "Queued" : label(state) || "Processing", tone: stopped ? "failed" : done || state === "partial" ? "done" : "live",
     html: result && done ? result : `${liveCard({ heading: isExport ? "Clip export" : friendlyStage(stage) || "Video processing", percent, finished: done, failed: stopped,
       steps: isExport ? steps(EXPORT_STEPS, percent ? 1 : 0, done) : steps(GENERATION_STEPS, generationStep(stage), done), note })}
-      ${items.length ? `<dl class="facts">${fact(isExport ? "Formats ready" : "Clips ready", `${finished} of ${items.length}`)}</dl>` : ""}${result}`,
+      ${result}`,
   };
 }
 export function confirmationView(payload: Facts, locale?: string): CardView {
