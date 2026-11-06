@@ -125,7 +125,9 @@ export const mcpAutopilotRulesResultSchema = z.strictObject({ rules: z.array(mcp
 export const mcpAutopilotRuleResultSchema = z.strictObject({ rule: mcpAutopilotRuleSchema });
 export const mcpRecoveryMutationResultSchema = z.strictObject({ socialPostId: id, attemptId: id, priorAttemptId: id.optional(), status: socialPostStatusSchema, evidence: z.enum(["provider_validated", "manual"]).optional(), ownershipValidated: z.boolean().optional(), externalUrl: link.nullable().optional() });
 export const mcpElicitationConfirmationSchema = z.strictObject({ confirm: z.literal(true) });
-export const mcpGetOperationSchema = z.strictObject({ ...mcpWorkspaceInput, operation: mcpOperationRefSchema });
+/** Workspace events name an operation by its opaque `op_` ID, accepted responses by its UUID. Both follow the same work. */
+export const mcpGetOperationSchema = z.strictObject({ ...mcpWorkspaceInput, operation: z.strictObject({ kind: mcpOperationKindSchema,
+  id: z.union([id, z.string().regex(/^op_[A-Za-z0-9_-]{23}$/)]) }) });
 const operationItemState = z.enum(["working", "completed", "failed", "cancelled"]);
 export const mcpOperationStatusResultSchema = z.strictObject({
   operation: mcpOperationRefSchema,

@@ -285,6 +285,23 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     )
 
     .get(
+      "/projects/:id/exports/render-states",
+      uuidParams("id"),
+      async (c) => {
+        return c.json(
+          {
+            exports: await clipExportService.listProjectRenderStates(
+              getActor(c),
+              c.req.valid("param").id,
+            ),
+          },
+          200,
+          NO_STORE,
+        );
+      },
+    )
+
+    .get(
       "/projects/:id/clips/:clipId/exports/:exportId",
       uuidParams("id", "clipId", "exportId"),
       async (c) => {

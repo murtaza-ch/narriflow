@@ -56,6 +56,15 @@ export function decodeOperationId(value: string): { kind: OperationKind; id: str
   return UUID_PATTERN.test(id) ? { kind, id } : null;
 }
 
+/** The domain reference behind an MCP read, which may carry an event's `op_` ID.
+ * Read scope comes from the declared kind, so the ID must agree with it. */
+export function resolveOperationRef(operation: { kind: OperationKind; id: string }): { kind: OperationKind; id: string } {
+  if (!operation.id.startsWith("op_")) return operation;
+  const decoded = decodeOperationId(operation.id);
+  if (decoded?.kind !== operation.kind) throw new ExpectedDomainFailureError({ code: "operation_not_found", kind: "missing", message: "This operation is unavailable" });
+  return decoded;
+}
+
 /** Trusted reads report deleted, expired, or purged lineage as unavailable. */
 export type TrustedOperationStatus = OperationStatus | { kind: OperationKind; id: string; state: "unavailable" };
 

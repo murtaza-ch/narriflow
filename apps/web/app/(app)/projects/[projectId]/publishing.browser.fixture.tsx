@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { apiErrorFromResponse, createIntent } from "@narriflow/api-client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 let createRoot: typeof import("react-dom/client").createRoot;
 import type {
 	ClipSnapshot,
@@ -112,6 +112,9 @@ let root: Root;
 let requests: Array<{ url: string; body: any; headers: Headers }> = [];
 let generate: (body: any) => Promise<Response>;
 let admit: (body: any) => Promise<Response>;
+/** What the render-states read and the export commands answer; `null` means every clip's video is ready. */
+let renderStates: ClipExportSnapshot[] | null = null;
+let onExportCommand: (url: string) => Response | Promise<Response> = () => Response.json({}, { status: 202 });
 function Entry() {
 	const p = usePublishing();
 	return (
@@ -199,7 +202,8 @@ async function render(
 		requests.push({ url: value, body, headers: new Headers(init?.headers) });
 		if (value.endsWith("/social/proposals")) return Response.json({ proposalId: "00000000-0000-4000-8000-0000000000aa" }, { status: 201 });
 		if (value.endsWith("/visual-assets")) return Response.json({ assets: [] });
-		if (value.endsWith("exports/current")) return Response.json({ exports });
+		if (value.endsWith("exports/render-states")) return Response.json({ exports: renderStates ?? exports });
+		if (init?.method === "POST" && /\/exports(\/[^/]+\/retry)?$/.test(value)) return onExportCommand(value);
 		if (value.endsWith("publishing-options"))
 			return Response.json({
 				privacyOptions: ["PUBLIC_TO_EVERYONE"],
@@ -292,6 +296,8 @@ afterEach(async () => {
 	browser.document.body.replaceChildren();
 	browser.localStorage.clear();
 	requests = [];
+	renderStates = null;
+	onExportCommand = () => Response.json({}, { status: 202 });
 });
 afterAll(() => browser.close());
 test("a multi-post plan lock opens the shared dialog without submitting or losing copy", async () => {
@@ -310,7 +316,7 @@ test("a plan without publishing opens the shared dialog instead of the composer"
 	await click("Exact clip");
 	expect([...browser.document.querySelectorAll('[role="dialog"]')].at(-1)?.textContent).toContain("Upgrade to publish your clips");
 	expect(browser.document.querySelector('textarea[aria-label="Description"]')).toBeNull();
-	expect(requests.filter((request) => request.url.endsWith("exports/current"))).toHaveLength(0);
+	expect(requests.filter((request) => request.url.endsWith("exports/render-states"))).toHaveLength(0);
 });
 test("opens the exact clip, auto-selects the sole account and generates missing copy", async () => {
 	await render();
@@ -724,6 +730,129 @@ test("restored deleted covers are cleared without losing copy", async () => {
 	expect((browser.document.querySelector('textarea[aria-label="Description"]') as any).value).toContain(
 		"Generated for",
 	);
+});
+
+function exportOf(clipIndex: number, status: ClipExportSnapshot["status"]): ClipExportSnapshot {
+	const finished = status === "ready";
+	return {
+		...exports[clipIndex]!,
+		id: id(50 + clipIndex),
+		status,
+		variants: exports[clipIndex]!.variants.map((variant) => ({
+			...variant,
+			hasAsset: finished,
+			status: finished ? "completed" : status === "failed" ? "failed" : status === "rendering" ? "rendering" : "pending",
+		})),
+	};
+}
+const railCard = (clipIndex: number) =>
+	[...browser.document.querySelectorAll('nav[aria-label="Selected clips"] button')].find((card) =>
+		card.textContent?.includes(clips[clipIndex]!.title ?? ""),
+	)!;
+const rendersPolled = () => requests.filter((request) => request.url.endsWith("exports/render-states")).length;
+
+test("each rail card shows its own clip's render state, apart from review, with a selection summary", async () => {
+	renderStates = [exportOf(0, "rendering"), exportOf(1, "failed")];
+	await render();
+	await click("Bulk clips");
+	expect(railCard(0).textContent).toContain("Rendering");
+	expect(railCard(0).textContent).not.toContain("No video");
+	expect(railCard(1).textContent).toContain("Failed");
+	expect(railCard(1).textContent).not.toContain("Rendering");
+	expect(browser.document.body.textContent).toContain("1 of 2 videos rendering · 1 failed");
+});
+
+test("Prepare video shows Queued on the clip that asked and cannot be pressed again", async () => {
+	renderStates = [];
+	onExportCommand = () => {
+		renderStates = [exportOf(1, "queued")];
+		return Response.json({ export: exportOf(1, "queued"), reused: false }, { status: 202 });
+	};
+	await render();
+	await click("Exact clip");
+	expect(browser.document.body.textContent).toContain("No video");
+	await click("Prepare video");
+	expect(button("Queued").disabled).toBe(true);
+	expect(button("Prepare video")).toBeUndefined();
+	expect(browser.document.body.textContent).not.toMatch(/\d+%/);
+	const commands = requests.filter((request) => request.url.endsWith(`/clips/${clips[1]!.id}/exports`));
+	expect(commands).toHaveLength(1);
+	expect(commands[0]!.body).toMatchObject({ expectedRevision: 1, aspectRatios: ["9:16"], resolution: "1080p" });
+});
+
+test("two presses before the button disables send one request", async () => {
+	renderStates = [];
+	onExportCommand = () => {
+		renderStates = [exportOf(1, "queued")];
+		return Response.json({ export: exportOf(1, "queued"), reused: false }, { status: 202 });
+	};
+	await render();
+	await click("Exact clip");
+	await act(async () => {
+		const prepare = button("Prepare video");
+		prepare.click();
+		prepare.click();
+	});
+	await flush();
+	expect(requests.filter((request) => request.url.endsWith(`/clips/${clips[1]!.id}/exports`))).toHaveLength(1);
+});
+
+test("a pending request belongs to its own clip, so another clip can still be prepared", async () => {
+	renderStates = [];
+	let answer: (response: Response) => void = () => {};
+	onExportCommand = () => new Promise<Response>((resolve) => { answer = resolve; });
+	await render();
+	await click("Bulk clips");
+	await click("Prepare video");
+	expect(button("Queued").disabled).toBe(true);
+	await act(async () => (railCard(0) as HTMLElement).click());
+	await flush();
+	expect(button("Prepare video").disabled).toBe(false);
+	await act(async () => answer(Response.json({ export: exportOf(1, "queued"), reused: false }, { status: 202 })));
+	await flush();
+});
+
+test("a failed render offers Retry video, which requeues that export and never creates one", async () => {
+	renderStates = [exportOf(1, "failed")];
+	onExportCommand = () => {
+		renderStates = [exportOf(1, "queued")];
+		return Response.json(exportOf(1, "queued"), { status: 202 });
+	};
+	await render();
+	await click("Exact clip");
+	expect(browser.document.body.textContent).toContain("Failed");
+	await click("Retry video");
+	expect(requests.filter((request) => request.url.endsWith(`/clips/${clips[1]!.id}/exports/${exportOf(1, "failed").id}/retry`))).toHaveLength(1);
+	expect(requests.filter((request) => request.url.endsWith(`/clips/${clips[1]!.id}/exports`))).toHaveLength(0);
+	expect(button("Queued").disabled).toBe(true);
+});
+
+test("a finished render appears without a reload", async () => {
+	renderStates = [exportOf(1, "rendering")];
+	await render();
+	await click("Exact clip");
+	expect(button("Rendering").disabled).toBe(true);
+	const polled = rendersPolled();
+	renderStates = [exportOf(1, "ready")];
+	// TanStack read `window` at import, before this fixture installs it, so it takes this process for a server and keeps
+	// no interval timer. A focus refetch runs the same read; `exportQueries.renderStates` pins the cadence in its own test.
+	await act(async () => {
+		focusManager.setFocused(false);
+		focusManager.setFocused(true);
+	});
+	await flush();
+	focusManager.setFocused(undefined);
+	expect(rendersPolled()).toBeGreaterThan(polled);
+	expect(browser.document.body.textContent).toContain("Video ready");
+	expect(button("Rendering")).toBeUndefined();
+	expect(button("Prepare video")).toBeUndefined();
+});
+
+test("a finished video reads as ready with no account chosen", async () => {
+	await render({ accounts: accounts.slice(0, 2) });
+	await click("Exact clip");
+	expect(browser.document.body.textContent).toContain("Video ready");
+	expect(button("Prepare video")).toBeUndefined();
 });
 
 test("export signature refresh keeps preview source stable until media changes or fails", async () => {

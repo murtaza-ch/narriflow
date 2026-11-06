@@ -10,6 +10,7 @@ import { clipTimelineService } from "@narriflow/services/clip-timeline.service";
 import { encodeReviewSelection, reviewService } from "@narriflow/services/review.service";
 import { projectService } from "@narriflow/services/project.service";
 import { operationStatusService } from "@narriflow/services/operation-status-runtime";
+import { resolveOperationRef } from "@narriflow/services/operation-status";
 import { socialService } from "@narriflow/services/social.service";
 import { socialOAuthService } from "@narriflow/services/social-oauth.service";
 import { socialPublishingOptions } from "@narriflow/services/social-publishing-options";
@@ -177,7 +178,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
   const operationOutput = schemas.mcpOperationStatusResultSchema;
   server.registerTool("narriflow_get_operation", { ...config("Get operation status", "Follow exactly the work one accepted mutation started: state, progress, per-clip or per-format outcomes, and produced IDs", operationOutput, readOnly, "progress"), inputSchema: schemas.mcpGetOperationSchema }, (input) => execute("narriflow_get_operation", operationOutput, async (current) => {
     const actor = await workspace("narriflow_get_operation", current, input.workspaceId, mcpOperationReadScope(input.operation.kind));
-    const status = await operationStatusService.read(actor, input.operation);
+    const status = await operationStatusService.read(actor, resolveOperationRef(input.operation));
     const projectId = status.results.projectId;
     return { data: { operation: { kind: status.kind, id: status.id }, state: status.state, stage: status.stage, progress: status.progress, items: status.items,
       results: status.results, notices: status.notices, failureCode: status.failureCode, reviewUrl: projectId ? `${appOrigin}/projects/${projectId}` : null } };

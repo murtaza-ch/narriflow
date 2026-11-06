@@ -31,6 +31,7 @@ export {
   type ExportBundleData,
   type ExportBundleListData,
   type ExportDownloadGrantData,
+  type ProjectRenderStatesData,
   type TimelineSourceGrant,
   type WorkspaceExportPageData,
   type WorkspaceExportProjectsData,

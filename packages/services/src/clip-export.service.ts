@@ -276,6 +276,40 @@ function frozenClipSnapshot(clip: {
   } as Prisma.InputJsonValue;
 }
 
+/** A live export of this revision and output that already renders every format
+ * asked for, whatever else it renders. A fingerprint only matches the identical
+ * format set, so without this a 9:16 request would render 9:16 again beside a
+ * running [9:16, 1:1] export. A request that adds a format is real new work and
+ * proceeds: automation records any refusal as a permanent failure, so it must
+ * not meet one for an overlap. Failed exports are not live, and their retries
+ * go through `retryFailed`. Call with the Clip locked. */
+export async function findCoveringInFlightExport(
+  tx: Pick<Prisma.TransactionClient, "clipExport">,
+  input: {
+    clipId: string;
+    editorRevision: number;
+    resolution: ClipRenderResolution;
+    watermark: boolean;
+    aspectRatios: ClipAspectRatio[];
+  },
+): Promise<{ id: string } | null> {
+  const live = await tx.clipExport.findMany({
+    where: {
+      clipId: input.clipId,
+      editorRevision: input.editorRevision,
+      resolution: input.resolution,
+      watermark: input.watermark,
+      status: { in: ["queued", "rendering"] },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, variants: { select: { aspectRatio: true } } },
+  });
+  const requested = input.aspectRatios.map((aspectRatio) => clipAspectRatioToDb[aspectRatio]);
+  const covering = live.find((row) =>
+    requested.every((aspectRatio) => row.variants.some((variant) => variant.aspectRatio === aspectRatio)));
+  return covering ? { id: covering.id } : null;
+}
+
 /** Inserts the Clip Export for one exact revision and output configuration,
  * or finds the identical one: the output fingerprint also reuses matching
  * exports requested under distinct keys. The caller commits their render-run
@@ -706,7 +740,10 @@ export class ClipExportService {
         if (!current) throw new ClipExportError("clip_not_found", "Clip not found");
         if (current.editorRevision !== input.expectedRevision)
           throw new ClipExportRevisionConflictError(current.editorRevision);
-        const { row, reused } = await upsertClipExport(tx, {
+        const inFlight = await findCoveringInFlightExport(tx, {
+          clipId, editorRevision: input.expectedRevision, resolution, watermark, aspectRatios,
+        });
+        const { row, reused } = inFlight ? { row: inFlight, reused: true } : await upsertClipExport(tx, {
           workspaceId: scope.workspaceId,
           createdByUserId: scope.actorUserId,
           projectId,
@@ -903,6 +940,30 @@ export class ClipExportService {
       }
     }
     return current;
+  }
+
+  /** Every export of a clip's present revision in any status, newest first, for
+   * a surface that follows renders: unlike `listCurrentProjectExports`, this
+   * includes the queued, rendering and failed ones that have no file. */
+  async listProjectRenderStates(
+    scope: ActorScope,
+    projectId: string,
+  ): Promise<ClipExportSnapshot[]> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+    const rows = await requirePrisma().clipExport.findMany({
+      where: {
+        workspaceId: scope.workspaceId,
+        projectId,
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+      },
+      orderBy: { createdAt: "desc" },
+      include: exportInclude,
+    });
+    return Promise.all(
+      rows
+        .filter((row) => row.editorRevision === row.clip.editorRevision)
+        .map((row) => toExportSnapshot(row, true)),
+    );
   }
 
   async retryFailed(

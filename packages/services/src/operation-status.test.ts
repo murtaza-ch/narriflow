@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { deriveExportStatus, deriveGenerationStatus, deriveIntakePhase, intakeProgress, type CaptionedExportOutcome, type GenerationRender, type GenerationRun } from "./operation-status";
+import { deriveExportStatus, deriveGenerationStatus, deriveIntakePhase, encodeOperationId, intakeProgress, resolveOperationRef, type CaptionedExportOutcome, type GenerationRender, type GenerationRun } from "./operation-status";
 
 const origin: GenerationRun = { id: "stt", stage: "stt", status: "completed", errorCode: null, idempotencyKey: "generation", contentPackId: "pack" };
 const detection: GenerationRun = { ...origin, id: "detection", stage: "moment_detection", idempotencyKey: "generation__moment_detection" };
@@ -146,5 +146,21 @@ describe("intake Operation Status before generation", () => {
     expect(deriveIntakePhase(null, ingest())).toMatchObject({ state: "working", stage: "awaiting_generation" });
     expect(deriveIntakePhase({ status: "queued_for_ingest", failureCode: null }, ingest({ generationHandoffAt: new Date(), generationRunId: "stt" }))).toBeNull();
     expect(intakeProgress(0.5)).toBe(0.6);
+  });
+});
+
+describe("MCP operation references", () => {
+  const id = "3fd62969-86bb-471a-bb53-4522d1bb25f8";
+
+  test("follows an event's opaque ID", () => {
+    expect(resolveOperationRef({ kind: "export", id: encodeOperationId({ kind: "export", id }) })).toEqual({ kind: "export", id });
+  });
+
+  test("keeps a domain ID as it is", () => {
+    expect(resolveOperationRef({ kind: "export", id })).toEqual({ kind: "export", id });
+  });
+
+  test("refuses an ID of another kind, because the declared kind chose the read scope", () => {
+    expect(() => resolveOperationRef({ kind: "intake", id: encodeOperationId({ kind: "export", id }) })).toThrow("This operation is unavailable");
   });
 });

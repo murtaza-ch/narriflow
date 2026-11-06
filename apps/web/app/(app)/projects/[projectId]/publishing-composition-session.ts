@@ -27,6 +27,9 @@ import {
 	publishingDraftKey,
 } from "./publishing-draft";
 
+/** The one draft issue the clip rail reports through the render state instead. */
+export const VIDEO_REQUIRED_ISSUE = "Prepare a compatible video.";
+
 export type PublishingCompositionFacts = {
 	clips: ClipSnapshot[];
 	accounts: SocialAccountSnapshot[];
@@ -327,7 +330,7 @@ export function createPublishingCompositionSession(dependencies: {
 				input.preferredExportId,
 			)
 		)
-			result.push("Prepare a compatible video.");
+			result.push(VIDEO_REQUIRED_ISSUE);
 		if (draft.deliveryMode === "direct" && !draft.caption.trim())
 			result.push("Write a description.");
 		if (socialCaptionLength(pair.account.platform, draft.caption.trim()) > SOCIAL_PROVIDER_CAPABILITIES[pair.account.platform].textLimit)
@@ -367,7 +370,7 @@ export function createPublishingCompositionSession(dependencies: {
 						input.exports,
 						input.preferredExportId,
 					);
-					if (!media) throw new Error("Prepare a compatible video.");
+					if (!media) throw new Error(VIDEO_REQUIRED_ISSUE);
 					return {
 						clipId: pair.clip.id,
 						accountId: pair.account.id,

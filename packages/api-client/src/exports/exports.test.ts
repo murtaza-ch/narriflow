@@ -46,6 +46,20 @@ describe("exports reads", () => {
     expect(poll({ state: { data: undefined } })).toBe(false);
   });
 
+  test("render states read every status for the Project and poll faster while one is active", async () => {
+    const { client, calls } = clientWith(() => jsonResponse({ exports: [] }));
+    const options = exportQueries.renderStates(client, scope, PROJECT);
+    await options.queryFn?.({ signal: new AbortController().signal } as never);
+    expect(calls[0]?.url).toBe(`${BASE}/projects/${PROJECT}/exports/render-states`);
+    expect(options.queryKey).toEqual(scopedKey(scope, "exports", "render-states", PROJECT));
+    const poll = options.refetchInterval as (query: unknown) => number | false;
+    const states = (...statuses: string[]) => ({ state: { data: { exports: statuses.map((status) => ({ status })) } } });
+    expect(poll(states("ready", "rendering"))).toBe(2_000);
+    expect(poll(states("queued"))).toBe(2_000);
+    expect(poll(states("ready", "failed"))).toBe(5_000);
+    expect(poll({ state: { data: undefined } })).toBe(5_000);
+  });
+
   test("the detail read carries the workflow cursor", async () => {
     const { client, calls } = clientWith(() => jsonResponse({ id: EXPORT, lastSeq: 12 }));
     const detail = await exportQueries.detail(client, scope, PROJECT, CLIP, EXPORT).queryFn?.({ signal: new AbortController().signal } as never);

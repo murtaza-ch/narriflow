@@ -7,7 +7,7 @@ import type {
   WorkspaceExportProjects,
   WorkspaceExportsQuery,
 } from "@narriflow/validators/api/exports";
-import { scopedKey, STALE_TIME, type WorkspaceScope } from "../core";
+import { POLL_INTERVAL_MS, scopedKey, STALE_TIME, type WorkspaceScope } from "../core";
 import type { ExportsClient } from "./index";
 
 type Ok<Endpoint extends (...args: never[]) => Promise<unknown>> = InferResponseType<Endpoint, 200>;
@@ -20,6 +20,7 @@ export type WorkspaceExportProjectsData = WorkspaceExportProjects;
 export type ClipExportDetailData = ClipExportDetail;
 export type ExportDownloadGrantData = ExportDownloadGrant;
 export type CurrentProjectExportsData = Ok<ExportsClient["projects"][":id"]["exports"]["current"]["$get"]>;
+export type ProjectRenderStatesData = Ok<ExportsClient["projects"][":id"]["exports"]["render-states"]["$get"]>;
 export type ExportBundleListData = Ok<ExportsClient["projects"][":id"]["export-bundles"]["$get"]>;
 export type ExportBundleData = Ok<ExportsClient["projects"][":id"]["export-bundles"][":bundleId"]["$get"]>;
 export type TimelineSourceGrant = Ok<ExportsClient["projects"][":id"]["clips"][":clipId"]["timeline-source"]["$get"]>;
@@ -30,6 +31,7 @@ export const EXPORT_RESOURCES = {
   workspaceProjects: "workspace-projects",
   detail: "detail",
   current: "current",
+  renderStates: "render-states",
   bundles: "bundles",
   bundle: "bundle",
 } as const;
@@ -37,6 +39,8 @@ export const EXPORT_RESOURCES = {
 /** Statuses of an export a worker is still rendering; `partial_ready` and `failed` are settled. */
 const ACTIVE_EXPORT_STATUSES: ReadonlySet<string> = new Set(["queued", "rendering"]);
 export const ACTIVE_EXPORT_POLL_MS = 5_000;
+/** While a render runs its state changes within seconds; otherwise only another surface can start one. */
+const RENDER_STATE_POLL_MS = { active: POLL_INTERVAL_MS.min, idle: POLL_INTERVAL_MS.max };
 
 /** Exports Download Grants are never queries: they expire in minutes (a bundle's in one), so they are fetched on the click that uses them. */
 export const exportQueries = {
@@ -88,6 +92,20 @@ export const exportQueries = {
       staleTime: STALE_TIME.live,
       queryFn: async ({ signal }): Promise<CurrentProjectExportsData> =>
         (await client.projects[":id"].exports.current.$get({ param: { id: projectId } }, withSignal(signal))).json(),
+    });
+  },
+
+  /** Every export of the clips' present revisions in any status, for a surface following renders. Polls until the query is disabled. */
+  renderStates(client: ExportsClient, scope: WorkspaceScope, projectId: string) {
+    return queryOptions({
+      queryKey: scopedKey(scope, "exports", EXPORT_RESOURCES.renderStates, projectId),
+      staleTime: STALE_TIME.live,
+      queryFn: async ({ signal }): Promise<ProjectRenderStatesData> =>
+        (await client.projects[":id"].exports["render-states"].$get({ param: { id: projectId } }, withSignal(signal))).json(),
+      refetchInterval: (query) =>
+        query.state.data?.exports.some((item) => ACTIVE_EXPORT_STATUSES.has(item.status))
+          ? RENDER_STATE_POLL_MS.active
+          : RENDER_STATE_POLL_MS.idle,
     });
   },
 

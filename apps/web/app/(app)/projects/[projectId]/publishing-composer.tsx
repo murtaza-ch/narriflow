@@ -63,8 +63,16 @@ import {
 	currentPublicationExport,
 	publishingDraftKey,
 } from "./publishing-draft";
+import {
+	CLIP_RENDER_STATE_LABELS,
+	clipRenderInFlight,
+	clipRenderState,
+	clipReviewLabel,
+	renderSummary,
+	type ClipRenderState,
+} from "./publishing-render-state";
 import { type ProjectPublishingApi } from "./publishing-api";
-import { type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
+import { VIDEO_REQUIRED_ISSUE, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
 import { PublishingCover } from "./publishing-cover";
 import { isApiError, type Intent } from "@narriflow/api-client";
 import { invalidatePublishing, type ProposeInput } from "@narriflow/api-client/publishing";
@@ -106,6 +114,25 @@ export function PublishingRecoveryComposer({ api, session, onSubmitted, projectI
 		</Button></Drawer.Footer>
 	</>;
 }
+const RENDER_STATE_COLORS: Record<ClipRenderState["kind"], string> = {
+	none: "fg.muted",
+	queued: "accent.fg",
+	rendering: "accent.fg",
+	ready: "success.fg",
+	failed: "danger.fg",
+};
+
+/** Queued and Rendering stay words: a render reports no percentage worth showing. */
+function RenderStateLabel({ state, size = "xs" }: { state: ClipRenderState; size?: string }) {
+	return (
+		<Flex as="span" display="inline-flex" align="center" gap="1" fontSize={size} color={RENDER_STATE_COLORS[state.kind]}>
+			{clipRenderInFlight(state) && <Spinner size="xs" />}
+			{state.kind === "ready" && <CheckCircle2 size={12} aria-hidden />}
+			{CLIP_RENDER_STATE_LABELS[state.kind]}
+		</Flex>
+	);
+}
+
 export function PublishingComposer({
 	api,
 	config,
@@ -127,7 +154,8 @@ export function PublishingComposer({
 	const scope = useWorkspaceScope();
 	const queryClient = useQueryClient();
 	const proposeIntents = useRef(new Map<string, Intent<ProposeInput>>());
-	const exportIntent = useMemo(() => runtime.createIntent<{ clipId: string; expectedRevision: number; resolution: string }>(), [runtime]);
+	const exportIntents = useRef(new Map<string, Intent<{ clipId: string; expectedRevision: number; resolution: string }>>());
+	const renderRequests = useRef(new Set<string>());
 	const { openUpgrade, currentTier } = useUpgrade();
 	const campaignUpgrade = featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to publish multiple posts together");
 	const campaignRequirement = planFeatureRequirement(currentTier, "campaign.operations")?.message
@@ -143,7 +171,7 @@ export function PublishingComposer({
 		Array<{ clipId: string; scheduledFor: string }>
 	>([]);
 	const [previewError, setPreviewError] = useState("");
-	const [renderBusy, setRenderBusy] = useState(false);
+	const [requestedRenders, setRequestedRenders] = useState<ReadonlySet<string>>(new Set());
 	const [override, setOverride] = useState("");
 	const approvalBlocked = result?.items.some((item) => item.errorCode === "review_approval_required") ?? false;
 	const [instruction, setInstruction] = useState("");
@@ -190,17 +218,16 @@ export function PublishingComposer({
 	useEffect(() => {
 		void session.checkSavedCovers(() => api.visualAssets());
 	}, [session, api]);
-	// The Project's current exports, re-read every 5s while the drawer is open (renders finish meanwhile).
+	// Every export of the clips' present revisions, re-read while the drawer is open, faster while one renders.
 	const exportsClient = useMemo(
 		() => (scope ? createExportsClient(runtime.transport.scoped(scope)) : null),
 		[runtime.transport, scope],
 	);
 	const currentExports = useQuery({
 		...(scope && exportsClient
-			? exportQueries.current(exportsClient, scope, config.projectId)
+			? exportQueries.renderStates(exportsClient, scope, config.projectId)
 			: { queryKey: ["publishing-exports-idle", config.projectId], queryFn: async () => ({ exports: [] }) }),
 		enabled: open && scope !== null,
-		refetchInterval: 5000,
 	});
 	const exports = useMemo<ClipExportSnapshot[]>(
 		() => (currentExports.data ? clipExportSnapshotSchema.array().parse(currentExports.data.exports) : []),
@@ -337,23 +364,31 @@ export function PublishingComposer({
 	function issues(pair: (typeof pairs)[number]) {
 		return session.issues(pair.key, { exports, options, optionErrors, preferredExportId });
 	}
-	async function prepare() {
-		setRenderBusy(true);
+	async function prepare(clip: ClipSnapshot, state: ClipRenderState) {
+		// A second press can land before the disabled button renders.
+		if (renderRequests.current.has(clip.id)) return;
+		renderRequests.current.add(clip.id);
+		setRequestedRenders((current) => new Set(current).add(clip.id));
 		setError("");
 		try {
-			if (activeExport?.status === "failed") {
-				await api.retryExport(config.projectId, active.id, activeExport.id);
+			if (state.kind === "failed") {
+				await api.retryExport(config.projectId, clip.id, state.exportId);
 			} else {
 				const resolution = config.can1080pExport ? "1080p" : "720p";
-				const request = { clipId: active.id, expectedRevision: active.editorRevision, resolution };
-				// Rendering spends credits: a retry after a lost answer reuses the key and gets the accepted export back.
+				const request = { clipId: clip.id, expectedRevision: clip.editorRevision, resolution };
+				// One key per clip: a lost answer replays the accepted export, and clips can be prepared side by side.
+				let intent = exportIntents.current.get(clip.id);
+				if (!intent) {
+					intent = runtime.createIntent<typeof request>();
+					exportIntents.current.set(clip.id, intent);
+				}
 				await api.createExport(
 					config.projectId,
-					active.id,
-					{ expectedRevision: active.editorRevision, aspectRatios: ["9:16"], resolution },
-					exportIntent.keyFor(request),
+					clip.id,
+					{ expectedRevision: clip.editorRevision, aspectRatios: ["9:16"], resolution },
+					intent.keyFor(request),
 				);
-				exportIntent.complete();
+				intent.complete();
 			}
 			await refreshExports();
 		} catch (e) {
@@ -361,33 +396,30 @@ export function PublishingComposer({
 				e instanceof Error ? e.message : "The video could not be prepared.",
 			);
 		} finally {
-			setRenderBusy(false);
+			renderRequests.current.delete(clip.id);
+			setRequestedRenders((current) => {
+				const next = new Set(current);
+				next.delete(clip.id);
+				return next;
+			});
 		}
 	}
 	async function submit() {
 		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => api.schedule(config.projectId, payload).catch(openUpgradeOnRefusal(openUpgrade)));
 		if (outcome) await onSubmitted(outcome);
 	}
-	const activeExport = exports.find(
-		(e) =>
-			e.clipId === active.id &&
-			e.editorRevision === active.editorRevision &&
-			!e.isOlderVersion,
+	const renderStates = new Map(
+		clips.map((clip) => [
+			clip.id,
+			clipRenderState(clip, exports, accounts.map((account) => account.platform), {
+				requested: requestedRenders.has(clip.id),
+				preferredExportId,
+			}),
+		]),
 	);
-	const activeMediaReady =
-		accounts.length > 0 &&
-		accounts.every(
-			(a) =>
-				!!currentPublicationExport(
-					active,
-					a.platform,
-					exports,
-					preferredExportId,
-				),
-		);
-	const preparingVideo =
-		renderBusy ||
-		(!!activeExport && ["queued", "rendering"].includes(activeExport.status));
+	const renderStateOf = (clip: ClipSnapshot): ClipRenderState => renderStates.get(clip.id) ?? { kind: "none" };
+	const activeRender = renderStateOf(active);
+	const selectionSummary = renderSummary([...renderStates.values()]);
 	const disabled = busy || !!pending;
 	const unresolved = pairs.filter((p) => !accepted.has(p.key));
 	const issueCount = unresolved.reduce((n, p) => n + issues(p).length, 0);
@@ -544,9 +576,11 @@ export function PublishingComposer({
 						display={{ base: "none", md: "flex" }}
 					>
 						{clips.map((clip) => {
-							const count = pairs
-								.filter((p) => p.clip.id === clip.id)
-								.reduce((n, p) => n + issues(p).length, 0);
+							const clipPairs = pairs.filter((p) => p.clip.id === clip.id);
+							const otherIssues = clipPairs.reduce((n, p) => n + issues(p).filter((issue) => issue !== VIDEO_REQUIRED_ISSUE).length, 0);
+							const render = renderStateOf(clip);
+							const review = clipReviewLabel(render, otherIssues, clipPairs.length);
+							const previewVariant = exports.flatMap((e) => (e.clipId === clip.id ? e.variants : [])).find((v) => v.previewUrl);
 							return (
 								<Button
 									key={clip.id}
@@ -561,19 +595,12 @@ export function PublishingComposer({
 								>
 									<Stack gap="2" minW="0" width="full">
 										<Flex align="center" gap="2">
-											{exports
-												.find((e) => e.clipId === clip.id)
-												?.variants.find((v) => v.previewUrl)?.previewUrl ? (
-												<PublishingPreview key={exports.find(e => e.clipId === clip.id)?.variants.find(v => v.previewUrl)?.id}
+											{previewVariant ? (
+												<PublishingPreview key={previewVariant.id}
 													muted
 													preload="metadata"
 													aria-label={`Preview of ${clip.title ?? clip.hookText}`}
-													src={
-														exports
-															.find((e) => e.clipId === clip.id)
-															?.variants.find((v) => v.previewUrl)
-															?.previewUrl ?? undefined
-													}
+													src={previewVariant.previewUrl ?? undefined}
 													style={{
 														width: 32,
 														height: 44,
@@ -591,20 +618,27 @@ export function PublishingComposer({
 										<Text fontSize="xs" lineClamp={2} minH="32px">
 											{clip.title ?? clip.hookText}
 										</Text>
-										<Text
-										fontSize="xs"
-										color={count ? "fg.muted" : "success.fg"}
-										>
-											{count ? "Needs review" : "Ready"}
-										</Text>
+										<Stack gap="1">
+											<RenderStateLabel state={render} />
+											{review && (
+												<Text fontSize="xs" color={review === "Ready" ? "success.fg" : "fg.muted"}>
+													{review}
+												</Text>
+											)}
+										</Stack>
 									</Stack>
 								</Button>
 							);
 						})}
 					</Stack>
 				)}
+{selectionSummary && (
+	<Text role="status" fontSize="13px" color="fg.muted">
+		{selectionSummary}
+	</Text>
+)}
 {clips.length > 1 && (
-								<Field.Root display={{ md: "none" }}>
+	<Field.Root display={{ md: "none" }}>
 									<Field.Label>Clip</Field.Label>
 									<NativeSelect.Root>
 										<NativeSelect.Field
@@ -613,8 +647,8 @@ export function PublishingComposer({
 										>
 											{clips.map((c) => (
 												<option value={c.id} key={c.id}>
-													{c.title ?? c.hookText}
-												</option>
+													{c.title ?? c.hookText} · {CLIP_RENDER_STATE_LABELS[renderStateOf(c).kind]}
+													</option>
 											))}
 										</NativeSelect.Field>
 										<NativeSelect.Indicator />
@@ -637,43 +671,37 @@ export function PublishingComposer({
 								minW="0"
 							>
 								<Stack gap="7">
-{!activeMediaReady && (
-										<Flex
-											justify="space-between"
-											gap="3"
-											align="center"
-											>
-											<Box minW="0">
-												<Text fontSize="14px" fontWeight="500" truncate>
-													{active.title ?? active.hookText}
-												</Text>
-												<Text fontSize="13px" color="fg.muted">
-												{formatDuration(active.durationSec)} ·{" "}
-													{activeMediaReady ? (
-														<CheckCircle2 size={13} aria-label="Video ready" />
-													) : (
-														"Video required"
-													)}
-												</Text>
-											</Box>
-											{!activeMediaReady && (
-												<Button
-													variant="subtle"
-													size="sm"
-													flexShrink={0}
-													disabled={preparingVideo}
-													onClick={() => void prepare()}
-												>
-													<Film size={16} />
-													{preparingVideo
-														? `Preparing ${activeExport?.progress ?? 0}%`
-														: activeExport?.status === "failed"
-															? "Retry video"
-															: "Prepare video"}
-												</Button>
-											)}
-										</Flex>
-									)}
+<Flex
+	justify="space-between"
+	gap="3"
+	align="center"
+>
+	<Box minW="0">
+		<Text fontSize="14px" fontWeight="500" truncate>
+			{active.title ?? active.hookText}
+		</Text>
+		<Flex fontSize="13px" color="fg.muted" align="center" gap="1">
+			<Text as="span">{formatDuration(active.durationSec)} ·</Text>
+			<RenderStateLabel state={activeRender} size="13px" />
+		</Flex>
+	</Box>
+	{activeRender.kind !== "ready" && (
+		<Button
+			variant="subtle"
+			size="sm"
+			flexShrink={0}
+			disabled={clipRenderInFlight(activeRender)}
+			onClick={() => void prepare(active, activeRender)}
+		>
+			{clipRenderInFlight(activeRender) ? <Spinner size="xs" /> : <Film size={16} />}
+			{clipRenderInFlight(activeRender)
+				? CLIP_RENDER_STATE_LABELS[activeRender.kind]
+				: activeRender.kind === "failed"
+					? "Retry video"
+					: "Prepare video"}
+		</Button>
+	)}
+</Flex>
 {config.assistedCopyEnabled ? (
 <Collapsible.Root>
 <Collapsible.Trigger asChild><Button variant="ghost" size="sm" alignSelf="start"><Sparkles size={14}/>Description assistance<ChevronDown size={13}/></Button></Collapsible.Trigger>

@@ -15,6 +15,7 @@ export const exportsAdmission = {
   "GET /projects/:id/export-bundles/:bundleId/download": { kind: "project", capability: "content.download", projectParam: "id" },
   "POST /projects/:id/clips/:clipId/exports": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "clip-export", limit: 20 } },
   "GET /projects/:id/exports/current": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/exports/render-states": { kind: "project", capability: "content.view", projectParam: "id" },
   "GET /projects/:id/clips/:clipId/exports/:exportId": { kind: "project", capability: "content.download", projectParam: "id" },
   "GET /projects/:id/clips/:clipId/exports/:exportId/subtitles/:format": { kind: "project", capability: "content.download", projectParam: "id" },
   "GET /projects/:id/clips/:clipId/timeline/:format": { kind: "project", capability: "content.download", projectParam: "id" },

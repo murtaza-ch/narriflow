@@ -192,6 +192,29 @@ describe("Workspace export retry", () => {
   });
 });
 
+describe("project render states", () => {
+  const url = `/api/projects/${PROJECT_ID}/exports/render-states`;
+
+  test("answers every status through the service, uncached", async () => {
+    const listProjectRenderStates = mock(async () => [{ id: EXPORT_ID, status: "rendering" }]);
+    const app = appWith({ clipExportService: { listProjectRenderStates } as never });
+    const response = await request(app, url);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({ exports: [{ id: EXPORT_ID, status: "rendering" }] });
+    expect(listProjectRenderStates.mock.calls[0]).toMatchObject([
+      { actorUserId: "actor-user", workspaceId: "workspace-a" },
+      PROJECT_ID,
+    ]);
+  });
+
+  test("a viewer can follow renders", async () => {
+    const listProjectRenderStates = mock(async () => []);
+    const app = appWith({ clipExportService: { listProjectRenderStates } as never }, { role: "viewer" });
+    expect((await request(app, url)).status).toBe(200);
+  });
+});
+
 describe("export detail", () => {
   const path = `/api/projects/${PROJECT_ID}/clips/${CLIP_ID}/exports/${EXPORT_ID}`;
 
