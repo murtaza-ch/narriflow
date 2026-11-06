@@ -27,6 +27,17 @@ Critical alerts send a failure signal to Healthchecks.io and open a PostHog issu
 
 The check runs inside the hourly cron on purpose. On Neon Free a tighter schedule would keep the database awake and exhaust its compute allowance. Move it to every 5 minutes after moving to Neon Scale.
 
+### Publishing alerts
+
+Two PostHog insight alerts email the owner. They are set in PostHog, not in code.
+
+| Alert | Insight | Fires when |
+| --- | --- | --- |
+| `Publishing failures` | `Publishing failures by reason` | Any `error_code` has a failure in the hour |
+| `Publish delay over 5 minutes` | `Publish delay p95 by platform` | Any platform's p95 `publish_delay_sec` passes 300 |
+
+Both run at minute 15 with an evaluation delay of one completed hour. The forwarder sends events up to an hour late and PostHog never re-reads a checked hour, so without the delay a failure in an hour's last two minutes would not alert. A failure alerts 1¼ to 2¼ hours after it happens, and PostHog's first check ran 30 minutes after its planned time, so allow up to 3 hours. Use the alerts for trends and the post list for what is failing now.
+
 ## Setup
 
 1. **PostHog:** create a US Cloud project.
