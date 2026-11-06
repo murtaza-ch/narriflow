@@ -123,7 +123,7 @@ export function publishFailureMessage(errorCode: string | null): string | null {
 	if (!errorCode) return null;
 	return (
 		USER_ERROR_MESSAGES[errorCode] ??
-		"Publishing failed. Review the connected account and approved media, then schedule it again."
+		"This post could not be published. Try again, or schedule it for later."
 	);
 }
 
@@ -426,9 +426,6 @@ export function describeSocialPost(
 				detail: preparationFailure
 					? "Narriflow stopped before provider submission."
 					: `${platformLabel} didn't accept this post.`,
-				// Unmapped provider codes keep the raw code in the copy: it's the one
-				// thing that makes a support conversation about a platform-specific
-				// rejection (there are ~35 of them) actionable.
 				error: accountFixed
 					? `Your ${platformLabel} connection was updated after this failed. Try this post again.`
 					: (publishFailureMessage(post.errorCode) ??

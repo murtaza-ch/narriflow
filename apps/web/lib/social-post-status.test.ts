@@ -205,13 +205,25 @@ describe("describeSocialPost", () => {
       NOW,
     );
     expect(unknown.error).not.toContain("x_media_processing_timeout");
-    expect(unknown.error).toContain("schedule it again");
+    expect(unknown.error).toBe(
+      "This post could not be published. Try again, or schedule it for later.",
+    );
 
     const missing = describeSocialPost(
       post({ status: "failed", errorCode: null }),
       NOW,
     );
     expect(missing.error).toContain("YouTube Shorts rejected this post");
+  });
+
+  test("a TikTok refusal says TikTok is limiting the account, not to check it", () => {
+    const limited = describeSocialPost(
+      post({ status: "failed", platform: "tiktok", errorCode: "tiktok_rate_limit" }),
+      NOW,
+    );
+    expect(limited.error).toBe(
+      "TikTok is limiting posts from this account right now. Try again later, or post from the TikTok app.",
+    );
   });
 
   test("no status renders its raw enum value", () => {
