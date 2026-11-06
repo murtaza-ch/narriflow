@@ -34,7 +34,7 @@ Two PostHog insight alerts email the owner. They are set in PostHog, not in code
 | Alert | Insight | Fires when |
 | --- | --- | --- |
 | `Publishing failures` | `Publishing failures by reason` | Any `error_code` has a failure in the hour |
-| `Publish delay over 5 minutes` | `Publish delay p95 by platform` | Any platform's p95 `publish_delay_sec` passes 300 |
+| `Publish delay over 10 minutes` | `Publish delay p95 by platform` | Any platform's p95 `publish_delay_sec` passes 600. A post takes 30 to 45 seconds, so a clean batch of 10 stays under it. |
 
 Both run at minute 15 with an evaluation delay of one completed hour. The forwarder sends events up to an hour late and PostHog never re-reads a checked hour, so without the delay a failure in an hour's last two minutes would not alert. A failure alerts 1¼ to 2¼ hours after it happens, and PostHog's first check ran 30 minutes after its planned time, so allow up to 3 hours. Use the alerts for trends and the post list for what is failing now.
 
