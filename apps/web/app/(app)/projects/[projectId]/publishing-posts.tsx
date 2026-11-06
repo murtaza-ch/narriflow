@@ -297,63 +297,54 @@ export function PublishingPosts({
 			{visible.map((post) => {
 				const feedback = describeSocialPost(post, Date.now(), timeZone);
 				const clip = clips.find((c) => c.id === post.clipId);
+				const account = post.accountDisplayName ?? SOCIAL_PLATFORM_LABELS[post.platform];
+				const postTime = post.postedAt ?? post.nextAttemptAt ?? post.scheduledFor;
 
 				return (
-					<Stack
-						key={post.id}
-						display="grid"
-						gridTemplateColumns="minmax(0, 1fr) auto"
-						gap="3"
-						p="4"
-						borderRadius="l3"
-						bg="bg.subtle"
-						>
-						<Flex
-							gridColumn="1 / -1"
-							justify="space-between"
-							align="center"
-							gap="3"
-							wrap="wrap"
-						>
-							<Flex align="center" gap="3" minW="0">
-								<Flex
-								boxSize="10"
+					<Collapsible.Root key={post.id} p="3" borderRadius="l3" bg="bg.subtle">
+						<Stack gap="3">
+						<Flex align="center" gap="3" wrap={{ base: "wrap", md: "nowrap" }}>
+							<Flex
+								boxSize="9"
 								flexShrink={0}
 								borderRadius="full"
 								bg="bg.panel"
 								align="center"
 								justify="center"
-								>
-									<SocialPlatformMark platform={post.platform} />
-								</Flex>
-								<Box minW="0">
-									<Text fontSize="sm" fontWeight="550" lineClamp={1}>
-									{post.accountDisplayName ??
-									SOCIAL_PLATFORM_LABELS[post.platform]}
-									</Text>
-									<Text fontSize="xs" color="fg.muted" lineClamp={1}>
-									{filterable && clip
-									? [
-									post.accountDisplayName
-									? SOCIAL_PLATFORM_LABELS[post.platform]
-									: null,
-									clip.title ?? clip.hookText,
-									]
-									.filter(Boolean)
-									.join(" · ")
-									: (post.accountHandle ??
-									SOCIAL_PLATFORM_LABELS[post.platform])}
-									</Text>
-								</Box>
+							>
+								<SocialPlatformMark platform={post.platform} />
 							</Flex>
+							<Box minW="0" flex="1">
+								<Text fontSize="sm" fontWeight="550" lineClamp={1}>
+									{clip ? (clip.title ?? clip.hookText) : account}
+								</Text>
+								<Text fontSize="xs" color="fg.muted" lineClamp={1} fontVariantNumeric="tabular-nums">
+									{clip ? account : (post.accountHandle ?? SOCIAL_PLATFORM_LABELS[post.platform])}
+									{postTime && (
+										<>
+											{" · "}
+											<time dateTime={postTime} title={timeZone}>
+												{new Intl.DateTimeFormat(undefined, {
+													month: "short",
+													day: "numeric",
+													hour: "numeric",
+													minute: "2-digit",
+													timeZone,
+												}).format(new Date(postTime))}
+											</time>
+										</>
+									)}
+								</Text>
+							</Box>
 							<Flex
-							gap="1.5"
-							align="center"
-							px="2.5"
-							py="1"
-							borderRadius="full"
-							bg={TONE_PILL[feedback.tone].bg}
-							color={TONE_PILL[feedback.tone].color}
+								gap="1.5"
+								align="center"
+								flexShrink={0}
+								px="2.5"
+								py="1"
+								borderRadius="full"
+								bg={TONE_PILL[feedback.tone].bg}
+								color={TONE_PILL[feedback.tone].color}
 							>
 								{feedback.isBusy ? (
 									<Spinner size="xs" />
@@ -365,91 +356,21 @@ export function PublishingPosts({
 								) : (
 									<Clock3 size={12} />
 								)}
-								<Text fontSize="11px" fontWeight="medium">
+								<Text fontSize="11px" fontWeight="medium" whiteSpace="nowrap">
 									{feedback.label}
 								</Text>
 							</Flex>
-						</Flex>
-						{feedback.error && (
-							<Text
-							gridColumn="1 / -1"
-							role="status"
-							fontSize="xs"
-							color="danger.fg"
-							bg="bg.panel"
-							borderRadius="l2"
-							px="3"
-							py="2"
-							>
-							{feedback.error}
-							</Text>
-						)}
-						{post.latestMetrics && (
-							<Text gridColumn="1 / -1" fontSize="xs" color="fg.muted">
-								{describeCounts(post.latestMetrics)}
-								{" · "}
-								as of{" "}
-								{new Intl.DateTimeFormat(undefined, {
-									month: "short",
-									day: "numeric",
-									timeZone,
-								}).format(new Date(post.latestMetrics.capturedAt))}
-							</Text>
-						)}
-						<Collapsible.Root minW="0">
-							<Flex align="center" justify="space-between" gap="2">
-								<Flex align="center" gap="1.5" color="fg.muted" fontSize="xs" fontVariantNumeric="tabular-nums">
-								<Clock3 size={12} />
-									{post.postedAt || post.nextAttemptAt || post.scheduledFor ? (
-										<time
-											dateTime={
-												(post.postedAt ??
-													post.nextAttemptAt ??
-													post.scheduledFor)!
-											}
-										>
-											{new Intl.DateTimeFormat(undefined, {
-												month: "short",
-												day: "numeric",
-												hour: "numeric",
-												minute: "2-digit",
-												timeZone,
-											}).format(
-												new Date(
-													(post.postedAt ??
-														post.nextAttemptAt ??
-														post.scheduledFor)!,
-												),
-											)}{" "}
-											· {timeZone}
-										</time>
-									) : (
-										feedback.label
-									)}
-								</Flex>
+							<Flex gap="1" wrap="wrap" align="center" justify="end" flexShrink={0}>
 								<Collapsible.Trigger asChild>
 									<Button
 										variant="ghost"
-										size="xs"
+										size="sm"
 										aria-label="Post details"
 										title="Post details"
 									>
 										<ChevronDown size={14} />
 									</Button>
 								</Collapsible.Trigger>
-							</Flex>
-							<Collapsible.Content>
-								<Stack gap="2" pt="3">
-									<Text fontSize="xs" color="fg.muted">
-										{feedback.detail}
-									</Text>
-									<Text fontSize="sm" whiteSpace="pre-wrap">
-										{post.caption}
-									</Text>
-								</Stack>
-							</Collapsible.Content>
-						</Collapsible.Root>
-						<Flex gap="1" wrap="wrap" align="start" justify="end">
 							<SocialPostLinks post={post} compact />
 							{canManage && post.deliveryMode === "tiktok_inbox" &&
 								["inbox_delivered", "posted"].includes(post.status) && (
@@ -547,9 +468,44 @@ export function PublishingPosts({
 								</Text>
 							) : null}
 						</Flex>
+						</Flex>
+						{feedback.error && (
+							<Text
+														role="status"
+							fontSize="xs"
+							color="danger.fg"
+							bg="bg.panel"
+							borderRadius="l2"
+							px="3"
+							py="2"
+							>
+							{feedback.error}
+							</Text>
+						)}
+						{post.latestMetrics && (
+							<Text fontSize="xs" color="fg.muted">
+								{describeCounts(post.latestMetrics)}
+								{" · "}
+								as of{" "}
+								{new Intl.DateTimeFormat(undefined, {
+									month: "short",
+									day: "numeric",
+									timeZone,
+								}).format(new Date(post.latestMetrics.capturedAt))}
+							</Text>
+						)}
+						<Collapsible.Content>
+							<Stack gap="2">
+								<Text fontSize="xs" color="fg.muted">
+									{feedback.detail}
+								</Text>
+								<Text fontSize="sm" whiteSpace="pre-wrap">
+									{post.caption}
+								</Text>
+							</Stack>
+						</Collapsible.Content>
 						{recovery?.id === post.id && (
 							<Stack
-							gridColumn="1 / -1"
 							gap="3"
 							p="4"
 							bg="bg.panel"
@@ -628,7 +584,8 @@ export function PublishingPosts({
 								</Flex>
 							</Stack>
 						)}
-					</Stack>
+						</Stack>
+					</Collapsible.Root>
 				);
 			})}
 			{nextCursor && filter === "all" && (

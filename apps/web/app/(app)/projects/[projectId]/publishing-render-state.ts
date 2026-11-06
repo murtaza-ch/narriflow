@@ -3,6 +3,8 @@ import { currentPublicationExport } from "./publishing-draft";
 
 /** What a clip's video is doing right now. Only `failed` carries an export, the one Retry video requeues. */
 export type ClipRenderState =
+	/** The first read has not answered, so nothing is known about this clip's video yet. */
+	| { kind: "checking" }
 	| { kind: "none" }
 	| { kind: "queued" }
 	| { kind: "rendering" }
@@ -10,6 +12,7 @@ export type ClipRenderState =
 	| { kind: "failed"; exportId: string };
 
 export const CLIP_RENDER_STATE_LABELS: Record<ClipRenderState["kind"], string> = {
+	checking: "Checking video",
 	none: "No video",
 	queued: "Queued",
 	rendering: "Rendering",
@@ -65,18 +68,14 @@ export function renderSummary(states: ClipRenderState[]): string | null {
 	const failed = count((state) => state.kind === "failed");
 	const rendering = count(clipRenderInFlight);
 	const ready = count((state) => state.kind === "ready");
-	const lead = rendering
-		? `${rendering} of ${states.length} videos rendering`
-		: ready
-			? `${ready} of ${states.length} videos ready`
-			: null;
-	if (lead) return failed ? `${lead} · ${failed} failed` : lead;
-	return failed ? `${failed} of ${states.length} videos failed` : null;
-}
-
-/** The rail's readiness line, which leaves the video to the render state beside it. */
-export function clipReviewLabel(render: ClipRenderState, otherIssues: number, accountCount: number): string | null {
-	if (!accountCount) return null;
-	if (otherIssues) return "Needs review";
-	return render.kind === "ready" ? "Ready" : null;
+	const lead = ready
+		? `${ready} of ${states.length} videos ready`
+		: rendering
+			? `${rendering} of ${states.length} videos rendering`
+			: failed
+				? `${failed} of ${states.length} videos failed`
+				: null;
+	if (!lead) return null;
+	const rest = [ready && rendering ? `${rendering} rendering` : null, (ready || rendering) && failed ? `${failed} failed` : null];
+	return [lead, ...rest.filter(Boolean)].join(" · ");
 }

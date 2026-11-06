@@ -1,5 +1,5 @@
 "use client";
-import { PublishingPreview } from "./publishing-preview";
+import { PublishingClipRail, RenderStateLabel, RenderSummary } from "./publishing-clip-rail";
 import { TimePicker } from "@narriflow/ui/components/time-picker";
 import { DatePicker } from "@narriflow/ui/components/date-picker";
 import { Select } from "@narriflow/ui/components/select";
@@ -29,7 +29,6 @@ import {
 import {
 	Copy,
 	Settings2,
-	CheckCircle2,
 	ImagePlus,
 	CalendarClock,
 	ChevronDown,
@@ -67,7 +66,6 @@ import {
 	CLIP_RENDER_STATE_LABELS,
 	clipRenderInFlight,
 	clipRenderState,
-	clipReviewLabel,
 	renderSummary,
 	type ClipRenderState,
 } from "./publishing-render-state";
@@ -113,24 +111,6 @@ export function PublishingRecoveryComposer({ api, session, onSubmitted, projectI
 			{snapshot.busy && <Spinner size="xs" />} Check previous submission
 		</Button></Drawer.Footer>
 	</>;
-}
-const RENDER_STATE_COLORS: Record<ClipRenderState["kind"], string> = {
-	none: "fg.muted",
-	queued: "accent.fg",
-	rendering: "accent.fg",
-	ready: "success.fg",
-	failed: "danger.fg",
-};
-
-/** Queued and Rendering stay words: a render reports no percentage worth showing. */
-function RenderStateLabel({ state, size = "xs" }: { state: ClipRenderState; size?: string }) {
-	return (
-		<Flex as="span" display="inline-flex" align="center" gap="1" fontSize={size} color={RENDER_STATE_COLORS[state.kind]}>
-			{clipRenderInFlight(state) && <Spinner size="xs" />}
-			{state.kind === "ready" && <CheckCircle2 size={12} aria-hidden />}
-			{CLIP_RENDER_STATE_LABELS[state.kind]}
-		</Flex>
-	);
 }
 
 export function PublishingComposer({
@@ -408,16 +388,18 @@ export function PublishingComposer({
 		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => api.schedule(config.projectId, payload).catch(openUpgradeOnRefusal(openUpgrade)));
 		if (outcome) await onSubmitted(outcome);
 	}
-	const renderStates = new Map(
+	const renderStates = new Map<string, ClipRenderState>(
 		clips.map((clip) => [
 			clip.id,
-			clipRenderState(clip, exports, accounts.map((account) => account.platform), {
-				requested: requestedRenders.has(clip.id),
-				preferredExportId,
-			}),
+			currentExports.data
+				? clipRenderState(clip, exports, accounts.map((account) => account.platform), {
+						requested: requestedRenders.has(clip.id),
+						preferredExportId,
+					})
+				: { kind: "checking" },
 		]),
 	);
-	const renderStateOf = (clip: ClipSnapshot): ClipRenderState => renderStates.get(clip.id) ?? { kind: "none" };
+	const renderStateOf = (clip: ClipSnapshot): ClipRenderState => renderStates.get(clip.id) ?? { kind: "checking" };
 	const activeRender = renderStateOf(active);
 	const selectionSummary = renderSummary([...renderStates.values()]);
 	const disabled = busy || !!pending;
@@ -562,81 +544,19 @@ export function PublishingComposer({
 						<Spinner />
 					) : (
 						<>
+							{selectionSummary && <RenderSummary summary={selectionSummary} states={[...renderStates.values()]} />}
 							{clips.length > 1 && (
-					<Stack
-						as="nav"
-						aria-label="Selected clips"
- flexShrink={0} minH="132px" overflowY="hidden"
-						width="full"
-						direction="row"
-						bg="bg.subtle"
-						overflowX="auto"
-						p="2"
-						gap="2"
-						display={{ base: "none", md: "flex" }}
-					>
-						{clips.map((clip) => {
-							const clipPairs = pairs.filter((p) => p.clip.id === clip.id);
-							const otherIssues = clipPairs.reduce((n, p) => n + issues(p).filter((issue) => issue !== VIDEO_REQUIRED_ISSUE).length, 0);
-							const render = renderStateOf(clip);
-							const review = clipReviewLabel(render, otherIssues, clipPairs.length);
-							const previewVariant = exports.flatMap((e) => (e.clipId === clip.id ? e.variants : [])).find((v) => v.previewUrl);
-							return (
-								<Button
-									key={clip.id}
-									variant="ghost" bg={active.id === clip.id ? "accent.subtle" : "transparent"} _hover={{ bg: active.id === clip.id ? "accent.subtle" : "bg.soft" }}
-									aria-current={active.id === clip.id ? "true" : undefined}
-									width="180px" minW="180px" maxW="180px" flexShrink={0} whiteSpace="normal"
-									textAlign="start"
-									h="auto" minH="112px"
-									p="3"
-									justifyContent="start"
-									onClick={() => setActiveId(clip.id)}
-								>
-									<Stack gap="2" minW="0" width="full">
-										<Flex align="center" gap="2">
-											{previewVariant ? (
-												<PublishingPreview key={previewVariant.id}
-													muted
-													preload="metadata"
-													aria-label={`Preview of ${clip.title ?? clip.hookText}`}
-													src={previewVariant.previewUrl ?? undefined}
-													style={{
-														width: 32,
-														height: 44,
-														objectFit: "cover",
-														borderRadius: 4,
-													}}
-												/>
-											) : (
-												<Flex width="32px" height="44px" flexShrink={0} align="center" justify="center" bg="bg.panel" borderRadius="4px"><Film size={16} /></Flex>
-											)}
-											<Text fontSize="xs">
-												{formatDuration(clip.durationSec)}
-											</Text>
-										</Flex>
-										<Text fontSize="xs" lineClamp={2} minH="32px">
-											{clip.title ?? clip.hookText}
-										</Text>
-										<Stack gap="1">
-											<RenderStateLabel state={render} />
-											{review && (
-												<Text fontSize="xs" color={review === "Ready" ? "success.fg" : "fg.muted"}>
-													{review}
-												</Text>
-											)}
-										</Stack>
-									</Stack>
-								</Button>
-							);
-						})}
-					</Stack>
-				)}
-{selectionSummary && (
-	<Text role="status" fontSize="13px" color="fg.muted">
-		{selectionSummary}
-	</Text>
-)}
+								<PublishingClipRail
+									activeId={active.id}
+									onSelect={setActiveId}
+									items={clips.map((clip) => ({
+										clip,
+										render: renderStateOf(clip),
+										needsReview: pairs.some((p) => p.clip.id === clip.id && issues(p).some((issue) => issue !== VIDEO_REQUIRED_ISSUE)),
+										preview: exports.flatMap((e) => (e.clipId === clip.id ? e.variants : [])).find((v) => v.previewUrl),
+									}))}
+								/>
+							)}
 {clips.length > 1 && (
 	<Field.Root display={{ md: "none" }}>
 									<Field.Label>Clip</Field.Label>
@@ -685,7 +605,7 @@ export function PublishingComposer({
 			<RenderStateLabel state={activeRender} size="13px" />
 		</Flex>
 	</Box>
-	{activeRender.kind !== "ready" && (
+	{activeRender.kind !== "ready" && activeRender.kind !== "checking" && (
 		<Button
 			variant="subtle"
 			size="sm"

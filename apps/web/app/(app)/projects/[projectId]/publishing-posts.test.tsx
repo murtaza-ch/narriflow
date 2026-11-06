@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
-import type { SocialPostSnapshot } from "@narriflow/validators";
+import type { ClipSnapshot, SocialPostSnapshot } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PublishingPosts } from "./publishing-posts";
 
@@ -38,7 +38,7 @@ function render(snapshot: SocialPostSnapshot, canManage: boolean) {
 	return renderPosts([snapshot], canManage);
 }
 
-function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable = false) {
+function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable = false, clips: ClipSnapshot[] = []) {
 	return renderToStaticMarkup(
 		<ChakraProvider value={system}>
 			<PublishingPosts
@@ -46,7 +46,7 @@ function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable
 				projectId={post.projectId}
 				posts={posts}
 				filterable={filterable}
-				clips={[]}
+				clips={clips}
 				refresh={async () => {}}
 				loadOlderPosts={async () => {}}
 				nextCursor={null}
@@ -59,6 +59,18 @@ function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable
 }
 
 describe("publishing post actions", () => {
+	test("a post leads with its clip, so posts to one account can be told apart", () => {
+		const clip = { id: "44444444-4444-4444-8444-444444444444", title: "Three breaches in one week", hookText: "Hook" } as ClipSnapshot;
+		const html = renderPosts([{ ...post, clipId: clip.id, scheduledFor: "2026-11-06T11:46:00.000Z" }], true, false, [clip]);
+		expect(html).toContain("Three breaches in one week");
+		expect(html).toContain("Studio channel");
+		expect(html).toContain('dateTime="2026-11-06T11:46:00.000Z"');
+	});
+
+	test("a post whose clip is gone still names its account", () => {
+		expect(render(post, true)).toContain("Studio channel");
+	});
+
 	test("an editor is told whom to ask instead of offered a reconnect they cannot do", () => {
 		const html = render(post, true);
 		expect(html).toContain("Confirm published");

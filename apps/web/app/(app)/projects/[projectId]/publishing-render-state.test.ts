@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ClipExportSnapshot, ClipSnapshot } from "@narriflow/validators";
-import { clipReviewLabel, clipRenderState, renderSummary, type ClipRenderState } from "./publishing-render-state";
+import { clipRenderState, renderSummary, type ClipRenderState } from "./publishing-render-state";
 
 const clip = { id: "clip-a", editorRevision: 3 } as ClipSnapshot;
 
@@ -92,31 +92,28 @@ describe("clip render state", () => {
 describe("render summary", () => {
 	const of = (...kinds: ClipRenderState["kind"][]) => kinds.map((kind) => ({ kind }) as ClipRenderState);
 
+	test("leads with finished videos, so the rest of the selection never hides them", () => {
+		expect(renderSummary([...of("ready", "ready", "ready", "ready", "ready", "ready", "ready", "ready", "ready"), ...of("rendering")])).toBe(
+			"9 of 10 videos ready · 1 rendering",
+		);
+		expect(renderSummary(of("ready", "ready"))).toBe("2 of 2 videos ready");
+	});
+
 	test("counts queued and rendering clips together", () => {
-		expect(renderSummary(of("queued", "rendering", "rendering", "ready", "none"))).toBe("3 of 5 videos rendering");
+		expect(renderSummary(of("queued", "rendering", "rendering", "none"))).toBe("3 of 4 videos rendering");
+		expect(renderSummary(of("queued", "rendering", "ready"))).toBe("1 of 3 videos ready · 2 rendering");
 	});
 
 	test("adds failures to the lead", () => {
 		expect(renderSummary(of("rendering", "failed", "none"))).toBe("1 of 3 videos rendering · 1 failed");
 		expect(renderSummary(of("ready", "failed"))).toBe("1 of 2 videos ready · 1 failed");
+		expect(renderSummary(of("ready", "rendering", "failed"))).toBe("1 of 3 videos ready · 1 rendering · 1 failed");
 		expect(renderSummary(of("failed", "none"))).toBe("1 of 2 videos failed");
 	});
 
-	test("has nothing to say for one clip or an untouched selection", () => {
+	test("has nothing to say for one clip, an untouched selection or a first read still pending", () => {
 		expect(renderSummary(of("rendering"))).toBeNull();
 		expect(renderSummary(of("none", "none"))).toBeNull();
-	});
-});
-
-describe("clip review label", () => {
-	test("stays separate from the video", () => {
-		expect(clipReviewLabel({ kind: "none" }, 0, 1)).toBeNull();
-		expect(clipReviewLabel({ kind: "rendering" }, 1, 1)).toBe("Needs review");
-		expect(clipReviewLabel({ kind: "ready" }, 0, 1)).toBe("Ready");
-		expect(clipReviewLabel({ kind: "ready" }, 2, 1)).toBe("Needs review");
-	});
-
-	test("says nothing without an account to post to", () => {
-		expect(clipReviewLabel({ kind: "ready" }, 0, 0)).toBeNull();
+		expect(renderSummary(of("checking", "checking"))).toBeNull();
 	});
 });

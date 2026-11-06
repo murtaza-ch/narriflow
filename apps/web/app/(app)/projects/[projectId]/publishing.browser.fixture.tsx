@@ -114,6 +114,7 @@ let generate: (body: any) => Promise<Response>;
 let admit: (body: any) => Promise<Response>;
 /** What the render-states read and the export commands answer; `null` means every clip's video is ready. */
 let renderStates: ClipExportSnapshot[] | null = null;
+let holdRenderStates: Promise<void> | null = null;
 let onExportCommand: (url: string) => Response | Promise<Response> = () => Response.json({}, { status: 202 });
 function Entry() {
 	const p = usePublishing();
@@ -202,7 +203,10 @@ async function render(
 		requests.push({ url: value, body, headers: new Headers(init?.headers) });
 		if (value.endsWith("/social/proposals")) return Response.json({ proposalId: "00000000-0000-4000-8000-0000000000aa" }, { status: 201 });
 		if (value.endsWith("/visual-assets")) return Response.json({ assets: [] });
-		if (value.endsWith("exports/render-states")) return Response.json({ exports: renderStates ?? exports });
+		if (value.endsWith("exports/render-states")) {
+			await holdRenderStates;
+			return Response.json({ exports: renderStates ?? exports });
+		}
 		if (init?.method === "POST" && /\/exports(\/[^/]+\/retry)?$/.test(value)) return onExportCommand(value);
 		if (value.endsWith("publishing-options"))
 			return Response.json({
@@ -297,6 +301,7 @@ afterEach(async () => {
 	browser.localStorage.clear();
 	requests = [];
 	renderStates = null;
+	holdRenderStates = null;
 	onExportCommand = () => Response.json({}, { status: 202 });
 });
 afterAll(() => browser.close());
@@ -846,6 +851,21 @@ test("a finished render appears without a reload", async () => {
 	expect(browser.document.body.textContent).toContain("Video ready");
 	expect(button("Rendering")).toBeUndefined();
 	expect(button("Prepare video")).toBeUndefined();
+});
+
+test("a clip reads as checking, never as having no video, until the first read answers", async () => {
+	let answer: () => void = () => {};
+	renderStates = [exportOf(0, "ready"), exportOf(1, "ready")];
+	holdRenderStates = new Promise<void>((resolve) => { answer = resolve; });
+	await render();
+	await click("Bulk clips");
+	expect(railCard(1).textContent).toContain("Checking video");
+	expect(browser.document.body.textContent).not.toContain("No video");
+	expect(button("Prepare video")).toBeUndefined();
+	await act(async () => answer());
+	await flush();
+	expect(railCard(1).textContent).toContain("Video ready");
+	expect(browser.document.body.textContent).toContain("2 of 2 videos ready");
 });
 
 test("a finished video reads as ready with no account chosen", async () => {
