@@ -496,6 +496,7 @@ describe("native publication adapters", () => {
 		["unaudited_client_can_only_post_to_private_accounts", 403, "tiktok_audit_privacy_required"],
 		["privacy_level_option_mismatch", 403, "tiktok_privacy_setting_changed"],
 		["reached_active_user_cap", 403, "tiktok_rate_limit"],
+		["spam_risk_too_many_posts", 403, "tiktok_daily_post_limit"],
 		["a_refusal_tiktok_adds_later", 403, "tiktok_publish_init_failed"],
 		["scope_not_authorized", 401, "tiktok_permission_required"],
 	] as const)("TikTok init refusal %s reports its own cause", async (providerCode, status, code) => {
@@ -1897,7 +1898,7 @@ describe("native publication adapters", () => {
 		expect(state.requests).toHaveLength(1);
 	});
 
-	test("normalizes a TikTok provider failure reason without losing retry policy", async () => {
+	test("stops on TikTok's daily post cap instead of retrying it", async () => {
 		const state = harness([json(CONTRACT_FIXTURE.tiktok.rateFailure)]);
 		const result = await state.registry.get("tiktok").reconcile!(
 			input("tiktok"),
@@ -1914,9 +1915,9 @@ describe("native publication adapters", () => {
 		expect(result).toMatchObject({
 			kind: "failed",
 			failure: {
-				code: "tiktok_rate_limit",
-				disposition: "safe_retry",
-				retryAfterMs: 60 * 60_000,
+				code: "tiktok_daily_post_limit",
+				disposition: "permanent",
+				retryAfterMs: null,
 				safeToRepublishAfterSubmission: true,
 			},
 		});

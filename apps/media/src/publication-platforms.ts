@@ -524,7 +524,9 @@ async function jsonRequest<T>(
 			const known: Record<string, [string, number]> = {
 				spam_risk_too_many_pending_share: ["tiktok_pending_drafts_limit", 400],
 				spam_risk_user_banned_from_posting: ["tiktok_account_restricted", 400],
-				spam_risk_too_many_posts: ["tiktok_rate_limit", 429],
+				// TikTok's rolling cap, not a throttle. Its guidelines say to stop and
+				// prompt the user, and retrying inside the day can only fail again.
+				spam_risk_too_many_posts: ["tiktok_daily_post_limit", 400],
 				access_token_invalid: ["tiktok_authentication_required", 401],
 				scope_not_authorized: ["tiktok_permission_required", 403],
 				unaudited_client_can_only_post_to_private_accounts: [
@@ -2129,15 +2131,13 @@ function tiktokPlatform(
 					return tiktokAccepted(input, publishId, status);
 				}
 				if (status.status === "FAILED") {
-					const rateLimited =
-						status.failureReason === "spam_risk_too_many_posts";
 					return {
 						kind: "failed",
 						failure: {
 							code: tiktokFailureCode(status.failureReason),
 							phase: "reconciliation",
-							disposition: rateLimited ? "safe_retry" : "permanent",
-							retryAfterMs: rateLimited ? 60 * 60_000 : null,
+							disposition: "permanent",
+							retryAfterMs: null,
 							safeToRepublishAfterSubmission: true,
 							evidence: status.failureReason
 								? { providerReason: status.failureReason.slice(0, 200) }

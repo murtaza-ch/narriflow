@@ -6,6 +6,7 @@ import {
   isLiveSocialPostSnapshot,
   socialPollDelayMs,
   SOCIAL_PUBLISH_GRACE_MS,
+  SOCIAL_QUEUE_GRACE_MS,
 } from "./social-post-status";
 
 const NOW = Date.UTC(2026, 6, 29, 18, 0, 0);
@@ -68,7 +69,7 @@ describe("describeSocialPost", () => {
     expect(feedback.detail).toContain("YouTube Shorts");
   });
 
-  test("a post past the grace window is called out as late", () => {
+  test("a post past the grace window waits in the account's queue", () => {
     const feedback = describeSocialPost(
       post({
         scheduledFor: new Date(
@@ -77,9 +78,25 @@ describe("describeSocialPost", () => {
       }),
       NOW,
     );
+    expect(feedback.label).toBe("In queue");
+    expect(feedback.tone).toBe("accent");
+    expect(feedback.isBusy).toBe(true);
+    expect(feedback.detail).toContain("9 min ago");
+    expect(feedback.detail).not.toContain("publisher may be down");
+  });
+
+  test("a post past the queue window is called out as late", () => {
+    const feedback = describeSocialPost(
+      post({
+        scheduledFor: new Date(
+          NOW - SOCIAL_QUEUE_GRACE_MS - 60_000,
+        ).toISOString(),
+      }),
+      NOW,
+    );
     expect(feedback.label).toBe("Late");
     expect(feedback.tone).toBe("warning");
-    expect(feedback.detail).toContain("9 min ago");
+    expect(feedback.detail).toContain("publisher may be down");
     expect(feedback.isLive).toBe(true);
   });
 

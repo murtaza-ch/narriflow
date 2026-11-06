@@ -306,6 +306,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"The exact video frozen for this post is unavailable. Create a new scheduled post.",
 	publication_media_preparation_failed:
 		"The exact video for this post could not be prepared. Review the clip export and create a new scheduled post.",
+	tiktok_daily_post_limit:
+		"TikTok says this account has reached its daily post limit. Try again tomorrow, or post from the TikTok app.",
 	tiktok_pending_drafts_limit:
 		"TikTok has too many pending inbox uploads. Open TikTok to publish or remove pending uploads, then schedule this delivery again.",
 	tiktok_account_restricted:

@@ -46,11 +46,12 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/** The publish loop polls every few seconds, so a due post should leave
- *  `scheduled` almost immediately. Past this grace window the post is stuck
- *  (no worker running, or one that keeps crashing) and the row says so
- *  instead of showing a reassuring "publishing shortly" forever. */
+/** A due post with nothing ahead of it leaves `scheduled` within this window.
+ *  Past it, the post is waiting behind others on the same account. */
 export const SOCIAL_PUBLISH_GRACE_MS = 5 * MINUTE_MS;
+/** An account publishes one post at a time, each in under a minute, so waiting
+ * this long is normal only for a batch of 30 or more. Past it, say something is wrong. */
+export const SOCIAL_QUEUE_GRACE_MS = 30 * MINUTE_MS;
 
 export type SocialPostTone =
 	| "neutral"
@@ -252,13 +253,23 @@ export function describeSocialPost(
 			}
 
 			const overdueBy = nowMs - scheduledAt;
-			if (overdueBy > SOCIAL_PUBLISH_GRACE_MS) {
+			if (overdueBy > SOCIAL_QUEUE_GRACE_MS) {
 				return {
 					label: retrying ? "Retry delayed" : "Late",
 					tone: "warning",
 					detail: `Due ${formatTimeDistance(overdueBy)} ago and not picked up yet — the publisher may be down.`,
 					error: null,
 					isBusy: false,
+					isLive: true,
+				};
+			}
+			if (overdueBy > SOCIAL_PUBLISH_GRACE_MS) {
+				return {
+					label: "In queue",
+					tone: "accent",
+					detail: `Due ${formatTimeDistance(overdueBy)} ago. Posts to one account go out one at a time.`,
+					error: null,
+					isBusy: true,
 					isLive: true,
 				};
 			}
