@@ -24,6 +24,8 @@ const LEDGER_EVENTS: Record<string, string> = {
 };
 const OPERATION_NAMES: Record<string, string> = { intake: "import", generation: "clip_generation", export: "clip_export" };
 const OPERATION_STATES: Record<string, string> = { completed: "complete", partial: "partial", failed: "fail", cancelled: "cancel" };
+/** Failure codes are machine names. Anything else stays out, as captions do. */
+const FAILURE_CODE = /^[a-z][a-z0-9_]{0,99}$/;
 const TIER_RANK: Record<string, number> = { free: 0, creator: 1, pro: 2, business: 3 };
 
 const WINDOW_MS = 60 * 60_000;
@@ -34,10 +36,11 @@ const MAX_EVENTS_PER_RUN = 20_000;
 export type ProductEventRow = {
   id: string; source: string; detail: string | null; state: string | null; at: Date; distinctId: string;
   workspaceId: string | null; projectId: string | null; clipId: string | null; platform: string | null; planTier: string | null;
+  errorCode: string | null; delaySeconds: number | null;
 };
 export interface ProductEvent {
   uuid: string; event: string; distinctId: string; timestamp: Date;
-  properties: Record<string, string | Record<string, string>>;
+  properties: Record<string, string | number | Record<string, string>>;
 }
 
 function eventName(row: ProductEventRow): string | null {
@@ -77,6 +80,8 @@ export function toProductEvent(row: ProductEventRow): ProductEvent | null {
   }
   if (row.source === "billing" && row.detail) properties.previous_tier = row.detail;
   if (row.source === "project" && row.detail) properties.source_type = row.detail;
+  if (row.errorCode && FAILURE_CODE.test(row.errorCode)) properties.error_code = row.errorCode;
+  if (row.delaySeconds !== null && row.delaySeconds >= 0) properties.publish_delay_sec = Math.round(row.delaySeconds);
   return { uuid: row.id, event, distinctId: row.distinctId, timestamp: row.at, properties };
 }
 
@@ -92,30 +97,37 @@ export async function readProductEvents(database: Pick<PrismaClient, "$queryRaw"
   return database.$queryRaw<ProductEventRow[]>`
     SELECT * FROM (
       SELECT u.id::text AS id, 'user' AS source, NULL::text AS detail, NULL::text AS state, u."createdAt" AS at, u."clerkId" AS "distinctId",
-        NULL::text AS "workspaceId", NULL::text AS "projectId", NULL::text AS "clipId", NULL::text AS platform, NULL::text AS "planTier"
+        NULL::text AS "workspaceId", NULL::text AS "projectId", NULL::text AS "clipId", NULL::text AS platform, NULL::text AS "planTier",
+        NULL::text AS "errorCode", NULL::double precision AS "delaySeconds"
       FROM "User" u WHERE u."deletedAt" IS NULL AND ${inWindow(Prisma.sql`u."createdAt"`)}
       UNION ALL
-      SELECT w.id::text, 'workspace', NULL, NULL, w."createdAt", u."clerkId", w.id::text, NULL, NULL, NULL, 'free'
+      SELECT w.id::text, 'workspace', NULL, NULL, w."createdAt", u."clerkId", w.id::text, NULL, NULL, NULL, 'free', NULL, NULL
       FROM "Workspace" w JOIN "User" u ON u.id = w."ownerUserId" WHERE ${inWindow(Prisma.sql`w."createdAt"`)}
       UNION ALL
-      SELECT p.id::text, 'project', p."sourceType"::text, NULL, p."createdAt", u."clerkId", p."workspaceId"::text, p.id::text, NULL, NULL, w."pricingTier"::text
+      SELECT p.id::text, 'project', p."sourceType"::text, NULL, p."createdAt", u."clerkId", p."workspaceId"::text, p.id::text, NULL, NULL, w."pricingTier"::text, NULL, NULL
       FROM "Project" p JOIN "User" u ON u.id = p."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId" WHERE ${inWindow(Prisma.sql`p."createdAt"`)}
       UNION ALL
-      SELECT e.id::text, 'export', NULL, NULL, e."createdAt", u."clerkId", p."workspaceId"::text, e."projectId"::text, e."clipId"::text, NULL, w."pricingTier"::text
+      SELECT e.id::text, 'export', NULL, NULL, e."createdAt", u."clerkId", p."workspaceId"::text, e."projectId"::text, e."clipId"::text, NULL, w."pricingTier"::text, NULL, NULL
       FROM "ClipExport" e JOIN "Project" p ON p.id = e."projectId" JOIN "User" u ON u.id = e."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId" WHERE ${inWindow(Prisma.sql`e."createdAt"`)}
       UNION ALL
-      SELECT e.id::text, 'ledger', e.type::text, NULL, e."createdAt", u."clerkId", e."workspaceId"::text, e."projectId"::text, NULL, NULL, w."pricingTier"::text
+      SELECT e.id::text, 'ledger', e.type::text, NULL, e."createdAt", u."clerkId", e."workspaceId"::text, e."projectId"::text, NULL, NULL, w."pricingTier"::text, NULL, NULL
       FROM "ProgramAnalyticsEvent" e JOIN "User" u ON u.id = e."actorUserId" JOIN "Workspace" w ON w.id = e."workspaceId" WHERE ${inWindow(Prisma.sql`e."createdAt"`)}
       UNION ALL
-      SELECT e.id::text, 'ledger', e.type::text, NULL, e."createdAt", u."clerkId", p."workspaceId"::text, e."projectId"::text, e."clipId"::text, e.platform::text, w."pricingTier"::text
-      FROM "ProjectAnalyticsEvent" e JOIN "Project" p ON p.id = e."projectId" JOIN "User" u ON u.id = p."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId" WHERE ${inWindow(Prisma.sql`e."createdAt"`)}
+      SELECT e.id::text, 'ledger', e.type::text, NULL, e."createdAt", u."clerkId", p."workspaceId"::text, e."projectId"::text, e."clipId"::text, e.platform::text, w."pricingTier"::text, NULL,
+        CASE WHEN e.type = 'social_posted' THEN EXTRACT(EPOCH FROM s."postedAt" - s."scheduledFor")::double precision END
+      FROM "ProjectAnalyticsEvent" e JOIN "Project" p ON p.id = e."projectId" JOIN "User" u ON u.id = p."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId"
+        LEFT JOIN "SocialPost" s ON s.id::text = e.metadata ->> 'socialPostId' WHERE ${inWindow(Prisma.sql`e."createdAt"`)}
       UNION ALL
-      SELECT e.id::text, 'operation', e.subject -> 'operation' ->> 'kind', e.subject ->> 'state', e."occurredAt", u."clerkId", e."workspaceId"::text, e.subject ->> 'projectId', NULL, NULL, w."pricingTier"::text
+      SELECT i.id::text, 'ledger', i.kind, NULL, i."createdAt", u."clerkId", p."workspaceId"::text, i."projectId"::text, s."clipId"::text, s.platform::text, w."pricingTier"::text, i.payload ->> 'code', NULL
+      FROM "PublicationAnalyticsIntent" i JOIN "SocialPost" s ON s.id = i."socialPostId" JOIN "Project" p ON p.id = i."projectId" JOIN "User" u ON u.id = p."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId"
+      WHERE i.kind = 'social_failed' AND ${inWindow(Prisma.sql`i."createdAt"`)}
+      UNION ALL
+      SELECT e.id::text, 'operation', e.subject -> 'operation' ->> 'kind', e.subject ->> 'state', e."occurredAt", u."clerkId", e."workspaceId"::text, e.subject ->> 'projectId', NULL, NULL, w."pricingTier"::text, NULL, NULL
       FROM "WorkspaceEvent" e JOIN "Workspace" w ON w.id = e."workspaceId"
         JOIN "Project" p ON p.id::text = e.subject ->> 'projectId' JOIN "User" u ON u.id = p."createdByUserId"
       WHERE e.type = 'operation.finished' AND ${inWindow(Prisma.sql`e."createdAt"`)}
       UNION ALL
-      SELECT t.id::text, 'billing', t."previousTier"::text, NULL, t."effectiveAt", u."clerkId", w.id::text, NULL, NULL, NULL, t."nextTier"::text
+      SELECT t.id::text, 'billing', t."previousTier"::text, NULL, t."effectiveAt", u."clerkId", w.id::text, NULL, NULL, NULL, t."nextTier"::text, NULL, NULL
       FROM "WorkspaceBillingTransition" t JOIN "WorkspaceBillingAccount" a ON a.id = t."billingAccountId"
         JOIN "Workspace" w ON w.id = a."workspaceId" JOIN "User" u ON u.id = w."ownerUserId" WHERE ${inWindow(Prisma.sql`t."createdAt"`)}
     ) events ORDER BY at LIMIT ${MAX_EVENTS_PER_RUN}`;

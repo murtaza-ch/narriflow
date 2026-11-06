@@ -46,6 +46,32 @@ describe("toProductEvent", () => {
   });
 });
 
+describe("publishing outcomes", () => {
+  const row = (overrides: Partial<ProductEventRow>): ProductEventRow => ({
+    id: "post", source: "ledger", detail: "social_failed", state: null, at: new Date(0), distinctId: "clerk", workspaceId: null, projectId: null,
+    clipId: null, platform: "youtube_shorts", planTier: null, errorCode: null, delaySeconds: null, ...overrides,
+  });
+
+  test("a failed post says why, so failures can be broken down by cause", () => {
+    expect(toProductEvent(row({ errorCode: "youtube_upload_limit_exceeded" }))).toMatchObject({
+      event: "social_post_fail", properties: { platform: "youtube_shorts", error_code: "youtube_upload_limit_exceeded" },
+    });
+  });
+
+  test("anything that is not a machine code stays out", () => {
+    expect(toProductEvent(row({ errorCode: "A caption someone wrote" }))?.properties).not.toHaveProperty("error_code");
+  });
+
+  test("a published post carries how long it waited past its time", () => {
+    expect(toProductEvent(row({ detail: "social_posted", delaySeconds: 761.4 }))?.properties.publish_delay_sec).toBe(761);
+  });
+
+  test("a post with no schedule or a clock skew reports no delay", () => {
+    expect(toProductEvent(row({ detail: "social_posted" }))?.properties).not.toHaveProperty("publish_delay_sec");
+    expect(toProductEvent(row({ detail: "social_posted", delaySeconds: -2 }))?.properties).not.toHaveProperty("publish_delay_sec");
+  });
+});
+
 test("windows are whole hours that meet exactly, so nothing is lost or sent twice", () => {
   const first = productEventWindow(new Date("2026-11-06T10:00:00Z")), second = productEventWindow(new Date("2026-11-06T11:00:00Z"));
   expect(first.to).toEqual(second.from);

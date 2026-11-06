@@ -29,7 +29,7 @@ The catalog of product analytics events in PostHog. Change this file with the co
 | | `clip_export_complete`, `_partial`, `_fail`, `_cancel` | Operation |
 | | `clip_render_complete` | Ledger |
 | | `clip_download_start` | Ledger |
-| Retention | `social_post_schedule`, `_publish`, `_fail`, `_cancel` (`platform`) | Ledger |
+| Retention | `social_post_schedule`, `_publish` (`publish_delay_sec`), `_fail` (`error_code`), `_cancel`, all with `platform` | Ledger |
 | Referral | `review_send`, `review_open`, `review_changes_request`, `review_item_approve` | Ledger |
 | | `campaign_schedule`, `campaign_approve` | Ledger |
 | Revenue | `upgrade_prompt_view` (`target_tier`) | Browser |
