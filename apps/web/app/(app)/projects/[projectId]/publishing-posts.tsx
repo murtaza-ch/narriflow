@@ -303,7 +303,7 @@ export function PublishingPosts({
 				return (
 					<Collapsible.Root key={post.id} p="3" borderRadius="l3" bg="bg.subtle">
 						<Stack gap="3">
-						<Flex align="center" gap="3" wrap={{ base: "wrap", md: "nowrap" }}>
+						<Flex align="center" gap="3" wrap="wrap">
 							<Flex
 								boxSize="9"
 								flexShrink={0}
@@ -314,7 +314,8 @@ export function PublishingPosts({
 							>
 								<SocialPlatformMark platform={post.platform} />
 							</Flex>
-							<Box minW="0" flex="1">
+							{/* Wide enough to read: long actions wrap below rather than cut the title. */}
+							<Box minW="0" flex="1 1 280px">
 								<Text fontSize="sm" fontWeight="550" lineClamp={1}>
 									{clip ? (clip.title ?? clip.hookText) : account}
 								</Text>
@@ -360,7 +361,7 @@ export function PublishingPosts({
 									{feedback.label}
 								</Text>
 							</Flex>
-							<Flex gap="1" wrap="wrap" align="center" justify="end" flexShrink={0}>
+							<Flex gap="1" wrap="wrap" align="center" justify="end" flexShrink={0} ms="auto">
 								<Collapsible.Trigger asChild>
 									<Button
 										variant="ghost"
