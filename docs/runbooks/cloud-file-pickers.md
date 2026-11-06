@@ -120,6 +120,10 @@ with a rate-limit reason is retried like a 429; other 403s
 - **`origin_mismatch` or a blank Picker.** An origin is missing from the Google
   client's Authorized JavaScript origins, or the API key's referrer restriction
   excludes it.
+- **"This request contains scopes that cannot be requested together."** Google
+  merged scopes the person already granted to this client, such as YouTube, into
+  the request. Keep `include_granted_scopes` off for the Drive token and the
+  YouTube connection.
 - **Dropbox "domain not allowed".** Add the domain to the Chooser domains list.
 - **"That Google Drive sign-in can't be used here."** The token's client is not
   the web server's `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, or the server doesn't have that

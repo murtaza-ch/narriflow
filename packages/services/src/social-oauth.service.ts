@@ -848,7 +848,6 @@ export class SocialOAuthService {
 		);
 		url.searchParams.set("access_type", "offline");
 		url.searchParams.set("prompt", "consent");
-		url.searchParams.set("include_granted_scopes", "true");
 		url.searchParams.set("state", state);
 		if (verifier) {
 			url.searchParams.set("code_challenge", codeChallenge(verifier));

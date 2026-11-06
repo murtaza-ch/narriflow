@@ -30,6 +30,7 @@ export interface GoogleApis {
       initTokenClient(config: {
         client_id: string;
         scope: string;
+        include_granted_scopes: boolean;
         callback(response: TokenResponse): void;
         error_callback(error: { type?: string }): void;
       }): { requestAccessToken(): void };
@@ -84,6 +85,9 @@ function requestDriveToken(
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: GOOGLE_DRIVE_FILE_SCOPE,
+      // The client also connects YouTube. Google refuses a request that merges
+      // those earlier scopes with Drive, and this token only needs drive.file.
+      include_granted_scopes: false,
       callback: (response) => {
         if (response.error === "access_denied") {
           resolve(null);

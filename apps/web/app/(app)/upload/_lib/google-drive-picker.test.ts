@@ -20,6 +20,7 @@ function google(token: TokenOutcome, chosen: Record<string, unknown> | null) {
     views: [] as unknown[],
     features: [] as string[],
     tokenRequested: false,
+    includeGrantedScopes: undefined as boolean | undefined,
     pickerOpened: false,
   };
   const apis: GoogleApis = {
@@ -27,6 +28,7 @@ function google(token: TokenOutcome, chosen: Record<string, unknown> | null) {
       oauth2: {
         initTokenClient: (config) => {
           seen.scope = config.scope;
+          seen.includeGrantedScopes = config.include_granted_scopes;
           seen.clientId = config.client_id;
           return {
             requestAccessToken: () => {
@@ -111,6 +113,7 @@ describe("pickDriveVideo", () => {
     });
     expect(seen).toMatchObject({
       scope: "https://www.googleapis.com/auth/drive.file",
+      includeGrantedScopes: false,
       clientId: "client-id",
       developerKey: "api-key",
       appId: "1234567890",
