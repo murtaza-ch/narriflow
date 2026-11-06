@@ -1,6 +1,6 @@
 import {trackPublishedVideo} from "./publication-observations";
 import {readExecutionAdmission} from "./execution-admission";
-import {appendPublicationDispatch,recoverPublicationDispatches} from "./publication-dispatch";
+import {appendPublicationDispatch,recoverPublicationDispatches,wakeNextAccountPosts} from "./publication-dispatch";
 import {takeExecutionDispatchIds} from "./execution-dispatch-runtime";
 import {createHash} from "node:crypto";
 import { lockPublicationAttempt } from "./publication-locks";
@@ -258,11 +258,13 @@ export async function recordTikTokPublicationEvent(
 						nextAttemptAt: null,
 					},
 				});
-				if (attempt.currentClaimId)
+				if (attempt.currentClaimId) {
+					await wakeNextAccountPosts(tx, attempt.currentClaimId, now);
 					await tx.publicationClaim.updateMany({
 						where: { id: attempt.currentClaimId, releasedAt: null },
 						data: { releasedAt: now, accountSlotKey: null },
 					});
+				}
 				await emitSocialPostFinished(tx, { socialPostId: attempt.socialPostId, attemptId: attempt.id });
     await recordTerminalWake(tx,attempt.socialPostId,attempt.id,event,now);
 				return { kind: "failed" as const, attemptId: attempt.id };
@@ -335,11 +337,13 @@ export async function recordTikTokPublicationEvent(
 					currentClaimId: null,
 				},
 			});
-			if (attempt.currentClaimId)
+			if (attempt.currentClaimId) {
+				await wakeNextAccountPosts(tx, attempt.currentClaimId, now);
 				await tx.publicationClaim.updateMany({
 					where: { id: attempt.currentClaimId, releasedAt: null },
 					data: { releasedAt: now, accountSlotKey: null },
 				});
+			}
 			const alreadyPosted = attempt.socialPost.status === "posted";
 			await tx.socialPost.update({
 				where: { id: attempt.socialPostId },

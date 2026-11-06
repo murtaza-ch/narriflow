@@ -1,5 +1,6 @@
 import {appendYouTubeReceiptEnrichment,trackPublishedVideo} from "./publication-observations";
 import { lockPublicationAttempt } from "./publication-locks";
+import { wakeNextAccountPosts } from "./publication-dispatch";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { emitSocialPostFinished } from "./social-post-finished";
@@ -482,11 +483,15 @@ async function requireCurrentClaim(
 	if (!attempt || !claim) throw new PublicationClaimLostError();
 }
 
-async function releaseCurrentClaim(
+/** `backingOff` keeps the slot's waiters on their timers: a retry usually means the
+ * provider refused the account, and waking them would spend their attempts on it. */
+export async function releaseCurrentClaim(
 	tx: Prisma.TransactionClient,
-	owned: OwnedPublicationAttempt,
+	owned: Pick<OwnedPublicationAttempt, "attemptId" | "claimId">,
 	now: Date,
+	options: { backingOff?: boolean } = {},
 ) {
+	if (!options.backingOff) await wakeNextAccountPosts(tx, owned.claimId, now);
 	await tx.publicationClaim.updateMany({
 		where: {
 			id: owned.claimId,
@@ -941,7 +946,7 @@ export function createPrismaSocialPublicationAttemptStore(database: () => Prisma
 							nextAttemptAt: nextActionAt,
 						},
 					});
-					await releaseCurrentClaim(tx, input.owned, input.now);
+					await releaseCurrentClaim(tx, input.owned, input.now, { backingOff: true });
 					return {
 						kind: "retry_scheduled",
 						attemptId: row.id,

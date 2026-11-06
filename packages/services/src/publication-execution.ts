@@ -34,6 +34,7 @@ import {
 } from "./execution-dispatch";
 import {
 	appendPublicationDispatch,
+	wakeNextAccountPosts,
  recoverPublicationDispatches,
  samePublicationDispatch,
 	publicationExecutionInputHash,
@@ -263,6 +264,7 @@ export class PublicationExecution
 		return this.wake(tx, postId, dueAt);
 	}
 	private async release(tx: Tx, ref: PublicationExecutionRef, now: Date) {
+		await wakeNextAccountPosts(tx, ref.claimId, now);
 		await tx.publicationClaim.update({
 			where: { id: ref.claimId },
 			data: { releasedAt: now, accountSlotKey: null },

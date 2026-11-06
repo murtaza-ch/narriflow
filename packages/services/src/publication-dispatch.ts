@@ -103,6 +103,30 @@ export async function appendPublicationDispatch(
 	return result.reference.dispatchId;
 }
 
+/** How many waiting posts a released slot wakes, and how many it looks through. */
+const ACCOUNT_WAKE_COUNT = 2;
+const ACCOUNT_WAKE_SCAN = 16;
+
+/** One claim holds an account's slot, and a post that finds it taken waits on the
+ * holder's lease or deadline. Wake the oldest posts able to run as the slot frees,
+ * so a queue moves as fast as its work rather than its timers. Two, not all of
+ * them: one wins the slot, and the other keeps the queue moving if the first
+ * cannot claim. A lost wake only falls back to those timers, so this never has to
+ * take a peer's lock. Call before the release clears `accountSlotKey`. */
+export async function wakeNextAccountPosts(tx:Tx,claimId:string,now:Date,append:typeof appendPublicationDispatch=appendPublicationDispatch){
+ const claim=await tx.publicationClaim.findUnique({where:{id:claimId},select:{accountSlotKey:true,attempt:{select:{socialPostId:true}}}});
+ if(!claim?.accountSlotKey)return [];
+ const epoch=await tx.executionEpoch.findUniqueOrThrow({where:{id:1}});
+ const candidates=await tx.socialPost.findMany({
+  where:{socialAccountId:claim.accountSlotKey,id:{not:claim.attempt.socialPostId},status:"scheduled",deploymentEpoch:epoch.epoch,
+   // A paused grant stays scheduled and past due, and would hold the head of the queue forever.
+   AND:[{OR:[{nextAttemptAt:{lte:now}},{nextAttemptAt:null,scheduledFor:{lte:now}}]},{OR:[{standingGrantId:null},{standingGrant:{status:{not:"paused"}}}]}]},
+  orderBy:[{scheduledFor:"asc"},{createdAt:"asc"},{id:"asc"}],take:ACCOUNT_WAKE_SCAN,select:{id:true,nextAttemptAt:true,scheduledFor:true,createdAt:true}});
+ const wakeKind=`pub_${createHash("sha256").update(claimId).digest("hex").slice(0,32)}`;
+ const runnable=candidates.filter(post=>publicationReleaseAt(post)<=now).slice(0,ACCOUNT_WAKE_COUNT);
+ return Promise.all(runnable.map(post=>append(tx,post.id,{dueAt:now,wakeKind})));
+}
+
 /** Repair an accepted identity only. Never creates a new admission or invents
  * a next wake from a stale request, even if the producer committed a newer cycle. */
 export async function recoverPublicationDispatches(tx:Tx,postId:string,workspaceId?:string){
