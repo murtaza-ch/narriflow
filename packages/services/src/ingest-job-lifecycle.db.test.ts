@@ -26,7 +26,7 @@ import { ProcessingUsage } from "./processing-usage";
 import { creditDebitSeconds } from "@narriflow/validators";
 import { startIngestTestExecution } from "./ingest-execution-test-support";
 import { createSourceVideoValidator } from "./source-readiness";
-import { ingestExecutionInputHash } from "./ingest-source-execution";
+import { ingestExecutionInputHash, prepareIngestSourceExecution } from "./ingest-source-execution";
 import { appendExecutionDispatch } from "./execution-dispatch";
 
 const url = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -278,6 +278,30 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(ledger.status).toBe("pending");
     expect(await prisma.notificationLedger.count({ where: { projectId: project.id, sourceId: job.id } })).toBe(1);
     expect(await prisma.executionDispatch.count({ where: { kind: "operation_driver", subjectKind: "notification", subjectId: `em1.p.${ledger.id}`, deadlineKind: null } })).toBe(1);
+  }));
+
+  test("a run rejected before start spends attempts, waits out its backoff, and stops at the retry limit", bindServiceTestEnvironment(async () => {
+    const { project, job } = await fixture();
+    const module = lifecycle();
+    const claim = async () => {
+      const current = await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } });
+      if (current.attemptCount) await prisma.ingestJob.update({ where: { id: job.id }, data: { updatedAt: new Date(Date.now() - 10 * 60_000) } });
+      return startIngestTestExecution(prisma, module, new WorkflowRunLifecycle({ prisma }), job.id, { started: false });
+    };
+    const first = await claim();
+    await first.command("fail", { failureCode: "source_runtime_invalid", retryable: true });
+    const retry = await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(retry).toMatchObject({ status: "queued", attemptCount: 1, startedAt: null });
+    const due = await prisma.executionDispatch.findFirstOrThrow({ where: { subjectId: job.id, generation: retry.generation, kind: "operation_driver", wakeKind: null } });
+    expect(due.dueAt.getTime()).toBeGreaterThan(Date.now());
+    const reference = await prisma.$transaction(tx => module.queueExecutionWithinTransaction(tx, job.id));
+    const prepared = await prepareIngestSourceExecution({ database: prisma, domain: module, reference: reference!, toolchainFingerprint: "f".repeat(64), executionKind: "modal_execution" });
+    expect(prepared.kind).toBe("sleep");
+    await (await claim()).command("fail", { failureCode: "source_runtime_invalid", retryable: true });
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "queued", attemptCount: 2 });
+    await (await claim()).command("fail", { failureCode: "source_runtime_invalid", retryable: true });
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", attemptCount: 3, lastError: expect.stringContaining("source_runtime_invalid") });
+    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "ingest_retries_exhausted" });
   }));
 
   test("outbox insertion failure rolls back actual Core progress, source acceptance, failure and expiry", bindServiceTestEnvironment(async () => {

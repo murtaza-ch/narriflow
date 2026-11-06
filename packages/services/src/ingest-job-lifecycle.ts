@@ -358,6 +358,12 @@ export class IngestJobLifecycle {
     return undefined;
   }
 
+  /** A failure before start spends an attempt too. Otherwise a run that is
+   * rejected on every startup never reaches the retry limit or its backoff. */
+  private spentAttempts(job: Pick<IngestJob, "attemptCount" | "startedAt">): number {
+    return job.startedAt ? job.attemptCount : job.attemptCount + 1;
+  }
+
   private async executionWakes(tx: Tx, ref: IngestExecutionReference, inputHash: string, wakeKind: string, retryAt?: Date): Promise<{ dispatchIds: string[] }> {
     const outcomeInputHash = inputHash;
     const current = retryAt ? await tx.ingestJob.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } })
@@ -469,7 +475,7 @@ export class IngestJobLifecycle {
     if (!decision) throw new IngestJobClaimLost(ref.id);
     const closed = decision.outcome === "permanent" ? await this.closeAdmittedGeneration(tx, ref, decision.terminalErrorCode, now, mismatch) : [];
     const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, mismatch ? "ingest_failed" : "ingest_outcome",
-      decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+      decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(this.spentAttempts(job))) : undefined);
     return { dispatchIds: [...closed, ...wakes.dispatchIds] };
   }
 
@@ -522,7 +528,7 @@ export class IngestJobLifecycle {
       permanent ? "Source acquisition deadline expired" : "Ingest execution lease expired", `${attemptToken}:expired`, now, permanent ? "permanent" : undefined);
     if (!decision) return { kind: "superseded" };
     const closed = decision.outcome === "permanent" ? await this.closeAdmittedGeneration(tx, ref, decision.terminalErrorCode, now) : [];
-    const wakes = await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+    const wakes = await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(this.spentAttempts(job))) : undefined);
     return { kind: "expired", dispatchIds: [...closed, ...wakes.dispatchIds] };
   }
 
@@ -621,7 +627,7 @@ export class IngestJobLifecycle {
   }
   private async settleFailure(
     tx: Tx,
-    job: Pick<IngestJob, "id" | "projectId" | "attemptCount">,
+    job: Pick<IngestJob, "id" | "projectId" | "attemptCount" | "startedAt">,
     where: Prisma.IngestJobWhereInput,
     code: string,
     message: string,
@@ -629,8 +635,9 @@ export class IngestJobLifecycle {
     now: Date,
     disposition?: "permanent",
   ): Promise<IngestFailureDecision | null> {
+    const attemptCount = this.spentAttempts(job);
     const decision = disposition === "permanent" ? { outcome: "permanent" as const, terminalErrorCode: code } : decideAutoRetry(
-      job.attemptCount,
+      attemptCount,
       code,
       INGEST_AUTO_RETRY_MAX_ATTEMPTS,
       INGEST_RETRIES_EXHAUSTED_CODE,
@@ -644,6 +651,7 @@ export class IngestJobLifecycle {
         claimExpiresAt: null,
         executorOwner: null,
         startedAt: null,
+        attemptCount,
         lastError: `${code}: ${message}`,
         completedAt: terminal ? now : null,
         updatedAt: now,

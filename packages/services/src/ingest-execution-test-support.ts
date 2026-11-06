@@ -8,7 +8,7 @@ import { createExecutionStorage } from "./execution-storage";
 
 /** Real source admission, work-package assignment and executor control. Only
  * external storage HEAD and scheduler delivery are controlled in this fixture. */
-export async function startIngestTestExecution(database: PrismaClient, domain: IngestJobLifecycle, workflow: WorkflowRunLifecycle, jobId: string) {
+export async function startIngestTestExecution(database: PrismaClient, domain: IngestJobLifecycle, workflow: WorkflowRunLifecycle, jobId: string, options: { started?: boolean } = {}) {
   const toolchainFingerprint = "f".repeat(64);
   const reference = await database.$transaction(tx => domain.queueExecutionWithinTransaction(tx, jobId));
   if (!reference) throw Error("Missing source admission");
@@ -38,7 +38,7 @@ export async function startIngestTestExecution(database: PrismaClient, domain: I
   const sourceVideo = work.outputs.find(output => output.role === "source_video");
   if (!sourceVideo) throw Error("Missing source destination");
   const assignment = await database.executionArtifact.findUniqueOrThrow({ where: { id: sourceVideo.artifactId } });
-  await execute({ action: "process-start", fence });
+  if (options.started !== false) await execute({ action: "process-start", fence });
   return { ...runtime, fence, assignment,
     command: (action: string, fields: Record<string, unknown> = {}) => execute({ action, fence, ...fields }),
     async complete(durationSec = 12.5, bytes = 42) {
