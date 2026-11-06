@@ -656,6 +656,22 @@ describe("native publication adapters", () => {
 		expect(state.cleanupCount()).toBe(1);
 	});
 
+	for (const [status, reason, code] of [
+		[400, "uploadLimitExceeded", "youtube_upload_limit_exceeded"],
+		[403, "quotaExceeded", "youtube_quota_exceeded"],
+		[403, "dailyLimitExceeded", "youtube_quota_exceeded"],
+		[400, "invalidTitle", "youtube_upload_init_failed"],
+	] as const) {
+		test(`names YouTube's ${status} ${reason} as ${code}`, async () => {
+			const state = harness([json({ error: { errors: [{ reason }] } }, { status })]);
+			const result = await state.registry.get("youtube_shorts").publish(input("youtube_shorts"), {
+				signal: new AbortController().signal,
+				checkpoint: async () => {},
+			});
+			expect(result).toMatchObject({ kind: "failed", failure: { code, disposition: "permanent" } });
+		});
+	}
+
 	test("sets the exact custom YouTube thumbnail after the video upload", async () => {
 		const request = input("youtube_shorts");
 		request.providerSettings = {

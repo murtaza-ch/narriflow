@@ -692,7 +692,7 @@ function normalizedFailure(
 	if (error instanceof DOMException && error.name === "AbortError") throw error;
 	const providerCode =
 		error instanceof ProviderHttpError
-			? error.code === "youtube_quota_exceeded"
+			? error.code === "youtube_quota_exceeded" || error.code === "youtube_upload_limit_exceeded"
 				? error.code
 				: error.status === 404 && error.code.startsWith("x_media_")
 					? "x_media_expired"
@@ -966,17 +966,15 @@ async function youtubeCompletedResponse(response: Response) {
 }
 
 async function youtubeFailureCode(response: Response, fallback: string) {
-	if (response.status !== 403) return fallback;
+	// A channel's upload limit is a 400, and API quota is a 403.
+	if (response.status !== 400 && response.status !== 403) return fallback;
 	try {
 		const body = (await response.clone().json()) as {
 			error?: { errors?: Array<{ reason?: string }> };
 		};
 		const reason = body.error?.errors?.[0]?.reason;
-		if (
-			reason === "quotaExceeded" ||
-			reason === "dailyLimitExceeded" ||
-			reason === "uploadLimitExceeded"
-		) {
+		if (reason === "uploadLimitExceeded") return "youtube_upload_limit_exceeded";
+		if (reason === "quotaExceeded" || reason === "dailyLimitExceeded") {
 			return "youtube_quota_exceeded";
 		}
 	} catch {

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "@narriflow/api-client";
 import { publishingKeys } from "@narriflow/api-client/publishing";
-import { isUncertainFailure, publishingQueries } from "./publishing-client";
+import { CancelledError } from "@tanstack/react-query";
+import { ignoreSupersededRead, isUncertainFailure, publishingQueries } from "./publishing-client";
 
 const scope = { userId: "user_1", workspaceId: "workspace_1" };
 const runtime = { transport: {} as never };
@@ -35,5 +36,16 @@ describe("uncertain failures", () => {
 	test("conflicts, outages and unreachable APIs are re-read; plain refusals are not", () => {
 		for (const status of [0, 409, 500, 503]) expect(isUncertainFailure(failure(status))).toBe(true);
 		for (const status of [400, 402, 403, 404, 422, 429]) expect(isUncertainFailure(failure(status))).toBe(false);
+	});
+});
+
+describe("superseded reads", () => {
+	test("a read a newer one cancelled is not a failure", () => {
+		expect(() => ignoreSupersededRead(new CancelledError())).not.toThrow();
+	});
+
+	test("a real failure still surfaces", () => {
+		const failure = new Error("Network down");
+		expect(() => ignoreSupersededRead(failure)).toThrow(failure);
 	});
 });

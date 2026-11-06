@@ -23,6 +23,7 @@ import {
 	type SocialAccountSnapshot,
 	type SocialPostSnapshot,
 } from "@narriflow/validators";
+import { ignoreSupersededRead } from "@/lib/publishing-client";
 import { isLiveSocialPostSnapshot } from "@/lib/social-post-status";
 import { browserPublishingStorage } from "./publishing-draft";
 import { createProjectPublishingApi, type ProjectPublishingApi } from "./publishing-api";
@@ -191,7 +192,7 @@ export function PublishingProvider({
 	}, [postPoll.error, postPoll.errorUpdatedAt]);
 	const refetchPosts = postPoll.refetch;
 	const refresh = useCallback(async () => {
-		await refetchPosts({ throwOnError: true });
+		await refetchPosts({ throwOnError: true }).catch(ignoreSupersededRead);
 	}, [refetchPosts]);
 	const loadOlderPosts = useCallback(async () => {
 		if (!nextPostsCursor) return;

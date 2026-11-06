@@ -78,7 +78,7 @@ import { createExportsClient, exportQueries } from "@narriflow/api-client/export
 import { invalidateProject } from "@narriflow/api-client/projects";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
-import { apiFailureMessage, browserFailureFromApiError } from "@/lib/publishing-client";
+import { apiFailureMessage, browserFailureFromApiError, ignoreSupersededRead } from "@/lib/publishing-client";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
@@ -215,7 +215,7 @@ export function PublishingComposer({
 	);
 	const refetchExports = currentExports.refetch;
 	const refreshExports = useCallback(async () => {
-		await refetchExports({ throwOnError: true });
+		await refetchExports({ throwOnError: true }).catch(ignoreSupersededRead);
 	}, [refetchExports]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: errorUpdatedAt re-reports each failed read.
 	useEffect(() => {

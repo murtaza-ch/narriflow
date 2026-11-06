@@ -6,7 +6,7 @@ import {
 	publishingQueries as domainPublishingQueries,
 	type publishingReads,
 } from "@narriflow/api-client/publishing";
-import { queryOptions } from "@tanstack/react-query";
+import { isCancelledError, queryOptions } from "@tanstack/react-query";
 import { authenticatedRequestFailureMessage, type BrowserRequestFailure } from "./authenticated-request-browser";
 import { socialPollDelayMs } from "./social-post-status";
 
@@ -19,6 +19,11 @@ import { socialPollDelayMs } from "./social-post-status";
 export { publishingApi, publishingClientFor };
 export type { PublishingClient };
 export type PublishingApi = ReturnType<typeof publishingApi>;
+
+/** A newer read cancelled this one and will deliver the answer, so nothing failed. */
+export function ignoreSupersededRead(error: unknown): void {
+	if (!isCancelledError(error)) throw error;
+}
 
 type Reads = ReturnType<typeof publishingReads>;
 type Data<Name extends keyof Reads> = Awaited<ReturnType<Reads[Name]>>;

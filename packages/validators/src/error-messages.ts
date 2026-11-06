@@ -1,6 +1,10 @@
 /** Maps internal error codes to user-facing copy. Keep messages calm,
  *  specific, and actionable. Fall back to a generic message for unknowns. */
 export const USER_ERROR_MESSAGES: Record<string, string> = {
+	youtube_upload_limit_exceeded:
+		"YouTube says this channel has reached its upload limit. Try again later.",
+	youtube_quota_exceeded:
+		"Narriflow has reached YouTube's publishing quota. Try again later.",
 	workspace_name_invalid:
 		"Workspace names must be between 1 and 80 characters.",
 	workspace_timezone_invalid:
