@@ -23,6 +23,8 @@ export interface LinkConfigureState {
   captionPreset: CaptionPresetId;
   defaultAspectRatio: ContentPack["defaultAspectRatio"];
   autoHook: boolean;
+  removeSilences: boolean;
+  removeFillerWords: boolean;
   specificMoments: string;
   platformTargets: ClipPlatformTarget[];
   clipCountTarget: number;
@@ -61,6 +63,8 @@ export function buildLinkContentPack(state: LinkConfigureState): ContentPack {
     platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
     mode: state.mode,
     autoHook: state.autoHook,
+    removeSilences: state.removeSilences,
+    removeFillerWords: state.removeFillerWords,
     specificMoments: state.specificMoments.slice(0, 500),
     processingStartSec: state.processingStartSec,
     processingEndSec: state.processingEndSec,
@@ -77,6 +81,8 @@ export const DEFAULT_LINK_CONFIGURE_STATE: Omit<
   captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
   defaultAspectRatio: "9:16",
   autoHook: true,
+  removeSilences: false,
+  removeFillerWords: false,
   specificMoments: "",
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
   clipCountTarget: 10,

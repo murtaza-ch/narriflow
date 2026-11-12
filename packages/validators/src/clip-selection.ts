@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { captionPresetSchema } from "./caption-preset";
+import { encodedQuietRangesSchema } from "./clip-cleanup";
 import { clipDetectionLlmResponseSchema } from "./clip";
 import { contentPackSchema } from "./content-pack";
 import { studioEditsSchema } from "./studio-edits";
@@ -16,7 +17,8 @@ export const clipSelectionInputSchema = z.strictObject({
     .refine(value => (value.sourceAudioId === null) === (value.sourceAudioBindingHash === null)),
   planning: z.strictObject({ projectTitle: z.string(), contentPack: contentPackSchema, sourceDurationSec: positive.nullable(), sourceProbeDurationSec: positive.nullable(),
     utterances: z.array(transcriptUtteranceSchema), fullText: z.string(), speakerCount: z.number().int().nonnegative().nullable(), sourceLanguageCode: z.string().nullable(), audienceDataLine: z.string().nullable() }),
-  editor: z.strictObject({ captionPreset: captionPresetSchema, studioEdits: studioEditsSchema, sourceDurationSec: positive.nullable(), wholeSource: z.boolean() }),
+  editor: z.strictObject({ captionPreset: captionPresetSchema, studioEdits: studioEditsSchema, sourceDurationSec: positive.nullable(), wholeSource: z.boolean(),
+    cleanup: z.strictObject({ removeSilences: z.boolean(), removeFillerWords: z.boolean(), quietRanges: encodedQuietRangesSchema.nullable(), languageCode: z.string().nullable() }) }),
   provider: z.strictObject({ model: z.string().min(1).max(100), reasoningEffort: z.string().min(1).max(40), maxOutputTokens: z.number().int().positive() }),
   systemPrompt: z.string().min(1), responseSchemaHash: hash,
 });

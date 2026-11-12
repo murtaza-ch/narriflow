@@ -27,6 +27,8 @@ const defaultContentPack: ContentPack = {
   platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
   mode: "clip",
   autoHook: true,
+  removeSilences: false,
+  removeFillerWords: false,
   specificMoments: "",
   processingStartSec: null,
   processingEndSec: null,
@@ -148,6 +150,8 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
     captionPreset: readCaptionPreset(formData),
     mode: readMode(formData),
     autoHook: readBoolean(formData, "autoHook", true),
+    removeSilences: readBoolean(formData, "removeSilences", false),
+    removeFillerWords: readBoolean(formData, "removeFillerWords", false),
     specificMoments: String(formData.get("specificMoments") ?? "").slice(
       0,
       500,
@@ -172,6 +176,8 @@ export type UploadSettingsFormInput = {
   mode: GenerationMode;
   clipLengthPreset: ClipLengthPreset;
   autoHook: boolean;
+  removeSilences: boolean;
+  removeFillerWords: boolean;
   specificMoments: string;
   processingStartSec: number | null;
   processingEndSec: number | null;
@@ -190,6 +196,8 @@ export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
   formData.set("clipLengthPreset", input.clipLengthPreset);
   formData.set("captionPreset", input.captionPreset);
   formData.set("autoHook", String(input.autoHook));
+  formData.set("removeSilences", String(input.removeSilences));
+  formData.set("removeFillerWords", String(input.removeFillerWords));
   formData.set("defaultAspectRatio", input.defaultAspectRatio ?? "9:16");
   formData.set("specificMoments", input.specificMoments);
   if (input.processingStartSec !== null) {

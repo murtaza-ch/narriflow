@@ -15,6 +15,8 @@ function baseInput(overrides: Partial<Parameters<typeof buildUploadSettingsFormD
     mode: "clip" as const,
     clipLengthPreset: "auto" as ClipLengthPreset,
     autoHook: true,
+    removeSilences: false,
+    removeFillerWords: false,
     specificMoments: "",
     processingStartSec: null,
     processingEndSec: null,
@@ -88,4 +90,11 @@ test("local upload preserves aspect ratio and an explicitly disabled hook", () =
   const context = buildUploadGenerationContext(baseInput({ defaultAspectRatio: "1:1", autoHook: false }));
   expect(context.contentPack.defaultAspectRatio).toBe("1:1");
   expect(context.contentPack.autoHook).toBe(false);
+});
+
+test("silence and filler-word removal default off and travel through the form", () => {
+  expect(buildUploadGenerationContext(baseInput()).contentPack).toMatchObject({ removeSilences: false, removeFillerWords: false });
+  const on = buildUploadGenerationContext(baseInput({ removeSilences: true, removeFillerWords: true }));
+  expect(on.contentPack).toMatchObject({ removeSilences: true, removeFillerWords: true });
+  expect(readContentPackFromForm(new FormData()).removeSilences).toBe(false);
 });

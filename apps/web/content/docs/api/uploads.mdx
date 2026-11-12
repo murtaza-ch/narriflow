@@ -206,9 +206,13 @@ The same `generation` object works on `POST /uploads`, `POST /projects` and `POS
 | `captionPreset` | `brand_default` | A caption style ID, or `brand_default` for the Brand Profile's style. |
 | `mode` | `clip` | `clip` finds short clips. `caption_only` captions the whole video. |
 | `autoHook` | `true` | Add a generated hook to each clip. |
+| `removeSilences` | `false` | Cut pauses of 1 second or more from each clip, only where the audio is measured quiet, so music and laughter stay. |
+| `removeFillerWords` | `false` | Cut "um", "uh", "er" and "erm" from each clip. English transcripts only. |
 | `specificMoments` | `""` | Up to 500 characters describing moments to find. |
 | `processingStartSec`, `processingEndSec` | `null` | Process only this part of the video, in seconds. |
 | `languageCode` | `null` | The spoken language, or `null` to detect it. One of over 100 codes: ISO 639-1 where the language has one (`en`, `ur`, `ja`), otherwise ISO 639-3 (`yue`, `fil`, `ast`). The [OpenAPI document](https://api.narriflow.example/api/v1/openapi.json) lists every code. |
+
+`removeSilences` and `removeFillerWords` start each new clip with those cuts already made. A person can restore them in the Studio.
 
 ## Finishing
 

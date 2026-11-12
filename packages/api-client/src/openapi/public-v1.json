@@ -338,6 +338,16 @@
                 "type": "boolean",
                 "default": true
               },
+              "removeSilences": {
+                "type": "boolean",
+                "default": false,
+                "description": "Cut pauses where the audio is quiet from each clip"
+              },
+              "removeFillerWords": {
+                "type": "boolean",
+                "default": false,
+                "description": "Cut filler words such as um and uh from each clip (English transcripts)"
+              },
               "specificMoments": {
                 "type": "string",
                 "maxLength": 500,
@@ -882,6 +892,16 @@
           "autoHook": {
             "type": "boolean",
             "default": true
+          },
+          "removeSilences": {
+            "type": "boolean",
+            "default": false,
+            "description": "Cut pauses where the audio is quiet from each clip"
+          },
+          "removeFillerWords": {
+            "type": "boolean",
+            "default": false,
+            "description": "Cut filler words such as um and uh from each clip (English transcripts)"
           },
           "specificMoments": {
             "type": "string",

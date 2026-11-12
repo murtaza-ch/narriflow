@@ -93,6 +93,8 @@ export function AdvancedClipSettings({
   compact = false,
 }: AdvancedClipSettingsProps) {
   const hookLabelId = useId();
+  const silencesLabelId = useId();
+  const fillerLabelId = useId();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("clip");
   const [languageCode, setLanguageCode] = useState(defaultSourceLanguageCode ?? "auto");
@@ -110,6 +112,8 @@ export function AdvancedClipSettings({
     platformOptions.map((option) => option.value),
   );
   const [autoHook, setAutoHook] = useState(true);
+  const [removeSilences, setRemoveSilences] = useState(false);
+  const [removeFillerWords, setRemoveFillerWords] = useState(false);
   const [specificMoments, setSpecificMoments] = useState("");
   const [toneConstraints, setToneConstraints] = useState("concise, conversational");
   const [captionPreset, setCaptionPreset] = useState(defaultCaptionPreset);
@@ -187,6 +191,8 @@ export function AdvancedClipSettings({
             <input key={platform} type="hidden" name="platformTargets" value={platform} />
           ))}
           <input type="hidden" name="autoHook" value={String(autoHook)} />
+          <input type="hidden" name="removeSilences" value={String(removeSilences)} />
+          <input type="hidden" name="removeFillerWords" value={String(removeFillerWords)} />
           <input type="hidden" name="specificMoments" value={specificMoments} />
           <input type="hidden" name="toneConstraints" value={toneConstraints} />
         </>
@@ -370,6 +376,28 @@ export function AdvancedClipSettings({
                         checked={autoHook}
                         onCheckedChange={setAutoHook}
                         inputProps={{ "aria-labelledby": hookLabelId }}
+                      />
+                    </ToggleCard>
+                    <ToggleCard
+                      labelId={silencesLabelId}
+                      title="Remove silences"
+                      description="Cuts pauses where the audio is quiet"
+                    >
+                      <Switch
+                        checked={removeSilences}
+                        onCheckedChange={setRemoveSilences}
+                        inputProps={{ "aria-labelledby": silencesLabelId }}
+                      />
+                    </ToggleCard>
+                    <ToggleCard
+                      labelId={fillerLabelId}
+                      title="Remove filler words"
+                      description="Cuts um and uh. English only"
+                    >
+                      <Switch
+                        checked={removeFillerWords}
+                        onCheckedChange={setRemoveFillerWords}
+                        inputProps={{ "aria-labelledby": fillerLabelId }}
                       />
                     </ToggleCard>
                     <Field.Root>

@@ -6,7 +6,7 @@ import { isApiError, type Intent } from "@narriflow/api-client/core";
 import type { RecipesActions } from "@narriflow/api-client/recipes";
 import { useMutation } from "@tanstack/react-query";
 import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, ArrowUpRight, Bot, Copy, Languages, Pencil, Plus, Scissors, Sparkles, Timer, Trash2, Zap } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, AudioLines, Bot, Copy, Languages, MessageSquareOff, Pencil, Plus, Scissors, Sparkles, Timer, Trash2, Zap } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
@@ -253,6 +253,8 @@ export function RecipesPanel({
                     <SettingChip icon={<Timer size={12} />}>{contentPack.clipLengthPreset === "auto" ? "Auto length" : (clipLengthItems.find((item) => item.value === contentPack.clipLengthPreset)?.label ?? "Auto length")}</SettingChip>
                     <SettingChip icon={<Languages size={12} />}>{languageLabel(recipe.languageCode)}</SettingChip>
                     {contentPack.autoHook ? <SettingChip icon={<Zap size={12} />}>Hook first</SettingChip> : null}
+                    {contentPack.removeSilences ? <SettingChip icon={<AudioLines size={12} />}>No silences</SettingChip> : null}
+                    {contentPack.removeFillerWords ? <SettingChip icon={<MessageSquareOff size={12} />}>No filler words</SettingChip> : null}
                   </Flex>
 
                   {recipe.finishing ? (
@@ -360,6 +362,8 @@ function RecipeDialog({
 }) {
   const recipe = target !== null && target !== "new" ? target : null;
   const hookLabelId = useId();
+  const silencesLabelId = useId();
+  const fillerLabelId = useId();
   // The parent keys this dialog by Recipe, so every open starts a fresh draft.
   const [opened] = useState<RecipeDraft>(() => (recipe ? draftFromRecipe(recipe) : emptyRecipeDraft(defaultBrandProfileId)));
   const [draft, setDraft] = useState<RecipeDraft>(opened);
@@ -476,6 +480,12 @@ function RecipeDialog({
                   </Box>
                   <ToggleCard labelId={hookLabelId} title="Start with a hook" description="Prioritize attention-grabbing openings.">
                     <Switch checked={draft.autoHook} onCheckedChange={(autoHook) => set({ autoHook })} inputProps={{ "aria-labelledby": hookLabelId }} />
+                  </ToggleCard>
+                  <ToggleCard labelId={silencesLabelId} title="Remove silences" description="Cuts pauses where the audio is quiet.">
+                    <Switch checked={draft.removeSilences} onCheckedChange={(removeSilences) => set({ removeSilences })} inputProps={{ "aria-labelledby": silencesLabelId }} />
+                  </ToggleCard>
+                  <ToggleCard labelId={fillerLabelId} title="Remove filler words" description="Cuts um and uh. English only.">
+                    <Switch checked={draft.removeFillerWords} onCheckedChange={(removeFillerWords) => set({ removeFillerWords })} inputProps={{ "aria-labelledby": fillerLabelId }} />
                   </ToggleCard>
                 </SettingsSection>
 

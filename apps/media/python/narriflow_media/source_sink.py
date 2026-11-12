@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .artifacts import AssignedArtifacts
+from .artifacts import AssignedArtifacts, valid_quiet_ranges
 from .control import ExecutionControlError, ExecutorSession
 from .fetch import ExistingSourceAudio, VerifiedSourceFile
 from .process import MediaProcessError, run_owned_process_async
@@ -28,6 +28,12 @@ def _content_type(path: Path, video: bool):
     if value is None:
         raise ExecutionControlError("execution_artifact_invalid")
     return value
+
+
+QUIET_RANGES_WIRE_BYTES = 48 * 1024  # leaves room for the binding inside the 60 KB facts limit
+QUIET_RANGES_MIN_SECONDS = 10
+QUIET_RANGES_MAX_SECONDS = 45
+QUIET_RANGES_SESSION_SHARE = 0.25
 
 
 class ScopedSourceSink:
@@ -75,16 +81,47 @@ class ScopedSourceSink:
             raise ExecutionControlError("execution_artifact_already_claimed")
         output = self._output("source_audio")
         manifest = artifact.manifest
+        quiet_ranges = await self.measure_quiet_ranges(artifact.path)
         def facts(completed):
             binding = {key: manifest[key] for key in ("sourceRevision", "mediaIdentity", "audioTrack", "durationSeconds",
                 "wholeSource", "audioStartTimeSec", "probeVersion", "toolchainFingerprint")}
             binding.update(sourceAudioId=self.command["sourceAudioId"], projectId=self.command["projectId"],
                 object={"key": completed.key, "etag": completed.etag, "byteLength": completed.byte_length, "sha256": completed.sha256})
-            return {"sourceAudio": binding}
+            # A sibling of the binding: the binding is hashed and reused as is.
+            return {"sourceAudio": binding, **({"quietRanges": quiet_ranges} if quiet_ranges is not None else {})}
         await self.artifacts.upload(output["artifactId"], artifact.path, content_type=artifact.content_type or _content_type(artifact.path, False),
             byte_length=manifest["byteLength"], sha256=manifest["sha256"], facts_builder=facts)
         self._published.add("source_audio")
         await self.refresh_optional_probe()
+
+    async def measure_quiet_ranges(self, path: Path):
+        """Quiet audio on the transcription clock, or None. Optional: any failure
+        leaves the Source Audio unmeasured, which turns silence removal off for
+        its clips; only session loss or cancellation propagates."""
+        self.session.assert_live()
+        # Most of the session stays with the audio upload that follows.
+        seconds = min(QUIET_RANGES_MAX_SECONDS, self.session.remaining_seconds * QUIET_RANGES_SESSION_SHARE)
+        if seconds < QUIET_RANGES_MIN_SECONDS:
+            return None
+        command = {"audioPath": str(Path(path).resolve()), "deadlineMs": int((seconds - 5) * 1000)}
+        try:
+            result = await self._run([self._bun, str(Path(__file__).resolve().parents[2] / "src/quiet-ranges-cli.ts")],
+                input_bytes=json.dumps(command, separators=(",", ":")).encode(), env=_environment(),
+                timeout_seconds=seconds, on_start=self.session.on_process_start,
+                cancel_event=self.session.cancel_event, max_file_bytes=16_000_000)
+            self.session.assert_live()
+            if result.returncode:
+                return None
+            value = json.loads(result.stdout)
+            if not isinstance(value, dict) or set(value) != {"quietRanges"} or value["quietRanges"] is None:
+                return None
+            ranges = valid_quiet_ranges(value["quietRanges"])
+            if len(json.dumps(ranges, separators=(",", ":"))) > QUIET_RANGES_WIRE_BYTES:
+                return None
+            return ranges
+        except (MediaProcessError, ValueError, KeyError, TypeError, UnicodeError):
+            self.session.assert_live()
+            return None
 
     async def refresh_optional_probe(self):
         self._replace(await self._loader(self.session))

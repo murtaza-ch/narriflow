@@ -50,6 +50,8 @@ export const contentPackSchema = z.object({
   platformPlaybookVersion: z.string().min(1),
   mode: generationModeSchema.default("clip"),
   autoHook: z.boolean().default(true),
+  removeSilences: z.boolean().default(false),
+  removeFillerWords: z.boolean().default(false),
   specificMoments: z.string().max(500).default(""),
   processingStartSec: z.number().int().min(0).nullable().default(null),
   processingEndSec: z.number().int().min(0).nullable().default(null),

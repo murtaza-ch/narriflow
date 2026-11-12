@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildEditedTimeMap, normalizeDeletedRanges, type ClipWindow } from "./edit-ranges";
-import { detectSilenceRanges } from "./silence-detection";
+import { detectSilenceRanges, SILENCE_LEAD_IN_EXTRA_SEC } from "./silence-detection";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
 function word(startSec: number, endSec: number, text = "w"): TranscriptWord {
@@ -47,24 +47,26 @@ describe("detectSilenceRanges", () => {
     expect(shortResult.some((r) => r.startSec >= 6 && r.endSec <= 6.9)).toBe(false);
   });
 
-  test("padding shrinks an interior gap on both sides", () => {
+  test("padding shrinks an interior gap, keeping more before speech resumes", () => {
     const window: ClipWindow = { startSec: 0, endSec: 20 };
     const utterances = [
       utterance(0, 5, 6, [word(5, 6)]),
       utterance(1, 8, 9, [word(8, 9)]),
     ];
-    // Gap [6, 8) is 2s, well above the 1.0 default. Padded by 0.15 on each
-    // side (both edges border real coverage) -> [6.15, 7.85].
+    // Gap [6, 8) is 2s, well above the 1.0 default. 0.15 kept after speech,
+    // 0.15 + 0.1 lead-in kept before the next word -> [6.15, 7.75].
+    expect(SILENCE_LEAD_IN_EXTRA_SEC).toBe(0.1);
     const result = detectSilenceRanges(utterances, window, { padSec: 0.15 });
-    expect(result).toContainEqual({ startSec: 6.15, endSec: 7.85 });
+    expect(result).toContainEqual({ startSec: 6.15, endSec: 7.75 });
   });
 
   test("leading and trailing edges are included but padded only on the interior side", () => {
     const window: ClipWindow = { startSec: 0, endSec: 20 };
     const utterances = [utterance(0, 5, 15, [word(5, 15)])];
     const result = detectSilenceRanges(utterances, window, { padSec: 0.15, minSilenceSec: 1 });
-    // Leading gap [0,5): only the right (speech-facing) edge is padded.
-    expect(result).toContainEqual({ startSec: 0, endSec: 4.85 });
+    // Leading gap [0,5): only the right (speech-facing) edge is padded,
+    // with the lead-in margin.
+    expect(result).toContainEqual({ startSec: 0, endSec: 4.75 });
     // Trailing gap [15,20): only the left (speech-facing) edge is padded.
     expect(result).toContainEqual({ startSec: 15.15, endSec: 20 });
   });
@@ -115,23 +117,54 @@ describe("detectSilenceRanges", () => {
     expect(result.some((r) => r.startSec < 2 && r.endSec > 2 && r.startSec < 3)).toBe(false);
   });
 
-  test("words with zero/absent timing fall back to utterance-level coverage", () => {
+  test("a single-instant word protects its instant, not its whole utterance", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 20 };
+    // Scribe emits a few words timed as one instant ("I"@974.524-974.524 in
+    // a real interview). The pauses around it are still pauses.
+    const utterances = [
+      utterance(0, 0, 1, [word(0, 1)]),
+      utterance(1, 2, 12, [word(2, 3), word(6, 6), word(11, 12)]),
+    ];
+    const result = detectSilenceRanges(utterances, window, { padSec: 0, minSilenceSec: 1 });
+    expect(result).toContainEqual({ startSec: 3, endSec: 6 });
+    expect(result).toContainEqual({ startSec: 6.01, endSec: 11 });
+    expect(result.some((r) => r.startSec < 6.01 && r.endSec > 6)).toBe(false);
+  });
+
+  test("an utterance with untimed words is protected whole", () => {
     const window: ClipWindow = { startSec: 0, endSec: 20 };
     const utterances = [
       utterance(0, 0, 1, [word(0, 1)]),
-      // Zero-duration word timing (endSec === startSec): the whole
-      // utterance span [5, 8] must be treated as speech, so no cut is
-      // proposed anywhere inside it even though the "word" itself claims a
-      // single instant.
-      utterance(1, 5, 8, [word(6, 6)]),
+      utterance(1, 5, 8, [word(6, Number.NaN)]),
     ];
     const result = detectSilenceRanges(utterances, window, { padSec: 0, minSilenceSec: 1 });
-    for (const range of result) {
-      const overlapsUtterance1 = range.startSec < 8 && range.endSec > 5;
-      expect(overlapsUtterance1).toBe(false);
-    }
-    // The real gap [1, 5) on either side of it is still detected normally.
+    expect(result.some((r) => r.startSec < 8 && r.endSec > 5)).toBe(false);
     expect(result).toContainEqual({ startSec: 1, endSec: 5 });
+  });
+
+  test("quietRanges keeps a cut only where the audio is quiet", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 20 };
+    const utterances = [
+      utterance(0, 0, 1, [word(0, 1)]),
+      utterance(1, 6, 7, [word(6, 7)]),
+    ];
+    // Transcript gap [1, 6) -> padded [1.15, 5.75]. Music fills 2.5-4.0; the
+    // audio is quiet elsewhere, plus a 0.2 s quiet blip that is too short.
+    const quietRanges = [
+      { startSec: 0.9, endSec: 2.5 },
+      { startSec: 4.0, endSec: 4.2 },
+      { startSec: 4.6, endSec: 6.2 },
+    ];
+    expect(detectSilenceRanges(utterances, window, { quietRanges })).toEqual([
+      { startSec: 1.15, endSec: 2.5 },
+      { startSec: 4.6, endSec: 5.75 },
+    ]);
+  });
+
+  test("an empty quietRanges means measured loud: nothing is cut", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 20 };
+    const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 6, 7, [word(6, 7)])];
+    expect(detectSilenceRanges(utterances, window, { quietRanges: [] })).toEqual([]);
   });
 
   test("rounding two candidates onto the same instant merges them via normalizeDeletedRanges", () => {
@@ -159,17 +192,17 @@ describe("detectSilenceRanges", () => {
       minSilenceSec: 1,
       existingDeleted: manual,
     });
-    // Interior gap [11.0, 14.0) padded -> [11.15, 13.85]; trailing gap
+    // Interior gap [11.0, 14.0) padded -> [11.15, 13.75]; trailing gap
     // [14.9, 16) padded on its speech-facing side only -> [15.05, 16].
     expect(detected).toEqual([
-      { startSec: 11.15, endSec: 13.85 },
+      { startSec: 11.15, endSec: 13.75 },
       { startSec: 15.05, endSec: 16 },
     ]);
 
     const union = normalizeDeletedRanges([...detected, ...manual], window);
     const map = buildEditedTimeMap(union, window);
-    // Window duration 6s, minus detected (2.7 + 0.95) minus manual (0.1).
-    expect(map.editedDurationSec).toBeCloseTo(6 - 2.7 - 0.95 - 0.1, 5);
+    // Window duration 6s, minus detected (2.6 + 0.95) minus manual (0.1).
+    expect(map.editedDurationSec).toBeCloseTo(6 - 2.6 - 0.95 - 0.1, 5);
   });
 
   test("no utterances: the whole window is one unpadded gap candidate", () => {

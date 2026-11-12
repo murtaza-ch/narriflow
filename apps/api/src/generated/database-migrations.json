@@ -164,5 +164,6 @@
   "20261101060000_execution_native_restore",
   "20261104000000_utc_session_independent_time",
   "20261105000000_production_readiness",
-  "20261106000000_render_admission"
+  "20261106000000_render_admission",
+  "20261112000000_clip_cleanup"
 ]

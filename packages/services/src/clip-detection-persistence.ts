@@ -1,10 +1,12 @@
 import { Prisma } from "@prisma/client";
 import { BRAND_DEFAULT_CAPTION_PRESET_ID, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, brandProfileSnapshotSchema, captionPresetSchema, captionedVideoFramingEdits,
-  clipSourceEdgeSec, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema,
-  type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
+  clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema,
+  type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 
-export interface DetectedClipSeed { captionPreset: CaptionPreset; studioEdits: StudioEdits; sourceDurationSec: number | null; wholeSource: boolean }
+/** Cleanup a generation asked for, with what it needs per clip. */
+export interface DetectedClipCleanup { removeSilences: boolean; removeFillerWords: boolean; quietRanges: EncodedQuietRanges | null; languageCode: string | null }
+export interface DetectedClipSeed { captionPreset: CaptionPreset; studioEdits: StudioEdits; sourceDurationSec: number | null; wholeSource: boolean; cleanup: DetectedClipCleanup }
 export interface DetectedClip {
   startSec: number;
   endSec: number;
@@ -81,7 +83,7 @@ export function runDefaultCaptionPreset(brandSnapshot: unknown, captionPresetId:
 }
 
 export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brandProfileSnapshot: unknown; sourceDurationSeconds: number | null; sourceProbe?: unknown } | null,
-  contentPack?: ContentPack | null): DetectedClipSeed {
+  contentPack: ContentPack | null, source: { quietRanges: unknown; languageCode: string | null }): DetectedClipSeed {
     const resolvedCaptionPreset = runDefaultCaptionPreset(
       project?.brandSnapshot,
       contentPack?.captionPreset,
@@ -96,12 +98,18 @@ export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brand
       project?.brandProfileSnapshot,
     );
 
-    return { captionPreset: resolvedCaptionPreset, studioEdits, sourceDurationSec: project ? clipSourceEdgeSec(project) : null, wholeSource };
+    // Stored quiet ranges that fail the schema count as not measured.
+    const quietRanges = encodedQuietRangesSchema.safeParse(source.quietRanges);
+    const cleanup = { removeSilences: contentPack?.removeSilences ?? false, removeFillerWords: contentPack?.removeFillerWords ?? false,
+      quietRanges: quietRanges.success ? quietRanges.data : null, languageCode: source.languageCode };
+    return { captionPreset: resolvedCaptionPreset, studioEdits, sourceDurationSec: project ? clipSourceEdgeSec(project) : null, wholeSource, cleanup };
 }
 
 /** One canonical Editor Document writer is shared by worker and durable selection. */
 export function buildDetectedClipRows(input: { projectId: string; workflowRunId: string; clips: DetectedClip[]; llmMeta: LlmMeta; seed: DetectedClipSeed }) {
   const { projectId, workflowRunId, clips, llmMeta, seed } = input;
+  const { cleanup } = seed;
+  const quietRanges = cleanup.quietRanges ? decodeQuietRanges(cleanup.quietRanges) : null;
     return clips.map((clip, i) => {
 		const editorDocument = encodeClipEditorDocumentForStorage(
 			{
@@ -112,7 +120,8 @@ export function buildDetectedClipRows(input: { projectId: string; workflowRunId:
           transcriptSlice: clip.transcriptSlice,
           studioEdits: seed.studioEdits,
 				brollUrl: null,
-				deletedRanges: [],
+				deletedRanges: detectClipCleanupRanges(clip.transcriptSlice, { startSec: clip.startSec, endSec: clip.endSec },
+					{ removeSilences: cleanup.removeSilences, removeFillerWords: cleanup.removeFillerWords, quietRanges, languageCode: cleanup.languageCode }),
 				sceneBlocks: [],
 				censorSegments: [],
 				mediaMotions: [],

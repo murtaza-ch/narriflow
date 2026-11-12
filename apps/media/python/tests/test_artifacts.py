@@ -196,6 +196,49 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(artifact['sourceAudio']['sourceAudioId'],source_audio_id)
         self.assertEqual(artifact['bindingHash'],'1'*64)
 
+    async def publish_source_audio_with(self, quiet_ranges):
+        output={'artifactId':str(uuid4()),'role':'source_audio','bindingHash':'1'*64,'maxBytes':10,
+            'contentType':'audio/wav','contentTypes':['audio/wav']}
+        session,calls,stored,storage=self.session(output)
+        source_audio_id,project_id=str(uuid4()),str(uuid4())
+        def facts(completed):
+            value={'sourceAudio':{'sourceAudioId':source_audio_id,'projectId':project_id,'sourceRevision':1,
+                'mediaIdentity':{'provider':'youtube','mediaId':'_123456789-'},'audioTrack':{'id':'140','language':None,'codec':'pcm_s16le','sampleRate':16000,'channels':1},
+                'object':{'key':completed.key,'etag':completed.etag,'byteLength':completed.byte_length,'sha256':completed.sha256},
+                'durationSeconds':1.0,'wholeSource':True,'audioStartTimeSec':0.0,'probeVersion':'normalized-probe-v1','toolchainFingerprint':'2'*64}}
+            if quiet_ranges is not None: value['quietRanges']=quiet_ranges
+            return value
+        with session,tempfile.TemporaryDirectory() as directory:
+            artifacts=AssignedArtifacts(session,await load_work_package(session))
+            path=Path(directory)/'source.wav';path.write_bytes(b'hello')
+            await artifacts.upload(output['artifactId'],path,content_type='audio/wav',byte_length=5,
+                sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage,facts_builder=facts)
+        return calls[-1][1]['artifact']
+
+    async def test_source_audio_quiet_ranges_ride_beside_the_binding(self):
+        artifact=await self.publish_source_audio_with([150,200,0,40])
+        self.assertEqual(artifact['quietRanges'],[150,200,0,40])
+        self.assertNotIn('quietRanges',artifact['sourceAudio'])
+        artifact=await self.publish_source_audio_with([])
+        self.assertEqual(artifact['quietRanges'],[])
+
+    async def test_malformed_quiet_ranges_are_refused(self):
+        for bad in ([150],[1,2,3],[-1,5],[1.5,2],[True,2],['1',2],{'a':1},'150',[8_640_001,1],[1]*16_002):
+            with self.subTest(bad=bad),self.assertRaisesRegex(ExecutionControlError,'execution_artifact_facts_invalid'):
+                await self.publish_source_audio_with(bad)
+
+    async def test_quiet_ranges_belong_to_source_audio_only(self):
+        output={'artifactId':str(uuid4()),'role':'render_variant','bindingHash':'1'*64,'maxBytes':10,
+            'contentType':'audio/wav','contentTypes':['audio/wav']}
+        session,calls,stored,storage=self.session(output)
+        facts=lambda completed:{'renderVariant':{'renderId':str(uuid4()),'durationSec':1.0},'quietRanges':[150,200]}
+        with session,tempfile.TemporaryDirectory() as directory:
+            artifacts=AssignedArtifacts(session,await load_work_package(session))
+            path=Path(directory)/'source.wav';path.write_bytes(b'hello')
+            with self.assertRaisesRegex(ExecutionControlError,'execution_artifact_facts_invalid'):
+                await artifacts.upload(output['artifactId'],path,content_type='audio/wav',byte_length=5,
+                    sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage,facts_builder=facts)
+
 
 if __name__=='__main__':
     unittest.main()

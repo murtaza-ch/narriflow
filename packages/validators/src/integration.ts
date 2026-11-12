@@ -24,6 +24,8 @@ export const generationSettingsSchema = z.strictObject({
   captionPreset: captionPresetIdSchema.default(BRAND_DEFAULT_CAPTION_PRESET_ID),
   mode: generationModeSchema.default("clip"),
   autoHook: z.boolean().default(true),
+  removeSilences: z.boolean().default(false).describe("Cut pauses where the audio is quiet from each clip"),
+  removeFillerWords: z.boolean().default(false).describe("Cut filler words such as um and uh from each clip (English transcripts)"),
   specificMoments: z.string().max(500).default(""),
   processingStartSec: z.number().int().min(0).nullable().default(null),
   processingEndSec: z.number().int().min(0).nullable().default(null),
@@ -38,7 +40,8 @@ export function buildGenerationContentPack(input: z.input<typeof generationSetti
     platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
     toneConstraints: ["concise", "conversational"],
     captionPreset: settings.captionPreset, platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
-    mode: settings.mode, autoHook: settings.autoHook, specificMoments: settings.specificMoments,
+    mode: settings.mode, autoHook: settings.autoHook, removeSilences: settings.removeSilences, removeFillerWords: settings.removeFillerWords,
+    specificMoments: settings.specificMoments,
     processingStartSec: settings.processingStartSec, processingEndSec: settings.processingEndSec,
     clipLengthPreset: settings.clipLengthPreset, defaultAspectRatio: settings.defaultAspectRatio,
   });

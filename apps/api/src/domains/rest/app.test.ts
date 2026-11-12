@@ -851,7 +851,7 @@ describe("REST v1 Recipes", () => {
     const listed = await (await call("/recipes")).json();
     expect(listed).toEqual({ recipes: [{
       recipeId: RECIPE_ID, name: "Weekly show", revision: 3, brandProfileId: BRAND_ID, languageCode: "en", finishing: null, updatedAt: "2026-10-02T00:00:00.000Z",
-      generation: { clipCountTarget: 6, clipLengthPreset: "auto", defaultAspectRatio: "1:1", captionPreset: "brand_default", mode: "clip", autoHook: true, specificMoments: "", processingStartSec: null, processingEndSec: null },
+      generation: { clipCountTarget: 6, clipLengthPreset: "auto", defaultAspectRatio: "1:1", captionPreset: "brand_default", mode: "clip", autoHook: true, removeSilences: false, removeFillerWords: false, specificMoments: "", processingStartSec: null, processingEndSec: null },
     }] });
     expect(await (await call(`/recipes/${RECIPE_ID}`)).json()).toEqual({ recipe: listed.recipes[0] });
   }));

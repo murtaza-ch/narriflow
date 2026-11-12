@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, chakra, Field, Flex, Stack, Text } from "@chakra-ui/react";
-import { Info, Zap } from "lucide-react";
+import { AudioLines, Info, MessageSquareOff, Zap } from "lucide-react";
 import { Switch } from "@narriflow/ui/components/switch";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import type {
@@ -26,6 +26,10 @@ export interface ClipStyleSettingsProps {
   setCaptionPreset: (value: CaptionPresetId) => void;
   autoHook: boolean;
   setAutoHook: (value: boolean) => void;
+  removeSilences: boolean;
+  setRemoveSilences: (value: boolean) => void;
+  removeFillerWords: boolean;
+  setRemoveFillerWords: (value: boolean) => void;
   specificMoments: string;
   setSpecificMoments: (value: string) => void;
   platformTargets: ClipPlatformTarget[];
@@ -46,6 +50,10 @@ export function ClipStyleSettings({
   setCaptionPreset,
   autoHook,
   setAutoHook,
+  removeSilences,
+  setRemoveSilences,
+  removeFillerWords,
+  setRemoveFillerWords,
   specificMoments,
   setSpecificMoments,
   platformTargets,
@@ -73,26 +81,31 @@ export function ClipStyleSettings({
       />
       <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
       {mode === "clip" ? (
-        // The same row as the import card's "Get AI clips": icon, what it does, a switch.
-        <Flex align="center" gap="2.5" minH="52px" px="3" py="2" bg="bg.soft" borderRadius="l2">
-          <Zap size={16} strokeWidth={1.75} aria-hidden="true" />
-          <Box flex="1" minW="0">
-            <Text id="auto-hook-label" fontSize="14px">
-              Start with a hook
-            </Text>
-            <Text fontSize="12px" color="fg.muted">
-              Prefer clips that open on an attention-grabbing line
-            </Text>
-          </Box>
-          <Switch
-            checked={autoHook}
-            onCheckedChange={setAutoHook}
-            inputProps={{
-              name: "autoHook",
-              "aria-labelledby": "auto-hook-label",
-            }}
-          />
-        </Flex>
+        <Stack gap="2">
+          {[
+            { id: "auto-hook-label", name: "autoHook", icon: <Zap size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Start with a hook", hint: "Prefer clips that open on an attention-grabbing line", checked: autoHook, onChange: setAutoHook },
+            { id: "remove-silences-label", name: "removeSilences", icon: <AudioLines size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove silences", hint: "Cuts pauses where the audio is quiet", checked: removeSilences, onChange: setRemoveSilences },
+            { id: "remove-filler-words-label", name: "removeFillerWords", icon: <MessageSquareOff size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove filler words", hint: "Cuts um and uh. English only", checked: removeFillerWords, onChange: setRemoveFillerWords },
+          ].map((row) => (
+            // The same row as the import card's "Get AI clips": icon, what it does, a switch.
+            <Flex key={row.name} align="center" gap="2.5" minH="52px" px="3" py="2" bg="bg.soft" borderRadius="l2">
+              {row.icon}
+              <Box flex="1" minW="0">
+                <Text id={row.id} fontSize="14px">
+                  {row.title}
+                </Text>
+                <Text fontSize="12px" color="fg.muted">
+                  {row.hint}
+                </Text>
+              </Box>
+              <Switch
+                checked={row.checked}
+                onCheckedChange={row.onChange}
+                inputProps={{ name: row.name, "aria-labelledby": row.id }}
+              />
+            </Flex>
+          ))}
+        </Stack>
       ) : (
         <Flex
           gap="2"

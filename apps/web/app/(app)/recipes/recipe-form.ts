@@ -31,6 +31,8 @@ export interface RecipeDraft {
   clipLengthPreset: ClipLengthPreset;
   defaultAspectRatio: ContentPack["defaultAspectRatio"];
   autoHook: boolean;
+  removeSilences: boolean;
+  removeFillerWords: boolean;
   finishing: FinishingDraft;
 }
 
@@ -43,6 +45,8 @@ export function emptyRecipeDraft(defaultBrandProfileId: string | null): RecipeDr
     clipLengthPreset: "auto",
     defaultAspectRatio: "9:16",
     autoHook: true,
+    removeSilences: false,
+    removeFillerWords: false,
     finishing: EMPTY_FINISHING_DRAFT,
   };
 }
@@ -56,6 +60,8 @@ export function draftFromRecipe(recipe: RecipeSnapshot): RecipeDraft {
     clipLengthPreset: recipe.contentPack.clipLengthPreset,
     defaultAspectRatio: recipe.contentPack.defaultAspectRatio,
     autoHook: recipe.contentPack.autoHook,
+    removeSilences: recipe.contentPack.removeSilences,
+    removeFillerWords: recipe.contentPack.removeFillerWords,
     finishing: draftFromFinishing(recipe.finishing),
   };
 }
@@ -82,6 +88,8 @@ export function recipeFromDraft(
     clipLengthPreset: draft.clipLengthPreset,
     defaultAspectRatio: draft.defaultAspectRatio,
     autoHook: draft.autoHook,
+    removeSilences: draft.removeSilences,
+    removeFillerWords: draft.removeFillerWords,
   });
   if (!contentPack.success) return { error: "These generation settings are not valid together." };
   const input = recipeInputSchema.safeParse({

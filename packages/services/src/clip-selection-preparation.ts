@@ -42,7 +42,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
       planning: { projectTitle: state.project.title, contentPack: pack, sourceDurationSec: (state.project.sourceDurationSeconds ?? transcript.durationSeconds) || null,
         sourceProbeDurationSec: probe.success ? probe.data.durationSec : null, utterances: transcriptUtteranceSchema.array().parse(transcript.utterancesJson ?? []), fullText: transcript.text ?? "",
         speakerCount: transcript.speakerCount, sourceLanguageCode: transcript.languageCode, audienceDataLine },
-      editor: prepareDetectedClipSeed(state.project, pack), provider: config.provider, systemPrompt: SYSTEM_PROMPT, responseSchemaHash: await responseSchemaHash };
+      editor: prepareDetectedClipSeed(state.project, pack, { quietRanges: transcript.sourceAudio?.quietRanges ?? null, languageCode: transcript.languageCode }), provider: config.provider, systemPrompt: SYSTEM_PROMPT, responseSchemaHash: await responseSchemaHash };
   }
   async function register(tx: Tx, rows: ClipSelectionWindow[]): Promise<ClipSelectionPreparation> {
     if (!rows.length || rows.length !== rows[0]!.windowCount || rows.some((row, index) => row.windowIndex !== index || row.selectionHash !== rows[0]!.selectionHash || row.inputStorageKey !== rows[0]!.inputStorageKey)) throw new Error("Selection membership is incomplete");

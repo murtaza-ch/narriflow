@@ -13,12 +13,13 @@ from uuid import uuid4
 from narriflow_media.control import ExecutionControlError
 from narriflow_media.fetch import FileSnapshot, VerifiedSourceFile
 from narriflow_media.multipart import CompletedObject
+from narriflow_media.process import MediaProcessError
 from narriflow_media.source_sink import ScopedSourceSink
 from narriflow_media.transfer import WorkPackage, _wire
 
 
 class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
-    def fixture(self, directory, *, seeded=False, probe_fails=False, provider="youtube"):
+    def fixture(self, directory, *, seeded=False, probe_fails=False, provider="youtube", quiet="ok"):
         trace, state = [], {}
         session = SimpleNamespace(fence={"reference": {"inputHash": "a"*64}, "attemptToken": str(uuid4()), "owner": str(uuid4())},
             assert_live=lambda: None, cancel_event=Event(), remaining_seconds=120, on_process_start=lambda pid: trace.append("start"))
@@ -56,12 +57,24 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
                 role = self.roles[artifact_id]; trace.append(role)
                 if role in {"source_audio", "source_video"}:
                     facts = options["facts_builder"](CompletedObject(f"assigned/{role}", '"sealed"', 5, manifest["sha256"]))
-                    if role == "source_audio": state["audio"] = facts["sourceAudio"]
+                    if role == "source_audio": state["audio"] = facts["sourceAudio"]; state["audioFacts"] = facts
                     else: state["video"] = facts["sourceVideo"]
             async def commit_completed(self,artifact_id,completed,**options):
                 trace.append('pin_commit');state['video']=options['facts_builder'](completed)['sourceVideo']
         async def loader(_session): trace.append("refresh"); return package(True)
         async def run(argv, **options):
+            if argv[1].endswith("quiet-ranges-cli.ts"):
+                trace.append("quiet_process")
+                request = json.loads(options["input_bytes"])
+                self.assertEqual(set(request), {"audioPath", "deadlineMs"})
+                self.assertEqual(request["audioPath"], str(audio.resolve()))
+                self.assertNotIn("DATABASE_URL", options["env"])
+                if quiet == "fail": return SimpleNamespace(returncode=1, stdout=b"")
+                if quiet == "bad_json": return SimpleNamespace(returncode=0, stdout=b"not json")
+                if quiet == "malformed": return SimpleNamespace(returncode=0, stdout=b'{"quietRanges":[150,200,7]}')
+                if quiet == "null": return SimpleNamespace(returncode=0, stdout=b'{"quietRanges":null}')
+                if quiet == "raises": raise MediaProcessError("media_process_timeout")
+                return SimpleNamespace(returncode=0, stdout=b'{"quietRanges":[150,200,0,40]}')
             trace.append("probe_process")
             self.assertNotIn("DATABASE_URL", options["env"])
             self.assertNotIn("EXECUTOR_CONTROL_KEYS_JSON", options["env"])
@@ -81,7 +94,7 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             sink,audio,video,trace,state=self.fixture(directory,provider="rss")
             await sink.audio_ready(audio);await sink.video_ready(video,audio)
-            self.assertEqual(trace,["source_audio","refresh","probe_process","probe","source_video"])
+            self.assertEqual(trace,["quiet_process","source_audio","refresh","probe_process","probe","source_video"])
             self.assertEqual(state['video']['mediaIdentity'],{'provider':'rss','mediaId':'episode1'})
             self.assertEqual(state['video']['probe']['audio'],{'sampleRate':48000,'channels':2})
             self.assertNotIn('sourceProbe',state['video']['probe'])
@@ -98,7 +111,7 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
             sink, audio, video, trace, state = self.fixture(directory)
             await sink.audio_ready(audio)
             await sink.video_ready(video, audio)
-            self.assertEqual(trace, ["source_audio", "refresh", "probe_process", "probe", "source_video"])
+            self.assertEqual(trace, ["quiet_process", "source_audio", "refresh", "probe_process", "probe", "source_video"])
             self.assertEqual(state["audio"]["object"]["key"], "assigned/source_audio")
             self.assertEqual(state["video"]["audioTrack"], state["audio"]["audioTrack"])
 
@@ -114,7 +127,41 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
             sink, audio, video, trace, state = self.fixture(directory, probe_fails=True)
             await sink.audio_ready(audio)
             await sink.video_ready(video, audio)
-            self.assertEqual(trace, ["source_audio", "refresh", "probe_process", "source_video"])
+            self.assertEqual(trace, ["quiet_process", "source_audio", "refresh", "probe_process", "source_video"])
+
+    async def test_measured_quiet_ranges_ride_beside_the_unchanged_audio_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink, audio, video, trace, state = self.fixture(directory)
+            await sink.audio_ready(audio)
+            self.assertEqual(set(state["audioFacts"]), {"sourceAudio", "quietRanges"})
+            self.assertEqual(state["audioFacts"]["quietRanges"], [150, 200, 0, 40])
+            self.assertNotIn("quietRanges", state["audio"])
+
+    async def test_quiet_range_measurement_failures_publish_the_audio_without_ranges(self):
+        for quiet in ("fail", "bad_json", "malformed", "null", "raises"):
+            with self.subTest(quiet=quiet), tempfile.TemporaryDirectory() as directory:
+                sink, audio, video, trace, state = self.fixture(directory, quiet=quiet)
+                await sink.audio_ready(audio)
+                self.assertEqual(trace[:3], ["quiet_process", "source_audio", "refresh"])
+                self.assertEqual(set(state["audioFacts"]), {"sourceAudio"})
+
+    async def test_quiet_range_measurement_is_skipped_when_the_session_has_no_time_for_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink, audio, video, trace, state = self.fixture(directory)
+            sink.session.remaining_seconds = 9
+            await sink.audio_ready(audio)
+            self.assertEqual(trace[0], "source_audio")
+            self.assertEqual(set(state["audioFacts"]), {"sourceAudio"})
+
+    async def test_session_loss_during_measurement_still_stops_the_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink, audio, video, trace, state = self.fixture(directory, quiet="fail")
+            def lost():
+                if "quiet_process" in trace: raise ExecutionControlError("execution_authority_lost")
+            sink.session.assert_live = lost
+            with self.assertRaisesRegex(ExecutionControlError, "execution_authority_lost"):
+                await sink.audio_ready(audio)
+            self.assertNotIn("source_audio", trace)
 
     async def test_wrong_upstream_identity_is_refused_before_any_upload(self):
         with tempfile.TemporaryDirectory() as directory:

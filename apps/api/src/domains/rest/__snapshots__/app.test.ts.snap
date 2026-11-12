@@ -2128,6 +2128,16 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
               "null",
             ],
           },
+          "removeFillerWords": {
+            "default": false,
+            "description": "Cut filler words such as um and uh from each clip (English transcripts)",
+            "type": "boolean",
+          },
+          "removeSilences": {
+            "default": false,
+            "description": "Cut pauses where the audio is quiet from each clip",
+            "type": "boolean",
+          },
           "specificMoments": {
             "default": "",
             "maxLength": 500,
@@ -3109,6 +3119,16 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
                   "integer",
                   "null",
                 ],
+              },
+              "removeFillerWords": {
+                "default": false,
+                "description": "Cut filler words such as um and uh from each clip (English transcripts)",
+                "type": "boolean",
+              },
+              "removeSilences": {
+                "default": false,
+                "description": "Cut pauses where the audio is quiet from each clip",
+                "type": "boolean",
               },
               "specificMoments": {
                 "default": "",

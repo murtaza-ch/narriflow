@@ -563,6 +563,9 @@ model ContentPack {
   platformPlaybookVersion String
   mode                    String       @default("clip")
   autoHook                Boolean      @default(true)
+  /// Clip cleanup seeded into each new clip's deletedRanges.
+  removeSilences          Boolean      @default(false)
+  removeFillerWords       Boolean      @default(false)
   specificMoments         String       @default("")
   processingStartSec      Int?
   processingEndSec        Int?
@@ -3628,6 +3631,10 @@ model SourceAudio {
   checksumSha256       String    @db.Char(64)
   durationSeconds      Float
   audioStartTimeSec    Float
+  /// Quiet intervals of this audio as whole-centisecond [gap, length, ...]
+  /// run lengths (encodedQuietRangesSchema). Null when not measured, which
+  /// turns silence removal off for clips from this source.
+  quietRanges          Json?
   probeVersion         String    @db.VarChar(160)
   toolchainFingerprint String    @db.Char(64)
   createdAt            DateTime  @default(now())

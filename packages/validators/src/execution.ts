@@ -3,6 +3,7 @@ import { publicationNativeCommandSchema, publicationNativeReplySchema } from "./
 import { clipRenderCaptionDiagnosticsSchema } from "./clip";
 import { mediaFactsSchema, sourceProbeSchema } from "./source-probe";
 import { renderGroupOutcomeSchema } from "./render-execution";
+import { encodedQuietRangesSchema } from "./clip-cleanup";
 
 export const EXECUTION_ENVELOPE_MAX_BYTES = 64 * 1024;
 export const EXECUTION_COMMAND_MAX_BYTES = 64 * 1024;
@@ -98,6 +99,8 @@ export const executionArtifactSchema = z.strictObject({
   etag: z.string().min(1).max(160).regex(/^[\x21-\x7e]+$/),
   bindingHash: sha256,
   sourceAudio: z.lazy(() => sourceAudioBindingSchema).optional(),
+  /** Measured quiet audio beside the (hashed) binding; absent when not measured. */
+  quietRanges: encodedQuietRangesSchema.optional(),
   sourceVideo: z.lazy(() => sourceVideoBindingSchema).optional(),
   renderVariant: z.strictObject({ renderId: z.string().uuid(), durationSec: z.number().finite().positive(),
     usedStockIds: z.array(z.number().int().positive().safe()).max(6).refine(ids => new Set(ids).size === ids.length).optional(),
@@ -106,6 +109,7 @@ export const executionArtifactSchema = z.strictObject({
   for (const [field, role] of [["sourceAudio", "source_audio"], ["sourceVideo", "source_video"], ["renderVariant", "render_variant"]] as const) {
     if (value[field] !== undefined && value.role !== role) context.addIssue({ code: "custom", path: [field], message: "Artifact evidence must match its assigned role" });
   }
+  if (value.quietRanges !== undefined && value.role !== "source_audio") context.addIssue({ code: "custom", path: ["quietRanges"], message: "Quiet ranges belong to Source Audio" });
   if (value.role === "source_audio" && !value.sourceAudio) context.addIssue({ code: "custom", path: ["sourceAudio"], message: "Whole-source audio evidence is required" });
   if (value.role === "source_video" && !value.sourceVideo) context.addIssue({ code: "custom", path: ["sourceVideo"], message: "Whole-source video evidence is required" });
 });

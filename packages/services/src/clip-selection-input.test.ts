@@ -6,7 +6,8 @@ const parent = { id: "00000000-0000-4000-8000-000000000001", projectId: "0000000
 const capsule = () => ({ version: 1 as const, parent, transcript: { id: "00000000-0000-4000-8000-000000000003", generation: 1, attemptId: null, contentHash: "b".repeat(64), sourceRevision: 1, sourceAudioId: null, sourceAudioBindingHash: null },
   planning: { projectTitle: "Frozen title", contentPack: contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 45, platformPlaybookVersion: "platform-playbook-v1" }),
     sourceDurationSec: 3600, sourceProbeDurationSec: 3600, utterances: [], fullText: "private transcript", speakerCount: 1, sourceLanguageCode: "en", audienceDataLine: "Frozen audience data" },
-  editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 3600, wholeSource: false },
+  editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 3600, wholeSource: false,
+    cleanup: { removeSilences: false, removeFillerWords: false, quietRanges: null, languageCode: "en" } },
   provider: { model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "Frozen system prompt", responseSchemaHash: "c".repeat(64) });
 test("private selection input canonical bytes bind the frozen Transcript, settings, guidance and editor seed", async () => {
   const input = await encodeClipSelectionInput(capsule());

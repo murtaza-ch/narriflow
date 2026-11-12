@@ -84,5 +84,14 @@ describe("Source Audio evidence", () => {
     expect(executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact }).success).toBe(false);
     expect(executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact: { ...artifact, sourceAudio: binding } }).success).toBe(true);
     expect(executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact: { ...artifact, role: "probe", sourceAudio: binding } }).success).toBe(false);
+    const withAudio = { ...artifact, sourceAudio: binding };
+    const commits = (value: unknown) => executionCommandSchema.safeParse({ action: "commit-artifact", fence, artifact: value }).success;
+    expect(commits({ ...withAudio, quietRanges: [150, 200, 0, 40] })).toBe(true);
+    expect(commits({ ...withAudio, quietRanges: [] })).toBe(true);
+    for (const quietRanges of [[150], [-1, 5], [1.5, 2], ["1", 2], [8_640_001, 1], new Array(16_002).fill(1), null, "150"]) {
+      expect(commits({ ...withAudio, quietRanges })).toBe(false);
+    }
+    expect(commits({ ...artifact, role: "probe", quietRanges: [150, 200] })).toBe(false);
+    expect(commits({ ...artifact, quietRanges: [150, 200] })).toBe(false);
   });
 });

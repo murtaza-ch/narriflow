@@ -38,6 +38,18 @@ class PublishedArtifact:
     render_group: dict[str, Any] | None = None
 
 
+QUIET_RANGES_MAX_VALUE = 8_640_000  # 24 hours in centiseconds
+QUIET_RANGES_MAX_ENTRIES = 16_000
+
+
+def valid_quiet_ranges(value):
+    """Whole-centisecond [gap, length, ...] run lengths of measured quiet audio."""
+    if (not isinstance(value, list) or len(value) % 2 or len(value) > QUIET_RANGES_MAX_ENTRIES
+            or any(type(item) is not int or not 0 <= item <= QUIET_RANGES_MAX_VALUE for item in value)):
+        raise ValueError()
+    return value
+
+
 def _facts(role, builder, completed):
     try:
         value = {} if builder is None else builder(completed)
@@ -48,9 +60,11 @@ def _facts(role, builder, completed):
             raise ValueError()
         value = json.loads(wire)
         field = {'source_audio':'sourceAudio', 'source_video':'sourceVideo', 'render_variant':'renderVariant'}.get(role)
-        _object(value, set(), {field} if field else set())
+        _object(value, set(), ({field} if field else set()) | ({'quietRanges'} if role == 'source_audio' else set()))
         if role in {'source_audio','source_video'} and field not in value:
             raise ValueError()
+        if 'quietRanges' in value:
+            valid_quiet_ranges(value['quietRanges'])
         if field == 'sourceAudio':
             facts = _object(value[field], {'sourceAudioId','projectId','sourceRevision','mediaIdentity','audioTrack','object',
                 'durationSeconds','wholeSource','audioStartTimeSec','probeVersion','toolchainFingerprint'})

@@ -49,6 +49,8 @@ export * from "./publishing-queue";
 export * from "./recipe";
 export * from "./review";
 export * from "./silence-detection";
+export * from "./filler-words";
+export * from "./clip-cleanup";
 export * from "./source-probe";
 export * from "./scene-template";
 export * from "./scene-layouts";

@@ -13,6 +13,7 @@ import {
   USER_ERROR_MESSAGES,
   wholeSourceWindow,
   wholeSourceWindowFault,
+  type EncodedQuietRanges,
   type SourceProbe,
   type WorkflowStageUpdatedEvent,
   SINGLE_PUT_CLEANUP_DELAY_MS,
@@ -55,7 +56,7 @@ export interface IngestExecutionReference {
   attemptToken: string;
 }
 export type IngestArtifactCommit = ExecutorArtifactCommit & (
-  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding } | { role: "probe" }
+  { role: "source_audio"; binding: SourceAudioBinding; quietRanges?: EncodedQuietRanges } | { role: "source_video"; binding: SourceVideoBinding } | { role: "probe" }
 );
 export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
   ref: IngestExecutionReference;
@@ -412,7 +413,9 @@ export class IngestJobLifecycle {
       if (!existing) await tx.sourceAudio.create({ data: { id: binding.sourceAudioId, projectId: ref.projectId, sourceRevision: ref.sourceRevision,
         mediaProvider: binding.mediaIdentity.provider, mediaId: binding.mediaIdentity.mediaId, audioTrack: binding.audioTrack, bindingHash,
         storageKey: binding.object.key, etag: binding.object.etag, byteLength: BigInt(binding.object.byteLength), checksumSha256: binding.object.sha256,
-        durationSeconds: binding.durationSeconds, audioStartTimeSec: binding.audioStartTimeSec, probeVersion: binding.probeVersion, toolchainFingerprint: binding.toolchainFingerprint } });
+        durationSeconds: binding.durationSeconds, audioStartTimeSec: binding.audioStartTimeSec, probeVersion: binding.probeVersion, toolchainFingerprint: binding.toolchainFingerprint,
+        // SQL NULL (not JSON null, which the array check rejects): not measured.
+        quietRanges: artifact.quietRanges ?? Prisma.DbNull } });
       const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "audio_ready");
       // Video can commit first. Only this invocation's sealed evidence is eligible.
       const pending = await tx.executionArtifact.findMany({ where: { attemptToken: context.attemptToken, owner: context.owner, role: "source_video",

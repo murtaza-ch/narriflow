@@ -36,6 +36,8 @@ const OPEN_PAYLOAD = {
       platformPlaybookVersion: "platform-playbook-v1",
       mode: "clip",
       autoHook: true,
+      removeSilences: false,
+      removeFillerWords: false,
       specificMoments: "",
       processingStartSec: null,
       processingEndSec: null,

@@ -24,6 +24,8 @@ export function recipeFormSettings(recipe: Pick<RecipeSnapshot, "languageCode" |
       captionPreset: pack.captionPreset,
       defaultAspectRatio: pack.defaultAspectRatio,
       autoHook: pack.autoHook,
+      removeSilences: pack.removeSilences,
+      removeFillerWords: pack.removeFillerWords,
       specificMoments: pack.specificMoments,
       platformTargets: pack.platformTargets,
       clipCountTarget: pack.clipCountTarget,

@@ -27,7 +27,7 @@ describe("Recipe form", () => {
     const result = recipeFromDraft(draft);
     if ("error" in result) throw new Error(result.error);
     expect(result.input).toMatchObject({ name: "Weekly show", brandProfileId: BRAND_PROFILE_ID, languageCode: null, finishing: null });
-    expect(result.input.contentPack).toMatchObject({ clipCountTarget: 10, defaultAspectRatio: "9:16", clipLengthPreset: "auto", autoHook: true });
+    expect(result.input.contentPack).toMatchObject({ clipCountTarget: 10, defaultAspectRatio: "9:16", clipLengthPreset: "auto", autoHook: true, removeSilences: false, removeFillerWords: false });
   });
 
   test("an edit opens as the saved draft and round-trips to the same settings", () => {
@@ -58,6 +58,15 @@ describe("Recipe form", () => {
     const changed = recipeFromDraft({ ...draftFromRecipe(tuned), clipLengthPreset: "under_30s" }, tuned.contentPack);
     if ("error" in changed) throw new Error(changed.error);
     expect(changed.input.contentPack).toMatchObject({ clipLengthPreset: "under_30s", maxDurationSec: 35, preferredMaxDurationSec: 30 });
+  });
+
+  test("silence and filler-word removal round-trip through the draft", () => {
+    const saved = recipe({ contentPack: buildGenerationContentPack({ removeSilences: true, removeFillerWords: true }) });
+    const opened = draftFromRecipe(saved);
+    expect(opened).toMatchObject({ removeSilences: true, removeFillerWords: true });
+    const result = recipeFromDraft({ ...opened, removeFillerWords: false }, saved.contentPack);
+    if ("error" in result) throw new Error(result.error);
+    expect(result.input.contentPack).toMatchObject({ removeSilences: true, removeFillerWords: false });
   });
 
   test("says what to fix instead of sending a bad Recipe", () => {

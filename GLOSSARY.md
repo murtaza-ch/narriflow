@@ -93,6 +93,14 @@ _Avoid_: PITR safety flag, epoch-only restore, backup permission
 Immutable whole-source audio evidence bound to a Project's source revision, upstream media identity and selected audio track, with verified object identity and exact measured duration. It can become ready before the original video without making that video ready.
 _Avoid_: Audio excerpt, transcription fallback, provider duration
 
+**Quiet Ranges**:
+The intervals where a Source Audio is measured quiet (FFmpeg `silencedetect`, −40 dB for at least 0.3 s), on the same clock as its transcript's words. Measured once when the Source Audio is published; absent when the measurement failed, which turns silence removal off for that source.
+_Avoid_: Silences (transcript gaps are not the same thing), VAD output
+
+**Clip Cleanup**:
+Silence and filler-word removal chosen with a generation's settings. Each new clip starts with these as ordinary cuts in its editor document, so the Studio shows them and they can be undone. A silence is a transcript gap of at least one second, cut only where Quiet Ranges confirm it, so music and laughter between words stay. Filler words are hesitation sounds ("um", "uh") in languages whose list is known.
+_Avoid_: Auto-edit, jump cut
+
 
 **Upload Session**:
 A workspace-owned, durable intake record that binds one immutable browser upload intent to its declared source, frozen brand and generation settings, server-chosen transfer plan, private storage identity, exact-object verification, and exactly-once handoff to a Project and Upload Finalize Ingest Job.

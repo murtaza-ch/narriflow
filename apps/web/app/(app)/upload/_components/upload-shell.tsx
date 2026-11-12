@@ -278,6 +278,8 @@ export function UploadShell({
   const [mode, setMode] = useState<GenerationMode>(initialMode);
   const [clipLength, setClipLength] = useState<ClipLengthPreset>("auto");
   const [autoHook, setAutoHook] = useState(true);
+  const [removeSilences, setRemoveSilences] = useState(false);
+  const [removeFillerWords, setRemoveFillerWords] = useState(false);
   const [specificMoments, setSpecificMoments] = useState("");
   const [captionPreset, setCaptionPreset] = useState<CaptionPresetId>(
     BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -562,6 +564,8 @@ export function UploadShell({
     setClipLength(settings.clip.clipLengthPreset);
     setCaptionPreset(settings.clip.captionPreset);
     setAutoHook(settings.clip.autoHook);
+    setRemoveSilences(settings.clip.removeSilences);
+    setRemoveFillerWords(settings.clip.removeFillerWords);
     setSpecificMoments(settings.clip.specificMoments);
     setPlatformTargets(settings.clip.platformTargets);
     setClipCountTarget(settings.clip.clipCountTarget);
@@ -593,6 +597,8 @@ export function UploadShell({
       clipLengthPreset: clipLength,
       defaultAspectRatio,
       autoHook,
+      removeSilences,
+      removeFillerWords,
       specificMoments,
       processingStartSec: hasCustomWindow ? nextStartSec : null,
       processingEndSec: hasCustomWindow ? nextEndSec : null,
@@ -1267,6 +1273,10 @@ export function UploadShell({
               setCaptionPreset={setCaptionPreset}
               autoHook={autoHook}
               setAutoHook={setAutoHook}
+              removeSilences={removeSilences}
+              setRemoveSilences={setRemoveSilences}
+              removeFillerWords={removeFillerWords}
+              setRemoveFillerWords={setRemoveFillerWords}
               specificMoments={specificMoments}
               setSpecificMoments={setSpecificMoments}
               platformTargets={platformTargets}

@@ -114,7 +114,7 @@ export function createIngestSourceExecution(options: {
       if (reported.role === "source_audio") {
         const binding = sourceAudioBindingSchema.parse(reported.sourceAudio);
         if (acquisition.audioPolicy==="none"||!expected(binding) || binding.sourceAudioId !== assignment.attemptToken) throw new ExecutorControlError("artifact_invalid");
-        return { ...artifact, role: "source_audio", binding };
+        return { ...artifact, role: "source_audio", binding, ...(reported.quietRanges ? { quietRanges: reported.quietRanges } : {}) };
       }
       if (reported.role === "source_video") {
         const binding = sourceVideoBindingSchema.parse(reported.sourceVideo);
