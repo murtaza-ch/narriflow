@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { buildClipCutPlan, deletedRangesSchema, normalizeDeletedRanges, type ClipWindow, type SourceRange } from "./edit-ranges";
-import { detectFillerWordRanges, isFillerWord } from "./filler-words";
+import { buildClipCutPlan, FLOAT_SLACK, MIN_KEPT_SEGMENT_SEC, normalizeDeletedRanges, type ClipWindow, type SourceRange } from "./edit-ranges";
+import { detectFillerWordRanges, removableFillerWords } from "./filler-words";
 import { buildCoverageSpans, detectSilenceRanges, joinSpeechlessSlivers } from "./silence-detection";
 import type { TranscriptUtterance } from "./transcript";
 
@@ -76,7 +76,9 @@ export function detectClipCleanupRanges(
   window: ClipWindow,
   opts: ClipCleanupOptions,
 ): SourceRange[] {
-  const skipFiller = opts.removeFillerWords ? (word: TranscriptUtterance["words"][number]) => isFillerWord(word, opts.languageCode) : undefined;
+  // Exactly the fillers filler removal cuts; a kept filler stays speech.
+  const removable = opts.removeFillerWords ? removableFillerWords(utterances, window, opts.languageCode) : null;
+  const skipFiller = removable ? (word: TranscriptUtterance["words"][number]) => removable.has(word) : undefined;
   const ranges = [
     ...(opts.removeSilences && opts.quietRanges
       ? detectSilenceRanges(utterances, window, {
@@ -90,7 +92,48 @@ export function detectClipCleanupRanges(
   ];
   if (ranges.length === 0) return [];
   const speech = buildCoverageSpans(utterances, window, skipFiller);
-  const normalized = normalizeDeletedRanges(joinSpeechlessSlivers(normalizeDeletedRanges(ranges, window), speech), window);
-  if (!deletedRangesSchema.safeParse(normalized).success || buildClipCutPlan(normalized, window).isEmpty) return [];
+  const joined = joinSpeechlessSlivers(normalizeDeletedRanges(ranges, window), speech);
+  const normalized = normalizeDeletedRanges(capToEditorLimit(keepSpeechRenderable(joined, speech, window)), window);
+  if (normalized.length === 0 || buildClipCutPlan(normalized, window).isEmpty) return [];
   return normalized;
+}
+
+/** The editor holds at most this many cuts per clip (`deletedRangesSchema`). */
+const EDITOR_MAX_CUTS = 500;
+
+/** Past the editor's limit, keeps the longest cuts: most of the time saved,
+ *  never a refused document. */
+function capToEditorLimit(cuts: SourceRange[]): SourceRange[] {
+  if (cuts.length <= EDITOR_MAX_CUTS) return cuts;
+  return [...cuts].sort((a, b) => b.endSec - b.startSec - (a.endSec - a.startSec)).slice(0, EDITOR_MAX_CUTS)
+    .sort((a, b) => a.startSec - b.startSec);
+}
+
+/** The render drops kept pieces shorter than MIN_KEPT_SEGMENT_SEC, which would
+ *  silently delete a word left between two close cuts. Widens every such
+ *  piece that holds speech by pulling its neighbouring cuts back, dropping a
+ *  cut that shrinks to nothing (under a millisecond). Wordless slivers are left for the render to drop. */
+function keepSpeechRenderable(input: SourceRange[], speech: SourceRange[], window: ClipWindow): SourceRange[] {
+  let cuts = input.map((cut) => ({ ...cut }));
+  const target = MIN_KEPT_SEGMENT_SEC + 0.005; // margin over the render's check after millisecond rounding
+  for (let pass = 0; pass < 16; pass += 1) {
+    let changed = false;
+    for (let i = 0; i <= cuts.length; i += 1) {
+      const before = i > 0 ? cuts[i - 1]! : null;
+      const after = i < cuts.length ? cuts[i]! : null;
+      const from = before ? before.endSec : window.startSec;
+      const to = after ? after.startSec : window.endSec;
+      if (to - from >= target - FLOAT_SLACK) continue;
+      if (!speech.some((s) => s.startSec < to + FLOAT_SLACK && s.endSec > from - FLOAT_SLACK)) continue;
+      const need = target - Math.max(0, to - from);
+      const share = before && after ? need / 2 : need;
+      if (before) before.endSec -= share;
+      if (after) after.startSec += share;
+      changed = true;
+    }
+    // Only a cut this pass shrank to nothing goes; a short filler cut stays.
+    cuts = cuts.filter((cut) => cut.endSec - cut.startSec > 0.001);
+    if (!changed) break;
+  }
+  return cuts;
 }

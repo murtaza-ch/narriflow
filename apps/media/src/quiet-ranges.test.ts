@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeQuietRanges } from "@narriflow/validators";
-import { measureQuietRanges, parseSilenceDetectMetadata, QuietRangesError } from "./quiet-ranges";
+import { measureQuietRanges, parseProgressEndSec, parseSilenceDetectMetadata, QuietRangesError } from "./quiet-ranges";
 import { productionWorkerProcessModule } from "./worker-process";
 
 describe("parseSilenceDetectMetadata", () => {
@@ -18,9 +18,17 @@ describe("parseSilenceDetectMetadata", () => {
     expect(parseSilenceDetectMetadata(text)).toEqual([{ startSec: 1.5, endSec: 3.500062 }, { startSec: 0, endSec: 0.7 }]);
   });
 
-  test("derives a missing start from the duration and drops a final unclosed start", () => {
+  test("derives a missing start from the duration; a final unclosed start closes at the audio end", () => {
     const text = "lavfi.silence_end=5\nlavfi.silence_duration=1.5\nlavfi.silence_start=9\nlavfi.silence_end=10\nlavfi.silence_start=20\n";
     expect(parseSilenceDetectMetadata(text)).toEqual([{ startSec: 3.5, endSec: 5 }, { startSec: 9, endSec: 10 }]);
+    expect(parseSilenceDetectMetadata(text, 24)).toEqual([{ startSec: 3.5, endSec: 5 }, { startSec: 9, endSec: 10 }, { startSec: 20, endSec: 24 }]);
+    expect(parseSilenceDetectMetadata(text, 19)).toEqual([{ startSec: 3.5, endSec: 5 }, { startSec: 9, endSec: 10 }]);
+  });
+
+  test("reads the decoded end from -progress output", () => {
+    expect(parseProgressEndSec("out_time_us=1000000\nprogress=continue\nout_time_us=4012000\nprogress=end\n")).toBe(4.012);
+    expect(parseProgressEndSec("out_time_us=N/A\nprogress=end\n")).toBeNull();
+    expect(parseProgressEndSec("")).toBeNull();
   });
 
   test("an empty or unrelated file has no ranges", () => {
@@ -33,7 +41,7 @@ describe("measureQuietRanges", () => {
   const signal = new AbortController().signal;
   const ffmpeg = (args: string[]) => productionWorkerProcessModule.execute({ command: "ffmpeg", args: ["-hide_banner", "-loglevel", "error", "-y", ...args], signal, deadlineMs: 60_000 });
 
-  test("measures real quiet gaps between tones and ignores a quiet tail it cannot close", async () => {
+  test("measures real quiet gaps between tones, including a quiet tail to the end", async () => {
     const directory = await mkdtemp(join(tmpdir(), "quiet-ranges-test-"));
     try {
       const path = join(directory, "tone-silence-tone.wav");
@@ -44,7 +52,11 @@ describe("measureQuietRanges", () => {
       const encoded = await measureQuietRanges({ audioPath: path, deadlineMs: 30_000 }, { signal, workerProcess: productionWorkerProcessModule });
       expect(encoded).not.toBeNull();
       const ranges = decodeQuietRanges(encoded!);
-      expect(ranges.length).toBe(1);
+      // The 4.5-5.0 s tail is quiet to the end of the audio: closed at the decoded end.
+      expect(ranges.length).toBe(2);
+      expect(ranges[1]!.startSec).toBeCloseTo(4.5, 1);
+      expect(ranges[1]!.endSec).toBeGreaterThan(4.9);
+      expect(ranges[1]!.endSec).toBeLessThanOrEqual(5.0 + 1e-9);
       expect(ranges[0]!.startSec).toBeCloseTo(1.5, 1);
       expect(ranges[0]!.endSec).toBeCloseTo(3.5, 1);
       // Whole-centisecond rounding only ever shrinks a quiet interval.

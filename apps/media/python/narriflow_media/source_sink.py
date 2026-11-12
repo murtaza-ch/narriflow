@@ -32,7 +32,9 @@ def _content_type(path: Path, video: bool):
 
 QUIET_RANGES_WIRE_BYTES = 48 * 1024  # leaves room for the binding inside the 60 KB facts limit
 QUIET_RANGES_MIN_SECONDS = 10
-QUIET_RANGES_MAX_SECONDS = 45
+# A 3.4-hour Opus source measured in 23 s on an Apple M1 Pro (2026-11-12);
+# executor CPUs can be slower, so the cap leaves room for the longest source.
+QUIET_RANGES_MAX_SECONDS = 120
 QUIET_RANGES_SESSION_SHARE = 0.25
 
 

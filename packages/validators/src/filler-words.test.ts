@@ -25,13 +25,13 @@ const window: ClipWindow = { startSec: 0, endSec: 20 };
 
 describe("isFillerWord", () => {
   test("matches hesitation sounds regardless of case and punctuation", () => {
-    for (const text of ["um", "Um,", "UH...", "uhm", "erm.", "Uhh"]) {
+    for (const text of ["um", "Um,", "Uh...", "uhm", "erm.", "Uhh", "U"+"m—"]) {
       expect(isFillerWord({ word: text }, "en")).toBe(true);
     }
   });
 
   test("keeps words that carry meaning", () => {
-    for (const text of ["uh-huh", "like", "umbrella", "her", "hmm", "you"]) {
+    for (const text of ["uh-huh", "like", "umbrella", "her", "hmm", "you", "ER", "UM", "UH."]) {
       expect(isFillerWord({ word: text }, "en")).toBe(false);
     }
   });
@@ -79,6 +79,35 @@ describe("detectFillerWordRanges", () => {
     const utterances = [utterance(0, [word(0.5, 0.8, "Um,"), word(1.3, 2, "today")])];
     expect(detectFillerWordRanges(utterances, { startSec: 0, endSec: 5 }, { languageCode: "en" })).toEqual([
       { startSec: 0, endSec: 1.05 },
+    ]);
+  });
+
+  test("a filler another speaker talks over is kept without keeping its neighbours", () => {
+    // Speaker 2's "uh" overlaps speaker 1's "people"; the later "erm" overlaps nothing.
+    const utterances = [
+      utterance(0, [word(11.187, 11.791, "people")]),
+      utterance(1, [word(11.697, 12.025, "uh"), word(12.306, 12.77, "erm."), word(12.805, 13.398, "a")]),
+    ];
+    const cuts = detectFillerWordRanges(utterances, window, { languageCode: "en" });
+    expect(cuts.some((c) => c.startSec <= 12.306 && c.endSec >= 12.77)).toBe(true);
+    expect(cuts.some((c) => c.startSec < 12.025 && c.endSec > 11.697)).toBe(false);
+  });
+
+  test("a filler overlapping a kept filler is kept too", () => {
+    // "erm" is talked over by "build", so it stays; "Um" overlaps "erm" and must stay with it.
+    const utterances = [
+      utterance(0, [word(14.6, 14.79, "so"), word(15.517, 15.992, "erm.")]),
+      utterance(1, [word(15.429, 15.558, "Um,"), word(15.777, 16.112, "build")]),
+      utterance(2, [word(16.179, 16.753, "we")]),
+    ];
+    expect(detectFillerWordRanges(utterances, window, { languageCode: "en" })).toEqual([]);
+  });
+
+  test("fillers far apart are separate cuts, never one cut over the pause (Sol P2)", () => {
+    const utterances = [utterance(0, [word(0, 1, "So"), word(1.2, 1.4, "um"), word(8.5, 8.7, "uh"), word(9, 10, "go")])];
+    expect(detectFillerWordRanges(utterances, window, { languageCode: "en" })).toEqual([
+      { startSec: 1.15, endSec: 1.4 },
+      { startSec: 8.5, endSec: 8.75 },
     ]);
   });
 

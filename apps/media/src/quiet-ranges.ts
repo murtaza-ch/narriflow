@@ -20,17 +20,27 @@ export function buildQuietRangesFfmpegArgs(audioPath: string, metadataPath: stri
   const { noiseDb, minDurationSec } = QUIET_AUDIO_DETECTION;
   // Frames carry metadata only on a silence edge, so the print file holds one
   // short block per edge instead of one per audio frame.
-  return ["-nostdin", "-hide_banner", "-v", "error", "-i", audioPath, "-vn", "-map", "0:a:0",
+  // `-progress pipe:1` reports the decoded end (`out_time_us`), which closes
+  // a silence that runs to the end of the audio.
+  return ["-nostdin", "-hide_banner", "-v", "error", "-progress", "pipe:1", "-i", audioPath, "-vn", "-map", "0:a:0",
     "-af", `silencedetect=noise=${noiseDb}dB:d=${minDurationSec},ametadata=mode=print:file=${metadataPath}`, "-f", "null", "-"];
+}
+
+/** The decoded end of the audio from FFmpeg's `-progress` output: the last
+ *  `out_time_us`. Null when it never reported one. */
+export function parseProgressEndSec(text: string): number | null {
+  let end: number | null = null;
+  for (const match of text.matchAll(/^out_time_us=(\d+)$/gm)) end = Number(match[1]) / 1_000_000;
+  return end !== null && Number.isFinite(end) && end > 0 ? end : null;
 }
 
 /** Reads `ametadata=mode=print` output of `silencedetect`: `lavfi.silence_start`,
  *  `lavfi.silence_end` and `lavfi.silence_duration` lines. A start clamps to 0
  *  (FFmpeg reports a slightly negative start for audio that begins quiet). An
  *  end without a start derives its start from the duration. A final start with
- *  no end (silence running to the end of the audio) is dropped: the tail after
- *  the last word is never a word gap, and the cut stays conservative. */
-export function parseSilenceDetectMetadata(text: string): { startSec: number; endSec: number }[] {
+ *  no end is silence running to the end of the audio: it closes at
+ *  `audioEndSec` when known, and is dropped otherwise. */
+export function parseSilenceDetectMetadata(text: string, audioEndSec: number | null = null): { startSec: number; endSec: number }[] {
   const ranges: { startSec: number; endSec: number }[] = [];
   let open: number | null = null;
   let end: number | null = null;
@@ -55,6 +65,9 @@ export function parseSilenceDetectMetadata(text: string): { startSec: number; en
     } else close(value);
   }
   close(null);
+  if (open !== null && audioEndSec !== null && audioEndSec > Math.max(0, open)) {
+    ranges.push({ startSec: Math.max(0, open), endSec: audioEndSec });
+  }
   return ranges;
 }
 
@@ -72,12 +85,13 @@ export async function measureQuietRanges(input: QuietRangesInput, ports: {
   if (!source?.isFile()) throw new QuietRangesError("quiet_ranges_input_invalid");
   return ports.workerProcess.withScratchDirectory("quiet-ranges-", async (directory) => {
     const metadataPath = join(directory, "silence.txt");
-    await ports.workerProcess.execute({ command: "ffmpeg", args: buildQuietRangesFfmpegArgs(input.audioPath, metadataPath),
-      signal: ports.signal, deadlineMs: input.deadlineMs });
+    const result = await ports.workerProcess.execute({ command: "ffmpeg", args: buildQuietRangesFfmpegArgs(input.audioPath, metadataPath),
+      signal: ports.signal, deadlineMs: input.deadlineMs, captureStdout: true, maxStdoutBytes: 4 * 1024 * 1024 });
+    const audioEndSec = parseProgressEndSec(result.stdout.toString("utf8"));
     const metadata = await stat(metadataPath).catch(() => null);
     // No edge at all writes no frame; ametadata may not create the file then.
     if (!metadata) return encodeQuietRanges([]);
     if (!metadata.isFile() || metadata.size > MAX_METADATA_BYTES) throw new QuietRangesError("quiet_ranges_output_invalid");
-    return encodeQuietRanges(parseSilenceDetectMetadata(await readFile(metadataPath, "utf8")));
+    return encodeQuietRanges(parseSilenceDetectMetadata(await readFile(metadataPath, "utf8"), audioEndSec));
   });
 }

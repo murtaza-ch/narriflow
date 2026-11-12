@@ -2326,7 +2326,7 @@ interface CutConcatResult {
  * exactly as the camera detector does; resetting each kept fragment instead
  * would accumulate fractional-frame errors against the planned camera cuts.
  */
-function buildCutConcatFilter(params: {
+export function buildCutConcatFilter(params: {
 	cutPlan: ClipCutPlan;
 	clipStartSec: number;
 	/** Default true — set false for the audio-only audiogram path, which has
@@ -2379,7 +2379,7 @@ function buildCutConcatFilter(params: {
 		if (params.includeAudio) {
 			const aLabel = `aseg${index}`;
 			filterParts.push(
-				`${audioInputRef}atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[${aLabel}]`,
+				`${audioInputRef}atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS${cutJoinFades(Number(end) - Number(start), index, segments.length)}[${aLabel}]`,
 			);
 			aLabels.push(`[${aLabel}]`);
 		}
@@ -2398,6 +2398,24 @@ function buildCutConcatFilter(params: {
 		filterParts.push(`${aLabels.join("")}concat=n=${segments.length}:v=0:a=1${audioOutLabel}`);
 	}
 	return { filterParts, videoLabel: includeVideo ? videoOutLabel : null, audioLabel: params.includeAudio ? audioOutLabel : null };
+}
+
+/** Length of the fade on each side of an audio cut join. Joining two
+ *  segments mid-waveform steps the signal and clicks; a few milliseconds of
+ *  fade is inaudible as a fade and removes the step. */
+export const CUT_JOIN_FADE_SEC = 0.005;
+
+/** Fades for one kept audio segment: out before every join, in after it.
+ *  The clip's own first and last samples stay untouched, as does every
+ *  duration (afade only scales samples). `durationSec` is the trimmed
+ *  length, from the same rounded bounds `atrim` uses. */
+function cutJoinFades(durationSec: number, index: number, count: number): string {
+	if (count < 2) return "";
+	const fadeSec = Math.min(CUT_JOIN_FADE_SEC, durationSec / 2);
+	const fades: string[] = [];
+	if (index > 0) fades.push(`afade=t=in:st=0:d=${fadeSec.toFixed(6)}`);
+	if (index < count - 1) fades.push(`afade=t=out:st=${(durationSec - fadeSec).toFixed(6)}:d=${fadeSec.toFixed(6)}`);
+	return fades.length ? `,${fades.join(",")}` : "";
 }
 
 const ALIGNED_SOURCE_AUDIO_LABEL = "[composition_source_audio_clock]";

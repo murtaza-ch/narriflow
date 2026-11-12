@@ -169,6 +169,17 @@ describe("detectSilenceRanges", () => {
     expect(detectSilenceRanges(utterances, window, { quietRanges })).toEqual([{ startSec: 1.15, endSec: 5.75 }]);
   });
 
+  test("a chain of short sounds is not joined past the blip budget", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 40 };
+    const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 30, 31, [word(30, 31)])];
+    // Quiet broken by 0.24 s and 0.13 s sounds: only the first joins (0.37 s > 0.3 s budget).
+    const quietRanges = [{ startSec: 1, endSec: 21.19 }, { startSec: 21.43, endSec: 22.63 }, { startSec: 22.76, endSec: 30 }];
+    expect(detectSilenceRanges(utterances, window, { quietRanges }).slice(0, 2)).toEqual([
+      { startSec: 1.15, endSec: 22.63 },
+      { startSec: 22.76, endSec: 29.75 },
+    ]);
+  });
+
   test("a longer sound between quiet runs stays", () => {
     const window: ClipWindow = { startSec: 0, endSec: 20 };
     const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 6, 7, [word(6, 7)])];
@@ -176,6 +187,15 @@ describe("detectSilenceRanges", () => {
     expect(detectSilenceRanges(utterances, window, { quietRanges })).toEqual([
       { startSec: 1.15, endSec: 3.0 },
       { startSec: 3.4, endSec: 5.75 },
+    ]);
+  });
+
+  test("a short manual cut inside a pause is not proposed again", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 20 };
+    const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 6, 7, [word(6, 7)])];
+    expect(detectSilenceRanges(utterances, window, { existingDeleted: [{ startSec: 3, endSec: 3.2 }] }).slice(0, 2)).toEqual([
+      { startSec: 1.15, endSec: 3 },
+      { startSec: 3.2, endSec: 5.75 },
     ]);
   });
 

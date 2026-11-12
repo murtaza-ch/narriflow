@@ -198,20 +198,24 @@ function subtractDeletedFromCandidate(
   return pieces;
 }
 
-/** Joins consecutive cuts whose kept piece between them is shorter than
- *  SILENCE_MAX_SPEECHLESS_SLIVER_SEC and overlaps no `speech` span. */
+/** Joins consecutive cuts whose kept piece between them overlaps no
+ *  `speech` span, while the blips joined into one cut total less than
+ *  SILENCE_MAX_SPEECHLESS_SLIVER_SEC: a chain of short sounds (sparse music
+ *  hits) is content, not a click. */
 export function joinSpeechlessSlivers(ranges: SourceRange[], speech: SourceRange[]): SourceRange[] {
-  const joined: SourceRange[] = [];
+  const joined: { range: SourceRange; blipSec: number }[] = [];
   for (const range of [...ranges].sort((a, b) => a.startSec - b.startSec)) {
     const last = joined[joined.length - 1];
-    const sliver = last && range.startSec - last.endSec < SILENCE_MAX_SPEECHLESS_SLIVER_SEC - FLOAT_SLACK;
-    if (last && sliver && !speech.some((s) => s.startSec < range.startSec && s.endSec > last.endSec)) {
-      last.endSec = Math.max(last.endSec, range.endSec);
+    const blipSec = last ? range.startSec - last.range.endSec : Number.POSITIVE_INFINITY;
+    if (last && last.blipSec + Math.max(0, blipSec) < SILENCE_MAX_SPEECHLESS_SLIVER_SEC - FLOAT_SLACK &&
+      !speech.some((s) => s.startSec < range.startSec && s.endSec > last.range.endSec)) {
+      last.range.endSec = Math.max(last.range.endSec, range.endSec);
+      last.blipSec += Math.max(0, blipSec);
     } else {
-      joined.push({ ...range });
+      joined.push({ range: { ...range }, blipSec: 0 });
     }
   }
-  return joined;
+  return joined.map((entry) => entry.range);
 }
 
 /** Padding kept before speech resumes for a given `padSec`. */
@@ -270,15 +274,17 @@ export function detectSilenceRanges(
     candidates.push({ startSec: roundMs(paddedStart), endSec: roundMs(paddedEnd) });
   }
 
-  const trimmed = candidates.flatMap((candidate) =>
+  const guarded = opts.quietRanges
+    ? intersectWithQuiet(candidates, opts.quietRanges, SILENCE_MIN_GUARDED_CUT_SEC)
+    : candidates;
+
+  // Join blips before subtracting existing deletions, so a short manual cut
+  // inside a pause is never proposed again as part of a joined cut.
+  const trimmed = joinSpeechlessSlivers(guarded, coverage).flatMap((candidate) =>
     subtractDeletedFromCandidate(candidate, existingDeleted).filter(
       (piece) => piece.endSec - piece.startSec > SILENCE_MIN_CUT_SEC + FLOAT_SLACK,
     ),
   );
 
-  const guarded = opts.quietRanges
-    ? intersectWithQuiet(trimmed, opts.quietRanges, SILENCE_MIN_GUARDED_CUT_SEC)
-    : trimmed;
-
-  return normalizeDeletedRanges(joinSpeechlessSlivers(guarded, coverage), window);
+  return normalizeDeletedRanges(trimmed, window);
 }

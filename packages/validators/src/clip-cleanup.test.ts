@@ -7,7 +7,7 @@ import {
   encodeQuietRanges,
   QUIET_RANGES_MAX_INTERVALS,
 } from "./clip-cleanup";
-import type { ClipWindow } from "./edit-ranges";
+import { buildClipCutPlan, sourceWordToEdited, type ClipWindow } from "./edit-ranges";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
 function word(startSec: number, endSec: number, text = "w"): TranscriptWord {
@@ -79,6 +79,20 @@ describe("detectClipCleanupRanges", () => {
     const words = [utterance([word(0, 1, "So"), word(1.1, 1.3, "um"), word(1.35, 1.45, "a"), word(1.5, 2, "b"), word(4, 10, "c")])];
     const cuts = detectClipCleanupRanges(words, window, { removeSilences: true, removeFillerWords: true, quietRanges: [{ startSec: 1.9, endSec: 4.1 }], languageCode: "en" });
     expect(cuts.some((c) => c.startSec < 1.45 && c.endSec > 1.35)).toBe(false);
+  });
+
+  test("a word between two close filler cuts survives the render (Sol P1)", () => {
+    const words = [utterance([word(0, 0.5, "So"), word(0.55, 0.79, "um"), word(0.8, 0.85, "a"), word(0.86, 1.1, "uh"), word(1.2, 3, "plan")])];
+    const cuts = detectClipCleanupRanges(words, window, { removeSilences: false, removeFillerWords: true, quietRanges: null, languageCode: "en" });
+    expect(sourceWordToEdited(buildClipCutPlan(cuts, window).map, { startSec: 0.8, endSec: 0.85 })).not.toBeNull();
+  });
+
+  test("more cuts than the editor holds keeps the longest, not none (Sol P2)", () => {
+    const long: ClipWindow = { startSec: 0, endSec: 2000 };
+    const many = [utterance(Array.from({ length: 700 }, (_, i) => word(i * 2.5, i * 2.5 + 0.5, "w")))];
+    const quiet = [{ startSec: 0, endSec: 2000 }];
+    const cuts = detectClipCleanupRanges(many, long, { removeSilences: true, removeFillerWords: false, quietRanges: quiet, languageCode: "en" });
+    expect(cuts.length).toBe(500);
   });
 
   test("cuts that would empty the clip are dropped", () => {
