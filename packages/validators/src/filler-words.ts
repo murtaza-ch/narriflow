@@ -35,8 +35,20 @@ export function isFillerWord(word: Pick<TranscriptWord, "word">, languageCode: s
   return set.has(letters.toLowerCase());
 }
 
+/** Decides whether one transcript word is a filler. The utterance carries
+ *  the word's speaker, which AI tags are keyed by. */
+export type FillerClassifier = (word: TranscriptWord, utterance: TranscriptUtterance) => boolean;
+
+/** The built-in list for `languageCode`, or null where none is known. */
+export function listFillerClassifier(languageCode: string | null | undefined): FillerClassifier | null {
+  return supportsFillerWordRemoval(languageCode) ? (word) => isFillerWord(word, languageCode) : null;
+}
+
 export interface DetectFillerWordOptions {
-  languageCode: string | null | undefined;
+  /** Picks the built-in list when `isFiller` is not given. */
+  languageCode?: string | null | undefined;
+  /** Overrides the language list (AI-tagged fillers). Null: no fillers. */
+  isFiller?: FillerClassifier | null;
   /** Kept after the preceding speech. @default SILENCE_DEFAULT_PAD_SEC */
   padSec?: number;
   /** A pause beside a filler this long or longer is a silence, not part of
@@ -51,14 +63,13 @@ export interface DetectFillerWordOptions {
 export function removableFillerWords(
   utterances: TranscriptUtterance[],
   window: ClipWindow,
-  languageCode: string | null | undefined,
+  isFiller: FillerClassifier | null,
 ): Set<TranscriptWord> {
-  if (!supportsFillerWordRemoval(languageCode)) return new Set();
-  const isFiller = (word: TranscriptWord) => isFillerWord(word, languageCode);
+  if (!isFiller) return new Set();
   const overlaps = (spans: SourceRange[], word: TranscriptWord) =>
     spans.some((s) => s.startSec < word.endSec - FLOAT_SLACK && s.endSec > word.startSec + FLOAT_SLACK);
-  let removable = new Set(utterances.flatMap((utterance) => utterance.words).filter((word) =>
-    isFiller(word) && word.endSec > word.startSec && word.startSec < window.endSec && word.endSec > window.startSec));
+  let removable = new Set(utterances.flatMap((utterance) => utterance.words.filter((word) =>
+    isFiller(word, utterance) && word.endSec > word.startSec && word.startSec < window.endSec && word.endSec > window.startSec)));
   // Keeping a filler can make an overlapping filler unsafe to cut; repeat
   // until no removable filler overlaps anything kept.
   for (;;) {
@@ -67,6 +78,11 @@ export function removableFillerWords(
     if (next.size === removable.size) return removable;
     removable = next;
   }
+}
+
+/** The classifier an options object selects: `isFiller` when given, else the language list. */
+export function fillerClassifier(opts: Pick<DetectFillerWordOptions, "languageCode" | "isFiller">): FillerClassifier | null {
+  return opts.isFiller !== undefined ? opts.isFiller : listFillerClassifier(opts.languageCode);
 }
 
 /**
@@ -84,7 +100,7 @@ export function detectFillerWordRanges(
   window: ClipWindow,
   opts: DetectFillerWordOptions,
 ): SourceRange[] {
-  const removable = removableFillerWords(utterances, window, opts.languageCode);
+  const removable = removableFillerWords(utterances, window, fillerClassifier(opts));
   if (removable.size === 0) return [];
   const padSec = opts.padSec ?? SILENCE_DEFAULT_PAD_SEC;
   const leadInSec = silenceLeadInSec(padSec);

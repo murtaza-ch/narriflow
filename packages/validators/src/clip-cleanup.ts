@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { buildClipCutPlan, FLOAT_SLACK, MIN_KEPT_SEGMENT_SEC, normalizeDeletedRanges, type ClipWindow, type SourceRange } from "./edit-ranges";
-import { detectFillerWordRanges, removableFillerWords } from "./filler-words";
+import { detectFillerWordRanges, listFillerClassifier, removableFillerWords, type FillerClassifier } from "./filler-words";
+import { fillerWordKey } from "./filler-tagging";
 import { buildCoverageSpans, detectSilenceRanges, joinSpeechlessSlivers } from "./silence-detection";
 import type { TranscriptUtterance } from "./transcript";
 
@@ -64,8 +65,35 @@ export interface ClipCleanupOptions {
    *  then cuts nothing rather than trusting transcript gaps alone, which
    *  would cut music and laughter. */
   quietRanges: readonly SourceRange[] | null;
-  /** Transcript language; filler words are removed only where recognised. */
+  /** Transcript language. English uses the built-in filler list; any other
+   *  language uses `aiFillerKeys` (fillerWordKey of each AI-tagged word). */
   languageCode: string | null;
+  aiFillerKeys?: ReadonlySet<string> | null;
+}
+
+/** Margin within which a slice word counts as touching the clip edge. */
+const EDGE_SEC = 0.0005;
+
+/** The filler classifier cleanup uses for these options, or null for none.
+ *  AI keys are source identities; clip slicing clamps edge words and rounds
+ *  times, so a slice word only matches when it does not touch the clip edge
+ *  and no other slice word shares its key (an untagged word can never take
+ *  a tagged word's identity). */
+export function cleanupFillerClassifier(utterances: TranscriptUtterance[], window: ClipWindow, opts: Pick<ClipCleanupOptions, "languageCode" | "aiFillerKeys">): FillerClassifier | null {
+  const list = listFillerClassifier(opts.languageCode);
+  if (list) return list;
+  const keys = opts.aiFillerKeys;
+  if (!keys || keys.size === 0) return null;
+  const counts = new Map<string, number>();
+  for (const utterance of utterances) for (const word of utterance.words) {
+    const key = fillerWordKey(utterance.speaker, word);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return (word, utterance) => {
+    if (word.startSec <= window.startSec + EDGE_SEC || word.endSec >= window.endSec - EDGE_SEC) return false;
+    const key = fillerWordKey(utterance.speaker, word);
+    return keys.has(key) && counts.get(key) === 1;
+  };
 }
 
 /** The cleanup cuts for one clip window, normalized. Empty when nothing was
@@ -77,7 +105,8 @@ export function detectClipCleanupRanges(
   opts: ClipCleanupOptions,
 ): SourceRange[] {
   // Exactly the fillers filler removal cuts; a kept filler stays speech.
-  const removable = opts.removeFillerWords ? removableFillerWords(utterances, window, opts.languageCode) : null;
+  const isFiller = opts.removeFillerWords ? cleanupFillerClassifier(utterances, window, opts) : null;
+  const removable = isFiller ? removableFillerWords(utterances, window, isFiller) : null;
   const skipFiller = removable ? (word: TranscriptUtterance["words"][number]) => removable.has(word) : undefined;
   const ranges = [
     ...(opts.removeSilences && opts.quietRanges
@@ -88,14 +117,31 @@ export function detectClipCleanupRanges(
           ...(skipFiller ? { skipWord: skipFiller } : {}),
         })
       : []),
-    ...(opts.removeFillerWords ? detectFillerWordRanges(utterances, window, { languageCode: opts.languageCode }) : []),
+    ...(isFiller ? detectFillerWordRanges(utterances, window, { isFiller }) : []),
   ];
   if (ranges.length === 0) return [];
   const speech = buildCoverageSpans(utterances, window, skipFiller);
-  const joined = joinSpeechlessSlivers(normalizeDeletedRanges(ranges, window), speech);
+  // Normalizing merges cuts closer than a millisecond, which would swallow a
+  // kept word that short between them; carve kept speech back out first.
+  const joined = joinSpeechlessSlivers(withoutSpeech(normalizeDeletedRanges(ranges, window), speech), speech);
   const normalized = normalizeDeletedRanges(capToEditorLimit(keepSpeechRenderable(joined, speech, window)), window);
   if (normalized.length === 0 || buildClipCutPlan(normalized, window).isEmpty) return [];
   return normalized;
+}
+
+/** `cuts` minus every kept-speech span: no cut may remove a word cleanup keeps. */
+function withoutSpeech(cuts: SourceRange[], speech: SourceRange[]): SourceRange[] {
+  const out: SourceRange[] = [];
+  for (const cut of cuts) {
+    let pieces = [{ ...cut }];
+    for (const span of speech) {
+      if (span.endSec <= cut.startSec || span.startSec >= cut.endSec) continue;
+      pieces = pieces.flatMap((piece) => span.endSec <= piece.startSec || span.startSec >= piece.endSec ? [piece]
+        : [{ startSec: piece.startSec, endSec: span.startSec }, { startSec: span.endSec, endSec: piece.endSec }].filter((p) => p.endSec - p.startSec > FLOAT_SLACK));
+    }
+    out.push(...pieces);
+  }
+  return out;
 }
 
 /** The editor holds at most this many cuts per clip (`deletedRangesSchema`). */

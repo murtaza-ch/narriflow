@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { buildClipCutPlan, sourceWordToEdited, type ClipWindow, type SourceRange } from "./edit-ranges";
 import { detectClipCleanupRanges } from "./clip-cleanup";
-import { detectFillerWordRanges, isFillerWord, removableFillerWords } from "./filler-words";
+import { detectFillerWordRanges, isFillerWord, listFillerClassifier, removableFillerWords } from "./filler-words";
 import { detectSilenceRanges, SILENCE_DEFAULT_PAD_SEC, SILENCE_MAX_SPEECHLESS_SLIVER_SEC, silenceLeadInSec } from "./silence-detection";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
@@ -139,7 +139,7 @@ describe("clip cleanup properties", () => {
     for (let seed = 1; seed <= CASES; seed++) {
       const { utterances, window, quietRanges } = randomCase(seed);
       const all = utterances.flatMap((u) => u.words);
-      const removable = removableFillerWords(utterances, window, "en");
+      const removable = removableFillerWords(utterances, window, listFillerClassifier("en"));
       for (const quiet of [quietRanges, null]) {
         const cuts = detectClipCleanupRanges(utterances, window, { removeSilences: true, removeFillerWords: true, quietRanges: quiet, languageCode: "en" });
         const map = buildClipCutPlan(cuts, window).map;

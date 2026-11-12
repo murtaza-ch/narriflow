@@ -51,6 +51,7 @@ export * from "./review";
 export * from "./silence-detection";
 export * from "./filler-words";
 export * from "./clip-cleanup";
+export * from "./filler-tagging";
 export * from "./source-probe";
 export * from "./scene-template";
 export * from "./scene-layouts";

@@ -25,7 +25,7 @@ export const generationSettingsSchema = z.strictObject({
   mode: generationModeSchema.default("clip"),
   autoHook: z.boolean().default(true),
   removeSilences: z.boolean().default(false).describe("Cut pauses where the audio is quiet from each clip"),
-  removeFillerWords: z.boolean().default(false).describe("Cut filler words such as um and uh from each clip (English transcripts)"),
+  removeFillerWords: z.boolean().default(false).describe("Cut hesitation sounds such as um and uh from each clip, in any transcript language"),
   specificMoments: z.string().max(500).default(""),
   processingStartSec: z.number().int().min(0).nullable().default(null),
   processingEndSec: z.number().int().min(0).nullable().default(null),

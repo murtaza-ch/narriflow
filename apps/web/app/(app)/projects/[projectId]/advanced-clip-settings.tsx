@@ -392,7 +392,7 @@ export function AdvancedClipSettings({
                     <ToggleCard
                       labelId={fillerLabelId}
                       title="Remove filler words"
-                      description="Cuts um and uh. English only"
+                      description="Cuts um, uh and similar sounds"
                     >
                       <Switch
                         checked={removeFillerWords}

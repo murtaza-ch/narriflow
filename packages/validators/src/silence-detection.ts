@@ -66,7 +66,7 @@ export interface DetectSilenceOptions {
   quietRanges?: SourceRange[];
   /** Words that are being removed anyway (filler words), so the pause on
    *  either side of them is one gap rather than two. */
-  skipWord?: (word: TranscriptUtterance["words"][number]) => boolean;
+  skipWord?: (word: TranscriptUtterance["words"][number], utterance: TranscriptUtterance) => boolean;
 }
 
 function roundMs(value: number): number {
@@ -98,14 +98,14 @@ function isTimed(word: { startSec: number; endSec: number }): boolean {
 export function buildCoverageSpans(
   utterances: TranscriptUtterance[],
   window: ClipWindow,
-  skipWord: (word: TranscriptUtterance["words"][number]) => boolean = () => false,
+  skipWord: (word: TranscriptUtterance["words"][number], utterance: TranscriptUtterance) => boolean = () => false,
 ): SourceRange[] {
   const raw: SourceRange[] = [];
   for (const utterance of utterances) {
     const words = utterance.words;
     if (words.length > 0 && words.every(isTimed)) {
       for (const word of words) {
-        if (skipWord(word)) continue;
+        if (skipWord(word, utterance)) continue;
         raw.push({ startSec: word.startSec, endSec: word.endSec > word.startSec ? word.endSec : word.startSec + ZERO_DURATION_WORD_SEC });
       }
     } else {

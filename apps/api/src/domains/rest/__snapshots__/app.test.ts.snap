@@ -2130,7 +2130,7 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
           },
           "removeFillerWords": {
             "default": false,
-            "description": "Cut filler words such as um and uh from each clip (English transcripts)",
+            "description": "Cut hesitation sounds such as um and uh from each clip, in any transcript language",
             "type": "boolean",
           },
           "removeSilences": {
@@ -3122,7 +3122,7 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
               },
               "removeFillerWords": {
                 "default": false,
-                "description": "Cut filler words such as um and uh from each clip (English transcripts)",
+                "description": "Cut hesitation sounds such as um and uh from each clip, in any transcript language",
                 "type": "boolean",
               },
               "removeSilences": {

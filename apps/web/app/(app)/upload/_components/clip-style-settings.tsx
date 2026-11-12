@@ -85,7 +85,7 @@ export function ClipStyleSettings({
           {[
             { id: "auto-hook-label", name: "autoHook", icon: <Zap size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Start with a hook", hint: "Prefer clips that open on an attention-grabbing line", checked: autoHook, onChange: setAutoHook },
             { id: "remove-silences-label", name: "removeSilences", icon: <AudioLines size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove silences", hint: "Cuts pauses where the audio is quiet", checked: removeSilences, onChange: setRemoveSilences },
-            { id: "remove-filler-words-label", name: "removeFillerWords", icon: <MessageSquareOff size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove filler words", hint: "Cuts um and uh. English only", checked: removeFillerWords, onChange: setRemoveFillerWords },
+            { id: "remove-filler-words-label", name: "removeFillerWords", icon: <MessageSquareOff size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove filler words", hint: "Cuts um, uh and similar sounds", checked: removeFillerWords, onChange: setRemoveFillerWords },
           ].map((row) => (
             // The same row as the import card's "Get AI clips": icon, what it does, a switch.
             <Flex key={row.name} align="center" gap="2.5" minH="52px" px="3" py="2" bg="bg.soft" borderRadius="l2">

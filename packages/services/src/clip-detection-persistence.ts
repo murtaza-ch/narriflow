@@ -1,11 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { BRAND_DEFAULT_CAPTION_PRESET_ID, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, brandProfileSnapshotSchema, captionPresetSchema, captionedVideoFramingEdits,
   clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema,
-  type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
+  type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges, type FillerTaggingOutcome, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 
 /** Cleanup a generation asked for, with what it needs per clip. */
-export interface DetectedClipCleanup { removeSilences: boolean; removeFillerWords: boolean; quietRanges: EncodedQuietRanges | null; languageCode: string | null }
+export interface DetectedClipCleanup { removeSilences: boolean; removeFillerWords: boolean; quietRanges: EncodedQuietRanges | null; languageCode: string | null; aiFillers: FillerTaggingOutcome | null }
 export interface DetectedClipSeed { captionPreset: CaptionPreset; studioEdits: StudioEdits; sourceDurationSec: number | null; wholeSource: boolean; cleanup: DetectedClipCleanup }
 export interface DetectedClip {
   startSec: number;
@@ -83,7 +83,7 @@ export function runDefaultCaptionPreset(brandSnapshot: unknown, captionPresetId:
 }
 
 export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brandProfileSnapshot: unknown; sourceDurationSeconds: number | null; sourceProbe?: unknown } | null,
-  contentPack: ContentPack | null, source: { quietRanges: unknown; languageCode: string | null }): DetectedClipSeed {
+  contentPack: ContentPack | null, source: { quietRanges: unknown; languageCode: string | null; aiFillers?: FillerTaggingOutcome | null }): DetectedClipSeed {
     const resolvedCaptionPreset = runDefaultCaptionPreset(
       project?.brandSnapshot,
       contentPack?.captionPreset,
@@ -101,7 +101,7 @@ export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brand
     // Stored quiet ranges that fail the schema count as not measured.
     const quietRanges = encodedQuietRangesSchema.safeParse(source.quietRanges);
     const cleanup = { removeSilences: contentPack?.removeSilences ?? false, removeFillerWords: contentPack?.removeFillerWords ?? false,
-      quietRanges: quietRanges.success ? quietRanges.data : null, languageCode: source.languageCode };
+      quietRanges: quietRanges.success ? quietRanges.data : null, languageCode: source.languageCode, aiFillers: source.aiFillers ?? null };
     return { captionPreset: resolvedCaptionPreset, studioEdits, sourceDurationSec: project ? clipSourceEdgeSec(project) : null, wholeSource, cleanup };
 }
 
@@ -110,6 +110,7 @@ export function buildDetectedClipRows(input: { projectId: string; workflowRunId:
   const { projectId, workflowRunId, clips, llmMeta, seed } = input;
   const { cleanup } = seed;
   const quietRanges = cleanup.quietRanges ? decodeQuietRanges(cleanup.quietRanges) : null;
+  const aiFillerKeys = cleanup.aiFillers ? new Set(cleanup.aiFillers.keys) : null;
     return clips.map((clip, i) => {
 		const editorDocument = encodeClipEditorDocumentForStorage(
 			{
@@ -121,7 +122,7 @@ export function buildDetectedClipRows(input: { projectId: string; workflowRunId:
           studioEdits: seed.studioEdits,
 				brollUrl: null,
 				deletedRanges: detectClipCleanupRanges(clip.transcriptSlice, { startSec: clip.startSec, endSec: clip.endSec },
-					{ removeSilences: cleanup.removeSilences, removeFillerWords: cleanup.removeFillerWords, quietRanges, languageCode: cleanup.languageCode }),
+					{ removeSilences: cleanup.removeSilences, removeFillerWords: cleanup.removeFillerWords, quietRanges, languageCode: cleanup.languageCode, aiFillerKeys }),
 				sceneBlocks: [],
 				censorSegments: [],
 				mediaMotions: [],

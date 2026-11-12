@@ -484,7 +484,7 @@ function RecipeDialog({
                   <ToggleCard labelId={silencesLabelId} title="Remove silences" description="Cuts pauses where the audio is quiet.">
                     <Switch checked={draft.removeSilences} onCheckedChange={(removeSilences) => set({ removeSilences })} inputProps={{ "aria-labelledby": silencesLabelId }} />
                   </ToggleCard>
-                  <ToggleCard labelId={fillerLabelId} title="Remove filler words" description="Cuts um and uh. English only.">
+                  <ToggleCard labelId={fillerLabelId} title="Remove filler words" description="Cuts um, uh and similar sounds.">
                     <Switch checked={draft.removeFillerWords} onCheckedChange={(removeFillerWords) => set({ removeFillerWords })} inputProps={{ "aria-labelledby": fillerLabelId }} />
                   </ToggleCard>
                 </SettingsSection>
