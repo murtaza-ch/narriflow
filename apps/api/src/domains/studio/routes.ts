@@ -44,7 +44,7 @@ export interface StudioRouteDeps {
   analyzeSceneDocumentMutation: typeof analyzeSceneDocumentMutation;
   projectService: Pick<
     typeof projectService,
-    "getProjectSnapshot" | "getProjectBrandSnapshot" | "getProjectBrandAudio" | "getCaptionLanguage"
+    "getProjectSnapshot" | "getProjectBrandSnapshot" | "getProjectBrandAudio" | "getCaptionLanguage" | "getTranscriptQuietRanges"
   >;
   autoCensorService: Pick<
     typeof autoCensorService,

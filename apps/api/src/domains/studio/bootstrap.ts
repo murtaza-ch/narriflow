@@ -27,7 +27,7 @@ export interface StudioReadDeps {
   >;
   projectService: Pick<
     typeof projectService,
-    "getProjectSnapshot" | "getProjectBrandSnapshot" | "getProjectBrandAudio" | "getCaptionLanguage"
+    "getProjectSnapshot" | "getProjectBrandSnapshot" | "getProjectBrandAudio" | "getCaptionLanguage" | "getTranscriptQuietRanges"
   >;
   autoCensorService: Pick<typeof autoCensorService, "getPolicy">;
   visualAssetService: Pick<
@@ -266,7 +266,7 @@ export async function loadStudioBootstrap(
 
   // A missing clip fails the whole read as clip_not_found, whichever read
   // settles first.
-  const [snapshot, clip, previewSource, rawBrandSnapshot, brandAudio, autoCensorPolicy, editorDoc, captionLanguage] =
+  const [snapshot, clip, previewSource, rawBrandSnapshot, brandAudio, autoCensorPolicy, editorDoc, captionLanguage, quietRanges] =
     await Promise.all([
       deps.projectService.getProjectSnapshot(actor, projectId),
       deps.clipService.getClipSnapshot(actor, projectId, clipId),
@@ -279,6 +279,7 @@ export async function loadStudioBootstrap(
       deps.autoCensorService.getPolicy(actor, projectId),
       deps.clipService.getClipEditorDocument(actor, projectId, clipId),
       deps.projectService.getCaptionLanguage(actor, projectId),
+      deps.projectService.getTranscriptQuietRanges(actor, projectId),
     ]);
   const project = snapshot.project;
   if (!project) throw new ClipActionError("clip_not_found");
@@ -357,6 +358,9 @@ export async function loadStudioBootstrap(
     },
     /** Effective transcript for the clip window; the web builds timeline segments from it. */
     utterances: effective.transcriptSlice,
+    /** Quiet Ranges of the whole source (encoded; decode with `decodeQuietRanges`), so
+     *  Remove silence never cuts music or laughter. Null when not measured. */
+    quietRanges,
     editor: {
       revision: editorDoc.revision,
       document: editorDoc.document,

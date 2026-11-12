@@ -159,6 +159,7 @@ function StudioData({
         fetchSplitLayoutAnalysis={pollers.fetchSplitLayoutAnalysis}
         fetchScreenLayoutAnalysis={pollers.fetchScreenLayoutAnalysis}
         brandLogo={seed.brandLogo}
+        quietRanges={seed.quietRanges}
         // The worker's screen-mode facecam layout analysis rides alongside the
         // document as a read-only sibling; it never folds into the editor document.
         layoutAnalysis={seed.editor.layoutAnalysis}

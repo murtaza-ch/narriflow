@@ -4,7 +4,7 @@ import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionA
 import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
 import { beginUserProjectPurge } from "./project-retention-execution";
 import { hasUnresolvedProviderOutcome } from "./project-provider-outcome";
-import { type ZoomRecordingNotification } from "@narriflow/validators";
+import { encodedQuietRangesSchema, type EncodedQuietRanges, type ZoomRecordingNotification } from "@narriflow/validators";
 
 /**
  * The only language a Project row may hold: a provider code, or null for
@@ -1953,6 +1953,18 @@ export class ProjectService {
 			select: { languageCode: true, transcript: { select: { languageCode: true } } },
 		});
 		return row ? (row.transcript?.languageCode ?? row.languageCode ?? null) : null;
+	}
+
+	/** Quiet Ranges of the Source Audio the Project's transcript was made from
+	 * (same clock as its words), or null when they were not measured. */
+	async getTranscriptQuietRanges(scope: ActorScope, projectId: string): Promise<EncodedQuietRanges | null> {
+		await this.requireActor(scope, "content.view");
+		const row = await this.requirePrisma().project.findFirst({
+			where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+			select: { transcript: { select: { sourceAudio: { select: { quietRanges: true } } } } },
+		});
+		const parsed = encodedQuietRangesSchema.safeParse(row?.transcript?.sourceAudio?.quietRanges);
+		return parsed.success ? parsed.data : null;
 	}
 
 	async getProjectLanguageCodeForWorker(

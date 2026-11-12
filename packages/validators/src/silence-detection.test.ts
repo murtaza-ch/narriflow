@@ -161,6 +161,24 @@ describe("detectSilenceRanges", () => {
     ]);
   });
 
+  test("a short speechless blip between quiet runs joins the cuts", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 20 };
+    const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 6, 7, [word(6, 7)])];
+    // A 0.13 s click at 3.0-3.13 splits the quiet: one cut, not two.
+    const quietRanges = [{ startSec: 0.9, endSec: 3.0 }, { startSec: 3.13, endSec: 6.2 }];
+    expect(detectSilenceRanges(utterances, window, { quietRanges })).toEqual([{ startSec: 1.15, endSec: 5.75 }]);
+  });
+
+  test("a longer sound between quiet runs stays", () => {
+    const window: ClipWindow = { startSec: 0, endSec: 20 };
+    const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 6, 7, [word(6, 7)])];
+    const quietRanges = [{ startSec: 0.9, endSec: 3.0 }, { startSec: 3.4, endSec: 6.2 }];
+    expect(detectSilenceRanges(utterances, window, { quietRanges })).toEqual([
+      { startSec: 1.15, endSec: 3.0 },
+      { startSec: 3.4, endSec: 5.75 },
+    ]);
+  });
+
   test("an empty quietRanges means measured loud: nothing is cut", () => {
     const window: ClipWindow = { startSec: 0, endSec: 20 };
     const utterances = [utterance(0, 0, 1, [word(0, 1)]), utterance(1, 6, 7, [word(6, 7)])];

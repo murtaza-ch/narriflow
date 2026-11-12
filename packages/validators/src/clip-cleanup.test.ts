@@ -74,6 +74,13 @@ describe("detectClipCleanupRanges", () => {
     ]);
   });
 
+  test("a short word between two cuts is never joined over", () => {
+    // "um" cut, then "a" (0.1 s, real speech), then a quiet pause cut.
+    const words = [utterance([word(0, 1, "So"), word(1.1, 1.3, "um"), word(1.35, 1.45, "a"), word(1.5, 2, "b"), word(4, 10, "c")])];
+    const cuts = detectClipCleanupRanges(words, window, { removeSilences: true, removeFillerWords: true, quietRanges: [{ startSec: 1.9, endSec: 4.1 }], languageCode: "en" });
+    expect(cuts.some((c) => c.startSec < 1.45 && c.endSec > 1.35)).toBe(false);
+  });
+
   test("cuts that would empty the clip are dropped", () => {
     const onlyFiller = [utterance([word(0.2, 0.8, "um")])];
     expect(detectClipCleanupRanges(onlyFiller, { startSec: 0, endSec: 1 }, { removeSilences: false, removeFillerWords: true, quietRanges: null, languageCode: "en" })).toEqual([]);

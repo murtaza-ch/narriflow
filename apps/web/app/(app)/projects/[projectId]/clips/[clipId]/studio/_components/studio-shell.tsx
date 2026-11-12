@@ -62,6 +62,8 @@ import {
   type WorkspaceCensorWords,
   type AutoCensorAnalyticsInput,
   type BrandAudioSnapshot,
+  decodeQuietRanges,
+  type EncodedQuietRanges,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { saveIssueFor, type SaveIssue } from "./save-issue";
@@ -581,6 +583,9 @@ interface StudioFields extends StudioState {
   /** Server-seeded brand logo (URL + snapshot defaults), or null when the
    *  project has none. See `StudioBrandLogo`'s doc comment. */
   brandLogo: StudioBrandLogo | null;
+  /** Measured quiet audio of the source (decoded Quiet Ranges), or null when
+   *  it was not measured. Remove silence cuts only inside it when present. */
+  quietRanges: SourceRange[] | null;
   /** Worker-derived Screen/PiP evidence. It is server-seeded, then refreshed
    *  by exact source-identity/fingerprint polling while requested evidence is
    *  pending. This read-only measurement never enters the editor document,
@@ -810,6 +815,8 @@ interface StudioShellProps {
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
+  /** The source's encoded Quiet Ranges from the bootstrap, or null when not measured. */
+  quietRanges?: EncodedQuietRanges | null;
   /** Server-seeded screen-mode PiP layout analysis (see
    *  `StudioFields.layoutAnalysis`'s doc comment), or null/omitted
    *  when the clip has none yet. */
@@ -866,6 +873,7 @@ export function StudioShell({
   fetchSplitLayoutAnalysis,
   fetchScreenLayoutAnalysis,
   brandLogo = null,
+  quietRanges: encodedQuietRanges = null,
   layoutAnalysis: initialLayoutAnalysis = null,
   autoLayoutAnalysis: initialAutoLayoutAnalysis = null,
   splitLayoutAnalysis: initialSplitLayoutAnalysis = null,
@@ -1263,6 +1271,7 @@ export function StudioShell({
   // (computeDeleteCandidate, Remove-silence detection/apply) must use, kept
   // as one memo so they can never disagree with editedTimeMap about where
   // the clip's bounds actually are.
+  const quietRanges = useMemo(() => (encodedQuietRanges ? decodeQuietRanges(encodedQuietRanges) : null), [encodedQuietRanges]);
   const clipWindow: ClipWindow = useMemo(() => {
     const hasRealBounds = doc.clipEndSec > doc.clipStartSec;
     return hasRealBounds
@@ -2382,7 +2391,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
+    brandLogo, quietRanges, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
     updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
     updateWord, deleteSourceRange, applyRemoveSilence,
     setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,

@@ -28,6 +28,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  clipExportDurationSec,
   clipRenderCaptionDiagnosticsSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
@@ -150,17 +151,18 @@ const clipReviewSelect = {
   startSec: true, endSec: true, title: true, hookText: true, reasoning: true,
   category: true, platformFit: true, viralityScore: true, hookStrengthScore: true,
   emotionalIntensityScore: true, storyCompletenessScore: true, pacingScore: true,
-  durationOptimalityScore: true, previewStorageKey: true, createdAt: true,
+  durationOptimalityScore: true, previewStorageKey: true, createdAt: true, deletedRanges: true, sceneBlocks: true,
 } satisfies Prisma.ClipSelect;
 
 function clipReviewFacts(row: Prisma.ClipGetPayload<{ select: typeof clipReviewSelect }> & { transcriptSlice?: unknown }) {
-  const { previewStorageKey, createdAt, transcriptSlice, ...facts } = row;
+  const { previewStorageKey, createdAt, transcriptSlice, deletedRanges, sceneBlocks, ...facts } = row;
   const excerpt = Array.isArray(transcriptSlice) ? joinTranscriptWords(transcriptSlice.flatMap((item) => {
     if (!item || typeof item !== "object" || !("text" in item) || typeof item.text !== "string") return [];
     return [{ word: item.text }];
   })).slice(0, 2_000) : "";
   return { ...facts, platformFit: facts.platformFit as ClipPlatformTarget[],
-    durationSec: Math.round(Math.max(0, facts.endSec - facts.startSec) * 10) / 10,
+    // The length it plays and exports: cuts removed, inserted scenes added.
+    durationSec: Math.round(clipExportDurationSec({ startSec: facts.startSec, endSec: facts.endSec, deletedRanges, sceneBlocks }) * 10) / 10,
     hasPreview: Boolean(previewStorageKey), createdAt: createdAt.toISOString(),
     ...(transcriptSlice !== undefined ? { transcriptExcerpt: excerpt } : {}) };
 }
@@ -273,7 +275,9 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     status: clip.status as ClipSnapshot["status"],
     startSec: effective.startSec,
     endSec: effective.endSec,
-    durationSec: Math.round(effective.durationSec * 10) / 10,
+    // The length it plays and exports: cuts removed, inserted scenes added.
+    durationSec: Math.round(clipExportDurationSec({ startSec: effective.startSec, endSec: effective.endSec,
+      deletedRanges: editorDocument.deletedRanges, sceneBlocks: editorDocument.sceneBlocks }) * 10) / 10,
     wholeSource: clip.wholeSource,
     title: clip.title,
     hookText: clip.hookText,

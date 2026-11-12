@@ -31,6 +31,11 @@ export const SILENCE_LEAD_IN_EXTRA_SEC = 0.1;
  *  fragments are acoustic noise between transcript words, not pauses. */
 export const SILENCE_MIN_GUARDED_CUT_SEC = 0.3;
 
+/** A piece kept between two cuts that is shorter than this and holds no
+ *  speech is a click or breath, not content: the two cuts join. Seen on a
+ *  real interview (2026-11-12) as 0.07-0.13 s blips between quiet runs. */
+export const SILENCE_MAX_SPEECHLESS_SLIVER_SEC = 0.3;
+
 /** Width given to a word whose transcript timing is a single instant, so it
  *  still splits the gap it sits in and gets padded like any other word. */
 const ZERO_DURATION_WORD_SEC = 0.01;
@@ -193,6 +198,22 @@ function subtractDeletedFromCandidate(
   return pieces;
 }
 
+/** Joins consecutive cuts whose kept piece between them is shorter than
+ *  SILENCE_MAX_SPEECHLESS_SLIVER_SEC and overlaps no `speech` span. */
+export function joinSpeechlessSlivers(ranges: SourceRange[], speech: SourceRange[]): SourceRange[] {
+  const joined: SourceRange[] = [];
+  for (const range of [...ranges].sort((a, b) => a.startSec - b.startSec)) {
+    const last = joined[joined.length - 1];
+    const sliver = last && range.startSec - last.endSec < SILENCE_MAX_SPEECHLESS_SLIVER_SEC - FLOAT_SLACK;
+    if (last && sliver && !speech.some((s) => s.startSec < range.startSec && s.endSec > last.endSec)) {
+      last.endSec = Math.max(last.endSec, range.endSec);
+    } else {
+      joined.push({ ...range });
+    }
+  }
+  return joined;
+}
+
 /** Padding kept before speech resumes for a given `padSec`. */
 export function silenceLeadInSec(padSec: number): number {
   return padSec > 0 ? padSec + SILENCE_LEAD_IN_EXTRA_SEC : 0;
@@ -259,5 +280,5 @@ export function detectSilenceRanges(
     ? intersectWithQuiet(trimmed, opts.quietRanges, SILENCE_MIN_GUARDED_CUT_SEC)
     : trimmed;
 
-  return normalizeDeletedRanges(guarded, window);
+  return normalizeDeletedRanges(joinSpeechlessSlivers(guarded, coverage), window);
 }

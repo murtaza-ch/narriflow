@@ -30,6 +30,7 @@ import {
   brollQueryForClip,
   planBrollCutaways,
   detectSilenceRanges,
+  silenceLeadInSec,
   SILENCE_DEFAULT_MIN_SILENCE_SEC,
   SILENCE_DEFAULT_PAD_SEC,
 } from "@narriflow/validators";
@@ -753,7 +754,7 @@ const SILENCE_MIN_SEC_RANGE = { min: 0.3, max: 3.0, step: 0.1 };
 const SILENCE_PAD_SEC_RANGE = { min: 0, max: 0.5, step: 0.05 };
 
 function RemoveSilencePopover() {
-  const { utterances, clipWindow, deletedRanges, applyRemoveSilence } = useStudio("utterances", "clipWindow", "deletedRanges", "applyRemoveSilence");
+  const { utterances, clipWindow, deletedRanges, applyRemoveSilence, quietRanges } = useStudio("utterances", "clipWindow", "deletedRanges", "applyRemoveSilence", "quietRanges");
   const [open, setOpen] = useState(false);
   const [minSilenceSec, setMinSilenceSec] = useState(SILENCE_DEFAULT_MIN_SILENCE_SEC);
   const [padSec, setPadSec] = useState(SILENCE_DEFAULT_PAD_SEC);
@@ -775,9 +776,11 @@ function RemoveSilencePopover() {
             minSilenceSec,
             padSec,
             existingDeleted: deletedRanges,
+            // Measured quiet audio keeps music and laughter between words.
+            ...(quietRanges ? { quietRanges } : {}),
           })
         : [],
-    [open, utterances, clipWindow, minSilenceSec, padSec, deletedRanges],
+    [open, utterances, clipWindow, minSilenceSec, padSec, deletedRanges, quietRanges],
   );
 
   const totalRemovedSec = useMemo(
@@ -858,7 +861,7 @@ function RemoveSilencePopover() {
                     Keep padding
                   </Text>
                   <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">
-                    {padSec.toFixed(2)}s
+                    {padSec === 0 ? "0s" : `${padSec.toFixed(2)}s · ${silenceLeadInSec(padSec).toFixed(2)}s before speech`}
                   </Text>
                 </Flex>
                 <Slider.Root
@@ -870,7 +873,7 @@ function RemoveSilencePopover() {
                   size="sm"
                   css={studioSliderCss}
                   aria-label={["Silence padding"]}
-                  getAriaValueText={({ value }) => `${value.toFixed(2)} seconds`}
+                  getAriaValueText={({ value }) => value === 0 ? "No padding" : `${value.toFixed(2)} seconds after speech, ${silenceLeadInSec(value).toFixed(2)} before`}
                 >
                   <Slider.Control>
                     <Slider.Track>

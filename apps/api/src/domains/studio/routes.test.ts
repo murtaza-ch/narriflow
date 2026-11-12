@@ -166,6 +166,7 @@ function harness(
       getProjectBrandSnapshot: read("brandSnapshot", null),
       getProjectBrandAudio: read("brandAudio", { music: [], sfx: [] }),
       getCaptionLanguage: read("captionLanguage", "ur"),
+      getTranscriptQuietRanges: read("quietRanges", [100, 50]),
     },
     autoCensorService: {
       getPolicy: read("policy", { locale: "en", canApply: true }),
@@ -365,6 +366,7 @@ describe("Studio bootstrap", () => {
       editor: { revision: 7, document: { version: 1 } },
       source: { videoUrl: "https://signed.test/sources/a.mp4", previewId: "sources/a.mp4", purged: false },
       brandLogo: null,
+      quietRanges: [100, 50],
       brandProfileId: PROFILE_ID,
       sceneWriteCapabilities: { cards: true, images: true, videos: true, templates: true },
       generatedImagesCapability: { reason: "available" },
@@ -382,6 +384,7 @@ describe("Studio bootstrap", () => {
         "preview",
         "profile",
         "project",
+        "quietRanges",
         "retainedBroll",
         "retainedFonts",
         "retainedSceneAssets",

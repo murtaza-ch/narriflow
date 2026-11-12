@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { buildClipCutPlan, deletedRangesSchema, normalizeDeletedRanges, type ClipWindow, type SourceRange } from "./edit-ranges";
 import { detectFillerWordRanges, isFillerWord } from "./filler-words";
-import { detectSilenceRanges } from "./silence-detection";
+import { buildCoverageSpans, detectSilenceRanges, joinSpeechlessSlivers } from "./silence-detection";
 import type { TranscriptUtterance } from "./transcript";
 
 // Automatic clip cleanup chosen at generation: silence and filler-word
@@ -76,19 +76,21 @@ export function detectClipCleanupRanges(
   window: ClipWindow,
   opts: ClipCleanupOptions,
 ): SourceRange[] {
+  const skipFiller = opts.removeFillerWords ? (word: TranscriptUtterance["words"][number]) => isFillerWord(word, opts.languageCode) : undefined;
   const ranges = [
     ...(opts.removeSilences && opts.quietRanges
       ? detectSilenceRanges(utterances, window, {
           quietRanges: [...opts.quietRanges],
           // A filler being cut joins the pauses around it into one gap, so no
           // sliver of pause is left between a silence cut and a filler cut.
-          ...(opts.removeFillerWords ? { skipWord: (word) => isFillerWord(word, opts.languageCode) } : {}),
+          ...(skipFiller ? { skipWord: skipFiller } : {}),
         })
       : []),
     ...(opts.removeFillerWords ? detectFillerWordRanges(utterances, window, { languageCode: opts.languageCode }) : []),
   ];
   if (ranges.length === 0) return [];
-  const normalized = normalizeDeletedRanges(ranges, window);
+  const speech = buildCoverageSpans(utterances, window, skipFiller);
+  const normalized = normalizeDeletedRanges(joinSpeechlessSlivers(normalizeDeletedRanges(ranges, window), speech), window);
   if (!deletedRangesSchema.safeParse(normalized).success || buildClipCutPlan(normalized, window).isEmpty) return [];
   return normalized;
 }
