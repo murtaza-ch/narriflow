@@ -11,7 +11,9 @@ export interface SwitchProps
   inputProps?: React.ComponentProps<typeof ChakraSwitch.HiddenInput>
 }
 
-/** App-wide Chakra switch with a filled track and accent checked state. */
+/** App-wide Chakra switch with a filled track and accent checked state. The
+ *  unselected track (`bg.track`) and both thumbs keep at least 3:1 contrast
+ *  on the page, panels and soft rows in both colour modes. */
 export const Switch = React.forwardRef<HTMLLabelElement, SwitchProps>(
   function Switch(props, ref) {
     const {
@@ -37,8 +39,11 @@ export const Switch = React.forwardRef<HTMLLabelElement, SwitchProps>(
         {...rest}
       >
         <ChakraSwitch.HiddenInput {...inputProps} />
-        <ChakraSwitch.Control>
-          <ChakraSwitch.Thumb bg="white" _checked={{ bg: "white" }} />
+        <ChakraSwitch.Control bg="bg.track" _checked={{ bg: "colorPalette.solid" }}>
+          {/* White on the grey track; on the accent fill, the accent's own
+              contrast colour (dark on the pale dark-mode accent, where white
+              measured 2.23:1). */}
+          <ChakraSwitch.Thumb bg="white" _checked={{ bg: "colorPalette.contrast" }} />
         </ChakraSwitch.Control>
         {children != null ? (
           <ChakraSwitch.Label

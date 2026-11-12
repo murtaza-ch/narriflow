@@ -525,6 +525,13 @@ const config = defineConfig({
           softHover: {
             value: { _light: "rgba(16, 19, 24, 0.08)", _dark: "rgba(255, 255, 255, 0.1)" },
           },
+          // The unselected track of a switch. At least 3:1 against the page,
+          // panels and soft rows in both modes (WCAG 1.4.11), with the white
+          // thumb at least 3:1 on it. Chakra's default track measured 1.39:1
+          // on a dark soft row and its thumb 1.48:1 in light mode.
+          track: {
+            value: { _light: "#84888D", _dark: "#737373" },
+          },
         },
         fg: {
           DEFAULT: {
