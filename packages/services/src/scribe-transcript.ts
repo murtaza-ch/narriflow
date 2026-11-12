@@ -105,7 +105,8 @@ export function createScribeFinalizer(deps: ScribeFinalizerDependencies) {
 
     return deps.lifecycle.completeProviderTranscript(key, {
       provider: normalized.provider,
-      providerModel: normalized.providerModel,
+      // The accepted submission recorded which Scribe model ran.
+      providerModel: null,
       providerJobId: normalized.providerJobId,
       providerRequestId: normalized.providerRequestId,
       languageCode: normalized.languageCode,

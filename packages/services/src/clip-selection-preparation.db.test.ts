@@ -54,7 +54,7 @@ dbDescribe("Frozen selection preparation", () => {
     };
     return { storage, objects };
   }
-  const provider = { model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32000 };
+  const provider = { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 };
   test("preparation stores one private input, registers every window/deadline atomically and replays the frozen guidance without a new read", async () => {
     const f = await fixture(), store = storageFixture();
     let guidanceReads = 0;

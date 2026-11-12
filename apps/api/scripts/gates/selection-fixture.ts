@@ -14,7 +14,7 @@ export async function createSyntheticSelectionCapsule(): Promise<ClipSelectionIn
       outputTypes: ["short_clip"], clipCountTarget: 30, clipDurationSecTarget: 45, platformPlaybookVersion: "platform-playbook-v1" }), sourceDurationSec: 10800, sourceProbeDurationSec: 10800,
       utterances, fullText: utterances.map(utterance => utterance.text).join(" "), speakerCount: 2, sourceLanguageCode: "en", audienceDataLine: "Frozen synthetic audience guidance" },
     editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 10800, wholeSource: false },
-    provider: { model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: SYSTEM_PROMPT,
+    provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: SYSTEM_PROMPT,
     responseSchemaHash: await clipSelectionBytesHash(new TextEncoder().encode(JSON.stringify(CLIP_DETECTION_JSON_SCHEMA))) };
 }
 

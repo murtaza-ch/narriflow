@@ -8,7 +8,7 @@ const capsule = () => ({ version: 1 as const, parent, transcript: { id: "0000000
     sourceDurationSec: 3600, sourceProbeDurationSec: 3600, utterances: [], fullText: "private transcript", speakerCount: 1, sourceLanguageCode: "en", audienceDataLine: "Frozen audience data" },
   editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 3600, wholeSource: false,
     cleanup: { removeSilences: false, removeFillerWords: false, quietRanges: null, languageCode: "en", aiFillers: null } },
-  provider: { model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "Frozen system prompt", responseSchemaHash: "c".repeat(64) });
+  provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "Frozen system prompt", responseSchemaHash: "c".repeat(64) });
 test("private selection input canonical bytes bind the frozen Transcript, settings, guidance and editor seed", async () => {
   const input = await encodeClipSelectionInput(capsule());
   expect(input.byteLength).toBe(input.bytes.byteLength);

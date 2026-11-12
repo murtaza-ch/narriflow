@@ -45,7 +45,7 @@ suite("Restore of immutable paid object results",()=>{
     const base=(await db.$transaction(tx=>appendWorkflowRunDispatch(tx,run.id))).reference;
     const objects=new Map<string,Uint8Array>();let writes=0,providerCalls=0;
     const storage:ClipSelectionStorage={async write(key,bytes){writes++;objects.set(key,bytes.slice());return {etag:'"sealed"',byteLength:bytes.byteLength,sha256:await clipSelectionBytesHash(bytes)};},async read(ref){const bytes=objects.get(ref.storageKey);if(!bytes || ref.etag!=='"sealed"')throw Error("Object precondition");return bytes.slice();}};
-    const preparation=createClipSelectionPreparation({database:db,storage,provider:{model:"gpt-5.4-mini",reasoningEffort:"medium",maxOutputTokens:32000},guidance:{async promptLine(){return "Frozen guidance";}}});
+    const preparation=createClipSelectionPreparation({database:db,storage,provider:{model:"gpt-6-luna",reasoningEffort:"medium",maxOutputTokens:32000},guidance:{async promptLine(){return "Frozen guidance";}}});
     const prepared=await preparation.prepare(base);if(prepared.kind!=="prepared")throw Error("Selection not prepared");expect(prepared.windows).toHaveLength(2);
     const lifecycle=createClipSelectionLifecycle({database:db,maxInFlightRequests:2,maxEstimatedTokens:1000000});
     const control=createClipSelectionControl({preparation,lifecycle,storage,deliver:async()=>{},provider:{async generate(){providerCalls++;return {kind:"completed",content:'{"clips":[]}',tokensUsed:117,providerRequestId:"captured-paid-request",rateLimitHeaders:{}};}}});

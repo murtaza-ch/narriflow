@@ -17,10 +17,10 @@ function input(over: { removeFillerWords?: boolean; languageCode?: string | null
       sourceDurationSec: 300, sourceProbeDurationSec: 300, utterances, fullText: "x", speakerCount: 1, sourceLanguageCode: over.languageCode === undefined ? "de" : over.languageCode, audienceDataLine: null },
     editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 300, wholeSource: false,
       cleanup: { removeSilences: false, removeFillerWords: over.removeFillerWords ?? true, quietRanges: null, languageCode: over.languageCode === undefined ? "de" : over.languageCode, aiFillers: null } },
-    provider: { model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "p", responseSchemaHash: "c".repeat(64) };
+    provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "p", responseSchemaHash: "c".repeat(64) };
 }
 
-const outcome = (keys: string[]): FillerTaggingOutcome => ({ contract: { models: [{ model: "gpt-5.6-luna", reasoningEffort: "low" }, { model: "gpt-5.4", reasoningEffort: "none" }],
+const outcome = (keys: string[]): FillerTaggingOutcome => ({ contract: { models: [{ model: "gpt-6-luna", reasoningEffort: "none" }],
   promptSha256: "d".repeat(64), schemaSha256: "e".repeat(64), maxOutputTokens: 4000 }, chunks: 1, tagged: 1, failed: 0, skipped: 0, unsafe: 0, tokensUsed: 10, overflow: false, keys });
 
 function recording(reply: () => Promise<unknown>) {

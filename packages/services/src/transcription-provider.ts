@@ -1,4 +1,4 @@
-import { SCRIBE_MODEL_ID } from "@narriflow/validators";
+import { SCRIBE_URDU_MODEL_ID, scribeModelForLanguage } from "@narriflow/validators";
 import { scribeErrorDetail, scribeHttpFailure } from "./scribe-errors";
 import { parseRetryAfterMs } from "./retry-after";
 import { WorkflowFailure } from "./workflow-attempt-contract";
@@ -7,7 +7,7 @@ import { decideProbePin, LANGUAGE_PROBE_MAX_BYTES, type LanguageProbeResult } fr
 /** Every provider callback carries the immutable source lineage submitted to Scribe. */
 export type { ProviderAttemptReference as ScribeSubmissionReference } from "@narriflow/validators/execution";
 import type { ProviderAttemptReference as ScribeSubmissionReference } from "@narriflow/validators/execution";
-export interface ScribeAcceptance { requestId: string; transcriptionId: string }
+export interface ScribeAcceptance { requestId: string; transcriptionId: string; /** The Scribe model the submission used. */ model: string }
 export type ScribeFetchResult =
   | { kind: "ready"; payload: Record<string, unknown> }
   | { kind: "pending" }
@@ -34,7 +34,8 @@ export function createScribeProvider(config: { apiKey: string; webhookId: string
         new TextDecoder().decode(input.wav.subarray(8, 12)) !== "WAVE") return unavailable("probe_invalid");
       try {
         const body = new FormData();
-        body.set("model_id", SCRIBE_MODEL_ID); body.set("tag_audio_events", "false"); body.set("timestamps_granularity", "word");
+        // Detection stays on v2: v3 labels Urdu speech as Hindi (see SCRIBE_URDU_MODEL_ID).
+        body.set("model_id", SCRIBE_URDU_MODEL_ID); body.set("tag_audio_events", "false"); body.set("timestamps_granularity", "word");
         body.set("file", new Blob([new Uint8Array(input.wav)], { type: "audio/wav" }), "probe.wav");
         const response = await fetchImpl(endpoint, { method: "POST", headers, body,
           signal: AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(60_000)]) });
@@ -52,7 +53,8 @@ export function createScribeProvider(config: { apiKey: string; webhookId: string
       if (source.protocol !== "https:" || source.username || source.password || source.hash) throw new WorkflowFailure("source_audio_grant_invalid", "permanent", "Source Audio grant is invalid");
       input.signal?.throwIfAborted();
       const body = new FormData();
-      body.set("model_id", SCRIBE_MODEL_ID);
+      const model = scribeModelForLanguage(input.languageCode);
+      body.set("model_id", model);
       body.set("diarize", "true");
       body.set("timestamps_granularity", "word");
       body.set("tag_audio_events", "false");
@@ -72,7 +74,7 @@ export function createScribeProvider(config: { apiKey: string; webhookId: string
       const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
       if (!response.ok) throw scribeHttpFailure("submit", response.status, payload, parseRetryAfterMs(response.headers.get("retry-after"), new Date()));
       if (typeof payload?.request_id !== "string" || !payload.request_id || typeof payload.transcription_id !== "string" || !payload.transcription_id) throw new ScribeSubmissionUnconfirmed();
-      return { requestId: payload.request_id, transcriptionId: payload.transcription_id };
+      return { requestId: payload.request_id, transcriptionId: payload.transcription_id, model };
     },
 
     async result(transcriptionId: string, signal?: AbortSignal): Promise<ScribeFetchResult> {

@@ -12,7 +12,7 @@ import { executeDubbing } from "./dubbing-native";
 async function input(byteLength = 3, targetLanguageCode: "en" | "es" = "en") {
   const request = { version: 1 as const, kind: "dubbing_request" as const, dubId: randomUUID(), workflowRunId: randomUUID(), projectId: randomUUID(), workspaceId: randomUUID(), actorUserId: randomUUID(), clipId: randomUUID(), editorRevision: 1, sourceRevision: 1,
     baseRender: { id: randomUUID(), storageKey: "projects/frozen/render.mp4", byteLength, durationSec: 2 }, script: "A frozen script", sourceLanguageCode: "en" as const, targetLanguageCode, voice: "marin" as const, aspectRatio: "9:16" as const,
-    provider: "openai" as const, model: "gpt-4o-mini-tts", translationModel: "gpt-5.4-mini" };
+    provider: "openai" as const, model: "gpt-4o-mini-tts", translationModel: "gpt-6-luna" };
   const value = { version: 1 as const, kind: "dub_mix" as const, request, requestHash: await frozenDubbingRequestHash(request), toolchainFingerprint: "a".repeat(64), baseVideo: { storageKey: request.baseRender.storageKey, etag: '"base"', byteLength } };
   return { ...value, bindingHash: await dubbingInputBinding(value) };
 }
@@ -67,7 +67,7 @@ test("real translated speech is probed and muxed once, and sealed recovery calls
   const server = Bun.serve({ port: 0, fetch: async request => {
     const path = new URL(request.url).pathname;posts.push(path);
     const body = await request.json();
-    if (path === "/v1/responses") { expect(body.model).toBe("gpt-5.4-mini");return Response.json({ id: "resp_controlled", output: [{ content: [{ text: "Un guion congelado" }] }] }); }
+    if (path === "/v1/responses") { expect(body.model).toBe("gpt-6-luna");return Response.json({ id: "resp_controlled", output: [{ content: [{ text: "Un guion congelado" }] }] }); }
     expect(body.input).toBe("Un guion congelado");return new Response(await readFile(speech), { headers: { "Content-Type": "audio/mpeg" } });
   } });
   try {

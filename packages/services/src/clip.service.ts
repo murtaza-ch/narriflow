@@ -114,6 +114,7 @@ import {
   computeViralityScore,
 } from "./clip-scoring";
 import { requirePrisma } from "./require-prisma";
+import { OPENAI_TEXT_MODEL, OPENAI_TEXT_REASONING } from "./openai-models";
 
 export {
   computeDurationOptimality,
@@ -1066,7 +1067,7 @@ export class ClipService {
     const model =
       readServiceEnvironment().OPENAI_CONTENT_MODEL ??
       readServiceEnvironment().OPENAI_CLIP_MODEL ??
-      "gpt-5.4-mini";
+      OPENAI_TEXT_MODEL;
 
     await prisma.$transaction(requireExecutionAdmissionOpen);
     let content: string;
@@ -1077,6 +1078,7 @@ export class ClipService {
         timeoutMs: TITLE_TIMEOUT_MS,
         body: {
           model,
+          reasoning: OPENAI_TEXT_REASONING,
           input: [
             {
               role: "system",

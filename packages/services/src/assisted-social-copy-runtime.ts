@@ -19,6 +19,7 @@ import { requirePlanFeature } from "./plan-features";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 import { requirePrisma } from "./require-prisma";
+import { OPENAI_TEXT_MODEL } from "./openai-models";
 
 const generationInclude = {
 	variants: { orderBy: { platform: "asc" as const } },
@@ -232,7 +233,7 @@ function productionModule(environment: ServiceEnvironment = readServiceEnvironme
 		environment.OPENAI_ASSISTED_COPY_MODEL ??
 		environment.OPENAI_CONTENT_MODEL ??
 		environment.OPENAI_CLIP_MODEL ??
-		"gpt-5.4-mini";
+		OPENAI_TEXT_MODEL;
 	const provider=createOpenAiAssistedCopyProvider({apiKey,model}),moderate=createOpenAiAssistedCopyModerator({apiKey});
 	const beforeExternal=async()=>{if(beforeWrite)await requirePrisma().$transaction(beforeWrite);};
 	return createAssistedSocialCopy({

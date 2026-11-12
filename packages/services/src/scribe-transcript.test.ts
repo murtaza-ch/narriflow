@@ -100,7 +100,7 @@ describe("finalizeScribeTranscript", () => {
     expect(h.completed).toHaveLength(1);
     expect(h.completed[0]).toMatchObject({
       provider: "elevenlabs",
-      providerModel: "scribe_v2",
+      providerModel: null, // the accepted submission recorded the model
       providerJobId: "tx_1",
       providerRequestId: "req_1",
       languageCode: "en",

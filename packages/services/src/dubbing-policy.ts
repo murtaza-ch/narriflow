@@ -1,6 +1,7 @@
 import { transcriptUtteranceSchema, type TranscriptUtterance } from "@narriflow/validators";
 import { frozenDubbingRequestSchema, type FrozenDubbingRequest } from "@narriflow/validators/dubbing-execution";
 import { sha256Hex } from "./execution-hash";
+import { OPENAI_TEXT_REASONING } from "./openai-models";
 
 function languageRoot(code: string | null | undefined) { return code?.split("-")[0]?.toLowerCase() ?? null; }
 export function shouldTranslateDub(sourceCode: string | null, targetCode: string) {
@@ -30,7 +31,7 @@ export async function frozenDubbingRequestHash(value: FrozenDubbingRequest) {
 }
 
 export function dubTranslationRequestBody(input: Pick<FrozenDubbingRequest, "translationModel" | "script" | "sourceLanguageCode" | "targetLanguageCode">) {
-  return { model: input.translationModel, input: [
+  return { model: input.translationModel, reasoning: OPENAI_TEXT_REASONING, input: [
     { role: "system", content: "Translate creator video transcripts for natural voiceover dubbing. Preserve meaning, names, numbers, and tone. Return only the translated script with no markdown or commentary." },
     { role: "user", content: `Source language: ${input.sourceLanguageCode ?? "auto"}\nTarget language: ${dubLanguageLabel(input.targetLanguageCode)} (${input.targetLanguageCode})\n\nSCRIPT:\n${input.script}` },
   ] };

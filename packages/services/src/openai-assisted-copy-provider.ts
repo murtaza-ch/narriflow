@@ -2,6 +2,7 @@ import type { AssistedCopyProvider } from "./assisted-social-copy";
 import { AssistedSocialCopyError } from "./assisted-social-copy";
 import { openAiResponseText } from "./openai-responses";
 import { readResponseBodyBounded } from "./url-policy";
+import { OPENAI_TEXT_REASONING } from "./openai-models";
 
 const RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const MODERATIONS_ENDPOINT = "https://api.openai.com/v1/moderations";
@@ -68,6 +69,7 @@ export function createOpenAiAssistedCopyProvider(options: ProviderOptions): Assi
           },
           body: JSON.stringify({
             model,
+            reasoning: OPENAI_TEXT_REASONING,
             store: false,
             input: [
               { role: "system", content: systemPrompt() },

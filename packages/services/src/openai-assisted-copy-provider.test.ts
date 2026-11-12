@@ -27,7 +27,7 @@ test("OpenAI assisted copy uses strict structured output without storing the req
   let body: Record<string, unknown> | null = null;
   const provider = createOpenAiAssistedCopyProvider({
     apiKey: "test-key",
-    model: "gpt-5.4-mini",
+    model: "gpt-6-luna",
     fetch: async (_url, init) => {
       body = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
@@ -44,9 +44,9 @@ test("OpenAI assisted copy uses strict structured output without storing the req
 
   const result = await provider.generate(INPUT);
 
-  expect(result).toMatchObject({ model: "gpt-5.4-mini", inputTokens: 150, outputTokens: 60 });
+  expect(result).toMatchObject({ model: "gpt-6-luna", inputTokens: 150, outputTokens: 60 });
   expect(result.variants).toHaveLength(2);
-  expect(body).toMatchObject({ model: "gpt-5.4-mini", store: false });
+  expect(body).toMatchObject({ model: "gpt-6-luna", store: false });
   expect(JSON.stringify(body)).toContain("Launch week");
   expect(JSON.stringify(body)).not.toContain("transcript");
 });

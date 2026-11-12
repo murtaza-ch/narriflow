@@ -35,7 +35,7 @@ describe("normalizeElevenLabsTranscript", () => {
 
     expect(normalized).toMatchObject({
       provider: "elevenlabs",
-      providerModel: "scribe_v2",
+      providerModel: "scribe_v3",
       providerJobId: "tx_1",
       providerRequestId: "req_1",
       languageCode: "en",
@@ -218,7 +218,7 @@ describe("normalizeElevenLabsTranscript", () => {
     test("a caption-only generation gets a finished transcript with no utterances", () => {
       for (const empty of [silent, payloadOf([]), { language_code: "eng" }]) {
         expect(normalizeElevenLabsTranscript(empty, { ...options, allowEmpty: true, durationSeconds: 7.6 })).toMatchObject({
-          provider: "elevenlabs", providerModel: "scribe_v2", providerJobId: "tx_1", text: "", utterances: [], speakerCount: 0, durationSeconds: 8,
+          provider: "elevenlabs", providerModel: "scribe_v3", providerJobId: "tx_1", text: "", utterances: [], speakerCount: 0, durationSeconds: 8,
         });
       }
     });
@@ -268,7 +268,7 @@ describe("exportTranscript", () => {
     projectId: "72e62077-cfc8-446b-9dd1-29bd72020858",
     status: "completed",
     provider: "elevenlabs",
-    providerModel: "scribe_v2",
+    providerModel: "scribe_v3",
     providerJobId: "scribe-transcript-123",
     languageCode: "en",
     languageConfidence: 0.97,
@@ -332,7 +332,7 @@ describe("exportTranscript in no-space scripts", () => {
   });
   const snapshot = (words: ReturnType<typeof word>[], text: string) => buildTranscriptSnapshot({
     projectId: "00000000-0000-4000-8000-000000000001", status: "completed", provider: "elevenlabs",
-    providerModel: "scribe_v2", providerJobId: null, languageCode: "zh", languageConfidence: 0.99, text,
+    providerModel: "scribe_v3", providerJobId: null, languageCode: "zh", languageConfidence: 0.99, text,
     utterancesJson: [{ index: 0, speaker: null, speakerLabel: "Speaker", startSec: 0, endSec: 3, text, confidence: null, words }],
     speakerCount: 1, durationSeconds: 3, errorCode: null, completedAt: null, updatedAt: null,
   });

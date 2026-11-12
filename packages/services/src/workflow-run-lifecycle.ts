@@ -1808,7 +1808,7 @@ export class WorkflowRunLifecycle {
    */
   async recordProviderAcceptance(
     key: ProviderAttemptReference,
-    input: { requestId: string; transcriptionId: string; nextPollAt: Date },
+    input: { requestId: string; transcriptionId: string; model: string; nextPollAt: Date },
   ): Promise<ProviderSettlementResult> {
     return this.transaction(async (tx) => {
       const lookup = await this.lockProviderAttempt(tx, key, "accept", {
@@ -1825,6 +1825,8 @@ export class WorkflowRunLifecycle {
         data: {
           providerJobId: input.transcriptionId,
           providerRequestId: input.requestId,
+          // The model the submission actually used (Urdu stays on Scribe v2).
+          providerModel: input.model,
           providerSubmissionDeadlineAt: null,
           providerResultDeadlineAt: resultDeadlineAt,
           status: "processing",
@@ -2207,7 +2209,7 @@ export class WorkflowRunLifecycle {
 
     const currentTranscript = await tx.transcript.findUnique({
       where: { projectId: attempt.projectId },
-      select: { workflowAttemptId: true, providerJobId: true },
+      select: { workflowAttemptId: true, providerJobId: true, providerModel: true },
     });
     if (
       currentTranscript?.workflowAttemptId !== attempt.attemptId ||
@@ -2223,7 +2225,8 @@ export class WorkflowRunLifecycle {
       status: "completed" as const,
       workflowAttemptId: attempt.attemptId,
       provider: input.provider,
-      providerModel: input.providerModel,
+      // A Scribe result keeps the model recorded when Scribe accepted the job.
+      providerModel: input.provider === "elevenlabs" ? input.providerModel ?? currentTranscript.providerModel : input.providerModel,
       providerJobId: input.providerJobId,
       ...(input.providerRequestId !== undefined
         ? { providerRequestId: input.providerRequestId }

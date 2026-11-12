@@ -216,7 +216,7 @@ The same `generation` object works on `POST /uploads`, `POST /projects` and `POS
 
 ### Filler words in other languages
 
-English transcripts use a fixed list: "um", "uh", "er" and "erm". For any other language, Narriflow asks two AI models to find hesitation sounds in the transcript and cuts a word only when both agree that it is a sound, not a word. Real words are never cut on purpose, even when they work as fillers ("so", "like", "este", "जी"), so some hesitations stay.
+English transcripts use a fixed list: "um", "uh", "er" and "erm". For any other language, an AI model finds hesitation sounds in the transcript, and Narriflow cuts a word only when the model says it is a sound, not a word, and checks that it isn't a stretched-out real word. Real words are never cut on purpose, even when they work as fillers ("so", "like", "este", "जी"), so some hesitations stay.
 
 This works best where the transcript writes hesitations down, as it usually does for German, Dutch, French, Russian and Swedish. Hindi and Urdu transcripts rarely include them, so little is cut there. If tagging can't finish, the clip keeps its fillers rather than failing.
 

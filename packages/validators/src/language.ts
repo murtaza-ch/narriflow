@@ -1,7 +1,21 @@
 import { z } from "zod";
 
-/** ElevenLabs speech-to-text model every transcript is produced with. */
-export const SCRIBE_MODEL_ID = "scribe_v2";
+/** ElevenLabs speech-to-text model transcripts are produced with. */
+export const SCRIBE_MODEL_ID = "scribe_v3";
+
+/**
+ * Kept for Urdu, for audio whose language is not pinned, and for language
+ * detection. Measured 2026-11-13 on three Pakistani Urdu podcasts with
+ * language_code=urd: Scribe v3 wrote two of them in Devanagari (0% Urdu
+ * script, 94% for v2 on the same audio) and auto-detected Urdu speech as
+ * Hindi, whatever the request options. Scribe v2 wrote Urdu script.
+ */
+export const SCRIBE_URDU_MODEL_ID = "scribe_v2";
+
+/** The Scribe model for a submission: v3, except Urdu and unknown-language audio. */
+export function scribeModelForLanguage(providerLanguageCode: string | null): string {
+  return providerLanguageCode === null || providerLanguageCode === "urd" ? SCRIBE_URDU_MODEL_ID : SCRIBE_MODEL_ID;
+}
 
 export type LanguageScript =
   | "Latin"

@@ -20,6 +20,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { OPENAI_TEXT_MODEL, OPENAI_TEXT_REASONING } from "./openai-models";
 
 const contentSuiteFailureCatalog = {
   database_unavailable: "unavailable",
@@ -286,7 +287,7 @@ export class ContentSuiteService {
       );
     }
 
-    const model = readServiceEnvironment().OPENAI_CONTENT_MODEL ?? readServiceEnvironment().OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
+    const model = readServiceEnvironment().OPENAI_CONTENT_MODEL ?? readServiceEnvironment().OPENAI_CLIP_MODEL ?? OPENAI_TEXT_MODEL;
 
     await prisma.$transaction(requireExecutionAdmissionOpen);
     const generationId = await reserveContentGeneration(prisma, scope.workspaceId, actor.pricingTier, new Date());
@@ -298,6 +299,7 @@ export class ContentSuiteService {
         timeoutMs: CONTENT_TIMEOUT_MS,
         body: {
           model,
+          reasoning: OPENAI_TEXT_REASONING,
           input: [
             { role: "system", content: buildSystemPrompt() },
             {

@@ -1,4 +1,4 @@
-# ElevenLabs Scribe v2 transcribes every Project; the language is pinned from the user's choice or a probe
+# ElevenLabs Scribe transcribes every Project (v3; Urdu on v2); the language is pinned from the user's choice or a probe
 
 **Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
 
@@ -30,3 +30,17 @@ Every later piece (worker adapter, webhook route, migration of stored codes, fon
 Scribe control moves into TypeScript service commands invoked by ImportPipeline steps. Native language-probe extraction runs in Modal only after Processing Usage admission against immutable whole-source Source Audio. Explicit language, supplied captions, no-STT and audio-only paths remain. Record provider intent before POST; accepted request ID stays distinct from transcription ID. Explicit provider-submission and result deadlines replace updatedAt timeout inference. Signed callback and targeted GET recovery use one fenced finalizer, and result plus wake commit together. No container or database connection waits for transcription, and no full-video STT fallback is retained. Admission weights duration at min(4, ceil(durationSeconds / 480)) concurrency units. Unknown acceptance retains the accepted duplicate-provider-bill risk from this decision; it never duplicates Processing Usage settlement.
 
 The optional native WAV is prepared while the source-bound STT run is queued and unowned. Its fixed window ends ninety seconds after immutable Source Audio creation, clamped to the active Ingest absolute deadline. Assignment binds Source Audio, STT run/generation, exact windows and toolchain; the existing Ingest owner produces it. A committed matching probe remains readable when video completion ends that owner. Missing, late, short-source or otherwise unavailable probes preserve Auto. Only after this preparation does weighted admission record intent and count the full source weight. That same reservation covers the synchronous provider probe and the full asynchronous POST, with one charged control attempt. Probe 429/transport failure degrades to Auto; no transaction spans provider HTTP.
+
+## Amendment 2026-11-13: Scribe v3, with Urdu on v2
+
+Submissions use Scribe v3 (`scribe_v3`, released 2026-11-09, same $0.20/hour list price; the vendor reports 27% fewer word errors across 102 languages). Its request parameters and response shape are unchanged, and it accepted every registry code we tested, including Yoruba.
+
+Urdu stays on Scribe v2, and so do unpinned audio and the language probe:
+- **Measured 2026-11-13:** three Pakistani Urdu podcasts, `language_code=urd`.
+  - Scribe v3 wrote two of the three entirely in Devanagari. On one of them v2 produced 94% Urdu script and v3 0%. The third came out in Devanagari from both models.
+  - Pinning `ur`, adding `secondary_language_codes=eng`, or using Auto did not change v3's output. Auto labelled the audio Hindi.
+- **Hindi and German were fine on v3.** v3 kept all 9 German hesitations that v2 kept, and slightly more Hindi ones.
+
+`scribeModelForLanguage` in `packages/validators/src/language.ts` makes the choice, and the accepted submission records its model on the Transcript (`providerModel`).
+
+Re-test Urdu on each new Scribe release and drop the exception once v3 or a successor writes Urdu script.

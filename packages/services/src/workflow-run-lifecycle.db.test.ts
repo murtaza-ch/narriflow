@@ -1921,7 +1921,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       async write(key, bytes) { objects.set(key, bytes.slice()); return { etag: '"sealed"', byteLength: bytes.byteLength, sha256: await clipSelectionBytesHash(bytes) }; },
       async read(object) { const bytes = objects.get(object.storageKey); if (!bytes || object.etag !== '"sealed"') throw Error("Changed private selection object"); return bytes.slice(); },
     };
-    const preparation = createClipSelectionPreparation({ database: prisma, storage, provider: { model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32000 } });
+    const preparation = createClipSelectionPreparation({ database: prisma, storage, provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 } });
     const prepared = await preparation.prepare(reference);
     if (prepared.kind !== "prepared") throw Error("Expected actual selection preparation");
     let providerCalls = 0;

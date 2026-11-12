@@ -17,10 +17,27 @@ test("Scribe receives only the immutable audio URL and exact callback lineage in
     expect(form.get("language_code")).toBe("urd");
     expect(JSON.parse(String(form.get("webhook_metadata")))).toEqual(reference);
     expect(form.get("diarize")).toBe("true");
+    expect(form.get("model_id")).toBe("scribe_v2"); // Urdu stays on v2
     return Response.json({ request_id: "req", transcription_id: "transcript" }, { status: 202 });
   } });
-  expect(await provider.submit({ reference, sourceAudioUrl: "https://audio.example/source.m4a?grant=1", languageCode: "urd" })).toEqual({ requestId: "req", transcriptionId: "transcript" });
+  expect(await provider.submit({ reference, sourceAudioUrl: "https://audio.example/source.m4a?grant=1", languageCode: "urd" })).toEqual({ requestId: "req", transcriptionId: "transcript", model: "scribe_v2" });
   expect(calls).toBe(1);
+});
+
+test("Scribe v3 transcribes every pinned language except Urdu; unpinned audio and detection stay on v2", async () => {
+  const models: string[] = [];
+  const provider = createScribeProvider({ apiKey: "k", webhookId: "w", fetch: async (_url, init) => {
+    models.push(String((init?.body as FormData).get("model_id")));
+    return Response.json({ request_id: "req", transcription_id: "t", language_code: "deu", language_probability: 0.99, words: [] }, { status: 202 });
+  } });
+  for (const languageCode of ["hin", "deu", "eng", "urd", null]) {
+    const accepted = await provider.submit({ reference, sourceAudioUrl: "https://audio.example/a.m4a", languageCode });
+    expect(accepted.model).toBe(models.at(-1)!);
+  }
+  expect(models).toEqual(["scribe_v3", "scribe_v3", "scribe_v3", "scribe_v2", "scribe_v2"]);
+  const wav = new Uint8Array(64); wav.set(new TextEncoder().encode("RIFF"), 0); wav.set(new TextEncoder().encode("WAVE"), 8);
+  await provider.probe({ wav });
+  expect(models.at(-1)).toBe("scribe_v2");
 });
 
 test("unknown POST acceptance is never retried by the provider client", async () => {

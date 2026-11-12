@@ -13,11 +13,20 @@ import {
   sourceLanguageCodeSchema,
   sourceLanguageInputSchema,
   toProviderLanguageCode,
+  scribeModelForLanguage,
 } from "./language";
 
-describe("Scribe v2 language registry", () => {
+describe("Scribe language registry", () => {
+  test("transcribes with Scribe v3, keeping Urdu and unknown-language audio on v2", () => {
+    expect(SCRIBE_MODEL_ID).toBe("scribe_v3");
+    expect(scribeModelForLanguage("hin")).toBe("scribe_v3");
+    expect(scribeModelForLanguage("yor")).toBe("scribe_v3");
+    expect(scribeModelForLanguage("urd")).toBe("scribe_v2");
+    expect(scribeModelForLanguage(null)).toBe("scribe_v2");
+    expect(scribeModelForLanguage(toProviderLanguageCode("ur"))).toBe("scribe_v2");
+  });
+
   test("enumerates the documented 100 languages plus Yoruba", () => {
-    expect(SCRIBE_MODEL_ID).toBe("scribe_v2");
     expect(SCRIBE_LANGUAGES).toHaveLength(101);
     expect(new Set(SCRIBE_LANGUAGE_CODES).size).toBe(101);
     expect(new Set(SCRIBE_LANGUAGES.map((l) => l.providerCode)).size).toBe(101);

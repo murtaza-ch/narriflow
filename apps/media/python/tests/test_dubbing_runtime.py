@@ -39,7 +39,7 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             base_bytes=base.read_bytes();audio_bytes=audio.read_bytes();starts=[];calls=[];posts=[];objects={};commits=[]
             request={'version':1,'kind':'dubbing_request','dubId':dub_id,'workflowRunId':run_id,'projectId':str(uuid4()),'workspaceId':str(uuid4()),'actorUserId':str(uuid4()),'clipId':str(uuid4()),
                 'editorRevision':1,'sourceRevision':1,'baseRender':{'id':str(uuid4()),'storageKey':'projects/frozen/base.mp4','byteLength':len(base_bytes),'durationSec':2},
-                'script':'The frozen script','sourceLanguageCode':'en','targetLanguageCode':'es','voice':'marin','aspectRatio':'9:16','provider':'openai','model':'gpt-4o-mini-tts','translationModel':'gpt-5.4-mini'}
+                'script':'The frozen script','sourceLanguageCode':'en','targetLanguageCode':'es','voice':'marin','aspectRatio':'9:16','provider':'openai','model':'gpt-4o-mini-tts','translationModel':'gpt-6-luna'}
             raw={'version':1,'kind':'dub_mix','request':request,'toolchainFingerprint':fingerprint,'baseVideo':{'storageKey':request['baseRender']['storageKey'],'etag':'"base"','byteLength':len(base_bytes)}}
             encoded=subprocess.run(['bun','-e',"import {readFileSync} from 'node:fs';import {frozenDubbingRequestHash} from './packages/services/src/dubbing-policy.ts';import {dubbingInputBinding} from './packages/services/src/dubbing-input.ts';let v=JSON.parse(readFileSync(0,'utf8'));v.requestHash=await frozenDubbingRequestHash(v.request);console.log(JSON.stringify({...v,bindingHash:await dubbingInputBinding(v)}));"],input=json.dumps(raw).encode(),capture_output=True,check=True,cwd=root,timeout=10)
             command=json.loads(encoded.stdout);expires=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat().replace('+00:00','Z')
@@ -55,7 +55,7 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                     posts.append(self.path)
                     if self.path=='/v1/responses':
-                        assert body['model']=='gpt-5.4-mini';assert commits[-1]=='translation_intent'
+                        assert body['model']=='gpt-6-luna';assert commits[-1]=='translation_intent'
                         content=json.dumps({'id':'resp_controlled','output_text':'El guion congelado'}).encode();mime='application/json'
                     else:
                         assert self.path=='/v1/audio/speech';assert body['input']=='El guion congelado';assert commits[-1]=='speech_intent'

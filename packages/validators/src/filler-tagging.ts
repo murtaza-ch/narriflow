@@ -6,11 +6,11 @@ import { splitUtterancesIntoSentences } from "./utterance-split";
 // contract: chunking, prompt, schema, acceptance and identity. The provider
 // call lives in services; this module never touches the network.
 //
-// Measured basis (2026-11-12, gpt-5.6-luna / low reasoning, this prompt and
-// schema): 1 accepted tag in 86,659 tokens of FLEURS read speech across 102
-// languages; 82% recall of Scribe-written fillers on the Nyra verbatim
-// benchmark (10 languages); 125/125 English fillers and no Hindi/Urdu trap
-// words on real dev clips.
+// Measured basis (2026-11-13, gpt-6-luna / no reasoning, this prompt and
+// schema, two runs): 0 accepted tags in 86,659 tokens of FLEURS read speech
+// across 102 languages; 87% recall of Scribe-written fillers on the Nyra
+// verbatim benchmark (10 languages); no Hindi/Urdu trap words on real dev
+// clips. See FILLER_TAGGING_MODELS in services for the comparison.
 
 export const FILLER_TAGGING_PROMPT = `You find hesitation sounds in a speech transcript, in any language.
 A hesitation sound is a vocalized pause with no dictionary meaning, like English "um", "uh", "er": a sound, not a word.

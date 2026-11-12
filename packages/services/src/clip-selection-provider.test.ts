@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createClipSelectionProvider } from "./clip-selection-provider";
 
 const now = new Date("2026-10-31T00:00:00Z"), deadline = new Date("2026-10-31T00:10:00Z");
-const config = { apiKey: "test-secret", model: "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: 32_000, now: () => now };
+const config = { apiKey: "test-secret", model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32_000, now: () => now };
 
 test("selection retains the Responses structured-output contract in one bounded request", async () => {
   let requests = 0;
@@ -11,7 +11,7 @@ test("selection retains the Responses structured-output contract in one bounded 
     expect(String(url)).toBe("https://api.openai.com/v1/responses");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-secret");
     const body = JSON.parse(String(init?.body));
-    expect(body).toMatchObject({ model: "gpt-5.4-mini", input: [{ role: "system", content: "system" }, { role: "user", content: "user" }],
+    expect(body).toMatchObject({ model: "gpt-6-luna", input: [{ role: "system", content: "system" }, { role: "user", content: "user" }],
       reasoning: { effort: "medium" }, text: { format: { type: "json_schema", name: "clip_detection", strict: true,
         schema: { type: "object", additionalProperties: false, required: ["clips"] } } }, max_output_tokens: 32_000 });
     expect(body.text.format.schema.properties.clips.items.required).toContain("broll_cues");

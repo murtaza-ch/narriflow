@@ -152,14 +152,14 @@ describe("tagTranscriptFillers", () => {
       const model = JSON.parse(String(init!.body)).model;
       return ok(model === "luna" ? [hesitation(5), { ...hesitation(6), text: "wort" }] : [hesitation(5)]);
     };
-    const outcome = await tagTranscriptFillers(utterances(1), "de", config(fetchImpl, { models: [{ model: "luna", reasoningEffort: "low" }, { model: "gpt-5.4", reasoningEffort: "none" }] }));
+    const outcome = await tagTranscriptFillers(utterances(1), "de", config(fetchImpl, { models: [{ model: "luna", reasoningEffort: "low" }, { model: "second", reasoningEffort: "none" }] }));
     expect(outcome.keys).toEqual([fillerWordKey(0, w(1.5, "äh,"))]);
     expect(outcome.contract.models).toHaveLength(2);
   });
 
   test("with two models, one model failing fails the chunk", async () => {
     const fetchImpl: FillerTaggingConfig["fetch"] = async (_url, init) => JSON.parse(String(init!.body)).model === "luna" ? ok([hesitation(5)]) : new Response("{}", { status: 500 });
-    const outcome = await tagTranscriptFillers(utterances(1), "de", config(fetchImpl, { models: [{ model: "luna", reasoningEffort: "low" }, { model: "gpt-5.4", reasoningEffort: "none" }] }));
+    const outcome = await tagTranscriptFillers(utterances(1), "de", config(fetchImpl, { models: [{ model: "luna", reasoningEffort: "low" }, { model: "second", reasoningEffort: "none" }] }));
     expect(outcome.keys).toEqual([]);
     expect(outcome.failed).toBe(outcome.chunks);
   });

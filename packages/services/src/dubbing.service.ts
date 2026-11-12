@@ -37,6 +37,7 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { requirePrisma } from "./require-prisma";
+import { OPENAI_TEXT_MODEL } from "./openai-models";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 const LIVE_DUB: readonly string[] = ["queued", "processing"];
@@ -233,7 +234,7 @@ export class DubbingService {
 
     const environment = readServiceEnvironment();
     const model = environment.OPENAI_TTS_MODEL ?? DEFAULT_TTS_MODEL;
-    const translationModel = environment.OPENAI_DUB_TRANSLATION_MODEL ?? environment.OPENAI_CONTENT_MODEL ?? environment.OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
+    const translationModel = environment.OPENAI_DUB_TRANSLATION_MODEL ?? environment.OPENAI_CONTENT_MODEL ?? environment.OPENAI_CLIP_MODEL ?? OPENAI_TEXT_MODEL;
     let admitted;
     try {
       // The dub row, its count, and the Workflow Run commit together.

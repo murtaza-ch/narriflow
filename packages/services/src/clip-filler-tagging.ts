@@ -36,9 +36,10 @@ export interface FillerTaggingConfig {
 }
 
 /**
- * Measured 2026-11-12 per 250-word chunk: luna (low) p50 4.2 s, p90 7.3 s,
- * p99 12 s; gpt-5.4 (none) p50 2.9 s. Both must finish, so a 3-hour source
- * may not be fully tagged within the budget; untagged chunks keep fillers. Requests stream, because a Worker holds at most six
+ * Measured 2026-11-13 per ~250-word chunk, gpt-6-luna (none), 1,834
+ * requests: p50 2.5 s, p90 3.3 s, p99 6.0 s, max 11.5 s. A very long source
+ * may still not be fully tagged within the budget; untagged chunks keep
+ * their fillers. Requests stream, because a Worker holds at most six
  * connections waiting for response headers and queues the rest; a streamed
  * response sends its headers at once.
  */
@@ -61,15 +62,17 @@ export const FILLER_TAGGING_DEFAULTS = {
 } as const;
 
 /**
- * Production models. A token is cut only when both accept it. Measured
- * 2026-11-12 on FLEURS (102 languages, 86,659 read-speech tokens): luna alone
- * 1 wrong tag, gpt-5.4 alone 3, both together 0; on the Nyra verbatim
- * benchmark (10 languages) together 82% recall of written fillers and no
- * real word cut. About $28 per million transcript words.
+ * Production model (owner decision 2026-11-13). Measured 2026-11-13 with this
+ * prompt and the acceptance and key guards, two independent runs: FLEURS
+ * (102 languages, 86,659 read-speech tokens) 0 wrong tags in both; Nyra
+ * verbatim benchmark (10 languages) 87.7% and 86.7% recall of written
+ * fillers, every extra unlabelled tag reviewed as a hesitation; real dev
+ * clips 0 Hindi/Urdu tags. About $0.92 per million transcript words.
+ * The previous pair (gpt-5.6-luna low AND gpt-5.4 none) also made 0 wrong
+ * tags but found 81.6% at $28. Several entries still mean "all must agree".
  */
 export const FILLER_TAGGING_MODELS: readonly FillerTaggingModel[] = [
-  { model: "gpt-5.6-luna", reasoningEffort: "low" },
-  { model: "gpt-5.4", reasoningEffort: "none" },
+  { model: "gpt-6-luna", reasoningEffort: "none" },
 ];
 
 async function sha256(text: string): Promise<string> {

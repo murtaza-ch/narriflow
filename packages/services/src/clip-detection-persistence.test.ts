@@ -54,7 +54,7 @@ describe("clip cleanup at generation", () => {
   test("frozen AI tags remove a German filler; no tags or another speaker's key cut nothing", () => {
     const de: TranscriptUtterance[] = [{ index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 10, endSec: 30, text: "Also äh wir", confidence: null,
       words: [word(10, 11, "Also,"), word(11.1, 11.4, "äh,"), word(11.5, 30, "wir")] }];
-    const aiFillers = (keys: string[]): FillerTaggingOutcome => ({ contract: { models: [{ model: "gpt-5.6-luna", reasoningEffort: "low" }], promptSha256: "a".repeat(64),
+    const aiFillers = (keys: string[]): FillerTaggingOutcome => ({ contract: { models: [{ model: "gpt-6-luna", reasoningEffort: "none" }], promptSha256: "a".repeat(64),
       schemaSha256: "b".repeat(64), maxOutputTokens: 4000 }, chunks: 1, tagged: 1, failed: 0, skipped: 0, unsafe: 0, tokensUsed: 10, overflow: false, keys });
     const run = (keys: string[] | null) => {
       const seed = prepareDetectedClipSeed(project, buildGenerationContentPack({ removeFillerWords: true }), { quietRanges: null, languageCode: "de", aiFillers: keys ? aiFillers(keys) : null });

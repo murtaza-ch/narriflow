@@ -8,6 +8,7 @@ import { createClipSelectionLifecycle } from "./clip-selection-window";
 import { createClipSelectionControl } from "./clip-selection-control";
 import { createClipSelectionProvider } from "./clip-selection-provider";
 import { createClipSelectionStorage } from "./clip-selection-storage";
+import { OPENAI_TEXT_MODEL } from "./openai-models";
 import { FILLER_TAGGING_DEFAULTS, FILLER_TAGGING_MODELS, tagTranscriptFillers } from "./clip-filler-tagging";
 
 /** A required positive-integer setting; a missing one names itself instead of becoming NaN. */
@@ -26,7 +27,7 @@ export function getClipSelectionControl() {
   const configuredOutputTokens = Number(settings.OPENAI_CLIP_MAX_OUTPUT_TOKENS);
   // These are the original detector settings. Request/token concurrency caps
   // below are required explicit configuration and have no default.
-  const provider = { model: settings.OPENAI_CLIP_MODEL ?? "gpt-5.4-mini", reasoningEffort: "medium", maxOutputTokens: Number.isFinite(configuredOutputTokens) && configuredOutputTokens > 0 ? Math.round(configuredOutputTokens) : 32000 };
+  const provider = { model: settings.OPENAI_CLIP_MODEL ?? OPENAI_TEXT_MODEL, reasoningEffort: "medium", maxOutputTokens: Number.isFinite(configuredOutputTokens) && configuredOutputTokens > 0 ? Math.round(configuredOutputTokens) : 32000 };
   const apiKey = settings.OPENAI_API_KEY ?? "";
   const fillerTagger = { tag: (utterances: Parameters<typeof tagTranscriptFillers>[0], languageCode: string, deadline: number) => tagTranscriptFillers(utterances, languageCode,
     { apiKey, models: FILLER_TAGGING_MODELS, deadline, concurrency: FILLER_TAGGING_DEFAULTS.concurrency, maxOutputTokens: FILLER_TAGGING_DEFAULTS.maxOutputTokens }) };
