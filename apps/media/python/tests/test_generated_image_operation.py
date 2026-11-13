@@ -23,7 +23,9 @@ class GeneratedImageOperationTests(unittest.IsolatedAsyncioTestCase):
         command={'kind':'generated_image','mode':mode,'jobId':str(uuid4()),'requestId':str(uuid4()),'inputHash':'a'*64,'maxOutputBytes':100000000}
         if mode=='recover':command.update(providerRef='accepted-provider',expected={'sha256':hashlib.sha256(PNG).hexdigest(),'byteLength':len(PNG),'contentType':'image/png'})
         else:command.update(prompt='A native frame',aspectRatio='9:16',style='editorial',model='fixture',quality='medium')
-        outputs=[{'artifactId':str(uuid4()),'role':role,'contentType':mime,'contentTypes':[mime],'maxBytes':limit,'bindingHash':'a'*64} for role,mime,limit in [('validated_asset','image/png',100000000),('probe','application/json',65536)]]
+        # The contentTypes lists are exactly what the API assigns per role (execution-transfer.ts).
+        allowed={'validated_asset':['image/png','image/jpeg','image/webp','video/mp4','video/quicktime','video/webm','video/x-matroska'],'probe':['application/json','audio/wav']}
+        outputs=[{'artifactId':str(uuid4()),'role':role,'contentType':mime,'contentTypes':allowed[role],'maxBytes':limit,'bindingHash':'a'*64} for role,mime,limit in [('validated_asset','image/png',100000000),('probe','application/json',65536)]]
         package=SimpleNamespace(input_hash='a'*64,function_name='generated_image',command=command,sources=[{'name':'generated_result','sha256':hashlib.sha256(PNG).hexdigest(),'byteLength':len(PNG)}] if mode=='recover' else [],outputs=outputs,assert_session=lambda _:None)
         return session,package,starts
 

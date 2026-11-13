@@ -333,7 +333,7 @@ async def run_generated_image(session: ExecutorSession, package: WorkPackage, wo
         raise NativeOperationFailure('native_command_invalid')
     outputs = _outputs(package, {'validated_asset', 'probe'})
     binary, proof = outputs['validated_asset'], outputs['probe']
-    if (binary['contentType'] != 'image/png' or binary['contentTypes'] != ['image/png'] or
+    if (binary['contentType'] != 'image/png' or 'image/png' not in binary['contentTypes'] or
             binary['maxBytes'] != command['maxOutputBytes'] or proof['contentType'] != 'application/json' or
             proof['maxBytes'] > MAX_PROBE_BYTES):
         raise NativeOperationFailure('native_assignment_invalid')
