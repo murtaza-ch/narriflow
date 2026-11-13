@@ -15,7 +15,7 @@ Evidence comes from two places:
 | Filler words (non-English) | `gpt-6-luna`, no reasoning, alone | `FILLER_TAGGING_MODELS` in `packages/services/src/clip-filler-tagging.ts` |
 | Speech-to-text | ElevenLabs `scribe_v3`; Urdu and unknown-language audio on `scribe_v2` | `scribeModelForLanguage` in `packages/validators/src/language.ts`; [ADR 0018](adr/0018-elevenlabs-scribe-transcription.md) |
 | Dubbing voice | `gpt-4o-mini-tts` (**shuts down 2027-01-06**) | `packages/services/src/dubbing.service.ts` |
-| Studio AI images (text-free B-roll) | `gpt-image-2`, medium (**shuts down 2027-02-10**) | `OPENAI_IMAGE_MODEL` / `OPENAI_IMAGE_QUALITY` Worker secrets; `apps/media/src/openai-image-provider.ts` |
+| Studio AI images (text-free B-roll) | `gpt-image-2.6-flare`, medium (switched from `gpt-image-2` on 2026-11-13) | `OPENAI_IMAGE_MODEL` / `OPENAI_IMAGE_QUALITY` Worker secrets; `apps/media/src/openai-image-provider.ts` |
 | Library search | `text-embedding-3-small` | `packages/services/src/openai-embedding-provider.ts` |
 
 `gpt-6-luna` costs $0.10 / $0.01 / $0.50. gpt-5.4-mini cost $0.75 / $0.075 / $4.50.
@@ -27,7 +27,7 @@ Two behaviours to know:
 ## Deadlines
 
 - **Dubbing voice by 2027-01-06.** `gpt-4o-mini-tts` shuts down then. OpenAI's suggested replacement is a Realtime-API workflow, not a drop-in for `/audio/speech`. See [Dubbing voice](#dubbing-voice-tts).
-- **Studio AI images by 2027-02-10.** `gpt-image-2` shuts down then. See [Studio AI images](#studio-ai-images).
+- **Studio AI images: done.** `gpt-image-2` shuts down on 2027-02-10, and the Worker moved to `gpt-image-2.6-flare` on 2026-11-13. See [Studio AI images](#studio-ai-images).
 - **Promotional prices end.**
   - Gemini 4 Argon and Carbon double on 2026-12-01.
   - Gemini 3.8 Flash and the Gemini 3.8 TTS models double on 2027-01-01. After that, 3.8 Flash costs $1.50 / $7.50.
@@ -133,7 +133,9 @@ Avoid or skip:
 - **Imagen 4:** shut down.
 - **`gpt-image-1-mini` and `gpt-image-1.5`:** shut down 2026-12-01.
 
-**Recommendation.** Switch `OPENAI_IMAGE_MODEL` to `gpt-image-2.6-flare`. It is a one-secret change: 17% cheaper, about 6× faster in our test, and the same quality on the leaderboard. Audition `gpt-image-2.5-flare` and Muse Image on 24–40 real prompts if cost per image matters more, and score cost per accepted image.
+**Done 2026-11-13:** the Worker's `OPENAI_IMAGE_MODEL` is now `gpt-image-2.6-flare`. The first live job also exposed an unrelated bug: the media runner rejected every AI image job, whatever the model. Commit 5501b19c fixed it.
+
+**Why this model.** Switch `OPENAI_IMAGE_MODEL` to `gpt-image-2.6-flare`. It is a one-secret change: 17% cheaper, about 6× faster in our test, and the same quality on the leaderboard. Audition `gpt-image-2.5-flare` and Muse Image on 24–40 real prompts if cost per image matters more, and score cost per accepted image.
 
 ### Filler words
 
