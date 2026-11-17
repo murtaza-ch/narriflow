@@ -68,17 +68,21 @@ describe("Video-only sources and the plan's length limit", () => {
   // A silent source: no audio track, so the video is the only measured duration.
   const silent = (durationSec: number): SourceVideoBinding => ({ ...video, audioTrack: null, audioStartTimeSec: null,
     probe: { ...video.probe, durationSec, audio: null, facts: { ...video.probe.facts, audios: [], format: { ...video.probe.facts.format, durationSec } } } });
-  const run = async (durationSec: number, pricingTier = "free") => {
+  const run = async (durationSec: number, pricingTier = "free", options: { binding?: SourceVideoBinding; audioPending?: boolean; projectRevision?: number } = {}) => {
     const released: Array<{ projectId: string; reason: string }> = [];
     const tx = {
-      project: { findUniqueOrThrow: async () => ({ sourceRevision: 1, workspace: { pricingTier } }) },
-      executionArtifact: { findUniqueOrThrow: async () => ({ attemptToken: "attempt", owner: "owner" }), findFirst: async () => null },
+      project: { findUniqueOrThrow: async () => ({ sourceRevision: options.projectRevision ?? 1, workspace: { pricingTier } }) },
+      executionArtifact: { findUniqueOrThrow: async () => ({ attemptToken: "attempt", owner: "owner" }),
+        findFirst: async () => options.audioPending ? { id: "pending-audio" } : null },
     } as unknown as Parameters<ReturnType<typeof createSourceVideoValidator>>[0];
     const validate = createSourceVideoValidator({ release: async (_tx, input) => { released.push(input); return null as never; } });
     const decision = await validate(tx, { ref: { projectId: video.projectId, sourceRevision: 1, attemptToken: "attempt" },
-      artifact: { artifactId: "artifact", binding: silent(durationSec) }, sourceAudio: null });
+      artifact: { artifactId: "artifact", binding: options.binding ?? silent(durationSec) }, sourceAudio: null });
     return { decision, released };
   };
+  // A source with an audio track whose video lands before its audio file.
+  const voiced = (durationSec: number): SourceVideoBinding => ({ ...video,
+    probe: { ...video.probe, durationSec, facts: { ...video.probe.facts, format: { ...video.probe.facts.format, durationSec } } } });
   test("a silent video over the plan limit is refused at acceptance and its reservation released", async () => {
     // Free allows 60 minutes; this one is 90.
     const { decision, released } = await run(90 * 60);
@@ -88,5 +92,14 @@ describe("Video-only sources and the plan's length limit", () => {
   test("a silent video within the limit, or on a plan that allows it, is accepted as before", async () => {
     expect(await run(59 * 60)).toEqual({ decision: { kind: "accepted" }, released: [] });
     expect(await run(90 * 60, "pro")).toEqual({ decision: { kind: "accepted" }, released: [] });
+  });
+  test("a voiced video arriving before its audio waits when within the limit and is refused when over it", async () => {
+    expect(await run(0, "free", { binding: voiced(59 * 60), audioPending: true })).toEqual({ decision: { kind: "waiting_for_audio" }, released: [] });
+    const over = await run(0, "free", { binding: voiced(90 * 60), audioPending: true });
+    expect(over.decision).toEqual({ kind: "rejected", failureCode: "ingest_max_duration_exceeded" });
+    expect(over.released).toHaveLength(1);
+  });
+  test("a superseded source revision is never judged against the plan", async () => {
+    await expect(run(90 * 60, "free", { projectRevision: 2 })).rejects.toThrow("source_revision_superseded");
   });
 });
