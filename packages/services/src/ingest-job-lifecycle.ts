@@ -62,7 +62,7 @@ export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
   ref: IngestExecutionReference;
   artifact: ExecutorArtifactCommit & { role: "source_video"; binding: SourceVideoBinding };
   sourceAudio: SourceAudio | null;
-}) => Promise<{ kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" }>;
+}) => Promise<{ kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" | "ingest_max_duration_exceeded" }>;
 
 const PENDING_STT_PROVIDER_MODEL = SCRIBE_MODEL_ID;
 

@@ -42,13 +42,21 @@ type VideoValidationInput = {
 /** Called only under the lifecycle's Workspace usage then Project locks. */
 export function createSourceVideoValidator(usage: Pick<ProcessingUsage, "release">) {
   return async (tx: Prisma.TransactionClient, input: VideoValidationInput): Promise<
-    { kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" }
+    { kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" | "ingest_max_duration_exceeded" }
   > => {
     const video = sourceVideoBindingSchema.parse(input.artifact.binding);
     if (video.projectId !== input.ref.projectId || video.sourceRevision !== input.ref.sourceRevision) throw new Error("source_revision_superseded");
     if (!input.sourceAudio) {
       if (Boolean(video.probe.audio) !== Boolean(video.probe.facts.audios.length) || Boolean(video.probe.video) !== Boolean(video.probe.facts.videos.length)) {
         return { kind: "rejected", failureCode: "source_audio_video_mismatch" };
+      }
+      // Without bound audio the video is the only measured duration, so the
+      // plan cap is enforced here instead of surfacing later at settlement.
+      const project = await tx.project.findUniqueOrThrow({ where: { id: input.ref.projectId }, select: { sourceRevision: true, workspace: { select: { pricingTier: true } } } });
+      if (project.sourceRevision !== input.ref.sourceRevision) throw new Error("source_revision_superseded");
+      if (sourceExceedsLimit(video.probe.durationSec, planLimits(resolvePricingTier(project.workspace.pricingTier)).maxSourceSeconds)) {
+        await usage.release(tx, { projectId: input.ref.projectId, reason: "ingest_max_duration_exceeded" });
+        return { kind: "rejected", failureCode: "ingest_max_duration_exceeded" };
       }
       const assigned = await tx.executionArtifact.findUniqueOrThrow({ where: { id: input.artifact.artifactId }, select: { attemptToken: true, owner: true } });
       if (assigned.attemptToken !== input.ref.attemptToken) throw new Error("source_revision_superseded");

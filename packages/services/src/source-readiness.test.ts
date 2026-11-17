@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SourceAudioBinding, SourceVideoBinding } from "@narriflow/validators/execution";
-import { sourceAudioMatchesVideo } from "./source-readiness";
+import { createSourceVideoValidator, sourceAudioMatchesVideo } from "./source-readiness";
 
 const audio: SourceAudioBinding = {
   sourceAudioId: "ce4d7e7e-caae-4d85-80f8-17f55e2eaf79", projectId: "05bfd4bb-8ce2-455c-a598-1328f676a288", sourceRevision: 1,
@@ -61,5 +61,32 @@ describe("Whole-source audio and video agreement", () => {
       { ...video, audioTrack: null },
       { ...video, toolchainFingerprint: "d".repeat(64) },
     ]) expect(sourceAudioMatchesVideo(audio, changed, 3600)).toBe(false);
+  });
+});
+
+describe("Video-only sources and the plan's length limit", () => {
+  // A silent source: no audio track, so the video is the only measured duration.
+  const silent = (durationSec: number): SourceVideoBinding => ({ ...video, audioTrack: null, audioStartTimeSec: null,
+    probe: { ...video.probe, durationSec, audio: null, facts: { ...video.probe.facts, audios: [], format: { ...video.probe.facts.format, durationSec } } } });
+  const run = async (durationSec: number, pricingTier = "free") => {
+    const released: Array<{ projectId: string; reason: string }> = [];
+    const tx = {
+      project: { findUniqueOrThrow: async () => ({ sourceRevision: 1, workspace: { pricingTier } }) },
+      executionArtifact: { findUniqueOrThrow: async () => ({ attemptToken: "attempt", owner: "owner" }), findFirst: async () => null },
+    } as unknown as Parameters<ReturnType<typeof createSourceVideoValidator>>[0];
+    const validate = createSourceVideoValidator({ release: async (_tx, input) => { released.push(input); return null as never; } });
+    const decision = await validate(tx, { ref: { projectId: video.projectId, sourceRevision: 1, attemptToken: "attempt" },
+      artifact: { artifactId: "artifact", binding: silent(durationSec) }, sourceAudio: null });
+    return { decision, released };
+  };
+  test("a silent video over the plan limit is refused at acceptance and its reservation released", async () => {
+    // Free allows 60 minutes; this one is 90.
+    const { decision, released } = await run(90 * 60);
+    expect(decision).toEqual({ kind: "rejected", failureCode: "ingest_max_duration_exceeded" });
+    expect(released).toEqual([{ projectId: video.projectId, reason: "ingest_max_duration_exceeded" }]);
+  });
+  test("a silent video within the limit, or on a plan that allows it, is accepted as before", async () => {
+    expect(await run(59 * 60)).toEqual({ decision: { kind: "accepted" }, released: [] });
+    expect(await run(90 * 60, "pro")).toEqual({ decision: { kind: "accepted" }, released: [] });
   });
 });
