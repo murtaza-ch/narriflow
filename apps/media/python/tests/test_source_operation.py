@@ -8,6 +8,7 @@ import unittest
 from uuid import uuid4
 
 from narriflow_media.fetch import SourceFetchFailure
+from narriflow_media.file_source_runtime import publish_original
 from narriflow_media.source_runtime import run_fetch_source,run_pin_source,run_service_youtube_source
 from narriflow_media.transfer import WorkPackage, _wire
 
@@ -103,11 +104,12 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
         session,package,trace,_runtime,_sink,_verify,_fetch = self.fixture()
         downloads=[]
         class Runtime:
-            async def download(self,source,work):
+            async def download(self,source,work,attempts=None):
+                assert attempts==1
                 downloads.append(source);raise SourceFetchFailure("download_reached")
         class Sink:
             def __init__(self,*args,**options):pass
-        async def resolve(token,media_id,timeout):
+        async def resolve(token,media_id,timeout,request):
             self.assertEqual(media_id,"dQw4w9WgXcQ")
             return SimpleNamespace(url="https://api.fastsaver.io/v1/tunnel?id=x",duration_seconds=seconds)
         for seconds,expected in [(3601,"ingest_max_duration_exceeded"),(3600,"download_reached"),(None,"download_reached")]:
@@ -116,6 +118,17 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
                     await run_service_youtube_source(session,package,Path(directory),token="apify_api_"+"T"*36,
                         sink_class=Sink,resolve=resolve,runtime=Runtime())
         self.assertEqual(downloads,[{"provider":"direct","url":"https://api.fastsaver.io/v1/tunnel?id=x","authorization":None}]*2)
+
+    async def test_the_measured_duration_enforces_the_plan_cap_before_any_hash_or_extraction(self):
+        calls=[]
+        class Runtime:
+            async def probe(self,path):calls.append("probe");return {"durationSec":3601.5}
+            async def hash(self,path):calls.append("hash")
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"original.bin";path.write_bytes(b"media")
+            with self.assertRaisesRegex(SourceFetchFailure,"ingest_max_duration_exceeded"):
+                await publish_original(None,SimpleNamespace(command={}),Path(directory),path,"video/mp4",runtime=Runtime(),sink=None,max_source_seconds=3600)
+        self.assertEqual(calls,["probe"])
 
     async def test_a_malformed_proxy_secret_is_refused_before_native_preflight(self):
         session,package,trace,runtime,sink,verify,fetch = self.fixture()

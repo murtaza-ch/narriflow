@@ -17,13 +17,16 @@ const GENERIC_MEDIA_CONTENT_TYPES=new Set(["application/octet-stream","binary/oc
 /** One guarded read implementation for direct, RSS, Drive and Zoom sources. */
 export async function downloadDirectSource(raw:IngestDirectRead,targetPath:string,options:{
  fetch?:typeof guardedFetch;signal?:AbortSignal;deadlineMs?:number;maxBytes?:number;delay?:(milliseconds:number)=>Promise<void>;
+ /** A one-shot link (limited opens) is read once; its caller resolves a new link to retry. */
+ attempts?:number;
 }={}){
  const input=ingestDirectReadSchema.parse(raw),maximum=options.maxBytes??MAX_UPLOAD_SIZE_BYTES;
- const deadline=options.deadlineMs??45*60_000;
- if(!Number.isSafeInteger(maximum)||maximum<=0||maximum>MAX_UPLOAD_SIZE_BYTES||!Number.isSafeInteger(deadline)||deadline<=0||deadline>45*60_000)throw new DirectSourceFailure("worker_invalid_payload");
+ const deadline=options.deadlineMs??45*60_000,attempts=options.attempts??4;
+ if(!Number.isSafeInteger(maximum)||maximum<=0||maximum>MAX_UPLOAD_SIZE_BYTES||!Number.isSafeInteger(deadline)||deadline<=0||deadline>45*60_000
+  ||!Number.isSafeInteger(attempts)||attempts<1||attempts>4)throw new DirectSourceFailure("worker_invalid_payload");
  if(await lstat(targetPath).then(()=>true,()=>false))throw new DirectSourceFailure("source_target_invalid");
  const signal=options.signal?AbortSignal.any([options.signal,AbortSignal.timeout(deadline)]):AbortSignal.timeout(deadline);
- for(let attempt=0;attempt<4;attempt++){
+ for(let attempt=0;attempt<attempts;attempt++){
   signal.throwIfAborted();let response:Response|undefined,created=false;
   try{
    response=await(options.fetch??guardedFetch)(input.url,{signal,timeoutMs:deadline,headers:{accept:"audio/*, video/*, application/octet-stream;q=0.8","user-agent":"NarriflowBot/1.0 (+https://narriflow.app)",...(input.authorization?{authorization:input.authorization}:{})}});
@@ -49,7 +52,7 @@ export async function downloadDirectSource(raw:IngestDirectRead,targetPath:strin
    const failure=error instanceof DirectSourceFailure?error:error instanceof UnsafeUrlError?new DirectSourceFailure("remote_url_unsafe"):
     error instanceof RemoteFetchError?new DirectSourceFailure(error.code==="remote_response_too_large"?"remote_media_too_large":error.code,error.code==="remote_download_failed"):
     new DirectSourceFailure("source_download_failed",true);
-   if(attempt===3||!failure.retryable)throw failure;
+   if(attempt===attempts-1||!failure.retryable)throw failure;
    if(options.delay)await options.delay(2000*2**attempt);else await sleep(2000*2**attempt,undefined,{signal});
   }finally{if(response?.body&&!response.body.locked)await response.body.cancel().catch(()=>undefined);}
  }

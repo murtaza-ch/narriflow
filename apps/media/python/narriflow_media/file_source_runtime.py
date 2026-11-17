@@ -47,10 +47,11 @@ class NativeFileRuntime:
                 raise ExecutionControlError('execution_start_unconfirmed' if error.code=='media_process_start_unconfirmed' else 'execution_authority_lost') from None
             raise SourceFetchFailure('source_download_failed',True) from None
 
-    async def download(self,source,work):
+    async def download(self,source,work,*,attempts=None):
         path=work/'original.bin'
-        result=await self._run(list(self.download_executable) if self.download_executable is not None else [self.bun,str(self.source/'direct-source-cli.ts')],
-            {'source':source,'outputPath':str(path.resolve()),'deadlineMs':max(1,int(min(2700,self.session.remaining_seconds)*1000))})
+        body={'source':source,'outputPath':str(path.resolve()),'deadlineMs':max(1,int(min(2700,self.session.remaining_seconds)*1000))}
+        if attempts is not None:body['attempts']=attempts
+        result=await self._run(list(self.download_executable) if self.download_executable is not None else [self.bun,str(self.source/'direct-source-cli.ts')],body)
         if result.returncode:
             try:
                 error=_json(result.stderr);code=error['errorCode']
@@ -115,8 +116,11 @@ def source_manifest(command,probe,snapshot,sha):
         'probeVersion':probe['probeVersion'],'toolchainFingerprint':command['toolchainFingerprint']}
 
 
-async def publish_original(session,package,work,path,content_type,*,runtime,sink,completed=None):
-    command=package.command;before=FileSnapshot.read(path);probe=await runtime.probe(path);snapshot,sha=await runtime.hash(path)
+async def publish_original(session,package,work,path,content_type,*,runtime,sink,completed=None,max_source_seconds=None):
+    command=package.command;before=FileSnapshot.read(path);probe=await runtime.probe(path)
+    # A plan cap is enforced on the measured duration before extraction or upload.
+    if max_source_seconds is not None and _duration(probe)>max_source_seconds:raise SourceFetchFailure('ingest_max_duration_exceeded')
+    snapshot,sha=await runtime.hash(path)
     if before!=snapshot or completed is not None and (completed.sha256!=sha or completed.byte_length!=snapshot.size):raise SourceFetchFailure('source_audio_video_mismatch')
     manifest=source_manifest(command,probe,snapshot,sha)
     output=next(value for value in package.outputs if value['role']=='source_video')

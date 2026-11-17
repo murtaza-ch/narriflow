@@ -42,3 +42,13 @@ test("a file host's generic binary label reaches the probe, and a web page stops
   await expect(read("text/html; charset=utf-8","page")).rejects.toMatchObject({code:"remote_media_invalid_content_type",retryable:false});
  }finally{await rm(directory,{recursive:true,force:true});}
 });
+
+test("a one-shot link is opened once: a transient failure is returned for a fresh link instead of retried",async()=>{
+ const directory=await mkdtemp(join(tmpdir(),"native-direct-once-"));let calls=0;
+ try{
+  await expect(downloadDirectSource({provider:"direct",url:"https://syrax.fastsaver.io/v1/tunnel?id=one-shot",authorization:null},join(directory,"source.bin"),{attempts:1,
+   fetch:async()=>{calls++;return new Response("busy",{status:503});},delay:async()=>{}})).rejects.toMatchObject({code:"source_download_failed",retryable:true});
+  expect(calls).toBe(1);
+  await expect(downloadDirectSource({provider:"direct",url:"https://x.example/f",authorization:null},join(directory,"other.bin"),{attempts:0})).rejects.toMatchObject({code:"worker_invalid_payload"});
+ }finally{await rm(directory,{recursive:true,force:true});}
+});

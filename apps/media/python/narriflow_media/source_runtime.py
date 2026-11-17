@@ -8,7 +8,7 @@ from .control import ExecutorSession
 from .fetch import ExistingSourceAudio, SourceFetchFailure, configured_proxy_routes, fetch_source
 from .fetch_runtime import YtDlpSourceRuntime
 from .file_source_runtime import NativeFileRuntime, publish_original, run_direct_source
-from .youtube_download_service import RESOLVE_SECONDS, resolve_service_download
+from .youtube_download_service import RESOLVE_SECONDS, curl_request, resolve_service_download
 from .manifest import YouTubeSource
 from .process import run_owned_process_async, verified_runtime_id
 from .source_sink import ScopedSourceSink, _environment
@@ -92,16 +92,27 @@ async def run_service_youtube_source(session: ExecutorSession, package: WorkPack
                                      bun_executable="bun", sink_class=ScopedSourceSink, resolve=None, runtime=None):
     """A YouTube original through the download service, then the direct-original path:
     one download, probe, hash, audio extracted from that same file, publish."""
-    command = package.command
-    resolved = await (resolve or resolve_service_download)(token, command["mediaId"], timeout=min(RESOLVE_SECONDS, max(1, session.remaining_seconds - 60)))
+    command, cap = package.command, package.command["maxSourceSeconds"]
     session.assert_live()
-    # Refuse an over-cap video before paying for its transfer. The server repeats the check.
-    if resolved.duration_seconds is not None and resolved.duration_seconds > command["maxSourceSeconds"]:
+    request = curl_request(work=work, on_start=session.on_process_start, cancel_event=session.cancel_event)
+    resolved = await (resolve or resolve_service_download)(token, command["mediaId"],
+        timeout=min(RESOLVE_SECONDS, max(1, session.remaining_seconds - 60)), request=request)
+    session.assert_live()
+    # Refuse an over-cap video before paying for its transfer when the service
+    # reports a duration; the measured probe below enforces it either way.
+    if resolved.duration_seconds is not None and resolved.duration_seconds > cap:
         raise SourceFetchFailure("ingest_max_duration_exceeded")
     runtime = runtime if runtime is not None else NativeFileRuntime(session, bun_executable=bun_executable)
     sink = sink_class(session, package, work, bun_executable=bun_executable)
-    path, content_type = await runtime.download({"provider": "direct", "url": resolved.url, "authorization": None}, work)
-    await publish_original(session, package, work, path, content_type, runtime=runtime, sink=sink)
+    try:
+        # The link allows three opens: one transfer attempt, and a failed transfer
+        # is retryable so the operation's retry resolves a fresh link.
+        path, content_type = await runtime.download({"provider": "direct", "url": resolved.url, "authorization": None}, work, attempts=1)
+    except SourceFetchFailure as error:
+        if error.code in {"source_download_failed", "remote_download_failed", "remote_fetch_timeout"}:
+            raise SourceFetchFailure("source_download_failed", True) from None
+        raise
+    await publish_original(session, package, work, path, content_type, runtime=runtime, sink=sink, max_source_seconds=cap)
 
 
 async def run_pin_source(session: ExecutorSession,package:WorkPackage,work:Path,*,bun_executable='bun',
