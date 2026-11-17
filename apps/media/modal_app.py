@@ -153,7 +153,8 @@ async def fetch_source(invocation: dict) -> dict:
             raise SourceFetchFailure("source_fetch_mode_forbidden")
         await run_fetch_source(session, package, work, mode="proxy", development=False,
             token_server_home=Path("/opt/youtube-tokens"), proxy_template=os.environ.get("YTDLP_PROXY_URL"),
-            static_proxy_urls=os.environ.get("YTDLP_STATIC_PROXY_URLS"))
+            static_proxy_urls=os.environ.get("YTDLP_STATIC_PROXY_URLS"),
+            download_service_token=os.environ.get("APIFY_API_TOKEN"))
     return await invoke_native(invocation, "fetch_source", client=native_client(os.environ),
                                operation=run, max_operation_seconds=2700)
 

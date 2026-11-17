@@ -1,8 +1,8 @@
 # YouTube imports
 
 A YouTube link import runs as the `fetch_source` native operation. It runs in one
-of two places: the Modal `fetch_source` Function through an HTTP proxy, or the
-outbound laptop fetch agent in development. The Worker chooses with
+of two places: the Modal `fetch_source` Function (through the download service
+or an HTTP proxy), or the outbound laptop fetch agent in development. The Worker chooses with
 `YOUTUBE_FETCH_MODE` (`proxy` or `local`). Neither place holds a database
 credential: both reach the API only through signed executor control.
 
@@ -36,6 +36,29 @@ The agent opens an outbound socket, checks the toolchain fingerprint
 (`MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT`) before connecting, and runs the lean
 Linux image in Docker. See [the media README](../../apps/media/README.md) for the
 session lifetime and limits. Production routes refuse device execution.
+
+## Download service (Modal, preferred)
+
+When the Modal secret `narriflow-dev-youtube-fetch` holds `APIFY_API_TOKEN`
+(with `YOUTUBE_FETCH_MODE=proxy`), Modal never talks to YouTube. It asks the
+Apify Actor `coder2077/youtube-video-downloader` (backed by fastsaver.io) for a
+1080p MP4 link (`youtube_download_service.py`), refuses a video over the plan's
+duration cap before the transfer, then fetches that link once through the
+guarded direct-download path and publishes it like any remote original: probe,
+hash, Source Audio extracted from the same file (`run_service_youtube_source`).
+The proxy settings below are ignored while the token is set.
+
+- Cost: $0.00169 per video plus a negligible Actor start fee, billed to the
+  Apify account; failed links are free.
+- The link lasts about five minutes and allows three opens, so it is never
+  stored or retried later; a retry of the operation resolves a new link.
+- A video the service cannot fetch fails as `source_provider_access_denied`
+  (upload instead). A rejected token or exhausted credit (401/402/403) is the
+  permanent `source_download_failed`; a service outage is the retryable one.
+- Logs: `{"message":"youtube_download_service","outcome":"resolved","host":...}`;
+  never the token or the file URL.
+- The token belongs only to the Modal secret. Rotate it in the Apify console
+  (Settings, API & Integrations) and re-create the secret.
 
 ## Proxy mode (Modal)
 

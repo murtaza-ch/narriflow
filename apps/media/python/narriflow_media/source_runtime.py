@@ -7,7 +7,8 @@ from pathlib import Path
 from .control import ExecutorSession
 from .fetch import ExistingSourceAudio, SourceFetchFailure, configured_proxy_routes, fetch_source
 from .fetch_runtime import YtDlpSourceRuntime
-from .file_source_runtime import run_direct_source
+from .file_source_runtime import NativeFileRuntime, publish_original, run_direct_source
+from .youtube_download_service import RESOLVE_SECONDS, resolve_service_download
 from .manifest import YouTubeSource
 from .process import run_owned_process_async, verified_runtime_id
 from .source_sink import ScopedSourceSink, _environment
@@ -35,8 +36,11 @@ async def verify_source_runtime(session, *, bun_executable="bun"):
 
 async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work: Path, *, mode: str,
                            development: bool, token_server_home: Path, proxy_template: str | None = None,
-                           static_proxy_urls: str | None = None, bun_executable="bun", runtime_class=YtDlpSourceRuntime, sink_class=ScopedSourceSink,
-                           verify_runtime=verify_source_runtime, fetch=fetch_source,direct_operation=run_direct_source):
+                           static_proxy_urls: str | None = None, download_service_token: str | None = None,
+                           bun_executable="bun", runtime_class=YtDlpSourceRuntime, sink_class=ScopedSourceSink,
+                           verify_runtime=verify_source_runtime, fetch=fetch_source,direct_operation=run_direct_source,
+                           service_operation=None):
+    service_operation = service_operation if service_operation is not None else run_service_youtube_source
     session.assert_live()
     package.assert_session(session)
     command = package.command
@@ -50,7 +54,8 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         raise SourceFetchFailure("source_runtime_invalid")
     if command["kind"]=="youtube_source" and (mode not in {"local", "proxy"} or mode == "local" and not development):
         raise SourceFetchFailure("source_fetch_mode_forbidden")
-    if command["kind"]=="youtube_source" and mode == "proxy":
+    service = command["kind"]=="youtube_source" and mode == "proxy" and bool(download_service_token)
+    if command["kind"]=="youtube_source" and mode == "proxy" and not service:
         # A missing or malformed proxy secret fails before any native preflight.
         configured_proxy_routes(static_urls=static_proxy_urls, rotating_template=proxy_template)
     if command["kind"]=="youtube_source" and (type(command.get("maxSourceSeconds")) is not int or command["maxSourceSeconds"]<=0):
@@ -60,6 +65,9 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         raise SourceFetchFailure("source_runtime_invalid", True)
     if command["kind"]=="direct_source":
         await direct_operation(session,package,work,bun_executable=bun_executable,sink_class=sink_class)
+        return
+    if service:
+        await service_operation(session,package,work,token=download_service_token,bun_executable=bun_executable,sink_class=sink_class)
         return
     sink = sink_class(session, package, work, bun_executable=bun_executable)
     existing = ExistingSourceAudio(command["existingSourceAudio"]) if command["existingSourceAudio"] else None
@@ -78,6 +86,22 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         development=development, work_directory=work, runtime=runtime, sink=sink,
         toolchain_fingerprint=fingerprint, proxy_template=proxy_template, static_proxy_urls=static_proxy_urls,
         deadline_seconds=min(2700, session.remaining_seconds), existing_audio=existing, project_id=command["projectId"], acquire_audio=command["audioPolicy"]!="none")
+
+
+async def run_service_youtube_source(session: ExecutorSession, package: WorkPackage, work: Path, *, token: str,
+                                     bun_executable="bun", sink_class=ScopedSourceSink, resolve=None, runtime=None):
+    """A YouTube original through the download service, then the direct-original path:
+    one download, probe, hash, audio extracted from that same file, publish."""
+    command = package.command
+    resolved = await (resolve or resolve_service_download)(token, command["mediaId"], timeout=min(RESOLVE_SECONDS, max(1, session.remaining_seconds - 60)))
+    session.assert_live()
+    # Refuse an over-cap video before paying for its transfer. The server repeats the check.
+    if resolved.duration_seconds is not None and resolved.duration_seconds > command["maxSourceSeconds"]:
+        raise SourceFetchFailure("ingest_max_duration_exceeded")
+    runtime = runtime if runtime is not None else NativeFileRuntime(session, bun_executable=bun_executable)
+    sink = sink_class(session, package, work, bun_executable=bun_executable)
+    path, content_type = await runtime.download({"provider": "direct", "url": resolved.url, "authorization": None}, work)
+    await publish_original(session, package, work, path, content_type, runtime=runtime, sink=sink)
 
 
 async def run_pin_source(session: ExecutorSession,package:WorkPackage,work:Path,*,bun_executable='bun',

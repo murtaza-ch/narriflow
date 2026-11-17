@@ -99,8 +99,13 @@ class NativeFileRuntime:
         return await asyncio.to_thread(measure)
 
 
+def source_identity(command):
+    # A YouTube original fetched through the download service keeps its YouTube identity.
+    return {'provider':'youtube','mediaId':command['mediaId']} if command['kind']=='youtube_source' else command['mediaIdentity']
+
+
 def source_manifest(command,probe,snapshot,sha):
-    identity=MediaSource(command['mediaIdentity']['provider'],command['mediaIdentity']['mediaId'])
+    identity=MediaSource(source_identity(command)['provider'],source_identity(command)['mediaId'])
     if probe['probeVersion']!=command['probeVersion']:raise SourceFetchFailure('source_runtime_invalid')
     if probe['hasAudio']:
         return build_audio_manifest(source=identity,source_revision=command['sourceRevision'],audio_format_id='stream:'+str(probe['facts']['audios'][0]['index']),

@@ -8,7 +8,7 @@ import unittest
 from uuid import uuid4
 
 from narriflow_media.fetch import SourceFetchFailure
-from narriflow_media.source_runtime import run_fetch_source,run_pin_source
+from narriflow_media.source_runtime import run_fetch_source,run_pin_source,run_service_youtube_source
 from narriflow_media.transfer import WorkPackage, _wire
 
 
@@ -89,6 +89,33 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
                 await run_fetch_source(session,package,Path("/unused"),mode=mode,development=False,static_proxy_urls="  ",
                     token_server_home=Path("/trusted/token-helper"),runtime_class=runtime,sink_class=sink,verify_runtime=verify,fetch=fetch)
             self.assertEqual(trace,[])
+
+    async def test_a_download_service_token_takes_the_service_route_without_any_proxy(self):
+        session,package,trace,runtime,sink,verify,fetch = self.fixture()
+        async def service(session,package,work,**options):trace.append(("service",options["token"]))
+        with tempfile.TemporaryDirectory() as directory:
+            await run_fetch_source(session,package,Path(directory),mode="proxy",development=False,
+                download_service_token="apify_api_"+"T"*36,token_server_home=Path("/trusted/token-helper"),
+                runtime_class=runtime,sink_class=sink,verify_runtime=verify,fetch=fetch,service_operation=service)
+        self.assertEqual(trace,["verify",("service","apify_api_"+"T"*36)])
+
+    async def test_the_service_route_refuses_an_over_cap_video_before_its_transfer(self):
+        session,package,trace,_runtime,_sink,_verify,_fetch = self.fixture()
+        downloads=[]
+        class Runtime:
+            async def download(self,source,work):
+                downloads.append(source);raise SourceFetchFailure("download_reached")
+        class Sink:
+            def __init__(self,*args,**options):pass
+        async def resolve(token,media_id,timeout):
+            self.assertEqual(media_id,"dQw4w9WgXcQ")
+            return SimpleNamespace(url="https://api.fastsaver.io/v1/tunnel?id=x",duration_seconds=seconds)
+        for seconds,expected in [(3601,"ingest_max_duration_exceeded"),(3600,"download_reached"),(None,"download_reached")]:
+            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(SourceFetchFailure,expected):
+                    await run_service_youtube_source(session,package,Path(directory),token="apify_api_"+"T"*36,
+                        sink_class=Sink,resolve=resolve,runtime=Runtime())
+        self.assertEqual(downloads,[{"provider":"direct","url":"https://api.fastsaver.io/v1/tunnel?id=x","authorization":None}]*2)
 
     async def test_a_malformed_proxy_secret_is_refused_before_native_preflight(self):
         session,package,trace,runtime,sink,verify,fetch = self.fixture()
