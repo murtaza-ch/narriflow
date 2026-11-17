@@ -9,6 +9,7 @@ import asyncio
 from dataclasses import dataclass, field
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 import re
@@ -18,7 +19,9 @@ import tempfile
 from typing import Any, Mapping, Protocol
 
 from .manifest import MAX_SOURCE_BYTES, SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest
-from .proxy import BoundProxySession, ProxySessionSequence
+from .proxy import BoundProxySession, ProxyConfigurationError, proxy_routes
+
+_logger = logging.getLogger(__name__)
 
 
 class SourceFetchFailure(RuntimeError):
@@ -213,6 +216,27 @@ async def _verified(download: DownloadedSource, selected: ResolvedSource, source
     return artifact
 
 
+def configured_proxy_routes(*, static_urls: str | None, rotating_template: str | None) -> list[BoundProxySession]:
+    """A bad proxy secret is a typed, permanent failure, never a retryable crash."""
+    try:
+        routes = proxy_routes(static_urls=static_urls, rotating_template=rotating_template)
+    except ProxyConfigurationError:
+        raise SourceFetchFailure("youtube_proxy_invalid") from None
+    if not routes:
+        raise SourceFetchFailure("source_fetch_mode_forbidden")
+    return routes
+
+
+def _log_route(session: BoundProxySession, outcome: str, code: str | None = None):
+    # The route label and a fixed failure code only. Never the URL (it carries
+    # the proxy credentials) or exception text.
+    entry = {"level": "info" if outcome == "downloaded" else "warn",
+             "message": "youtube_fetch_route", "route": session.route, "outcome": outcome}
+    if code is not None:
+        entry["code"] = code
+    _logger.warning(json.dumps(entry))
+
+
 def verify_source_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourceFile):
     frames_per_second = video.probe.get("fps")
     frame_tolerance = 2 / frames_per_second if type(frames_per_second) in {int, float} and math.isfinite(frames_per_second) and frames_per_second > 0 else 0
@@ -230,6 +254,7 @@ def verify_source_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourc
 async def fetch_source(identity: YouTubeSource, *, source_revision: int, mode: str, development: bool,
                        work_directory: Path, runtime: SourceRuntime, sink: SourceSink,
                        toolchain_fingerprint: str, proxy_template: str | None = None,
+                       static_proxy_urls: str | None = None,
                        deadline_seconds: float = 45 * 60, existing_audio: ExistingSourceAudio | None = None,
                        project_id: str | None = None, acquire_audio: bool = True) -> FetchSourceResult:
     if mode not in {"local", "proxy"} or (mode == "local" and not development):
@@ -245,16 +270,18 @@ async def fetch_source(identity: YouTubeSource, *, source_revision: int, mode: s
         if (binding["projectId"] != project_id or binding["sourceRevision"] != source_revision
                 or binding["mediaIdentity"] != {"provider": "youtube", "mediaId": identity.media_id}):
             raise SourceFetchFailure("source_audio_video_mismatch")
-    sessions = ProxySessionSequence(proxy_template or "") if mode == "proxy" else None
+    routes: list[BoundProxySession | None] = [None]
+    if mode == "proxy":
+        routes = list(configured_proxy_routes(static_urls=static_proxy_urls, rotating_template=proxy_template))
     work_directory.mkdir(parents=True, exist_ok=True)
     audio: VerifiedSourceFile | ExistingSourceAudio | None = existing_audio
     async with asyncio.timeout(deadline_seconds):
-        for _attempt in range(3 if sessions is not None else 1):
-            session = sessions.next() if sessions is not None else None
+        for session in routes:
             directory = Path(tempfile.mkdtemp(prefix="source-session-", dir=work_directory))
             audio_directory = Path(tempfile.mkdtemp(prefix="source-audio-", dir=work_directory)) if audio is None else None
             tasks: list[asyncio.Task] = []
             retry = False
+            outcome, code = "failed", None
             try:
                 selected = await runtime.resolve(identity, session, directory)
                 if selected.media_id != identity.media_id:
@@ -284,12 +311,29 @@ async def fetch_source(identity: YouTubeSource, *, source_revision: int, mode: s
                     verify_source_audio_binding(audio, video)
                 video.assert_unchanged()
                 await sink.video_ready(video, audio)
+                outcome = "downloaded"
                 return FetchSourceResult(audio, video)
             except ProviderAccessBlocked:
-                if sessions is None:
+                outcome = "blocked"
+                if session is None:
                     raise
                 retry = True
+            except asyncio.CancelledError:
+                outcome = "interrupted"
+                raise
+            except Exception as error:
+                # Dead proxies and proxy authentication failures land here and
+                # end the import: only a provider block moves to the next exit.
+                # Log a fixed code, never the exception text.
+                code = getattr(error, "code", None)
+                if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
+                    code = "unclassified"
+                if code == "media_execution_cancelled":
+                    outcome, code = "interrupted", None
+                raise
             finally:
+                if session is not None:
+                    _log_route(session, outcome, code)
                 for task in tasks:
                     if not task.done():
                         task.cancel()

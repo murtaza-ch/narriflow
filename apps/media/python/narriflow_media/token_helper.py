@@ -15,17 +15,8 @@ from typing import Callable
 from uuid import uuid4
 
 from .fetch import SourceFetchFailure
-from .process import run_owned_process_async
+from .process import ChildCancellation, run_owned_process_async
 from .proxy import BoundProxySession
-
-
-class _HelperCancellation(Event):
-    def __init__(self, owner: Event):
-        super().__init__()
-        self._owner = owner
-
-    def is_set(self):
-        return super().is_set() or self._owner.is_set()
 
 
 class OwnedTokenHelper:
@@ -35,7 +26,7 @@ class OwnedTokenHelper:
         if not math.isfinite(deadline_seconds) or not 0 < deadline_seconds <= 2700:
             raise SourceFetchFailure('source_token_helper_invalid')
         self._home, self._work, self._session = server_home.resolve(), work_directory, session
-        self._assert_owned, self._cancel = assert_owned, _HelperCancellation(cancel_event)
+        self._assert_owned, self._cancel = assert_owned, ChildCancellation(cancel_event)
         self._seconds, self._bun = deadline_seconds, bun_executable
         self._task: asyncio.Task | None = None
         self._directory: Path | None = None

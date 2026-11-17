@@ -1,8 +1,8 @@
 # YouTube imports
 
 A YouTube link import runs as the `fetch_source` native operation. It runs in one
-of two places: the Modal `fetch_source` Function through a sticky HTTP proxy, or
-the outbound laptop fetch agent in development. The Worker chooses with
+of two places: the Modal `fetch_source` Function through an HTTP proxy, or the
+outbound laptop fetch agent in development. The Worker chooses with
 `YOUTUBE_FETCH_MODE` (`proxy` or `local`). Neither place holds a database
 credential: both reach the API only through signed executor control.
 
@@ -39,26 +39,49 @@ session lifetime and limits. Production routes refuse device execution.
 
 ## Proxy mode (Modal)
 
-`modal_app.py` reads `YOUTUBE_FETCH_MODE` and `YTDLP_PROXY_URL` from the Modal
-secret `narriflow-dev-youtube-fetch`. Proxy credentials belong only to that
-secret, never to the API or the repository. HTTP proxy URLs only; credentials
-must be URL-encoded. The proxy applies to YouTube imports only.
+`modal_app.py` reads `YOUTUBE_FETCH_MODE`, `YTDLP_STATIC_PROXY_URLS` and
+`YTDLP_PROXY_URL` from the Modal secret `narriflow-dev-youtube-fetch`. Proxy
+credentials belong only to that secret, never to the API or the repository. HTTP
+proxy URLs only; credentials must be URL-encoded (a comma in a password is
+`%2C`). The proxies apply to YouTube imports only. Proxy mode needs at least one
+of the two URL settings.
 
-Use a residential proxy with sticky sessions. Datacenter proxy IPs meet the same
-YouTube block as Modal. Put the `{session}` placeholder in the username. The
-runtime (`proxy.py`) binds a fresh session ID per attempt, so metadata, media
-transfer and retries within an attempt share one exit IP. When YouTube blocks a
-command (bot check or HTTP 403), `fetch.py` retries on a fresh session, at most
-three sessions per import. A proxy without `{session}` is refused as
-`youtube_proxy_invalid`. The bgutil plugin forwards the bound proxy to token
-generation; the loopback token server bypasses it. There is no direct fallback if
-the proxy is unavailable.
+Each import tries its exits in this order (`proxy.py`):
+
+1. **Fixed ISP addresses** (`YTDLP_STATIC_PROXY_URLS`): up to five
+   comma-separated URLs without a `{session}` placeholder. Each is tried once,
+   starting from a random address so imports spread across the pool. A flat
+   monthly fee per address; this is the intended route.
+2. **Rotating sticky sessions** (`YTDLP_PROXY_URL`): the residential last
+   resort, leave it unset unless the owner decides otherwise. Put `{session}` in
+   the username; the runtime binds three fresh session IDs per import.
+
+Metadata, media transfer and retries within one attempt share one exit. When
+YouTube blocks a command (bot check or HTTP 403/429), `fetch.py` moves to the
+next exit and extracts again; committed Source Audio is kept and never uploaded
+again. When every exit is blocked, the import fails as
+`source_provider_access_denied` and the user is sent to file upload. Only a
+YouTube block moves to the next exit: a dead proxy, a proxy authentication
+failure (407) or any other transport error ends the import on that exit, and all
+exits share the operation's 45-minute deadline. A fixed URL
+with `{session}`, a rotating URL without it, an empty list entry or more than
+five fixed addresses, or the same address twice is refused before work starts as
+the permanent failure `youtube_proxy_invalid`. The bgutil plugin
+forwards the bound proxy to token generation; the loopback token server bypasses
+it. There is no direct fallback if the proxies are unavailable.
+
+Every attempt logs one line such as
+`{"message":"youtube_fetch_route","route":"static-2","outcome":"blocked"}`.
+Routes are `static-N` (position in `YTDLP_STATIC_PROXY_URLS`) or `rotating-N`;
+outcomes are `downloaded`, `blocked`, `failed` (with its failure `code`) or
+`interrupted`. The URL and exception text are never logged. A fixed address that
+keeps logging `blocked` needs replacing.
 
 ```dotenv
-# DataImpulse: sticky session about 30 minutes
-YTDLP_PROXY_URL=http://LOGIN__cr.us;sessid.{session}:PASSWORD@gw.dataimpulse.com:823
-# Decodo: three-hour session
-YTDLP_PROXY_URL=http://user-USERNAME-session-{session}-sessionduration-180:PASSWORD@gate.decodo.com:7000
+# Fixed ISP addresses (example shapes; use the provider's host and port)
+YTDLP_STATIC_PROXY_URLS=http://USER:PASSWORD@203.0.113.7:3128,http://USER:PASSWORD@203.0.113.8:3128
+# Residential last resort, normally unset. DataImpulse: sticky session about 30 minutes
+# YTDLP_PROXY_URL=http://LOGIN__cr.us;sessid.{session}:PASSWORD@gw.dataimpulse.com:823
 ```
 
 Imports use roughly 270 to 300 MB per hour of source video (measured October
@@ -69,7 +92,7 @@ balance. Do not paste credentials into shell history or enable yt-dlp verbose
 logs with real credentials.
 
 `YOUTUBE_PROXY_ACCEPTED=true` is set on the API only after the configured proxy
-passes the gates below. Proxy purchase is deferred.
+passes the gates below.
 
 ## Verification
 

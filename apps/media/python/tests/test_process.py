@@ -12,7 +12,7 @@ import tempfile
 import threading
 import unittest
 
-from narriflow_media.process import MAX_OUTPUT_BYTES, MediaProcessError, run_owned_process, run_owned_process_async
+from narriflow_media.process import MAX_OUTPUT_BYTES, ChildCancellation, MediaProcessError, run_owned_process, run_owned_process_async
 
 
 class OwnedProcessTests(unittest.TestCase):
@@ -131,6 +131,33 @@ class OwnedProcessTests(unittest.TestCase):
                               on_start=started, cancel_event=cancelled)
         self.assertEqual(failure.exception.code, "media_execution_cancelled")
         self.assertLess(time.monotonic() - began, 2)
+        self.assertEqual(len(children), 1)
+        self.assert_pid_stopped(children[0])
+
+    def test_cancelling_one_sibling_stops_only_that_child_and_leaves_its_owner_live(self):
+        owner = threading.Event()
+        children = []
+        async def scenario():
+            sibling = asyncio.create_task(run_owned_process_async(
+                [sys.executable, "-c", "import time;time.sleep(60)"], timeout_seconds=60, kill_grace_seconds=0.1,
+                on_start=children.append, cancel_event=ChildCancellation(owner)))
+            while not children:
+                await asyncio.sleep(0.02)
+            sibling.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await sibling
+            self.assertFalse(owner.is_set())
+            # The owner is still live: the next exit's process may start.
+            result = await run_owned_process_async([sys.executable, "-c", "print('next')"], timeout_seconds=10,
+                                                   cancel_event=ChildCancellation(owner))
+            self.assertEqual(result.stdout.strip(), b"next")
+            # Stopping the owner still stops every child watching it.
+            owner.set()
+            with self.assertRaises(MediaProcessError) as failure:
+                await run_owned_process_async([sys.executable, "-c", "import time;time.sleep(60)"], timeout_seconds=60,
+                                              cancel_event=ChildCancellation(owner))
+            self.assertEqual(failure.exception.code, "media_execution_cancelled")
+        asyncio.run(scenario())
         self.assertEqual(len(children), 1)
         self.assert_pid_stopped(children[0])
 

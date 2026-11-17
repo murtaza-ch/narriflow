@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .control import ExecutorSession
-from .fetch import ExistingSourceAudio, SourceFetchFailure, fetch_source
+from .fetch import ExistingSourceAudio, SourceFetchFailure, configured_proxy_routes, fetch_source
 from .fetch_runtime import YtDlpSourceRuntime
 from .file_source_runtime import run_direct_source
 from .manifest import YouTubeSource
@@ -35,7 +35,7 @@ async def verify_source_runtime(session, *, bun_executable="bun"):
 
 async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work: Path, *, mode: str,
                            development: bool, token_server_home: Path, proxy_template: str | None = None,
-                           bun_executable="bun", runtime_class=YtDlpSourceRuntime, sink_class=ScopedSourceSink,
+                           static_proxy_urls: str | None = None, bun_executable="bun", runtime_class=YtDlpSourceRuntime, sink_class=ScopedSourceSink,
                            verify_runtime=verify_source_runtime, fetch=fetch_source,direct_operation=run_direct_source):
     session.assert_live()
     package.assert_session(session)
@@ -48,8 +48,11 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         raise SourceFetchFailure(command["failureCode"],command["retryable"])
     if command.get("kind") not in {"youtube_source","direct_source"} or command.get("audioPolicy") not in {"required","none","pending_pack"}:
         raise SourceFetchFailure("source_runtime_invalid")
-    if command["kind"]=="youtube_source" and (mode not in {"local", "proxy"} or mode == "local" and not development or mode == "proxy" and not proxy_template):
+    if command["kind"]=="youtube_source" and (mode not in {"local", "proxy"} or mode == "local" and not development):
         raise SourceFetchFailure("source_fetch_mode_forbidden")
+    if command["kind"]=="youtube_source" and mode == "proxy":
+        # A missing or malformed proxy secret fails before any native preflight.
+        configured_proxy_routes(static_urls=static_proxy_urls, rotating_template=proxy_template)
     if command["kind"]=="youtube_source" and (type(command.get("maxSourceSeconds")) is not int or command["maxSourceSeconds"]<=0):
         raise SourceFetchFailure("source_runtime_invalid")
     fingerprint = await verify_runtime(session, bun_executable=bun_executable)
@@ -73,7 +76,7 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         cancel_event=session.cancel_event, assert_owned=session.assert_live, max_source_seconds=command["maxSourceSeconds"])
     await fetch(YouTubeSource(command["mediaId"]), source_revision=command["sourceRevision"], mode=mode,
         development=development, work_directory=work, runtime=runtime, sink=sink,
-        toolchain_fingerprint=fingerprint, proxy_template=proxy_template,
+        toolchain_fingerprint=fingerprint, proxy_template=proxy_template, static_proxy_urls=static_proxy_urls,
         deadline_seconds=min(2700, session.remaining_seconds), existing_audio=existing, project_id=command["projectId"], acquire_audio=command["audioPolicy"]!="none")
 
 

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from .fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure, probe_failure
 from .manifest import MAX_SOURCE_BYTES, YouTubeSource, toolchain_versions
-from .process import FILE_SIZE_LIMIT_EXIT_CODE, run_owned_process_async
+from .process import FILE_SIZE_LIMIT_EXIT_CODE, ChildCancellation, run_owned_process_async
 from .proxy import BoundProxySession
 from .token_helper import OwnedTokenHelper
 
@@ -99,7 +99,9 @@ class YtDlpSourceRuntime:
         result = await run_owned_process_async(
             [sys.executable, "-I", "-m", "yt_dlp", *self._arguments(session), *args],
             timeout_seconds=self._remaining(), env=self._environment(session), on_start=self._start,
-            cancel_event=self._cancel,
+            # Audio and video run side by side. When a block on one cancels the
+            # other, only that process stops; the next exit stays allowed.
+            cancel_event=ChildCancellation(self._cancel),
             max_file_bytes=MAX_SOURCE_BYTES,
         )
         if result.returncode:
@@ -198,7 +200,7 @@ class YtDlpSourceRuntime:
         result = await run_owned_process_async(
             [self._bun, str(self._probe)], input_bytes=json.dumps({"sourcePath": str(path.resolve())}).encode(),
             timeout_seconds=self._remaining(60), env=self._environment(None), on_start=self._start,
-            cancel_event=self._cancel,
+            cancel_event=ChildCancellation(self._cancel),
         )
         if result.returncode:
             raise probe_failure(result.stderr)

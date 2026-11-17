@@ -171,6 +171,22 @@ def run_owned_process(
                     stream.close()
 
 
+class ChildCancellation(Event):
+    """Stops one child when its owner stops, without stopping the owner.
+
+    `run_owned_process_async` sets the event it is given when its task is
+    cancelled. Passing the owner's event would mark the whole operation
+    cancelled when only one sibling process was meant to stop.
+    """
+
+    def __init__(self, owner: Event):
+        super().__init__()
+        self._owner = owner
+
+    def is_set(self):
+        return super().is_set() or self._owner.is_set()
+
+
 async def run_owned_process_async(argv: Sequence[str], *, input_bytes: bytes = b"", timeout_seconds: float,
                                   kill_grace_seconds: float = 5, env: Mapping[str, str] | None = None,
                                   on_start: Callable[[int], None] | None = None,

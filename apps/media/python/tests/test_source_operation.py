@@ -86,6 +86,24 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
         for mode in ["local","proxy"]:
             session,package,trace,runtime,sink,verify,fetch = self.fixture()
             with self.assertRaisesRegex(SourceFetchFailure,"source_fetch_mode_forbidden"):
-                await run_fetch_source(session,package,Path("/unused"),mode=mode,development=False,
+                await run_fetch_source(session,package,Path("/unused"),mode=mode,development=False,static_proxy_urls="  ",
                     token_server_home=Path("/trusted/token-helper"),runtime_class=runtime,sink_class=sink,verify_runtime=verify,fetch=fetch)
             self.assertEqual(trace,[])
+
+    async def test_a_malformed_proxy_secret_is_refused_before_native_preflight(self):
+        session,package,trace,runtime,sink,verify,fetch = self.fixture()
+        with self.assertRaisesRegex(SourceFetchFailure,"youtube_proxy_invalid"):
+            await run_fetch_source(session,package,Path("/unused"),mode="proxy",development=False,
+                static_proxy_urls="http://isp.example:3128,",
+                token_server_home=Path("/trusted/token-helper"),runtime_class=runtime,sink_class=sink,verify_runtime=verify,fetch=fetch)
+        self.assertEqual(trace,[])
+
+    async def test_fixed_addresses_alone_admit_proxy_mode_and_reach_the_shared_fetch(self):
+        session,package,trace,runtime,sink,verify,_fetch = self.fixture()
+        seen = {}
+        async def fetch(source, **options): seen.update(options)
+        with tempfile.TemporaryDirectory() as directory:
+            await run_fetch_source(session,package,Path(directory),mode="proxy",development=False,
+                static_proxy_urls="http://isp.example:3128",
+                token_server_home=Path("/trusted/token-helper"),runtime_class=runtime,sink_class=sink,verify_runtime=verify,fetch=fetch)
+        self.assertEqual((seen["mode"],seen["proxy_template"],seen["static_proxy_urls"]),("proxy",None,"http://isp.example:3128"))

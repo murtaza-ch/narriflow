@@ -1,9 +1,18 @@
-"""One sticky HTTP proxy session is shared by extraction and every transfer."""
+"""One proxy exit is shared by extraction and every transfer of an attempt.
+
+An import tries fixed ISP addresses first, then rotating sticky sessions.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import ipaddress
+import random
 import re
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+MAX_STATIC_PROXIES = 5
+ROTATING_SESSIONS = 3
+_SESSION_PLACEHOLDER = re.compile(r"\{session\}|%7bsession%7d", re.IGNORECASE)
 
 
 class ProxyConfigurationError(ValueError):
@@ -16,6 +25,8 @@ class ProxyConfigurationError(ValueError):
 class BoundProxySession:
     session_id: str
     _url: str = field(repr=False)
+    # A safe label for logs: static-N in configuration order, or rotating-N.
+    route: str = "rotating"
 
     @property
     def url(self) -> str:
@@ -35,59 +46,98 @@ class BoundProxySession:
         return ["--proxy", self._url, "--external-downloader-args", f"ffmpeg_i:-http_proxy {self._url}"]
 
 
-def bind_proxy_session(template: str, session_id: str) -> BoundProxySession:
+def _validated_template(template: str, *, rotating: bool) -> str:
+    """Shape checks shared by both kinds. A rotating template must carry the
+    session placeholder in its credentials; a fixed address must not."""
+    if not isinstance(template, str) or not 1 <= len(template) <= 2048:
+        raise ValueError()
+    if any(ord(char) <= 32 or ord(char) >= 127 for char in template):
+        raise ValueError()
+    initial = urlsplit(template)
+    if initial.scheme != "http" or not initial.hostname or initial.path not in {"", "/"} or initial.query or initial.fragment:
+        raise ValueError()
+    credentials = f"{initial.username or ''}:{initial.password or ''}"
+    if rotating and not _SESSION_PLACEHOLDER.search(credentials):
+        raise ValueError()
+    if not rotating and _SESSION_PLACEHOLDER.search(template):
+        raise ValueError()
+    return template
+
+
+def _normalized(candidate: str) -> str:
+    parsed = urlsplit(candidate)
+    port = parsed.port
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError()
+    host = parsed.hostname
+    if not host or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:" for char in host):
+        raise ValueError()
+    host = f"[{host}]" if ":" in host else host
+    if port is not None:
+        host += f":{port}"
+    username = quote(unquote(parsed.username or ""), safe="-._~")
+    password = quote(unquote(parsed.password or ""), safe="-._~")
+    credentials = username + (f":{password}" if parsed.password is not None else "")
+    return urlunsplit(("http", f"{credentials}@{host}" if credentials else host, "", "", ""))
+
+
+def bind_proxy_session(template: str, session_id: str, route: str = "rotating") -> BoundProxySession:
     """Validate before substitution; URL parser exceptions never expose credentials."""
     try:
-        if not isinstance(template, str) or not 1 <= len(template) <= 2048:
+        if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", session_id):
             raise ValueError()
-        if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", session_id):
-            raise ValueError()
-        if any(ord(char) <= 32 or ord(char) >= 127 for char in template):
-            raise ValueError()
-        initial = urlsplit(template)
-        if initial.scheme != "http" or not initial.hostname or initial.path not in {"", "/"} or initial.query or initial.fragment:
-            raise ValueError()
-        credentials = f"{initial.username or ''}:{initial.password or ''}"
-        if not re.search(r"\{session\}|%7bsession%7d", credentials, re.IGNORECASE):
-            raise ValueError()
-        candidate = re.sub(r"\{session\}|%7bsession%7d", session_id, template, flags=re.IGNORECASE)
-        parsed = urlsplit(candidate)
-        port = parsed.port
-        if port is not None and not 1 <= port <= 65535:
-            raise ValueError()
-        host = parsed.hostname
-        if not host or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:" for char in host):
-            raise ValueError()
-        host = f"[{host}]" if ":" in host else host
-        if port is not None:
-            host += f":{port}"
-        username = quote(unquote(parsed.username or ""), safe="-._~")
-        password = quote(unquote(parsed.password or ""), safe="-._~")
-        credentials = username + (f":{password}" if parsed.password is not None else "")
-        normalized = urlunsplit(("http", f"{credentials}@{host}", "", "", ""))
-        return BoundProxySession(session_id, normalized)
+        _validated_template(template, rotating=True)
+        return BoundProxySession(session_id, _normalized(_SESSION_PLACEHOLDER.sub(session_id, template)), route)
     except (TypeError, ValueError, UnicodeError):
         raise ProxyConfigurationError() from None
 
 
-class ProxySessionLimitError(RuntimeError):
-    def __init__(self):
-        super().__init__("source_provider_access_denied")
-        self.code = "source_provider_access_denied"
+def bind_static_proxy(url: str, label: str) -> BoundProxySession:
+    """A fixed ISP address: the same exit for every request, no placeholder.
+    It has no provider session, so its label doubles as its identity."""
+    try:
+        if not isinstance(label, str) or not re.fullmatch(r"static-[1-9]", label):
+            raise ValueError()
+        return BoundProxySession(label, _normalized(_validated_template(url, rotating=False)), label)
+    except (TypeError, ValueError, UnicodeError):
+        raise ProxyConfigurationError() from None
 
 
-class ProxySessionSequence:
-    """A new exit requires new extraction. A fourth session is never issued."""
+def _exit_identity(url: str) -> tuple:
+    """Two spellings of one address are the same exit: default port, host
+    case and IP literal forms do not make a second route."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    try:
+        host = ipaddress.ip_address(host).compressed
+    except ValueError:
+        pass
+    return parsed.username, parsed.password, host, parsed.port or 80
 
-    def __init__(self, template: str):
-        bind_proxy_session(template, "0" * 32)
-        self._template = template
-        self._issued = 0
 
-    def next(self) -> BoundProxySession:
-        from uuid import uuid4
+def proxy_routes(*, static_urls: str | None, rotating_template: str | None,
+                 start: int | None = None) -> list[BoundProxySession]:
+    """The ordered exits one import may try, validated before any work starts.
 
-        if self._issued == 3:
-            raise ProxySessionLimitError()
-        self._issued += 1
-        return bind_proxy_session(self._template, uuid4().hex)
+    Fixed addresses come first, each once, from a random starting point so
+    imports spread across the pool. Up to three rotating sessions follow when
+    a rotating proxy is configured. A new exit always means new extraction.
+    """
+    if static_urls is not None and not isinstance(static_urls, str):
+        raise ProxyConfigurationError()
+    values = [value.strip() for value in static_urls.split(",")] if static_urls and static_urls.strip() else []
+    # An empty entry is a typo in the secret, not a request for fewer exits.
+    if "" in values or len(values) > MAX_STATIC_PROXIES:
+        raise ProxyConfigurationError()
+    statics = [bind_static_proxy(value, f"static-{index + 1}") for index, value in enumerate(values)]
+    if len({_exit_identity(route.url) for route in statics}) != len(statics):
+        raise ProxyConfigurationError()
+    if statics:
+        offset = (random.randrange(len(statics)) if start is None else start) % len(statics)
+        statics = statics[offset:] + statics[:offset]
+    if not rotating_template:
+        return statics
+    from uuid import uuid4
+
+    return statics + [bind_proxy_session(rotating_template, uuid4().hex, f"rotating-{index + 1}")
+                      for index in range(ROTATING_SESSIONS)]

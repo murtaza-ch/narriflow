@@ -4,8 +4,10 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from narriflow_media.manifest import YouTubeSource
+from narriflow_media.manifest import SourceManifestError, YouTubeSource
+from narriflow_media.process import MediaProcessError
 from narriflow_media.fetch import DownloadedSource, ExistingSourceAudio, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure, fetch_source
 
 
@@ -149,6 +151,119 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(audio_downloads, [resolved[0]])
             self.assertEqual(commits, ["audio", "video"])
             self.assertEqual(closed, resolved)
+
+    def fixed_route_runtime(self, root: Path, blocked: set[str], resolved: list[str]):
+        audio_file, video_file = root / "audio.m4a", root / "video.mp4"
+        audio_file.write_bytes(b"a")
+        video_file.write_bytes(b"v")
+        class Runtime:
+            async def resolve(self, source, session, work):
+                resolved.append(session.session_id)
+                if session.session_id in blocked:
+                    raise ProviderAccessBlocked()
+                metadata = work / "source.info.json"
+                metadata.write_text(session.session_id)
+                return ResolvedSource(source.media_id, "140", "137", "en", metadata)
+            async def download_audio(self, selected, session, work):
+                return DownloadedSource(audio_file, selected.media_id, selected.audio_format_id)
+            async def download_video(self, selected, session, work):
+                return DownloadedSource(video_file, selected.media_id, selected.audio_format_id)
+            async def end_session(self, work):
+                pass
+            async def probe(self, path):
+                return probe(path == video_file)
+        return Runtime()
+
+    async def test_a_blocked_fixed_address_falls_through_to_the_next_before_any_rotating_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, resolved, commits = Path(directory), [], []
+            class Sink:
+                async def audio_ready(self, artifact):
+                    commits.append("audio")
+                async def video_ready(self, artifact, audio):
+                    commits.append("video")
+            with self.assertLogs("narriflow_media.fetch", "WARNING") as logs, patch("narriflow_media.proxy.random.randrange", return_value=0):
+                await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
+                                   static_proxy_urls="http://isp:hidden@one.example:3128,http://isp:hidden@two.example:3128",
+                                   proxy_template="http://sticky-{session}:hidden@proxy.example:8080",
+                                   work_directory=root, runtime=self.fixed_route_runtime(root, {"static-1"}, resolved),
+                                   sink=Sink(), toolchain_fingerprint="b" * 64)
+            self.assertEqual(resolved, ["static-1", "static-2"])
+            self.assertEqual(commits, ["audio", "video"])
+            self.assertEqual(len(logs.output), 2)
+            self.assertIn('"route": "static-1", "outcome": "blocked"', logs.output[0])
+            self.assertIn('"route": "static-2", "outcome": "downloaded"', logs.output[1])
+            self.assertFalse(any("hidden" in line or "example" in line for line in logs.output))
+
+    async def test_a_non_block_failure_ends_the_import_on_that_exit_and_logs_only_its_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, resolved = Path(directory), []
+            runtime = self.fixed_route_runtime(root, set(), resolved)
+            async def dead_proxy(source, session, work):
+                resolved.append(session.route)
+                raise SourceFetchFailure("source_fetch_failed", True)
+            runtime.resolve = dead_proxy
+            class Sink:
+                async def audio_ready(self, artifact):
+                    raise AssertionError("nothing may commit")
+                video_ready = audio_ready
+            with self.assertLogs("narriflow_media.fetch", "WARNING") as logs, patch("narriflow_media.proxy.random.randrange", return_value=0):
+                with self.assertRaisesRegex(SourceFetchFailure, "source_fetch_failed"):
+                    await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
+                                       static_proxy_urls="http://isp:hidden@one.example:3128,http://isp:hidden@two.example:3128",
+                                       work_directory=root, runtime=runtime, sink=Sink(), toolchain_fingerprint="b" * 64)
+            self.assertEqual(resolved, ["static-1"])
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn('"outcome": "failed", "code": "source_fetch_failed"', logs.output[0])
+
+    async def test_untyped_and_cancelled_failures_log_a_fixed_code_or_interrupted(self):
+        cases = [(SourceManifestError("source_file_changed"), '"outcome": "failed", "code": "source_file_changed"'),
+                 (RuntimeError("http://isp:hidden@one.example:3128 refused"), '"outcome": "failed", "code": "unclassified"'),
+                 (MediaProcessError("media_execution_cancelled"), '"outcome": "interrupted"')]
+        for error, expected in cases:
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runtime = self.fixed_route_runtime(root, set(), [])
+                async def failing(source, session, work, error=error):
+                    raise error
+                runtime.resolve = failing
+                with self.assertLogs("narriflow_media.fetch", "WARNING") as logs:
+                    with self.assertRaises(type(error)):
+                        await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
+                                           static_proxy_urls="http://isp:hidden@one.example:3128",
+                                           work_directory=root, runtime=runtime, sink=None, toolchain_fingerprint="b" * 64)
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn(expected, logs.output[0])
+                self.assertNotIn("hidden", logs.output[0])
+
+    async def test_a_malformed_proxy_secret_is_a_permanent_typed_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(SourceFetchFailure) as failure:
+                await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
+                                   static_proxy_urls="http://isp-{session}:hidden@one.example:3128",
+                                   work_directory=Path(directory), runtime=None, sink=None, toolchain_fingerprint="b" * 64)
+            self.assertEqual((failure.exception.code, failure.exception.retryable), ("youtube_proxy_invalid", False))
+            self.assertIsNone(failure.exception.__cause__)
+            self.assertNotIn("hidden", str(failure.exception))
+
+    async def test_every_blocked_fixed_address_without_a_rotating_proxy_refuses_the_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, resolved = Path(directory), []
+            class Sink:
+                async def audio_ready(self, artifact):
+                    raise AssertionError("nothing may commit")
+                video_ready = audio_ready
+            with self.assertLogs("narriflow_media.fetch", "WARNING"):
+                with self.assertRaises(ProviderAccessBlocked):
+                    await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
+                                       static_proxy_urls="http://one.example:3128,http://two.example:3128",
+                                       work_directory=root, runtime=self.fixed_route_runtime(root, {"static-1", "static-2"}, resolved),
+                                       sink=Sink(), toolchain_fingerprint="b" * 64)
+            self.assertEqual(sorted(resolved), ["static-1", "static-2"])
+            with self.assertRaisesRegex(SourceFetchFailure, "source_fetch_mode_forbidden"):
+                await fetch_source(YouTubeSource("_123456789-"), source_revision=2, mode="proxy", development=False,
+                                   work_directory=root, runtime=self.fixed_route_runtime(root, set(), []),
+                                   sink=Sink(), toolchain_fingerprint="b" * 64)
 
     async def test_video_mismatch_keeps_the_committed_audio_and_never_publishes_video(self):
         with tempfile.TemporaryDirectory() as directory:
