@@ -112,7 +112,9 @@ async def run_service_youtube_source(session: ExecutorSession, package: WorkPack
         if error.code in {"source_download_failed", "remote_download_failed", "remote_fetch_timeout"}:
             raise SourceFetchFailure("source_download_failed", True) from None
         raise
-    await publish_original(session, package, work, path, content_type, runtime=runtime, sink=sink, max_source_seconds=cap)
+    # The service delivers fragmented MP4; renders need the index first.
+    path = await runtime.remux_faststart(path, work)
+    await publish_original(session, package, work, path, "video/mp4", runtime=runtime, sink=sink, max_source_seconds=cap)
 
 
 async def run_pin_source(session: ExecutorSession,package:WorkPackage,work:Path,*,bun_executable='bun',

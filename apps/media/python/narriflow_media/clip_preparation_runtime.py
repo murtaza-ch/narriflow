@@ -5,6 +5,7 @@ import asyncio
 import json
 import math
 from pathlib import Path
+import re
 import sys
 import time
 
@@ -86,13 +87,18 @@ async def run_prepare_clip(session,package,work:Path,*,transport=None,source_tra
             raise NativeOperationFailure('clip_preparation_process_unavailable',True) from None
         session.assert_live()
         if result.returncode:
-            code='clip_preparation_failed';retryable=True
+            code='clip_preparation_failed';retryable=True;detail=None
             for line in result.stderr.splitlines():
                 try:
                     failure=json.loads(line)
                     if failure.get('message')=='clip_preparation_failed' and failure.get('errorCode') in {'source_identity_mismatch','clip_preparation_command_invalid'}:
                         code=failure['errorCode'];retryable=False
+                    if failure.get('message')=='clip_preparation_failed' and isinstance(failure.get('errorCode'),str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',failure['errorCode']):
+                        detail=failure['errorCode']
                 except (ValueError,AttributeError):pass
+            # The CLI's fixed code says which phase failed; nothing else from stderr is logged.
+            print(json.dumps({'level':'warn','message':'clip_preparation_child_failed','exitCode':result.returncode,'errorCode':detail,
+                'phaseMs':preparation_phases(result.stderr),'sourceBytesTransferred':sources.bytes_transferred,'sourceRequests':sources.upstream_requests}),file=sys.stderr)
             raise NativeOperationFailure(code,retryable)
         returned=_json(result.stdout,65536)
         if not isinstance(returned,dict) or set(returned)!={'previewPath','peaksPath','layoutPath'}:

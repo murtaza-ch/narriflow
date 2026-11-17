@@ -64,6 +64,30 @@ class NativeFileRuntime:
         path.chmod(0o400)
         return path,facts['contentType']
 
+    async def remux_faststart(self,path,work):
+        """Rewrite a stream copy as a regular MP4 with its index first. Download
+        services deliver fragmented MP4 with no front index: opening one over
+        ranged reads walks every fragment, which stalls preparation and renders
+        on long sources. No re-encode; quality and timing are unchanged."""
+        output=work/'original.mp4'
+        if output.exists():raise SourceFetchFailure('source_download_failed',True)
+        self.session.assert_live()
+        try:
+            result=await run_owned_process_async(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-i',str(path.resolve()),
+                '-map','0:v:0','-map','0:a:0?','-c','copy','-movflags','+faststart','-f','mp4',str(output.resolve())],
+                env=_environment(),timeout_seconds=min(1800,self.session.remaining_seconds),max_file_bytes=MAX_SOURCE_BYTES,
+                on_start=self.session.on_process_start,cancel_event=self.session.cancel_event)
+        except MediaProcessError as error:
+            if error.code in {'media_process_start_unconfirmed','media_execution_cancelled'}:
+                raise ExecutionControlError('execution_start_unconfirmed' if error.code=='media_process_start_unconfirmed' else 'execution_authority_lost') from None
+            raise SourceFetchFailure('source_download_failed',True) from None
+        if result.returncode or output.is_symlink() or not output.is_file() or not 0<output.stat().st_size<=MAX_SOURCE_BYTES:
+            output.unlink(missing_ok=True)
+            # An unreadable download is the service's fault; a retry fetches a fresh copy.
+            raise SourceFetchFailure('source_download_failed',True)
+        path.unlink(missing_ok=True);output.chmod(0o400)
+        return output
+
     async def probe(self,path):
         result=await self._run([self.bun,str(self.source/'probe-cli.ts')],{'sourcePath':str(path.resolve())},timeout=60)
         if result.returncode:raise probe_failure(result.stderr)
