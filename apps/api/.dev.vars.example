@@ -146,10 +146,13 @@ DEV_DEVICE_KEYS_JSON=
 MEDIA_FETCH_TOOLCHAIN_FINGERPRINT=
 MEDIA_RENDER_TOOLCHAIN_FINGERPRINT=
 MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT=
-YOUTUBE_FETCH_MODE=local
+# Shared development imports YouTube through Modal (the Apify download service
+# token lives only in the narriflow-dev-youtube-fetch Modal Secret). Set
+# YOUTUBE_FETCH_MODE=local, unset YOUTUBE_PROXY_ACCEPTED and allowlist a Workspace
+# below to use the laptop fetch agent instead. See docs/runbooks/youtube-import.md.
+YOUTUBE_FETCH_MODE=proxy
+YOUTUBE_PROXY_ACCEPTED=true
 LOCAL_FETCH_WORKSPACE_IDS_JSON=[]
-# YOUTUBE_PROXY_ACCEPTED=true only after the configured Modal proxy passes gates.
-# Proxy credentials belong only to the fetch_source Modal Secret at launch.
 
 # Optional. Each stays off until set. See docs/runbooks/alerting.md.
 # POSTHOG_PROJECT_TOKEN=
