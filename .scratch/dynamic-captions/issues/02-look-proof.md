@@ -84,3 +84,50 @@ python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
 **Verification.** `bun run lint` passes: 0 errors, and the remaining warnings are pre-existing ones outside `references/proof/`. Biome checks `.scratch`, so the proof scripts are kept lint-clean. Per the orchestrator, `typecheck` and `test` were not run for this ticket, because no code in `apps/` or `packages/` changed. That box stays open until the closing pass.
+
+### Opus, 2026-11-19: G2 follow-up (adopted recipe)
+
+Sol's G2 failed only because the proof did not use the adopted recipe. The proof now draws it in both painters, and nothing in `apps/` or `packages/` changed. `headline-s80.ass` and `frame-settled-s80.jpg` are deleted (superseded). All frames are now JPEG quality 85 (`sips`), and `render.sh` writes them directly.
+
+**Recipe (both painters, from `layout.js`).** S = 80. Minor and body words are Inter SemiBold at 80 px, white. The hero is Inter ExtraBold with letter spacing −0.03 em. The tracking is measured before the fill is solved (HarfBuzz `layoutCaptionLine` with −0.03 in the worker, Canvas `letterSpacing` in the page, the advance excluding the trailing spacing). Fill is 0.80 of the frame width, clamped to 2.2 to 3.4 S (176 to 272 px) before fit. rowGap is 0.06 S, and every row gap in every cue measures 4.80 px ink to ink. The one exception is 4.66 px in "the secret is consistency", where the clamped 176 px hero is wider than the fit width and the block scale is 0.971. The gradient runs from `#A5EBC5` at 0 % to `#36B780` at 100 % of the hero's rest ink box. The shadow is a separate black 65 % layer with a 6 px blur and 2 px down at S, scaled by px / S. The block is centred at x 50 %, y 60 %. The entrance is `slide` as before. Hero sizes per cue are 171 to 272 px. Rule 1 holds after fit (minimum 2.2x body).
+
+**Gradient bands.** Each band is exactly 8 px, and every edge falls on an even row. A word over 48 bands or a cue over 120 events throws in `build.ts`. The maximum is **37 bands per hero word** ("wasting") and **68 Dialogue events per cue** ("got 1 million views"). There are 505 events over 12 cues (mean 42), against 176 for Bold Pop.
+
+**New finding: libass drops kerning under `\fsp`.** Any glyph with a non-zero `\fsp` is drawn unkerned, and `Kerning: yes` does not change this. With `\fsp-6.18`, "AVAV" is pixel-identical whether Kerning is yes or no, and it is 65 px wider kerned at `\fsp0`. HarfBuzz and CSS keep kerning under letter spacing. A uniform `\fsp` therefore drew "Accurate" 10 px wider than Chrome (Δ left 5 to 6 px, outside tolerance). `build.ts` now gives each glyph of a tracked word its own `\fsp`: the tracking plus that glyph's kerning, which is its kerned advance in the word minus its advance alone. For example, `{\fsp-11.41}A{\fsp-6.18}c…`. The event count stays the same. **Input for 03b/06:** any tracked word (hero −0.03 em, and classic presets with `letterSpacing ≠ 0`) needs per-glyph `\fsp` like this, or it drifts by the kerning amounts. The classic painter's uniform `\fsp` probably has the same drift today.
+
+**Parity, measured** (`parity.ts`). For each word already spoken, the script renders that word alone, without its shadow, on flat black: libass through ffmpeg (that word's Layer 1 events), Chrome through `&flat&noshadow&only=N`. The ink box is every pixel whose brightest channel reaches half the image's peak. Both painters draw the same glyphs, so the ink-bottom delta is the baseline delta. Δ = HTML − libass, in px:
+
+| Moment | Word | libass ink x / y | HTML ink x / y | Δ baseline | Δ left | Δ right | Δ top | max \|Δ\| |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| onset (0.2667 s) | with | 462-614 / 1004-1063 | 462-615 / 1003-1063 | 0 | 0 | 1 | −1 | 1 |
+| onset | Accurate | 113-967 / 1090-1240 | 114-966 / 1089-1241 | 1 | 1 | −1 | −1 | 1 |
+| +100 ms (0.35 s) | with | 462-614 / 1004-1063 | 462-615 / 1003-1063 | 0 | 0 | 1 | −1 | 1 |
+| +100 ms | Accurate | 108-968 / 1076-1228 | 110-967 / 1076-1229 | 1 | 2 | −1 | 0 | 2 |
+| settled (1.2 s) | with | 462-614 / 1004-1063 | 462-615 / 1003-1063 | 0 | 0 | 1 | −1 | 1 |
+| settled | Accurate | 108-968 / 1068-1220 | 109-967 / 1067-1220 | 0 | 1 | −1 | −1 | 1 |
+| settled | captions | 384-696 / 1225-1300 | 383-696 / 1224-1300 | 0 | −1 | 0 | −1 | 1 |
+
+Every word is within tolerance: baselines ≤ 1 px (limit 2), left edges ≤ 2 px (limit 4), ink bounds ≤ 2 px (limit 4). "captions" first appears at 0.75 s, so it is measured settled only. The Canvas layout and the HarfBuzz geometry agree exactly (max |Δ| 0.00 px for baselines and sizes, page report).
+
+**Budget, re-measured** because the bands, sizes and event count changed. Same machine, method and `render.sh` as above. Load average was 12 to 20 throughout, so the wall times are noisy and the CPU column is steadier.
+
+| Pass | Mode | None | Bold Pop | Headline | Headline / Bold Pop |
+| --- | --- | --- | --- | --- | --- |
+| median of 3 | encode, wall s | 1.77 | 1.96 | 2.27 | **1.16x** |
+| median of 3 | encode, CPU s | 6.08 | 7.84 | 7.91 | 1.01x |
+| median of 3 | filter only, wall s | 1.71 | 1.49 | 1.91 | 1.28x |
+| median of 3 | filter only, CPU s | 1.53 | 2.51 | 2.90 | 1.16x |
+| median of 5 | encode, wall s | 1.43 | 1.67 | 1.81 | **1.08x** |
+| median of 5 | encode, CPU s | 5.77 | 7.40 | 7.74 | 1.05x |
+| median of 5 | filter only, wall s | 1.40 | 1.46 | 1.56 | 1.07x |
+| median of 5 | filter only, CPU s | 1.40 | 2.43 | 2.71 | 1.12x |
+
+Both passes stay under the 1.35x budget. The libass share grew compared with the S = 56 proof: filter CPU is now 1.12 to 1.16x, up from 1.01x. The hero glyphs are larger, and there are 39 more band events.
+
+**Files.** Changed: `layout.js` (recipe), `build.ts` (tracked measurement, per-glyph `\fsp`, fixed 8 px bands with the 48 and 120 guards, the variant removed), `headline.html` (tracking, side padding so negative tracking does not clip the gradient's last glyph, `&flat`, `&noshadow`, `&only=N`), `render.sh` (JPEG q85, HTML frames, contact sheet), `headline.ass`, `cues.json`, the six frames and `cues-settled.jpg` (all 12 cues settled, 4x3). `boldpop.ass` is unchanged. New: `parity.ts`. Deleted: `headline-s80.ass`, `frame-settled-s80.jpg`.
+
+```sh
+bun .scratch/dynamic-captions/references/proof/build.ts                          # headline.ass, boldpop.ass, cues.json
+bash .scratch/dynamic-captions/references/proof/render.sh "$TMPDIR/narriflow-proof"   # frames, contact sheet, budget (BUDGET=0 skips, RUNS=n)
+bun .scratch/dynamic-captions/references/proof/parity.ts "$TMPDIR/narriflow-parity"  # parity table
+```

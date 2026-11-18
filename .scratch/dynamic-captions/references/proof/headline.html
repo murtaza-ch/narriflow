@@ -10,6 +10,8 @@
     python3 -m http.server 8765    (from the worktree root)
     open http://localhost:8765/.scratch/dynamic-captions/references/proof/headline.html
   Query: ?t=0.35 freezes the playhead; &shot renders the bare 1080x1920 stage for screenshots.
+  Measurement switches (parity.ts): &flat paints the stage black, &noshadow hides the shadow
+  elements, &only=N shows only word N of each cue.
   Words are measured with Canvas measureText (the Studio's method, spec 5.6), placed by the
   shared layout.js, and compared with the HarfBuzz geometry build.ts wrote to cues.json.
 -->
@@ -24,6 +26,7 @@
   .stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; overflow: hidden; background: #000 url("backdrop.jpg") center / cover no-repeat; }
   .word { position: absolute; white-space: pre; line-height: normal; will-change: transform, opacity, filter; }
   .word.hero { color: transparent; -webkit-background-clip: text; background-clip: text; }
+  body.flat .stage { background: #000; }
   .controls { display: flex; align-items: center; gap: 12px; width: min(100%, 560px); }
   .controls input { flex: 1; accent-color: var(--accent); }
   .controls button { background: #24262b; color: var(--fg); border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
@@ -50,18 +53,23 @@ import { CANVAS, HEADLINE, layoutCue, wordPose } from "./layout.js";
 const params = new URLSearchParams(location.search);
 const shot = params.has("shot");
 const frozen = params.has("t") ? Number(params.get("t")) : null;
+const only = params.has("only") ? Number(params.get("only")) : null;
+const noShadow = params.has("noshadow");
 if (shot) document.body.classList.add("shot");
+if (params.has("flat")) document.body.classList.add("flat");
 
 const FAMILY = { text: "Proof Inter SemiBold", hero: "Proof Inter ExtraBold" };
 await Promise.all(Object.values(FAMILY).map((family) => document.fonts.load(`100px "${family}"`, "Accurate")));
 const data = await (await fetch("cues.json")).json();
 
-// Canvas measurement at 100 px, fractional (spec 5.6, Studio).
+// Canvas measurement at 100 px, fractional (spec 5.6, Studio). Canvas adds the letter spacing after
+// every character, as CSS does; the layout's advance excludes the trailing one.
 const ctx = document.createElement("canvas").getContext("2d");
-function measure(text, font) {
+function measure(text, font, letterSpacingEm) {
   ctx.font = `100px "${FAMILY[font]}"`;
+  ctx.letterSpacing = `${letterSpacingEm * 100}px`;
   const m = ctx.measureText(text);
-  return { advanceEm: m.width / 100, inkTopEm: m.actualBoundingBoxAscent / 100, inkBottomEm: Math.max(0, m.actualBoundingBoxDescent / 100) };
+  return { advanceEm: m.width / 100 - letterSpacingEm, inkTopEm: m.actualBoundingBoxAscent / 100, inkBottomEm: Math.max(0, m.actualBoundingBoxDescent / 100) };
 }
 
 // Where the baseline sits inside an absolutely positioned word box, per face and size.
@@ -99,20 +107,32 @@ for (const baked of data.cues) {
   const heroInk = heroWords.length
     ? { top: Math.min(...heroWords.map((w) => w.baselineY - w.inkTop)), bottom: Math.max(...heroWords.map((w) => w.baselineY + w.inkBottom)) }
     : null;
-  const painted = layout.words.map((word) => {
+  const painted = layout.words.map((word, wordIndex) => {
     const s = word.px / HEADLINE.S;
     const top = word.baselineY - baselineOffset(word.font, word.px);
+    // Side padding keeps ink that overhangs the advance box (negative tracking pulls the last glyph past
+    // the box) inside the background-clip area. The glyphs still start at baselineX.
+    const pad = 0.2 * word.px;
     const make = (className) => {
       const el = document.createElement("span");
       el.className = className;
       el.textContent = word.text;
-      Object.assign(el.style, { left: `${word.baselineX}px`, top: `${top}px`, font: `${word.px}px "${FAMILY[word.font]}"`, transformOrigin: `${word.advance / 2}px ${word.baselineY - top}px` });
+      Object.assign(el.style, {
+        left: `${word.baselineX - pad}px`,
+        top: `${top}px`,
+        padding: `0 ${pad}px`,
+        font: `${word.px}px "${FAMILY[word.font]}"`,
+        letterSpacing: `${word.letterSpacingEm}em`,
+        transformOrigin: `${pad + word.advance / 2}px ${word.baselineY - top}px`,
+      });
+      if (only !== null && only !== wordIndex) el.hidden = true;
       stage.append(el);
       return el;
     };
     const shade = make("word");
     shade.style.color = "transparent";
     shade.style.textShadow = `0 ${shadow.offsetYPx * s}px ${shadow.blurPx * s}px rgba(0,0,0,${shadow.opacity})`;
+    if (noShadow) shade.hidden = true;
     const text = make(word.role === "hero" ? "word hero" : "word");
     if (word.role === "hero" && heroInk) {
       text.style.backgroundImage = `linear-gradient(to bottom, ${HEADLINE.gradient.top} ${heroInk.top - top}px, ${HEADLINE.gradient.bottom} ${heroInk.bottom - top}px)`;

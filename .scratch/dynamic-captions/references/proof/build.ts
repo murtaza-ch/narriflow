@@ -1,39 +1,33 @@
 /**
  * Throwaway look proof (ticket 02). Writes, next to this file:
- *  - headline.ass  Headline cues, one event per word per paint layer, phase 2 gradient bands
+ *  - headline.ass  Headline cues (adopted recipe), one event per word per paint layer, phase 2 gradient bands
  *  - boldpop.ass   the same words through the real `renderCaptionTrack` with Bold Pop (budget baseline)
  *  - cues.json     cue data plus the HarfBuzz geometry, which headline.html checks its Canvas layout against
  *
  *   bun .scratch/dynamic-captions/references/proof/build.ts        (from the worktree root)
- *   bun .scratch/dynamic-captions/references/proof/build.ts 80 1   (variant: S = 80, minor = 1 em; headline-s80.ass only)
  *
  * Word measurement uses `layoutCaptionLine` (HarfBuzz, the worker's method). Placement comes from
  * ./layout.js, shared with headline.html. Not engine code.
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { layoutCaptionLine } from "../../../../packages/caption-fonts/src/shaping.ts";
+import { layoutCaptionLine, shapeCaptionRun } from "../../../../packages/caption-fonts/src/shaping.ts";
 import { captionFontFace } from "../../../../packages/validators/src/caption-font.ts";
 import { getCaptionPresetById } from "../../../../packages/validators/src/index.ts";
 import { renderCaptionTrack } from "../../../../apps/media/src/caption-ass.ts";
 import { ANCHOR, CANVAS, EASE_OUT_ACCEL, HEADLINE, SLIDE, entranceScale, fnv1a, layoutCue } from "./layout.js";
 
 const HERE = import.meta.dir;
-// Comparison variant for G2 (hierarchy closer to reference 01): `build.ts 80 1` (S, minor size in em) writes headline-s80.ass only.
-const [variantS, variantMinorEm] = Bun.argv.slice(2);
-const VARIANT = variantS ? `-s${variantS}` : "";
-if (variantS) {
-  HEADLINE.S = Number(variantS);
-  HEADLINE.roles.minor.sizeEm = Number(variantMinorEm ?? HEADLINE.roles.minor.sizeEm);
-}
 const FONTS = join(HERE, "../../../../packages/caption-fonts/fonts");
 const FACES = { text: captionFontFace("Inter SemiBold"), hero: captionFontFace("Inter") } as const;
 type Font = keyof typeof FACES;
 
 /** libass `\blur` strength per unit of Gaussian sigma (caption-ass.ts `ASS_BLUR_PER_SIGMA`). */
 const ASS_BLUR_PER_SIGMA = 1 / 0.849;
-const BAND_MAX_PX = 8;
-const BAND_MAX_COUNT = 32;
+/** Spec 5.10: bands of 8 px or fewer on even rows, at most 48 per hero word, at most 120 events per cue. */
+const BAND_PX = 8;
+const BAND_MAX_PER_WORD = 48;
+const EVENTS_MAX_PER_CUE = 120;
 const CUE_PITCH_SEC = 1.65;
 const CUE_LENGTH_SEC = 1.6;
 
@@ -56,21 +50,40 @@ const CUES: readonly (readonly [string, Role, number])[][] = [
 
 interface Measured { advanceEm: number; inkTopEm: number; inkBottomEm: number; bboxCenterEm: number }
 const cache = new Map<string, Measured>();
-function measure(text: string, font: Font): Measured {
-  const key = `${font}\0${text}`;
+function measure(text: string, font: Font, letterSpacingEm: number): Measured {
+  const key = `${font}\0${letterSpacingEm}\0${text}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const line = layoutCaptionLine(
     [{ parts: [{ text, fontPath: join(FONTS, FACES[font].file), spaced: true, inked: true }], gap: null, gapExtraEm: 0 }],
-    0,
+    letterSpacingEm,
     "ltr",
   );
-  const value = { advanceEm: line.widthEm, inkTopEm: line.inkTopEm, inkBottomEm: line.inkBottomEm, bboxCenterEm: line.bboxCenterEm };
+  // layoutCaptionLine counts libass's spacing after every cluster; the layout's advance excludes the trailing one (spec 5.6).
+  // bboxCenterEm stays libass's own (trailing spacing included), because that is the box `\an5` centres.
+  const value = { advanceEm: line.widthEm - letterSpacingEm, inkTopEm: line.inkTopEm, inkBottomEm: line.inkBottomEm, bboxCenterEm: line.bboxCenterEm };
   cache.set(key, value);
   return value;
 }
 
 const num = (value: number) => String(Math.round(value * 100) / 100);
+
+/**
+ * Word text for a tracked word. libass turns kerning off for any glyph with a non-zero `\fsp` (measured:
+ * "AVAV" with `\fsp` draws the same with `Kerning: yes` and `no`), while HarfBuzz and CSS keep kerning
+ * under letter spacing. So each glyph carries its own `\fsp`: the tracking plus that glyph's kerning
+ * (kerned advance in the word minus its advance alone), which puts every glyph where the layout measured it.
+ */
+function trackedText(text: string, font: Font, letterSpacingEm: number, px: number): string {
+  if (letterSpacingEm === 0) return text;
+  const path = join(FONTS, FACES[font].file);
+  const chars = Array.from(text);
+  const run = shapeCaptionRun(path, text);
+  if (run.clusters.length !== chars.length) throw new Error(`"${text}" does not shape one cluster per character`);
+  return chars
+    .map((char, index) => `{\\fsp${num((run.clusters[index]!.advanceEm - shapeCaptionRun(path, char).advanceEm + letterSpacingEm) * px)}}${char}`)
+    .join("");
+}
 const alphaByte = (opacity: number) => Math.round((1 - opacity) * 255);
 const hex2 = (value: number) => value.toString(16).padStart(2, "0").toUpperCase();
 const assColor = (hex: string) => `&H${hex.slice(5, 7)}${hex.slice(3, 5)}${hex.slice(1, 3)}&`.toUpperCase();
@@ -99,10 +112,11 @@ CUES.forEach((spec, cueIndex) => {
     : null;
   const before = events.length;
   let bandCount = 0;
+  let maxWordBands = 0;
 
   for (const word of layout.words) {
     const face = FACES[word.font as Font];
-    const m = measure(word.text, word.font as Font);
+    const m = measure(word.text, word.font as Font, word.letterSpacingEm);
     const px = word.px;
     const s = px / HEADLINE.S;
     // libass centres an `\an5` event on its own bbox and line box; aim that at the layout's advance box and baseline.
@@ -113,6 +127,7 @@ CUES.forEach((spec, cueIndex) => {
     const k = entranceScale(remainingMs, hero ? SLIDE.hero.travelMs : SLIDE.word.travelMs);
     const durMs = Math.round(remainingMs);
     const head = `\\an5\\fn${face.assName}\\fs${num(px * (face.ascent + face.descent))}\\bord0\\shad0`;
+    const body = trackedText(word.text, word.font as Font, word.letterSpacingEm, px);
     const at = (ms: number) => Math.round(ms * k);
 
     const position = (offsetY: number) => {
@@ -130,7 +145,7 @@ CUES.forEach((spec, cueIndex) => {
     };
     const fade = k === 0 ? "" : `\\fade(255,0,0,0,${at(SLIDE[hero ? "hero" : "word"].opacityMs)},${durMs},${durMs})`;
     const push = (layer: number, tags: string) =>
-      events.push({ layer, start: word.startSec, end: cueEnd, text: `{${tags}}${word.text}` });
+      events.push({ layer, start: word.startSec, end: cueEnd, text: `{${tags}}${body}` });
 
     // Shadow: black 65%, CSS 6 px blur (sigma 3), 2 px down, scaled by the word's size relative to S.
     const shadow = HEADLINE.shadow;
@@ -146,28 +161,32 @@ CUES.forEach((spec, cueIndex) => {
     const spill = 2 * SLIDE.hero.blurEm * px;
     const top = 2 * Math.floor((heroInk.top - spill) / 2);
     const span = heroInk.bottom + SLIDE.hero.offsetYEm * px + spill - top;
-    const count = Math.min(BAND_MAX_COUNT, Math.ceil(span / BAND_MAX_PX));
-    const height = 2 * Math.ceil(span / count / 2);
+    const count = Math.ceil(span / BAND_PX);
+    if (count > BAND_MAX_PER_WORD) throw new Error(`"${word.text}" needs ${count} bands, over ${BAND_MAX_PER_WORD}`);
     bandCount += count;
+    maxWordBands = Math.max(maxWordBands, count);
     for (let band = 0; band < count; band++) {
-      const y0 = top + band * height;
-      const y1 = y0 + height;
+      const y0 = top + band * BAND_PX;
+      const y1 = y0 + BAND_PX;
       const t = Math.min(1, Math.max(0, ((y0 + y1) / 2 - heroInk.top) / (heroInk.bottom - heroInk.top)));
       const color = mix(HEADLINE.gradient.top, HEADLINE.gradient.bottom, t);
       push(1, `${head}${position(0)}\\1c${assColor(color)}${blur(0)}${fade}\\clip(0,${y0},${CANVAS.width},${y1})`);
     }
   }
+  const cueEvents = events.length - before;
+  if (cueEvents > EVENTS_MAX_PER_CUE) throw new Error(`cue ${cueIndex} has ${cueEvents} events, over ${EVENTS_MAX_PER_CUE}`);
   summary.push({
     startSec: cueStart,
     endSec: cueEnd,
     seed,
     text: words.map((word) => word.text).join(" "),
-    events: events.length - before,
+    events: cueEvents,
     bands: bandCount,
+    maxWordBands,
     scale: layout.scale,
     inkGapsPx: layout.inkGaps,
     words: layout.words.map((word) => ({
-      text: word.text, role: word.role, font: word.font, startSec: word.startSec, px: word.px,
+      text: word.text, role: word.role, font: word.font, letterSpacingEm: word.letterSpacingEm, startSec: word.startSec, px: word.px,
       baselineX: word.baselineX, baselineY: word.baselineY, advance: word.advance, inkTop: word.inkTop, inkBottom: word.inkBottom, motionSign: word.motionSign,
     })),
   });
@@ -175,7 +194,7 @@ CUES.forEach((spec, cueIndex) => {
 
 const ass = [
   "[Script Info]",
-  "; Throwaway look proof, ticket 02: Headline (phase 2 gradient). Generated by build.ts.",
+  "; Throwaway look proof, ticket 02: Headline, adopted recipe (phase 2 gradient). Generated by build.ts.",
   "ScriptType: v4.00+",
   `PlayResX: ${CANVAS.width}`,
   `PlayResY: ${CANVAS.height}`,
@@ -193,8 +212,7 @@ const ass = [
   ...events.map((event) => `Dialogue: ${event.layer},${assTime(event.start)},${assTime(event.end)},Word,,0,0,0,,${event.text}`),
   "",
 ].join("\n");
-writeFileSync(join(HERE, `headline${VARIANT}.ass`), ass);
-if (VARIANT) process.exit(0);
+writeFileSync(join(HERE, "headline.ass"), ass);
 
 // Bold Pop baseline: the same words and timings through the real classic painter.
 const boldPop = getCaptionPresetById("bold-pop")!.preset;
@@ -227,7 +245,10 @@ writeFileSync(join(HERE, "boldpop.ass"), track.ass);
 const boldPopDialogues = track.ass.split("\n").filter((line) => line.startsWith("Dialogue:")).length;
 
 writeFileSync(join(HERE, "cues.json"), `${JSON.stringify({ canvas: CANVAS, anchor: ANCHOR, cues: summary }, null, 1)}\n`);
-const perCue = (summary as { events: number; bands: number; text: string; inkGapsPx: number[]; scale: number }[]);
-for (const cue of perCue) console.log(`${cue.text.padEnd(28)} events ${String(cue.events).padStart(3)}  bands ${String(cue.bands).padStart(2)}  scale ${cue.scale.toFixed(3)}  ink gaps ${cue.inkGapsPx.map((gap) => gap.toFixed(2)).join(", ")}`);
-console.log(`Headline: ${events.length} Dialogue events over ${CUES.length} cues (max ${Math.max(...perCue.map((cue) => cue.events))} per cue)`);
+const perCue = summary as { events: number; bands: number; maxWordBands: number; text: string; inkGapsPx: number[]; scale: number; words: { role: string; px: number }[] }[];
+for (const cue of perCue) {
+  const hero = cue.words.find((word) => word.role === "hero");
+  console.log(`${cue.text.padEnd(28)} events ${String(cue.events).padStart(3)}  bands ${String(cue.bands).padStart(2)} (max ${cue.maxWordBands}/word)  hero ${hero ? hero.px.toFixed(1) : "-"} px  scale ${cue.scale.toFixed(3)}  ink gaps ${cue.inkGapsPx.map((gap) => gap.toFixed(2)).join(", ")}`);
+}
+console.log(`Headline: ${events.length} Dialogue events over ${CUES.length} cues (max ${Math.max(...perCue.map((cue) => cue.events))} per cue, max ${Math.max(...perCue.map((cue) => cue.maxWordBands))} bands per hero word)`);
 console.log(`Bold Pop: ${boldPopDialogues} Dialogue events over ${CUES.length} cues`);

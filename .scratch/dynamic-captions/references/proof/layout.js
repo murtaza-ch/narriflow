@@ -7,15 +7,15 @@
 export const CANVAS = { width: 1080, height: 1920 };
 export const ANCHOR = { xPct: 50, yPct: 60 };
 
-/** Headline, spec section 6 (phase 2 gradient). */
+/** Headline, spec section 6 (adopted recipe, phase 2 gradient). Minor words draw at body size. */
 export const HEADLINE = {
-  S: 56,
+  S: 80,
   roles: {
-    minor: { font: "text", sizeEm: 0.75 },
-    body: { font: "text", sizeEm: 1 },
-    hero: { font: "hero", sizeEm: 1 },
+    minor: { font: "text", sizeEm: 1, letterSpacingEm: 0 },
+    body: { font: "text", sizeEm: 1, letterSpacingEm: 0 },
+    hero: { font: "hero", sizeEm: 1, letterSpacingEm: -0.03 },
   },
-  heroFill: { widthFraction: 0.8, minEm: 2.5, maxEm: 4.2 },
+  heroFill: { widthFraction: 0.8, minEm: 2.2, maxEm: 3.4 },
   rowGapEm: 0.06,
   staggerEm: 0,
   gradient: { top: "#A5EBC5", bottom: "#36B780" },
@@ -65,7 +65,8 @@ export function entranceScale(remainingMs, entranceMs) {
 
 /**
  * cue: { words: [{ text, role, startSec }], endSec, seed }
- * measure(text, font): { advanceEm, inkTopEm, inkBottomEm } at 1 em.
+ * measure(text, font, letterSpacingEm): { advanceEm, inkTopEm, inkBottomEm } at 1 em, the advance
+ * including the letter spacing between clusters and excluding the trailing one (spec 5.6).
  * Returns placed words in canvas px plus the block bounds.
  */
 export function layoutCue(cue, measure) {
@@ -73,7 +74,7 @@ export function layoutCue(cue, measure) {
   const S = style.S;
   const roles = cue.words.map((word) => word.role);
   const rows = blockRows(roles);
-  const measured = cue.words.map((word) => measure(word.text, style.roles[word.role].font));
+  const measured = cue.words.map((word) => measure(word.text, style.roles[word.role].font, style.roles[word.role].letterSpacingEm));
   const px = cue.words.map((word) => S * style.roles[word.role].sizeEm);
 
   const rowWidth = (row, sizes) =>
@@ -123,6 +124,7 @@ export function layoutCue(cue, measure) {
         text: cue.words[index].text,
         role: roles[index],
         font: style.roles[roles[index]].font,
+        letterSpacingEm: style.roles[roles[index]].letterSpacingEm,
         px: px[index],
         row: k,
         baselineX: cursor,
