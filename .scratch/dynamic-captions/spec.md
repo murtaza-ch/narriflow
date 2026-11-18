@@ -373,6 +373,11 @@ Rules, in order:
 
 Painting:
 
+- **Kerning.** Every ASS script the worker writes sets `Kerning: yes` in `[Script Info]`.
+  libass does not kern by default, while HarfBuzz and the browser do; ticket 02 measured a
+  10 px drift on "Accurate" without it. This applies to classic presets too, so ticket 03b
+  updates the ticket 00 snapshot on purpose and says so in its commit.
+
 - **Worker.** Each word gets one event per paint layer (shadow, outer, glow, text) with
   `\an5\pos(centerX, centerY)\org(centerX, centerY)\frz(−rotationDeg)` plus its motion
   tags. Tiles are `\p1` shapes with the same `\pos` and `\org`. Reuse the per-word
@@ -471,7 +476,10 @@ colours do not change. Slots follow the user's colours.
 - **Gradient.** Only for styles whose motions neither scale nor rotate the hero. Worker:
   the hero's text layer is split into horizontal `\clip` bands of 8 px or fewer, at most 32,
   each with an interpolated `\1c`, covering the hero's bounds plus its entrance travel.
-  Studio: `background-clip: text` with the same two colours over the hero's rest box. At
+  Band edges fall on even pixel rows, or 4:2:0 encoding shows grey seams (ticket 02).
+  Studio: `background-clip: text` with the same two colours over the hero's rest box. CSS
+  paints `text-shadow` over a clipped gradient, so the shadow is its own element behind the
+  word, as the worker's shadow is its own event. At
   rest the two match. During the 150 ms travel they differ by up to the travel distance,
   which is accepted. Shadow, outer stroke and glow are not banded.
 - **Underline.** One shared point list in a unit box (`M`, `L`, `C` only), serialised to an
@@ -591,13 +599,15 @@ Names match the existing one-word style.
 
 | Style | Reference | Layout | Support (minor, body) | Hero | Colours | Motion | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Headline | 01 | stack, centre | Inter SemiBold, sentence case, S = 56, minor 0.75 | Inter, mixed case, fill 0.80, 2.5 to 4.2 S | white; hero `#36B780` (flat in phase 1) | `slide` | no outline; shadow black 65%, 6 px blur, 2 px down; rowGap 0.06 |
+| Headline | 01 | stack, centre | Inter SemiBold, sentence case, S = 80, minor same size as body | Inter, mixed case, letter spacing −0.03 em, fill 0.80, 2.2 to 3.4 S | white; hero `#36B780` (flat in phase 1) | `slide` | no outline; shadow black 65%, 6 px blur, 2 px down; rowGap 0.06 |
 | Editorial | 06 (foreground type only, an adaptation) | stack, centre | minor Inter SemiBold 40 px, body Instrument Serif 60 px, S = 60 | Instrument Serif, lowercase, 144 px (2.4 S) | all `#F6EFE4`, hero in `highlightColor` default `#F6EFE4` | `blur` | stagger 8 px, rowGap 0.10 |
 | Cutout | 05 | row | Bebas Neue caps, S = 84 | none | body tiles `#16161A` with `#F5923E` ink, minor tiles `#F4B6D2` with `#16161A` ink | `drop` | tiles radius 0.05 em, pad 0.12 × 0.08 em, gap 0.08 em; tilts −2, 1.5, −1, 2; hard shadow 3 px; wordsPerCue 5 |
 | Marker | 04, 07 (partial: one hero, not two) | stack, left, guide 8% | Poppins, lowercase, S = 48 | Poppins, lowercase, 120 px (2.5 S) | white; hero alternates `#FFD248` and `#EF8DB9` by seed | `rise` | rowGap 0.14; underline in phase 2 |
 | Stack | 08 | stack, centre | Inter SemiBold, lowercase, S = 48 | Inter, lowercase, 144 px (3.0 S) | white | `slide` | rowGap 0.04; stars in phase 2 |
 
-Every phase 1 preset sets `wordsPerCue: 4` except Cutout.
+Every phase 1 preset sets `wordsPerCue: 4` except Cutout. A style shrinks minor words only
+when its catalog row says so (Editorial). Mixed minor and body sizes in one row looked uneven
+in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body size.
 
 ### Later catalog additions (same release)
 
