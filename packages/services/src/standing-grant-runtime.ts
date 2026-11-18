@@ -138,7 +138,7 @@ export async function sendReviewRoundUnderGrant(input: { finishingId: string; wo
   const [project, exports] = await Promise.all([
     prisma.project.findFirst({ where: { id: input.projectId, workspaceId: input.workspaceId }, select: { title: true, brandProfileSnapshot: true } }),
     prisma.clipExport.findMany({
-      where: { id: { in: input.exportIds }, projectId: input.projectId, status: "ready" },
+      where: { id: { in: input.exportIds }, dubId: null, projectId: input.projectId, status: "ready" },
       orderBy: { createdAt: "asc" },
       select: { id: true, clipId: true, editorRevision: true, variants: { where: { status: "completed" }, orderBy: { createdAt: "asc" }, select: { id: true } } },
     }),

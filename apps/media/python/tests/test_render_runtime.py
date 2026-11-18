@@ -11,7 +11,7 @@ from io import StringIO
 from unittest.mock import patch, AsyncMock
 from uuid import uuid4
 
-from narriflow_media.render_runtime import run_render_group,artifact_binding
+from narriflow_media.render_runtime import run_render_group,artifact_binding,ScopedSourceServer
 from narriflow_media.multipart import TransferResponse
 from narriflow_media.transfer import load_work_package
 from narriflow_media.artifacts import ArtifactCommitUnconfirmed
@@ -62,6 +62,32 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured['controlOperations'],{})
         self.assertEqual(measured['sourceBytesTransferred'],0)
         self.assertNotIn('private',logs.getvalue())
+
+    async def test_a_dub_narration_is_a_scoped_source_beside_the_original_and_the_frozen_assets(self):
+        for dub,expected in [(None,['original']),({'audio':{'name':'dub_audio','object':{'storageKey':'execution/1/attempt/owner/audio','etag':'"audio"','byteLength':90000,'sha256':'b'*64}},
+                'language':'ur','segments':[[{'text':'x','startSec':0,'endSec':1}]]},['original','dub_audio'])]:
+            identity,group_id=str(uuid4()),str(uuid4());input_hash='d'*64
+            source={'storageKey':'execution/frozen/original','etag':'"source"','byteLength':5,'sha256':'a'*64}
+            music={'name':'audio_1','id':str(uuid4()),'title':'Music','durationSec':1,'object':{'storageKey':'audio/frozen/1','etag':'"library"','byteLength':7,'sha256':'c'*64}}
+            command={'version':1,'kind':'render_group','groupId':group_id,'preparation':{'source':source,'toolchainFingerprint':'a'*64},'dub':dub,
+                'variants':[{'renderId':identity}],'assets':{'visuals':[],'fonts':[],'audio':[music],'logo':None},'autoBroll':{'resolved':[]}}
+            outputs=[{'artifactId':str(uuid4()),'role':role,'bindingHash':artifact_binding(input_hash,identity,role),'contentType':mime,'contentTypes':[mime],'maxBytes':maximum}
+                for role,mime,maximum in [('render_variant','video/mp4',1024),('render_outcome','application/json',65536)]]
+            class Session:
+                fence={'reference':{'inputHash':input_hash,'subject':{'kind':'render_group','id':group_id}},'attemptToken':str(uuid4()),'owner':str(uuid4())}
+                remaining_seconds=60;cancel_event=threading.Event()
+                def assert_live(self):pass
+                def transfer(self,action,**fields):
+                    assert action=='work-package'
+                    return type('Result',(),{'disposition':{'functionName':'render_group','inputHash':input_hash,'input':{'kind':'inline','command':command},'sources':[{'name':'original',**source}],'outputs':outputs}})()
+            async def verified(*_,**__):return 'a'*64
+            session=Session();package=await load_work_package(session)
+            with tempfile.TemporaryDirectory() as directory,patch('narriflow_media.render_runtime.run_owned_process_async',AsyncMock(return_value=ProcessResult(70,b'',b''))),\
+                    patch('narriflow_media.render_runtime.ScopedSourceServer',side_effect=ScopedSourceServer) as servers,redirect_stderr(StringIO()):
+                with self.assertRaises(NativeOperationFailure):await run_render_group(session,package,Path(directory),verify_runtime=verified)
+            scoped=servers.call_args.args[1]
+            self.assertEqual([item['name'] for item in scoped],[*expected[:1],'audio_1',*expected[1:]])
+            if dub is not None:self.assertEqual(scoped[-1],{'name':'dub_audio',**dub['audio']['object']})
 
     async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False,long_source=False,source_path=None,source_sha256=None,prepared_bundle=None,resolution='720p',aspect_ratio='ratio_1_1',fixture_document=None,inspect_output=None,refused_upload=False):
         root=Path(__file__).resolve().parents[4]

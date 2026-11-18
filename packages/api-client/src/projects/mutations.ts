@@ -44,6 +44,16 @@ export const projectCommands = {
       .then((response) => response.json());
   },
 
+  /**
+   * Starts (or restarts, after a failure) the video of a completed dub. Naturally idempotent:
+   * a rendering or ready video comes back as is. Resolves to `{ dub }`, the fresh snapshot.
+   */
+  renderDubVideo(client: ProjectsClient, projectId: string, dubId: string) {
+    return client.projects[":id"].dubs[":dubId"].render
+      .$post({ param: { id: projectId, dubId } })
+      .then((response) => response.json());
+  },
+
   /** Permanent. Treat a 404 `project_not_found` as success: the Project is already gone. */
   remove(client: ProjectsClient, projectId: string) {
     return client.projects[":id"].$delete({ param: { id: projectId } }).then((response) => response.json());

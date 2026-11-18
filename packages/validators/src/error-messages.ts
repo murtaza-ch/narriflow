@@ -175,6 +175,26 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	dubbing_run_failed: "Voiceover dubbing didn't complete. Please try again.",
 	dubbing_outcome_unknown: "Dubbing outcome needs review. This request will not be repeated automatically.",
 	dub_provider_outcome_unknown: "Dubbing outcome needs review. This request will not be repeated automatically.",
+	dub_transcript_empty:
+		"This clip has no spoken words to dub. Pick a clip with speech.",
+	dub_transcript_untimed_cut:
+		"A cut in this clip falls inside a line without word timing, so it can't be dubbed. Move the cut to a sentence boundary in the editor, then try again.",
+	dub_transcript_too_long:
+		"This clip has too many sentences to dub. Trim it in the editor, then try again.",
+	dubbing_censor_unsupported:
+		"Dubbing isn't available for clips with Auto Censor edits. Turn Auto Censor off for this clip, then try again.",
+	dubbing_clip_too_long:
+		"This clip is too long to dub on your plan. Trim it in the editor, then try again.",
+	dub_narration_unfit:
+		"The translated narration is too long to fit this clip's timing. Try again or pick another language.",
+	dub_provider_rejected:
+		"The voice service couldn't dub this clip. Try again or pick another voice or language.",
+	dub_clip_superseded:
+		"This clip was edited after the dub was made. Dub the new version.",
+	dubbing_clip_superseded:
+		"This clip was edited after the dub was made. Dub the new version.",
+	dub_video_not_started:
+		"The dub video couldn't start. Use Render again to try once more.",
 	export_bundle_source_superseded: "The bundle source changed. Create a new export bundle.",
 	// L10: `music_download_failed`/`sfx_download_failed` are RESERVED — render-
 	// clips.ts's music/SFX download failures are log-and-skip (the track is

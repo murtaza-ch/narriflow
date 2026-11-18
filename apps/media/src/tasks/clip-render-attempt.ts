@@ -19,6 +19,7 @@ import {
 import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-document-codec";
 import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
 import { hasFeature } from "@narriflow/validators";
+import type { RenderDub } from "@narriflow/validators/render-execution";
 import { rethrowWorkflowAttemptLost, WorkflowAttemptLost, WorkflowFailure, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
 import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, DownloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, PutFileFromPath as productionPutFileFromPath, DurableLayoutEvidenceReader } from "@narriflow/services";
 import {
@@ -242,11 +243,19 @@ export interface CompositionResourceMeasurement {
 	scope: CompositionPeakRssScope;
 }
 
+/** A dub video's narration: its stored audio and caption words, on the clip's
+ *  edited timeline before inserted scenes. */
+export interface FrozenRenderDub {
+	audioStorageKey: string;
+	language: string;
+	segments: RenderDub["segments"];
+}
+
 export interface ClipRenderAttemptAdapters {
 	workerProcess: WorkerProcessModule;
   state: Pick<typeof productionClipService, "getProjectRenderStorageReferences"> & {
     getFrozenRenderingStateForWorkSet(...args: Parameters<typeof productionClipService.getFrozenRenderingStateForWorkSet>):
-      Promise<(NonNullable<Awaited<ReturnType<typeof productionClipService.getFrozenRenderingStateForWorkSet>>> & { frozenWatermark?: boolean }) | null>;
+      Promise<(NonNullable<Awaited<ReturnType<typeof productionClipService.getFrozenRenderingStateForWorkSet>>> & { frozenWatermark?: boolean; dub?: FrozenRenderDub | null }) | null>;
   };
 	/** Layout evidence another group stored since this attempt's snapshot. */
 	layoutEvidence: DurableLayoutEvidenceReader & { completedPreparation?: boolean };
@@ -2303,6 +2312,29 @@ async function executeClipRenderAttempt(
 	);
 }
 
+/** A dub's narration is the clip's dialogue, not an optional asset: an
+ *  unavailable or undecodable file fails the render instead of degrading it. */
+async function resolveDubAudio(input: {
+	dub: FrozenRenderDub;
+	clip: { id: string };
+	tempDir: string;
+}): Promise<{ path: string }> {
+	const path = join(input.tempDir, `dub-${input.clip.id}.mp3`);
+	await currentRenderAdapters().storage.downloadObjectToFile({
+		key: input.dub.audioStorageKey,
+		filePath: path,
+	});
+	const inspected = await probeSource(path);
+	if (!inspected.hasAudio || inspected.hasVideo) {
+		throw new WorkflowWorkerError(
+			"dub_audio_invalid",
+			"The dub's narration has no decodable audio",
+			"permanent",
+		);
+	}
+	return { path };
+}
+
 async function resolveClipAudioAssets(input: {
 	run: WorkflowRunJob;
 	clip: { id: string };
@@ -3538,6 +3570,15 @@ async function renderClipGroup(input: {
 		touchedOptionalAssetClasses,
 	});
 
+	const dubAudio = frozenState.dub
+		? await resolveDubAudio({ dub: frozenState.dub, clip, tempDir })
+		: null;
+	// The narration's words replace the transcript for captions and ducking, in
+	// the dub's language. Layout evidence stays source-bound (planned above).
+	const captionOverride = frozenState.dub
+		? { language: frozenState.dub.language, segments: frozenState.dub.segments }
+		: null;
+
 	const renderedAspectRatios = new Set(
 		outputs.map((output) => output.aspectRatio),
 	);
@@ -3675,7 +3716,9 @@ async function renderClipGroup(input: {
 		const planned = planClipComposition({
 			document: compositionDocument,
 			captionLanguage: frozenState.captionLanguage,
-			source: plannerSource,
+			// A dub is dialogue even over a source without audio.
+			source: dubAudio ? { ...plannerSource, hasAudio: true } : plannerSource,
+			...(captionOverride ? { captionOverride } : {}),
 			evidence: compositionEvidence,
 			assets: deriveRenderCompositionAssets({
 				document: compositionDocument, resolvedSceneAssets, sceneVisualAvailability, sceneFontAvailability,
@@ -3814,6 +3857,7 @@ async function renderClipGroup(input: {
 					sourceRef: effect.ref,
 					path: effect.path,
 				})),
+				...(dubAudio ? { dub: dubAudio } : {}),
 			},
 		);
 		for (const output of outputs) {

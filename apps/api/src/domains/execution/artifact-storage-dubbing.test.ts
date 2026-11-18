@@ -12,7 +12,7 @@ async function prepare(stage: "translation_intent" | "translation_result", maxBy
   const reference = { dispatchId: randomUUID(), deploymentEpoch: 1, generation: 1, kind: "modal_execution", subject: { kind: "workflow_run", id: randomUUID() }, inputHash: "b".repeat(64) } as const;
   const assignment = { id: artifactId, attemptToken, owner, role: "probe", bindingHash, contentType: "application/json", maxBytes: BigInt(maxBytes), storageKey: `execution/1/${attemptToken}/${owner}/${artifactId}`, committedAt: null };
   const value = { version: 1, kind: "dubbing_checkpoint", stage, dubId: randomUUID(), requestHash: "c".repeat(64),
-    ...(stage === "translation_intent" ? { bodySha256: "d".repeat(64) } : { text: "e".repeat(textLength), providerRequestId: "resp_offline" }) };
+    ...(stage === "translation_intent" ? { bodySha256: "d".repeat(64) } : { segments: Array.from({ length: Math.ceil(textLength / 10_000) }, () => "e".repeat(10_000)), providerRequestId: "resp_offline" }) };
   const bytes = new TextEncoder().encode(JSON.stringify(value)), sha256 = createHash("sha256").update(bytes).digest("hex");
   const metadata = { key: assignment.storageKey, httpEtag: '"sealed"', size: bytes.length, httpMetadata: { contentType: "application/json" },
     customMetadata: { "execution-artifact-id": artifactId, "execution-binding-hash": bindingHash }, checksums: {} };

@@ -336,7 +336,7 @@ export async function locateClip(actor: ActorScope, clipId: string) {
 
 /** Resolves an export addressed by ID alone to its accessible clip. */
 export async function locateExport(actor: ActorScope, exportId: string) {
-  const row = await prisma().clipExport.findFirst({ where: { id: exportId, workspaceId: actor.workspaceId, project: { workspaceId: actor.workspaceId, ...accessibleProjectWhere() } }, select: { projectId: true, clipId: true } });
+  const row = await prisma().clipExport.findFirst({ where: { id: exportId, dubId: null, workspaceId: actor.workspaceId, project: { workspaceId: actor.workspaceId, ...accessibleProjectWhere() } }, select: { projectId: true, clipId: true } });
   if (!row) notFound("clip_export_not_found", "This export doesn't exist in the key's workspace. Use the export ID returned when it was requested.");
   return { projectId: row.projectId, clipId: row.clipId, exportId };
 }

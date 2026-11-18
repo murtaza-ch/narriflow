@@ -74,7 +74,7 @@ export async function createWorkerExecutor(reference: ExecutionDispatchReference
 }
 
 export function getWorkerRenderGroupService(bucket: R2Bucket) {
-  return getRenderGroupExecutionService(workerArtifactHead(bucket));
+  return getRenderGroupExecutionService(workerArtifactHead(bucket), createAssignedArtifactStorage(bucket).readJson);
 }
 
 export function getWorkerExportBundleService(bucket: R2Bucket) {
@@ -88,7 +88,7 @@ export async function getWorkerWorkflowRunService(reference: ExecutionDispatchRe
   if (reference.subject.kind !== "workflow_run") throw new ExecutorControlError("invalid_reference");
   const database = getPrismaClient();if (!database) throw new ExecutorControlError("epoch_unavailable");
   const row = await database.workflowRun.findUnique({ where: { id: reference.subject.id }, select: { stage: true } });
-  if (row?.stage === "dubbing") return { stage: "dubbing" as const, domain: getDubbingExecution(workerArtifactHead(bucket)) };
+  if (row?.stage === "dubbing") return { stage: "dubbing" as const, domain: getDubbingExecution() };
   if (row?.stage === "export_bundle") return { stage: "export_bundle" as const, domain: getWorkerExportBundleService(bucket) };
   throw new ExecutorControlError("invalid_reference");
 }

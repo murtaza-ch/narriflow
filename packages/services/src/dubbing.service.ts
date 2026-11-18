@@ -9,10 +9,12 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioToDb,
   clipSourceEdgeSec,
+  planDubSegments,
   planLimits,
   requestClipDubSchema,
   workspaceAllowsCapability,
   type ClipAspectRatio,
+  resolvePricingTier,
   type ClipDubSnapshot,
   type RequestClipDubInput,
 } from "@narriflow/validators";
@@ -30,7 +32,7 @@ import {
   getWorkflowRunLifecycle,
 } from "./workflow-run-lifecycle";
 import { decodeClipEditorDocumentFromStorage } from "./clip-editor-document-persistence";
-import { buildDubTranscriptText, frozenDubbingRequestHash } from "./dubbing-policy";
+import { frozenDubbingRequestHash } from "./dubbing-policy";
 import { frozenDubbingRequestSchema } from "@narriflow/validators/dubbing-execution";
 import {
   ExpectedDomainFailureError,
@@ -38,6 +40,14 @@ import {
 } from "./expected-domain-failure";
 import { requirePrisma } from "./require-prisma";
 import { OPENAI_TEXT_MODEL } from "./openai-models";
+import { requireExecutionAdmissionOpen } from "./execution-admission";
+import {
+  admitDubExportWithinTransaction,
+  assertClipExportDocumentAllowed,
+  clipExportService,
+  ClipExportError,
+} from "./clip-export.service";
+import { dubVideoState, type DubVideoSource } from "./dubbing-policy";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 const LIVE_DUB: readonly string[] = ["queued", "processing"];
@@ -46,15 +56,18 @@ const LIVE_RUN = ["queued", "running", "waiting"] as const;
 const dubbingFailureCatalog = {
   clip_not_found: "missing",
   dub_asset_missing: "missing",
+  dub_clip_superseded: "conflict",
   dub_not_found: "missing",
   dub_not_ready: "conflict",
+  dubbing_censor_unsupported: "unprocessable",
   dubbing_clip_too_long: "unprocessable",
   dubbing_idempotency_conflict: "conflict",
   dubbing_idempotency_key_required: "invalid",
   dubbing_in_progress: "conflict",
-  dubbing_render_required: "unprocessable",
   dubbing_outcome_unknown: "conflict",
   dub_transcript_empty: "unprocessable",
+  dub_transcript_untimed_cut: "unprocessable",
+  dub_transcript_too_long: "unprocessable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type DubbingFailureCode = keyof typeof dubbingFailureCatalog;
@@ -66,6 +79,12 @@ export class DubbingFailureError extends ExpectedDomainFailureError<DubbingFailu
   }
 }
 
+
+const planRefusalMessage = {
+  dub_transcript_empty: "The clip has no transcript text to dub.",
+  dub_transcript_untimed_cut: "A cut falls inside a transcript line that has no word timing, so the clip cannot be dubbed.",
+  dub_transcript_too_long: "The clip has too many sentences to dub.",
+} as const satisfies Record<"dub_transcript_empty" | "dub_transcript_untimed_cut" | "dub_transcript_too_long", string>;
 
 function bigintToNumber(value: bigint | number | null) {
   return value === null ? null : Number(value);
@@ -95,14 +114,13 @@ function toDubSnapshot(row: {
   transcriptText: string | null;
   translatedText: string | null;
   audioStorageKey: string | null;
-  renderStorageKey: string | null;
   audioSizeBytes: bigint | number | null;
-  renderSizeBytes: bigint | number | null;
   durationSec: number | null;
   errorCode: string | null;
   completedAt: Date | null;
   createdAt: Date;
-}): ClipDubSnapshot {
+} & DubVideoSource): ClipDubSnapshot {
+  const video = dubVideoState(row);
   return {
     id: row.id,
     projectId: row.projectId,
@@ -116,15 +134,30 @@ function toDubSnapshot(row: {
     transcriptText: row.transcriptText,
     translatedText: row.translatedText,
     hasAudioAsset: Boolean(row.audioStorageKey),
-    hasVideoAsset: Boolean(row.renderStorageKey),
+    hasVideoAsset: video.storageKey !== null,
+    video: video.video,
     audioSizeBytes: bigintToNumber(row.audioSizeBytes),
-    renderSizeBytes: bigintToNumber(row.renderSizeBytes),
+    renderSizeBytes: bigintToNumber(video.sizeBytes),
     durationSec: row.durationSec,
     errorCode: row.errorCode,
     completedAt: row.completedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }
+
+/** The dub's video export, as far as its video state and file go. */
+const dubVideoInclude = {
+  export: {
+    select: {
+      id: true,
+      status: true,
+      errorCode: true,
+      variants: { select: { status: true, storageKey: true, sizeBytes: true, errorCode: true }, orderBy: { createdAt: "asc" as const }, take: 1 },
+    },
+  },
+};
+
+type ClipDubWithVideo = ClipDub & { export: DubVideoSource["export"] };
 
 export class DubbingService {
   async listProjectDubs(
@@ -135,6 +168,7 @@ export class DubbingService {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const rows = await prisma.clipDub.findMany({
       where: { projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+      include: dubVideoInclude,
       orderBy: [{ createdAt: "desc" }],
     });
     return rows.map(toDubSnapshot);
@@ -175,16 +209,17 @@ export class DubbingService {
         projectId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
-      include: { renders: true },
     });
 
     if (!clip) {
       throw new DubbingFailureError("clip_not_found", "Clip not found.");
     }
 
+    // A dub belongs to one editor revision: an edited clip is a new dub.
     const tuple = { clipId: clip.id, targetLanguageCode: parsed.targetLanguageCode, voice: parsed.voice, aspectRatio: aspectRatioDb };
-    const activeTuple = { ...tuple, status: { in: ["queued", "processing", "completed", "unknown"] as Array<ClipDub["status"]> } };
-    const replay = async (dub: ClipDub, workflowRunId: string | null) => ({
+    const activeStatus = { in: ["queued", "processing", "completed", "unknown"] as Array<ClipDub["status"]> };
+    const activeTuple = { ...tuple, editorRevision: clip.editorRevision, status: activeStatus };
+    const replay = async (dub: ClipDubWithVideo, workflowRunId: string | null) => ({
       dub: toDubSnapshot(dub),
       workflowRunId,
       acceptedAt: dub.updatedAt.toISOString(),
@@ -193,7 +228,7 @@ export class DubbingService {
 
     // An accepted dub replays without another count: completed returns its
     // output, a live one returns the run that owns it.
-    const existing = await prisma.clipDub.findFirst({ where: activeTuple });
+    const existing = await prisma.clipDub.findFirst({ where: activeTuple, include: dubVideoInclude });
     if (existing?.status === "unknown") throw new DubbingFailureError("dubbing_outcome_unknown", "Dubbing outcome needs review. This request will not be repeated automatically.");
     if (existing?.status === "completed") return replay(existing, null);
     if (existing && LIVE_DUB.includes(existing.status)) {
@@ -210,27 +245,6 @@ export class DubbingService {
       throw new DubbingFailureError("dubbing_in_progress", "The accepted dubbing request is being reconciled.");
     }
 
-
-    const selectedRender = clip.renders.find(
-      (render) =>
-        render.aspectRatio === aspectRatioDb &&
-        render.status === "completed" &&
-        Boolean(render.storageKey),
-    );
-    if (!selectedRender) {
-      throw new DubbingFailureError(
-        "dubbing_render_required",
-        "Render the selected clip before dubbing.",
-      );
-    }
-    const maxClipSeconds = planLimits(actor.pricingTier).dubs.maxClipSeconds;
-    const clipSeconds = selectedRender.durationSec ?? clip.endSec - clip.startSec;
-    if (clipSeconds > maxClipSeconds) {
-      throw new DubbingFailureError(
-        "dubbing_clip_too_long",
-        `Dubbing supports clips up to ${Math.floor(maxClipSeconds / 60)} minutes.`,
-      );
-    }
 
     const environment = readServiceEnvironment();
     const model = environment.OPENAI_TTS_MODEL ?? DEFAULT_TTS_MODEL;
@@ -253,12 +267,9 @@ export class DubbingService {
               );
             }
           }
-          const current = await tx.clipDub.findFirst({ where: activeTuple });
-          if (current?.status === "unknown") throw new DubbingFailureError("dubbing_outcome_unknown", "Dubbing outcome needs review. This request will not be repeated automatically.");
-          if (current) {
-            if (current.workflowRunId !== run.id) throw new DubbingFailureError("dubbing_in_progress", "Another accepted dubbing request owns this clip and voice.");
-            return current;
-          }
+          // The same request again: whatever the clip's revision is now, it keeps its dub.
+          const own = await tx.clipDub.findFirst({ where: { workflowRunId: run.id }, include: dubVideoInclude });
+          if (own) return own;
           if (!run.created) throw new DubbingFailureError("dubbing_idempotency_conflict", "This request key already identifies a different dubbing request.");
           const workspace = await tx.workspace.findUniqueOrThrow({ where: { id: scope.workspaceId }, select: { status: true, ownerUserId: true, pricingTier: true } });
           const membership = await tx.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: scope.workspaceId, userId: scope.actorUserId } }, select: { role: true } });
@@ -267,28 +278,35 @@ export class DubbingService {
           if (!currentActor || currentActor.deletedAt || !owner && !membership || !workspaceAllowsCapability({ role: owner ? "owner" : membership!.role, status: workspace.status }, "processing.consume")) throw new DubbingFailureError("clip_not_found", "Clip not found.");
           requirePlanFeature(workspace.pricingTier, "dubbing");
           const source = await tx.clip.findFirst({ where: { id: clip.id, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
-            include: { renders: true, project: { include: { transcript: { select: { languageCode: true } } } } } });
-          const render = source?.renders.find(render => render.aspectRatio === aspectRatioDb && render.status === "completed" && render.storageKey && render.sizeBytes && render.sizeBytes > 0n && render.sizeBytes <= 10n * 1024n ** 3n);
-          if (!source || !render?.storageKey || !render.sizeBytes) throw new DubbingFailureError("dubbing_render_required", "Render the selected clip before dubbing.");
+            include: { project: { include: { transcript: { select: { languageCode: true } } } } } });
+          if (!source) throw new DubbingFailureError("clip_not_found", "Clip not found.");
+          // The identity lookup is for the revision this transaction sees, which may be newer than the one read above.
+          const current = await tx.clipDub.findFirst({ where: { ...tuple, editorRevision: source.editorRevision, status: activeStatus } });
+          if (current?.status === "unknown") throw new DubbingFailureError("dubbing_outcome_unknown", "Dubbing outcome needs review. This request will not be repeated automatically.");
+          if (current) throw new DubbingFailureError("dubbing_in_progress", "Another accepted dubbing request owns this clip and voice.");
           const document = decodeClipEditorDocumentFromStorage(source, { durationSec: clipSourceEdgeSec(source.project), wholeSource: source.wholeSource });
-          const seconds = render.durationSec ?? document.clipEndSec - document.clipStartSec;
-          if (seconds > planLimits(workspace.pricingTier).dubs.maxClipSeconds) throw new DubbingFailureError("dubbing_clip_too_long", "The rendered clip is too long for dubbing.");
-          const script = buildDubTranscriptText({ transcriptSlice: document.transcriptSlice, hookText: source.hookText, payoffText: source.payoffText });
-          if (!script) throw new DubbingFailureError("dub_transcript_empty", "The clip has no transcript text to dub.");
+          // Translated words have no source word ids, so there is nothing to mask or beep.
+          if (document.censorSegments.some((segment) => segment.enabled)) throw new DubbingFailureError("dubbing_censor_unsupported", "Dubbing is not available for clips with Auto Censor edits.");
+          // The dub's video is an export of this document: refuse before paid work what the export would refuse.
+          assertClipExportDocumentAllowed(resolvePricingTier(workspace.pricingTier), document);
+          const plan = planDubSegments(document);
+          if (plan.kind === "refused") throw new DubbingFailureError(plan.code, planRefusalMessage[plan.code]);
+          const seconds = plan.editedDurationSec + document.sceneBlocks.reduce((sum, block) => sum + block.durationSec, 0);
+          if (seconds > planLimits(workspace.pricingTier).dubs.maxClipSeconds) throw new DubbingFailureError("dubbing_clip_too_long", "The clip is too long for dubbing.");
           const id = randomUUID();
           const request = frozenDubbingRequestSchema.parse({ version: 1, kind: "dubbing_request", dubId: id, workflowRunId: run.id,
             projectId, workspaceId: scope.workspaceId, actorUserId: scope.actorUserId, clipId: source.id, editorRevision: source.editorRevision, sourceRevision: source.project.sourceRevision,
-            baseRender: { id: render.id, storageKey: render.storageKey, byteLength: Number(render.sizeBytes), durationSec: seconds }, script,
+            segments: plan.segments, editedDurationSec: plan.editedDurationSec,
             sourceLanguageCode: source.project.languageCode ?? source.project.transcript?.languageCode ?? null,
             targetLanguageCode: parsed.targetLanguageCode, voice: parsed.voice, aspectRatio: parsed.aspectRatio, provider: "openai", model, translationModel });
           const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
           if (!clock) throw Error("dubbing_clock_unavailable");
           const acceptedRun = await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id }, select: { deploymentEpoch: true } });
           const dub = await tx.clipDub.create({ data: { id, projectId, clipId: source.id, aspectRatio: aspectRatioDb, targetLanguageCode: parsed.targetLanguageCode, voice: parsed.voice,
-            model, status: "queued", workflowRunId: run.id, frozenRequest: request, requestHash: await frozenDubbingRequestHash(request), createdAt: clock.now, operationDeadlineAt: new Date(clock.now.getTime() + 45 * 60_000), deploymentEpoch: acceptedRun.deploymentEpoch } });
+            model, editorRevision: source.editorRevision, status: "queued", transcriptText: plan.segments.map(segment => segment.text).join(" "), workflowRunId: run.id, frozenRequest: request, requestHash: await frozenDubbingRequestHash(request), createdAt: clock.now, operationDeadlineAt: new Date(clock.now.getTime() + 45 * 60_000), deploymentEpoch: acceptedRun.deploymentEpoch } });
           await reserveGenerationUsage(tx, { kind: "dub", jobId: dub.id, workspaceId: scope.workspaceId, actorUserId: scope.actorUserId,
             pricingTier: workspace.pricingTier, now: clock.now, attached: true });
-          return dub;
+          return { ...dub, export: null };
         },
       );
     } catch (error) {
@@ -315,44 +333,50 @@ export class DubbingService {
     return (await summarizeGenerationUsage(scope.workspaceId)).dubs;
   }
 
-  async getPendingDubsForProject(projectId: string) {
+  /**
+   * Starts the dub's video again: queues its failed export for another render,
+   * or creates the export when the dub has none (its admission was refused at
+   * completion). A video that is rendering or ready is returned as it is.
+   */
+  async renderDubVideo(scope: ActorScope, projectId: string, dubId: string): Promise<ClipDubSnapshot> {
     const prisma = requirePrisma();
-    const dubs = await prisma.clipDub.findMany({
-      where: { projectId, status: "queued" },
-      include: {
-        clip: { include: { renders: true } },
-        project: {
-          select: {
-            id: true,
-            title: true,
-            languageCode: true,
-            sourceDurationSeconds: true,
-            sourceProbe: true,
-            transcript: { select: { languageCode: true } },
-          },
-        },
-      },
-      orderBy: { createdAt: "asc" },
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    requirePlanFeature(actor.pricingTier, "dubbing");
+    const load = () => prisma.clipDub.findFirst({
+      where: { id: dubId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+      include: dubVideoInclude,
     });
-    return dubs.map((dub) => {
-      const document = decodeClipEditorDocumentFromStorage(dub.clip, {
-        durationSec: clipSourceEdgeSec(dub.project),
-        wholeSource: dub.clip.wholeSource,
-      });
-      return {
-        ...dub,
-        clip: {
-          ...dub.clip,
-          startSec: document.clipStartSec,
-          endSec: document.clipEndSec,
-          captionPreset: document.captionPreset,
-          transcriptSlice: document.transcriptSlice,
-          studioEdits: document.studioEdits,
-          brollUrl: document.brollUrl,
-          deletedRanges: document.deletedRanges,
-        },
-      };
-    });
+    const dub = await load();
+    if (!dub) throw new DubbingFailureError("dub_not_found", "Dub not found.");
+    if (dub.status !== "completed") throw new DubbingFailureError("dub_not_ready", "The dub is not ready.");
+    const { video } = dubVideoState(dub);
+    if (video.status === "rendering" || video.status === "ready") return toDubSnapshot(dub);
+    if (dub.export) {
+      await clipExportService.retryDubExport(scope, projectId, dub.clipId, dub.export.id);
+    } else {
+      try {
+        await prisma.$transaction(async (tx) => {
+          await requireExecutionAdmissionOpen(tx);
+          await admitDubExportWithinTransaction(tx, {
+            dubId: dub.id,
+            projectId,
+            workspaceId: scope.workspaceId,
+            actorUserId: scope.actorUserId,
+            clipId: dub.clipId,
+            aspectRatio: aspectRatioFromDb(dub.aspectRatio),
+            editorRevision: dub.editorRevision,
+          });
+        });
+      } catch (error) {
+        if (error instanceof ClipExportError && error.code === "editor_revision_conflict") {
+          throw new DubbingFailureError("dub_clip_superseded", "The clip was edited after this dub was made. Dub the new version.");
+        }
+        throw error;
+      }
+    }
+    const updated = await load();
+    if (!updated) throw new DubbingFailureError("dub_not_found", "Dub not found.");
+    return toDubSnapshot(updated);
   }
 
   async getDubDownloadUrl(
@@ -365,7 +389,7 @@ export class DubbingService {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
     const dub = await prisma.clipDub.findFirst({
       where: { id: dubId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
-      include: { clip: true },
+      include: { clip: true, ...dubVideoInclude },
     });
 
     if (!dub) {
@@ -375,7 +399,8 @@ export class DubbingService {
       throw new DubbingFailureError("dub_not_ready", "The dub is not ready.");
     }
 
-    const key = asset === "audio" ? dub.audioStorageKey : dub.renderStorageKey;
+    // The video is the dub export's file, ready only once its render finished.
+    const key = asset === "audio" ? dub.audioStorageKey : dubVideoState(dub).storageKey;
     if (!key) {
       throw new DubbingFailureError(
         "dub_asset_missing",

@@ -15,7 +15,7 @@ test("render capsule binds completed source observations, exact objects and froz
   const input = renderExecutionInputSchema.parse({ version: 1, kind: "render_group", watermark: true, groupId: id(), workflowRunId: id(), workSetGeneration: id(), preparation,
     prepared: { preview: object, result: { version: 1, preparationId: raw.preparationId, bindingHash: preparation.bindingHash,
       preview: { artifactId: id(), startSec: 0, durationSec: 8 }, peaks: { state: "unavailable", reason: "no_audio" }, layout: { automatic: { state: "failed", reason: "analysis_unavailable" }, screen: null, split: null } } },
-    workspace: { id: id(), ownerUserId: id(), pricingTier: "free" }, captionLanguage: null, brandSnapshot: null,
+    workspace: { id: id(), ownerUserId: id(), pricingTier: "free" }, captionLanguage: null, brandSnapshot: null, dub: null,
     clip: { index: 0, title: null, hookText: "frozen", category: "hook", brollCues: null },
     variants: [{ renderId: id(), aspectRatio: "ratio_9_16", resolution: "720p", exportVariantId: id(), export: { id: id(), watermark: true } }],
     assets: { visuals: [], fonts: [], audio: [], logo: null }, autoBroll: { configured: false, request: null, resolved: [] } });
@@ -26,4 +26,19 @@ test("render capsule binds completed source observations, exact objects and froz
   await expect(encodeRenderExecutionInput({ ...input, prepared: { ...input.prepared, result: { ...input.prepared.result, bindingHash: "c".repeat(64) } } })).rejects.toThrow();
   await expect(decodeRenderExecutionInput(encoded.bytes, { ...reference, sha256: "c".repeat(64) })).rejects.toThrow("render_input_invalid");
   expect(renderExecutionInputSchema.safeParse({ ...input, variants: [...input.variants, input.variants[0]] }).success).toBe(false);
+
+  // A dub's narration is one more frozen source: unique among the names, in the dub's caption language, on an export.
+  const dub = { audio: { name: "dub_audio", object: { ...object, storageKey: "execution/dub" } }, language: "ur",
+    segments: [[{ text: "ہیلو", spaceBefore: false, startSec: 0.2, endSec: 0.6 }, { text: "دنیا", spaceBefore: true, startSec: 0.6, endSec: 1 }]] };
+  const withDub = { ...input, captionLanguage: "ur", dub };
+  const encodedDub = await encodeRenderExecutionInput(withDub);
+  expect(encodedDub.sha256).not.toBe(encoded.sha256);
+  expect((await decodeRenderExecutionInput(encodedDub.bytes, { ...object, byteLength: encodedDub.byteLength, sha256: encodedDub.sha256 })).dub).toEqual(dub);
+  expect(renderExecutionInputSchema.safeParse({ ...withDub, dub: { ...dub, audio: { ...dub.audio, name: "original" } } }).success).toBe(false);
+  expect(renderExecutionInputSchema.safeParse({ ...withDub, captionLanguage: "en" }).success).toBe(false);
+  expect(renderExecutionInputSchema.safeParse({ ...withDub, variants: [{ ...input.variants[0], exportVariantId: null, export: null }] }).success).toBe(false);
+  expect(renderExecutionInputSchema.safeParse({ ...withDub, dub: { ...dub, audio: { ...dub.audio, object: { ...object, storageKey: "execution/dub", sha256: undefined, etag: "" } } } }).success).toBe(false);
+  expect(renderExecutionInputSchema.safeParse({ ...withDub, dub: { ...dub, segments: [] } }).success).toBe(false);
+  const { dub: _dub, ...withoutDub } = input;
+  expect(renderExecutionInputSchema.safeParse(withoutDub).success).toBe(false);
 });

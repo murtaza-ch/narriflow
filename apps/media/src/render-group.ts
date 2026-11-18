@@ -30,7 +30,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
   const lost = (): never => { throw new WorkflowAttemptLost(attempt); };
   const request = async (command: Record<string, unknown>) => { options.signal.throwIfAborted(); try { return await options.ports.request(command); } catch { return lost(); } };
   const originalUrl = options.ports.sourceUrl("original");
-  const assets = [...input.assets.visuals, ...input.assets.fonts, ...input.assets.audio, ...(input.assets.logo ? [input.assets.logo] : [])];
+  const assets = [...input.assets.visuals, ...input.assets.fonts, ...input.assets.audio, ...(input.assets.logo ? [input.assets.logo] : []), ...(input.dub ? [input.dub.audio] : [])];
   const sources = new Map<string, { name: string; object: { storageKey: string; etag: string; byteLength: number; sha256?: string } }>([[source.storageKey, { name: "original", object: source }], ...assets.map(asset => [asset.object.storageKey, asset] as const)]);
   const urlSources = new Map([...sources.values()].map(value => [options.ports.sourceUrl(value.name), value]));
   const logicalKeys = new Map(input.variants.map(variant => {
@@ -48,6 +48,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
   const frozen = { sourceStorageKey: source.storageKey, sourceSizeBytes: source.byteLength, sourceDurationSeconds: input.preparation.sourceProbe.durationSec,
     frozenWatermark: input.watermark,
     workspaceOwnerUserId: input.workspace.ownerUserId, workspaceId: input.workspace.id, captionLanguage: input.captionLanguage,
+    dub: input.dub ? { audioStorageKey: input.dub.audio.object.storageKey, language: input.dub.language, segments: input.dub.segments } : null,
     pricingTier: input.workspace.pricingTier, brandSnapshot: { status: "available" as const, value: input.brandSnapshot },
     pendingRenders: input.variants.filter(variant => options.ports.renderIds.includes(variant.renderId)).map(variant => ({ id: variant.renderId,
       clipId: clip.id, aspectRatio: variant.aspectRatio, resolution: variant.resolution, editorRevision: clip.editorRevision, clip,

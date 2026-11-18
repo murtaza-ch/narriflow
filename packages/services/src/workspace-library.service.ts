@@ -293,7 +293,9 @@ export class WorkspaceLibraryService {
 							status = 'failed' AND stage = 'clip_rendering' AND EXISTS (
 								SELECT 1 FROM "ClipRender" cr
 								JOIN "Clip" c ON c.id = cr."clipId"
-								WHERE c."projectId" = p.id AND cr.status = 'completed'
+								LEFT JOIN "ClipExportVariant" v ON v.id = cr."exportVariantId"
+								LEFT JOIN "ClipExport" e ON e.id = v."exportId"
+								WHERE c."projectId" = p.id AND cr.status = 'completed' AND e."dubId" IS NULL
 							)
 						) AS "hasRenderedVideo"
 					FROM "WorkflowRun"
@@ -646,6 +648,7 @@ export class WorkspaceLibraryService {
 		const rows = await requiredPrisma().clipExport.findMany({
 			where: {
 				workspaceId: scope.workspaceId,
+				dubId: null,
 				project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 				AND: libraryContinuation(filters.cursor),
 				...(filters.status === "processing"
@@ -743,7 +746,7 @@ export class WorkspaceLibraryService {
 		return requiredPrisma().project.findMany({
 			where: {
 				workspaceId: scope.workspaceId,
-				clipExports: { some: { workspaceId: scope.workspaceId } },
+				clipExports: { some: { workspaceId: scope.workspaceId, dubId: null } },
 				...accessibleProjectWhere(),
 			},
 			select: { id: true, title: true },

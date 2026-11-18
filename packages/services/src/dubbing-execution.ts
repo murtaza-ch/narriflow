@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { ClipDub, WorkflowRun, ExecutionAttempt, ExecutionArtifact, Prisma, PrismaClient } from "@prisma/client";
 import { workspaceAllowsCapability } from "@narriflow/validators";
-import { frozenDubbingRequestSchema, dubbingCheckpointSchema, type DubbingCheckpoint } from "@narriflow/validators/dubbing-execution";
+import { frozenDubbingRequestSchema, dubbingCheckpointSchema, type DubbingCheckpoint, type FrozenDubbingRequest } from "@narriflow/validators/dubbing-execution";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { WorkflowRunLifecycle, type WorkflowExecutionReference } from "./workflow-run-lifecycle";
 import { readExecutionDispatch, appendExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { takeExecutionDispatchIds, collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { lockGenerationUsage, releaseGenerationUsage } from "./generated-media-usage-ledger";
-import { frozenDubbingRequestHash, dubTranslationRequestBody, dubSpeechRequestBody, dubbingArtifactBindingHash, shouldTranslateDub, DUBBING_STAGE_OUTPUTS, type DubbingArtifactStage } from "./dubbing-policy";
+import { frozenDubbingRequestHash, dubTranslationRequestBody, dubSpeechIntentHash, dubTimingMatchesRequest, dubbingArtifactBindingHash, shouldTranslateDub, DUBBING_STAGE_OUTPUTS, type DubbingArtifactStage } from "./dubbing-policy";
 import { dubbingInputBinding, encodeDubbingInput, decodeDubbingInput } from "./dubbing-input";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { lockPlannedExecutionObject } from "./execution-object-cleanup";
@@ -18,6 +18,7 @@ import type { NativeValidationPreparation } from "./native-validation";
 import type { DubbingExecutionInput } from "@narriflow/validators/dubbing-execution";
 import { createExecutorControl, ExecutorControlError, type ExecutorArtifactHead } from "./executor-control";
 import { createExecutionTransfer } from "./execution-transfer";
+import { admitDubExportWithinTransaction } from "./clip-export.service";
 import type { createExecutionStorage } from "./execution-storage";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 import { WorkflowFailure } from "./workflow-attempt-contract";
@@ -29,10 +30,10 @@ type Tx = Prisma.TransactionClient;
 interface Dependencies {
   toolchainFingerprint: string;
   inputStorage: Pick<PrivateJsonStorage, "read" | "write">;
-  head(storageKey: string): Promise<DubbingExecutionInput["baseVideo"] | null>;
   register(ids: readonly string[]): Promise<void>;
 }
-export interface DubbingArtifactCommit extends ExecutorArtifactCommit { input?: DubbingExecutionInput; evidence?: DubbingCheckpoint }
+/** `translatedSegments` is read from the sealed translation result when a speech intent is committed. */
+export interface DubbingArtifactCommit extends ExecutorArtifactCommit { input?: DubbingExecutionInput; evidence?: DubbingCheckpoint; translatedSegments?: readonly string[] }
 function tuple(row: Pick<ClipDub | ExecutionAttempt, "inputStorageKey" | "inputEtag" | "inputByteLength" | "inputChecksumSha256">): PrivateJsonObject {
   if (!row.inputStorageKey || !row.inputEtag || !row.inputByteLength || !row.inputChecksumSha256) throw Error("dubbing_input_invalid");
   return { storageKey: row.inputStorageKey, etag: row.inputEtag, byteLength: Number(row.inputByteLength), sha256: row.inputChecksumSha256 };
@@ -96,11 +97,9 @@ export class DubbingExecution extends WorkflowRunLifecycle {
       const membership = await tx.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: request.workspaceId, userId: request.actorUserId } }, select: { role: true } });
       const owner = workspace?.ownerUserId === request.actorUserId;
       const clip = await tx.clip.findUnique({ where: { id: request.clipId }, select: { projectId: true, editorRevision: true } });
-      const render = await tx.clipRender.findUnique({ where: { id: request.baseRender.id }, select: { clipId: true, status: true, storageKey: true, sizeBytes: true } });
       const reason = !workspace || !actor || actor.deletedAt || !owner && !membership || !workspaceAllowsCapability({ role: owner ? "owner" : membership!.role, status: workspace.status }, "processing.consume") ? "dubbing_access_revoked"
         : project.workspaceId !== request.workspaceId || project.sourceRevision !== request.sourceRevision ? "dubbing_source_superseded"
-        : !clip || clip.projectId !== run.projectId || clip.editorRevision !== request.editorRevision ? "dubbing_clip_superseded"
-        : !render || render.clipId !== request.clipId || render.status !== "completed" || render.storageKey !== request.baseRender.storageKey || render.sizeBytes !== BigInt(request.baseRender.byteLength) ? "dubbing_render_unavailable" : null;
+        : !clip || clip.projectId !== run.projectId || clip.editorRevision !== request.editorRevision ? "dubbing_clip_superseded" : null;
       if (reason) { await this.finishAccepted(tx, accepted, reference, reason);return null; }
     }
     return accepted;
@@ -126,6 +125,7 @@ export class DubbingExecution extends WorkflowRunLifecycle {
       state.run.leaseOwner !== context.owner || !state.run.leaseExpiresAt || state.run.leaseExpiresAt <= state.now || state.deadlineAt <= state.now || context.functionName !== "dub_mix") throw new ExecutorControlError("authority_lost");
     return state;
   }
+  /** A paid intent without its committed result: the provider may have charged for it. */
   private outstanding(dub: Pick<ClipDub, "translationIntentArtifactId" | "translationResultArtifactId" | "speechIntentArtifactId" | "audioArtifactId">) {
     return dub.translationIntentArtifactId !== null && dub.translationResultArtifactId === null || dub.speechIntentArtifactId !== null && dub.audioArtifactId === null;
   }
@@ -140,18 +140,11 @@ export class DubbingExecution extends WorkflowRunLifecycle {
     const state = await this.owned(tx, ref, context), input = artifact.input, evidence = artifact.evidence;
     if (!input || input.requestHash !== state.dub.requestHash || input.bindingHash !== state.dub.inputBindingHash || input.request.dubId !== state.dub.id) throw new ExecutorControlError("artifact_invalid");
     if (artifact.role === "dub_mix") {
-      const stage = artifact.contentType === "audio/mpeg" ? "audio" : artifact.contentType === "video/mp4" ? "video" : null;
-      if (!stage || artifact.bindingHash !== await dubbingArtifactBindingHash(input.requestHash, stage) || artifact.byteLength > BigInt(DUBBING_STAGE_OUTPUTS[stage].maxBytes) ||
-        !state.dub.speechIntentArtifactId || !state.dub.translationResultArtifactId || !state.dub.translatedText) throw new ExecutorControlError("artifact_invalid");
-      if (stage === "audio") {
-        if (state.dub.audioArtifactId) throw new ExecutorControlError("artifact_invalid");
-        await checkpointObject(tx, state.dub.speechIntentArtifactId, input.requestHash, "speech_intent", state.run.id);
-        await tx.clipDub.update({ where: { id: state.dub.id }, data: { audioArtifactId: artifact.artifactId } });
-      } else {
-        if (!state.dub.audioArtifactId || state.dub.videoArtifactId) throw new ExecutorControlError("artifact_invalid");
-        await checkpointObject(tx, state.dub.audioArtifactId, input.requestHash, "audio", state.run.id);
-        await tx.clipDub.update({ where: { id: state.dub.id }, data: { videoArtifactId: artifact.artifactId } });
-      }
+      if (artifact.contentType !== "audio/mpeg" || artifact.bindingHash !== await dubbingArtifactBindingHash(input.requestHash, "audio") || artifact.byteLength > BigInt(DUBBING_STAGE_OUTPUTS.audio.maxBytes) ||
+        !state.dub.speechIntentArtifactId || !state.dub.translationResultArtifactId || !state.dub.translatedText || !state.dub.timingArtifactId || state.dub.audioArtifactId) throw new ExecutorControlError("artifact_invalid");
+      await checkpointObject(tx, state.dub.speechIntentArtifactId, input.requestHash, "speech_intent", state.run.id);
+      await checkpointObject(tx, state.dub.timingArtifactId, input.requestHash, "timing", state.run.id);
+      await tx.clipDub.update({ where: { id: state.dub.id }, data: { audioArtifactId: artifact.artifactId } });
       return undefined;
     }
     if (!evidence || artifact.role !== "probe" || artifact.contentType !== "application/json" || artifact.byteLength > BigInt(DUBBING_STAGE_OUTPUTS[evidence.stage].maxBytes) ||
@@ -168,16 +161,27 @@ export class DubbingExecution extends WorkflowRunLifecycle {
       if (translated) {
         if (!state.dub.translationIntentArtifactId) throw new ExecutorControlError("artifact_invalid");
         await checkpointObject(tx, state.dub.translationIntentArtifactId, input.requestHash, "translation_intent", state.run.id);
-      } else if (state.dub.translationIntentArtifactId || evidence.text !== state.request.script || evidence.providerRequestId !== null) throw new ExecutorControlError("artifact_invalid");
-      await tx.clipDub.update({ where: { id: state.dub.id }, data: { translationResultArtifactId: artifact.artifactId, translatedText: evidence.text } });
+      } else if (state.dub.translationIntentArtifactId || evidence.providerRequestId !== null || evidence.segments.some((text, index) => text !== state.request.segments[index]?.text)) throw new ExecutorControlError("artifact_invalid");
+      if (evidence.segments.length !== state.request.segments.length) throw new ExecutorControlError("artifact_invalid");
+      await tx.clipDub.update({ where: { id: state.dub.id }, data: { translationResultArtifactId: artifact.artifactId, translatedText: evidence.segments.join(" ") } });
     } else if (evidence.stage === "speech_intent") {
       if (!state.dub.translationResultArtifactId || !state.dub.translatedText || state.dub.speechIntentArtifactId || state.dub.audioArtifactId) throw new ExecutorControlError("artifact_invalid");
       await checkpointObject(tx, state.dub.translationResultArtifactId, input.requestHash, "translation_result", state.run.id);
-      const body = new TextEncoder().encode(JSON.stringify(dubSpeechRequestBody(state.request, state.dub.translatedText)));
-      const hash = await sha256Hex(body);
-      if (evidence.bodySha256 !== hash) throw new ExecutorControlError("artifact_invalid");
+      const segments = artifact.translatedSegments;
+      if (!segments || segments.length !== state.request.segments.length || segments.join(" ") !== state.dub.translatedText || evidence.bodySha256 !== await dubSpeechIntentHash(state.request, segments)) throw new ExecutorControlError("artifact_invalid");
       await tx.clipDub.update({ where: { id: state.dub.id }, data: { speechIntentArtifactId: artifact.artifactId } });
+    } else if (evidence.stage === "timing") {
+      if (!state.dub.speechIntentArtifactId || !state.dub.translationResultArtifactId || state.dub.timingArtifactId || state.dub.audioArtifactId || !dubTimingMatchesRequest(evidence.segments, state.request)) throw new ExecutorControlError("artifact_invalid");
+      await checkpointObject(tx, state.dub.speechIntentArtifactId, input.requestHash, "speech_intent", state.run.id);
+      await tx.clipDub.update({ where: { id: state.dub.id }, data: { timingArtifactId: artifact.artifactId } });
     } else {
+      if (evidence.outcome === "unfit") {
+        if (!state.dub.speechIntentArtifactId || state.dub.timingArtifactId || state.dub.audioArtifactId || state.dub.outcomeArtifactId || evidence.segmentIndex >= state.request.segments.length) throw new ExecutorControlError("artifact_invalid");
+        await checkpointObject(tx, state.dub.speechIntentArtifactId, input.requestHash, "speech_intent", state.run.id);
+        // A known failure, not an unknown paid outcome: the lifecycle releases the count with the failed dub.
+        await tx.clipDub.update({ where: { id: state.dub.id }, data: { status: "failed", errorCode: "dub_narration_unfit", completedAt: state.now, outcomeArtifactId: artifact.artifactId } });
+        return super.failExecution(tx, ref, context, { failureCode: "dub_narration_unfit", retryable: false });
+      }
       if (evidence.outcome !== "completed") {
         const intentId = evidence.providerStage === "translation" ? state.dub.translationIntentArtifactId : state.dub.speechIntentArtifactId;
         const resultId = evidence.providerStage === "translation" ? state.dub.translationResultArtifactId : state.dub.audioArtifactId;
@@ -187,19 +191,42 @@ export class DubbingExecution extends WorkflowRunLifecycle {
         await tx.clipDub.update({ where: { id: state.dub.id }, data: { status: unknown ? "unknown" : "failed", errorCode: code, completedAt: state.now, outcomeArtifactId: artifact.artifactId } });
         return super.failExecution(tx, ref, context, { failureCode: code, retryable: false });
       }
-      if (this.outstanding(state.dub) || !state.dub.audioArtifactId || !state.dub.videoArtifactId || !state.dub.translationResultArtifactId || !state.dub.translatedText || state.dub.outcomeArtifactId) throw new ExecutorControlError("artifact_invalid");
-      const audio = await checkpointObject(tx, state.dub.audioArtifactId, input.requestHash, "audio", state.run.id), video = await checkpointObject(tx, state.dub.videoArtifactId, input.requestHash, "video", state.run.id);
-      if (audio.byteLength !== evidence.audio.byteLength || audio.sha256 !== evidence.audio.sha256 || video.byteLength !== evidence.video.byteLength || video.sha256 !== evidence.video.sha256) throw new ExecutorControlError("artifact_invalid");
+      if (this.outstanding(state.dub) || !state.dub.audioArtifactId || !state.dub.timingArtifactId || !state.dub.translationResultArtifactId || !state.dub.translatedText || state.dub.outcomeArtifactId) throw new ExecutorControlError("artifact_invalid");
+      const audio = await checkpointObject(tx, state.dub.audioArtifactId, input.requestHash, "audio", state.run.id);
+      await checkpointObject(tx, state.dub.timingArtifactId, input.requestHash, "timing", state.run.id);
+      if (audio.byteLength !== evidence.audio.byteLength || audio.sha256 !== evidence.audio.sha256) throw new ExecutorControlError("artifact_invalid");
       await tx.clipDub.update({ where: { id: state.dub.id }, data: { outcomeArtifactId: artifact.artifactId } });
       const owner = new WorkflowRunLifecycle({ prisma: this.database, leaseOwner: context.owner });
+      // A completed dub row is immutable, so its video outcome is decided before it is marked completed.
+      const videoErrorCode = await this.admitVideo(tx, state);
       const completed = await owner.completeDubWithinTransaction(tx, { workflowRunId: ref.id, projectId: ref.projectId, stage: "dubbing", attemptId: context.attemptToken, attemptCount: state.run.attemptCount }, state.dub.id,
-        { status: "completed", transcriptText: state.request.script, translatedText: state.dub.translatedText, audioStorageKey: audio.storageKey, renderStorageKey: video.storageKey,
-          audioSizeBytes: BigInt(audio.byteLength), renderSizeBytes: BigInt(video.byteLength), durationSec: evidence.probe.state === "ready" ? evidence.probe.durationSec : null,
-          model: state.request.model, errorCode: null, completedAt: state.now });
+        { status: "completed", transcriptText: state.request.segments.map(segment => segment.text).join(" "), translatedText: state.dub.translatedText, audioStorageKey: audio.storageKey,
+          audioSizeBytes: BigInt(audio.byteLength), durationSec: evidence.probe.state === "ready" ? evidence.probe.durationSec : null,
+          model: state.request.model, errorCode: null, videoErrorCode, completedAt: state.now });
       if (completed.count !== 1) throw new ExecutorControlError("authority_lost");
       return this.completeExecutionWithinTransaction(tx, ref, context, { requestedCount: 1, succeededCount: 1, failedCount: 0 });
     }
     return undefined;
+  }
+  /** The dub's video: a dub-bound export of the clip at the dub's revision, handed to a render run in this transaction
+   * (its dispatch registers after commit with the rest of this one's). A refusal never fails the completion: the
+   * dub keeps its audio and the refusal's code, and "Render again" can start the video later. A savepoint keeps a
+   * failed statement from aborting the transaction. */
+  private async admitVideo(tx: Tx, state: { dub: ClipDub; request: FrozenDubbingRequest }): Promise<string | null> {
+    await tx.$executeRaw`SAVEPOINT dub_video_export`;
+    try {
+      await admitDubExportWithinTransaction(tx, {
+        dubId: state.dub.id, projectId: state.request.projectId, workspaceId: state.request.workspaceId, actorUserId: state.request.actorUserId,
+        clipId: state.request.clipId, aspectRatio: state.request.aspectRatio, editorRevision: state.request.editorRevision,
+      });
+      await tx.$executeRaw`RELEASE SAVEPOINT dub_video_export`;
+      return null;
+    } catch (error) {
+      await tx.$executeRaw`ROLLBACK TO SAVEPOINT dub_video_export`;
+      const code = error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "dub_video_not_started";
+      console.warn(JSON.stringify({ level: "warn", message: "dub_video_not_started", dubId: state.dub.id, code }));
+      return code.slice(0, 80);
+    }
   }
   override async failExecution(tx: Tx, ref: WorkflowExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
     const state = await this.owned(tx, ref, context);
@@ -300,9 +327,7 @@ export class DubbingExecution extends WorkflowRunLifecycle {
     if (initial.run.nextAttemptAt && initial.run.nextAttemptAt > initial.now) return { kind: "sleep", dueAt: new Date(Math.min(initial.run.nextAttemptAt.getTime(), initial.deadlineAt.getTime())) };
     if (!initial.dub.inputStorageKey) {
       const source = await this.transition(tx => this.current(tx, reference));if (!source) return { kind: "superseded" };
-      const baseVideo = await this.dubbingDependencies.head(source.request.baseRender.storageKey);
-      if (!baseVideo || baseVideo.storageKey !== source.request.baseRender.storageKey || baseVideo.byteLength !== source.request.baseRender.byteLength) throw Error("dubbing_source_changed");
-      const value = { version: 1 as const, kind: "dub_mix" as const, request: source.request, requestHash: source.dub.requestHash!, toolchainFingerprint: this.dubbingDependencies.toolchainFingerprint, baseVideo };
+      const value = { version: 1 as const, kind: "dub_mix" as const, request: source.request, requestHash: source.dub.requestHash!, toolchainFingerprint: this.dubbingDependencies.toolchainFingerprint };
       const encoded = await encodeDubbingInput({ ...value, bindingHash: await dubbingInputBinding(value) });
       const key = await this.transition(async tx => {
         const state = await this.current(tx, reference);if (!state) return null;if (state.dub.inputStorageKey) return null;
@@ -350,7 +375,15 @@ export function createDubbingExecution(options: { database: PrismaClient; domain
       if (artifact.role === "dub_mix") return { ...artifact, input };
       if (artifact.role !== "probe" || artifact.byteLength > 1024n ** 2n) throw new ExecutorControlError("artifact_invalid");
       const evidence = dubbingCheckpointSchema.safeParse(await options.artifacts.readJson(artifact, Math.min(Number(assignment.maxBytes), 1024 ** 2)));if (!evidence.success) throw new ExecutorControlError("artifact_invalid");
-      return { ...artifact, evidence: evidence.data, input };
+      if (evidence.data.stage !== "speech_intent") return { ...artifact, evidence: evidence.data, input };
+      // The speech intent hashes one body per translated line; the sealed translation names those lines.
+      const dub = await options.database.clipDub.findUniqueOrThrow({ where: { id: input.request.dubId } });
+      const sealed = dub.translationResultArtifactId ? await options.database.executionArtifact.findUnique({ where: { id: dub.translationResultArtifactId } }) : null;
+      if (!sealed?.committedAt || sealed.role !== "probe" || !sealed.etag || !sealed.byteLength || !sealed.checksumSha256) throw new ExecutorControlError("artifact_invalid");
+      const translation = dubbingCheckpointSchema.safeParse(await options.artifacts.readJson({ artifactId: sealed.id, role: "probe", storageKey: sealed.storageKey, contentType: sealed.contentType,
+        byteLength: sealed.byteLength, sha256: sealed.checksumSha256, etag: sealed.etag, bindingHash: sealed.bindingHash }, 1024 ** 2));
+      if (!translation.success || translation.data.stage !== "translation_result") throw new ExecutorControlError("artifact_invalid");
+      return { ...artifact, evidence: evidence.data, input, translatedSegments: translation.data.segments };
     } } });
   const transfer = createExecutionTransfer({ database: options.database, authority: control, storage: options.storage, resolvePackage: async authority => {
     if (authority.functionName !== "dub_mix" || authority.fence.reference.kind !== "modal_execution" || authority.fence.reference.subject.kind !== "workflow_run" || !authority.input) throw new ExecutorControlError("invalid_reference");
@@ -358,16 +391,17 @@ export function createDubbingExecution(options: { database: PrismaClient; domain
     if (input.request.workflowRunId !== authority.fence.reference.subject.id) throw new ExecutorControlError("invalid_reference");
     const row = await options.database.clipDub.findUniqueOrThrow({ where: { id: input.request.dubId } });
     if (row.workflowRunId !== input.request.workflowRunId || row.requestHash !== input.requestHash) throw new ExecutorControlError("invalid_reference");
-    const sources = [{ name: "base_video", ...input.baseVideo }];
-    if (row.translationResultArtifactId) sources.push({ name: "translation_result", ...await checkpointObject(options.database, row.translationResultArtifactId, input.requestHash, "translation_result", input.request.workflowRunId) });
+    // A sealed result is recovered by download; its stage is never recomputed with a paid call.
+    const sources: Array<{ name: string } & Awaited<ReturnType<typeof checkpointObject>>> = [];
+    if (row.translationResultArtifactId && !row.audioArtifactId) sources.push({ name: "translation_result", ...await checkpointObject(options.database, row.translationResultArtifactId, input.requestHash, "translation_result", input.request.workflowRunId) });
+    if (row.timingArtifactId) sources.push({ name: "dub_timing", ...await checkpointObject(options.database, row.timingArtifactId, input.requestHash, "timing", input.request.workflowRunId) });
     if (row.audioArtifactId) sources.push({ name: "dub_audio", ...await checkpointObject(options.database, row.audioArtifactId, input.requestHash, "audio", input.request.workflowRunId) });
-    if (row.videoArtifactId) sources.push({ name: "dub_video", ...await checkpointObject(options.database, row.videoArtifactId, input.requestHash, "video", input.request.workflowRunId) });
     const stages: DubbingArtifactStage[] = [];
     if (!row.translationIntentArtifactId && !row.translationResultArtifactId && shouldTranslateDub(input.request.sourceLanguageCode, input.request.targetLanguageCode)) stages.push("translation_intent");
     if (!row.translationResultArtifactId) stages.push("translation_result");
     if (!row.speechIntentArtifactId && !row.audioArtifactId) stages.push("speech_intent");
+    if (!row.timingArtifactId) stages.push("timing");
     if (!row.audioArtifactId) stages.push("audio");
-    if (!row.videoArtifactId) stages.push("video");
     if (!row.outcomeArtifactId) stages.push("final_result");
     return { input: { kind: "object" }, sources, outputs: await Promise.all(stages.map(async stage => ({ ...DUBBING_STAGE_OUTPUTS[stage], bindingHash: await dubbingArtifactBindingHash(input.requestHash, stage) }))) };
   } });

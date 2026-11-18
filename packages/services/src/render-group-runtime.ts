@@ -7,7 +7,7 @@ import { createRenderInputSnapshot, type RenderInputSnapshotDependencies } from 
 import { readServiceEnvironment } from "./runtime-environment";
 
 /** Resolve fresh scope-bound ports. Neither the database nor a capsule crosses a wait. */
-export async function getRenderGroupExecutionService(object: RenderInputSnapshotDependencies["object"]) {
+export async function getRenderGroupExecutionService(object: RenderInputSnapshotDependencies["object"], readArtifactJson: RenderInputSnapshotDependencies["readArtifactJson"]) {
   const database = getPrismaClient();
   if (!database) throw new Error("Render execution requires a database scope");
   const settings = readServiceEnvironment(), toolchainFingerprint = settings.MEDIA_RENDER_TOOLCHAIN_FINGERPRINT;
@@ -17,6 +17,6 @@ export async function getRenderGroupExecutionService(object: RenderInputSnapshot
   if (!Number.isSafeInteger(maxAdmittedGroups) || maxAdmittedGroups <= 0) throw new Error("render_configuration_invalid");
   return new RenderGroupExecutionService(database, { toolchainFingerprint, maxAdmittedGroups,
     preparation: await getClipPreparationService(), inputStorage: getPrivateJsonStorage(), register: deliverExecutionDispatches,
-    snapshot: createRenderInputSnapshot(database, { object, pexelsConfigured: isPexelsConfigured(), searchStock: searchPexelsVideos }),
+    snapshot: createRenderInputSnapshot(database, { object, readArtifactJson, pexelsConfigured: isPexelsConfigured(), searchStock: searchPexelsVideos }),
   });
 }

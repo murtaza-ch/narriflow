@@ -325,6 +325,15 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       },
     )
 
+    .post(
+      "/projects/:id/dubs/:dubId/render",
+      uuidParams("id", "dubId"),
+      async (c) => {
+        const dub = await dubbingService.renderDubVideo(getActor(c), c.req.param("id"), c.req.param("dubId"));
+        return c.json({ dub }, 202);
+      },
+    )
+
     .get(
       "/projects/:id/dubs/:dubId/download",
       uuidParams("id", "dubId"),

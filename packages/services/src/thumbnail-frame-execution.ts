@@ -49,7 +49,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
 
   private async source(db: ReadDb, input: { workspaceId: string; projectId: string; clipId: string; exportVariantId: string }) {
     const variant = await db.clipExportVariant.findFirst({ where: { id: input.exportVariantId, status: "completed", storageKey: { not: null }, durationSec: { gt: 0 },
-      export: { projectId: input.projectId, clipId: input.clipId, project: { workspaceId: input.workspaceId } } }, include: { export: { select: { fingerprint: true } } } });
+      export: { dubId: null, projectId: input.projectId, clipId: input.clipId, project: { workspaceId: input.workspaceId } } }, include: { export: { select: { fingerprint: true } } } });
     if (!variant?.storageKey || !variant.durationSec) throw new ThumbnailPreparationError("thumbnail_source_missing");
     const sealed = await db.executionArtifact.findUnique({ where: { storageKey: variant.storageKey } });
     if (!sealed?.committedAt || sealed.role !== "render_variant" || sealed.contentType !== "video/mp4" || !sealed.etag || !sealed.byteLength || !sealed.checksumSha256 || sealed.byteLength !== variant.sizeBytes) throw new ThumbnailPreparationError("thumbnail_source_missing");

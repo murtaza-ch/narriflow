@@ -242,7 +242,7 @@ export const publishingQueue = {
 				if (!isSocialProviderPublishingEnabled(account.platform)) throw new PublishingQueueError("social_provider_publishing_disabled", "Publishing to this platform isn't available yet. Choose another account.");
 				await requirePublishableSocialAccount(tx, { workspaceId: scope.workspaceId, accountId: account.id, tier });
 				const exported = await tx.clipExport.findFirst({
-					where: { id: input.exportId, clipId: input.clipId, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+					where: { id: input.exportId, dubId: null, clipId: input.clipId, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
 					select: {
 						projectId: true,
 						editorRevision: true,

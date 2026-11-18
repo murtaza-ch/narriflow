@@ -427,8 +427,8 @@ export function createProductionSocialPublicationScheduling(options: {beforeWrit
 			requirePublishableAccount: ({ workspaceId, accountId, tier }) =>
 				requirePublishableSocialAccount(requirePrisma(), { workspaceId, accountId, tier }),
 			async readExport(exportId) {
-				const row = await requirePrisma().clipExport.findUnique({
-					where: { id: exportId },
+				const row = await requirePrisma().clipExport.findFirst({
+					where: { id: exportId, dubId: null },
 					select: {
 						id: true, workspaceId: true, projectId: true, clipId: true, editorRevision: true, resolution: true, fingerprint: true,
 						variants: { select: { id: true, aspectRatio: true, resolution: true, status: true, storageKey: true, sizeBytes: true, durationSec: true } },

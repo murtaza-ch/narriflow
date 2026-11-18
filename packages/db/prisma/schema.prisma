@@ -1858,6 +1858,9 @@ model ClipExport {
   progress        Int              @default(0)
   errorCode       String?
   workflowRunId   String?          @db.Uuid
+  /// Set only on a dub's video export. Every ordinary export read filters
+  /// `dubId: null`; the dub is the only way to reach a dub export.
+  dubId           String?          @unique @db.Uuid
   /// Times a failed export was queued again. Each terminal outcome of an
   /// export is a separate Workspace Event, named by this count.
   retryCount      Int              @default(0)
@@ -1868,6 +1871,7 @@ model ClipExport {
   project                 Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workspace               Workspace?               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   clip                    Clip                     @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  dub                     ClipDub?                 @relation(fields: [dubId], references: [id], onDelete: Cascade)
   variants                ClipExportVariant[]
   shareLinks              ClipShareLink[]
   frozenPublicationStates FrozenPublicationState[]
@@ -2259,11 +2263,14 @@ model ClipDub {
   transcriptText     String?
   translatedText     String?
   audioStorageKey    String?
-  renderStorageKey   String?
   audioSizeBytes     BigInt?
-  renderSizeBytes    BigInt?
   durationSec        Float?
   errorCode          String?
+  /// The clip's editor revision the dub was made for; part of its identity.
+  editorRevision     Int
+  /// Why the dub's video was not started at completion (an export admission
+  /// code). Once the dub has an export, the export owns the video's state.
+  videoErrorCode     String?
   /// Fencing reference to the parent Workflow Attempt. It is not an
   /// independent lease or retry counter.
   workflowAttemptId  String?         @db.Uuid
@@ -2281,8 +2288,8 @@ model ClipDub {
   translationIntentArtifactId String? @db.Uuid
   translationResultArtifactId String? @db.Uuid
   speechIntentArtifactId String? @db.Uuid
+  timingArtifactId String? @db.Uuid
   audioArtifactId String? @db.Uuid
-  videoArtifactId String? @db.Uuid
   outcomeArtifactId String? @db.Uuid
   inputBindingHash String?
   inputStorageKey String?
@@ -2293,10 +2300,12 @@ model ClipDub {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clip    Clip    @relation(fields: [clipId, projectId], references: [id, projectId], onDelete: Cascade)
   workflowRun WorkflowRun? @relation(fields: [workflowRunId, projectId], references: [id, projectId], onDelete: Cascade)
+  /// The dub's video: a dub-bound export, reachable only through the dub.
+  export  ClipExport?
 
   // A raw partial unique index permits immutable known-failed request history.
   @@unique([workflowRunId, projectId])
-  @@index([clipId, targetLanguageCode, voice, aspectRatio, createdAt, id], map: "ClipDub_tuple_history_idx")
+  @@index([clipId, targetLanguageCode, voice, aspectRatio, editorRevision, createdAt, id], map: "ClipDub_tuple_history_idx")
   @@index([projectId, status, createdAt])
   @@index([clipId, status])
 }

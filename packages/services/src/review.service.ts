@@ -393,7 +393,7 @@ export class ReviewService {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     requirePlanFeature(actor.pricingTier, "review.rooms");
     const rows = await requirePrisma().clipExport.findMany({
-      where: { id: { in: items.map((item) => item.exportId) }, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+      where: { id: { in: items.map((item) => item.exportId) }, dubId: null, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { id: true, projectId: true, clipId: true, status: true, editorRevision: true, clip: { select: { editorRevision: true } },
         variants: { where: { status: "completed", storageKey: { not: null } }, select: { id: true } } },
     });
@@ -444,7 +444,7 @@ export class ReviewService {
     const project = await prisma.project.findFirst({ where: { id: scope.projectId, workspaceId: scope.workspaceId }, select: { id: true } });
     if (!project) throw new ReviewServiceError("review_project_not_found", "Project was not found");
     const exports = await prisma.clipExport.findMany({
-      where: { projectId: scope.projectId, id: { in: parsed.items.map((item) => item.exportId) }, status: "ready" },
+      where: { projectId: scope.projectId, dubId: null, id: { in: parsed.items.map((item) => item.exportId) }, status: "ready" },
       select: { id: true, clipId: true, editorRevision: true, variants: { where: { status: "completed" }, select: { id: true } } },
     });
     const exportById = new Map(exports.map((item) => [item.id, item]));
@@ -1088,13 +1088,13 @@ export class ReviewService {
         },
       }),
       prisma.clip.findMany({
-        where: { projectId, exports: { some: { status: "ready" } } },
+        where: { projectId, exports: { some: { status: "ready", dubId: null } } },
         orderBy: { index: "asc" },
         select: {
           id: true,
           title: true,
           editorRevision: true,
-          exports: { where: { status: "ready" }, orderBy: { createdAt: "desc" }, select: {
+          exports: { where: { status: "ready", dubId: null }, orderBy: { createdAt: "desc" }, select: {
             id: true,
             editorRevision: true,
             createdAt: true,

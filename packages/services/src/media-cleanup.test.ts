@@ -80,7 +80,7 @@ describe("Media Cleanup", () => {
             id: "clip-empty",
             previewStorageKey: null,
             renders: [{ storageKey: null }],
-            dubs: [{ audioStorageKey: null, renderStorageKey: null }],
+            dubs: [{ audioStorageKey: null }],
           },
         ],
       },

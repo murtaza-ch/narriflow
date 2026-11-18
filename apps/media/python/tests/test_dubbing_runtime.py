@@ -20,8 +20,16 @@ from narriflow_media.transfer import load_work_package
 
 
 class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_actual_child_commits_ordered_paid_stages_and_real_mux_then_recovery_posts_nothing(self):
+    async def test_actual_child_commits_ordered_paid_stages_and_real_mix_then_recovery_posts_nothing(self):
         await self.operation('success')
+
+    async def test_narration_that_cannot_fit_seals_unfit_and_commits_neither_timing_nor_audio(self):
+        await self.operation('unfit')
+
+    def test_stage_table_has_timing_and_no_video(self):
+        self.assertEqual(list(STAGES),['translation_intent','translation_result','speech_intent','timing','audio','final_result'])
+        self.assertEqual(STAGES['timing'],('probe','application/json',1024**2))
+        self.assertEqual(STAGES['audio'],('dub_mix','audio/mpeg',64*1024**2))
 
     async def test_unknown_final_ack_retains_sealed_media_without_another_publication(self):
         await self.operation('lost_final')
@@ -33,17 +41,17 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def operation(self,mode,*,fingerprint="a"*64,enforce_runtime=False):
         root=Path(__file__).resolve().parents[4];run_id,dub_id=str(uuid4()),str(uuid4())
         with tempfile.TemporaryDirectory() as temporary:
-            directory=Path(temporary);base=directory/'base.mp4';audio=directory/'speech.mp3'
-            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=blue:s=160x90:r=10:d=2','-an','-c:v','libx264','-pix_fmt','yuv420p',str(base)],check=True,capture_output=True,timeout=10)
+            directory=Path(temporary);audio=directory/'speech.mp3'
             subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=440:duration=1.5','-c:a','libmp3lame',str(audio)],check=True,capture_output=True,timeout=10)
-            base_bytes=base.read_bytes();audio_bytes=audio.read_bytes();starts=[];calls=[];posts=[];objects={};commits=[]
+            audio_bytes=audio.read_bytes();starts=[];calls=[];posts=[];objects={};commits=[]
+            segments=[{'startSec':0,'endSec':1,'text':'Too long once spoken'}] if mode=='unfit' else [{'startSec':0,'endSec':2.5,'text':'First sentence'},{'startSec':3,'endSec':5.5,'text':'Second sentence'}]
             request={'version':1,'kind':'dubbing_request','dubId':dub_id,'workflowRunId':run_id,'projectId':str(uuid4()),'workspaceId':str(uuid4()),'actorUserId':str(uuid4()),'clipId':str(uuid4()),
-                'editorRevision':1,'sourceRevision':1,'baseRender':{'id':str(uuid4()),'storageKey':'projects/frozen/base.mp4','byteLength':len(base_bytes),'durationSec':2},
-                'script':'The frozen script','sourceLanguageCode':'en','targetLanguageCode':'es','voice':'marin','aspectRatio':'9:16','provider':'openai','model':'gpt-4o-mini-tts','translationModel':'gpt-6-luna'}
-            raw={'version':1,'kind':'dub_mix','request':request,'toolchainFingerprint':fingerprint,'baseVideo':{'storageKey':request['baseRender']['storageKey'],'etag':'"base"','byteLength':len(base_bytes)}}
+                'editorRevision':1,'sourceRevision':1,'segments':segments,'editedDurationSec':1 if mode=='unfit' else 6,
+                'sourceLanguageCode':'en','targetLanguageCode':'es','voice':'marin','aspectRatio':'9:16','provider':'openai','model':'gpt-4o-mini-tts','translationModel':'gpt-6-luna'}
+            raw={'version':1,'kind':'dub_mix','request':request,'toolchainFingerprint':fingerprint}
             encoded=subprocess.run(['bun','-e',"import {readFileSync} from 'node:fs';import {frozenDubbingRequestHash} from './packages/services/src/dubbing-policy.ts';import {dubbingInputBinding} from './packages/services/src/dubbing-input.ts';let v=JSON.parse(readFileSync(0,'utf8'));v.requestHash=await frozenDubbingRequestHash(v.request);console.log(JSON.stringify({...v,bindingHash:await dubbingInputBinding(v)}));"],input=json.dumps(raw).encode(),capture_output=True,check=True,cwd=root,timeout=10)
             command=json.loads(encoded.stdout);expires=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat().replace('+00:00','Z')
-            source_objects={'base_video':command['baseVideo']};source_payloads={'base_video':base_bytes}
+            source_objects={};source_payloads={}
             outputs=[{'artifactId':str(uuid4()),'role':role,'bindingHash':artifact_binding(command['requestHash'],stage),'contentType':mime,'contentTypes':[mime],'maxBytes':maximum} for stage,(role,mime,maximum) in STAGES.items()]
             output_stage={output['artifactId']:stage for stage,output in zip(STAGES,outputs)}
             class Provider(BaseHTTPRequestHandler):
@@ -55,10 +63,11 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                     posts.append(self.path)
                     if self.path=='/v1/responses':
-                        assert body['model']=='gpt-6-luna';assert commits[-1]=='translation_intent'
-                        content=json.dumps({'id':'resp_controlled','output_text':'El guion congelado'}).encode();mime='application/json'
+                        assert body['model']=='gpt-6-luna';assert commits[-1]=='translation_intent';assert body['text']['format']['strict'] is True
+                        lines=json.loads(body['input'][1]['content'].split('LINES:\n')[1]);assert [line['id'] for line in lines]==list(range(1,len(segments)+1))
+                        content=json.dumps({'id':'resp_controlled','output_text':json.dumps({'segments':[{'id':line['id'],'text':f"Linea {line['id']}"} for line in lines]})}).encode();mime='application/json'
                     else:
-                        assert self.path=='/v1/audio/speech';assert body['input']=='El guion congelado';assert commits[-1]=='speech_intent'
+                        assert self.path=='/v1/audio/speech';assert body['input']==f"Linea {len([path for path in posts if path=='/v1/audio/speech'])}";assert commits[-1] in {'speech_intent'}
                         content=audio_bytes;mime='audio/mpeg'
                     self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content)
             provider=ThreadingHTTPServer(('127.0.0.1',0),Provider);provider.daemon_threads=True;thread=threading.Thread(target=provider.serve_forever,daemon=True);thread.start()
@@ -116,29 +125,40 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     elif mode in {'revoked','lost_start'}:
                         with self.assertRaises(ExecutionControlError):await operation
                     else:
-                        result=await operation;self.assertEqual(result['outcome'],'completed')
+                        result=await operation;self.assertEqual(result['outcome'],'unfit' if mode=='unfit' else 'completed')
                 self.assertEqual(len(starts),1)
                 if mode in {'lost_intent','revoked','lost_start'}:
                     self.assertEqual(posts,[])
                     if mode=='lost_start':self.assertEqual(commits,[]);self.assertFalse(any(action=='source-read' for action,_ in calls))
                 else:
-                    self.assertEqual(posts,['/v1/responses','/v1/audio/speech']);self.assertEqual(commits,list(STAGES))
-                    self.assertEqual(len(objects),6)
+                    speech=['/v1/audio/speech']*len(segments)
+                    self.assertEqual(posts,['/v1/responses']+speech)
+                    # A fresh authority read precedes every POST, and control calls never overlap their POST.
+                    self.assertEqual(sum(1 for action,_ in calls if action=='read-disposition'),len(posts))
                     final=json.loads(objects[next(identity for identity,stage in output_stage.items() if stage=='final_result')])
-                    self.assertEqual(final['outcome'],'completed')
-                    video_id=next(identity for identity,stage in output_stage.items() if stage=='video')
-                    self.assertEqual(final['video'],{'byteLength':len(objects[video_id]),'sha256':hashlib.sha256(objects[video_id]).hexdigest()})
-                    self.assertTrue((work/'dub.mp4').is_file());self.assertEqual(final['probe']['state'],'ready')
+                    if mode=='unfit':
+                        self.assertEqual(commits,['translation_intent','translation_result','speech_intent','final_result'])
+                        self.assertEqual(final['outcome'],'unfit');self.assertEqual(final['segmentIndex'],0)
+                        self.assertEqual(len(objects),4);self.assertFalse((work/'dub.mp3').exists())
+                        return {'mode':mode,'nativeStarts':len(starts),'controlledProviderRequests':len(posts),'committedStageAcknowledgements':len(commits),'completedObjectsRetained':len(objects)}
+                    self.assertEqual(commits,list(STAGES))
+                    self.assertEqual(len(objects),6)
+                    self.assertEqual(final['outcome'],'completed');self.assertNotIn('video',final)
+                    audio_id=next(identity for identity,stage in output_stage.items() if stage=='audio')
+                    self.assertEqual(final['audio'],{'byteLength':len(objects[audio_id]),'sha256':hashlib.sha256(objects[audio_id]).hexdigest()})
+                    timing=json.loads(objects[next(identity for identity,stage in output_stage.items() if stage=='timing')])
+                    self.assertEqual(len(timing['segments']),2);self.assertEqual([word['text'] for word in timing['segments'][0]['words']],['Linea','1'])
+                    self.assertTrue((work/'dub.mp3').is_file());self.assertEqual(final['probe']['state'],'ready');self.assertGreater(final['probe']['durationSec'],5.9)
                     self.assertFalse(any(action in {'fail','upload-abort'} for action,_ in calls))
                     if mode=='success':
-                        for name,stage in [('translation_result','translation_result'),('dub_audio','audio'),('dub_video','video')]:
+                        for name,stage in [('dub_timing','timing'),('dub_audio','audio')]:
                             identity=next(identity for identity,value in output_stage.items() if value==stage);payload=objects[identity]
                             source_payloads[name]=payload;source_objects[name]={'storageKey':'execution/frozen/'+identity,'etag':'"'+identity+'"','byteLength':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}
                         outputs[:]=[output for output in outputs if output_stage[output['artifactId']]=='final_result']
                         outputs[0]={**outputs[0],'artifactId':str(uuid4())};output_stage[outputs[0]['artifactId']]='final_result'
                         recovered=directory/'recovered';recovered.mkdir();session=Session();package=await load_work_package(session)
                         result=await run_dubbing(session,package,recovered,transport=Storage(),source_transport=Storage(),verify_runtime=verified,cli_path=cli)
-                        self.assertEqual(result['outcome'],'completed');self.assertEqual(len(posts),2);self.assertEqual(len(starts),2)
+                        self.assertEqual(result['outcome'],'completed');self.assertEqual(len(posts),3);self.assertEqual(len(starts),2)
                 return {'mode':mode,'nativeStarts':len(starts),'controlledProviderRequests':len(posts),'committedStageAcknowledgements':len(commits),'completedObjectsRetained':len(objects)}
             finally:
                 provider.shutdown();provider.server_close();thread.join(timeout=1)

@@ -7,6 +7,7 @@ import {
 } from "@narriflow/validators";
 import type { OmittedGlyph, SkippedEmoji } from "./caption-glyphs";
 import {
+	DUB_OUTPUT_AUDIO,
 	OUTPUT_PIXEL_FORMAT,
 	renderOutputFrameRate,
 	rendersConvertedSdr,
@@ -165,7 +166,10 @@ export function compositionOutputExpectation(input: {
 		input.audio.soundEffects.length > 0 ||
 		input.audio.censors.some((censor) => censor.treatment === "beep") ||
 		sceneAudio;
-	const hasAudio = input.audio.source.available || mixed;
+	// A dub is the dialogue: its filter leaves the delivery format whatever the
+	// source holds, so the source's own audio facts do not describe the output.
+	const dub = Boolean(input.audio.dub);
+	const hasAudio = input.audio.source.available || mixed || dub;
 	const converted = rendersConvertedSdr(input.source, Boolean(input.hdrAssets));
 	return {
 		durationSec: input.plan.editedDurationSec,
@@ -178,14 +182,18 @@ export function compositionOutputExpectation(input: {
 		sampleAspectRatio: { numerator: 1, denominator: 1 },
 		variableFrameSpacing: sceneAudio,
 		audio: hasAudio
-			? {
-					...(!mixed && sourceAudio?.sampleRate
-						? { sampleRate: sourceAudio.sampleRate }
-						: {}),
-					...(!mixed && sourceAudio?.channels
-						? { channels: sourceAudio.channels }
-						: {}),
-				}
+			? dub
+				? mixed
+					? {}
+					: { ...DUB_OUTPUT_AUDIO }
+				: {
+						...(!mixed && sourceAudio?.sampleRate
+							? { sampleRate: sourceAudio.sampleRate }
+							: {}),
+						...(!mixed && sourceAudio?.channels
+							? { channels: sourceAudio.channels }
+							: {}),
+					}
 			: null,
 		color: converted
 			? { mode: "asserted", tags: SDR_OUTPUT_COLOR }

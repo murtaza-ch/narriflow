@@ -25,8 +25,9 @@ function exportRow(id: string, status: string, overrides: Record<string, unknown
 
 let rows: unknown[] = [];
 const findMany = mock(async (_query: Prisma.ClipExportFindManyArgs) => rows);
+const findFirst = mock(async (_query: Prisma.ClipExportFindFirstArgs) => null as unknown);
 const fakePrisma = {
-  clipExport: { findMany },
+  clipExport: { findMany, findFirst },
   project: { findUnique: async () => ({ expiresAt: null, purgeStartedAt: null }) },
 } as unknown as PrismaClient;
 
@@ -56,7 +57,7 @@ describe("project render states", () => {
     expect(states[3]?.variants[0]?.previewUrl).toEqual(expect.any(String));
     const query = findMany.mock.calls.at(-1)?.[0];
     expect(query?.where).not.toHaveProperty("status");
-    expect(query?.where).toMatchObject({ workspaceId: WORKSPACE, projectId: PROJECT });
+    expect(query?.where).toMatchObject({ workspaceId: WORKSPACE, projectId: PROJECT, dubId: null });
     expect(query?.orderBy).toEqual({ createdAt: "desc" });
   })));
 
@@ -68,7 +69,27 @@ describe("project render states", () => {
   test("the finished-only list keeps its contract", bindServiceTestEnvironment(globals.bind(async () => {
     rows = [exportRow("ready", "ready")];
     expect((await clipExportService.listCurrentProjectExports(scope, PROJECT)).map((item) => item.id)).toEqual(["ready"]);
-    expect(findMany.mock.calls.at(-1)?.[0]?.where).toMatchObject({ status: { in: ["partial_ready", "ready"] } });
+    expect(findMany.mock.calls.at(-1)?.[0]?.where).toMatchObject({ status: { in: ["partial_ready", "ready"] }, dubId: null });
+  })));
+});
+
+describe("dub exports are reachable only through their dub", () => {
+  test("id reads, grants and share links never match an export that has a dub", bindServiceTestEnvironment(globals.bind(async () => {
+    const id = "00000000-0000-4000-8000-000000000009";
+    const filtered = async (call: () => Promise<unknown>) => {
+      findFirst.mockClear();
+      await call().catch(() => undefined);
+      const wheres = findFirst.mock.calls.map(([query]) => query.where);
+      expect(wheres.length).toBeGreaterThan(0);
+      return wheres;
+    };
+    for (const where of await filtered(() => clipExportService.getOwned(scope, PROJECT, CLIP, id))) expect(where).toMatchObject({ id, dubId: null });
+    for (const where of await filtered(() => clipExportService.getWorkspaceOwned(scope, id))) expect(where).toMatchObject({ id, dubId: null });
+    for (const where of await filtered(() => clipExportService.issueDownloadGrants(scope, id, { credentialKind: "session" }))) expect(where).toMatchObject({ id, dubId: null });
+    for (const where of await filtered(() => clipExportService.getSubtitles(scope, PROJECT, CLIP, id))) expect(where).toMatchObject({ id, dubId: null });
+    for (const where of await filtered(() => clipExportService.retryFailed(scope, PROJECT, CLIP, id))) expect(where).toMatchObject({ id, dubId: null });
+    for (const where of await filtered(() => clipExportService.createShareLink(scope, PROJECT, CLIP, id, 7))) expect(where).toMatchObject({ id, dubId: null });
+    for (const where of await filtered(() => clipExportService.revokeShareLinks(scope, PROJECT, CLIP, id))) expect(where).toMatchObject({ id, dubId: null });
   })));
 });
 
@@ -100,7 +121,7 @@ describe("in-flight export guard", () => {
     const { tx, query } = txWith([]);
     expect(await findCoveringInFlightExport(tx, { ...request, aspectRatios: ["9:16"] })).toBeNull();
     expect(query.mock.calls[0]?.[0]?.where).toEqual({
-      clipId: CLIP, editorRevision: 2, resolution: "1080p", watermark: false, status: { in: ["queued", "rendering"] },
+      clipId: CLIP, dubId: null, editorRevision: 2, resolution: "1080p", watermark: false, status: { in: ["queued", "rendering"] },
     });
   }));
 });

@@ -408,7 +408,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		const run = await prisma.workflowRun.create({ data: { projectId: created.id, stage: "clip_rendering", status: "failed", idempotencyKey: randomUUID() } });
 		const clip = await prisma.clip.create({ data: { projectId: created.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, hookText: "Hook", reasoning: "Test fixture", category: "hook", transcriptSlice: [],
 			viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test" } });
-		const dub = await prisma.clipDub.create({ data: { projectId: created.id, clipId: clip.id, targetLanguageCode: "es", voice: "marin", model: "test", status: "unknown" } });
+		const dub = await prisma.clipDub.create({ data: { projectId: created.id, clipId: clip.id, targetLanguageCode: "es", voice: "marin", model: "test", editorRevision: clip.editorRevision, status: "unknown" } });
 		const media = (extra: Record<string, unknown>) => prisma.generatedMediaJob.create({ data: { workspaceId: workspace.id, projectId: created.id, createdByUserId: owner.id, workspaceOwnerUserId: owner.id, actorRole: "owner", actorStatus: "active", pricingTier: "creator",
 			isPersonalWorkspace: false, idempotencyKey: randomUUID(), requestFingerprint: "f", protectedPrompt: "A calm lake", promptFingerprint: "p".repeat(64), promptOrigin: "manual", aspectRatio: "16:9", style: "cinematic", title: "Lake",
 			provider: "openai", providerModel: "gpt-image-1", usageReservationId: randomUUID(), promptExpiresAt: new Date(Date.now() + 86_400_000), ...extra } as never });
@@ -419,7 +419,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		// These outcomes are immutable once recorded, so each unresolved shape is settled by removing its row.
 		await refused();
 		await prisma.clipDub.delete({ where: { id: dub.id } });
-		const halfWritten = await prisma.clipDub.create({ data: { projectId: created.id, clipId: clip.id, targetLanguageCode: "fr", voice: "marin", model: "test", status: "queued", translationIntentArtifactId: randomUUID() } });
+		const halfWritten = await prisma.clipDub.create({ data: { projectId: created.id, clipId: clip.id, targetLanguageCode: "fr", voice: "marin", model: "test", editorRevision: clip.editorRevision, status: "queued", translationIntentArtifactId: randomUUID() } });
 		await refused();
 		await prisma.clipDub.delete({ where: { id: halfWritten.id } });
 		const unknown = await media({ status: "waiting", outcomeUnknown: true });

@@ -269,7 +269,7 @@ async function resolveExportBundleSelection(
       title: true,
       editorRevision: true,
       exports: {
-        where: { status: "ready", resolution: input.resolution },
+        where: { status: "ready", dubId: null, resolution: input.resolution },
         orderBy: { createdAt: "desc" },
         take: 1,
         include: {

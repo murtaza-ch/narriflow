@@ -376,8 +376,7 @@ async function pageWork(tx: Tx, epoch: number, page: ReturnType<typeof parse>) {
       WHERE e."projectId"=${projectId}::uuid UNION ALL SELECT "previewStorageKey"
       FROM "Clip" WHERE "projectId"=${projectId}::uuid UNION ALL SELECT r."storageKey"
       FROM "ClipRender" r JOIN "Clip" c ON c.id=r."clipId" WHERE c."projectId"=${projectId}::uuid
-      UNION ALL SELECT "audioStorageKey" FROM "ClipDub" WHERE "projectId"=${projectId}::uuid
-      UNION ALL SELECT "renderStorageKey" FROM "ClipDub" WHERE "projectId"=${projectId}::uuid)
+      UNION ALL SELECT "audioStorageKey" FROM "ClipDub" WHERE "projectId"=${projectId}::uuid)
    SELECT key FROM refs WHERE key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM "MediaCleanupObligation" m WHERE m."objectKey"=refs.key AND m."projectId"=${projectId}::uuid) AND NOT EXISTS(SELECT 1 FROM "VisualAsset" v WHERE v."storageKey"=refs.key AND v."deletedAt" IS NULL) LIMIT 1`;
     if (missing) throw Error("project_retention_key_provenance_missing");
   }

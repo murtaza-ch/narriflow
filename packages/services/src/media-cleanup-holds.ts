@@ -56,8 +56,8 @@ async function assignedReferenceHeld(tx: Tx, artifact: ExecutionArtifact, now: D
     case "social_publication": return publicationObjectIsHeld(tx, artifact.storageKey, now);
     case "clip_selection_window": {const row=await tx.clipSelectionWindow.findFirst({where:{id,resultStorageKey:artifact.storageKey},select:{projectId:true}});return Boolean(row&&await projectHeld(tx,row.projectId,now));}
     case "dubbing": {
-      const row = await tx.clipDub.findUnique({ where: { id }, select: { audioStorageKey: true, renderStorageKey: true,projectId:true } });
-      return Boolean(row && await projectHeld(tx,row.projectId,now) && [row.audioStorageKey, row.renderStorageKey].includes(artifact.storageKey));
+      const row = await tx.clipDub.findUnique({ where: { id }, select: { audioStorageKey: true, projectId: true } });
+      return Boolean(row && await projectHeld(tx,row.projectId,now) && row.audioStorageKey === artifact.storageKey);
     }
     case "export_bundle": {const row=await tx.exportBundle.findFirst({where:{id,OR:[{storageKey:artifact.storageKey},{attemptStorageKey:artifact.storageKey}]},select:{operation:{select:{projectId:true}}}});return Boolean(row&&await projectHeld(tx,row.operation.projectId,now));}
     default: throw new MediaCleanupControlError("cleanup_intent_invalid");
@@ -78,7 +78,7 @@ async function retiredReferenceHeld(tx: Tx, intent: Readonly<MediaCleanupObligat
     const clip = await tx.clip.findUnique({ where: { id: intent.clipId }, select: { previewStorageKey: true } });
     if (clip?.previewStorageKey === key || (clip?.previewStorageKey && tryDerivePeaksStorageKey(clip.previewStorageKey) === key)) return true;
     if (await tx.clipRender.findFirst({ where: { clipId: intent.clipId, storageKey: key }, select: { id: true } })) return true;
-    if (await tx.clipDub.findFirst({ where: { clipId: intent.clipId, OR: [{ audioStorageKey: key }, { renderStorageKey: key }] }, select: { id: true } })) return true;
+    if (await tx.clipDub.findFirst({ where: { clipId: intent.clipId, audioStorageKey: key }, select: { id: true } })) return true;
   }
   return false;
 }

@@ -163,7 +163,7 @@ async def run_render_group(session,package,work:Path,*,transport=None,source_tra
     original=[source for source in package.sources if source['name']=='original']
     if len(original)!=1 or {key:original[0].get(key) for key in ('storageKey','etag','byteLength','sha256')}!=command['preparation'].get('source'):raise NativeOperationFailure('native_source_invalid')
     try:
-        assets=command['assets'];frozen=[*assets['visuals'],*assets['fonts'],*assets['audio'],*([assets['logo']] if assets['logo'] else [])]
+        assets=command['assets'];frozen=[*assets['visuals'],*assets['fonts'],*assets['audio'],*([assets['logo']] if assets['logo'] else []),*([command['dub']['audio']] if command.get('dub') else [])]
         sources=[original[0],*({'name':value['name'],**value['object']} for value in frozen)]
     except (KeyError,TypeError):raise NativeOperationFailure('render_command_invalid') from None
     raw=json.dumps(command,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()

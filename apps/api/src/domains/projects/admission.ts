@@ -28,5 +28,6 @@ export const projectsAdmission = {
   "GET /projects/:id/dubs": { kind: "project", capability: "content.view", projectParam: "id" },
   "GET /projects/:id/dubs/allowance": { kind: "project", capability: "content.view", projectParam: "id" },
   "POST /projects/:id/dubs": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "dubs", limit: 20 } },
+  "POST /projects/:id/dubs/:dubId/render": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "dub-render", limit: 12 } },
   "GET /projects/:id/dubs/:dubId/download": { kind: "project", capability: "content.download", projectParam: "id" },
 } as const satisfies AdmissionTable;

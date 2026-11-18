@@ -108,7 +108,7 @@ export async function readProductEvents(database: Pick<PrismaClient, "$queryRaw"
       FROM "Project" p JOIN "User" u ON u.id = p."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId" WHERE ${inWindow(Prisma.sql`p."createdAt"`)}
       UNION ALL
       SELECT e.id::text, 'export', NULL, NULL, e."createdAt", u."clerkId", p."workspaceId"::text, e."projectId"::text, e."clipId"::text, NULL, w."pricingTier"::text, NULL, NULL
-      FROM "ClipExport" e JOIN "Project" p ON p.id = e."projectId" JOIN "User" u ON u.id = e."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId" WHERE ${inWindow(Prisma.sql`e."createdAt"`)}
+      FROM "ClipExport" e JOIN "Project" p ON p.id = e."projectId" JOIN "User" u ON u.id = e."createdByUserId" JOIN "Workspace" w ON w.id = p."workspaceId" WHERE e."dubId" IS NULL AND ${inWindow(Prisma.sql`e."createdAt"`)}
       UNION ALL
       SELECT e.id::text, 'ledger', e.type::text, NULL, e."createdAt", u."clerkId", e."workspaceId"::text, e."projectId"::text, NULL, NULL, w."pricingTier"::text, NULL, NULL
       FROM "ProgramAnalyticsEvent" e JOIN "User" u ON u.id = e."actorUserId" JOIN "Workspace" w ON w.id = e."workspaceId" WHERE ${inWindow(Prisma.sql`e."createdAt"`)}

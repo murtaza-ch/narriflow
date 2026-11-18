@@ -17,7 +17,7 @@ export function createProductionReviewApprovalGate() {
 					workspaceId: true,
 					brandProfileSnapshot: true,
 					clipExports: {
-						where: { id: { in: exportIds } },
+						where: { id: { in: exportIds }, dubId: null },
 						select: { id: true },
 					},
 					reviewRounds: {

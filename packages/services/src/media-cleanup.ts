@@ -93,19 +93,14 @@ export interface RetiredClipMediaCleanupStore {
         id: true;
         previewStorageKey: true;
         renders: { select: { storageKey: true } };
-        dubs: {
-          select: { audioStorageKey: true; renderStorageKey: true };
-        };
+        dubs: { select: { audioStorageKey: true } };
       };
     }): Promise<
       Array<{
         id: string;
         previewStorageKey: string | null;
         renders: Array<{ storageKey: string | null }>;
-        dubs: Array<{
-          audioStorageKey: string | null;
-          renderStorageKey: string | null;
-        }>;
+        dubs: Array<{ audioStorageKey: string | null }>;
       }>
     >;
   };
@@ -125,7 +120,7 @@ export async function admitRetiredClipMediaCleanup(
       id: true,
       previewStorageKey: true,
       renders: { select: { storageKey: true } },
-      dubs: { select: { audioStorageKey: true, renderStorageKey: true } },
+      dubs: { select: { audioStorageKey: true } },
     },
   });
   return admitMediaCleanupObligations(
@@ -137,10 +132,7 @@ export async function admitRetiredClipMediaCleanup(
         clipId: clip.id,
         previewStorageKey: clip.previewStorageKey,
         renderStorageKeys: clip.renders.map((render) => render.storageKey),
-        dubStorageKeys: clip.dubs.flatMap((dub) => [
-          dub.audioStorageKey,
-          dub.renderStorageKey,
-        ]),
+        dubStorageKeys: clip.dubs.map((dub) => dub.audioStorageKey),
       })),
     ),
   );

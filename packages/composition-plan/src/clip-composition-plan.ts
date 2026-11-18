@@ -206,11 +206,28 @@ export interface ScreenLayoutEvidence {
     | { readonly state: "unavailable" };
 }
 
+/** Words on the edited timeline (before inserted scene blocks) that replace
+ * the transcript as the caption and ducking source, one array per sentence.
+ * A dub supplies its target-language words; cues never straddle a sentence. */
+export interface CaptionOverride {
+  readonly language: string;
+  readonly segments: readonly (readonly {
+    readonly text: string;
+    readonly spaceBefore?: boolean;
+    readonly startSec: number;
+    readonly endSec: number;
+  }[])[];
+}
+
 export interface ClipCompositionPlanInput {
   readonly document: EditorDocument;
   /** Effective caption language: the transcript's language, else the project's
    * requested one. Carried onto every caption layer. */
   readonly captionLanguage?: string | null;
+  /** Target-language caption words in edited time. When present they replace
+   * the transcript for captions (censor masks do not apply) and music ducking,
+   * and their language replaces `captionLanguage`. */
+  readonly captionOverride?: CaptionOverride;
   readonly source: CompositionSourceFacts;
   readonly evidence: {
     readonly framingDegraded?: {
@@ -795,14 +812,19 @@ function buildAudioSchedule(
     endSec: input.document.clipEndSec,
   }).map;
   const insertionAnchors = insertedBaseAnchors(input.document.sceneBlocks);
+  const speechIntervals = input.captionOverride
+    ? input.captionOverride.segments.flatMap((segment) =>
+        segment.map((word) => ({ startSec: word.startSec, endSec: word.endSec })),
+      )
+    : extractSpeechWordIntervals(
+        input.document.transcriptSlice,
+        input.document.clipStartSec,
+        editedTimeMap,
+      );
   const duckingWindows = musicSettings.ducking
     ? capDuckingWindows(
         computeSpeechWindows(
-          extractSpeechWordIntervals(
-            input.document.transcriptSlice,
-            input.document.clipStartSec,
-            editedTimeMap,
-          ).flatMap((range) =>
+          speechIntervals.flatMap((range) =>
             sourceRangeSlicesForInsertions(range, insertionAnchors)
               .map((slice) => slice.outputRange),
           ),
@@ -2374,6 +2396,7 @@ export function deriveCaptionCues(
   options: {
     readonly ignoreVisibility?: boolean;
     readonly language?: string | null;
+    readonly captionOverride?: CaptionOverride;
   } = {},
 ): CaptionCue[] {
   const editedTimeMap = buildClipCutPlan(document.deletedRanges, {
@@ -2391,6 +2414,7 @@ export function deriveCaptionCues(
       target: CAPTION_CUE_TARGET,
       editedTimeMap,
       language: options.language ?? null,
+      captionOverride: options.captionOverride,
     }),
     document.sceneBlocks,
     totalDurationSec,
@@ -2442,8 +2466,10 @@ function captionLayersForTarget(input: {
   target: CompositionTarget;
   editedTimeMap: EditedTimeMap;
   language: string | null;
+  captionOverride?: CaptionOverride | undefined;
 }): CompositionCaptionVisualLayer[] {
-  const { document, target, editedTimeMap, language } = input;
+  const { document, target, editedTimeMap, captionOverride } = input;
+  const language = captionOverride ? captionOverride.language : input.language;
   const preset = document.captionPreset;
   if (preset.visible === false) return [];
   const destination = { x: 0, y: 0, width: target.width, height: target.height };
@@ -2455,6 +2481,55 @@ function captionLayersForTarget(input: {
   };
   const punctuation = preset.punctuation !== false;
   const layers: CompositionCaptionVisualLayer[] = [];
+
+  if (captionOverride) {
+    for (const [segmentIndex, segment] of captionOverride.segments.entries()) {
+      const visibleWords = segment.flatMap((word) => {
+        const formatted = applyCaptionTextTransform(
+          formatCaptionWord(word.text, { punctuation }),
+          preset.textTransform,
+          language,
+        );
+        return formatted ? [{ word, formatted }] : [];
+      });
+      const groups = groupCaptionTokens(
+        visibleWords.map((entry) => entry.formatted),
+        preset.wordsPerCue,
+      );
+      for (const [groupIndex, range] of groups.entries()) {
+        const group = visibleWords.slice(range.start, range.end);
+        const startSec = group[0]!.word.startSec;
+        const endSec = Math.max(
+          startSec + 0.1,
+          group[group.length - 1]!.word.endSec,
+        );
+        layers.push({
+          id: `layer:caption:dub:${segmentIndex}:${groupIndex}:${target.id}`,
+          kind: "caption",
+          activeRange: { startSec, endSec },
+          anchor,
+          destination,
+          rotationDeg: 0,
+          opacity: 1,
+          zIndex: 40,
+          cueIndex: layers.length,
+          words: group.map((entry, index) => ({
+            text: entry.formatted,
+            ...(entry.word.spaceBefore === undefined ? {} : { spaceBefore: entry.word.spaceBefore }),
+            emoji: preset.emojis ? emojiForWord(entry.word.text) : null,
+            startSec: entry.word.startSec,
+            endSec:
+              index + 1 < group.length
+                ? Math.max(entry.word.startSec + 0.05, group[index + 1]!.word.startSec)
+                : Math.max(entry.word.startSec + 0.1, entry.word.endSec),
+          })),
+          preset,
+          language,
+        });
+      }
+    }
+    return layers;
+  }
 
   for (const utterance of document.transcriptSlice) {
     const visibleWords = utterance.words.flatMap((word, wordIndex) => {
@@ -2564,8 +2639,9 @@ function visualLayersForTarget(input: {
   editedTimeMap: EditedTimeMap;
   logo: CompositionLogoAvailability | undefined;
   captionLanguage: string | null;
+  captionOverride?: CaptionOverride | undefined;
 }): CompositionVisualLayer[] {
-  const { document, target, editedTimeMap, logo, captionLanguage } = input;
+  const { document, target, editedTimeMap, logo, captionLanguage, captionOverride } = input;
   const duration = editedTimeMap.editedDurationSec;
   const destination = { x: 0, y: 0, width: target.width, height: target.height };
   const visualLayers: CompositionVisualLayer[] = [];
@@ -2596,6 +2672,7 @@ function visualLayersForTarget(input: {
     target,
     editedTimeMap,
     language: captionLanguage,
+    captionOverride,
   });
   const useSpeakerSeam = document.studioEdits.framing.mode === "auto" &&
     document.captionPreset.position === "bottom" &&
@@ -2863,6 +2940,7 @@ export function planClipComposition(
       ...(input.document.sceneBlocks.length > 0
         ? { sceneBlocks: input.document.sceneBlocks }
         : {}),
+      ...(input.captionOverride ? { captionOverride: input.captionOverride } : {}),
       assets: input.assets,
       evidence:
         {
@@ -3681,6 +3759,7 @@ export function planClipComposition(
           editedTimeMap,
           logo: input.assets.logo,
           captionLanguage: input.captionLanguage ?? null,
+          captionOverride: input.captionOverride,
         }),
         input.document.sceneBlocks,
         totalEditedDurationSec,

@@ -152,12 +152,14 @@ async function queueHandedOffIntakeFinished(tx: Tx, generationRunId: string, sta
 export async function queueExportFinished(tx: Tx, exportId: string): Promise<void> {
   const row = await tx.clipExport.findUnique({
     where: { id: exportId },
-    select: { projectId: true, workspaceId: true, status: true, progress: true, errorCode: true, retryCount: true,
+    select: { projectId: true, workspaceId: true, status: true, progress: true, errorCode: true, retryCount: true, dubId: true,
       clip: { select: { workflowRunId: true } },
       variants: { orderBy: { createdAt: "asc" }, select: { id: true, status: true, storageKey: true, errorCode: true,
         render: { select: { failureDisposition: true, workflowRun: { select: { status: true } } } } } } },
   });
   if (!row?.workspaceId || !["ready", "partial_ready", "failed"].includes(row.status)) return;
+  // A dub's video is reported by its dub; it is not an export operation.
+  if (row.dubId) return;
   const mayRetry = row.variants.some((variant) => variant.status === "failed" && variant.render?.failureDisposition === "retryable"
     && variant.render.workflowRun && ["queued", "running", "waiting"].includes(variant.render.workflowRun.status));
   if (mayRetry) return;

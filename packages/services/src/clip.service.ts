@@ -1762,9 +1762,7 @@ export class ClipService {
               select: {
                 previewStorageKey: true,
                 renders: { select: { storageKey: true } },
-                dubs: {
-                  select: { audioStorageKey: true, renderStorageKey: true },
-                },
+                dubs: { select: { audioStorageKey: true } },
                 socialPosts: {
                   where: { status: { in: ["scheduled", "publishing"] } },
                   select: { id: true },
@@ -1781,10 +1779,7 @@ export class ClipService {
                 renderStorageKeys: clip.renders.map(
                   (render) => render.storageKey,
                 ),
-                dubStorageKeys: clip.dubs.flatMap((dub) => [
-                  dub.audioStorageKey,
-                  dub.renderStorageKey,
-                ]),
+                dubStorageKeys: clip.dubs.map((dub) => dub.audioStorageKey),
               },
             };
           },

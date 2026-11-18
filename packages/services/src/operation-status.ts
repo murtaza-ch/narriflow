@@ -380,7 +380,7 @@ export function createOperationStatusReader(prisma: PrismaClient): OperationStat
   }
 
   async function exportOperation(workspaceId: string, id: string): Promise<OperationStatus> {
-    const row = await prisma.clipExport.findFirst({ where: { id, workspaceId, project: { workspaceId, ...accessibleProjectWhere() } },
+    const row = await prisma.clipExport.findFirst({ where: { id, dubId: null, workspaceId, project: { workspaceId, ...accessibleProjectWhere() } },
       select: { projectId: true, clipId: true, status: true, progress: true, errorCode: true,
         variants: { orderBy: { createdAt: "asc" }, select: { id: true, status: true, storageKey: true, errorCode: true } } } });
     if (!row) throw new Unavailable();

@@ -1,5 +1,7 @@
 import { open } from "node:fs/promises";
 import { openAiResponseText } from "@narriflow/services/openai-responses";
+import { parseDubTranslation } from "@narriflow/services/dubbing-policy";
+import type { FrozenDubbingRequest } from "@narriflow/validators/dubbing-execution";
 import { guardedFetch, type GuardedFetchOptions } from "./outbound-transport";
 
 export type DubProviderRequest = (url: string, options: GuardedFetchOptions) => Promise<Response>;
@@ -29,7 +31,7 @@ async function post(stage: "translation" | "speech", body: object, options: Opti
 }
 
 /** One fixed-origin POST, bounded response, and no automatic retry. */
-export async function submitDubTranslation(body: object, options: Options): Promise<DubProviderFailure | { outcome: "completed"; text: string; providerRequestId: string | null }> {
+export async function submitDubTranslation(body: object, expected: FrozenDubbingRequest["segments"], options: Options): Promise<DubProviderFailure | { outcome: "completed"; segments: string[]; providerRequestId: string | null }> {
   const response = await post("translation", body, options);if (!(response instanceof Response)) return response;
   try {
     const chunks: Uint8Array[] = [];let size = 0;
@@ -38,10 +40,10 @@ export async function submitDubTranslation(body: object, options: Options): Prom
     try { while (true) { const part = await reader.read();if (part.done) break;size += part.value.byteLength;if (size > 1024 ** 2) throw Error();chunks.push(part.value); } }
     finally { await reader.cancel().catch(() => {}); }
     const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-    const text = (openAiResponseText(payload) ?? "").trim();
-    if (!text || text.length > 100_000 || text.includes("\0")) return unknown("translation", "payload");
+    const segments = parseDubTranslation(JSON.parse(openAiResponseText(payload) ?? ""), expected);
+    if (!segments) return unknown("translation", "payload");
     const providerRequestId = typeof payload?.id === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(payload.id) ? payload.id : null;
-    return { outcome: "completed", text, providerRequestId };
+    return { outcome: "completed", segments, providerRequestId };
   } catch (error) { options.signal.throwIfAborted();return unknown("translation", "body", error); }
 }
 

@@ -8,8 +8,8 @@ function invocation(value: unknown): Invocation {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "inputPath,rpcUrl,sourceNames,stages,work") throw Error("dubbing_command_invalid");
   const input = value as Record<string, unknown>;
   for (const name of ["inputPath", "work"]) if (typeof input[name] !== "string" || input[name].length > 4096 || !isAbsolute(input[name]) || input[name].includes("\0")) throw Error("dubbing_command_invalid");
-  if (typeof input.rpcUrl !== "string" || input.rpcUrl.length > 512 || !Array.isArray(input.sourceNames) || !input.sourceNames.length || input.sourceNames.length > 4 ||
-    input.sourceNames.some(name => !["base_video", "translation_result", "dub_audio", "dub_video"].includes(name)) || !Array.isArray(input.stages) || !input.stages.length || input.stages.length > 6 ||
+  if (typeof input.rpcUrl !== "string" || input.rpcUrl.length > 512 || !Array.isArray(input.sourceNames) || input.sourceNames.length > 3 ||
+    input.sourceNames.some(name => !["translation_result", "dub_timing", "dub_audio"].includes(name)) || !Array.isArray(input.stages) || !input.stages.length || input.stages.length > 6 ||
     input.stages.some(stage => typeof stage !== "string" || !Object.hasOwn(DUBBING_STAGE_OUTPUTS, stage))) throw Error("dubbing_command_invalid");
   return value as Invocation;
 }

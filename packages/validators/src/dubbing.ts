@@ -24,6 +24,14 @@ export const dubLanguageCodeSchema = z
   .regex(/^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i)
   .transform((value) => value.toLowerCase());
 
+/** The dub's video is its dub-bound export: `none` until one exists. */
+export const dubVideoStatusSchema = z.enum(["none", "rendering", "ready", "failed"]);
+
+export const dubVideoSchema = z.object({
+  status: dubVideoStatusSchema,
+  errorCode: z.string().nullable(),
+});
+
 export const requestClipDubSchema = z.object({
   clipId: z.string().uuid(),
   aspectRatio: clipAspectRatioSchema.default("9:16"),
@@ -45,6 +53,7 @@ export const clipDubSnapshotSchema = z.object({
   translatedText: z.string().nullable(),
   hasAudioAsset: z.boolean(),
   hasVideoAsset: z.boolean(),
+  video: dubVideoSchema,
   audioSizeBytes: z.number().nullable(),
   renderSizeBytes: z.number().nullable(),
   durationSec: z.number().nullable(),
@@ -58,6 +67,7 @@ export const dubDownloadQuerySchema = z.object({
 });
 
 export type DubStatus = z.infer<typeof dubStatusSchema>;
+export type DubVideo = z.infer<typeof dubVideoSchema>;
 export type RequestClipDubInput = z.infer<typeof requestClipDubSchema>;
 export type ClipDubSnapshot = z.infer<typeof clipDubSnapshotSchema>;
 export type DubDownloadQuery = z.infer<typeof dubDownloadQuerySchema>;

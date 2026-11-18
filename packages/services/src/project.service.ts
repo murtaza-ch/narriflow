@@ -498,10 +498,10 @@ export class ProjectService {
 		await deliverProgressAfterCommit(prisma, [revocation]);
 	}
 
-	/** Whether any clip of the project has a completed render. */
+	/** Whether any clip of the project has a completed render. A dub's video is not one. */
 	private async hasRenderedVideo(projectId: string): Promise<boolean> {
 		const render = await this.requirePrisma().clipRender.findFirst({
-			where: { status: "completed", clip: { projectId } },
+			where: { status: "completed", clip: { projectId }, OR: [{ exportVariantId: null }, { exportVariant: { export: { dubId: null } } }] },
 			select: { id: true },
 		});
 		return render !== null;

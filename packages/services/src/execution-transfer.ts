@@ -49,7 +49,7 @@ const contentTypes: Readonly<Record<string, readonly string[]>> = {
   source_audio: ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg", "audio/aac"],
   source_video: ["application/octet-stream", "audio/ogg", "audio/flac", ...uploadMimeTypes],
   render_variant: ["video/mp4"], render_outcome: ["application/json"], clip_preview: ["video/mp4"], preview_peaks: ["application/json"], layout_evidence: ["application/json"], probe: ["application/json", "audio/wav"],
-  thumbnail: ["image/png", "image/jpeg", "image/webp"], export_bundle: ["application/zip"], dub_mix: ["video/mp4", "audio/wav", "audio/mpeg", "audio/mp4"], selection_window: ["application/json"],
+  thumbnail: ["image/png", "image/jpeg", "image/webp"], export_bundle: ["application/zip"], dub_mix: ["audio/wav", "audio/mpeg", "audio/mp4"], selection_window: ["application/json"],
   validated_font: ["font/ttf", "font/otf", "font/woff2", "application/font-sfnt", "application/x-font-ttf", "application/x-font-opentype", "application/octet-stream"],
   validated_asset: ["image/png", "image/jpeg", "image/webp", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska"],
   outbound_receipt: ["application/json"], publication_checkpoint: ["application/octet-stream"],

@@ -265,12 +265,12 @@ export interface CompletedDubArtifactInput {
   transcriptText: string;
   translatedText: string;
   audioStorageKey: string;
-  renderStorageKey: string;
   audioSizeBytes: bigint;
-  renderSizeBytes: bigint;
   durationSec: number | null;
   model: string;
   errorCode: null;
+  /** Why the dub's video was not started, when it was not. */
+  videoErrorCode: string | null;
   completedAt: Date;
 }
 

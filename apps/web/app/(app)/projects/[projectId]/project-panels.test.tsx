@@ -70,10 +70,19 @@ describe("Dubbing panel", () => {
 		expect(html).toContain("Voice-over dubbing needs the Pro plan.");
 	});
 
-	test("with nothing rendered it points to the clips to render", () => {
+	test("with no clips it points to generating clips", () => {
 		const html = dubbing({ clips: [] });
-		expect(html).toContain("Render a clip first.");
+		expect(html).toContain("Generate clips first");
 		expect(html).toContain(`href="/projects/${projectId}"`);
+		expect(html).not.toContain("Render a clip");
+	});
+
+	test("a clip without a render is still selectable", () => {
+		const unrendered = { ...rendered, renderVariants: [] } as unknown as ClipSnapshot;
+		const html = dubbing({ clips: [unrendered] });
+		expect(html).toContain("Clip 01");
+		expect(html).not.toContain("Generate clips first");
+		expect(html).not.toContain("No clips yet");
 	});
 
 	test("the summary names the clip by its title and the allowance shows as a meter", () => {
@@ -87,24 +96,73 @@ describe("Dubbing panel", () => {
 		expect(html).toContain('role="meter"');
 	});
 
-	test("a finished dub keeps its video and audio downloads", () => {
-		const dub = {
-			id: "33333333-3333-4333-8333-333333333333",
-			clipId: rendered.id,
-			aspectRatio: "9:16",
-			targetLanguageCode: "es",
-			voice: "marin",
-			status: "completed",
-			durationSec: 42,
-			errorCode: null,
-		} as unknown as Parameters<typeof DubbingPanel>[0]["dubs"][number];
-		const html = dubbing({ dubs: [dub] });
+	const dubBase = {
+		id: "33333333-3333-4333-8333-333333333333",
+		clipId: rendered.id,
+		aspectRatio: "9:16",
+		targetLanguageCode: "es",
+		voice: "marin",
+		status: "completed",
+		durationSec: 42,
+		errorCode: null,
+		video: { status: "ready", errorCode: null },
+	};
+	const dubWith = (overrides: Record<string, unknown>) =>
+		({ ...dubBase, ...overrides }) as unknown as Parameters<typeof DubbingPanel>[0]["dubs"][number];
+
+	test("a dub with a ready video offers the audio and video downloads", () => {
+		const html = dubbing({ dubs: [dubWith({})] });
 		expect(html).toContain("Spanish");
 		expect(html).toContain("Marin");
 		expect(html).toContain("0:42");
 		expect(html).toContain(">Video<");
 		expect(html).toContain(">Audio<");
+		expect(html).not.toContain("Render again");
 		expect(html).not.toContain("No dubs yet");
+	});
+
+	test("audio is available while the video is still rendering", () => {
+		const html = dubbing({ dubs: [dubWith({ video: { status: "rendering", errorCode: null } })] });
+		expect(html).toContain(">Audio<");
+		expect(html).not.toContain(">Video<");
+		expect(html).toContain("Rendering video");
+		expect(html).not.toContain("Render again");
+	});
+
+	test("a failed video explains why and offers Render again beside the audio", () => {
+		const html = dubbing({ dubs: [dubWith({ video: { status: "failed", errorCode: "ffmpeg_render_failed" } })] });
+		expect(html).toContain(">Audio<");
+		expect(html).not.toContain(">Video<");
+		expect(html).toContain("The video didn&#x27;t render.");
+		expect(html).toContain("A clip failed to render");
+		expect(html).toContain("Render again");
+	});
+
+	test("a video that never started with an error code reads like a failed one", () => {
+		const html = dubbing({ dubs: [dubWith({ video: { status: "none", errorCode: "dub_video_not_started" } })] });
+		expect(html).toContain("Render again");
+		expect(html).toContain("couldn&#x27;t start");
+	});
+
+	test("a video not started and not refused offers Render video", () => {
+		const html = dubbing({ dubs: [dubWith({ video: { status: "none", errorCode: null } })] });
+		expect(html).toContain("Render video");
+		expect(html).not.toContain("Render again");
+	});
+
+	test("a member who can't edit gets no render action on a failed video", () => {
+		const html = dubbing({ canEdit: false, dubs: [dubWith({ video: { status: "failed", errorCode: "ffmpeg_render_failed" } })] });
+		expect(html).toContain(">Audio<");
+		expect(html).not.toContain("Render again");
+	});
+
+	test("a failed dub shows the specific reason and offers Dub again", () => {
+		const html = dubbing({
+			dubs: [dubWith({ status: "failed", errorCode: "dub_narration_unfit", durationSec: null, video: { status: "none", errorCode: null } })],
+		});
+		expect(html).toContain("too long to fit this clip");
+		expect(html).toContain("Dub again");
+		expect(html).not.toContain(">Audio<");
 	});
 
 	test("with no dubs it says what a dub comes with", () => {

@@ -255,6 +255,9 @@ export function bindCompositionPlanAudioInputs(
 			sourceRef: string;
 			path: string;
 		}[];
+		/** A dub's narration (edited timeline, before inserted scenes). It
+		 *  replaces the source's dialogue wherever one is rendered. */
+		dub?: { path: string } | null;
 	},
 ) {
 	const music = request.music
@@ -274,7 +277,18 @@ export function bindCompositionPlanAudioInputs(
 		if (!input) throw new Error("clip_composition_sound_effect_input_missing");
 		return { ...planned, path: input.path };
 	});
-	return { ...request, music, soundEffects };
+	const bound: Omit<typeof request, "music" | "soundEffects"> & {
+		music: typeof music;
+		soundEffects: typeof soundEffects;
+		dub?: { path: string };
+	} = { ...request, music, soundEffects };
+	// A dub is always available dialogue, even over a source without audio.
+	// Without one the request is exactly as before.
+	if (resolved.dub) {
+		bound.source = { ...request.source, available: true };
+		bound.dub = { path: resolved.dub.path };
+	}
+	return bound;
 }
 
 export type BoundCompositionAudioRenderRequest = ReturnType<
@@ -290,6 +304,8 @@ export function compileCompositionPlanSceneAudio(input: {
 		inputIndex: number;
 		hasAudio: boolean;
 	}>;
+	/** The dialogue is a dub: the source's gain and mute do not apply to it. */
+	unityGain?: boolean;
 }) {
 	const target = input.plan.targets.find(
 		(candidate) => candidate.id === input.targetId,
@@ -316,10 +332,12 @@ export function compileCompositionPlanSceneAudio(input: {
 	const outputs: string[] = [];
 	// Source controls belong to the source scenes. Inserted videos carry their
 	// own gain/mute settings and must not inherit the source track's controls.
-	const sourceGain = buildSourceGainFilter({
-		source: input.plan.audioSchedule.source,
-		censors: [],
-	});
+	const sourceGain = input.unityGain
+		? null
+		: buildSourceGainFilter({
+				source: input.plan.audioSchedule.source,
+				censors: [],
+			});
 	target.scenes.forEach((scene, index) => {
 		const duration = scene.endSec - scene.startSec;
 		const output = `[composition_scene_audio_${index}]`;
@@ -2852,6 +2870,58 @@ function assertBoundAudioMatchesPlan(
 	}
 }
 
+/** The label every builder reads a dub's dialogue from. */
+const DUB_AUDIO_LABEL = "[composition_dub_audio]";
+/** Format a dub's dialogue leaves its filter in, whatever its file holds: the
+ *  delivery format of every other dialogue-and-music mix, so music mixed with
+ *  a 24 kHz mono narration is not narrowed to it. */
+export const DUB_OUTPUT_AUDIO = { sampleRate: 48_000, channels: 2 } as const;
+
+/** A dub's narration is on the edited timeline before inserted scenes, so it is
+ *  cut to that length (MP3 padding past it never reaches the output) and padded
+ *  if the encoder left it short. The result stays the one label the source's
+ *  cut-and-concat audio would otherwise provide. */
+function dubDialogueFilter(params: {
+	plan: ClipCompositionPlan;
+	targetId: string;
+	inputIndex: number;
+}): string {
+	const target = params.plan.targets.find(
+		(candidate) => candidate.id === params.targetId,
+	);
+	if (!target) throw new Error("clip_composition_target_missing");
+	const inserted = target.scenes.some((scene) =>
+		scene.layers.some((layer) => layer.kind === "inserted-scene"),
+	);
+	const durationSec = inserted
+		? target.scenes.reduce(
+				(maximum, scene) => Math.max(maximum, scene.sourceRange?.endSec ?? 0),
+				0,
+			)
+		: params.plan.editedDurationSec;
+	if (!(durationSec > 0)) throw new Error("invalid_clip_composition_dub_audio");
+	return `[${params.inputIndex}:a]aresample=${DUB_OUTPUT_AUDIO.sampleRate},aformat=channel_layouts=stereo,apad,atrim=duration=${durationSec.toFixed(3)},asetpts=PTS-STARTPTS${DUB_AUDIO_LABEL}`;
+}
+
+/** A dub's dialogue is not the source's: its gain and mute never apply. */
+function dubDialogueAudio(
+	audio: BoundCompositionAudioRenderRequest,
+): BoundCompositionAudioRenderRequest {
+	if (audio.censors.length > 0) {
+		// Admission refuses a dub of a clip with censor edits; the translated
+		// words have no source words to mask or beep.
+		throw new CompositionCommandFailure(
+			"dub_censor_unsupported",
+			"A dub cannot carry censor edits",
+			"permanent",
+		);
+	}
+	return {
+		...audio,
+		source: { ...audio.source, available: true, gain: 1, muted: false },
+	};
+}
+
 function buildSingleVideoArgs(params: {
 	/** Corrective pass: see `mixPeakLimiterFilter`. */
 	mixPeakCeiling?: number;
@@ -2895,13 +2965,18 @@ function buildSingleVideoArgs(params: {
 	}
 	const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
 	const clipDurationSec = params.composition.plan.editedDurationSec;
+	// A dub replaces the source's dialogue: no clock alignment, cut-and-concat
+	// audio or original-audio output exists beside it.
+	const dub = params.audio.dub ?? null;
+	const dubAudio = dub ? dubDialogueAudio(params.audio) : null;
+	const hasDialogue = Boolean(dub) || params.probe.hasAudio;
 
-	const alignedAudio = alignSourceAudioClock(params);
+	const alignedAudio = dub ? null : alignSourceAudioClock(params);
 	const cutConcat = isCut
 		? buildCutConcatFilter({
 				cutPlan: params.cutPlan!,
 				clipStartSec: params.startSec,
-				includeAudio: params.probe.hasAudio,
+				includeAudio: !dub && params.probe.hasAudio,
 				...(alignedAudio ? { audioInputRef: alignedAudio.label } : {}),
 			})
 		: null;
@@ -2912,11 +2987,13 @@ function buildSingleVideoArgs(params: {
 		isCut,
 	);
 	const videoInputLabel = sourceVideo.label;
-	const audioInputLabel = cutConcat
-		? cutConcat.audioLabel
-		: params.probe.hasAudio
-			? (alignedAudio?.label ?? "[0:a:0]")
-			: null;
+	const audioInputLabel = dub
+		? DUB_AUDIO_LABEL
+		: cutConcat
+			? cutConcat.audioLabel
+			: params.probe.hasAudio
+				? (alignedAudio?.label ?? "[0:a:0]")
+				: null;
 
 	// Input index bookkeeping: source is always 0; background image (fit mode
 	// only, when a local downloaded path is available), logo, music, then each
@@ -2960,8 +3037,18 @@ function buildSingleVideoArgs(params: {
 	const logoInputIndex = plannedLogo ? nextInputIndex++ : null;
 	const musicInputIndex = params.audio.music ? nextInputIndex++ : null;
 	const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
+	const dubInputIndex = dub ? nextInputIndex++ : null;
 
 	const filterParts: string[] = [
+		...(dubInputIndex === null
+			? []
+			: [
+					dubDialogueFilter({
+						plan: params.composition.plan,
+						targetId: params.composition.targetId,
+						inputIndex: dubInputIndex,
+					}),
+				]),
 		...(alignedAudio?.filterParts ?? []),
 		...(cutConcat ? cutConcat.filterParts : []),
 		...sourceVideo.filterParts,
@@ -2990,6 +3077,7 @@ function buildSingleVideoArgs(params: {
 			inputIndex: sceneInputStartIndex! + index,
 			hasAudio: params.resolvedSceneAssets?.[sourceRef]?.hasAudio ?? false,
 		})),
+		unityGain: Boolean(dub),
 	});
 	filterParts.push(...sceneAudio.filterParts);
 	const sceneDialogueLabel = hasInsertedScenes ? sceneAudio.outputLabel : null;
@@ -3051,9 +3139,13 @@ function buildSingleVideoArgs(params: {
 		args.push("-i", sfx.path);
 	}
 
-	const audioForRender = sceneDialogueLabel
-		? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
-		: params.audio;
+	if (dub) args.push("-i", dub.path);
+
+	const audioForRender = dubAudio
+		? dubAudio
+		: sceneDialogueLabel
+			? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
+			: params.audio;
 	const hasMixedAudio =
 		Boolean(params.audio.music) ||
 		sfxInputIndexes.length > 0 ||
@@ -3066,7 +3158,11 @@ function buildSingleVideoArgs(params: {
 				clipDurationSec,
 				dialogueInputRef:
 					sceneDialogueLabel ??
-					(cutConcat ? cutConcat.audioLabel! : alignedAudio?.label),
+					(dub
+						? DUB_AUDIO_LABEL
+						: cutConcat
+							? cutConcat.audioLabel!
+							: alignedAudio?.label),
 				musicInputIndex,
 				sfxInputIndexes,
 			}),
@@ -3087,7 +3183,7 @@ function buildSingleVideoArgs(params: {
 
 	if (hasMixedAudio) {
 		args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
-	} else if (sceneDialogueLabel || params.probe.hasAudio) {
+	} else if (sceneDialogueLabel || hasDialogue) {
 		args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
 	} else {
 		args.push("-an");
@@ -3200,13 +3296,17 @@ function buildBrollVideoArgs(params: {
 	);
 	const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
 	const clipDurationSec = params.composition.plan.editedDurationSec;
+	// See `buildSingleVideoArgs`: a dub replaces the source's dialogue.
+	const dub = params.audio.dub ?? null;
+	const dubAudio = dub ? dubDialogueAudio(params.audio) : null;
+	const hasDialogue = Boolean(dub) || params.probe.hasAudio;
 
-	const alignedAudio = alignSourceAudioClock(params);
+	const alignedAudio = dub ? null : alignSourceAudioClock(params);
 	const cutConcat = isCut
 		? buildCutConcatFilter({
 				cutPlan: params.cutPlan!,
 				clipStartSec: params.startSec,
-				includeAudio: params.probe.hasAudio,
+				includeAudio: !dub && params.probe.hasAudio,
 				...(alignedAudio ? { audioInputRef: alignedAudio.label } : {}),
 			})
 		: null;
@@ -3217,11 +3317,13 @@ function buildBrollVideoArgs(params: {
 		isCut,
 	);
 	const videoInputLabel = sourceVideo.label;
-	const audioInputLabel = cutConcat
-		? cutConcat.audioLabel
-		: params.probe.hasAudio
-			? (alignedAudio?.label ?? "[0:a:0]")
-			: null;
+	const audioInputLabel = dub
+		? DUB_AUDIO_LABEL
+		: cutConcat
+			? cutConcat.audioLabel
+			: params.probe.hasAudio
+				? (alignedAudio?.label ?? "[0:a:0]")
+				: null;
 
 	const parts: string[] = [
 		...(alignedAudio?.filterParts ?? []),
@@ -3273,6 +3375,7 @@ function buildBrollVideoArgs(params: {
 			inputIndex: 1 + bgOffset + cutawayCount + index,
 			hasAudio: params.resolvedSceneAssets?.[sourceRef]?.hasAudio ?? false,
 		})),
+		unityGain: Boolean(dub),
 	});
 	parts.push(...sceneAudio.filterParts);
 	const sceneDialogueLabel = hasInsertedScenes ? sceneAudio.outputLabel : null;
@@ -3352,10 +3455,27 @@ function buildBrollVideoArgs(params: {
 	for (const sfx of params.audio.soundEffects) {
 		args.push("-i", sfx.path);
 	}
+	if (dub) {
+		args.push("-i", dub.path);
+		// The dub's filter reads the last input; it leads the graph like the
+		// source's own clock alignment does.
+		parts.unshift(
+			dubDialogueFilter({
+				plan: params.composition.plan,
+				targetId: params.composition.targetId,
+				inputIndex:
+					musicInputIndex +
+					(params.audio.music ? 1 : 0) +
+					params.audio.soundEffects.length,
+			}),
+		);
+	}
 
-	const audioForRender = sceneDialogueLabel
-		? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
-		: params.audio;
+	const audioForRender = dubAudio
+		? dubAudio
+		: sceneDialogueLabel
+			? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
+			: params.audio;
 	const hasMixedAudio =
 		Boolean(params.audio.music) ||
 		sfxInputIndexes.length > 0 ||
@@ -3368,7 +3488,11 @@ function buildBrollVideoArgs(params: {
 				clipDurationSec,
 				dialogueInputRef:
 					sceneDialogueLabel ??
-					(cutConcat ? cutConcat.audioLabel! : alignedAudio?.label),
+					(dub
+						? DUB_AUDIO_LABEL
+						: cutConcat
+							? cutConcat.audioLabel!
+							: alignedAudio?.label),
 				musicInputIndex: params.audio.music ? musicInputIndex : null,
 				sfxInputIndexes,
 			}),
@@ -3383,7 +3507,7 @@ function buildBrollVideoArgs(params: {
 
 	if (hasMixedAudio) {
 		args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
-	} else if (sceneDialogueLabel || params.probe.hasAudio) {
+	} else if (sceneDialogueLabel || hasDialogue) {
 		args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
 	} else {
 		args.push("-an");
@@ -3488,17 +3612,29 @@ function buildAudiogramArgs(params: {
 	const bgColor = audiogram.backgroundColor.replace("#", "0x");
 	const waveColor = hexToFfmpegRgb(audiogram.waveformColor);
 	const waveHeight = audiogram.waveformHeight;
+	// A dub is already on the edited timeline: the source's cut-and-concat audio
+	// does not exist beside it, and the waveform reads the dub.
+	const dub = params.audio.dub ?? null;
+	const dubAudio = dub ? dubDialogueAudio(params.audio) : null;
 	const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
-	const cutConcat = isCut
-		? buildCutConcatFilter({
-				cutPlan: params.cutPlan!,
-				clipStartSec: params.startSec,
-				includeVideo: false,
-				includeAudio: true,
-				audioInputRef: "[0:a]",
-			})
-		: null;
-	const audioInputLabel = cutConcat ? cutConcat.audioLabel! : "[0:a]";
+	const cutConcat =
+		isCut && !dub
+			? buildCutConcatFilter({
+					cutPlan: params.cutPlan!,
+					clipStartSec: params.startSec,
+					includeVideo: false,
+					includeAudio: true,
+					audioInputRef: "[0:a]",
+				})
+			: null;
+	// Both a cut-and-concat and a dub label are filter outputs, which a second
+	// reader needs an explicit split to share (a bare `[0:a]` input is not).
+	const audioIsFilterOutput = Boolean(cutConcat) || Boolean(dub);
+	const audioInputLabel = dub
+		? DUB_AUDIO_LABEL
+		: cutConcat
+			? cutConcat.audioLabel!
+			: "[0:a]";
 
 	// Music and/or SFX (vizard-parity.md "Music/SFX library" — the audiogram
 	// path follows whatever it already does for music, so SFX shares the same
@@ -3508,9 +3644,11 @@ function buildAudiogramArgs(params: {
 		Boolean(params.audio.music) ||
 		params.audio.soundEffects.length > 0 ||
 		params.audio.censors.some((censor) => censor.treatment === "beep");
-	const audioForRender = hasInsertedScenes
-		? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
-		: params.audio;
+	const audioForRender = dubAudio
+		? dubAudio
+		: hasInsertedScenes
+			? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
+			: params.audio;
 
 	const plannedLogo = plannedTarget.visualLayers.find(
 		(layer) => layer.kind === "logo",
@@ -3525,7 +3663,22 @@ function buildAudiogramArgs(params: {
 	const sfxInputIndexes = params.audio.soundEffects.map(
 		(_, index) => musicInputIndex + (params.audio.music ? 1 : 0) + index,
 	);
-	const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+	const dubInputIndex =
+		musicInputIndex +
+		(params.audio.music ? 1 : 0) +
+		params.audio.soundEffects.length;
+	const chain: string[] = [
+		...(dub
+			? [
+					dubDialogueFilter({
+						plan: params.composition.plan,
+						targetId: params.composition.targetId,
+						inputIndex: dubInputIndex,
+					}),
+				]
+			: []),
+		...(cutConcat ? cutConcat.filterParts : []),
+	];
 	let dialogueAudioLabel: string;
 	if (hasInsertedScenes) {
 		if (sourceVisualDurationSec <= 0)
@@ -3556,6 +3709,7 @@ function buildAudiogramArgs(params: {
 				inputIndex: sceneInputStartIndex! + index,
 				hasAudio: params.resolvedSceneAssets?.[sourceRef]?.hasAudio ?? false,
 			})),
+			unityGain: Boolean(dub),
 		});
 		chain.push(...sceneAudio.filterParts);
 		if (!sceneAudio.outputLabel)
@@ -3567,12 +3721,12 @@ function buildAudiogramArgs(params: {
 			);
 		}
 	} else {
-		dialogueAudioLabel = cutConcat ? "[dlgsrc]" : audioInputLabel;
-		if (hasMusicOrSfx && cutConcat) {
+		dialogueAudioLabel = audioIsFilterOutput ? "[dlgsrc]" : audioInputLabel;
+		if (hasMusicOrSfx && audioIsFilterOutput) {
 			chain.push(`${audioInputLabel}asplit=2[wavesrc][dlgsrc]`);
 		}
 		const waveSourceLabel =
-			hasMusicOrSfx && cutConcat ? "[wavesrc]" : audioInputLabel;
+			hasMusicOrSfx && audioIsFilterOutput ? "[wavesrc]" : audioInputLabel;
 		chain.push(
 			...(hasMusicOrSfx
 				? [
@@ -3584,7 +3738,7 @@ function buildAudiogramArgs(params: {
 						`color=c=${bgColor}:s=${W}x${H}:d=${outputDurationSec.toFixed(3)}[bg]`,
 						`${audioInputLabel}asplit=2[wavesrc][fadesrc]`,
 						`[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-						`[fadesrc]${buildDialogueAudioFilter(params.audio)}[outa]`,
+						`[fadesrc]${buildDialogueAudioFilter(dubAudio ?? params.audio)}[outa]`,
 						`[bg][wave]overlay=0:(H-h)/2[comp]`,
 					]),
 		);
@@ -3638,6 +3792,7 @@ function buildAudiogramArgs(params: {
 	for (const sfx of params.audio.soundEffects) {
 		args.push("-i", sfx.path);
 	}
+	if (dub) args.push("-i", dub.path);
 
 	if (hasMusicOrSfx) {
 		chain.push(

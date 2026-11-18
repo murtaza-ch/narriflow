@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -19,8 +20,9 @@ from .source_runtime import verify_source_runtime
 from .source_server import ScopedSourceServer, CHUNK_BYTES
 
 STAGES={'translation_intent':('probe','application/json',65536),'translation_result':('probe','application/json',1024**2),
-        'speech_intent':('probe','application/json',65536),'audio':('dub_mix','audio/mpeg',64*1024**2),
-        'video':('dub_mix','video/mp4',10*1024**3),'final_result':('probe','application/json',65536)}
+        'speech_intent':('probe','application/json',65536),'timing':('probe','application/json',1024**2),
+        'audio':('dub_mix','audio/mpeg',64*1024**2),'final_result':('probe','application/json',65536)}
+SOURCE_CAPS={'translation_result':1024**2,'dub_timing':1024**2,'dub_audio':64*1024**2}
 
 
 def artifact_binding(request_hash,stage):
@@ -92,9 +94,8 @@ class DubbingControlServer:
             return {}
         path=self.path(value['path'],exists=operation!='download')
         if operation=='download':
-            source=self.sources._sources.get(value['sourceName'])
-            caps={'base_video':10*1024**3,'translation_result':1024**2,'dub_audio':64*1024**2,'dub_video':10*1024**3}
-            if source is None or type(value['maxBytes']) is not int or not source['byteLength']<=value['maxBytes']<=caps[source['name']]:raise NativeOperationFailure('native_source_invalid')
+            source=self.sources._sources.get(value['sourceName']) if self.sources is not None else None
+            if source is None or type(value['maxBytes']) is not int or not source['byteLength']<=value['maxBytes']<=SOURCE_CAPS[source['name']]:raise NativeOperationFailure('native_source_invalid')
             digest=hashlib.sha256();cursor=0
             with path.open('xb') as output:
                 while cursor<source['byteLength']:
@@ -102,7 +103,7 @@ class DubbingControlServer:
             if 'sha256' in source and source['sha256']!=digest.hexdigest():raise NativeOperationFailure('native_source_changed')
             path.chmod(0o400);return {}
         stage=value['stage'];assigned=self.outputs.get(stage)
-        if assigned is None or stage in self.completed or (operation=='publish')!=(stage in {'audio','video'}):raise NativeOperationFailure('native_assignment_invalid')
+        if assigned is None or stage in self.completed or (operation=='publish')!=(stage=='audio'):raise NativeOperationFailure('native_assignment_invalid')
         size,sha=_file_facts(path,self.session,assigned['maxBytes']);path.chmod(0o400)
         if operation=='checkpoint':
             evidence=_json(path.read_bytes(),STAGES[stage][2])
@@ -111,7 +112,7 @@ class DubbingControlServer:
         asyncio.run(self.artifacts.upload(assigned['artifactId'],path,content_type=assigned['contentType'],byte_length=size,sha256=sha,transport=self.transport))
         self.completed.add(stage)
         if stage=='final_result':
-            if evidence.get('outcome') not in {'completed','rejected','unknown'}:raise NativeOperationFailure('native_result_invalid')
+            if evidence.get('outcome') not in {'completed','rejected','unknown','unfit'}:raise NativeOperationFailure('native_result_invalid')
             self.outcome={'outcome':evidence['outcome']}
         return {'byteLength':size,'sha256':sha} if operation=='publish' else {}
 
@@ -123,21 +124,23 @@ async def run_dubbing(session,package,work:Path,*,api_key=None,transport=None,so
         raise NativeOperationFailure('dubbing_command_invalid')
     if await verify_runtime(session,bun_executable=bun_executable)!=command.get('toolchainFingerprint'):raise NativeOperationFailure('dubbing_runtime_invalid',True)
     sources=list(package.sources);names={source['name'] for source in sources}
-    if (len(names)!=len(sources) or not names<={'base_video','translation_result','dub_audio','dub_video'} or 'base_video' not in names
-            or any(source['name']!='base_video' and 'sha256' not in source for source in sources)):
+    if (len(names)!=len(sources) or not names<=set(SOURCE_CAPS) or ('dub_audio' in names and 'dub_timing' not in names)
+            or any('sha256' not in source for source in sources)):
         raise NativeOperationFailure('native_source_invalid')
-    base=next(source for source in sources if source['name']=='base_video')
-    if {key:base[key] for key in ('storageKey','etag','byteLength','sha256') if key in base}!=command.get('baseVideo'):raise NativeOperationFailure('native_source_invalid')
     raw=json.dumps(command,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()
     if len(raw)>16*1024**2:raise NativeOperationFailure('dubbing_command_invalid')
     input_path=directory/'dubbing-input.json';input_path.write_bytes(raw);input_path.chmod(0o400)
-    with ScopedSourceServer(session,sources,transport=source_transport) as source_server,DubbingControlServer(session,package,directory,source_server,transport=transport) as control:
+    # A first attempt has no sealed source; the scoped reader only exists to recover sealed results.
+    with (ScopedSourceServer(session,sources,transport=source_transport) if sources else nullcontext()) as source_server,DubbingControlServer(session,package,directory,source_server,transport=transport) as control:
         env=_environment()
         if any(stage in control.outputs for stage in ('translation_intent','speech_intent')) and api_key is None:raise NativeOperationFailure('dub_provider_configuration_invalid')
         if api_key is not None:
             if not isinstance(api_key,str) or not 0<len(api_key)<=8192 or any(char in api_key for char in '\r\n\0'):raise NativeOperationFailure('dub_provider_configuration_invalid')
             env['OPENAI_API_KEY']=api_key
-        def on_start(pid):session.on_process_start(pid);source_server.allow_reads();control.allow()
+        def on_start(pid):
+            session.on_process_start(pid)
+            if source_server is not None:source_server.allow_reads()
+            control.allow()
         body=json.dumps({'inputPath':str(input_path),'work':str(directory),'rpcUrl':control.url,'sourceNames':sorted(names),'stages':list(control.outputs)},separators=(',',':')).encode()
         try:
             result=await run_owned_process_async([bun_executable,str(cli_path or Path(__file__).resolve().parents[2]/'src/dubbing-cli.ts')],input_bytes=body,
@@ -158,4 +161,4 @@ async def run_dubbing(session,package,work:Path,*,api_key=None,transport=None,so
                         'ioCode':diagnostic.get('ioCode') if diagnostic.get('ioCode') in {'EEXIST','EBADF','ENOSPC','EACCES','EPERM','ERR_INVALID_ARG_TYPE','ERR_INVALID_ARG_VALUE'} else None}),file=sys.stderr)
             except (ValueError,AttributeError):pass
         if result.returncode or control.outcome is None or _json(result.stdout,65536)!=control.outcome:raise NativeOperationFailure('dubbing_result_unconfirmed',True)
-        return {**control.outcome,'sourceBytesTransferred':source_server.bytes_transferred}
+        return {**control.outcome,'sourceBytesTransferred':source_server.bytes_transferred if source_server is not None else 0}

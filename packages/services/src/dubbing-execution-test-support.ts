@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { frozenDubbingRequestSchema } from "@narriflow/validators/dubbing-execution";
 import { DubbingExecution, createDubbingExecution } from "./dubbing-execution";
-import { dubSpeechRequestBody, dubTranslationRequestBody, dubbingArtifactBindingHash } from "./dubbing-policy";
+import { dubSpeechIntentHash, dubTranslationRequestBody, dubbingArtifactBindingHash } from "./dubbing-policy";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { createExecutionStorage } from "./execution-storage";
 
@@ -16,7 +16,6 @@ export async function startDubbingTestExecution(database: PrismaClient, runId: s
   const workflow = new WorkflowRunLifecycle({ prisma: database });
   const reference = (await database.$transaction(tx => workflow.dispatchRunWithinTransaction(tx, runId))).reference;
   const domain = new DubbingExecution(database, { toolchainFingerprint: "a".repeat(64), register: async () => {},
-    head: async storageKey => ({ storageKey, etag: '"base"', byteLength: request.baseRender.byteLength, sha256: hash("abc") }),
     inputStorage: { read: async object => { const bytes = objects!.get(object.storageKey);if (!bytes) throw Error("Unknown fixture capsule");return bytes.slice(); },
       write: async (key, bytes) => { objects!.set(key, bytes.slice());return { etag: '"capsule"', byteLength: bytes.byteLength, sha256: hash(bytes) }; } },
   });
@@ -25,7 +24,7 @@ export async function startDubbingTestExecution(database: PrismaClient, runId: s
   const evidence = new Map<string, unknown>();
   const runtime = createDubbingExecution({ database, domain, deliverWakes: async () => {},
     storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "dub-test", accessKeyId: "fixture", secretAccessKey: "fixture" }),
-    artifacts: { head: async assignment => assignment.role === "dub_mix" ? { etag: assignment.contentType === "video/mp4" ? '"video"' : '"audio"', contentType: assignment.contentType, byteLength: assignment.contentType === "video/mp4" ? 8192n : 4096n }
+    artifacts: { head: async assignment => assignment.role === "dub_mix" ? { etag: '"audio"', contentType: assignment.contentType, byteLength: 4096n }
       : { etag: '"proof"', contentType: assignment.contentType, byteLength: BigInt(new TextEncoder().encode(JSON.stringify(evidence.get(assignment.id))).byteLength) }, readJson: async artifact => evidence.get(artifact.artifactId) },
   });
   const verified = () => ({ requestHash: hash(randomUUID()), metadata: { version: 1 as const, keyId: "dub-test", audience: "executor-control" as const, method: "POST" as const,
@@ -36,7 +35,7 @@ export async function startDubbingTestExecution(database: PrismaClient, runId: s
   const packageReply = await runtime.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: verified() });
   if (packageReply.disposition !== "work_package") throw Error("Missing Dub package");
   const outputs = packageReply.outputs;
-  async function commit(stage: "translation_intent" | "translation_result" | "speech_intent" | "final_result", fields: object) {
+  async function commit(stage: "translation_intent" | "translation_result" | "speech_intent" | "timing" | "final_result", fields: object) {
     const bindingHash = await dubbingArtifactBindingHash(dub.requestHash!, stage), output = outputs.find(output => output.bindingHash === bindingHash);
     if (!output) throw Error(`Missing Dub ${stage} assignment`);
     const value = { version: 1, kind: "dubbing_checkpoint", stage, dubId: dub.id, requestHash: dub.requestHash, ...fields }, raw = JSON.stringify(value);
@@ -47,20 +46,21 @@ export async function startDubbingTestExecution(database: PrismaClient, runId: s
     command: (action: string, fields: Record<string, unknown> = {}) => send({ action, fence, ...fields }),
     translationIntent: () => commit("translation_intent", { bodySha256: hash(JSON.stringify(dubTranslationRequestBody(request))) }),
     async complete() {
-      const current = await database.clipDub.findUniqueOrThrow({ where: { id: dub.id } }), text = current.translatedText ?? "El guion congelado";
+      const current = await database.clipDub.findUniqueOrThrow({ where: { id: dub.id } }), texts = request.segments.map(segment => `Traducido: ${segment.text}`);
       if (!current.translationResultArtifactId) {
         if (!current.translationIntentArtifactId) await commit("translation_intent", { bodySha256: hash(JSON.stringify(dubTranslationRequestBody(request))) });
-        await commit("translation_result", { text, providerRequestId: "resp_fixture" });
+        await commit("translation_result", { segments: texts, providerRequestId: "resp_fixture" });
       }
-      if (!current.speechIntentArtifactId) await commit("speech_intent", { bodySha256: hash(JSON.stringify(dubSpeechRequestBody(request, text))) });
-      for (const stage of ["audio", "video"] as const) {
-        if (stage === "audio" ? current.audioArtifactId : current.videoArtifactId) continue;
-        const bindingHash = await dubbingArtifactBindingHash(dub.requestHash!, stage), output = outputs.find(output => output.bindingHash === bindingHash);
-        if (!output) throw Error(`Missing Dub ${stage} output`);
+      if (!current.speechIntentArtifactId) await commit("speech_intent", { bodySha256: await dubSpeechIntentHash(request, texts) });
+      if (!current.timingArtifactId) await commit("timing", { segments: request.segments.map((segment, index) => ({ startSec: segment.startSec, endSec: segment.endSec, tempo: 1,
+        words: [{ text: texts[index], spaceBefore: false, startSec: segment.startSec, endSec: segment.endSec }] })) });
+      if (!current.audioArtifactId) {
+        const bindingHash = await dubbingArtifactBindingHash(dub.requestHash!, "audio"), output = outputs.find(output => output.bindingHash === bindingHash);
+        if (!output) throw Error("Missing Dub audio output");
         await send({ action: "commit-artifact", fence, artifact: { artifactId: output.artifactId, role: "dub_mix", bindingHash,
-          contentType: stage === "audio" ? "audio/mpeg" : "video/mp4", byteLength: stage === "audio" ? 4096 : 8192, etag: stage === "audio" ? '"audio"' : '"video"', sha256: (stage === "audio" ? "c" : "d").repeat(64) } });
+          contentType: "audio/mpeg", byteLength: 4096, etag: '"audio"', sha256: "c".repeat(64) } });
       }
-      return commit("final_result", { outcome: "completed", audio: { byteLength: 4096, sha256: "c".repeat(64) }, video: { byteLength: 8192, sha256: "d".repeat(64) }, probe: { state: "ready", durationSec: 10 } });
+      return commit("final_result", { outcome: "completed", audio: { byteLength: 4096, sha256: "c".repeat(64) }, probe: { state: "ready", durationSec: 10 } });
     },
   };
 }

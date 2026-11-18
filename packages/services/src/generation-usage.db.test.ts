@@ -79,7 +79,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     return { owner, workspace: created };
   }
 
-  async function dubbableProject(workspaceId: string, createdByUserId: string, renderSeconds: number | null = 10) {
+  async function dubbableProject(workspaceId: string, createdByUserId: string, clipSeconds = 10) {
     const project = await prisma.project.create({
       data: {
         title: "Generation project",
@@ -88,7 +88,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
         workspaceId,
         createdByUserId,
         ingestStatus: "ready",
-        sourceDurationSeconds: 10,
+        sourceDurationSeconds: Math.ceil(clipSeconds),
       },
     });
     const detection = await prisma.workflowRun.create({
@@ -107,12 +107,12 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
         index: 0,
         status: "edited",
         startSec: 0,
-        endSec: 10,
+        endSec: clipSeconds,
         title: "Dub me",
         hookText: "A strong hook",
         reasoning: "Fixture",
         category: "hook",
-        transcriptSlice: [],
+        transcriptSlice: [{ index: 0, speaker: null, speakerLabel: "Speaker 1", startSec: 0, endSec: clipSeconds, text: "A strong hook", confidence: null, words: [] }],
         viralityScore: 80,
         hookStrengthScore: 80,
         emotionalIntensityScore: 70,
@@ -123,16 +123,6 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
         instagramScore: 80,
         llmProvider: "test",
         llmModel: "test",
-      },
-    });
-    await prisma.clipRender.create({
-      data: {
-        clipId: clip.id,
-        aspectRatio: "ratio_9_16",
-        status: "completed",
-        storageKey: `fixtures/${randomUUID()}/base.mp4`,
-        durationSec: renderSeconds,
-        sizeBytes: 3n,
       },
     });
     return { project, clip };
@@ -581,11 +571,11 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     const first = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
     let current = await startDubbingTestExecution(prisma, first.workflowRunId!);
     await current.command("fail", { failureCode: "openai_request_rejected", retryable: false });
-    await prisma.clip.update({ where: { id: clip.id }, data: { hookText: "A deliberately revised script" } });
+    await prisma.clip.update({ where: { id: clip.id }, data: { transcriptSlice: [{ index: 0, speaker: null, speakerLabel: "Speaker 1", startSec: 0, endSec: 10, text: "A deliberately revised script", confidence: null, words: [] }] } });
     const second = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
     expect(second.dub.id).not.toBe(first.dub.id);
-    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: first.dub.id } })).toMatchObject({ status: "failed", workflowRunId: first.workflowRunId, frozenRequest: { script: "A strong hook", targetLanguageCode: "es", voice: "marin" } });
-    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: second.dub.id } })).toMatchObject({ status: "queued", workflowRunId: second.workflowRunId, frozenRequest: { script: "A deliberately revised script", targetLanguageCode: "es", voice: "marin" } });
+    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: first.dub.id } })).toMatchObject({ status: "failed", workflowRunId: first.workflowRunId, frozenRequest: { segments: [{ text: "A strong hook" }], targetLanguageCode: "es", voice: "marin" } });
+    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: second.dub.id } })).toMatchObject({ status: "queued", workflowRunId: second.workflowRunId, frozenRequest: { segments: [{ text: "A deliberately revised script" }], targetLanguageCode: "es", voice: "marin" } });
     await expect(Promise.resolve(prisma.clipDub.update({ where: { id: first.dub.id }, data: { voice: "coral" } }))).rejects.toThrow("Accepted dubbing request is immutable");
     await expect(Promise.resolve(prisma.clipDub.update({ where: { id: first.dub.id }, data: { status: "queued", errorCode: null } }))).rejects.toThrow("Terminal dubbing request history is immutable");
     expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: first.dub.id } })).toMatchObject({ status: "released", reason: "openai_request_rejected" });

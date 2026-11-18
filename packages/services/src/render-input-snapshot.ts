@@ -7,6 +7,8 @@ import { compileBrollSearchRequest, resolveBrollCutaways, type BrollSearch } fro
 import { documentFontReferences } from "./brand-font-contract";
 import type { ReadyClipPreparation } from "./clip-preparation";
 import { effectiveCaptionLanguage } from "./clip-export-subtitles";
+import type { ExecutorArtifactCommit } from "./executor-domain-control";
+import { renderDubSegments, renderDubTimingArtifact, verifyRenderDub, type RenderDubSource } from "./render-dub";
 
 type AssetObject = ReturnType<typeof renderAssetObjectSchema.parse>;
 export interface RenderInputSnapshotDependencies {
@@ -14,6 +16,8 @@ export interface RenderInputSnapshotDependencies {
   object(key: string): Promise<AssetObject | null>;
   pexelsConfigured: boolean;
   searchStock: BrollSearch;
+  /** Bounded read of a committed JSON artifact by its exact stored identity. */
+  readArtifactJson(artifact: ExecutorArtifactCommit, maxBytes: number): Promise<unknown>;
 }
 
 /** Frozen metadata retains source ownership and the existing optional-media policy. */
@@ -26,6 +30,20 @@ export function createRenderInputSnapshot(database: PrismaClient, dependencies: 
         project.id !== preparation.projectId || project.sourceRevision !== preparation.sourceRevision || project.sourceStorageKey !== preparation.source.storageKey || group.clipId !== preparation.clipId) throw new Error("render_input_unavailable");
       const variants = await tx.clipRender.findMany({ where: { id: { in: group.members.map(member => member.clipRenderId) }, workflowRunId: group.workflowRunId }, include: { exportVariant: true }, orderBy: { id: "asc" } });
       if (!variants.length || variants.length > 4 || variants.length !== group.members.length || group.members.some(member => member.invalidatedAt)) throw new Error("render_input_unavailable");
+      // A dub's video is an export bound to its dub; its narration and caption words come from the dub's sealed artifacts.
+      const exportIds = [...new Set(variants.flatMap(variant => variant.exportVariant ? [variant.exportVariant.exportId] : []))];
+      const exports = exportIds.length ? await tx.clipExport.findMany({ where: { id: { in: exportIds } }, select: { dubId: true } }) : [];
+      const dubIds = [...new Set(exports.flatMap(value => value.dubId ? [value.dubId] : []))];
+      if (dubIds.length > 1 || dubIds.length === 1 && exports.some(value => !value.dubId)) throw new Error("render_input_invalid");
+      let dub: RenderDubSource | null = null;
+      if (dubIds[0]) {
+        const row = await tx.clipDub.findUnique({ where: { id: dubIds[0] } });
+        if (!row?.audioArtifactId || !row.timingArtifactId) throw new Error("render_input_invalid");
+        const artifacts = await tx.executionArtifact.findMany({ where: { id: { in: [row.audioArtifactId, row.timingArtifactId] } } });
+        const audio = artifacts.find(value => value.id === row.audioArtifactId), timing = artifacts.find(value => value.id === row.timingArtifactId);
+        if (!audio || !timing) throw new Error("render_input_invalid");
+        dub = { dub: row, audio, timing };
+      }
       const clip = await tx.clip.findFirst({ where: { id: group.clipId, projectId: project.id } });
       const stored = (variants[0]!.exportVariant ? variants[0]!.clipSnapshot : clip) as Record<string, unknown> | null;
       if (!stored) throw new Error("render_input_invalid");
@@ -40,7 +58,7 @@ export function createRenderInputSnapshot(database: PrismaClient, dependencies: 
         audioIds.length ? tx.audioAsset.findMany({ where: { id: { in: audioIds }, deletedAt: null, OR: [{ userId: null, workspaceId: null }, { workspaceId: workspace.id }] } }) : [],
       ]);
       const broll = brollCuesArraySchema.safeParse(stored.brollCues);
-      return { group, project, variants, visuals, fonts, audio, clip: { index: stored.index, title: stored.title, hookText: stored.hookText, category: stored.category, brollCues: broll.success ? broll.data : null } };
+      return { group, project, variants, visuals, fonts, audio, dub, clip: { index: stored.index, title: stored.title, hookText: stored.hookText, category: stored.category, brollCues: broll.success ? broll.data : null } };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     const { group, project } = metadata;
     const configuration: unknown = JSON.parse(group.exportIdentity);
@@ -60,6 +78,12 @@ export function createRenderInputSnapshot(database: PrismaClient, dependencies: 
     const visuals = (await boundedMap(metadata.visuals, async asset => { const object = await freeze(asset.storageKey, asset.fingerprint, Number(asset.sizeBytes)); return object ? { name: `visual_${asset.id.replaceAll("-", "")}`, id: asset.id, kind: asset.kind, fingerprint: asset.fingerprint, object } : null; })).filter(value => value !== null);
     const fonts = (await boundedMap(metadata.fonts, async font => { const object = await freeze(font.storageKey, font.fingerprint, Number(font.sizeBytes)); return object ? { name: `font_${font.id.replaceAll("-", "")}`, id: font.id, family: font.family, format: font.format, fingerprint: font.fingerprint, object } : null; })).filter(value => value !== null);
     const audio = (await boundedMap(metadata.audio, async asset => { const object = await freeze(asset.storageKey); return object ? { name: `audio_${asset.id.replaceAll("-", "")}`, id: asset.id, title: asset.title, durationSec: asset.durationSec, object } : null; })).filter(value => value !== null);
+    // The committed narration is a required source: unlike an optional asset, it is never skipped.
+    const dubObjects = metadata.dub ? await verifyRenderDub(metadata.dub, { projectId: project.id, clipId: group.clipId, editorRevision: preparation.editorRevision }) : null;
+    const dubAudio = dubObjects ? await freeze(dubObjects.audio.storageKey, dubObjects.audio.sha256, dubObjects.audio.byteLength) : null;
+    if (metadata.dub && dubObjects && (!dubAudio || dubAudio.etag !== dubObjects.audio.etag)) throw new Error("render_input_unavailable");
+    const dubInput = metadata.dub && dubAudio ? { audio: { name: "dub_audio", object: dubAudio }, language: metadata.dub.dub.targetLanguageCode,
+      segments: renderDubSegments(await dependencies.readArtifactJson(renderDubTimingArtifact(metadata.dub.timing), 1024 ** 2), metadata.dub.dub) } : null;
     const brand = brandTemplateSnapshotSchema.safeParse(project.brandSnapshot);
     const logoObject = brand.success && brand.data.logoStorageKey ? await freeze(brand.data.logoStorageKey) : null;
     const variants = metadata.variants.map(variant => ({ renderId: variant.id, aspectRatio: variant.aspectRatio, resolution: variant.resolution,
@@ -75,7 +99,7 @@ export function createRenderInputSnapshot(database: PrismaClient, dependencies: 
     return renderExecutionInputSchema.parse({ version: 1, kind: "render_group", groupId: group.id, workflowRunId: group.workflowRunId, workSetGeneration: group.workSetGeneration,
       watermark: configuration[4],
       preparation, prepared: { preview: ready.preview, result: ready.result }, workspace: { id: project.workspaceId, ownerUserId: project.workspace.ownerUserId, pricingTier: resolvePricingTier(project.workspace.pricingTier) },
-      captionLanguage: effectiveCaptionLanguage(project), brandSnapshot: project.brandSnapshot, clip, variants,
+      captionLanguage: dubInput ? dubInput.language : effectiveCaptionLanguage(project), brandSnapshot: project.brandSnapshot, dub: dubInput, clip, variants,
       assets: { visuals, fonts, audio, logo: logoObject ? { name: "brand_logo", object: logoObject } : null }, autoBroll: { configured: dependencies.pexelsConfigured, request, resolved } });
   };
 }

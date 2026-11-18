@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, ArrowRight, Download, Languages, Mic2, Play } from "lucide-react";
+import { AlertTriangle, ArrowRight, Download, Languages, Mic2, Play, RotateCw } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
 import { Spinner } from "@narriflow/ui/components/spinner";
@@ -17,7 +17,7 @@ import type {
 } from "@narriflow/validators";
 import { clipAspectRatioOptions, userErrorMessage } from "@narriflow/validators";
 import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, isApiError, type Intent } from "@narriflow/api-client";
-import { invalidateProject, PROJECT_RESOURCES, type ProjectDetail } from "@narriflow/api-client/projects";
+import { invalidateProject, PROJECT_RESOURCES, projectCommands, type ProjectDetail } from "@narriflow/api-client/projects";
 import { invalidateWorkspaceUsage } from "@narriflow/api-client/workspace";
 import { useMutation } from "@tanstack/react-query";
 import { formatDuration } from "@/lib/format";
@@ -58,11 +58,8 @@ const voiceOptions = [
   { value: "shimmer", label: "Shimmer" },
 ];
 
-function renderedAspectRatios(clip: ClipSnapshot): ClipAspectRatio[] {
-  return clip.renderVariants
-    .filter((render) => render.hasAsset)
-    .map((render) => render.aspectRatio);
-}
+/** Any clip can be dubbed in any format; the dub's video is rendered after the narration. */
+const aspectRatioItems = clipAspectRatioOptions.map((option) => ({ value: option.value, label: option.value }));
 
 const dubBadgeStatus: Record<
   ClipDubSnapshot["status"],
@@ -189,7 +186,7 @@ function AllowanceMeter({ remaining, limit }: { remaining: number; limit: number
   );
 }
 
-/** What a dub produces, drawn: a dubbed video and a narration-only audio file. */
+/** What a dub produces, drawn: a narration-only audio file and a dubbed video. */
 function DubsEmpty({ canEdit }: { canEdit: boolean }) {
   return (
     <Flex align="center" gap="5" bg="bg.subtle" borderRadius="l3" px={{ base: "5", md: "6" }} py="5" wrap="wrap">
@@ -207,7 +204,7 @@ function DubsEmpty({ canEdit }: { canEdit: boolean }) {
         </Text>
         <Text fontSize="13px" color="fg.muted">
           {canEdit
-            ? "Each dub comes with a video and a narration-only audio file."
+            ? "Each dub comes with a narration-only audio file and a dubbed video."
             : "Voiceover dubs made from this project's clips show up here."}
         </Text>
       </Box>
@@ -240,16 +237,9 @@ export function DubbingPanel({
   const api = useClipApi();
   // One key per deliberate request; a retry of the same dub replays it.
   const dubIntent = useRef<Intent<DubRequest> | null>(null);
-  const renderedClips = useMemo(
-    () => clips.filter((clip) => renderedAspectRatios(clip).length > 0),
-    [clips],
-  );
-  const [clipId, setClipId] = useState(renderedClips[0]?.id ?? "");
-  const selectedClip = renderedClips.find((clip) => clip.id === clipId) ?? null;
-  const aspectRatios = selectedClip ? renderedAspectRatios(selectedClip) : [];
-  const [aspectRatio, setAspectRatio] = useState<ClipAspectRatio>(
-    aspectRatios[0] ?? "9:16",
-  );
+  const [clipId, setClipId] = useState(clips[0]?.id ?? "");
+  const selectedClip = clips.find((clip) => clip.id === clipId) ?? null;
+  const [aspectRatio, setAspectRatio] = useState<ClipAspectRatio>("9:16");
   const [targetLanguageCode, setTargetLanguageCode] = useState("es");
   const [voice, setVoice] = useState("marin");
   const [message, setMessage] = useState<string | null>(null);
@@ -257,18 +247,14 @@ export function DubbingPanel({
 
   const clipItems = useMemo(
     () =>
-      renderedClips.length === 0
-        ? [{ value: "", label: "No rendered clips", disabled: true }]
-        : renderedClips.map((clip) => ({
+      clips.length === 0
+        ? [{ value: "", label: "No clips yet", disabled: true }]
+        : clips.map((clip) => ({
             value: clip.id,
             label: clipLabel(clip),
           })),
-    [renderedClips],
+    [clips],
   );
-  const aspectRatioItems = aspectRatios.map((value) => ({
-    value,
-    label: value,
-  }));
 
   const createDub = useMutation({
     retry: false,
@@ -298,14 +284,46 @@ export function DubbingPanel({
     },
   });
 
+  const renderVideo = useMutation({
+    retry: false,
+    mutationFn: async (dubId: string) => {
+      const { queryClient, scope, projects } = requireClipApi(api);
+      await projectCommands.renderDubVideo(projects, projectId, dubId);
+      // The dub row now reads "rendering"; the progress stream settles it when the render ends.
+      await invalidateProject(queryClient, scope, projectId);
+    },
+    onError: (failure) => {
+      if (api && failureNeedsStateRefetch(failure)) void invalidateProject(api.queryClient, api.scope, projectId);
+      setMessage(clipActionErrorCopy(failure, "Could not start the video. Please try again."));
+    },
+  });
+
   function requestDub() {
     if (createDub.isPending) return;
     if (!selectedClip) {
-      setMessage("Render a clip before generating a dub.");
+      setMessage("Choose a clip before generating a dub.");
       return;
     }
     setMessage(null);
     createDub.mutate({ clipId: selectedClip.id, aspectRatio, targetLanguageCode, voice });
+  }
+
+  /** A failed dub is made again with the same clip, format, language and voice. */
+  function retryDub(dub: ClipDubSnapshot) {
+    if (createDub.isPending) return;
+    setMessage(null);
+    createDub.mutate({
+      clipId: dub.clipId,
+      aspectRatio: dub.aspectRatio,
+      targetLanguageCode: dub.targetLanguageCode,
+      voice: dub.voice,
+    });
+  }
+
+  function renderAgain(dub: ClipDubSnapshot) {
+    if (renderVideo.isPending) return;
+    setMessage(null);
+    renderVideo.mutate(dub.id);
   }
 
   async function downloadDub(dub: ClipDubSnapshot, asset: "video" | "audio") {
@@ -356,7 +374,7 @@ export function DubbingPanel({
       <PanelHeader
         icon={<Languages size={20} />}
         title="Voiceover dubs"
-        description="Narrate a rendered clip in another language with an AI voice."
+        description="Narrate a clip in another language with an AI voice."
       />
 
       {/* Composer */}
@@ -375,17 +393,10 @@ export function DubbingPanel({
               <Select
                 items={clipItems}
                 value={clipId}
-                onValueChange={(nextId) => {
-                  setClipId(nextId);
-                  const nextClip = renderedClips.find((clip) => clip.id === nextId);
-                  const nextAspect = nextClip
-                    ? renderedAspectRatios(nextClip)[0]
-                    : null;
-                  if (nextAspect) setAspectRatio(nextAspect);
-                }}
+                onValueChange={setClipId}
                 size="sm"
-                placeholder="No rendered clips"
-                disabled={renderedClips.length === 0}
+                placeholder="No clips yet"
+                disabled={clips.length === 0}
                 aria-label="Clip to dub"
               />
             </Box>
@@ -398,8 +409,7 @@ export function DubbingPanel({
                 onValueChange={(value) => setAspectRatio(value as ClipAspectRatio)}
                 size="sm"
                 placeholder="Format"
-                disabled={aspectRatios.length === 0}
-                aria-label="Render format"
+                aria-label="Video format"
               />
             </Box>
 
@@ -471,7 +481,7 @@ export function DubbingPanel({
               </Flex>
             ) : (
               <Text fontSize="13px" color="fg.muted">
-                Render a clip first. Dubs narrate over a finished render.{" "}
+                Generate clips first, then dub any of them.{" "}
                 <Link href={`/projects/${projectId}`} style={{ textDecoration: "underline", textUnderlineOffset: "3px" }}>
                   Go to clips
                 </Link>
@@ -493,7 +503,6 @@ export function DubbingPanel({
                   disabled={
                     busy ||
                     !selectedClip ||
-                    aspectRatios.length === 0 ||
                     blockedMessage !== null ||
                     clipTooLong
                   }
@@ -540,6 +549,10 @@ export function DubbingPanel({
         <Stack gap="2">
           {dubs.map((dub) => {
             const clip = clips.find((candidate) => candidate.id === dub.clipId);
+            // A refused or failed video start leaves `none` with a code: the same failure as `failed`.
+            const videoFailure =
+              dub.status === "completed" && (dub.video.status === "failed" || (dub.video.status === "none" && dub.video.errorCode !== null));
+            const videoFailureCopy = userErrorMessage(dub.video.errorCode) ?? "Render again to retry.";
             return (
               <Flex
                 key={dub.id}
@@ -579,32 +592,29 @@ export function DubbingPanel({
                         · {formatDuration(dub.durationSec)}
                       </Text>
                     ) : null}
-                    {dub.errorCode ? (
-                      <Text as="span" color="danger.fg">
-                        {" "}
-                        · {userErrorMessage(dub.errorCode)}
-                      </Text>
-                    ) : null}
                   </Text>
+                  {dub.errorCode ? (
+                    <Text fontSize="12px" color="danger.fg">
+                      {userErrorMessage(dub.errorCode)}
+                    </Text>
+                  ) : null}
+                  {videoFailure ? (
+                    <Text fontSize="12px" color="danger.fg">
+                      {`The video didn't render. ${videoFailureCopy}`}
+                    </Text>
+                  ) : null}
                 </Box>
                 {dub.status !== "completed" ? (
                   <StatusBadge status={dubBadgeStatus[dub.status]} label={dubStatusLabel[dub.status]} />
                 ) : null}
+                {dub.status === "failed" && canEdit ? (
+                  <Button size="sm" variant="subtle" disabled={createDub.isPending} onClick={() => retryDub(dub)}>
+                    <RotateCw size={13} />
+                    Dub again
+                  </Button>
+                ) : null}
                 {dub.status === "completed" ? (
-                  <Flex gap="1.5" flexShrink={0}>
-                    <Button
-                      size="sm"
-                      variant="subtle"
-                      disabled={downloadingAsset !== null}
-                      onClick={() => downloadDub(dub, "video")}
-                    >
-                      {downloadingAsset === `${dub.id}:video` ? (
-                        <Spinner size="xs" />
-                      ) : (
-                        <Download size={13} />
-                      )}
-                      {downloadingAsset === `${dub.id}:video` ? "Preparing…" : "Video"}
-                    </Button>
+                  <Flex gap="1.5" align="center" flexShrink={0}>
                     <Button
                       size="sm"
                       variant="subtle"
@@ -618,6 +628,45 @@ export function DubbingPanel({
                       )}
                       {downloadingAsset === `${dub.id}:audio` ? "Preparing…" : "Audio"}
                     </Button>
+                    {dub.video.status === "ready" ? (
+                      <Button
+                        size="sm"
+                        variant="subtle"
+                        disabled={downloadingAsset !== null}
+                        onClick={() => downloadDub(dub, "video")}
+                      >
+                        {downloadingAsset === `${dub.id}:video` ? (
+                          <Spinner size="xs" />
+                        ) : (
+                          <Download size={13} />
+                        )}
+                        {downloadingAsset === `${dub.id}:video` ? "Preparing…" : "Video"}
+                      </Button>
+                    ) : null}
+                    {dub.video.status === "rendering" ? (
+                      <StatusBadge status="processing" label="Rendering video" />
+                    ) : null}
+                    {dub.video.status !== "ready" && dub.video.status !== "rendering" ? (
+                      canEdit ? (
+                        <Button
+                          size="sm"
+                          variant="subtle"
+                          disabled={renderVideo.isPending}
+                          onClick={() => renderAgain(dub)}
+                        >
+                          {renderVideo.isPending && renderVideo.variables === dub.id ? (
+                            <Spinner size="xs" />
+                          ) : (
+                            <RotateCw size={13} />
+                          )}
+                          {videoFailure ? "Render again" : "Render video"}
+                        </Button>
+                      ) : (
+                        <Text fontSize="12px" color="fg.subtle">
+                          No video yet
+                        </Text>
+                      )
+                    ) : null}
                   </Flex>
                 ) : null}
               </Flex>

@@ -171,6 +171,8 @@ export function buildClipExportFingerprint(input: {
   aspectRatios: ClipAspectRatio[];
   resolution: ClipRenderResolution;
   watermark: boolean;
+  /** A dub's video export is its own output, never an ordinary export's match. */
+  dubId?: string;
 }): string {
   return createHash("sha256")
     .update(
@@ -180,6 +182,7 @@ export function buildClipExportFingerprint(input: {
         aspectRatios: normalizeAspectRatios(input.aspectRatios),
         resolution: input.resolution,
         watermark: input.watermark,
+        ...(input.dubId ? { dubId: input.dubId } : {}),
       }),
     )
     .digest("hex");
@@ -296,6 +299,7 @@ export async function findCoveringInFlightExport(
   const live = await tx.clipExport.findMany({
     where: {
       clipId: input.clipId,
+      dubId: null,
       editorRevision: input.editorRevision,
       resolution: input.resolution,
       watermark: input.watermark,
@@ -327,6 +331,8 @@ async function upsertClipExport(
     resolution: ClipRenderResolution;
     watermark: boolean;
     aspectRatios: ClipAspectRatio[];
+    /** Set for a dub's video export; every other export has none. */
+    dubId?: string;
   },
 ) {
   const { clip, clipId, resolution, watermark } = input;
@@ -344,6 +350,7 @@ async function upsertClipExport(
       fingerprint: input.fingerprint,
       resolution,
       watermark,
+      ...(input.dubId ? { dubId: input.dubId } : {}),
       variants: {
         create: input.aspectRatios.map((aspectRatio) => ({
           id: randomUUID(),
@@ -401,6 +408,70 @@ export async function admitCaptionedExportWithinTransaction(tx: Prisma.Transacti
         aspectRatios,
       });
       return { exportId: row.id, clipId: clip.id };
+}
+
+/** The dub a video export is made for. */
+export interface DubExportTarget {
+  dubId: string;
+  projectId: string;
+  workspaceId: string;
+  /** The actor who asked for the dub; recorded as the export's creator. */
+  actorUserId: string | null;
+  clipId: string;
+  aspectRatio: ClipAspectRatio;
+  editorRevision: number;
+}
+
+/**
+ * Creates a dub's video export, one variant at the dub's aspect ratio, and hands
+ * it to a `clip_rendering` run, in the caller's transaction. The Clip is locked
+ * and must still be at the dub's revision, so the export freezes exactly the
+ * clip the dub was made for. Throws `ClipExportError` (or a plan error) when the
+ * document may not be exported; the caller decides what that means for the dub.
+ */
+export async function admitDubExportWithinTransaction(
+  tx: Prisma.TransactionClient,
+  target: DubExportTarget,
+): Promise<{ exportId: string }> {
+  const lifecycle = new WorkflowRunLifecycle();
+  await lifecycle.lockRenderAdmissionWithinTransaction(tx, target.projectId, target.workspaceId);
+  await tx.$queryRaw`SELECT "id" FROM "Clip" WHERE "id" = ${target.clipId}::uuid FOR UPDATE`;
+  const clip = await tx.clip.findFirst({
+    where: {
+      id: target.clipId,
+      projectId: target.projectId,
+      project: { workspaceId: target.workspaceId, ...accessibleProjectWhere() },
+    },
+    include: {
+      project: { select: { sourceDurationSeconds: true, sourceProbe: true, workspace: { select: { pricingTier: true } } } },
+    },
+  });
+  if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
+  if (clip.editorRevision !== target.editorRevision) throw new ClipExportRevisionConflictError(clip.editorRevision);
+  const tier = resolvePricingTier(clip.project.workspace.pricingTier);
+  assertClipExportDocumentAllowed(tier, decodeClipEditorDocumentFromStorage(clip, {
+    durationSec: clipSourceEdgeSec(clip.project),
+    wholeSource: clip.wholeSource,
+  }));
+  const { granted } = resolveClipExportOutput(tier, "1080p");
+  const aspectRatios = [target.aspectRatio];
+  const { row } = await upsertClipExport(tx, {
+    workspaceId: target.workspaceId,
+    createdByUserId: target.actorUserId,
+    projectId: target.projectId,
+    clipId: clip.id,
+    clip,
+    sourceDurationSec: clipSourceEdgeSec(clip.project),
+    fingerprint: buildClipExportFingerprint({
+      editorRevision: clip.editorRevision, aspectRatios, ...granted, dubId: target.dubId,
+    }),
+    resolution: granted.resolution,
+    watermark: granted.watermark,
+    aspectRatios,
+    dubId: target.dubId,
+  });
+  await lifecycle.handoffClipExportWithinTransaction(tx, row.id, target.workspaceId);
+  return { exportId: row.id };
 }
 
 async function toExportSnapshot(
@@ -585,7 +656,7 @@ export function assertSceneExportReferenceRows(
 async function loadDeliverableExport(scope: ActorScope, where: { id: string; projectId?: string; clipId?: string }) {
   await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
   const row = await requirePrisma().clipExport.findFirst({
-    where: { ...where, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+    where: { ...where, dubId: null, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
     include: {
       clip: { select: { title: true, hookText: true } },
       project: { select: { sourceDurationSeconds: true, sourceProbe: true, languageCode: true, transcript: { select: { languageCode: true } } } },
@@ -794,6 +865,7 @@ export class ClipExportService {
     const row = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
+        dubId: null,
         projectId,
         clipId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
@@ -851,6 +923,7 @@ export class ClipExportService {
     const row = await requirePrisma().clipExport.findFirst({
       where: {
         id: exportId,
+        dubId: null,
         workspaceId: scope.workspaceId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
@@ -924,6 +997,7 @@ export class ClipExportService {
     const rows = await requirePrisma().clipExport.findMany({
       where: {
         workspaceId: scope.workspaceId,
+        dubId: null,
         projectId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
         status: { in: ["partial_ready", "ready"] },
@@ -953,6 +1027,7 @@ export class ClipExportService {
     const rows = await requirePrisma().clipExport.findMany({
       where: {
         workspaceId: scope.workspaceId,
+        dubId: null,
         projectId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
@@ -973,11 +1048,30 @@ export class ClipExportService {
     exportId: string,
     beforeMutation?: (tx: Prisma.TransactionClient) => Promise<void>,
   ) {
+    await this.retryFailedExport(scope, projectId, clipId, exportId, false, beforeMutation);
+    return this.getOwned(scope, projectId, clipId, exportId);
+  }
+
+  /** Queues a dub's failed video render again. A dub export is reachable only
+   * through its dub, so the caller passes the export it read from the dub. */
+  async retryDubExport(scope: ActorScope, projectId: string, clipId: string, exportId: string) {
+    await this.retryFailedExport(scope, projectId, clipId, exportId, true);
+  }
+
+  private async retryFailedExport(
+    scope: ActorScope,
+    projectId: string,
+    clipId: string,
+    exportId: string,
+    dub: boolean,
+    beforeMutation?: (tx: Prisma.TransactionClient) => Promise<void>,
+  ) {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
+        dubId: dub ? { not: null } : null,
         projectId,
         clipId,
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
@@ -1001,7 +1095,7 @@ export class ClipExportService {
       await new WorkflowRunLifecycle({ prisma }).retryFailedClipExport({
         beforeMutation, projectId, exportId, expectedRetryCount: owned.retryCount, variantIds: [],
       });
-      return this.getOwned(scope, projectId, clipId, exportId);
+      return;
     }
     const frozenSnapshot = failed.find((variant) => variant.render)?.render?.clipSnapshot;
     if (!frozenSnapshot || failed.some((variant) => !variant.render?.clipSnapshot)) {
@@ -1026,8 +1120,6 @@ export class ClipExportService {
     await new WorkflowRunLifecycle({ prisma }).retryFailedClipExport({
       beforeMutation, projectId, exportId, expectedRetryCount: owned.retryCount, variantIds: failed.map((variant) => variant.id),
     });
-
-    return this.getOwned(scope, projectId, clipId, exportId);
   }
 
   async createShareLink(
@@ -1042,6 +1134,7 @@ export class ClipExportService {
     const owned = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
+        dubId: null,
         projectId,
         clipId,
         project: {
@@ -1074,6 +1167,7 @@ export class ClipExportService {
     const owned = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
+        dubId: null,
         projectId,
         clipId,
         project: {
@@ -1099,7 +1193,7 @@ export class ClipExportService {
       where: {
         tokenHash: hashClipShareToken(token),
         revokedAt: null,
-        export: { project: accessibleProjectWhere(now) },
+        export: { dubId: null, project: accessibleProjectWhere(now) },
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
       include: { export: { include: exportInclude } },
@@ -1115,6 +1209,7 @@ export class ClipExportService {
       const owned = await tx.clipExport.findFirst({
         where: {
           id: exportId,
+          dubId: null,
           workspaceId: scope.workspaceId,
           project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
         },

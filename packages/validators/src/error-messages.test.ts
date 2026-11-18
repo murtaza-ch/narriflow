@@ -132,6 +132,25 @@ describe("userErrorMessage", () => {
     expect(message).not.toContain("provider");
   });
 
+  test("every dub refusal and failure code has specific copy that names the next step", () => {
+    for (const code of [
+      "dub_transcript_empty",
+      "dub_transcript_untimed_cut",
+      "dub_transcript_too_long",
+      "dubbing_censor_unsupported",
+      "dubbing_clip_too_long",
+      "dub_narration_unfit",
+      "dub_provider_rejected",
+      "dub_clip_superseded",
+      "dubbing_clip_superseded",
+      "dub_video_not_started",
+    ]) {
+      expect(hasUserErrorMessage(code)).toBe(true);
+      expect(userErrorMessage(code)).toMatch(/try again|Trim|pick|Pick|Dub the new|Render again|Turn Auto Censor off/);
+    }
+    expect(userErrorMessage("dub_narration_unfit")).toContain("too long to fit");
+  });
+
   test("returns the generic fallback for an unknown code", () => {
     expect(userErrorMessage("totally_unknown_code")).toBe(
       "Something went wrong. Please try again or contact support.",

@@ -21,6 +21,7 @@ export * from "./clip-auto-layout-analysis";
 export * from "./content-asset";
 export * from "./clip-timing";
 export * from "./content-pack";
+export * from "./dub-plan";
 export * from "./dubbing";
 export * from "./edit-ranges";
 export * from "./editor-document";
