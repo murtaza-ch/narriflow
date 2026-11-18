@@ -474,7 +474,8 @@ colours do not change. Slots follow the user's colours.
 ### 5.10 Phase 2 effects
 
 - **Gradient.** Only for styles whose motions neither scale nor rotate the hero. Worker:
-  the hero's text layer is split into horizontal `\clip` bands of 8 px or fewer, at most 32,
+  the hero's text layer is split into horizontal `\clip` bands of 8 px or fewer, at most 48 per hero word (and within the 120
+  events per cue budget),
   each with an interpolated `\1c`, covering the hero's bounds plus its entrance travel.
   Band edges fall on even pixel rows, or 4:2:0 encoding shows grey seams (ticket 02).
   Studio: `background-clip: text` with the same two colours over the hero's rest box. CSS
@@ -662,7 +663,9 @@ Not in this release: reference 11 (script plus heavy caps) and glow (10).
 - Events: one per word per layer for the cue's life, roughly 15 to 30 per cue, plus tiles
   and, in phase 2, gradient bands. Budget: 120 events per cue, and the heaviest phase 1 or 2
   look over 20 s at 1080x1920 renders in at most 1.35 times Bold Pop's wall time on the
-  same machine. Ticket 02 measures this before engine work starts.
+  same machine. Ticket 02 measured 1.05x locally (M1 Pro, still background, system
+  libass). That is a local measurement, not a bound for real footage or the worker image's
+  libass build; ticket 03b re-measures on the worker image.
 - Person matte (ticket 09): CPU in the render only over behind-hero ranges, plus the
   browser model in the Studio. Measured in G3.
 - Studio: the current cue's words are positioned and transformed imperatively each frame.
