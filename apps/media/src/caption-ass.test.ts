@@ -291,3 +291,34 @@ describe("multilingual burn-in", () => {
     expect(pos(latinOverlay.text).y).not.toBeCloseTo(pos(line.text).y, 1);
   });
 });
+
+describe("classic preset snapshot", () => {
+  // Locks today's classic ASS output so dynamic-caption work cannot change it by accident (spec 4.5).
+  const fixture: Array<{ language: string; words: Array<{ text: string; spaceBefore?: boolean }> }> = [
+    { language: "en", words: [{ text: "Ready" }, { text: "to" }, { text: "go" }] },
+    { language: "ur", words: [{ text: "یہ" }, { text: "بہت" }, { text: "اچھا" }] },
+    { language: "ja", words: [{ text: "今日は" }, { text: "天気が", spaceBefore: false }, { text: "いい", spaceBefore: false }] },
+  ];
+
+  function classicTrack(preset: (typeof CAPTION_PRESETS)[number]["preset"]) {
+    const layers = fixture.map((entry, cueIndex): CompositionCaptionVisualLayer => {
+      const cueStartSec = cueIndex * 2;
+      return {
+        id: `caption:${cueIndex}`, kind: "caption", cueIndex,
+        activeRange: { startSec: cueStartSec, endSec: cueStartSec + 1.5 },
+        anchor: { xPct: 50, yPct: 72 },
+        destination: { x: 0, y: 0, width: 1080, height: 1920 },
+        rotationDeg: 0, opacity: 1, zIndex: 40, preset,
+        words: entry.words.map((word, index) => ({ ...word, emoji: null, startSec: cueStartSec + index * 0.5, endSec: cueStartSec + (index + 1) * 0.5 })),
+        language: entry.language,
+      };
+    });
+    return renderCaptionTrack({ layers, canvas: { width: 1080, height: 1920 } }).ass;
+  }
+
+  test.each(CAPTION_PRESETS.map((entry) => [entry.id, entry.preset] as const))("%s keeps its ASS output", (_id, preset) => {
+    const ass = classicTrack(preset);
+    expect(classicTrack(preset)).toBe(ass);
+    expect(ass).toMatchSnapshot();
+  });
+});
