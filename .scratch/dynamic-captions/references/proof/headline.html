@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Headline look proof</title>
+<!--
+  Throwaway look proof (ticket 02). Serve the worktree root over HTTP so the fonts,
+  layout.js and cues.json load (file:// blocks fonts and modules):
+    python3 -m http.server 8765    (from the worktree root)
+    open http://localhost:8765/.scratch/dynamic-captions/references/proof/headline.html
+  Query: ?t=0.35 freezes the playhead; &shot renders the bare 1080x1920 stage for screenshots.
+  Words are measured with Canvas measureText (the Studio's method, spec 5.6), placed by the
+  shared layout.js, and compared with the HarfBuzz geometry build.ts wrote to cues.json.
+-->
+<style>
+  @font-face { font-family: "Proof Inter SemiBold"; src: url("../../../../packages/caption-fonts/fonts/Inter-SemiBold.ttf") format("truetype"); }
+  @font-face { font-family: "Proof Inter ExtraBold"; src: url("../../../../packages/caption-fonts/fonts/Inter-ExtraBold.ttf") format("truetype"); }
+  :root { --bg: #111214; --fg: #e8e8ea; --muted: #8b8d93; --accent: #3b6cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  .viewer { display: grid; justify-items: center; gap: 12px; padding: 16px; }
+  .frame { position: relative; overflow: hidden; border-radius: 8px; }
+  .stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; overflow: hidden; background: #000 url("backdrop.jpg") center / cover no-repeat; }
+  .word { position: absolute; white-space: pre; line-height: normal; will-change: transform, opacity, filter; }
+  .word.hero { color: transparent; -webkit-background-clip: text; background-clip: text; }
+  .controls { display: flex; align-items: center; gap: 12px; width: min(100%, 560px); }
+  .controls input { flex: 1; accent-color: var(--accent); }
+  .controls button { background: #24262b; color: var(--fg); border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  .controls output { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 4.5em; text-align: right; }
+  #report { margin: 0; color: var(--muted); font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; width: min(100%, 560px); }
+  body.shot .viewer { padding: 0; display: block; }
+  body.shot .frame { border-radius: 0; }
+  body.shot .controls, body.shot #report { display: none; }
+</style>
+</head>
+<body>
+<div class="viewer">
+  <div class="frame" id="frame"><div class="stage" id="stage"></div></div>
+  <div class="controls">
+    <button id="play" type="button">Pause</button>
+    <input id="scrub" type="range" min="0" max="20" step="0.01" value="0" aria-label="Playhead">
+    <output id="clock">0.00 s</output>
+  </div>
+  <pre id="report">Loading fonts…</pre>
+</div>
+<script type="module">
+import { CANVAS, HEADLINE, layoutCue, wordPose } from "./layout.js";
+
+const params = new URLSearchParams(location.search);
+const shot = params.has("shot");
+const frozen = params.has("t") ? Number(params.get("t")) : null;
+if (shot) document.body.classList.add("shot");
+
+const FAMILY = { text: "Proof Inter SemiBold", hero: "Proof Inter ExtraBold" };
+await Promise.all(Object.values(FAMILY).map((family) => document.fonts.load(`100px "${family}"`, "Accurate")));
+const data = await (await fetch("cues.json")).json();
+
+// Canvas measurement at 100 px, fractional (spec 5.6, Studio).
+const ctx = document.createElement("canvas").getContext("2d");
+function measure(text, font) {
+  ctx.font = `100px "${FAMILY[font]}"`;
+  const m = ctx.measureText(text);
+  return { advanceEm: m.width / 100, inkTopEm: m.actualBoundingBoxAscent / 100, inkBottomEm: Math.max(0, m.actualBoundingBoxDescent / 100) };
+}
+
+// Where the baseline sits inside an absolutely positioned word box, per face and size.
+const probeHost = Object.assign(document.createElement("div"), { style: "position:absolute;left:-99999px;top:0" });
+document.body.append(probeHost);
+const baselineCache = new Map();
+function baselineOffset(font, px) {
+  const key = `${font}:${px}`;
+  if (baselineCache.has(key)) return baselineCache.get(key);
+  const el = document.createElement("span");
+  el.className = "word";
+  el.style.font = `${px}px "${FAMILY[font]}"`;
+  el.textContent = "H";
+  const probe = Object.assign(document.createElement("span"), { style: "display:inline-block;width:0;height:0;vertical-align:baseline" });
+  el.append(probe);
+  probeHost.append(el);
+  const offset = probe.getBoundingClientRect().top - el.getBoundingClientRect().top;
+  el.remove();
+  baselineCache.set(key, offset);
+  return offset;
+}
+
+const stage = document.getElementById("stage");
+const shadow = HEADLINE.shadow;
+const cues = [];
+const worst = { baselineX: 0, baselineY: 0, px: 0 };
+for (const baked of data.cues) {
+  const words = baked.words.map((word) => ({ text: word.text, role: word.role, startSec: word.startSec }));
+  const layout = layoutCue({ words, endSec: baked.endSec, seed: baked.seed }, measure);
+  layout.words.forEach((word, index) => {
+    const ref = baked.words[index];
+    for (const field of ["baselineX", "baselineY", "px"]) worst[field] = Math.max(worst[field], Math.abs(word[field] - ref[field]));
+  });
+  const heroWords = layout.words.filter((word) => word.role === "hero");
+  const heroInk = heroWords.length
+    ? { top: Math.min(...heroWords.map((w) => w.baselineY - w.inkTop)), bottom: Math.max(...heroWords.map((w) => w.baselineY + w.inkBottom)) }
+    : null;
+  const painted = layout.words.map((word) => {
+    const s = word.px / HEADLINE.S;
+    const top = word.baselineY - baselineOffset(word.font, word.px);
+    const make = (className) => {
+      const el = document.createElement("span");
+      el.className = className;
+      el.textContent = word.text;
+      Object.assign(el.style, { left: `${word.baselineX}px`, top: `${top}px`, font: `${word.px}px "${FAMILY[word.font]}"`, transformOrigin: `${word.advance / 2}px ${word.baselineY - top}px` });
+      stage.append(el);
+      return el;
+    };
+    const shade = make("word");
+    shade.style.color = "transparent";
+    shade.style.textShadow = `0 ${shadow.offsetYPx * s}px ${shadow.blurPx * s}px rgba(0,0,0,${shadow.opacity})`;
+    const text = make(word.role === "hero" ? "word hero" : "word");
+    if (word.role === "hero" && heroInk) {
+      text.style.backgroundImage = `linear-gradient(to bottom, ${HEADLINE.gradient.top} ${heroInk.top - top}px, ${HEADLINE.gradient.bottom} ${heroInk.bottom - top}px)`;
+    } else {
+      text.style.color = "#FFFFFF";
+    }
+    return { word, els: [shade, text] };
+  });
+  cues.push({ startSec: baked.startSec, endSec: baked.endSec, painted });
+}
+
+// Playhead-driven poses (spec 5.7): every frame computes each word's pose from the time.
+function paint(time) {
+  for (const cue of cues) {
+    const live = time >= cue.startSec && time < cue.endSec;
+    for (const { word, els } of cue.painted) {
+      const on = live && time >= word.startSec;
+      const pose = on ? wordPose(word, (time - word.startSec) * 1000, (cue.endSec - word.startSec) * 1000) : null;
+      for (const el of els) {
+        el.style.visibility = on ? "visible" : "hidden";
+        if (!pose) continue;
+        el.style.opacity = String(pose.opacity);
+        el.style.transform = `translate(${pose.dx}px, ${pose.dy}px)`;
+        el.style.filter = pose.blur > 0.01 ? `blur(${pose.blur}px)` : "none";
+      }
+    }
+  }
+}
+
+const frame = document.getElementById("frame");
+function fit() {
+  const scale = shot ? 1 : Math.min(1, (innerHeight - 140) / CANVAS.height, (innerWidth - 32) / CANVAS.width);
+  stage.style.transform = `scale(${scale})`;
+  frame.style.width = `${CANVAS.width * scale}px`;
+  frame.style.height = `${CANVAS.height * scale}px`;
+}
+fit();
+addEventListener("resize", fit);
+
+document.getElementById("report").textContent =
+  `Canvas layout vs HarfBuzz geometry (cues.json), max |Δ| over ${cues.length} cues:\n` +
+  `  baselineX ${worst.baselineX.toFixed(2)} px, baselineY ${worst.baselineY.toFixed(2)} px, size ${worst.px.toFixed(2)} px`;
+
+const scrub = document.getElementById("scrub");
+const clock = document.getElementById("clock");
+const play = document.getElementById("play");
+const DURATION = 20;
+let playing = frozen === null;
+let time = frozen ?? 0;
+let last = performance.now();
+play.textContent = playing ? "Pause" : "Play";
+play.onclick = () => { playing = !playing; play.textContent = playing ? "Pause" : "Play"; last = performance.now(); };
+scrub.oninput = () => { time = Number(scrub.value); };
+function tick(now) {
+  if (playing) time = (time + (now - last) / 1000) % DURATION;
+  last = now;
+  scrub.value = String(time);
+  clock.textContent = `${time.toFixed(2)} s`;
+  paint(time);
+  requestAnimationFrame(tick);
+}
+paint(time);
+document.body.dataset.ready = "1";
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

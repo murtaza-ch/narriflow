@@ -1,0 +1,759 @@
+{
+ "canvas": {
+  "width": 1080,
+  "height": 1920
+ },
+ "anchor": {
+  "xPct": 50,
+  "yPct": 60
+ },
+ "cues": [
+  {
+   "startSec": 0,
+   "endSec": 1.6,
+   "seed": 890022063,
+   "text": "with Accurate captions",
+   "events": 31,
+   "bands": 26,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3599999999999,
+    3.3600000000001273
+   ],
+   "words": [
+    {
+     "text": "with",
+     "role": "minor",
+     "font": "text",
+     "startSec": 0,
+     "px": 42,
+     "baselineX": 498.35888671875,
+     "baselineY": 1065.2359278524245,
+     "advance": 83.2822265625,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.0615234375,
+     "motionSign": -1
+    },
+    {
+     "text": "Accurate",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 0.25,
+     "px": 196.23732948874348,
+     "baselineX": 108,
+     "baselineY": 1211.4277740136686,
+     "advance": 864,
+     "inkTop": 142.77032272374404,
+     "inkBottom": 2.2038371964067873,
+     "motionSign": -1
+    },
+    {
+     "text": "captions",
+     "role": "body",
+     "font": "text",
+     "startSec": 0.75,
+     "px": 56,
+     "baselineX": 428.916015625,
+     "baselineY": 1258.3627049600755,
+     "advance": 222.16796875,
+     "inkTop": 41.37109375,
+     "inkBottom": 11.4296875,
+     "motionSign": 1
+    }
+   ]
+  },
+  {
+   "startSec": 1.65,
+   "endSec": 3.25,
+   "seed": 846414611,
+   "text": "the BEST part",
+   "events": 36,
+   "bands": 31,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3599999999999,
+    3.3600000000001273
+   ],
+   "words": [
+    {
+     "text": "the",
+     "role": "minor",
+     "font": "text",
+     "startSec": 1.65,
+     "px": 42,
+     "baselineX": 508.63330078125,
+     "baselineY": 1051.2593359375,
+     "advance": 62.7333984375,
+     "inkTop": 30.556640625,
+     "inkBottom": 0.4921875,
+     "motionSign": -1
+    },
+    {
+     "text": "BEST",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 1.8499999999999999,
+     "px": 235.20000000000002,
+     "baselineX": 237.673828125,
+     "baselineY": 1228.8701171875,
+     "advance": 604.65234375,
+     "inkTop": 173.75859375000002,
+     "inkBottom": 2.64140625,
+     "motionSign": -1
+    },
+    {
+     "text": "part",
+     "role": "body",
+     "font": "text",
+     "startSec": 2.25,
+     "px": 56,
+     "baselineX": 487.2265625,
+     "baselineY": 1271.8676171875002,
+     "advance": 105.546875,
+     "inkTop": 36.99609375,
+     "inkBottom": 11.4296875,
+     "motionSign": 1
+    }
+   ]
+  },
+  {
+   "startSec": 3.3,
+   "endSec": 4.9,
+   "seed": 3225498203,
+   "text": "I made 20 dollars",
+   "events": 54,
+   "bands": 48,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273
+   ],
+   "words": [
+    {
+     "text": "I",
+     "role": "minor",
+     "font": "text",
+     "startSec": 3.3,
+     "px": 42,
+     "baselineX": 455.861421875,
+     "baselineY": 1102.6147494941438,
+     "advance": 10.74609375,
+     "inkTop": 30.556640625,
+     "inkBottom": 0,
+     "motionSign": -1
+    },
+    {
+     "text": "made",
+     "role": "body",
+     "font": "text",
+     "startSec": 3.4499999999999997,
+     "px": 56,
+     "baselineX": 479.599515625,
+     "baselineY": 1102.6147494941438,
+     "advance": 144.5390625,
+     "inkTop": 40.7421875,
+     "inkBottom": 0.65625,
+     "motionSign": -1
+    },
+    {
+     "text": "20",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 3.75,
+     "px": 180.42698704290427,
+     "baselineX": 108,
+     "baselineY": 1239.92496013668,
+     "advance": 232.75786121452788,
+     "inkTop": 133.2939606425362,
+     "inkBottom": 2.0262796396419915,
+     "motionSign": -1
+    },
+    {
+     "text": "dollars",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 4,
+     "px": 180.42698704290427,
+     "baselineX": 382.6169222084817,
+     "baselineY": 1239.92496013668,
+     "advance": 589.3830777915183,
+     "inkTop": 131.26768100289422,
+     "inkBottom": 2.2024778691760774,
+     "motionSign": -1
+    }
+   ]
+  },
+  {
+   "startSec": 4.949999999999999,
+   "endSec": 6.549999999999999,
+   "seed": 988132387,
+   "text": "This is 96% accurate",
+   "events": 38,
+   "bands": 31,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273,
+    3.3600000000001273
+   ],
+   "words": [
+    {
+     "text": "This",
+     "role": "minor",
+     "font": "text",
+     "startSec": 4.949999999999999,
+     "px": 42,
+     "baselineX": 477.95221875,
+     "baselineY": 1056.756796875,
+     "advance": 82.7080078125,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.5126953125,
+     "motionSign": -1
+    },
+    {
+     "text": "is",
+     "role": "minor",
+     "font": "text",
+     "startSec": 5.1,
+     "px": 42,
+     "baselineX": 570.4042265625,
+     "baselineY": 1056.756796875,
+     "advance": 31.6435546875,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.5126953125,
+     "motionSign": -1
+    },
+    {
+     "text": "96%",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 5.299999999999999,
+     "px": 235.20000000000002,
+     "baselineX": 273.849609375,
+     "baselineY": 1234.5029296875,
+     "advance": 532.30078125,
+     "inkTop": 173.87343750000002,
+     "inkBottom": 2.75625,
+     "motionSign": -1
+    },
+    {
+     "text": "accurate",
+     "role": "body",
+     "font": "text",
+     "startSec": 5.749999999999999,
+     "px": 56,
+     "baselineX": 426.783203125,
+     "baselineY": 1277.6152734375,
+     "advance": 226.43359375,
+     "inkTop": 36.99609375,
+     "inkBottom": 0.65625,
+     "motionSign": 1
+    }
+   ]
+  },
+  {
+   "startSec": 6.6,
+   "endSec": 8.2,
+   "seed": 2282445877,
+   "text": "if it has Captions",
+   "events": 38,
+   "bands": 31,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "if",
+     "role": "minor",
+     "font": "text",
+     "startSec": 6.6,
+     "px": 42,
+     "baselineX": 470.69105859375,
+     "baselineY": 1070.9956253523112,
+     "advance": 25.060546875,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0,
+     "motionSign": -1
+    },
+    {
+     "text": "it",
+     "role": "minor",
+     "font": "text",
+     "startSec": 6.699999999999999,
+     "px": 42,
+     "baselineX": 505.49560546875,
+     "baselineY": 1070.9956253523112,
+     "advance": 24.9990234375,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.0615234375,
+     "motionSign": -1
+    },
+    {
+     "text": "has",
+     "role": "minor",
+     "font": "text",
+     "startSec": 6.8,
+     "px": 42,
+     "baselineX": 540.23862890625,
+     "baselineY": 1070.9956253523112,
+     "advance": 69.0703125,
+     "inkTop": 30.556640625,
+     "inkBottom": 0.5126953125,
+     "motionSign": -1
+    },
+    {
+     "text": "Captions",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 7,
+     "px": 199.48951521984216,
+     "baselineX": 108,
+     "baselineY": 1223.3165732014515,
+     "advance": 864,
+     "inkTop": 148.44825253664035,
+     "inkBottom": 40.716121758737316,
+     "motionSign": -1
+    }
+   ]
+  },
+  {
+   "startSec": 8.25,
+   "endSec": 9.85,
+   "seed": 4102280314,
+   "text": "apni Language mein likho",
+   "events": 35,
+   "bands": 28,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273,
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "apni",
+     "role": "body",
+     "font": "text",
+     "startSec": 8.25,
+     "px": 56,
+     "baselineX": 485.025390625,
+     "baselineY": 1056.9625783342779,
+     "advance": 109.94921875,
+     "inkTop": 41.37109375,
+     "inkBottom": 11.4296875,
+     "motionSign": 1
+    },
+    {
+     "text": "Language",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 8.55,
+     "px": 182.307026581496,
+     "baselineX": 108,
+     "baselineY": 1204.387749040542,
+     "advance": 864,
+     "inkTop": 132.63548320626418,
+     "inkBottom": 38.6334226251803,
+     "motionSign": 1
+    },
+    {
+     "text": "mein",
+     "role": "minor",
+     "font": "text",
+     "startSec": 9.05,
+     "px": 42,
+     "baselineX": 425.02792578125,
+     "baselineY": 1287.7522654157224,
+     "advance": 94.8076171875,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.4921875,
+     "motionSign": -1
+    },
+    {
+     "text": "likho",
+     "role": "body",
+     "font": "text",
+     "startSec": 9.25,
+     "px": 56,
+     "baselineX": 532.82754296875,
+     "baselineY": 1287.7522654157224,
+     "advance": 122.14453125,
+     "inkTop": 41.37109375,
+     "inkBottom": 0.65625,
+     "motionSign": -1
+    }
+   ]
+  },
+  {
+   "startSec": 9.899999999999999,
+   "endSec": 11.499999999999998,
+   "seed": 4286286127,
+   "text": "you will never guess",
+   "events": 32,
+   "bands": 25,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273,
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "you",
+     "role": "minor",
+     "font": "text",
+     "startSec": 9.899999999999999,
+     "px": 42,
+     "baselineX": 467.62653515625,
+     "baselineY": 1074.9588476562499,
+     "advance": 71.080078125,
+     "inkTop": 22.39453125,
+     "inkBottom": 8.61328125,
+     "motionSign": -1
+    },
+    {
+     "text": "will",
+     "role": "minor",
+     "font": "text",
+     "startSec": 10.019999999999998,
+     "px": 42,
+     "baselineX": 548.45061328125,
+     "baselineY": 1074.9588476562499,
+     "advance": 63.9228515625,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0,
+     "motionSign": -1
+    },
+    {
+     "text": "never",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 10.2,
+     "px": 235.20000000000002,
+     "baselineX": 221.13632812499998,
+     "baselineY": 1212.34150390625,
+     "advance": 637.72734375,
+     "inkTop": 125.40937500000001,
+     "inkBottom": 2.64140625,
+     "motionSign": -1
+    },
+    {
+     "text": "guess",
+     "role": "body",
+     "font": "text",
+     "startSec": 10.649999999999999,
+     "px": 56,
+     "baselineX": 462.494140625,
+     "baselineY": 1248.20228515625,
+     "advance": 155.01171875,
+     "inkTop": 29.859375,
+     "inkBottom": 11.8671875,
+     "motionSign": 1
+    }
+   ]
+  },
+  {
+   "startSec": 11.549999999999999,
+   "endSec": 13.149999999999999,
+   "seed": 4027625787,
+   "text": "the secret is consistency",
+   "events": 30,
+   "bands": 23,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "the",
+     "role": "minor",
+     "font": "text",
+     "startSec": 11.549999999999999,
+     "px": 42,
+     "baselineX": 398.71796093750004,
+     "baselineY": 1098.49225,
+     "advance": 62.7333984375,
+     "inkTop": 30.556640625,
+     "inkBottom": 0.4921875,
+     "motionSign": -1
+    },
+    {
+     "text": "secret",
+     "role": "body",
+     "font": "text",
+     "startSec": 11.669999999999998,
+     "px": 56,
+     "baselineX": 474.443359375,
+     "baselineY": 1098.49225,
+     "advance": 162.203125,
+     "inkTop": 36.99609375,
+     "inkBottom": 0.68359375,
+     "motionSign": -1
+    },
+    {
+     "text": "is",
+     "role": "minor",
+     "font": "text",
+     "startSec": 11.95,
+     "px": 42,
+     "baselineX": 649.638484375,
+     "baselineY": 1098.49225,
+     "advance": 31.6435546875,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.5126953125,
+     "motionSign": -1
+    },
+    {
+     "text": "consistency",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 12.1,
+     "px": 147.456,
+     "baselineX": 108.00000000000006,
+     "baselineY": 1212.26384375,
+     "advance": 863.9999999999999,
+     "inkTop": 109.728,
+     "inkBottom": 30.24,
+     "motionSign": -1
+    }
+   ]
+  },
+  {
+   "startSec": 13.2,
+   "endSec": 14.799999999999999,
+   "seed": 549663589,
+   "text": "got 1 million views",
+   "events": 66,
+   "bands": 60,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273,
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "got",
+     "role": "body",
+     "font": "text",
+     "startSec": 13.2,
+     "px": 56,
+     "baselineX": 497.31640625,
+     "baselineY": 1054.8377665261464,
+     "advance": 85.3671875,
+     "inkTop": 36.99609375,
+     "inkBottom": 11.8671875,
+     "motionSign": -1
+    },
+    {
+     "text": "1",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 13.45,
+     "px": 225.9534248926337,
+     "baselineX": 108.00000000000006,
+     "baselineY": 1238.2060768466415,
+     "advance": 92.56588060787094,
+     "inkTop": 164.38994291505088,
+     "inkBottom": 0,
+     "motionSign": -1
+    },
+    {
+     "text": "million",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 13.6,
+     "px": 225.9534248926337,
+     "baselineX": 252.98707518296203,
+     "baselineY": 1238.2060768466415,
+     "advance": 719.012924817038,
+     "inkTop": 168.141122820495,
+     "inkBottom": 2.5375628772121948,
+     "motionSign": -1
+    },
+    {
+     "text": "views",
+     "role": "body",
+     "font": "text",
+     "startSec": 14.049999999999999,
+     "px": 56,
+     "baselineX": 465.638671875,
+     "baselineY": 1285.4747334738536,
+     "advance": 148.72265625,
+     "inkTop": 41.37109375,
+     "inkBottom": 0.68359375,
+     "motionSign": 1
+    }
+   ]
+  },
+  {
+   "startSec": 14.85,
+   "endSec": 16.45,
+   "seed": 3638949837,
+   "text": "stop wasting your time",
+   "events": 39,
+   "bands": 32,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273,
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "stop",
+     "role": "body",
+     "font": "text",
+     "startSec": 14.85,
+     "px": 56,
+     "baselineX": 482.93359375,
+     "baselineY": 1029.0888836453046,
+     "advance": 114.1328125,
+     "inkTop": 36.99609375,
+     "inkBottom": 11.4296875,
+     "motionSign": -1
+    },
+    {
+     "text": "wasting",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 15.15,
+     "px": 224.5522842639594,
+     "baselineX": 108,
+     "baselineY": 1210.977048302665,
+     "advance": 864,
+     "inkTop": 167.0984771573604,
+     "inkBottom": 47.585786802030455,
+     "motionSign": -1
+    },
+    {
+     "text": "your",
+     "role": "minor",
+     "font": "text",
+     "startSec": 15.65,
+     "px": 42,
+     "baselineX": 433.5557578125,
+     "baselineY": 1303.2939288546954,
+     "advance": 86.419921875,
+     "inkTop": 22.39453125,
+     "inkBottom": 8.61328125,
+     "motionSign": 1
+    },
+    {
+     "text": "time",
+     "role": "body",
+     "font": "text",
+     "startSec": 15.799999999999999,
+     "px": 56,
+     "baselineX": 532.9676796875,
+     "baselineY": 1303.2939288546954,
+     "advance": 113.4765625,
+     "inkTop": 41.37109375,
+     "inkBottom": 0.65625,
+     "motionSign": 1
+    }
+   ]
+  },
+  {
+   "startSec": 16.5,
+   "endSec": 18.1,
+   "seed": 2389880857,
+   "text": "it changed everything",
+   "events": 31,
+   "bands": 26,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3600000000001273
+   ],
+   "words": [
+    {
+     "text": "it",
+     "role": "minor",
+     "font": "text",
+     "startSec": 16.5,
+     "px": 42,
+     "baselineX": 408.53964453125,
+     "baselineY": 1085.4832731958763,
+     "advance": 24.9990234375,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.0615234375,
+     "motionSign": -1
+    },
+    {
+     "text": "changed",
+     "role": "body",
+     "font": "text",
+     "startSec": 16.65,
+     "px": 56,
+     "baselineX": 446.53066796875,
+     "baselineY": 1085.4832731958763,
+     "advance": 224.9296875,
+     "inkTop": 40.7421875,
+     "inkBottom": 11.8671875,
+     "motionSign": -1
+    },
+    {
+     "text": "everything",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 16.95,
+     "px": 165.83617619493907,
+     "baselineX": 108,
+     "baselineY": 1224.1158964971885,
+     "advance": 864,
+     "inkTop": 123.40543580131208,
+     "inkBottom": 35.14301780693533,
+     "motionSign": -1
+    }
+   ]
+  },
+  {
+   "startSec": 18.15,
+   "endSec": 19.75,
+   "seed": 3463479954,
+   "text": "this is HUGE",
+   "events": 36,
+   "bands": 31,
+   "scale": 1,
+   "inkGapsPx": [
+    3.3599999999999
+   ],
+   "words": [
+    {
+     "text": "this",
+     "role": "minor",
+     "font": "text",
+     "startSec": 18.15,
+     "px": 42,
+     "baselineX": 483.90973828125,
+     "baselineY": 1077.3778125,
+     "advance": 70.79296875,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.5126953125,
+     "motionSign": 1
+    },
+    {
+     "text": "is",
+     "role": "minor",
+     "font": "text",
+     "startSec": 18.299999999999997,
+     "px": 42,
+     "baselineX": 564.44670703125,
+     "baselineY": 1077.3778125,
+     "advance": 31.6435546875,
+     "inkTop": 31.0283203125,
+     "inkBottom": 0.5126953125,
+     "motionSign": 1
+    },
+    {
+     "text": "HUGE",
+     "role": "hero",
+     "font": "hero",
+     "startSec": 18.5,
+     "px": 235.20000000000002,
+     "baselineX": 211.20234374999995,
+     "baselineY": 1255.0091015624998,
+     "advance": 657.5953125000001,
+     "inkTop": 173.75859375000002,
+     "inkBottom": 2.64140625,
+     "motionSign": 1
+    }
+   ]
+  }
+ ]
+}
