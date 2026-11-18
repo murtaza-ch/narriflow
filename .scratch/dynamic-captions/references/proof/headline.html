@@ -11,7 +11,11 @@
     open http://localhost:8765/.scratch/dynamic-captions/references/proof/headline.html
   Query: ?t=0.35 freezes the playhead; &shot renders the bare 1080x1920 stage for screenshots.
   Measurement switches (parity.ts): &flat paints the stage black, &noshadow hides the shadow
-  elements, &only=N shows only word N of each cue.
+  elements, &only=N shows only word N of each cue, &mask draws every word solid white at full
+  opacity with no shadow (ink coverage only; position and blur still follow the pose).
+  With ?t, the page also writes each visible word's DOM baseline into <script id="metrics">
+  (read with Chrome's --dump-dom in the same run as --screenshot): a zero-size baseline anchor
+  at the start of each word's text, so its client rect is the pen origin with the pose applied.
   Words are measured with Canvas measureText (the Studio's method, spec 5.6), placed by the
   shared layout.js, and compared with the HarfBuzz geometry build.ts wrote to cues.json.
 -->
@@ -26,6 +30,7 @@
   .stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; overflow: hidden; background: #000 url("backdrop.jpg") center / cover no-repeat; }
   .word { position: absolute; white-space: pre; line-height: normal; will-change: transform, opacity, filter; }
   .word.hero { color: transparent; -webkit-background-clip: text; background-clip: text; }
+  .anchor { display: inline-block; width: 0; height: 0; vertical-align: baseline; }
   body.flat .stage { background: #000; }
   .controls { display: flex; align-items: center; gap: 12px; width: min(100%, 560px); }
   .controls input { flex: 1; accent-color: var(--accent); }
@@ -54,7 +59,8 @@ const params = new URLSearchParams(location.search);
 const shot = params.has("shot");
 const frozen = params.has("t") ? Number(params.get("t")) : null;
 const only = params.has("only") ? Number(params.get("only")) : null;
-const noShadow = params.has("noshadow");
+const mask = params.has("mask");
+const noShadow = mask || params.has("noshadow");
 if (shot) document.body.classList.add("shot");
 if (params.has("flat")) document.body.classList.add("flat");
 
@@ -133,13 +139,16 @@ for (const baked of data.cues) {
     shade.style.color = "transparent";
     shade.style.textShadow = `0 ${shadow.offsetYPx * s}px ${shadow.blurPx * s}px rgba(0,0,0,${shadow.opacity})`;
     if (noShadow) shade.hidden = true;
-    const text = make(word.role === "hero" ? "word hero" : "word");
-    if (word.role === "hero" && heroInk) {
+    const text = make(word.role === "hero" && !mask ? "word hero" : "word");
+    // Zero-size baseline anchor at the pen origin: its rect top is the baseline, its left the text start.
+    const anchor = Object.assign(document.createElement("i"), { className: "anchor" });
+    text.prepend(anchor);
+    if (word.role === "hero" && heroInk && !mask) {
       text.style.backgroundImage = `linear-gradient(to bottom, ${HEADLINE.gradient.top} ${heroInk.top - top}px, ${HEADLINE.gradient.bottom} ${heroInk.bottom - top}px)`;
     } else {
       text.style.color = "#FFFFFF";
     }
-    return { word, els: [shade, text] };
+    return { word, els: [shade, text], anchor, pose: null };
   });
   cues.push({ startSec: baked.startSec, endSec: baked.endSec, painted });
 }
@@ -148,18 +157,37 @@ for (const baked of data.cues) {
 function paint(time) {
   for (const cue of cues) {
     const live = time >= cue.startSec && time < cue.endSec;
-    for (const { word, els } of cue.painted) {
+    for (const entry of cue.painted) {
+      const { word, els } = entry;
       const on = live && time >= word.startSec;
       const pose = on ? wordPose(word, (time - word.startSec) * 1000, (cue.endSec - word.startSec) * 1000) : null;
+      entry.pose = pose;
       for (const el of els) {
         el.style.visibility = on ? "visible" : "hidden";
         if (!pose) continue;
-        el.style.opacity = String(pose.opacity);
+        el.style.opacity = String(mask ? 1 : pose.opacity);
         el.style.transform = `translate(${pose.dx}px, ${pose.dy}px)`;
         el.style.filter = pose.blur > 0.01 ? `blur(${pose.blur}px)` : "none";
       }
     }
   }
+}
+
+// DOM baselines of the visible words at the frozen playhead, in canvas px (parity.ts reads them).
+const metrics = Object.assign(document.createElement("script"), { type: "application/json", id: "metrics" });
+document.body.append(metrics);
+function writeMetrics() {
+  const origin = stage.getBoundingClientRect();
+  const k = origin.width / CANVAS.width;
+  const words = [];
+  for (const [cueIndex, cue] of cues.entries()) {
+    for (const [index, { word, anchor, pose }] of cue.painted.entries()) {
+      if (!pose) continue;
+      const rect = anchor.getBoundingClientRect();
+      words.push({ cue: cueIndex, index, text: word.text, penX: (rect.left - origin.left) / k, baselineY: (rect.top - origin.top) / k, layoutBaselineX: word.baselineX, layoutBaselineY: word.baselineY, pose });
+    }
+  }
+  metrics.textContent = JSON.stringify({ t: time, words });
 }
 
 const frame = document.getElementById("frame");
@@ -192,9 +220,11 @@ function tick(now) {
   scrub.value = String(time);
   clock.textContent = `${time.toFixed(2)} s`;
   paint(time);
+  if (frozen !== null) writeMetrics();
   requestAnimationFrame(tick);
 }
 paint(time);
+if (frozen !== null) writeMetrics();
 document.body.dataset.ready = "1";
 requestAnimationFrame(tick);
 </script>
