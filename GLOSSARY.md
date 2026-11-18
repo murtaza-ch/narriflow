@@ -51,6 +51,22 @@ _Avoid_: Layout plan, detector payload, renderer fallback
 The service module that owns preview publication and the durable Automatic analysis queue, including renewed claim leases, editor-revision and proxy fencing, completion, retry deferral, and immediate shutdown release. Claim loss aborts the analysis through its execution signal. Workflow Attempt publication uses its own execution fence.
 _Avoid_: Clip Service preview helper, analysis worker mutex
 
+**Dynamic Style**:
+An entry in `CAPTION_DYNAMIC_STYLES` that a caption preset selects with `dynamic`. It maps Caption Roles to type (font slot, size, case, spacing, colour) and lays each cue out as a Caption Block. A style is data; renderers measure and paint, and shared geometry places every word.
+_Avoid_: Template, caption theme, animated preset
+
+**Caption Role**:
+The part a word plays in a Caption Block: `hero`, `body` or `minor`. The hero is the emphasised word, or 2-word unit, of a cue. Minor words are closed-class words (the, of, to, is, ka, ki, hai). Body is everything else. Roles come from a deterministic scorer or a user's override, never from per-word styling.
+_Avoid_: Emphasis style, word weight, highlight
+
+**Caption Block**:
+A cue laid out as one to three rows of role-typed words (`block` on a caption layer): a lead row, the hero alone, and a tail row, or one row when the cue has no hero. Subtitles and the clip timeline read the cue's plain words, never the block.
+_Avoid_: Caption line, multi-line caption, stack
+
+**Word Key**:
+A word's source start time in whole milliseconds, as a string. It names a word for emphasis overrides and seeds its cue's look, and it survives cuts, trims and text corrections. A trim that clamps an edge word's start changes that one word's key.
+_Avoid_: Word ID, word index
+
 **Scene Block**:
 A bounded visual insertion that occupies edited time in one Clip Editor Document and may contain video, an image, a color card, or a text card.
 _Avoid_: Timeline clip, composition scene, intro file

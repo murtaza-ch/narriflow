@@ -23,6 +23,10 @@
       "types": "./src/bidi-order.ts",
       "default": "./src/bidi-order.ts"
     },
+    "./caption-block": {
+      "types": "./src/caption-block.ts",
+      "default": "./src/caption-block.ts"
+    },
     "./glyph-coverage": {
       "types": "./src/glyph-coverage.ts",
       "default": "./src/glyph-coverage.ts"

@@ -298,9 +298,10 @@ interface CompositionCaptionVisualLayer { /* existing fields */ readonly block?:
   measurement. `layout: "stack"` puts the hero alone on its row, the words before it on a
   lead row, the words after on a tail row, dropping empty rows. `layout: "row"` is one row.
   A cue with no hero is one row, every non-minor word drawn at `style.noHeroSizeEm`.
-- One shared builder, `captionCueBlock(words, preset, language, cueIndex)`, is used by the
+- One shared builder, `captionCueBlock(words, preset, language, cueIndex, roles)`, is used by the
   plan and by the preset thumbnails and brand-kit previews, so samples render through the
-  real pipeline.
+  real pipeline. Roles are an argument because the scorer needs every cue of the clip;
+  thumbnails call `assignCaptionRoles` on their sample first.
 
 ### 5.6 Geometry (`packages/caption-fonts/src/caption-block.ts`, new, browser-safe subpath)
 
@@ -356,8 +357,8 @@ Rules, in order:
    rows start at the block's left edge, mirrored to the right edge for an RTL cue. Words
    inside a row follow `captionWordVisualOrder`.
 6. **Stagger.** Lead and tail rows shift by `style.staggerEm × S × sign`. Row 0 has sign
-   `seed % 2 === 0 ? 1 : −1`, the next non-hero row the opposite. The hero row does not
-   shift. `motionSign` of every word in a row equals the row's sign.
+   `seed % 2 === 0 ? 1 : −1`, the next row the opposite. The hero row takes its sign for
+   `motionSign` but does not shift. `motionSign` of every word in a row equals the row's sign.
 7. **Fit.** One block scale: `min(1, CAPTION_FIT_WIDTH_FRACTION × canvas.width / widestRow)`,
    applied to every word, so the hierarchy holds. Hero fill already targets less than the
    fit width, so this only bites on long lead or tail rows.
@@ -417,6 +418,9 @@ Painting:
   transforms imperatively. No mount-triggered animation. Pause, scrub and seeking into an
   entrance show the same pose the export shows at that time.
 - **Reduced motion** shows settled words, as classic presets do today.
+- **Motion pickers.** Motions that use `offsetXEm`, `rotateZDeg` or a `hero` track
+  (`slide`, `slam`, `drop`) are dynamic-only. The Studio lists them only for dynamic
+  presets. A classic preset that still holds one renders it as `fade` in both painters.
 
 New motions (ms, values at 1 em):
 
@@ -454,6 +458,10 @@ interface CaptionDynamicStyle {
   readonly staggerEm: number;
   readonly leftGuidePct?: number;
   readonly defaultMotion: CaptionAnimationName;
+  /** Style shadow that the preset's `shadow` enum cannot express (Headline's 65% soft shadow). */
+  readonly softShadow?: { readonly opacity: number; readonly blurPx: number; readonly offsetYPx: number };
+  /** Default for `preset.accentColor`. */
+  readonly accentColor?: string;
   readonly tile?: {
     readonly fill: Readonly<Record<CaptionWordRole, CaptionColourSlot | string>>;
     readonly tiltsDeg: readonly number[];
@@ -725,10 +733,9 @@ by 03a.
 
 **03c. Studio painter.** Absolute per-word painter with playhead-driven poses, Canvas
 measurement, the panel preview and thumbnails on the plan and `captionCueBlock`, the
-`caption-parity` page cases, the REST snapshot
-(`apps/api/src/domains/rest/__snapshots__/app.test.ts.snap`) and the public OpenAPI document
-regenerated with `bun run --cwd apps/api openapi:generate` and verified with
-`openapi:check`. Blocked by 03a. Can run beside 03b.
+`caption-parity` page cases. Every ticket that adds a catalog preset regenerates the REST
+snapshot and the public OpenAPI document (`bun run --cwd apps/api openapi:generate`, then
+`openapi:check`); 03a did it for Headline. Blocked by 03a. Can run beside 03b.
 
 **04. Studio controls and emphasis.** Section 7. Blocked by 03c.
 

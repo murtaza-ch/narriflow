@@ -11,6 +11,7 @@ import {
   MAX_DUCKING_WINDOWS,
   resolveEffectiveFramingMode,
   resolveMusicFadeWindows,
+  studioEditsEqual,
   studioEditsSchema,
   studioTransitionSchema,
   studioSfxPlacementSchema,
@@ -833,5 +834,32 @@ describe("applyStudioEditsToAllSchema (bulk apply request body)", () => {
         excludeClipId: "not-a-uuid",
       }),
     ).toThrow();
+  });
+});
+
+describe("studioEdits.captionEmphasis", () => {
+  test("is absent by default and keeps overrides by Word Key", () => {
+    expect(studioEditsSchema.parse({}).captionEmphasis).toBeUndefined();
+    const parsed = studioEditsSchema.parse({ captionEmphasis: { "1200": "hero", "1500": "pair", "1800": "plain" } });
+    expect(parsed.captionEmphasis).toEqual({ "1200": "hero", "1500": "pair", "1800": "plain" });
+  });
+
+  test("rejects unknown values, keys that are not whole milliseconds, and more than 2,000 entries", () => {
+    expect(studioEditsSchema.safeParse({ captionEmphasis: { "1200": "big" } }).success).toBe(false);
+    expect(studioEditsSchema.safeParse({ captionEmphasis: { "1.2": "hero" } }).success).toBe(false);
+    expect(studioEditsSchema.safeParse({ captionEmphasis: { "-5": "hero" } }).success).toBe(false);
+    const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [String(index), "plain"]));
+    expect(studioEditsSchema.safeParse({ captionEmphasis: entries(2000) }).success).toBe(true);
+    expect(studioEditsSchema.safeParse({ captionEmphasis: entries(2001) }).success).toBe(false);
+  });
+
+  test("studioEditsEqual compares it, treating absent and empty alike", () => {
+    const base = studioEditsSchema.parse({});
+    const hero = studioEditsSchema.parse({ captionEmphasis: { "1200": "hero" } });
+    expect(studioEditsEqual(base, studioEditsSchema.parse({ captionEmphasis: {} }))).toBe(true);
+    expect(studioEditsEqual(base, hero)).toBe(false);
+    expect(studioEditsEqual(hero, studioEditsSchema.parse({ captionEmphasis: { "1200": "pair" } }))).toBe(false);
+    expect(studioEditsEqual(hero, studioEditsSchema.parse({ captionEmphasis: { "1300": "hero" } }))).toBe(false);
+    expect(studioEditsEqual(hero, studioEditsSchema.parse({ captionEmphasis: { "1200": "hero" } }))).toBe(true);
   });
 });

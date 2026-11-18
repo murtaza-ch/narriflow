@@ -21,10 +21,12 @@ export type CaptionBackdrop = (typeof CAPTION_BACKDROPS)[number];
 
 /**
  * Talking-head frame each caption preset previews over, so a style is judged
- * on footage instead of a flat panel. Two presets share each frame; the
+ * on footage instead of a flat panel. Two or three presets share each frame; the
  * pairing follows the mood of the style.
  */
 const BACKDROP_BY_PRESET: Record<CatalogPresetId, CaptionBackdrop> = {
+  // The ticket 02 look proof was judged over this frame.
+  headline: "green-studio",
   "bold-pop": "dark-studio",
   blast: "brick-street",
   punch: "green-studio",

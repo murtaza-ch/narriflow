@@ -1,0 +1,364 @@
+import {
+  CAPTION_BLOCK,
+  CAPTION_CUE_TILTS_DEG,
+  CAPTION_FIT_WIDTH_FRACTION,
+  CAPTION_MOTIONS,
+  captionBlockAnimation,
+  captionEntranceKeyframes,
+  type CaptionBlock,
+  type CaptionDynamicStyle,
+  type CaptionKeyframe,
+  type CaptionMotionSpec,
+  type CaptionPreset,
+} from "@narriflow/validators";
+import { type CaptionDirection, captionWordVisualOrder } from "./bidi-order";
+
+/**
+ * Caption Block geometry (spec 5.6, ADR 0020): where every word of a Dynamic
+ * Style cue goes, in canvas px. The worker and the Studio each measure words
+ * their own way (HarfBuzz, Canvas `measureText`) and paint each word where
+ * this module says; neither lays text out across words.
+ *
+ * Browser-safe: no `node:` import anywhere in this file's import graph
+ * (`@narriflow/caption-fonts/caption-block`).
+ */
+
+/** One word measured alone in its role's face, at 1 em. */
+export interface MeasuredWord {
+  /** Advance at 1 em, including letter spacing, excluding trailing spacing. */
+  readonly advanceEm: number;
+  /** Ink above the baseline, positive. */
+  readonly inkTopEm: number;
+  /** Ink below the baseline, positive. */
+  readonly inkBottomEm: number;
+}
+
+/** What the layout reads of each caption word (a `CompositionCaptionWord` fits). */
+export interface CaptionBlockWordInput {
+  /** The provider's spacing before the word; `false` joins it to the previous word with no gap. */
+  readonly spaceBefore?: boolean;
+}
+
+export interface CaptionBlockRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface PlacedWord {
+  /** Font size in canvas px, after fit. */
+  readonly px: number;
+  /**
+   * Left end of the advance box at the baseline, before the word's rotation:
+   * turning this point about (`centerX`, `centerY`) by `rotationDeg` gives
+   * where the drawn baseline starts.
+   */
+  readonly baselineX: number;
+  readonly baselineY: number;
+  /** Centre of the advance box, vertically at the middle of the word's ink. The pivot of every transform. */
+  readonly centerX: number;
+  readonly centerY: number;
+  /** Block tilt plus tile tilt, degrees clockwise. */
+  readonly rotationDeg: number;
+  /** Multiplies `offsetXEm` of direction-flipping motions; equals the row's stagger sign. */
+  readonly motionSign: 1 | -1;
+}
+
+/** Drawn details (underline, stars); phase 2 fills these, phase 1 has none. */
+export interface PlacedDecoration {
+  readonly kind: "underline" | "star";
+  readonly bounds: CaptionBlockRect;
+}
+
+export interface CaptionBlockLayout {
+  /** The one fit scale applied to every word, so the hierarchy holds. */
+  readonly scale: number;
+  /** Parallel to the block's words. */
+  readonly words: readonly PlacedWord[];
+  /** Rest ink box of every word plus strokes, tiles, decorations and the reserved entrance travel. */
+  readonly bounds: CaptionBlockRect;
+  readonly decorations: readonly PlacedDecoration[];
+}
+
+export interface CaptionBlockLayoutInput {
+  readonly block: CaptionBlock;
+  readonly preset: CaptionPreset;
+  readonly style: CaptionDynamicStyle;
+  readonly words: readonly CaptionBlockWordInput[];
+  readonly measured: readonly MeasuredWord[];
+  readonly canvas: { readonly width: number; readonly height: number };
+  readonly anchor: { readonly xPct: number; readonly yPct: number };
+  /** The cue's base direction; rows read in its bidi visual order, left styles mirror for RTL. */
+  readonly direction: CaptionDirection;
+}
+
+interface Box {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+const emptyBox = (): Box => ({ left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity });
+
+function include(box: Box, left: number, top: number, right: number, bottom: number) {
+  box.left = Math.min(box.left, left);
+  box.right = Math.max(box.right, right);
+  box.top = Math.min(box.top, top);
+  box.bottom = Math.max(box.bottom, bottom);
+}
+
+/** Visual order of one row: logical word indexes left to right, and whether a space precedes each. */
+function rowVisualOrder(
+  row: readonly number[],
+  block: CaptionBlock,
+  words: readonly CaptionBlockWordInput[],
+  direction: CaptionDirection,
+): { readonly index: number; readonly spaced: boolean }[] {
+  const order = captionWordVisualOrder(
+    row.map((index, at) => ({ text: block.texts[index]!, space: at > 0 && words[index]!.spaceBefore !== false })),
+    direction,
+  );
+  const placed: { index: number; spaced: boolean }[] = [];
+  let spaced = false;
+  for (const item of order.items) {
+    if ("space" in item) {
+      spaced = true;
+      continue;
+    }
+    placed.push({ index: row[item.word]!, spaced: placed.length > 0 && spaced });
+    spaced = false;
+  }
+  return placed;
+}
+
+/** Extremes a keyframed property reaches, including its rest value. */
+function extremes(keyframes: readonly CaptionKeyframe[], property: keyof CaptionKeyframe, rest: number): [number, number] {
+  let low = rest;
+  let high = rest;
+  for (const frame of keyframes) {
+    const value = frame[property];
+    if (typeof value !== "number") continue;
+    low = Math.min(low, value);
+    high = Math.max(high, value);
+  }
+  return [low, high];
+}
+
+const radians = (degrees: number) => (degrees * Math.PI) / 180;
+
+/**
+ * Lays out one Caption Block. Rules in order (spec 5.6): role sizes, word
+ * gaps, hero fill, the fit scale, stagger signs, row pitch from measured ink,
+ * row x and bidi order, block tilt, anchor, and the safe-area shift over the
+ * bounds including the reserved entrance travel (spec 5.7). Rotation is
+ * applied about the block's rest centre before the safe-area shift, so the
+ * shift covers the turned corners; anchoring is unaffected because the turn
+ * keeps the centre.
+ */
+export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlockLayout {
+  const { block, preset, style, words, measured, canvas, anchor, direction } = input;
+  const count = block.roles.length;
+  if (measured.length !== count || words.length !== count) {
+    throw new Error("layoutCaptionBlock needs one measurement and one word per block role");
+  }
+  if (count === 0) {
+    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [] };
+  }
+  const S = preset.fontSize;
+  const roles = block.roles;
+  const hasHero = roles.includes("hero");
+  const strokePerPx = (preset.outlineWidth + (preset.outerOutlineWidth ?? 0)) / S;
+  const tile = style.tile;
+  const padX = (px: number) => (tile ? tile.padXEm * px : 0);
+  const padY = (px: number) => (tile ? tile.padYEm * px : 0);
+  const stroke = (px: number) => strokePerPx * px;
+
+  // Rule 1, sizes.
+  const px = roles.map((role) =>
+    S * (hasHero || role === "minor" ? style.roles[role].sizeEm : style.noHeroSizeEm));
+
+  const order = block.rows.map((row) => rowVisualOrder(row, block, words, direction));
+
+  // Rule 2, gaps; a row's width includes the outer stroke and tile extent at both ends.
+  const gapBefore = (left: number, right: number, spaced: boolean, sizes: readonly number[]) =>
+    (spaced ? CAPTION_BLOCK.wordGapEm * Math.max(sizes[left]!, sizes[right]!) : 0) + padX(sizes[left]!) + padX(sizes[right]!);
+  const rowWidth = (k: number, sizes: readonly number[]) => {
+    const items = order[k]!;
+    if (items.length === 0) return 0;
+    const first = items[0]!.index;
+    const last = items[items.length - 1]!.index;
+    let width = stroke(sizes[first]!) + padX(sizes[first]!) + stroke(sizes[last]!) + padX(sizes[last]!);
+    items.forEach((item, at) => {
+      width += measured[item.index]!.advanceEm * sizes[item.index]!;
+      if (at > 0) width += gapBefore(items[at - 1]!.index, item.index, item.spaced, sizes);
+    });
+    return width;
+  };
+
+  // Rule 3, hero fill: a stack hero row is scaled to the style's share of the frame width.
+  const heroRow = block.rows.findIndex((row) => row.length > 0 && row.every((index) => roles[index] === "hero"));
+  if (hasHero) {
+    let heroPx = S * style.roles.hero.sizeEm;
+    if (style.heroFill && heroRow >= 0 && style.layout === "stack") {
+      const unit = px.map((size, index) => (roles[index] === "hero" ? 1 : size));
+      const perEm = rowWidth(heroRow, unit);
+      const target = perEm > 0 ? (style.heroFill.widthFraction * canvas.width) / perEm : S * style.heroFill.minEm;
+      heroPx = Math.min(S * style.heroFill.maxEm, Math.max(S * style.heroFill.minEm, target));
+    }
+    heroPx *= preset.emphasisScale ?? 1;
+    roles.forEach((role, index) => {
+      if (role === "hero") px[index] = heroPx;
+    });
+  }
+
+  // Rule 7, fit: one scale for the whole block, so the hierarchy holds.
+  const widest = Math.max(...block.rows.map((_, k) => rowWidth(k, px)));
+  const scale = widest > 0 ? Math.min(1, (CAPTION_FIT_WIDTH_FRACTION * canvas.width) / widest) : 1;
+  for (let index = 0; index < count; index++) px[index] = px[index]! * scale;
+
+  // Rule 6, stagger signs: row 0 takes the seed's sign, each later non-hero row the opposite of the last one.
+  const baseSign: 1 | -1 = block.seed % 2 === 0 ? 1 : -1;
+  const isHeroRow = (k: number) => k === heroRow;
+  let lastSign = baseSign;
+  const rowSign = block.rows.map((_, k): 1 | -1 => {
+    if (k === 0) return baseSign;
+    if (isHeroRow(k)) return baseSign;
+    lastSign = lastSign === 1 ? -1 : 1;
+    return lastSign;
+  });
+
+  // Rule 4, row pitch from measured ink plus stroke (and tile padding).
+  const inkTop = (index: number) => measured[index]!.inkTopEm * px[index]! + stroke(px[index]!) + padY(px[index]!);
+  const inkBottom = (index: number) => measured[index]!.inkBottomEm * px[index]! + stroke(px[index]!) + padY(px[index]!);
+  const rowInkTop = block.rows.map((row) => Math.max(...row.map(inkTop)));
+  const rowInkBottom = block.rows.map((row) => Math.max(...row.map(inkBottom)));
+  const baselines = [0];
+  for (let k = 1; k < block.rows.length; k++) {
+    baselines.push(baselines[k - 1]! + rowInkBottom[k - 1]! + style.rowGapEm * S * scale + rowInkTop[k]!);
+  }
+
+  // Rule 5, row x (and rule 6's shift). Block-local coordinates: x = 0 is the centre axis, or the
+  // left edge of a left style (the right edge when it mirrors for RTL); y = 0 is row 0's baseline.
+  // Curved rows (spec 5.11) will replace this straight placement per glyph cluster, and row pitch
+  // will then use the arc's vertical extent.
+  const mirrored = style.align === "left" && direction === "rtl";
+  const left = new Array<number>(count).fill(0);
+  const rest = emptyBox();
+  block.rows.forEach((_, k) => {
+    const width = rowWidth(k, px);
+    const shift = isHeroRow(k) ? 0 : style.staggerEm * S * scale * rowSign[k]!;
+    const rowLeft = (style.align === "center" ? -width / 2 : mirrored ? -width : 0) + shift;
+    const items = order[k]!;
+    let cursor = rowLeft + stroke(px[items[0]!.index]!) + padX(px[items[0]!.index]!);
+    items.forEach((item, at) => {
+      if (at > 0) cursor += gapBefore(items[at - 1]!.index, item.index, item.spaced, px);
+      left[item.index] = cursor;
+      cursor += measured[item.index]!.advanceEm * px[item.index]!;
+    });
+    include(rest, rowLeft, baselines[k]! - rowInkTop[k]!, rowLeft + width, baselines[k]! + rowInkBottom[k]!);
+  });
+  const rowOf = new Array<number>(count).fill(0);
+  block.rows.forEach((row, k) => {
+    for (const index of row) rowOf[index] = k;
+  });
+
+  // Rule 10, rotation: the block tilt turns each word's centre about the block centre.
+  const motion: CaptionMotionSpec = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
+  const blockTilt = motion.tilt ? CAPTION_CUE_TILTS_DEG[block.seed % CAPTION_CUE_TILTS_DEG.length]! : 0;
+  const pivotX = (rest.left + rest.right) / 2;
+  const pivotY = (rest.top + rest.bottom) / 2;
+  const cos = Math.cos(radians(blockTilt));
+  const sin = Math.sin(radians(blockTilt));
+  const local = roles.map((role, index) => {
+    const advance = measured[index]!.advanceEm * px[index]!;
+    const inkMid = ((measured[index]!.inkTopEm - measured[index]!.inkBottomEm) / 2) * px[index]!;
+    const x = left[index]! + advance / 2 - pivotX;
+    const y = baselines[rowOf[index]!]! - inkMid - pivotY;
+    const tileTilt = tile && tile.tiltsDeg.length > 0 ? tile.tiltsDeg[(index + block.seed) % tile.tiltsDeg.length]! : 0;
+    return {
+      role,
+      advance,
+      inkMid,
+      centerX: pivotX + x * cos - y * sin,
+      centerY: pivotY + x * sin + y * cos,
+      rotationDeg: blockTilt + tileTilt,
+      motionSign: rowSign[rowOf[index]!]!,
+    };
+  });
+
+  // Reserved space (spec 5.7): each word's box at rest, turned, plus its entrance travel and scale growth.
+  const reserved = emptyBox();
+  local.forEach((word, index) => {
+    const size = px[index]!;
+    const halfW = word.advance / 2 + stroke(size) + padX(size);
+    const halfH = ((measured[index]!.inkTopEm + measured[index]!.inkBottomEm) / 2) * size + stroke(size) + padY(size);
+    const frames = captionEntranceKeyframes(motion, word.role === "hero");
+    const [xLow, xHigh] = extremes(frames, "offsetXEm", 0);
+    const [yLow, yHigh] = extremes(frames, "offsetYEm", 0);
+    const [, scaleXHigh] = extremes(frames, "scaleX", 1);
+    const [, scaleYHigh] = extremes(frames, "scaleY", 1);
+    const [zLow, zHigh] = extremes(frames, "rotateZDeg", 0);
+    const grow = Math.max(1, scaleXHigh, scaleYHigh);
+    let spanW = 0;
+    let spanH = 0;
+    for (const extra of [0, zLow, zHigh]) {
+      const theta = radians(word.rotationDeg + extra);
+      spanW = Math.max(spanW, Math.abs(halfW * Math.cos(theta)) + Math.abs(halfH * Math.sin(theta)));
+      spanH = Math.max(spanH, Math.abs(halfW * Math.sin(theta)) + Math.abs(halfH * Math.cos(theta)));
+    }
+    spanW *= grow;
+    spanH *= grow;
+    const travelX = [xLow * size * word.motionSign, xHigh * size * word.motionSign];
+    include(
+      reserved,
+      word.centerX - spanW + Math.min(...travelX),
+      word.centerY - spanH + yLow * size,
+      word.centerX + spanW + Math.max(...travelX),
+      word.centerY + spanH + yHigh * size,
+    );
+  });
+
+  // Rule 8, anchor. Centre styles centre the rest box on the anchor; left styles put its left
+  // edge (mirrored: its right edge, at the mirrored guide) on the anchor and centre it vertically.
+  const anchorX = (canvas.width * anchor.xPct) / 100;
+  const anchorY = (canvas.height * anchor.yPct) / 100;
+  let dx = style.align === "center"
+    ? anchorX - (rest.left + rest.right) / 2
+    : mirrored
+      ? canvas.width - anchorX - rest.right
+      : anchorX - rest.left;
+  let dy = anchorY - (rest.top + rest.bottom) / 2;
+
+  // Rule 9, safe area: shift the block (never the stored position) to keep the reserved bounds inside.
+  const safe = CAPTION_BLOCK.safeArea;
+  const keepInside = (low: number, high: number, min: number, max: number) => {
+    if (high - low > max - min) return (min + max) / 2 - (low + high) / 2;
+    if (low < min) return min - low;
+    if (high > max) return max - high;
+    return 0;
+  };
+  dx += keepInside(reserved.left + dx, reserved.right + dx, safe.left * canvas.width, safe.right * canvas.width);
+  dy += keepInside(reserved.top + dy, reserved.bottom + dy, safe.top * canvas.height, safe.bottom * canvas.height);
+
+  return {
+    scale,
+    words: local.map((word, index) => ({
+      px: px[index]!,
+      baselineX: word.centerX + dx - word.advance / 2,
+      baselineY: word.centerY + dy + word.inkMid,
+      centerX: word.centerX + dx,
+      centerY: word.centerY + dy,
+      rotationDeg: word.rotationDeg,
+      motionSign: word.motionSign,
+    })),
+    bounds: {
+      x: reserved.left + dx,
+      y: reserved.top + dy,
+      width: reserved.right - reserved.left,
+      height: reserved.bottom - reserved.top,
+    },
+    decorations: [],
+  };
+}

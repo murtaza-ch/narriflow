@@ -15,19 +15,26 @@ export type CaptionEase = "linear" | "out" | "in";
  * that set it; `ease` shapes the segment that ENDS at this keyframe. libass
  * renders an ease as a `\t` acceleration (out = 0.5, in = 2); the preview
  * samples the same power curve, so both follow one curve.
- * `offsetYEm` moves through `\move`, which libass interpolates linearly, so
- * keep its segments linear.
+ * `offsetXEm` and `offsetYEm` move through one `\move` per event, which
+ * libass interpolates linearly, so keep their segments linear and give x and
+ * y travel the same window. `offsetXEm` is multiplied by the word's
+ * `motionSign` (Caption Blocks, caption-block.ts), so a staggered row can
+ * enter from either side. `rotateZDeg` is clockwise, about the word's centre.
  */
 export interface CaptionKeyframe {
   readonly at: number;
   readonly scaleX?: number;
   readonly scaleY?: number;
   readonly opacity?: number;
+  readonly offsetXEm?: number;
   readonly offsetYEm?: number;
   readonly blurEm?: number;
   readonly rotateXDeg?: number;
+  readonly rotateZDeg?: number;
   readonly ease?: CaptionEase;
 }
+
+export type CaptionKeyframeProperty = Exclude<keyof CaptionKeyframe, "at" | "ease">;
 
 export const CAPTION_EASE_ACCEL: Record<CaptionEase, number> = {
   linear: 1,
@@ -47,6 +54,8 @@ export interface CaptionMotionSpec {
   readonly reveal: "cue" | "word";
   /** Entrance of the active word, played when it becomes active. */
   readonly word: readonly CaptionKeyframe[];
+  /** Entrance of a Caption Block's hero words; other block words use `word`. Absent = `word`. */
+  readonly hero?: readonly CaptionKeyframe[];
   /** Fade-in of a new cue (cue-reveal motions). */
   readonly cueFadeMs: number;
   /** Opacity of not-yet-spoken words in cue-reveal motions. */
@@ -196,6 +205,24 @@ export const CAPTION_MOTIONS = {
     upcomingOpacity: 0,
     tilt: false,
   },
+  slide: {
+    label: "Slide",
+    reveal: "word",
+    word: [
+      { at: 0, offsetXEm: -0.18, opacity: 0 },
+      { at: 40, opacity: 1 },
+      { at: 90, offsetXEm: 0 },
+    ],
+    hero: [
+      { at: 0, offsetYEm: 0.12, blurEm: 0.04, opacity: 0 },
+      { at: 40, opacity: 1 },
+      { at: 100, blurEm: 0, ease: "out" },
+      { at: 150, offsetYEm: 0 },
+    ],
+    cueFadeMs: 0,
+    upcomingOpacity: 0,
+    tilt: false,
+  },
   typewriter: {
     label: "Typewriter",
     reveal: "word",
@@ -297,7 +324,7 @@ export function captionTypewriterLetterDelays(letterCount: number, wordDurationM
  */
 export function captionKeyframeValue(
   keyframes: readonly CaptionKeyframe[],
-  property: "scaleX" | "scaleY" | "opacity" | "offsetYEm" | "blurEm" | "rotateXDeg",
+  property: CaptionKeyframeProperty,
   atMs: number,
 ): number | undefined {
   const track = keyframes.filter((frame) => frame[property] !== undefined);
@@ -314,4 +341,31 @@ export function captionKeyframeValue(
     }
   }
   return track[track.length - 1]![property];
+}
+
+/** The keyframes a word of a Caption Block enters with: hero words use `hero ?? word`, others `word`. */
+export function captionEntranceKeyframes(motion: CaptionMotionSpec, hero: boolean): readonly CaptionKeyframe[] {
+  return hero ? motion.hero ?? motion.word : motion.word;
+}
+
+/** Length of an entrance: its last keyframe time, ms. */
+export function captionEntranceMs(keyframes: readonly CaptionKeyframe[]): number {
+  return keyframes.reduce((longest, frame) => Math.max(longest, frame.at), 0);
+}
+
+/** Below this much cue time left at a word's onset, the word appears settled. */
+export const CAPTION_ENTRANCE_MIN_REMAINING_MS = 100;
+
+/** An entrance may use at most this fraction of the cue time left at the word's onset. */
+export const CAPTION_ENTRANCE_MAX_SHARE = 0.45;
+
+/**
+ * Duration cap for Caption Block entrances (spec 5.7): every keyframe time of
+ * a word is multiplied by this factor, `min(1, 0.45 × remainingCueMs /
+ * entranceMs)`. 0 means "draw the word settled": less than 100 ms of the cue
+ * is left, or the entrance has no length.
+ */
+export function captionEntranceTimeScale(remainingCueMs: number, entranceMs: number): number {
+  if (remainingCueMs < CAPTION_ENTRANCE_MIN_REMAINING_MS || entranceMs <= 0) return 0;
+  return Math.min(1, (CAPTION_ENTRANCE_MAX_SHARE * remainingCueMs) / entranceMs);
 }

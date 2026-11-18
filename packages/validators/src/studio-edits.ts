@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  CAPTION_EMPHASIS_OVERRIDE_LIMIT,
+  captionEmphasisOverrideSchema,
+  type CaptionEmphasisOverride,
+} from "./caption-emphasis";
 import { logoPositionSchema } from "./logo-position";
 import {
   sourceRangeToEdited,
@@ -462,6 +467,16 @@ export const studioVisualBrollPlacementSchema = z.strictObject({
   path: ["endSec"],
 });
 
+/**
+ * Caption emphasis overrides by Word Key (a word's source start in whole
+ * milliseconds). Overrides whose key matches no word are kept and ignored.
+ */
+export const studioCaptionEmphasisSchema = z
+  .record(z.string().regex(/^\d+$/), captionEmphasisOverrideSchema)
+  .refine((overrides) => Object.keys(overrides).length <= CAPTION_EMPHASIS_OVERRIDE_LIMIT, {
+    message: `at most ${CAPTION_EMPHASIS_OVERRIDE_LIMIT} caption emphasis overrides`,
+  });
+
 export const studioEditsSchema = z
   .object({
     textLayers: z.array(studioTextLayerSchema).max(STUDIO_EDIT_LIMITS.textLayers).default([]),
@@ -481,6 +496,8 @@ export const studioEditsSchema = z
     sceneLayouts: studioSceneLayoutSelectionsSchema,
     sfx: z.array(studioSfxPlacementSchema).max(STUDIO_EDIT_LIMITS.sfx).default([]),
     visualBroll: z.array(studioVisualBrollPlacementSchema).max(STUDIO_EDIT_LIMITS.visualBroll).default([]),
+    /** Hero overrides for Dynamic Style captions. Absent = none. */
+    captionEmphasis: studioCaptionEmphasisSchema.optional(),
   })
   .superRefine((edits, context) => {
     const ordered = [...edits.visualBroll].sort((left, right) => left.startSec - right.startSec);
@@ -593,6 +610,16 @@ function studioVisualBrollEqual(
   });
 }
 
+function captionEmphasisEqual(
+  left: Readonly<Record<string, CaptionEmphasisOverride>> | undefined,
+  right: Readonly<Record<string, CaptionEmphasisOverride>> | undefined,
+): boolean {
+  if (left === right) return true;
+  const leftKeys = Object.keys(left ?? {});
+  if (leftKeys.length !== Object.keys(right ?? {}).length) return false;
+  return leftKeys.every((key) => left![key] === right?.[key]);
+}
+
 /** Field-aware equality for canonical Studio edit values. */
 export function studioEditsEqual(
   left: StudioEdits,
@@ -623,6 +650,7 @@ export function studioEditsEqual(
     studioTextLayersEqual(left.textLayers, right.textLayers) &&
     studioSfxPlacementsEqual(left.sfx, right.sfx) &&
     studioVisualBrollEqual(left.visualBroll, right.visualBroll) &&
+    captionEmphasisEqual(left.captionEmphasis, right.captionEmphasis) &&
     speakerLayoutOverridesEqual(
       left.speakerLayoutOverrides,
       right.speakerLayoutOverrides,

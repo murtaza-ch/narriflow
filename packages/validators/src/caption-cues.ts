@@ -17,6 +17,29 @@ function captionTokenCost(text: string): number {
   return Array.from(text).some(isNoSpaceScriptChar) ? 1 : WORD_COST_CHARS;
 }
 
+/** A pause of at least this many edited seconds after a word is a soft cue break. */
+export const CAPTION_SOFT_BREAK_GAP_SEC = 0.35;
+
+/** Sentence or clause punctuation at the end of a token, before any closing quotes or brackets. */
+const CLAUSE_END_RE = /[.!?…,;:—–۔؟،؛।॥。！？、，；：]["'”’)\]»」』]*$/u;
+
+/**
+ * Soft cue breaks for `groupCaptionTokens` (spec 5.4): entry i is true when
+ * the raw transcript text of token i ends with sentence or clause punctuation,
+ * or the edited-time gap from its end to the next token's start is 0.35 s or
+ * more. `raw` is the text before punctuation stripping, so a break survives
+ * the Punctuation toggle.
+ */
+export function captionSoftBreaks(
+  tokens: readonly { readonly raw: string; readonly startSec: number; readonly endSec: number }[],
+): boolean[] {
+  return tokens.map((token, index) => {
+    if (CLAUSE_END_RE.test(token.raw.trim())) return true;
+    const next = tokens[index + 1];
+    return next !== undefined && next.startSec - token.endSec >= CAPTION_SOFT_BREAK_GAP_SEC;
+  });
+}
+
 /**
  * The one caption cue grouping, shared by the composition plan (burn-in,
  * subtitle files, Studio composition preview) and the Studio's caption
@@ -29,22 +52,41 @@ function captionTokenCost(text: string): number {
  * Pure arithmetic on code points, never `Intl.Segmenter`: browser and Bun ICU
  * segment differently and the preview must match the export.
  *
+ * `softBreakAfter` (from `captionSoftBreaks`) makes breaks phrase-aware: when
+ * the next token would overflow the budget and the open cue holds a soft break
+ * that leaves at least 2 tokens in the closed cue, the cue closes after the
+ * latest such break and the tokens after it open the next cue. A soft break
+ * never closes a cue that is not overflowing. Without it, cues close only on
+ * the budget.
+ *
  * Returns half-open `[start, end)` index ranges covering every token.
  */
 export function groupCaptionTokens(
   texts: readonly string[],
   wordsPerCue: number,
+  softBreakAfter?: readonly boolean[],
 ): { start: number; end: number }[] {
   const budget = Math.max(1, Math.floor(wordsPerCue)) * WORD_COST_CHARS;
+  const costs = texts.map(captionTokenCost);
   const groups: { start: number; end: number }[] = [];
   let start = 0;
   let used = 0;
   for (let index = 0; index < texts.length; index += 1) {
-    const cost = captionTokenCost(texts[index]!);
-    if (index > start && used + cost > budget) {
-      groups.push({ start, end: index });
-      start = index;
+    const cost = costs[index]!;
+    while (index > start && used + cost > budget) {
+      let end = index;
+      if (softBreakAfter) {
+        for (let at = index - 1; at > start; at -= 1) {
+          if (softBreakAfter[at]) {
+            end = at + 1;
+            break;
+          }
+        }
+      }
+      groups.push({ start, end });
+      start = end;
       used = 0;
+      for (let carried = start; carried < index; carried += 1) used += costs[carried]!;
     }
     used += cost;
   }

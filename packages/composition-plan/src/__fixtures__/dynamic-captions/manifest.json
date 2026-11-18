@@ -1,0 +1,481 @@
+{
+  "description": "Dynamic caption fixture cases (spec section 9). Each case is one timed utterance that forms one cue. Times are source seconds in a clip that starts at 0; keys are Word Keys (source start in whole ms). Expected roles hold for the shipped and the G1-tuned emphasis weights. Ticket 03b renders worker frames and 03c Studio frames from these cases.",
+  "cases": [
+    {
+      "id": "headline-en",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "the",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.27
+        },
+        {
+          "word": "BEST",
+          "key": "1300",
+          "startSec": 1.3,
+          "endSec": 1.57
+        },
+        {
+          "word": "part",
+          "key": "1600",
+          "startSec": 1.6,
+          "endSec": 1.87
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      },
+      "notes": "One English cue for Headline: lead, hero and tail rows."
+    },
+    {
+      "id": "headline-number-unit",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "I",
+          "key": "2000",
+          "startSec": 2,
+          "endSec": 2.27
+        },
+        {
+          "word": "made",
+          "key": "2300",
+          "startSec": 2.3,
+          "endSec": 2.57
+        },
+        {
+          "word": "20",
+          "key": "2600",
+          "startSec": 2.6,
+          "endSec": 2.87
+        },
+        {
+          "word": "dollars.",
+          "key": "2900",
+          "startSec": 2.9,
+          "endSec": 3.17
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "body",
+          "hero",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2,
+            3
+          ]
+        ]
+      },
+      "notes": "A number and its unit form one 2-word hero on one row."
+    },
+    {
+      "id": "headline-gate-no-hero",
+      "reference": null,
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "and",
+          "key": "3000",
+          "startSec": 3,
+          "endSec": 3.27
+        },
+        {
+          "word": "then",
+          "key": "3300",
+          "startSec": 3.3,
+          "endSec": 3.57
+        },
+        {
+          "word": "it",
+          "key": "3600",
+          "startSec": 3.6,
+          "endSec": 3.87
+        },
+        {
+          "word": "was",
+          "key": "3900",
+          "startSec": 3.9,
+          "endSec": 4.17
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "minor",
+          "minor"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2,
+            3
+          ]
+        ]
+      },
+      "notes": "No word can be the hero, so the gate leaves the cue as one row at noHeroSizeEm (minor words keep their size)."
+    },
+    {
+      "id": "headline-urdu",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "ur",
+      "words": [
+        {
+          "word": "یہ",
+          "key": "4000",
+          "startSec": 4,
+          "endSec": 4.27
+        },
+        {
+          "word": "50",
+          "key": "4300",
+          "startSec": 4.3,
+          "endSec": 4.57
+        },
+        {
+          "word": "فیصد",
+          "key": "4600",
+          "startSec": 4.6,
+          "endSec": 4.87
+        },
+        {
+          "word": "ہے",
+          "key": "4900",
+          "startSec": 4.9,
+          "endSec": 5.17
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "hero",
+          "hero",
+          "minor"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "Urdu (Arabic script, RTL): a number unit hero; rows keep bidi visual order."
+    },
+    {
+      "id": "headline-japanese",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "ja",
+      "words": [
+        {
+          "word": "今日は",
+          "key": "5000",
+          "startSec": 5,
+          "endSec": 5.27
+        },
+        {
+          "word": "3回",
+          "key": "5300",
+          "startSec": 5.3,
+          "endSec": 5.57,
+          "spaceBefore": false
+        },
+        {
+          "word": "走った",
+          "key": "5600",
+          "startSec": 5.6,
+          "endSec": 5.87,
+          "spaceBefore": false
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "body",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      },
+      "notes": "Japanese: no spaces between words (spaceBefore false), so rows join with no gap; case transforms are no-ops."
+    },
+    {
+      "id": "headline-short-words",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "stop",
+          "key": "6000",
+          "startSec": 6,
+          "endSec": 6.18
+        },
+        {
+          "word": "wasting",
+          "key": "6200",
+          "startSec": 6.2,
+          "endSec": 6.38
+        },
+        {
+          "word": "time",
+          "key": "6400",
+          "startSec": 6.4,
+          "endSec": 6.58
+        },
+        {
+          "word": "NOW",
+          "key": "6600",
+          "startSec": 6.6,
+          "endSec": 6.78
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "body",
+          "body",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "Shorter than 300 ms per word: the duration cap (spec 5.7) shortens every entrance; the hero is the last word, so its entrance runs in the cue's last 200 ms."
+    },
+    {
+      "id": "headline-long-hero-fit",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {
+        "wordsPerCue": 5
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "we",
+          "key": "8000",
+          "startSec": 8,
+          "endSec": 8.315
+        },
+        {
+          "word": "finally",
+          "key": "8350",
+          "startSec": 8.35,
+          "endSec": 8.665
+        },
+        {
+          "word": "got",
+          "key": "8700",
+          "startSec": 8.7,
+          "endSec": 9.015
+        },
+        {
+          "word": "1,000,000,000",
+          "key": "9050",
+          "startSec": 9.05,
+          "endSec": 9.365
+        },
+        {
+          "word": "views",
+          "key": "9400",
+          "startSec": 9.4,
+          "endSec": 9.715
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "body",
+          "body",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ],
+          [
+            4
+          ]
+        ]
+      },
+      "notes": "A 5-word cue whose 13-character hero is wider than the fit width at the 2.2 S floor, so the block fit scale (rule 7) drops below 1 with real fonts."
+    },
+    {
+      "id": "headline-override-hero",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "the",
+          "key": "10000",
+          "startSec": 10,
+          "endSec": 10.27
+        },
+        {
+          "word": "BEST",
+          "key": "10300",
+          "startSec": 10.3,
+          "endSec": 10.57
+        },
+        {
+          "word": "part",
+          "key": "10600",
+          "startSec": 10.6,
+          "endSec": 10.87
+        }
+      ],
+      "overrides": {
+        "10600": "hero"
+      },
+      "expected": {
+        "roles": [
+          "minor",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      },
+      "notes": "A user override moves the hero from BEST to part."
+    },
+    {
+      "id": "headline-override-plain",
+      "reference": null,
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "the",
+          "key": "11000",
+          "startSec": 11,
+          "endSec": 11.27
+        },
+        {
+          "word": "BEST",
+          "key": "11300",
+          "startSec": 11.3,
+          "endSec": 11.57
+        },
+        {
+          "word": "part",
+          "key": "11600",
+          "startSec": 11.6,
+          "endSec": 11.87
+        }
+      ],
+      "overrides": {
+        "11000": "plain",
+        "11300": "plain",
+        "11600": "plain"
+      },
+      "expected": {
+        "roles": [
+          "minor",
+          "body",
+          "body"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ]
+        ]
+      },
+      "notes": "\"No emphasis\": every word of the cue is plain, so the cue has no hero."
+    }
+  ]
+}

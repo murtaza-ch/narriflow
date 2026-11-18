@@ -316,7 +316,9 @@ describe("classic preset snapshot", () => {
     return renderCaptionTrack({ layers, canvas: { width: 1080, height: 1920 } }).ass;
   }
 
-  test.each(CAPTION_PRESETS.map((entry) => [entry.id, entry.preset] as const))("%s keeps its ASS output", (_id, preset) => {
+  // Dynamic Style presets draw Caption Blocks and are not part of this lock.
+  const classicPresets = CAPTION_PRESETS.filter((entry) => entry.preset.dynamic === undefined);
+  test.each(classicPresets.map((entry) => [entry.id, entry.preset] as const))("%s keeps its ASS output", (_id, preset) => {
     const ass = classicTrack(preset);
     expect(classicTrack(preset)).toBe(ass);
     expect(ass).toMatchSnapshot();

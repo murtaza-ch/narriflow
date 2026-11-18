@@ -1,0 +1,347 @@
+import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
+import {
+  CAPTION_BLOCK,
+  CAPTION_CUE_TILTS_DEG,
+  CAPTION_DYNAMIC_STYLES,
+  CAPTION_FIT_WIDTH_FRACTION,
+  type CaptionAnimation,
+  type CaptionBlock,
+  type CaptionDynamicStyle,
+  type CaptionPresetInput,
+  type CaptionWordRole,
+  captionBlockRows,
+  captionPresetSchema,
+  fnv1a32,
+} from "@narriflow/validators";
+import { type CaptionBlockLayoutInput, layoutCaptionBlock, type MeasuredWord, type PlacedWord } from "./caption-block";
+
+const CANVAS = { width: 1080, height: 1920 };
+const HEADLINE = CAPTION_DYNAMIC_STYLES.headline;
+const S = 80;
+
+/** Fake measurement: 0.5 em per letter, cap ink 0.7 em, descenders 0.2 em. */
+function measure(text: string): MeasuredWord {
+  return { advanceEm: 0.5 * Array.from(text).length, inkTopEm: 0.7, inkBottomEm: /[gjpqy]/.test(text) ? 0.2 : 0 };
+}
+
+interface Case {
+  readonly texts: readonly string[];
+  readonly roles: readonly CaptionWordRole[];
+  readonly heroSpan?: readonly [number, number] | null;
+  readonly seed?: number;
+  readonly style?: CaptionDynamicStyle;
+  readonly preset?: CaptionPresetInput;
+  readonly anchor?: { xPct: number; yPct: number };
+  readonly direction?: "ltr" | "rtl";
+  readonly spaceBefore?: readonly (boolean | undefined)[];
+}
+
+function layout(input: Case) {
+  const style = input.style ?? HEADLINE;
+  const heroStart = input.roles.indexOf("hero");
+  const heroSpan = input.heroSpan !== undefined
+    ? input.heroSpan
+    : heroStart < 0 ? null : [heroStart, input.roles.lastIndexOf("hero")] as const;
+  const block: CaptionBlock = {
+    style: "headline",
+    roles: input.roles,
+    texts: input.texts,
+    keys: input.texts.map(() => null),
+    rows: captionBlockRows(input.roles, heroSpan, style),
+    seed: input.seed ?? 0,
+  };
+  const preset = captionPresetSchema.parse({
+    dynamic: "headline", fontName: "Inter SemiBold", fontSize: S, textTransform: "none", outlineWidth: 0, animation: "slide",
+    ...input.preset,
+  });
+  const layoutInput: CaptionBlockLayoutInput = {
+    block,
+    preset,
+    style,
+    words: input.texts.map((_, index) => {
+      const spaceBefore = input.spaceBefore?.[index];
+      return spaceBefore === undefined ? {} : { spaceBefore };
+    }),
+    measured: input.texts.map(measure),
+    canvas: CANVAS,
+    anchor: input.anchor ?? { xPct: 50, yPct: 50 },
+    direction: input.direction ?? "ltr",
+  };
+  return { ...layoutCaptionBlock(layoutInput), block, measured: layoutInput.measured };
+}
+
+const advance = (word: PlacedWord, measured: MeasuredWord) => measured.advanceEm * word.px;
+const inkTop = (word: PlacedWord, measured: MeasuredWord) => word.baselineY - measured.inkTopEm * word.px;
+const inkBottom = (word: PlacedWord, measured: MeasuredWord) => word.baselineY + measured.inkBottomEm * word.px;
+
+/** Rest ink box of the placed words (advance boxes horizontally, ink vertically). */
+function inkBox(result: ReturnType<typeof layout>) {
+  return {
+    left: Math.min(...result.words.map((word) => word.baselineX)),
+    right: Math.max(...result.words.map((word, index) => word.baselineX + advance(word, result.measured[index]!))),
+    top: Math.min(...result.words.map((word, index) => inkTop(word, result.measured[index]!))),
+    bottom: Math.max(...result.words.map((word, index) => inkBottom(word, result.measured[index]!))),
+  };
+}
+
+const styleWith = (changes: Partial<CaptionDynamicStyle>): CaptionDynamicStyle => ({ ...HEADLINE, ...changes });
+const smallMinor = styleWith({ roles: { ...HEADLINE.roles, minor: { ...HEADLINE.roles.minor, sizeEm: 0.75 } } });
+
+describe("rule 1, sizes", () => {
+  test("roles size as multiples of S; minor words take their own size", () => {
+    const result = layout({ texts: ["the", "big", "deal"], roles: ["minor", "body", "body"], style: styleWith({ ...smallMinor, layout: "row", roles: { ...smallMinor.roles } }), heroSpan: [1, 1] });
+    // No hero role here, so non-minor words take noHeroSizeEm.
+    expect(result.words.map((word) => word.px)).toEqual([0.75 * S, HEADLINE.noHeroSizeEm * S, HEADLINE.noHeroSizeEm * S]);
+  });
+
+  test("with a hero, body and minor words keep their role sizes", () => {
+    const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], style: smallMinor });
+    expect(result.words[0]!.px).toBe(0.75 * S);
+    expect(result.words[2]!.px).toBe(S);
+  });
+
+  test("Headline draws minor words at body size", () => {
+    const result = layout({ texts: ["with", "Accurate", "captions"], roles: ["minor", "hero", "body"] });
+    expect(result.words[0]!.px).toBe(result.words[2]!.px);
+  });
+});
+
+describe("rule 2, gaps", () => {
+  test("adjacent words are wordGapEm times the larger size apart", () => {
+    // No hero: minor words at 0.75 S, the others at noHeroSizeEm, so each gap follows the larger word.
+    const result = layout({ texts: ["the", "big", "deal"], roles: ["minor", "body", "body"], style: smallMinor });
+    const [first, second, third] = result.words;
+    expect(first!.px).toBeLessThan(second!.px);
+    expect(second!.baselineX - (first!.baselineX + advance(first!, result.measured[0]!))).toBeCloseTo(CAPTION_BLOCK.wordGapEm * second!.px, 9);
+    expect(third!.baselineX - (second!.baselineX + advance(second!, result.measured[1]!))).toBeCloseTo(CAPTION_BLOCK.wordGapEm * third!.px, 9);
+  });
+
+  test("a word with spaceBefore false joins the previous word", () => {
+    const result = layout({ texts: ["今日", "は", "晴れ"], roles: ["body", "body", "body"], spaceBefore: [undefined, false, false] });
+    const [first, second] = result.words;
+    expect(second!.baselineX).toBeCloseTo(first!.baselineX + advance(first!, result.measured[0]!), 9);
+  });
+
+  test("tile styles add their padding to the gap", () => {
+    const tiled = styleWith({ layout: "row", tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08 } });
+    const result = layout({ texts: ["keep", "it"], roles: ["body", "minor"], style: tiled, heroSpan: null });
+    const [first, second] = result.words;
+    const px = HEADLINE.noHeroSizeEm * S;
+    expect(second!.baselineX - (first!.baselineX + advance(first!, result.measured[0]!)))
+      .toBeCloseTo(CAPTION_BLOCK.wordGapEm * px + 0.12 * px + 0.12 * S, 9);
+  });
+});
+
+describe("rule 3, hero fill", () => {
+  test("the hero row fills the style's share of the frame width", () => {
+    const result = layout({ texts: ["with", "Accurate", "captions"], roles: ["minor", "hero", "body"] });
+    const hero = result.words[1]!;
+    expect(advance(hero, result.measured[1]!)).toBeCloseTo(0.8 * CANVAS.width, 9);
+    expect(result.scale).toBe(1);
+  });
+
+  test("a 2-word hero fills with its gap and the stroke at both ends", () => {
+    const result = layout({ texts: ["got", "1", "million", "views"], roles: ["body", "hero", "hero", "body"], preset: { outlineWidth: 4 } });
+    const [, one, million] = result.words;
+    const stroke = (4 / S) * one!.px;
+    const width = million!.baselineX + advance(million!, result.measured[2]!) - one!.baselineX + 2 * stroke;
+    expect(width).toBeCloseTo(0.8 * CANVAS.width, 9);
+    expect(million!.baselineX - (one!.baselineX + advance(one!, result.measured[1]!))).toBeCloseTo(CAPTION_BLOCK.wordGapEm * one!.px, 9);
+  });
+
+  test("the hero size is clamped to [minEm, maxEm] × S, then multiplied by emphasisScale", () => {
+    const short = layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"] });
+    expect(short.words[1]!.px).toBe(3.4 * S);
+    const scaled = layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"], preset: { emphasisScale: 0.8 } });
+    expect(scaled.words[1]!.px).toBeCloseTo(3.4 * S * 0.8, 9);
+    const long = layout({ texts: ["it", "abcdefghijklmnop"], roles: ["minor", "hero"] });
+    // 8 em at the 2.2 S floor is wider than the fit width, so the fit scale applies on top.
+    expect(long.words[1]!.px).toBeCloseTo(2.2 * S * long.scale, 9);
+    expect(long.scale).toBeCloseTo((CAPTION_FIT_WIDTH_FRACTION * CANVAS.width) / (8 * 2.2 * S), 9);
+  });
+});
+
+describe("rule 4, row pitch from measured ink", () => {
+  test("ink-to-ink gaps between rows equal rowGapEm × S, whatever the sizes", () => {
+    const result = layout({ texts: ["you", "will", "never", "guess"], roles: ["minor", "minor", "hero", "body"] });
+    const rowGap = HEADLINE.rowGapEm * S;
+    const rows = result.block.rows;
+    for (let k = 1; k < rows.length; k++) {
+      const upper = Math.max(...rows[k - 1]!.map((index) => inkBottom(result.words[index]!, result.measured[index]!)));
+      const lower = Math.min(...rows[k]!.map((index) => inkTop(result.words[index]!, result.measured[index]!)));
+      expect(lower - upper).toBeCloseTo(rowGap, 9);
+    }
+  });
+
+  test("a negative rowGapEm overlaps rows by that much ink, and stroke counts as ink", () => {
+    const style = styleWith({ rowGapEm: -0.1 });
+    const result = layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], style, preset: { outlineWidth: 5 } });
+    const [lead, hero] = result.words;
+    const strokeLead = (5 / S) * lead!.px;
+    const strokeHero = (5 / S) * hero!.px;
+    const gap = (inkTop(hero!, result.measured[1]!) - strokeHero) - (inkBottom(lead!, result.measured[0]!) + strokeLead);
+    expect(gap).toBeCloseTo(-0.1 * S, 9);
+  });
+});
+
+describe("rules 5 and 6, row x and stagger", () => {
+  const staggered = styleWith({ staggerEm: 0.25 });
+  const rowCentre = (result: ReturnType<typeof layout>, row: readonly number[]) => {
+    const left = Math.min(...row.map((index) => result.words[index]!.baselineX));
+    const right = Math.max(...row.map((index) => result.words[index]!.baselineX + advance(result.words[index]!, result.measured[index]!)));
+    return (left + right) / 2;
+  };
+
+  test("lead and tail rows shift in opposite directions from the seed; the hero row stays centred", () => {
+    for (const [seed, sign] of [[2, 1], [3, -1]] as const) {
+      const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], style: staggered, seed });
+      const [lead, hero, tail] = result.block.rows.map((row) => rowCentre(result, row));
+      const shift = 0.25 * S;
+      expect(lead! - hero!).toBeCloseTo(sign * shift, 9);
+      expect(tail! - hero!).toBeCloseTo(-sign * shift, 9);
+      expect(result.words.map((word) => word.motionSign)).toEqual([sign, sign, -sign]);
+    }
+  });
+
+  test("a hero on row 0 keeps the seed's sign and the tail takes the opposite", () => {
+    const result = layout({ texts: ["BEST", "part", "ever"], roles: ["hero", "body", "body"], style: staggered, seed: 4 });
+    expect(result.words.map((word) => word.motionSign)).toEqual([1, -1, -1]);
+  });
+
+  test("RTL rows read in bidi visual order: the first word is rightmost", () => {
+    const result = layout({ texts: ["یہ", "بہت", "اچھا"], roles: ["body", "body", "body"], direction: "rtl" });
+    const xs = result.words.map((word) => word.baselineX);
+    expect(xs[0]!).toBeGreaterThan(xs[1]!);
+    expect(xs[1]!).toBeGreaterThan(xs[2]!);
+  });
+});
+
+describe("rule 7, fit", () => {
+  test("one scale for the whole block keeps the hierarchy", () => {
+    const result = layout({ texts: ["abcdefghijkl", "mnopqrstuvwx", "ABCDEFGH"], roles: ["body", "body", "hero"] });
+    expect(result.scale).toBeLessThan(1);
+    const lead = result.block.rows[0]!;
+    const width = result.words[lead[1]!]!.baselineX + advance(result.words[lead[1]!]!, result.measured[lead[1]!]!) - result.words[lead[0]!]!.baselineX;
+    expect(width).toBeCloseTo(CAPTION_FIT_WIDTH_FRACTION * CANVAS.width, 9);
+    expect(result.words[0]!.px).toBeCloseTo(S * result.scale, 9);
+    // The hero filled 80% of the width before the block scaled down with everything else.
+    expect(advance(result.words[2]!, result.measured[2]!)).toBeCloseTo(0.8 * CANVAS.width * result.scale, 9);
+  });
+});
+
+describe("rule 8, anchor", () => {
+  test("centre styles put the rest ink box centre on the anchor", () => {
+    const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], anchor: { xPct: 45, yPct: 45 } });
+    const box = inkBox(result);
+    expect((box.left + box.right) / 2).toBeCloseTo(0.45 * CANVAS.width, 9);
+    expect((box.top + box.bottom) / 2).toBeCloseTo(0.45 * CANVAS.height, 9);
+  });
+
+  test("left styles put the block's left edge on the anchor and left-align rows", () => {
+    const left = styleWith({ align: "left", leftGuidePct: 8 });
+    const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], style: left, anchor: { xPct: 10, yPct: 50 } });
+    for (const word of result.words) expect(word.baselineX).toBeCloseTo(0.1 * CANVAS.width, 9);
+    const box = inkBox(result);
+    expect((box.top + box.bottom) / 2).toBeCloseTo(0.5 * CANVAS.height, 9);
+  });
+
+  test("left styles mirror to the right edge for an RTL cue", () => {
+    const left = styleWith({ align: "left", leftGuidePct: 8 });
+    const result = layout({ texts: ["یہ", "بہت", "اچھا"], roles: ["minor", "hero", "body"], style: left, direction: "rtl", anchor: { xPct: 10, yPct: 50 } });
+    for (const [index, word] of result.words.entries()) {
+      expect(word.baselineX + advance(word, result.measured[index]!)).toBeCloseTo(0.9 * CANVAS.width, 9);
+    }
+  });
+});
+
+describe("rule 9, safe area", () => {
+  test("the block shifts up so its bounds, including the hero's rising travel, end at 82%", () => {
+    // The hero is the last row and has no descender, so its 0.12 em start below rest reaches lowest.
+    const result = layout({ texts: ["with", "ACCURATE"], roles: ["minor", "hero"], anchor: { xPct: 50, yPct: 95 } });
+    const bottom = result.bounds.y + result.bounds.height;
+    expect(bottom).toBeCloseTo(0.82 * CANVAS.height, 9);
+    const hero = result.words[1]!;
+    expect(bottom - inkBox(result).bottom).toBeCloseTo(0.12 * hero.px, 9);
+  });
+
+  test("reserved sideways travel keeps a left style's entering words inside 6%", () => {
+    const left = styleWith({ align: "left", leftGuidePct: 8 });
+    const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], style: left, seed: 0, anchor: { xPct: 6, yPct: 50 } });
+    // Row 0 has sign +1, so its words enter from 0.18 em to the left of rest.
+    expect(result.words[0]!.motionSign).toBe(1);
+    expect(result.bounds.x).toBeCloseTo(0.06 * CANVAS.width, 9);
+    expect(result.words[0]!.baselineX).toBeCloseTo(0.06 * CANVAS.width + 0.18 * S, 9);
+  });
+
+  test("a block inside the safe area is not moved", () => {
+    const result = layout({ texts: ["with", "Accurate", "captions"], roles: ["minor", "hero", "body"], anchor: { xPct: 50, yPct: 50 } });
+    expect(result.bounds.y).toBeGreaterThan(0.1 * CANVAS.height);
+    expect(result.bounds.y + result.bounds.height).toBeLessThan(0.82 * CANVAS.height);
+    const box = inkBox(result);
+    expect((box.top + box.bottom) / 2).toBeCloseTo(0.5 * CANVAS.height, 9);
+  });
+});
+
+describe("rule 10, rotation", () => {
+  const tiled = styleWith({
+    layout: "row",
+    tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [-2, 1.5, -1, 2], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08 },
+  });
+  const words = { texts: ["keep", "it", "short"], roles: ["body", "minor", "body"] as const, style: tiled, heroSpan: null, seed: 5 };
+
+  test("rotation is the block tilt plus the word's tile tilt", () => {
+    const result = layout({ ...words, preset: { animation: "bounce" as CaptionAnimation } });
+    const blockTilt = CAPTION_CUE_TILTS_DEG[5 % 4]!;
+    expect(result.words.map((word) => word.rotationDeg)).toEqual([0, 1, 2].map((index) => blockTilt + tiled.tile!.tiltsDeg[(index + 5) % 4]!));
+  });
+
+  test("the block tilt turns word centres about the block centre", () => {
+    const flat = layout({ ...words, preset: { animation: "fade" as CaptionAnimation } });
+    const tilted = layout({ ...words, preset: { animation: "bounce" as CaptionAnimation } });
+    const theta = (CAPTION_CUE_TILTS_DEG[5 % 4]! * Math.PI) / 180;
+    const cx = CANVAS.width / 2;
+    const cy = CANVAS.height / 2;
+    flat.words.forEach((word, index) => {
+      const x = word.centerX - cx;
+      const y = word.centerY - cy;
+      expect(tilted.words[index]!.centerX).toBeCloseTo(cx + x * Math.cos(theta) - y * Math.sin(theta), 6);
+      expect(tilted.words[index]!.centerY).toBeCloseTo(cy + x * Math.sin(theta) + y * Math.cos(theta), 6);
+      expect(flat.words[index]!.rotationDeg).toBe(tiled.tile!.tiltsDeg[(index + 5) % 4]!);
+    });
+  });
+
+  test("baselines are given in the word's own frame around its centre", () => {
+    const result = layout({ ...words, preset: { animation: "bounce" as CaptionAnimation } });
+    result.words.forEach((word, index) => {
+      const measured = result.measured[index]!;
+      expect(word.centerX - word.baselineX).toBeCloseTo(advance(word, measured) / 2, 9);
+      expect(word.baselineY - word.centerY).toBeCloseTo(((measured.inkTopEm - measured.inkBottomEm) / 2) * word.px, 9);
+    });
+  });
+});
+
+describe("seeds and stability", () => {
+  test("the same block lays out identically every time", () => {
+    const input = { texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"] as const, style: styleWith({ staggerEm: 0.2 }), seed: fnv1a32("1250") };
+    expect(layout(input).words).toEqual(layout(input).words);
+  });
+
+  test("decorations are empty in phase 1", () => {
+    expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"] }).decorations).toEqual([]);
+  });
+});
+
+test("the caption-block import graph has no node: modules", async () => {
+  const entry = resolve(import.meta.dir, "caption-block.ts");
+  const code = `const result = await Bun.build({ entrypoints: [${JSON.stringify(entry)}], target: "browser", write: false, metafile: true });
+    if (!result.success) { console.error(result.logs); process.exit(1); }
+    const imports = Object.values(result.metafile.inputs).flatMap((input) => input.imports.map((entry) => entry.path));
+    console.log(JSON.stringify(imports.filter((path) => path.startsWith("node:") || /^(fs|path|os|crypto|child_process)$/.test(path))));`;
+  const child = Bun.spawn([process.execPath, "--no-env-file", "-e", code], {
+    cwd: resolve(import.meta.dir, "../../.."), stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "" },
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  expect(JSON.parse(stdout)).toEqual([]);
+}, 30_000);

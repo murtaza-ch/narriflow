@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CAPTION_DYNAMIC_NAMES } from "./caption-dynamic";
 import { CAPTION_FONT_NAMES } from "./caption-font";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
 import { stripCaptionEdgePunctuation, toCaptionUpperCase } from "./text-script";
@@ -170,6 +171,23 @@ export const captionPresetSchema = z.object({
    *  punctuation as transcribed; false routes cue text through
    *  `formatCaptionWord` in both the composition plan and the preview. */
   punctuation: z.boolean().optional(),
+  /**
+   * Dynamic Style (caption-dynamic.ts). Absent = classic single-line caption.
+   * When set, `fontSize` is the body size S, `primaryColor` the body colour,
+   * `highlightColor` the hero colour and `accentColor` the third colour;
+   * `highlightBoxColor`, `backgroundColor` and `emojis` do nothing.
+   */
+  dynamic: z.enum(CAPTION_DYNAMIC_NAMES).optional(),
+  /** Built-in face for roles on the hero font slot. Defaults to the style's hero font. */
+  heroFontName: captionFontNameSchema.optional(),
+  /** Third colour (tile fill, alternate hero, decorations). Defaults per style. */
+  accentColor: hexColor.optional(),
+  /** Multiplies the hero size after fill-to-width. 1 = the style's size. */
+  emphasisScale: z.number().min(0.7).max(1.4).optional(),
+  /** Curved rows (spec 5.11): positive arches, negative bows. Absent or 0 = straight. Not drawn yet. */
+  curve: z.number().min(-1).max(1).optional(),
+  /** Draw the hero row behind the speaker (spec 5.12). Not drawn yet. */
+  heroBehind: z.boolean().optional(),
 });
 
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;
@@ -200,9 +218,10 @@ export function captionPresetsEqual(
  */
 export const DEFAULT_CAPTION_PRESET: CaptionPreset = captionPresetSchema.parse({});
 
-export type CaptionPresetGroup = "Bold" | "Clean" | "Expressive" | "Effects";
+export type CaptionPresetGroup = "Dynamic" | "Bold" | "Clean" | "Expressive" | "Effects";
 
-export const CAPTION_PRESET_GROUPS = ["Bold", "Clean", "Expressive", "Effects"] as const satisfies readonly CaptionPresetGroup[];
+/** Gallery order: Dynamic Styles first. */
+export const CAPTION_PRESET_GROUPS = ["Dynamic", "Bold", "Clean", "Expressive", "Effects"] as const satisfies readonly CaptionPresetGroup[];
 
 export interface NamedCaptionPreset {
   id: string;
@@ -221,6 +240,11 @@ function namedPreset<const Id extends string>(
 }
 
 export const CAPTION_PRESETS = [
+  // Dynamic
+  namedPreset("headline", "Headline", "Dynamic", {
+    dynamic: "headline", fontName: "Inter SemiBold", fontSize: 80, textTransform: "none", letterSpacing: 0,
+    primaryColor: "#FFFFFF", highlightColor: "#36B780", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
+  }),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

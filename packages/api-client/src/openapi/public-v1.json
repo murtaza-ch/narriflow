@@ -299,6 +299,7 @@
                 "type": "string",
                 "enum": [
                   "brand_default",
+                  "headline",
                   "bold-pop",
                   "blast",
                   "punch",
@@ -854,6 +855,7 @@
             "type": "string",
             "enum": [
               "brand_default",
+              "headline",
               "bold-pop",
               "blast",
               "punch",

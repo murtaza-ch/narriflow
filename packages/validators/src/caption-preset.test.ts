@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CAPTION_DYNAMIC_STYLES,
   CAPTION_PRESET_GROUPS,
   CAPTION_PRESETS,
   DEFAULT_CAPTION_PRESET,
   applyCaptionPresetLook,
   applyCaptionTextTransform,
+  captionBlockAnimation,
   captionPresetIdSchema,
   captionPresetSchema,
+  captionPresetsEqual,
   formatCaptionWord,
   matchCaptionPreset,
 } from ".";
@@ -32,13 +35,71 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 24 presets with unique ids and names in every group", () => {
-    expect(CAPTION_PRESETS).toHaveLength(24);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(24);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(24);
-    for (const group of CAPTION_PRESET_GROUPS) {
+  test("has 25 presets with unique ids and names, the Dynamic group first", () => {
+    expect(CAPTION_PRESETS).toHaveLength(25);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(25);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(25);
+    expect(CAPTION_PRESET_GROUPS[0]).toBe("Dynamic");
+    expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
+    for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic")) {
       expect(CAPTION_PRESETS.filter((named) => named.group === group)).toHaveLength(6);
     }
+  });
+
+  test("Dynamic group presets, and only they, set a Dynamic Style", () => {
+    const dynamic = CAPTION_PRESETS.filter((named) => named.group === "Dynamic");
+    expect(dynamic.map((named) => named.id)).toEqual(["headline"]);
+    for (const named of CAPTION_PRESETS) {
+      expect(named.preset.dynamic !== undefined).toBe(named.group === "Dynamic");
+    }
+    for (const named of dynamic) {
+      const style = CAPTION_DYNAMIC_STYLES[named.preset.dynamic!];
+      // The catalog motion drives the block itself rather than falling back.
+      expect(captionBlockAnimation(named.preset, style)).toBe(named.preset.animation);
+      expect(named.preset.wordsPerCue).toBeGreaterThanOrEqual(2);
+      expect(named.preset.wordsPerCue).toBeLessThanOrEqual(5);
+    }
+  });
+
+  test("Headline follows the section 6 catalog row", () => {
+    const headline = CAPTION_PRESETS.find((named) => named.id === "headline")!.preset;
+    expect(headline).toMatchObject({
+      dynamic: "headline", fontName: "Inter SemiBold", fontSize: 80, textTransform: "none",
+      primaryColor: "#FFFFFF", highlightColor: "#36B780", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
+    });
+    const style = CAPTION_DYNAMIC_STYLES.headline;
+    expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
+    expect(style.heroFill).toEqual({ widthFraction: 0.8, minEm: 2.2, maxEm: 3.4 });
+    expect(style.roles.hero).toMatchObject({ font: "hero", letterSpacing: -0.03, transform: "none", colour: "highlight" });
+    expect(style.heroFontName).toBe("Inter");
+    expect(style.rowGapEm).toBe(0.06);
+    expect(style.softShadow).toEqual({ offsetYEm: 0.025, blurEm: 0.0375, opacity: 0.65 });
+  });
+
+  test("dynamic preset fields are optional and range-checked", () => {
+    const parsed = captionPresetSchema.parse({});
+    for (const key of ["dynamic", "heroFontName", "accentColor", "emphasisScale", "curve", "heroBehind"] as const) {
+      expect(parsed[key]).toBeUndefined();
+    }
+    expect(captionPresetSchema.safeParse({ dynamic: "headline", heroFontName: "Anton", accentColor: "#112233", emphasisScale: 1.2, curve: -0.5, heroBehind: true }).success).toBe(true);
+    expect(captionPresetSchema.safeParse({ dynamic: "nope" }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ heroFontName: "Impact" }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ emphasisScale: 0.6 }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ emphasisScale: 1.5 }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ curve: 1.1 }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ accentColor: "red" }).success).toBe(false);
+  });
+
+  test("equality and matching see the dynamic fields", () => {
+    const headline = CAPTION_PRESETS.find((named) => named.id === "headline")!;
+    expect(captionPresetsEqual(headline.preset, { ...headline.preset })).toBe(true);
+    expect(captionPresetsEqual(headline.preset, { ...headline.preset, heroFontName: "Anton" })).toBe(false);
+    expect(captionPresetsEqual(headline.preset, { ...headline.preset, curve: 0.3 })).toBe(false);
+    expect(matchCaptionPreset({ ...headline.preset, positionY: 40 })?.id).toBe("headline");
+    expect(matchCaptionPreset({ ...headline.preset, emphasisScale: 1.2 })).toBeUndefined();
+    expect(matchCaptionPreset({ ...headline.preset, dynamic: undefined })).toBeUndefined();
+    const boldPop = CAPTION_PRESETS.find((named) => named.id === "bold-pop")!;
+    expect(applyCaptionPresetLook({ ...headline.preset, positionY: 40 }, boldPop)).toEqual({ ...boldPop.preset, positionY: 40 });
   });
 
   test("keeps the classic presets by id so stored references stay valid", () => {
