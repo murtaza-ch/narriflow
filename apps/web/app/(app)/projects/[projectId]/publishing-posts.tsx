@@ -234,9 +234,11 @@ export function PublishingPosts({
 	return (
 		<Stack gap="4">
 			{filterable && (
-				<Flex justify="space-between" align="center" gap="3" wrap="wrap">
+				// One row in the drawer: the status control keeps its size and the platform select gives way. Phones wrap.
+				<Flex justify="space-between" align="center" gap="3" wrap={{ base: "wrap", md: "nowrap" }}>
 					{filters.length > 1 ? (
 						<SegmentedControl
+							flexShrink={0}
 							aria-label="Filter posts"
 							value={filter}
 							onValueChange={setFilter}
@@ -261,9 +263,9 @@ export function PublishingPosts({
 					) : (
 						<Box />
 					)}
-					<Flex align="center" gap="1" ms="auto">
+					<Flex align="center" gap="1" ms="auto" minW="0">
 						{platforms.length > 1 && (
-							<Box w="44">
+							<Box w="44" minW="28" flexShrink={1}>
 								<Select
 									ariaLabel="Filter by platform"
 									value={platform}
