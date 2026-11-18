@@ -2,13 +2,12 @@
 import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { SocialPostLinks } from "@/lib/social-post-links";
 import { describeCounts } from "@/lib/performance-format";
-import { type ReactNode, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { createIntent } from "@narriflow/api-client";
 import { apiFailureMessage } from "@/lib/publishing-client";
 import Link from "next/link";
 import {
 	Box,
-	chakra,
 	Flex,
 	Stack,
 	Text,
@@ -32,6 +31,8 @@ import { Input } from "@narriflow/ui/components/input";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { Select } from "@narriflow/ui/components/select";
 import type {
 	SocialPlatform,
 	SocialPostSnapshot,
@@ -105,52 +106,6 @@ function PostsHeroVisual() {
 				Scheduled · Fri 9:00
 			</Flex>
 		</Box>
-	);
-}
-
-/** One soft pill of the Posts filter bar, with its count. */
-function FilterChip({
-	active,
-	count,
-	alert = false,
-	onClick,
-	children,
-}: {
-	active: boolean;
-	count: number;
-	alert?: boolean;
-	onClick(): void;
-	children: ReactNode;
-}) {
-	return (
-		<chakra.button
-			type="button"
-			display="inline-flex"
-			alignItems="center"
-			gap="1.5"
-			h="8"
-			px="3"
-			borderRadius="full"
-			fontSize="13px"
-			fontWeight="500"
-			bg={active ? "accent.muted" : "bg.soft"}
-			color={active ? "accent.fg" : "fg.muted"}
-			_hover={{ bg: active ? "accent.muted" : "bg.softHover" }}
-			_focusVisible={{ outline: "2px solid", outlineColor: "accent.focusRing", outlineOffset: "2px" }}
-			transition="background 0.15s ease"
-			aria-pressed={active}
-			onClick={onClick}
-		>
-			{children}
-			<Text
-				as="span"
-				fontSize="12px"
-				fontVariantNumeric="tabular-nums"
-				color={alert ? "danger.fg" : active ? "accent.fg" : "fg.subtle"}
-			>
-				{count}
-			</Text>
-		</chakra.button>
 	);
 }
 
@@ -280,54 +235,61 @@ export function PublishingPosts({
 		<Stack gap="4">
 			{filterable && (
 				<Flex justify="space-between" align="center" gap="3" wrap="wrap">
-					{filters.length > 1 || platforms.length > 1 ? (
-						<Flex gap="2" wrap="wrap" align="center">
-							{filters.length > 1 && (
-								<Flex gap="2" wrap="wrap" role="group" aria-label="Filter posts">
-									{filters.map(({ value, label, count }) => (
-										<FilterChip
-											key={value}
-											active={filter === value}
-											count={count}
-											alert={value === "attention" && count > 0}
-											onClick={() => setFilter(value)}
+					{filters.length > 1 ? (
+						<SegmentedControl
+							aria-label="Filter posts"
+							value={filter}
+							onValueChange={setFilter}
+							items={filters.map(({ value, label, count }) => ({
+								value,
+								label: (
+									<>
+										{label}
+										<Text
+											as="span"
+											ms="1.5"
+											fontSize="12px"
+											fontVariantNumeric="tabular-nums"
+											color={value === "attention" && count > 0 ? "danger.fg" : "fg.subtle"}
 										>
-											{label}
-										</FilterChip>
-									))}
-								</Flex>
-							)}
-							{platforms.length > 1 && (
-								<Flex gap="2" wrap="wrap" role="group" aria-label="Filter by platform">
-									<FilterChip active={platform === "all"} count={posts.length} onClick={() => setPlatformFilter("all")}>
-										All platforms
-									</FilterChip>
-									{platforms.map((value) => (
-										<FilterChip
-											key={value}
-											active={platform === value}
-											count={posts.filter((p) => p.platform === value).length}
-											onClick={() => setPlatformFilter(value)}
-										>
-											<SocialPlatformMark platform={value} size="4" />
-											{SOCIAL_PLATFORM_LABELS[value]}
-										</FilterChip>
-									))}
-								</Flex>
-							)}
-						</Flex>
+											{count}
+										</Text>
+									</>
+								),
+							}))}
+						/>
 					) : (
 						<Box />
 					)}
-					<Button
-						aria-label="Refresh"
-						title="Refresh"
-						variant="ghost"
-						size="sm"
-						onClick={() => void refresh().catch((e) => setError(e.message))}
-					>
-						<RefreshCw size={14} />
-					</Button>
+					<Flex align="center" gap="1" ms="auto">
+						{platforms.length > 1 && (
+							<Box w="44">
+								<Select
+									ariaLabel="Filter by platform"
+									value={platform}
+									onValueChange={(value) => setPlatformFilter((value || "all") as SocialPlatform | "all")}
+									startElement={platform === "all" ? undefined : <SocialPlatformMark platform={platform} size="4" />}
+									items={[
+										{ value: "all", label: "All platforms" },
+										...platforms.map((value) => ({
+											value,
+											label: SOCIAL_PLATFORM_LABELS[value],
+											icon: <SocialPlatformMark platform={value} size="4" />,
+										})),
+									]}
+								/>
+							</Box>
+						)}
+						<Button
+							aria-label="Refresh"
+							title="Refresh"
+							variant="ghost"
+							size="sm"
+							onClick={() => void refresh().catch((e) => setError(e.message))}
+						>
+							<RefreshCw size={14} />
+						</Button>
+					</Flex>
 				</Flex>
 			)}
 			{error && (
