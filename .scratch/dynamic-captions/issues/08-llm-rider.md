@@ -15,3 +15,5 @@ Spec: [../spec.md](../spec.md). Follow the spec; where a ticket and the spec dis
 - [ ] `bun run lint`, `bun run typecheck`, `bun run test` pass (Bun 1.4.4). No PostgreSQL or heavy suites.
 
 ## Comments
+
+G1 failed for native script after one tuning round (72.6% held-out, bar 80%); see ticket 01. This ticket is needed.

@@ -56,11 +56,11 @@ export const CAPTION_EMPHASIS_WEIGHTS = {
   topicMinCount: 3,
   cueFinal: 0.25,
   capitalised: 0.25,
-  lengthPerLetter: 0.05,
-  lengthMax: 0.5,
+  lengthPerLetter: 0.1,
+  lengthMax: 1,
   repeat: -1.0,
-  gateMinScore: 1.5,
-  gateMargin: 0.5,
+  gateMinScore: 0.5,
+  gateMargin: 0,
 } as const;
 
 export type CaptionEmphasisWeights = { readonly [K in keyof typeof CAPTION_EMPHASIS_WEIGHTS]: number };

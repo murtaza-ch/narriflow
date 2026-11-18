@@ -51,6 +51,18 @@ function build(cues: readonly (readonly (string | Spec)[])[]): CaptionEmphasisWo
   );
 }
 
+/**
+ * The gate and length values the logic tests were written against. Shipped
+ * defaults are tuned on the G1 sheet (ticket 01) and tested separately below.
+ */
+const LOGIC_WEIGHTS: CaptionEmphasisWeights = {
+  ...CAPTION_EMPHASIS_WEIGHTS,
+  lengthPerLetter: 0.05,
+  lengthMax: 0.5,
+  gateMinScore: 1.5,
+  gateMargin: 0.5,
+};
+
 function roles(
   cues: CaptionEmphasisWord[][],
   options: {
@@ -65,7 +77,7 @@ function roles(
     language: options.language === undefined ? "en" : options.language,
     overrides: options.overrides ?? {},
     policy: options.policy ?? "auto",
-    ...(options.weights ? { weights: options.weights } : {}),
+    weights: options.weights ?? LOGIC_WEIGHTS,
   });
 }
 
@@ -80,7 +92,7 @@ function only(signals: Partial<CaptionEmphasisWeights>, gate: number): CaptionEm
     stretchFloor: CAPTION_EMPHASIS_WEIGHTS.stretchFloor,
     pauseMinSec: CAPTION_EMPHASIS_WEIGHTS.pauseMinSec,
     topicMinCount: CAPTION_EMPHASIS_WEIGHTS.topicMinCount,
-    lengthMax: CAPTION_EMPHASIS_WEIGHTS.lengthMax,
+    lengthMax: LOGIC_WEIGHTS.lengthMax,
     gateMinScore: gate,
     gateMargin: 0.1,
     ...signals,
@@ -378,5 +390,13 @@ describe("source rules", () => {
   test("the word lists stay under 20 KB", () => {
     const bytes = files.slice(1).reduce((total, file) => total + readFileSync(join(dir, file)).byteLength, 0);
     expect(bytes).toBeLessThan(20 * 1024);
+  });
+});
+
+describe("shipped weights (tuned on the G1 tuning sheet)", () => {
+  test("a weak but clear candidate still becomes the hero", () => {
+    const cues = build([["and", "then", "we", "talked"]]);
+    const result = assignCaptionRoles({ cues, language: "en", overrides: {}, policy: "auto" });
+    expect(heroes(cues, result)).toEqual(["talked"]);
   });
 });
