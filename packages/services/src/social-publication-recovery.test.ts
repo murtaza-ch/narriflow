@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   allowedSocialPublicationActions,
+  replacementAttemptData,
+  retryStartsFirstAttempt,
   socialPublicationReconnectRequired,
   validateSocialPublicationEvidence,
 } from "./social-publication-recovery";
+import { parseSocialPublicationAttemptBudget } from "./social-publication-config";
 
 const owner = { role: "owner", status: "active" } as const;
 const admin = { role: "admin", status: "active" } as const;
@@ -202,5 +205,81 @@ describe("Social Publication recovery actions", () => {
         accountHandle: "creator",
       }),
     ).rejects.toThrow("must identify one post");
+  });
+});
+
+describe("Try again for a post that failed before any attempt existed", () => {
+  const failedAt = new Date("2026-11-18T08:00:00Z");
+  const reconnectedAt = new Date("2026-11-18T08:15:00Z");
+  const failedByDeadConnection = {
+    status: "failed",
+    errorCode: "social_account_reconnect_required",
+    updatedAt: failedAt,
+    workspace: { status: "active" },
+    socialAccount: { status: "active", updatedAt: reconnectedAt },
+  };
+
+  test("offers Try again once the account has been reconnected, whatever attempts the post has", () => {
+    expect(allowedSocialPublicationActions(failedByDeadConnection, owner)).toEqual(["retry", "schedule_again"]);
+    expect(allowedSocialPublicationActions(failedByDeadConnection, editor)).toEqual(["retry", "schedule_again"]);
+  });
+
+  test("keeps offering reconnect until the account is back", () => {
+    expect(allowedSocialPublicationActions({ ...failedByDeadConnection, socialAccount: { status: "expired", updatedAt: failedAt } }, owner)).toEqual(["reconnect_account"]);
+  });
+
+  test("a failed post with no attempt starts its first attempt; one with an attempt keeps the replacement path", () => {
+    expect(retryStartsFirstAttempt({ status: "failed" }, undefined, "failed")).toBe(true);
+    expect(retryStartsFirstAttempt({ status: "failed" }, { phase: "failed" }, "failed")).toBe(false);
+  });
+
+  test("only a failed post qualifies: Publish again still needs the attempt whose outcome was unknown", () => {
+    expect(retryStartsFirstAttempt({ status: "needs_attention" }, undefined, "needs_attention")).toBe(false);
+    expect(retryStartsFirstAttempt({ status: "scheduled" }, undefined, "failed")).toBe(false);
+    expect(retryStartsFirstAttempt({ status: "posted" }, undefined, "failed")).toBe(false);
+  });
+});
+
+describe("the attempt Try again starts", () => {
+  const now = new Date("2026-11-18T09:00:00Z");
+  const budget = parseSocialPublicationAttemptBudget({
+    SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET: "10",
+    SOCIAL_PUBLISH_MAX_ATTEMPTS: "3",
+    SOCIAL_PUBLISH_PROCESSING_DEADLINE_MS: "3600000",
+    SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS: "7200000",
+  });
+  const base = { id: "next", postId: "post-1", frozenStateId: "frozen-1", actorUserId: "retrying-user", decisionId: "decision-1", now, budget };
+
+  test("a post that never had an attempt gets attempt 1 owned by the person retrying", () => {
+    const data = replacementAttemptData({ ...base, prior: undefined });
+    expect(data).toMatchObject({
+      id: "next",
+      socialPostId: "post-1",
+      frozenStateId: "frozen-1",
+      attemptNumber: 1,
+      priorAttemptId: null,
+      executionActorUserId: "retrying-user",
+      idempotencyKey: "publication:post-1:1",
+      phase: "retry_scheduled",
+      nextActionAt: now,
+    });
+  });
+
+  test("a recovery attempt starts with the configured execution limits, not the schema defaults", () => {
+    const data = replacementAttemptData({ ...base, prior: undefined });
+    expect(data.providerCallCeiling).toBe(10);
+    expect(data.nativeStartCeiling).toBe(13);
+    expect(data.processingDeadline.getTime() - now.getTime()).toBe(3_600_000);
+    expect(data.reconciliationDeadline.getTime() - now.getTime()).toBe(7_200_000);
+  });
+
+  test("a post with an attempt gets the next one, linked to it and keyed by the decision", () => {
+    const data = replacementAttemptData({ ...base, prior: { id: "attempt-2", attemptNumber: 2, idempotencyKey: "publication:post-1:2" } });
+    expect(data).toMatchObject({
+      attemptNumber: 3,
+      priorAttemptId: "attempt-2",
+      executionActorUserId: "retrying-user",
+      idempotencyKey: "publication:post-1:2:manual:decision-1",
+    });
   });
 });

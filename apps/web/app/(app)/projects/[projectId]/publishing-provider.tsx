@@ -11,6 +11,7 @@ import {
 	useSyncExternalStore,
 	type ReactNode,
 } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CloseButton, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { Send } from "lucide-react";
@@ -29,6 +30,7 @@ import { browserPublishingStorage } from "./publishing-draft";
 import { createProjectPublishingApi, type ProjectPublishingApi } from "./publishing-api";
 import { createPublishingCompositionSession } from "./publishing-composition-session";
 import { PanelHeader } from "./panel-header";
+import { RECONNECT_REQUIRED, reconnectMessage, socialAccountsHref } from "./publishing-preflight";
 import { scopedKey } from "@narriflow/api-client";
 import { useQuery } from "@tanstack/react-query";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
@@ -320,6 +322,7 @@ export function PublishingProvider({
 									preferredExportId={exportId}
 									open={open}
 									onSubmitted={onSubmitted}
+									viewPosts={viewPosts}
 								/>
 							) : mode === "compose" && (composition.pending || composition.recoveryUnavailable) ? (
 								<PublishingRecoveryComposer api={api} session={session} onSubmitted={onSubmitted} projectId={config.projectId} />
@@ -351,7 +354,18 @@ export function PublishingProvider({
 																(clip) => clip.id === item.clipId,
 															)?.title
 														}
-														: {item.errorCode?.replaceAll("_", " ")}
+														:{" "}
+														{item.errorCode === RECONNECT_REQUIRED ? (
+															<>
+																{(() => {
+																	const platform = config.accounts.find((account) => account.id === item.accountId)?.platform;
+																	return platform ? reconnectMessage(platform) : "Reconnect the account to post.";
+																})()}{" "}
+																<Link href={socialAccountsHref(config.projectId, ids)}>Reconnect</Link>
+															</>
+														) : (
+															item.errorCode?.replaceAll("_", " ")
+														)}
 													</Text>
 												))}
 											<Button
@@ -381,6 +395,8 @@ export function PublishingProvider({
 										nextCursor={nextPostsCursor}
 										compose={compose}
 										canManage={config.canPublish}
+										filterable
+										intro={false}
 									/>
 								</Drawer.Body>
 							)}

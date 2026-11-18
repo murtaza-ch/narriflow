@@ -41,6 +41,7 @@ export const publishingAdmission = {
   "GET /projects/:id/social-accounts/:accountId/publishing-options": { kind: "project", capability: "content.view", projectParam: "id", rate: { scope: "actor", prefix: "publishing-options", limit: 30 } },
   "POST /projects/:id/social-posts/:postId/refresh-inbox": { kind: "project", capability: "publishing.manage", projectParam: "id", rate: { scope: "actor", prefix: "refresh-inbox", limit: 20 } },
   "GET /projects/:id/social-posts": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/social-posts/clip-history": { kind: "project", capability: "content.view", projectParam: "id" },
   "DELETE /projects/:id/social-posts/:postId": { kind: "project", capability: "publishing.manage", projectParam: "id" },
   "GET /projects/:id/social-posts/:postId/publication": { kind: "project", capability: "content.view", projectParam: "id" },
   "POST /projects/:id/social-posts/:postId/recheck": { kind: "project", capability: "publishing.manage", projectParam: "id", deferRateRefusal: true },

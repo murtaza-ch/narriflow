@@ -127,6 +127,34 @@ export async function wakeNextAccountPosts(tx:Tx,claimId:string,now:Date,append:
  return Promise.all(runnable.map(post=>append(tx,post.id,{dueAt:now,wakeKind})));
 }
 
+/** The wake an account's other due posts get when its connection turns out to be dead. */
+export function accountReconnectWakeKind(accountId:string,accountUpdatedAt:Date){
+ return `pub_${createHash("sha256").update(JSON.stringify(["account_reconnect",accountId,accountUpdatedAt.toISOString()])).digest("hex").slice(0,32)}`;
+}
+
+/** A post just failed with `social_account_reconnect_required` and submitted nothing. It holds no
+ * claim, so no release wakes the account's queue and the other due posts would sleep on slot timers
+ * until the person may already have reconnected. Wake the account's other due, runnable `scheduled`
+ * posts now so each reaches the same check and fails the same way, with one verdict for the batch.
+ * Same candidate filter as `wakeNextAccountPosts`, bounded by `ACCOUNT_WAKE_SCAN`.
+ *
+ * Best effort, so run it in its own short transaction after the failing post's commit: it reads
+ * peers and appends dispatches, and never takes their locks. A reconnect during the cascade lets
+ * the remaining posts publish, and a lost wake only falls back to timers. The wake identity is
+ * account + `SocialAccount.updatedAt` and its due time is fixed at the epoch, so every failing
+ * post in the cascade appends the identical dispatch and repeats collapse; a reconnect changes
+ * `updatedAt` and starts a new identity. */
+export async function wakeAccountPostsAfterReconnectFailure(tx:Tx,input:{accountId:string;postId:string;epoch:number},now:Date,append:typeof appendPublicationDispatch=appendPublicationDispatch){
+ const account=await tx.socialAccount.findUnique({where:{id:input.accountId},select:{updatedAt:true}});
+ if(!account)return [];
+ const candidates=await tx.socialPost.findMany({
+  where:{socialAccountId:input.accountId,id:{not:input.postId},status:"scheduled",deploymentEpoch:input.epoch,
+   AND:[{OR:[{nextAttemptAt:{lte:now}},{nextAttemptAt:null,scheduledFor:{lte:now}}]},{OR:[{standingGrantId:null},{standingGrant:{status:{not:"paused"}}}]}]},
+  orderBy:[{scheduledFor:"asc"},{createdAt:"asc"},{id:"asc"}],take:ACCOUNT_WAKE_SCAN,select:{id:true,nextAttemptAt:true,scheduledFor:true,createdAt:true}});
+ const wakeKind=accountReconnectWakeKind(input.accountId,account.updatedAt);
+ return Promise.all(candidates.filter(post=>publicationReleaseAt(post)<=now).map(post=>append(tx,post.id,{dueAt:new Date(0),wakeKind})));
+}
+
 /** Repair an accepted identity only. Never creates a new admission or invents
  * a next wake from a stale request, even if the producer committed a newer cycle. */
 export async function recoverPublicationDispatches(tx:Tx,postId:string,workspaceId?:string){

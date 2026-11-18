@@ -1,5 +1,6 @@
-import { describe, expect, mock, test } from "bun:test";
-import { wakeNextAccountPosts } from "./publication-dispatch";
+import { describe, expect, mock, spyOn, test } from "bun:test";
+import { PublicationExecution } from "./publication-execution";
+import { accountReconnectWakeKind, wakeAccountPostsAfterReconnectFailure, wakeNextAccountPosts } from "./publication-dispatch";
 import { releaseCurrentClaim } from "./social-publication-attempt";
 
 const NOW = new Date("2026-11-06T12:00:40.000Z");
@@ -98,5 +99,115 @@ describe("releasing a claim", () => {
     await releaseCurrentClaim(tx as never, owned, NOW);
     expect(findUnique).toHaveBeenCalledTimes(1);
     expect(tx.publicationClaim.updateMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("an account that needs reconnecting", () => {
+  const FAILED = "failed-post";
+  const UPDATED = new Date("2026-11-06T11:00:00.000Z");
+  function reconnect(options: { posts?: ReturnType<typeof due>[]; account?: { updatedAt: Date } | null } = {}) {
+    const findMany = mock(async (_query: unknown) => options.posts ?? [due("first"), due("second"), due("third")]);
+    const accountRead = mock(async () => options.account === undefined ? { updatedAt: UPDATED } : options.account);
+    const tx = { socialAccount: { findUnique: accountRead }, socialPost: { findMany } };
+    const append = mock(async (_tx: unknown, id: string, _options: unknown) => `dispatch-${id}`);
+    return { findMany, append, wake: () => wakeAccountPostsAfterReconnectFailure(tx as never, { accountId: ACCOUNT, postId: FAILED, epoch: 7 }, NOW, append as never) };
+  }
+
+  test("wakes every other due post of the account now, under one wake identity and a fixed due time", async () => {
+    const { append, wake } = reconnect();
+    expect(await wake()).toEqual(["dispatch-first", "dispatch-second", "dispatch-third"]);
+    expect(woken(append)).toEqual(["first", "second", "third"]);
+    const identities = append.mock.calls.map((call) => call[2] as { dueAt: Date; wakeKind: string });
+    expect(new Set(identities.map((identity) => identity.wakeKind)).size).toBe(1);
+    expect(identities[0]!.wakeKind).toBe(accountReconnectWakeKind(ACCOUNT, UPDATED));
+    expect(identities[0]!.wakeKind).toMatch(/^pub_[a-f0-9]{32}$/);
+    expect(identities.every((identity) => identity.dueAt.getTime() === 0)).toBe(true);
+  });
+
+  test("the wake identity follows the account's last change, so a reconnect starts a new one", () => {
+    expect(accountReconnectWakeKind(ACCOUNT, UPDATED)).toBe(accountReconnectWakeKind(ACCOUNT, new Date(UPDATED)));
+    expect(accountReconnectWakeKind(ACCOUNT, UPDATED)).not.toBe(accountReconnectWakeKind(ACCOUNT, new Date(UPDATED.getTime() + 1)));
+    expect(accountReconnectWakeKind(ACCOUNT, UPDATED)).not.toBe(accountReconnectWakeKind(HOLDER, UPDATED));
+  });
+
+  test("uses the slot wake's candidate filter, minus the failed post, bounded to the scan size", async () => {
+    const { findMany, wake } = reconnect();
+    await wake();
+    const query = findMany.mock.calls[0]![0] as { where: Record<string, unknown>; orderBy: unknown; take: number };
+    expect(query.where).toMatchObject({ socialAccountId: ACCOUNT, id: { not: FAILED }, status: "scheduled", deploymentEpoch: 7 });
+    expect(query.where.AND).toEqual([
+      { OR: [{ nextAttemptAt: { lte: NOW } }, { nextAttemptAt: null, scheduledFor: { lte: NOW } }] },
+      { OR: [{ standingGrantId: null }, { standingGrant: { status: { not: "paused" } } }] },
+    ]);
+    expect(query.orderBy).toEqual([{ scheduledFor: "asc" }, { createdAt: "asc" }, { id: "asc" }]);
+    expect(query.take).toBe(16);
+  });
+
+  test("leaves a post still inside its release time asleep", async () => {
+    const later = new Date(NOW.getTime() + 60_000);
+    const { append, wake } = reconnect({ posts: [due("backing-off", { nextAttemptAt: later }), due("runnable")] });
+    await wake();
+    expect(woken(append)).toEqual(["runnable"]);
+  });
+
+  test("an account that is gone or a queue with nothing due wakes nobody", async () => {
+    const gone = reconnect({ account: null });
+    expect(await gone.wake()).toEqual([]);
+    expect(gone.findMany).not.toHaveBeenCalled();
+    const empty = reconnect({ posts: [] });
+    expect(await empty.wake()).toEqual([]);
+    expect(empty.append).not.toHaveBeenCalled();
+  });
+
+  test("an append that fails rejects, so the caller's own short transaction aborts and the caller logs it", async () => {
+    const { append, wake } = reconnect();
+    append.mockImplementationOnce(async () => { throw new Error("dispatch_conflict"); });
+    await expect(wake()).rejects.toThrow("dispatch_conflict");
+  });
+});
+
+describe("the reconnect wake after the failing post commits", () => {
+  const reference = { deploymentEpoch: 7 } as never;
+  const failed = { accountId: ACCOUNT, postId: "failed-post", now: NOW };
+  /** The wake runs in its own transaction: `run` stands in for `$transaction`. */
+  function wakeIn(options: { epoch?: number; transactionError?: Error }) {
+    const queryRaw = mock(async () => [{ epoch: options.epoch ?? 7 }]);
+    const tx = {
+      $queryRaw: queryRaw,
+      socialAccount: { findUnique: async () => ({ updatedAt: new Date("2026-11-06T11:00:00.000Z") }) },
+      socialPost: { findMany: mock(async (_query: unknown) => [] as unknown[]) },
+      executionEpoch: { findUniqueOrThrow: async () => ({ epoch: 7 }) },
+    };
+    const database = { $transaction: mock(async (run: (tx: unknown) => unknown) => { if (options.transactionError) throw options.transactionError; return run(tx); }) };
+    const register = mock(async (_ids: readonly string[]) => {});
+    const self = { database, ports: { register }, epoch: (PublicationExecution.prototype as never as { epoch(tx: unknown): Promise<number> }).epoch };
+    const wake = () => (PublicationExecution.prototype as never as { wakeAfterReconnectFailure(this: unknown, r: unknown, f: unknown): Promise<void> }).wakeAfterReconnectFailure.call(self, reference, failed);
+    return { database, register, tx, wake };
+  }
+
+  test("runs in its own transaction at the dispatch's epoch and registers the result", async () => {
+    const { database, register, tx, wake } = wakeIn({});
+    await wake();
+    expect(database.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.socialPost.findMany.mock.calls[0]![0]).toMatchObject({ where: { socialAccountId: ACCOUNT, id: { not: "failed-post" }, deploymentEpoch: 7 } });
+    expect(register).toHaveBeenCalledWith([]);
+  });
+
+  test("a transaction under another epoch wakes nobody", async () => {
+    const { register, tx, wake } = wakeIn({ epoch: 8 });
+    await wake();
+    expect(tx.socialPost.findMany).not.toHaveBeenCalled();
+    expect(register).toHaveBeenCalledWith([]);
+  });
+
+  test("a failure is logged and swallowed", async () => {
+    const { register, wake } = wakeIn({ transactionError: new Error("current transaction is aborted") });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(wake()).resolves.toBeUndefined();
+      const logged = JSON.parse(String(warn.mock.calls[0]![0]));
+      expect(logged).toMatchObject({ level: "warn", message: "publication_reconnect_wake_skipped", postId: "failed-post", accountId: ACCOUNT });
+    } finally { warn.mockRestore(); }
+    expect(register).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@
 import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { SocialPostLinks } from "@/lib/social-post-links";
 import { describeCounts } from "@/lib/performance-format";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { createIntent } from "@narriflow/api-client";
 import { apiFailureMessage } from "@/lib/publishing-client";
 import Link from "next/link";
@@ -108,6 +108,52 @@ function PostsHeroVisual() {
 	);
 }
 
+/** One soft pill of the Posts filter bar, with its count. */
+function FilterChip({
+	active,
+	count,
+	alert = false,
+	onClick,
+	children,
+}: {
+	active: boolean;
+	count: number;
+	alert?: boolean;
+	onClick(): void;
+	children: ReactNode;
+}) {
+	return (
+		<chakra.button
+			type="button"
+			display="inline-flex"
+			alignItems="center"
+			gap="1.5"
+			h="8"
+			px="3"
+			borderRadius="full"
+			fontSize="13px"
+			fontWeight="500"
+			bg={active ? "accent.muted" : "bg.soft"}
+			color={active ? "accent.fg" : "fg.muted"}
+			_hover={{ bg: active ? "accent.muted" : "bg.softHover" }}
+			_focusVisible={{ outline: "2px solid", outlineColor: "accent.focusRing", outlineOffset: "2px" }}
+			transition="background 0.15s ease"
+			aria-pressed={active}
+			onClick={onClick}
+		>
+			{children}
+			<Text
+				as="span"
+				fontSize="12px"
+				fontVariantNumeric="tabular-nums"
+				color={alert ? "danger.fg" : active ? "accent.fg" : "fg.subtle"}
+			>
+				{count}
+			</Text>
+		</chakra.button>
+	);
+}
+
 export function PublishingPosts({
 	api,
 	projectId,
@@ -119,6 +165,7 @@ export function PublishingPosts({
 	compose,
 	canManage,
 	filterable = false,
+	intro = filterable,
 	timeZone,
 }: {
 	api: Pick<ProjectPublishingApi, "cancelPost" | "refreshInbox" | "recheck" | "confirm" | "publishAgain" | "retry">;
@@ -132,9 +179,12 @@ export function PublishingPosts({
 	/** Role and workspace status allow changing posts; otherwise only links and copy show. */
 	canManage: boolean;
 	filterable?: boolean;
+	/** The never-posted feature intro; the project's Posts tab shows it, the publish drawer does not. */
+	intro?: boolean;
 	timeZone: string;
 }) {
 	const [filter, setFilter] = useState("all");
+	const [platformFilter, setPlatformFilter] = useState<SocialPlatform | "all">("all");
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState("");
 	const [recovery, setRecovery] = useState<{
@@ -190,9 +240,13 @@ export function PublishingPosts({
 				: value === "inbox"
 					? p.status === "inbox_delivered"
 					: p.status === "posted");
-	const visible = posts.filter((p) => matches(p, filter));
+	// Platforms present, in first-seen order; the platform row appears only when there is a choice.
+	const platforms = [...new Set(posts.map((p) => p.platform))];
+	const platform = platforms.includes(platformFilter as SocialPlatform) ? platformFilter : "all";
+	const onPlatform = posts.filter((p) => platform === "all" || p.platform === platform);
+	const visible = onPlatform.filter((p) => matches(p, filter));
 	// A project that has never posted gets the feature intro, not five zeroed tabs.
-	if (filterable && posts.length === 0 && !nextCursor) {
+	if (intro && posts.length === 0 && !nextCursor) {
 		return canManage ? (
 			<FeatureHero
 				title="Publish clips and track every post"
@@ -216,52 +270,51 @@ export function PublishingPosts({
 			/>
 		);
 	}
-	// Only categories that have posts, plus the one being viewed.
+	// Only categories that have posts on the chosen platform, plus the one being viewed.
 	const filters = FILTERS.map(([value, label]) => ({
 		value,
 		label,
-		count: posts.filter((p) => matches(p, value)).length,
+		count: onPlatform.filter((p) => matches(p, value)).length,
 	})).filter(({ value, count }) => value === "all" || value === filter || count > 0);
 	return (
 		<Stack gap="4">
 			{filterable && (
 				<Flex justify="space-between" align="center" gap="3" wrap="wrap">
-					{filters.length > 1 ? (
-						<Flex gap="2" wrap="wrap" role="group" aria-label="Filter posts">
-							{filters.map(({ value, label, count }) => {
-								const active = filter === value;
-								return (
-									<chakra.button
-										key={value}
-										type="button"
-										display="inline-flex"
-										alignItems="center"
-										gap="1.5"
-										h="8"
-										px="3"
-										borderRadius="full"
-										fontSize="13px"
-										fontWeight="500"
-										bg={active ? "accent.muted" : "bg.soft"}
-										color={active ? "accent.fg" : "fg.muted"}
-										_hover={{ bg: active ? "accent.muted" : "bg.softHover" }}
-										_focusVisible={{ outline: "2px solid", outlineColor: "accent.focusRing", outlineOffset: "2px" }}
-										transition="background 0.15s ease"
-										aria-pressed={active}
-										onClick={() => setFilter(value)}
-									>
-										{label}
-										<Text
-											as="span"
-											fontSize="12px"
-											fontVariantNumeric="tabular-nums"
-											color={value === "attention" && count > 0 ? "danger.fg" : active ? "accent.fg" : "fg.subtle"}
+					{filters.length > 1 || platforms.length > 1 ? (
+						<Flex gap="2" wrap="wrap" align="center">
+							{filters.length > 1 && (
+								<Flex gap="2" wrap="wrap" role="group" aria-label="Filter posts">
+									{filters.map(({ value, label, count }) => (
+										<FilterChip
+											key={value}
+											active={filter === value}
+											count={count}
+											alert={value === "attention" && count > 0}
+											onClick={() => setFilter(value)}
 										>
-											{count}
-										</Text>
-									</chakra.button>
-								);
-							})}
+											{label}
+										</FilterChip>
+									))}
+								</Flex>
+							)}
+							{platforms.length > 1 && (
+								<Flex gap="2" wrap="wrap" role="group" aria-label="Filter by platform">
+									<FilterChip active={platform === "all"} count={posts.length} onClick={() => setPlatformFilter("all")}>
+										All platforms
+									</FilterChip>
+									{platforms.map((value) => (
+										<FilterChip
+											key={value}
+											active={platform === value}
+											count={posts.filter((p) => p.platform === value).length}
+											onClick={() => setPlatformFilter(value)}
+										>
+											<SocialPlatformMark platform={value} size="4" />
+											{SOCIAL_PLATFORM_LABELS[value]}
+										</FilterChip>
+									))}
+								</Flex>
+							)}
 						</Flex>
 					) : (
 						<Box />
@@ -283,7 +336,7 @@ export function PublishingPosts({
 				</Text>
 			)}
 			{!visible.length &&
-				(filterable ? (
+				(filterable && posts.length > 0 ? (
 					<Text py="10" textAlign="center" fontSize="sm" color="fg.muted">
 						No posts match this filter.
 					</Text>
@@ -589,7 +642,7 @@ export function PublishingPosts({
 					</Collapsible.Root>
 				);
 			})}
-			{nextCursor && filter === "all" && (
+			{nextCursor && filter === "all" && platform === "all" && (
 				<Button variant="subtle" onClick={() => void loadOlderPosts()}>
 					Load older posts
 				</Button>

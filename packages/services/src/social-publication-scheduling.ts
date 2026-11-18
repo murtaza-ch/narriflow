@@ -85,6 +85,8 @@ export type SchedulePublicationInput = {
 	proposalId?: string;
  expectedProposalRevision?:number;
 	beforeAccept?: () => Promise<void>;
+	/** One credential check per account for a batch of admissions: the bulk service passes the same map to every item. Not part of the intent hash. */
+	reconnectChecks?: Map<string, Promise<boolean>>;
 };
 
 export type PublicationFreezeResult =
@@ -123,6 +125,8 @@ export interface PublicationFreezePorts {
 		expiresAt: Date | null;
 		canRefresh: boolean;
 	} | null>;
+	/** Whether the account's stored connection is known to be dead, so the person must reconnect. A refresh in progress or a provider failure is not a verdict (false). May call the provider; never run it inside a transaction. */
+	accountNeedsReconnect(accountId: string): Promise<boolean>;
 	/** Refuses an account the Workspace's plan does not let publish; see `requirePublishableSocialAccount`. */
 	requirePublishableAccount(input: { workspaceId: string; accountId: string; tier: string }): Promise<void>;
 	readExport(exportId: string): Promise<PublicationExportFacts | null>;
@@ -191,7 +195,7 @@ const publicationIntentFailureCatalog = {
 	posting_schedule_exhausted: "unprocessable",
 	publication_schedule_in_past: "invalid",
 	review_approval_result_incomplete: "unavailable",
-	social_account_expired: "unprocessable",
+	social_account_reconnect_required: "conflict",
 	social_account_unavailable: "missing",
 	social_post_not_found: "missing",
 	social_proposal_changed: "conflict",
@@ -299,13 +303,29 @@ async function freezePublication(
 	}
 	if (input.accountId) {
 		const account = await ports.readAccount(input.accountId);
-		if (!account || account.workspaceId !== input.workspaceId || account.platform !== input.platform || account.status !== "active") {
+		if (!account || account.workspaceId !== input.workspaceId || account.platform !== input.platform) {
 			throw new PublicationIntentStateError("social_account_unavailable", "The selected social account is unavailable for this platform");
 		}
-		if (!socialAccountCanPublishAt(account, now)) {
-			throw new PublicationIntentStateError("social_account_expired", "The selected social account token has expired");
+		// An account of this workspace that is expired or revoked, or whose token cannot be used, needs
+		// reconnecting. One answer for the whole batch: a credential check that flips the status
+		// mid-batch must not change what the later items are told.
+		if (account.status !== "active" || !socialAccountCanPublishAt(account, now)) {
+			throw new PublicationIntentStateError("social_account_reconnect_required", "Reconnect the selected social account before creating a new scheduled post.");
 		}
 		await ports.requirePublishableAccount({ workspaceId: input.workspaceId, accountId: input.accountId, tier: actor.pricingTier });
+		// Only new admissions reach here: `store.open` returns an accepted replay before it calls `create`,
+		// so a replay is never relabelled by a connection that died after it was accepted.
+		const accountId = input.accountId;
+		const checks = input.reconnectChecks;
+		let needsReconnect = checks?.get(accountId);
+		if (!needsReconnect) {
+			// A check that throws is no verdict; it must not poison the memo for the rest of the batch.
+			needsReconnect = (async () => ports.accountNeedsReconnect(accountId))().catch(() => false);
+			checks?.set(accountId, needsReconnect);
+		}
+		if (await needsReconnect) {
+			throw new PublicationIntentStateError("social_account_reconnect_required", "Reconnect the selected social account before creating a new scheduled post.");
+		}
 	}
 	const deliveryMode = input.deliveryMode ?? "direct";
 	const providerSettings: Prisma.JsonObject = {

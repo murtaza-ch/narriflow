@@ -23,7 +23,7 @@ import {
 import { combineLatestCaptures, latestCaptureInclude } from "./performance-summary";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
 import { emitSocialPostFinished } from "./social-post-finished";
-import { parseSocialPublicationReconciliationBudget, SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
+import { parseSocialPublicationAttemptBudget, parseSocialPublicationReconciliationBudget, SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
 import { socialOAuthService } from "./social-oauth.service";
 import { requirePlanFeature } from "./plan-features";
 import { hasCustomThumbnail, requirePublishableSocialAccount } from "./social-account-eligibility";
@@ -33,8 +33,6 @@ import {
 } from "./expected-domain-failure";
 import { requirePrisma } from "./require-prisma";
 
-const DEFAULT_PROCESSING_DEADLINE_MS = 24 * 60 * 60_000;
-const DEFAULT_RECONCILIATION_DEADLINE_MS = 24 * 60 * 60_000;
 
 type SocialPublicationActionRow = {
   status: string;
@@ -357,7 +355,8 @@ export async function validateSocialPublicationEvidence(input: {
   };
 }
 
-async function loadRecoveryTarget(
+/** Locks and loads the post with its latest attempt, which is absent for a post that failed before execution created one. */
+async function loadRecoveryPost(
   tx: Prisma.TransactionClient,
   input: { workspaceId: string; projectId?: string; socialPostId: string; actorUserId: string },
 ) {
@@ -385,14 +384,71 @@ async function loadRecoveryTarget(
       },
     },
   });
-  const attempt = post?.publicationAttempts[0];
-  if (!post || !attempt || !post.frozenState) {
+  if (!post || !post.frozenState) {
     throw new SocialPublicationRecoveryError(
       "social_publication_not_found",
       "Social publication was not found",
     );
   }
-  return { post, attempt, frozen: post.frozenState };
+  return { post, attempt: post.publicationAttempts[0], frozen: post.frozenState };
+}
+
+async function loadRecoveryTarget(
+  tx: Prisma.TransactionClient,
+  input: { workspaceId: string; projectId?: string; socialPostId: string; actorUserId: string },
+) {
+  const { post, attempt, frozen } = await loadRecoveryPost(tx, input);
+  if (!attempt) {
+    throw new SocialPublicationRecoveryError(
+      "social_publication_not_found",
+      "Social publication was not found",
+    );
+  }
+  return { post, attempt, frozen };
+}
+
+/** Whether Try again may start the post's first attempt: it failed before
+ * execution created one, so nothing was ever submitted. Posts with an attempt
+ * keep the replacement-attempt path. */
+export function retryStartsFirstAttempt(
+  post: { status: string },
+  attempt: unknown,
+  from: "needs_attention" | "failed",
+) {
+  return from === "failed" && !attempt && post.status === "failed";
+}
+
+/** The attempt a manual retry or republish starts. A post that failed before
+ * execution created any attempt gets attempt 1, with the key execution itself
+ * would have used; the actor is recorded either way, so the retry runs as the
+ * person who asked for it and not as whoever first confirmed the post. */
+export function replacementAttemptData(input: {
+  id: string;
+  postId: string;
+  frozenStateId: string;
+  prior: { id: string; attemptNumber: number; idempotencyKey: string } | undefined;
+  actorUserId: string;
+  decisionId: string;
+  now: Date;
+  budget: ReturnType<typeof parseSocialPublicationAttemptBudget>;
+}) {
+  const { prior, budget } = input;
+  return {
+    id: input.id,
+    socialPostId: input.postId,
+    frozenStateId: input.frozenStateId,
+    attemptNumber: prior ? prior.attemptNumber + 1 : 1,
+    priorAttemptId: prior?.id ?? null,
+    executionActorUserId: input.actorUserId,
+    idempotencyKey: prior ? `${prior.idempotencyKey}:manual:${input.decisionId}` : `publication:${input.postId}:1`,
+    phase: "retry_scheduled" as const,
+    nextActionAt: input.now,
+    // The same limits execution gives an attempt it creates itself.
+    processingDeadline: new Date(input.now.getTime() + budget.processingDeadlineMs),
+    reconciliationDeadline: new Date(input.now.getTime() + budget.reconciliationDeadlineMs),
+    providerCallCeiling: budget.providerCallBudget,
+    nativeStartCeiling: budget.nativeStartCeiling,
+  };
 }
 
 /** Starts a new attempt on the same frozen post. An unknown outcome needs the
@@ -416,11 +472,18 @@ async function startReplacementAttempt(
   const now = input.now ?? new Date();
   const mutate = async (tx: Prisma.TransactionClient) => {
     const admission=await readExecutionAdmission(tx);
-    const { post, attempt, frozen } = await loadRecoveryTarget(tx, input);
+    const { post, attempt, frozen } = await loadRecoveryPost(tx, input);
     assertExecutionAdmissionOpen(admission);
+    const firstAttempt = retryStartsFirstAttempt(post, attempt, from);
+    if (!attempt && !firstAttempt) {
+      throw new SocialPublicationRecoveryError(
+        "social_publication_not_found",
+        "Social publication was not found",
+      );
+    }
     if (
       post.status !== from ||
-      attempt.phase !== from ||
+      (attempt && attempt.phase !== from) ||
       post.workspace?.status !== "active" ||
       post.socialAccount?.status !== "active"
     ) {
@@ -437,15 +500,18 @@ async function startReplacementAttempt(
     if (hasCustomThumbnail(frozenSettings)) requirePlanFeature(actor.pricingTier, "publishing.customThumbnails");
     const decisionId = randomUUID();
     const nextAttemptId = randomUUID();
-    const fencedAttempt = await tx.socialPublicationAttempt.updateMany({
-      where: { id: attempt.id, phase: from },
-      data: { operationLookupHash: null },
-    });
-    if (fencedAttempt.count !== 1) {
-      throw new SocialPublicationRecoveryError(
-        "social_publication_transition_conflict",
-        "The publication changed before Publish again completed",
-      );
+    // A post that failed before any attempt existed has nothing to fence.
+    if (attempt) {
+      const fencedAttempt = await tx.socialPublicationAttempt.updateMany({
+        where: { id: attempt.id, phase: from },
+        data: { operationLookupHash: null },
+      });
+      if (fencedAttempt.count !== 1) {
+        throw new SocialPublicationRecoveryError(
+          "social_publication_transition_conflict",
+          "The publication changed before Publish again completed",
+        );
+      }
     }
     const updated = await tx.socialPost.updateMany({
       where: { id: post.id, status: from },
@@ -464,25 +530,22 @@ async function startReplacementAttempt(
       );
     }
     await tx.socialPublicationAttempt.create({
-      data: {
+      data: replacementAttemptData({
         id: nextAttemptId,
-        socialPostId: post.id,
+        postId: post.id,
         frozenStateId: frozen.id,
-        attemptNumber: attempt.attemptNumber + 1,
-        priorAttemptId: attempt.id,
-        executionActorUserId:input.actorUserId,
-        idempotencyKey: `${attempt.idempotencyKey}:manual:${decisionId}`,
-        phase: "retry_scheduled",
-        nextActionAt: now,
-        processingDeadline: new Date(now.getTime() + DEFAULT_PROCESSING_DEADLINE_MS),
-        reconciliationDeadline: new Date(now.getTime() + DEFAULT_RECONCILIATION_DEADLINE_MS),
-      },
+        prior: attempt,
+        actorUserId: input.actorUserId,
+        decisionId,
+        now,
+        budget: parseSocialPublicationAttemptBudget(readServiceEnvironment()),
+      }),
     });
     await tx.publicationManualDecision.create({
       data: {
         id: decisionId,
         socialPostId: post.id,
-        attemptId: attempt.id,
+        attemptId: attempt?.id ?? nextAttemptId,
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
         kind: "republish_requested",
@@ -492,7 +555,7 @@ async function startReplacementAttempt(
     await appendPublicationDispatch(tx,post.id,{dueAt:now});
     return {
       socialPostId: post.id,
-      priorAttemptId: attempt.id,
+      priorAttemptId: attempt?.id ?? null,
       attemptId: nextAttemptId,
       status: "scheduled" as const,
     };

@@ -10,6 +10,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { brandOwnerWhere } from "./brand-ownership";
 import { assistedSocialCopyService } from "./assisted-social-copy-runtime";
 import { readSocialPublishingOptionsForAccount } from "./social-publishing-options";
+import { checkSocialAccountCredential } from "./social-account-credential";
 import { isSocialProviderPublishingEnabled, socialPublicationCapabilityVersion } from "./social-publication-config";
 import { reviewApprovalGate } from "./review-approval-gate.prisma";
 import { workspaceService } from "./workspace.service";
@@ -422,6 +423,7 @@ export function createProductionSocialPublicationScheduling(options: {beforeWrit
 				return row ? { workspaceId: row.workspaceId, platform: row.platform, status: row.status,
 					expiresAt: row.expiresAt, canRefresh: Boolean(row.refreshTokenEncrypted) } : null;
 			},
+			accountNeedsReconnect: async (accountId) => (await checkSocialAccountCredential(accountId)).kind === "reconnect_required",
 			requirePublishableAccount: ({ workspaceId, accountId, tier }) =>
 				requirePublishableSocialAccount(requirePrisma(), { workspaceId, accountId, tier }),
 			async readExport(exportId) {

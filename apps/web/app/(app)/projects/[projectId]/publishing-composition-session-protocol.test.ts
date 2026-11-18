@@ -80,7 +80,17 @@ const facts = {
   workspaceTimezone: "Asia/Karachi",
 
 };
-const submissionFacts = { exports, options: {} };
+const readyOptions = {
+  privacyOptions: [],
+  commentDisabled: false,
+  duetDisabled: false,
+  stitchDisabled: false,
+  maximumDurationSec: 600,
+  inboxEnabled: false,
+  directEnabled: true,
+};
+const options = Object.fromEntries(accounts.map((account) => [account.id, readyOptions]));
+const submissionFacts = { exports, options };
 const draftKey = (clipId = clips[0]!.id) => `${clipId}:${accounts[0]!.id}`;
 function memoryStorage() {
   const values = new Map<string, string>();

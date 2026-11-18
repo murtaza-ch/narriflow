@@ -174,6 +174,28 @@ export function parseSocialPublicationReconciliationBudget(
 	};
 }
 
+function processingDeadlineMs(environment: Record<string, string | undefined>) {
+	return integer(environment, "SOCIAL_PUBLISH_PROCESSING_DEADLINE_MS", 24 * 60 * 60_000, 60_000, 7 * 24 * 60 * 60_000);
+}
+
+function maxAttempts(environment: Record<string, string | undefined>) {
+	return integer(environment, "SOCIAL_PUBLISH_MAX_ATTEMPTS", 4, 1, 10);
+}
+
+/** The limits a new Social Publication Attempt starts with. Execution and manual
+ * recovery both create attempts, so both read them here; unlike the full config
+ * this needs no checkpoint key. */
+export function parseSocialPublicationAttemptBudget(
+	environment: Record<string, string | undefined>,
+) {
+	const budget = parseSocialPublicationReconciliationBudget(environment);
+	return {
+		...budget,
+		processingDeadlineMs: processingDeadlineMs(environment),
+		nativeStartCeiling: budget.providerCallBudget + maxAttempts(environment),
+	};
+}
+
 export function parseSocialPublicationConfig(
 	environment: Record<string, string | undefined>,
 	now = new Date(),
@@ -208,22 +230,10 @@ export function parseSocialPublicationConfig(
 				10 * 60_000,
 			),
 			...parseSocialPublicationReconciliationBudget(environment),
-			processingDeadlineMs: integer(
-				environment,
-				"SOCIAL_PUBLISH_PROCESSING_DEADLINE_MS",
-				24 * 60 * 60_000,
-				60_000,
-				7 * 24 * 60 * 60_000,
-			),
+			processingDeadlineMs: processingDeadlineMs(environment),
 		},
 		retry: {
-			maxAttempts: integer(
-				environment,
-				"SOCIAL_PUBLISH_MAX_ATTEMPTS",
-				4,
-				1,
-				10,
-			),
+			maxAttempts: maxAttempts(environment),
 			maxElapsedMs: integer(
 				environment,
 				"SOCIAL_PUBLISH_MAX_ELAPSED_MS",

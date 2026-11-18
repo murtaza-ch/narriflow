@@ -4,6 +4,8 @@ import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import { Prisma } from "@prisma/client";
 import {
+	SOCIAL_CLIP_HISTORY_STATUSES,
+	type SocialClipHistory,
 	type SocialPostSnapshot,
 	type WorkspaceAccessRole,
 	type WorkspaceAccessStatus,
@@ -23,6 +25,8 @@ import {
 	socialPublicationReconnectRequired,
 	socialPublicationRecovery,
 } from "./social-publication-recovery";
+/** A clip-history read is bounded by its clip cap and this row cap. */
+const SOCIAL_CLIP_HISTORY_MAX_ROWS = 500;
 type SocialPostCursor = { createdAt: string; id: string };
 
 function decodeSocialPostCursor(value: string | undefined): SocialPostCursor | null {
@@ -282,6 +286,46 @@ export class SocialService {
 			include: socialPostSnapshotInclude,
 		});
 		return { items: rows.slice(0, 100).map((row) => toSocialPostSnapshot(row, actor)), nextCursor: rows.length > 100 ? encodeSocialPostCursor(rows[99]!) : null };
+	}
+
+	/**
+	 * The posts of these clips that already reached an account or are still on
+	 * their way (`SOCIAL_CLIP_HISTORY_STATUSES`), newest first, for the composer's
+	 * repeat-post warning. Same access as `listProjectPosts`.
+	 */
+	async listClipHistory(
+		scope: ActorScope,
+		projectId: string,
+		clipIds: string[],
+	): Promise<SocialClipHistory> {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+		const rows = await requirePrisma().socialPost.findMany({
+			where: {
+				projectId,
+				workspaceId: scope.workspaceId,
+				project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+				clipId: { in: clipIds },
+				socialAccountId: { not: null },
+				status: { in: [...SOCIAL_CLIP_HISTORY_STATUSES] },
+			},
+			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+			take: SOCIAL_CLIP_HISTORY_MAX_ROWS,
+			select: { id: true, clipId: true, socialAccountId: true, platform: true, status: true, scheduledFor: true, postedAt: true },
+		});
+		return {
+			items: rows.flatMap((row) =>
+				row.clipId && row.socialAccountId
+					? [{
+						postId: row.id,
+						clipId: row.clipId,
+						accountId: row.socialAccountId,
+						platform: row.platform,
+						status: row.status as SocialClipHistory["items"][number]["status"],
+						scheduledFor: row.scheduledFor?.toISOString() ?? null,
+						postedAt: row.postedAt?.toISOString() ?? null,
+					}]
+					: []),
+		};
 	}
 
 	async cancelPost(

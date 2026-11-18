@@ -4,6 +4,7 @@ import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import { getPrismaClient } from "@narriflow/db/client";
 import { SOCIAL_PROVIDER_CAPABILITIES } from "@narriflow/validators";
+import { checkSocialAccountCredential } from "./social-account-credential";
 import { socialOAuthService } from "./social-oauth.service";
 import { recordTikTokPublicationEvent } from "./social-publication-tiktok-webhook";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
@@ -13,6 +14,13 @@ function unavailable(message: string) {
 		code: "social_account_unavailable",
 		kind: "unavailable",
 		message,
+	});
+}
+function reconnectRequired() {
+	return new ExpectedDomainFailureError({
+		code: "social_account_reconnect_required",
+		kind: "conflict",
+		message: "Reconnect this account to publish.",
 	});
 }
 async function tiktokRead(token: string, path: string, body: object = {}) {
@@ -52,8 +60,17 @@ export async function readSocialPublishingOptionsForAccount(workspaceId: string,
 	const row = await getPrismaClient()?.socialAccount.findFirst({
 		where: { id: accountId, workspaceId },
 	});
-	if (!row || row.status !== "active")
-		throw unavailable("Reconnect this account to publish.");
+	if (!row || row.status !== "active") throw reconnectRequired();
+	// Every platform gets the same refresh preflight, so a dead connection shows
+	// up here instead of when the post runs. It is a refresh preflight only: it
+	// cannot see a revoked token that has no expiry (Meta), or a dead refresh
+	// grant while the access token is still outside the refresh window.
+	const credential = await checkSocialAccountCredential(accountId);
+	if (credential.kind === "reconnect_required") throw reconnectRequired();
+	if (credential.kind === "temporary")
+		throw unavailable(
+			"Account settings could not be loaded. Check the connection and try again.",
+		);
 	const capability = SOCIAL_PROVIDER_CAPABILITIES[row.platform];
 	const result = {
 		platform: row.platform,
@@ -69,8 +86,7 @@ export async function readSocialPublishingOptionsForAccount(workspaceId: string,
 		maximumDurationSec: Number(capability.durationSec.max),
 	};
 	if (row.platform !== "tiktok" || !result.directEnabled) return result;
-	const account = await socialOAuthService.getPublishAccount(accountId);
-	const creator = await tiktokRead(account.accessToken, "creator_info/query");
+	const creator = await tiktokRead(credential.account.accessToken, "creator_info/query");
 	return {
 		...result,
 		privacyOptions: Array.isArray(creator.privacy_level_options)

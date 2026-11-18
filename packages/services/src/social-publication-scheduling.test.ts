@@ -92,6 +92,7 @@ function makePorts(overrides: Partial<PublicationFreezePorts> = {}): Publication
 		projectExists: async () => true,
 		readClip: async () => ({ editorRevision: 7 }),
 		readAccount: async () => ({ workspaceId: "workspace-1", platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),
+		accountNeedsReconnect: async () => false,
 		requirePublishableAccount: async () => {},
 		readExport: async () => readyExport,
 		createExport: async () => "export-1",
@@ -460,7 +461,10 @@ describe("publication freeze policy through admission", () => {
 		{ code: "editor_revision_conflict", ports: { readClip: async () => ({ editorRevision: 8 }) } },
 		{ code: "social_account_unavailable", ports: { readAccount: async () => null } },
 		{ code: "social_account_unavailable", ports: { readAccount: async () => ({ workspaceId: "other", platform: "youtube_shorts" as const, status: "active", expiresAt: null, canRefresh: false }) } },
-		{ code: "social_account_expired", ports: { readAccount: async () => ({ workspaceId: actor.workspaceId, platform: "youtube_shorts" as const, status: "active", expiresAt: new Date("2026-08-28T09:00:00Z"), canRefresh: false }) } },
+		{ code: "social_account_reconnect_required", ports: { readAccount: async () => ({ workspaceId: actor.workspaceId, platform: "youtube_shorts" as const, status: "active", expiresAt: new Date("2026-08-28T09:00:00Z"), canRefresh: false }) } },
+		{ code: "social_account_reconnect_required", ports: { readAccount: async () => ({ workspaceId: actor.workspaceId, platform: "youtube_shorts" as const, status: "expired", expiresAt: null, canRefresh: true }) } },
+		{ code: "social_account_reconnect_required", ports: { readAccount: async () => ({ workspaceId: actor.workspaceId, platform: "youtube_shorts" as const, status: "revoked", expiresAt: null, canRefresh: false }) } },
+		{ code: "social_account_unavailable", ports: { readAccount: async () => ({ workspaceId: actor.workspaceId, platform: "tiktok" as const, status: "expired", expiresAt: null, canRefresh: false }) } },
 		{ code: "publication_export_mismatch", ports: { readExport: async () => ({ ...readyExport, editorRevision: 6 }) } },
 		{ code: "publication_export_variant_missing", ports: { readExport: async () => ({ ...readyExport, variants: [] }) } },
 		{ code: "publication_media_preparation_failed", ports: { readExport: async () => ({ ...readyExport, variants: readyExport.variants.map((variant) => ({ ...variant, status: "failed" })) }) } },
@@ -587,5 +591,70 @@ describe("Publishing Queue admission", () => {
 		const h = policyHarness({}, async () => { throw new ExpectedDomainFailureError({ code: "review_approval_required", kind: "conflict", message: "Client approval is required" }); });
 		await expect(h.module.schedule({ ...baseInput, slotQueue: { accountId: "account-1", pick: weekdayNine } })).rejects.toMatchObject({ code: "review_approval_required" });
 		expect(await h.store.count()).toBe(0);
+	});
+});
+
+describe("Social Publication scheduling credential check", () => {
+	const scheduleWith = (ports: Partial<PublicationFreezePorts>) => {
+		const store = createInMemoryPublicationSchedulingStore();
+		const scheduling = createSocialPublicationScheduling({
+			store,
+			authorize: async () => actor,
+			authorizeReview,
+			freezePorts: makePorts(ports),
+			createId: () => "social-post-1",
+			now: () => new Date("2026-08-28T10:00:00.000Z"),
+		});
+		return { store, scheduling };
+	};
+
+	test("refuses a new post for an account that needs reconnecting, and creates nothing", async () => {
+		const { store, scheduling } = scheduleWith({ accountNeedsReconnect: async () => true });
+		await expect(scheduling.schedule(baseInput)).rejects.toMatchObject({
+			code: "social_account_reconnect_required",
+			kind: "conflict",
+		});
+		expect(await store.count()).toBe(0);
+	});
+
+	test("an accepted request replays unchanged after the connection dies", async () => {
+		let needsReconnect = false;
+		let checks = 0;
+		const { store, scheduling } = scheduleWith({ accountNeedsReconnect: async () => { checks += 1; return needsReconnect; } });
+		const accepted = await scheduling.schedule(baseInput);
+		needsReconnect = true;
+		await expect(scheduling.schedule(baseInput)).resolves.toEqual(accepted);
+		await expect(scheduling.replay(baseInput)).resolves.toEqual(accepted);
+		expect(checks).toBe(1);
+		expect(await store.count()).toBe(1);
+	});
+
+	test("a temporary failure is not a verdict and admission goes ahead", async () => {
+		// The runtime port answers false for a refresh in progress or a provider failure.
+		const { store, scheduling } = scheduleWith({ accountNeedsReconnect: async () => false });
+		await expect(scheduling.schedule(baseInput)).resolves.toMatchObject({ status: "scheduled" });
+		expect(await store.count()).toBe(1);
+	});
+
+	test("does not spend a provider refresh on an account the plan already refuses", async () => {
+		let checks = 0;
+		const { scheduling } = scheduleWith({
+			accountNeedsReconnect: async () => { checks += 1; return true; },
+			requirePublishableAccount: async () => { throw new ExpectedDomainFailureError({ code: "plan_limit_reached", kind: "payment_required", message: "plan" }); },
+		});
+		await expect(scheduling.schedule(baseInput)).rejects.toMatchObject({ code: "plan_limit_reached" });
+		expect(checks).toBe(0);
+	});
+
+	test("a shared memo checks each account once for a batch", async () => {
+		let checks = 0;
+		const { scheduling } = scheduleWith({ accountNeedsReconnect: async () => { checks += 1; return true; } });
+		const reconnectChecks = new Map<string, Promise<boolean>>();
+		for (const key of ["a", "b", "c"]) {
+			await expect(scheduling.schedule({ ...baseInput, clientIdempotencyKey: key, reconnectChecks })).rejects.toMatchObject({
+				code: "social_account_reconnect_required",
+			});
+		}
+		expect(checks).toBe(1);
 	});
 });

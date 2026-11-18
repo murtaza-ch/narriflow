@@ -14,6 +14,7 @@ export type CalendarQuery = QueryOf<PublishingClient["publishing"]["calendar"]>;
 export type CalendarPostsQuery = QueryOf<PublishingClient["workspace"]["calendar"]["posts"]>;
 export type ComposerOptionsQuery = QueryOf<PublishingClient["workspace"]["calendar"]["composer-options"]>;
 export type ProjectPostsQuery = QueryOf<PublishingClient["projects"][":id"]["social-posts"]>;
+export type ClipHistoryQuery = QueryOf<PublishingClient["projects"][":id"]["social-posts"]["clip-history"]>;
 
 const DOMAIN = "publishing" as const;
 
@@ -36,6 +37,8 @@ export const publishingKeys = {
   tiktokOptions: (scope: WorkspaceScope, accountId: string) => scopedKey(scope, DOMAIN, "tiktok-options", { accountId }),
   projectPosts: (scope: WorkspaceScope, projectId: string, query: ProjectPostsQuery = {}) =>
     scopedKey(scope, DOMAIN, "project-posts", { projectId, ...query }),
+  clipHistory: (scope: WorkspaceScope, projectId: string, query: ClipHistoryQuery) =>
+    scopedKey(scope, DOMAIN, "clip-history", { projectId, ...query }),
   publication: (scope: WorkspaceScope, projectId: string, postId: string) =>
     scopedKey(scope, DOMAIN, "publication", { projectId, postId }),
   whatWorked: (scope: WorkspaceScope) => scopedKey(scope, DOMAIN, "what-worked"),
@@ -63,6 +66,8 @@ export function publishingReads(client: PublishingClient) {
       (await client.social.accounts[":accountId"]["tiktok-options"].$get({ param: { accountId } })).json(),
     projectPosts: async (projectId: string, query: ProjectPostsQuery = {}) =>
       (await client.projects[":id"]["social-posts"].$get({ param: { id: projectId }, query })).json(),
+    clipHistory: async (projectId: string, query: ClipHistoryQuery) =>
+      (await client.projects[":id"]["social-posts"]["clip-history"].$get({ param: { id: projectId }, query })).json(),
     publication: async (projectId: string, postId: string) =>
       (await client.projects[":id"]["social-posts"][":postId"].publication.$get({ param: { id: projectId, postId } })).json(),
     whatWorked: async () => (await client.performance["what-worked"].$get()).json(),

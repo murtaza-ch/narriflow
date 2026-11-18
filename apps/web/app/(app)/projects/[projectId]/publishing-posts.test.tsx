@@ -38,7 +38,7 @@ function render(snapshot: SocialPostSnapshot, canManage: boolean) {
 	return renderPosts([snapshot], canManage);
 }
 
-function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable = false, clips: ClipSnapshot[] = []) {
+function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable = false, clips: ClipSnapshot[] = [], intro?: boolean) {
 	return renderToStaticMarkup(
 		<ChakraProvider value={system}>
 			<PublishingPosts
@@ -46,6 +46,7 @@ function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable
 				projectId={post.projectId}
 				posts={posts}
 				filterable={filterable}
+				{...(intro === undefined ? {} : { intro })}
 				clips={clips}
 				refresh={async () => {}}
 				loadOlderPosts={async () => {}}
@@ -128,5 +129,31 @@ describe("project Posts tab", () => {
 		expect(html).toContain("Needs attention");
 		expect(html).not.toContain("Scheduled");
 		expect(html).not.toContain("TikTok inbox");
+	});
+});
+
+describe("publish drawer Posts view", () => {
+	const posted = { ...post, id: "55555555-5555-4555-8555-555555555555", status: "posted", errorCode: null, reconnectRequired: false, allowedActions: [] } as unknown as SocialPostSnapshot;
+	const tiktok = { ...posted, id: "66666666-6666-4666-8666-666666666666", platform: "tiktok" } as SocialPostSnapshot;
+
+	test("status filters show at the top, and platform filters when posts span platforms", () => {
+		const html = renderPosts([post, posted, tiktok], true, true, [], false);
+		expect(html).toContain('aria-label="Filter posts"');
+		expect(html).toContain("Published");
+		expect(html).toContain('aria-label="Filter by platform"');
+		expect(html).toContain("All platforms");
+		expect(html).toContain("TikTok");
+	});
+
+	test("one platform needs no platform filter", () => {
+		const html = renderPosts([post, posted], true, true, [], false);
+		expect(html).not.toContain("Filter by platform");
+	});
+
+	test("no posts yet shows an empty state, not the project intro or a filter miss", () => {
+		const html = renderPosts([], true, true, [], false);
+		expect(html).not.toContain("Publish clips and track every post");
+		expect(html).not.toContain("No posts match this filter");
+		expect(html).toContain("No posts here yet");
 	});
 });

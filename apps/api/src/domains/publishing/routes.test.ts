@@ -68,6 +68,7 @@ function harness(options: { role?: WorkspaceActorContext["role"]; rateLimit?: ()
     assistedSocialCopyService: { generate: record("generate") },
     socialService: {
       listProjectPosts: record("listProjectPosts", { items: [], nextCursor: null }),
+      listClipHistory: record("listClipHistory", { items: [] }),
       cancelPost: record("cancelPost"),
       inspectPublication: record("inspectPublication"),
       recheckPublication: record("recheckPublication"),
@@ -674,6 +675,24 @@ describe("project publishing", () => {
     const response = await request(`/api/projects/${PROJECT_ID}/social-posts?active=1&tracked=a,b&cursor=c`);
     expect(await response.json()).toEqual({ posts: [], nextCursor: null });
     expect(calls[0]!.args.slice(1)).toEqual([PROJECT_ID, { activeOnly: true, trackedIds: ["a", "b"], cursor: "c" }]);
+  });
+
+  test("reads clip history for the given clips, before any post id route can claim the path", async () => {
+    const { request, calls } = harness();
+    const clips = ["80000000-0000-4000-8000-000000000001", "80000000-0000-4000-8000-000000000002"];
+    const response = await request(`/api/projects/${PROJECT_ID}/social-posts/clip-history?clipIds=${clips.join(",")}`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [] });
+    expect(calls.map((call) => [call.name, call.args.slice(1)])).toEqual([["listClipHistory", [PROJECT_ID, clips]]]);
+  });
+
+  test("refuses a clip-history read with no clips, a bad id or too many clips", async () => {
+    const { request, calls } = harness();
+    const path = `/api/projects/${PROJECT_ID}/social-posts/clip-history`;
+    const many = Array.from({ length: 51 }, (_, n) => `80000000-0000-4000-8000-${String(n).padStart(12, "0")}`).join(",");
+    for (const query of ["", "?clipIds=", "?clipIds=not-a-uuid", `?clipIds=${many}`])
+      expect((await request(`${path}${query}`)).status).toBe(400);
+    expect(calls).toHaveLength(0);
   });
 
   test("cancels a post through the project route that the calendar also uses", async () => {

@@ -18,6 +18,7 @@ import {
   publishingPreviewSchema,
   recheckSocialPublicationSchema,
   republishSocialPublicationSchema,
+  socialClipHistoryQuerySchema,
   socialPlatformSchema,
   updateSocialPostProposalSchema,
   workspaceAllowsCapability,
@@ -61,6 +62,7 @@ export interface PublishingRouteDeps {
   socialService: Pick<
     SocialService,
     | "listProjectPosts"
+    | "listClipHistory"
     | "cancelPost"
     | "inspectPublication"
     | "recheckPublication"
@@ -470,6 +472,19 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
           cursor,
         });
         return c.json({ posts: page.items, nextCursor: page.nextCursor }, 200);
+      },
+    )
+
+    // Registered before every `/social-posts/:postId` route so `clip-history` is never read as a post id.
+    .get(
+      "/projects/:id/social-posts/clip-history",
+      uuidParams("id"),
+      validate("query", socialClipHistoryQuerySchema),
+      async (c) => {
+        return c.json(
+          await deps.socialService.listClipHistory(getActor(c), c.req.valid("param").id, c.req.valid("query").clipIds),
+          200,
+        );
       },
     )
 

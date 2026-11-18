@@ -115,6 +115,10 @@ let admit: (body: any) => Promise<Response>;
 /** What the render-states read and the export commands answer; `null` means every clip's video is ready. */
 let renderStates: ClipExportSnapshot[] | null = null;
 let holdRenderStates: Promise<void> | null = null;
+/** Earlier posts the clip-history read answers with, and a refusal for an account's publishing options (set to simulate a dead connection). */
+let clipHistory: unknown[] = [];
+let clipHistoryFails = false;
+let optionsRefusal: Response | null = null;
 let onExportCommand: (url: string) => Response | Promise<Response> = () => Response.json({}, { status: 202 });
 function Entry() {
 	const p = usePublishing();
@@ -208,6 +212,11 @@ async function render(
 			return Response.json({ exports: renderStates ?? exports });
 		}
 		if (init?.method === "POST" && /\/exports(\/[^/]+\/retry)?$/.test(value)) return onExportCommand(value);
+		if (value.endsWith("publishing-options") && optionsRefusal) return optionsRefusal.clone();
+		if (value.includes("social-posts/clip-history")) {
+			if (clipHistoryFails) return Response.json({ error: "internal_error", message: "Unavailable", requestId: "req_test" }, { status: 500 });
+			return Response.json({ items: clipHistory });
+		}
 		if (value.endsWith("publishing-options"))
 			return Response.json({
 				privacyOptions: ["PUBLIC_TO_EVERYONE"],
@@ -302,6 +311,9 @@ afterEach(async () => {
 	requests = [];
 	renderStates = null;
 	holdRenderStates = null;
+	clipHistory = [];
+	clipHistoryFails = false;
+	optionsRefusal = null;
 	onExportCommand = () => Response.json({}, { status: 202 });
 });
 afterAll(() => browser.close());
@@ -889,4 +901,72 @@ test("export signature refresh keeps preview source stable until media changes o
   expect(video.getAttribute("src")).toBe("https://media.example/video?signature=two");
   await act(async () => root.render(<PublishingPreview key="variant-two" src="https://media.example/other" />));
   expect(container.querySelector("video")!.getAttribute("src")).toBe("https://media.example/other");
+});
+
+const historyItem = (clipIndex: number, status: string, postedAt: string | null = null) => ({
+	postId: id(900 + clipIndex),
+	clipId: clips[clipIndex]!.id,
+	accountId: accounts[0]!.id,
+	platform: "youtube_shorts",
+	status,
+	scheduledFor: null,
+	postedAt,
+});
+test("a dead connection shows Reconnect, blocks submitting and never asks for a retry", async () => {
+	optionsRefusal = Response.json(
+		{ error: "social_account_reconnect_required", message: "Reconnect the selected social account before creating a new scheduled post.", requestId: "req_test" },
+		{ status: 409 },
+	);
+	await render();
+	await click("Exact clip");
+	const text = browser.document.querySelector('[role="dialog"]')!.textContent!;
+	expect(text).toContain("Reconnect your YouTube Shorts account to post.");
+	expect(browser.document.querySelector('a[href^="/settings/social-accounts?returnTo="]')).not.toBeNull();
+	expect(button("Retry account settings")).toBeUndefined();
+	expect(button("Publish now").disabled).toBe(true);
+});
+test("an account that is not active is listed with a Reconnect link and cannot be chosen", async () => {
+	await render({ accounts: [accounts[0]!, { ...accounts[1]!, status: "expired" } as SocialAccountSnapshot] });
+	await click("Exact clip");
+	const reconnect = [...browser.document.querySelectorAll("a")].filter((a) => a.textContent === "Reconnect");
+	expect(reconnect).toHaveLength(1);
+	expect(reconnect[0]!.getAttribute("href")).toContain("/settings/social-accounts?returnTo=");
+});
+test("clips already on the account are skipped by default", async () => {
+	clipHistory = [historyItem(0, "posted", "2026-09-02T10:00:00.000Z")];
+	await render();
+	await click("Bulk clips");
+	expect(browser.document.querySelector('[role="dialog"]')!.textContent).toContain("1 of these posts is already on YouTube Shorts.");
+	await click("Publish now");
+	const submitted = requests.filter((r) => r.url.endsWith("/schedule"));
+	expect(submitted).toHaveLength(1);
+	expect(submitted[0]!.body.items.map((i: any) => i.clipId)).toEqual([clips[1]!.id]);
+});
+test("posting again anyway includes published pairs but never uncertain ones", async () => {
+	clipHistory = [historyItem(0, "posted", "2026-09-02T10:00:00.000Z"), historyItem(1, "needs_attention")];
+	await render();
+	await click("Bulk clips");
+	await act(async () => {
+		(browser.document.querySelector('input[type="checkbox"][aria-label="Post them again anyway"]') ?? [...browser.document.querySelectorAll("label")].find((l) => l.textContent?.includes("Post them again anyway"))?.querySelector("input"))?.dispatchEvent(new browser.MouseEvent("click", { bubbles: true }) as unknown as Event);
+	});
+	await flush();
+	await click("Publish now");
+	const submitted = requests.filter((r) => r.url.endsWith("/schedule"));
+	expect(submitted).toHaveLength(1);
+	expect(submitted[0]!.body.items.map((i: any) => i.clipId)).toEqual([clips[0]!.id]);
+});
+test("every chosen post already queued blocks submitting; a failed history read does not", async () => {
+	clipHistory = [historyItem(1, "scheduled")];
+	await render();
+	await click("Exact clip");
+	expect(browser.document.querySelector('[role="dialog"]')!.textContent).toContain("Every chosen post is already published or queued.");
+	expect(button("Publish now").disabled).toBe(true);
+	await act(async () => root?.unmount());
+	browser.document.body.replaceChildren();
+	clipHistory = [];
+	clipHistoryFails = true;
+	await render();
+	await click("Exact clip");
+	expect(browser.document.querySelector('[role="dialog"]')!.textContent).toContain("Couldn't check earlier posts for duplicates.");
+	expect(button("Publish now").disabled).toBe(false);
 });

@@ -532,8 +532,11 @@ export function createBulkSocialScheduling(dependencies: {
 				return publicOperation(opened.operation, true);
 			}
 
+			// One provider refresh per distinct account for the whole request.
+			const reconnectChecks = new Map<string, Promise<boolean>>();
 			const admit = (plan: (typeof plans)[number]) =>
 				dependencies.schedule({
+					reconnectChecks,
 					immediate: input.scheduleMode === "now",
 					actorUserId: input.actorUserId,
 					workspaceId: input.workspaceId,

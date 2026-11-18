@@ -519,7 +519,8 @@ describe("bulk social scheduling", () => {
 			projectExists: async () => { mutableReads += 1; if (unavailable) throw new Error("project reader unavailable"); return true; },
 			readClip: async () => ({ editorRevision: 4 }),
 			readAccount: async () => ({ workspaceId: INPUT.workspaceId, platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),
-			requirePublishableAccount: async () => {},
+			accountNeedsReconnect: async () => false,
+		requirePublishableAccount: async () => {},
 			readExport: async () => ({
 				id: EXPORT_A, workspaceId: INPUT.workspaceId, projectId: INPUT.projectId, clipId: CLIP_A,
 				editorRevision: 4, resolution: "1080p", fingerprint: "frozen-export",
@@ -720,5 +721,97 @@ describe("bulk scheduling and the Publishing Queue", () => {
 		await busy.module.schedule(INPUT);
 		expect(busy.admitted.map((item) => item.scheduledFor.toISOString())).toEqual([second!, "2026-09-03T08:00:00.000Z"]);
 		for (const item of busy.admitted) expect(item.slotQueue).toBeUndefined();
+	});
+});
+
+describe("bulk scheduling against a dead connection", () => {
+	function build(state: { reconnect: boolean; checks: number; settleAvailable?: boolean; now?: Date; accountStatus?: string; checkExpiresAccount?: boolean; checkThrows?: boolean }) {
+		const intentStore = createInMemoryPublicationSchedulingStore();
+		const ports: PublicationFreezePorts = {
+			providerEnabled: () => true, capabilityVersion: () => "capability-v1",
+			projectExists: async () => true,
+			readClip: async ({ clipId }) => ({ editorRevision: clipId === CLIP_A ? 4 : 7 }),
+			readAccount: async () => ({ workspaceId: INPUT.workspaceId, platform: "youtube_shorts", status: state.accountStatus ?? "active", expiresAt: null, canRefresh: true }),
+			accountNeedsReconnect: async () => {
+				state.checks += 1;
+				if (state.checkThrows) throw new Error("provider unreachable");
+				// The real check marks the account expired as a side effect of a dead refresh.
+				if (state.reconnect && state.checkExpiresAccount) state.accountStatus = "expired";
+				return state.reconnect;
+			},
+			requirePublishableAccount: async () => {},
+			readExport: async (id) => ({
+				id, workspaceId: INPUT.workspaceId, projectId: INPUT.projectId, clipId: id === EXPORT_A ? CLIP_A : CLIP_B,
+				editorRevision: id === EXPORT_A ? 4 : 7, resolution: "1080p", fingerprint: `fingerprint-${id}`,
+				variants: [{ id: id === EXPORT_A ? VARIANT_A : VARIANT_B, aspectRatio: "9:16", resolution: "1080p", status: "completed", storageKey: "local/export.mp4", sizeBytes: 42_000, durationSec: 30 }],
+			}),
+			createExport: async () => { throw new Error("bulk uses an exact prepared Export"); },
+			tiktokOptions: async () => { throw new Error("not a TikTok request"); },
+			requireCopyProvenance: async () => {},
+			readThumbnailAsset: async () => null, thumbnailFrameMatches: async () => false,
+		};
+		let postId = 0;
+		const admission = createSocialPublicationScheduling({
+			store: intentStore,
+			authorize: async () => ACTOR,
+			authorizeReview: async ({ exportIds }) => ({ allowed: true, items: exportIds.map((exportId) => ({ exportId, eligibility: "approved", overrideAuditId: null })) }),
+			freezePorts: ports, createId: () => `post-${++postId}`, now: () => new Date("2026-09-02T10:00:00Z"),
+		});
+		const backing = createInMemoryBulkScheduleStore(() => state.now ?? new Date("2026-09-02T10:00:00Z"));
+		const module = createBulkSocialScheduling({
+			store: { ...backing, async settleItem(...args) { if (state.settleAvailable === false) throw new Error("settlement unavailable"); return backing.settleItem(...args); } },
+			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
+			schedule: (input, options) => admission.schedule(input, options),
+			queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
+			createId: () => crypto.randomUUID(), now: () => state.now ?? new Date("2026-09-02T10:00:00Z"),
+		});
+		return { module, intentStore };
+	}
+
+	test("every item for the account is ineligible, not retryable, with one provider check and no post", async () => {
+		const state = { reconnect: true, checks: 0 };
+		const { module, intentStore } = build(state);
+		const result = await module.schedule(INPUT);
+		expect(result.items.map((item) => ({ status: item.status, errorCode: item.errorCode, retryable: item.retryable, socialPostId: item.socialPostId }))).toEqual([
+			{ status: "ineligible", errorCode: "social_account_reconnect_required", retryable: false, socialPostId: null },
+			{ status: "ineligible", errorCode: "social_account_reconnect_required", retryable: false, socialPostId: null },
+		]);
+		expect(state.checks).toBe(1);
+		expect(await intentStore.count()).toBe(0);
+	});
+
+	test("an account the check marks expired mid-batch gives every item the same verdict, from one check", async () => {
+		const state = { reconnect: true, checks: 0, checkExpiresAccount: true };
+		const { module, intentStore } = build(state);
+		const result = await module.schedule(INPUT);
+		expect(state.accountStatus).toBe("expired");
+		expect(result.items.map((item) => item.errorCode)).toEqual(["social_account_reconnect_required", "social_account_reconnect_required"]);
+		expect(result.items.every((item) => item.status === "ineligible" && item.retryable === false)).toBe(true);
+		expect(state.checks).toBe(1);
+		expect(await intentStore.count()).toBe(0);
+	});
+
+	test("a credential check that throws is no verdict: every item is admitted and the failure is not cached", async () => {
+		const state = { reconnect: true, checks: 0, checkThrows: true };
+		const { module, intentStore } = build(state);
+		const result = await module.schedule(INPUT);
+		expect(result.items.map((item) => item.status)).toEqual(["succeeded", "succeeded"]);
+		expect(state.checks).toBe(1);
+		expect(await intentStore.count()).toBe(2);
+	});
+
+	test("a recovered item whose post was accepted keeps its result when the connection has since died", async () => {
+		const state = { reconnect: false, checks: 0, settleAvailable: false };
+		const { module, intentStore } = build(state);
+		const input = { ...INPUT, items: [INPUT.items[0]!] };
+		await expect(module.schedule(input)).rejects.toMatchObject({ code: "campaign_schedule_item_failed" });
+		expect(await intentStore.count()).toBe(1);
+		state.reconnect = true;
+		state.settleAvailable = true;
+		state.now = new Date("2026-09-02T10:11:00Z");
+		const recovered = await module.schedule(input);
+		expect(recovered.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
+		expect(state.checks).toBe(1);
+		expect(await intentStore.count()).toBe(1);
 	});
 });

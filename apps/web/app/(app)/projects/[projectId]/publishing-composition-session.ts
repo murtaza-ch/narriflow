@@ -17,6 +17,7 @@ import {
 	type PublishingGenerationRequest,
 	type PublishingPreviewRequest,
 	type SocialAccountSnapshot,
+	type SocialClipHistoryItem,
 } from "@narriflow/validators";
 import { isApiError } from "@narriflow/api-client";
 import { formatDateInputInTimeZone } from "@/lib/format";
@@ -26,6 +27,12 @@ import {
 	currentPublicationExport,
 	publishingDraftKey,
 } from "./publishing-draft";
+import {
+	classifyHistory,
+	pendingConnectionMessage,
+	skippedPairKeys,
+	type OptionError,
+} from "./publishing-preflight";
 
 /** The one draft issue the clip rail reports through the render state instead. */
 export const VIDEO_REQUIRED_ISSUE = "Prepare a compatible video.";
@@ -71,7 +78,11 @@ type SubmissionFacts = {
 	options: Record<string, PublishingOptions>;
 	preferredExportId?: string;
 	reviewOverrideReason?: string;
-	optionErrors?: Record<string, string>;
+	optionErrors?: Record<string, OptionError>;
+	/** Earlier posts of the chosen clips. Pairs they match are left out of the request. */
+	history?: readonly SocialClipHistoryItem[];
+	/** Include published, sent and queued matches again; uncertain ones are never included. */
+	repostAnyway?: boolean;
 };
 type GenerationIntent = {
 	clipId: string;
@@ -83,6 +94,7 @@ type GenerationIntent = {
 };
 
 const storageWarning = "This browser could not save your draft. Keep this page open.";
+export const ALL_SKIPPED_ISSUE = "Every chosen post is already published or queued.";
 const incompleteOutcome =
 	"The submission result was incomplete. Check the previous submission before trying again.";
 function message(error: unknown, fallback: string) {
@@ -335,11 +347,12 @@ export function createPublishingCompositionSession(dependencies: {
 			result.push("Write a description.");
 		if (socialCaptionLength(pair.account.platform, draft.caption.trim()) > SOCIAL_PROVIDER_CAPABILITIES[pair.account.platform].textLimit)
 			result.push("Description exceeds the character limit.");
-		if (input.optionErrors?.[pair.account.id]) result.push(input.optionErrors[pair.account.id]!);
-		if (pair.account.platform === "tiktok") {
-			const options = input.options[pair.account.id];
-			if (!options) result.push("Loading TikTok settings…");
-			else if (draft.deliveryMode === "tiktok_inbox" && !options.inboxEnabled)
+		const optionError = input.optionErrors?.[pair.account.id];
+		const options = input.options[pair.account.id];
+		if (optionError) result.push(optionError.message);
+		else if (!options) result.push(pendingConnectionMessage(pair.account.platform));
+		if (pair.account.platform === "tiktok" && options) {
+			if (draft.deliveryMode === "tiktok_inbox" && !options.inboxEnabled)
 				result.push("Reconnect TikTok to allow inbox uploads.");
 			else if (draft.deliveryMode === "direct") {
 				if (!options.directEnabled) result.push("Reconnect TikTok to allow direct publication.");
@@ -353,11 +366,18 @@ export function createPublishingCompositionSession(dependencies: {
 	}
 	function buildSubmission(input: SubmissionFacts) {
 		const accepted = acceptedKeys(snapshot.result);
+		// Duplicates are left out of the request itself, not only hidden in the composer.
+		const skipped = skippedPairKeys(
+			pairs().map((pair) => pair.key),
+			classifyHistory(input.history ?? []),
+			input.repostAnyway === true,
+		);
+		const included = pairs().filter((pair) => !accepted.has(pair.key) && !skipped.has(pair.key));
+		if (!included.length && pairs().some((pair) => !accepted.has(pair.key))) throw new Error(ALL_SKIPPED_ISSUE);
 		return bulkSocialScheduleSchema.parse({
 			...snapshot.timing,
 			idempotencyKey: dependencies.createId(),
-			items: pairs()
-				.filter((pair) => !accepted.has(pair.key))
+			items: included
 				.map((pair) => {
 					const problems = issues(pair.key, input);
 					if (problems.length) throw new Error(problems[0]);

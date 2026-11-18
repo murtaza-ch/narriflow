@@ -46,7 +46,9 @@ import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
 	clipExportSnapshotSchema,
+	SOCIAL_CLIP_HISTORY_MAX_CLIPS,
 	SOCIAL_PROVIDER_CAPABILITIES,
+	socialClipHistoryResponseSchema,
 	socialCaptionLength,
 	planFeatureRequirement,
 	type BulkSocialScheduleOutcome,
@@ -70,9 +72,22 @@ import {
 	type ClipRenderState,
 } from "./publishing-render-state";
 import { type ProjectPublishingApi } from "./publishing-api";
-import { VIDEO_REQUIRED_ISSUE, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
+import { ALL_SKIPPED_ISSUE, VIDEO_REQUIRED_ISSUE, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
 import { PublishingCover } from "./publishing-cover";
-import { isApiError, type Intent } from "@narriflow/api-client";
+import {
+	classifyHistory,
+	clearedRecord,
+	duplicateCopy,
+	duplicateSummary,
+	type OptionError,
+	queueSchedulable,
+	reconnectMessage,
+	RECONNECT_REQUIRED,
+	skippedPairKeys,
+	socialAccountsHref,
+	submittedClipIds,
+} from "./publishing-preflight";
+import { isApiError, scopedKey, type Intent } from "@narriflow/api-client";
 import { invalidatePublishing, type ProposeInput } from "@narriflow/api-client/publishing";
 import { createExportsClient, exportQueries } from "@narriflow/api-client/exports";
 import { invalidateProject } from "@narriflow/api-client/projects";
@@ -121,6 +136,7 @@ export function PublishingComposer({
 	preferredExportId,
 	open,
 	onSubmitted,
+	viewPosts,
 }: {
 	api: ProjectPublishingApi;
 	config: Config;
@@ -129,6 +145,8 @@ export function PublishingComposer({
 	preferredExportId?: string;
 	open: boolean;
 	onSubmitted(outcome: BulkResult): Promise<void>;
+	/** Opens the Posts view for these clips, where an uncertain earlier post can be checked. */
+	viewPosts?(clipIds: string[]): void;
 }) {
 	const runtime = useApiRuntime();
 	const scope = useWorkspaceScope();
@@ -146,7 +164,9 @@ export function PublishingComposer({
 	const setTiming = session.updateTiming;
 	const [activeId, setActiveId] = useState(clips[0]!.id);
 	const [options, setOptions] = useState<Record<string, Options>>({});
-	const [optionErrors, setOptionErrors] = useState<Record<string, string>>({});
+	const [optionErrors, setOptionErrors] = useState<Record<string, OptionError>>({});
+	const optionRequests = useRef({ epoch: 0, inFlight: new Set<string>() });
+	const [repostAnyway, setRepostAnyway] = useState(false);
 	const [slots, setSlots] = useState<
 		Array<{ clipId: string; scheduledFor: string }>
 	>([]);
@@ -221,6 +241,28 @@ export function PublishingComposer({
 	useEffect(() => {
 		if (currentExports.error) setError(currentExports.error.message);
 	}, [currentExports.error, currentExports.errorUpdatedAt, setError]);
+	// Earlier posts of the chosen clips on any account, read when the drawer opens and after a submission.
+	const historyClipIds = useMemo(() => clips.map((clip) => clip.id).sort(), [clips]);
+	const clipHistory = useQuery({
+		queryKey: (scope
+			? scopedKey(scope, "publishing", "clip-history", { projectId: config.projectId, clipIds: historyClipIds })
+			: ["publishing-clip-history-idle", config.projectId]) as unknown[],
+		queryFn: async () => {
+			const chunks: string[][] = [];
+			for (let index = 0; index < historyClipIds.length; index += SOCIAL_CLIP_HISTORY_MAX_CLIPS)
+				chunks.push(historyClipIds.slice(index, index + SOCIAL_CLIP_HISTORY_MAX_CLIPS));
+			const answers = await Promise.all(chunks.map(async (chunk) => socialClipHistoryResponseSchema.parse(await api.clipHistory(config.projectId, chunk))));
+			return answers.flatMap((answer) => answer.items);
+		},
+		enabled: open && scope !== null,
+		staleTime: 0,
+		gcTime: 0,
+		retry: false,
+	});
+	const historyItems = useMemo(() => clipHistory.data ?? [], [clipHistory.data]);
+	// Any read in flight blocks submit: a reopened drawer still holds the last answer until the fresh one lands.
+	const historyLoading = open && clipHistory.isFetching;
+	const refetchHistory = clipHistory.refetch;
 	const staleRevision = exports.some((item) =>
 		clips.some(
 			(clip) =>
@@ -232,31 +274,56 @@ export function PublishingComposer({
 	useEffect(() => {
 		if (staleRevision && scope) void invalidateProject(queryClient, scope, config.projectId);
 	}, [staleRevision, queryClient, scope, config.projectId]);
+	// Options are read once per account while the drawer is open. Closing drops them, so a reconnect
+	// done elsewhere is picked up the next time the drawer opens.
 	useEffect(() => {
-		let alive = true;
+		const requests = optionRequests.current;
+		if (!open) {
+			requests.epoch += 1;
+			requests.inFlight.clear();
+			// Already-empty state keeps its identity, or this effect would re-run on its own reset.
+			setOptions(clearedRecord);
+			setOptionErrors(clearedRecord);
+			return;
+		}
 		for (const account of accounts) {
-			if (options[account.id] || optionErrors[account.id]) continue;
+			if (options[account.id] || optionErrors[account.id] || requests.inFlight.has(account.id)) continue;
+			const epoch = requests.epoch;
+			requests.inFlight.add(account.id);
 			void api
 				.publishingOptions(config.projectId, account.id)
 				.then((value) => {
-					if (alive) setOptions((o) => ({ ...o, [account.id]: value as Options }));
+					if (requests.epoch === epoch) setOptions((o) => ({ ...o, [account.id]: value as Options }));
 				})
 				.catch((e) => {
-					if (alive)
-						setOptionErrors((o) => ({ ...o, [account.id]: e.message }));
+					if (requests.epoch === epoch)
+						setOptionErrors((o) => ({
+							...o,
+							[account.id]: { code: isApiError(e) ? e.code : null, message: e instanceof Error ? e.message : "Account settings could not be loaded." },
+						}));
+				})
+				.finally(() => {
+					if (requests.epoch === epoch) requests.inFlight.delete(account.id);
 				});
 		}
-		return () => {
-			alive = false;
-		};
-	}, [accounts, api, config.projectId, options, optionErrors]);
+	}, [open, accounts, api, config.projectId, options, optionErrors]);
+	// What is submitted is the pairs left after skipping duplicates, and admission spaces slots over
+	// exactly their clips, so the preview is built from the same list and follows it as it changes.
+	const matches = useMemo(() => classifyHistory(historyItems), [historyItems]);
+	const skipped = skippedPairKeys(
+		pairs.filter((p) => !accepted.has(p.key)).map((p) => p.key),
+		matches,
+		repostAnyway,
+	);
+	const unresolved = pairs.filter((p) => !accepted.has(p.key) && !skipped.has(p.key));
 	const timingSignature = JSON.stringify({
 		...timing,
-		clipIds: clips.map((c) => c.id),
+		clipIds: submittedClipIds(unresolved),
 	});
 	useEffect(() => {
-		const mode = JSON.parse(timingSignature).scheduleMode;
-		if (!open || mode === "now" || mode === "queue") {
+		const request = JSON.parse(timingSignature);
+		// With nothing left to submit there is nothing to space out (and the preview refuses an empty list).
+		if (!open || request.scheduleMode === "now" || request.scheduleMode === "queue" || !request.clipIds.length) {
 			setSlots([]);
 			setPreviewError("");
 			return;
@@ -266,7 +333,7 @@ export function PublishingComposer({
 		const timer = setTimeout(
 			() =>
 				void api
-					.previewSchedule(config.projectId, JSON.parse(timingSignature))
+					.previewSchedule(config.projectId, request)
 					.then((v) => {
 						if (alive) {
 							setSlots(v.slots.flatMap((slot) => (slot.clipId ? [{ clipId: slot.clipId, scheduledFor: slot.scheduledFor }] : [])));
@@ -385,7 +452,8 @@ export function PublishingComposer({
 		}
 	}
 	async function submit() {
-		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => api.schedule(config.projectId, payload).catch(openUpgradeOnRefusal(openUpgrade)));
+		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override, history: historyItems, repostAnyway }, (payload) => api.schedule(config.projectId, payload).catch(openUpgradeOnRefusal(openUpgrade)));
+		void refetchHistory();
 		if (outcome) await onSubmitted(outcome);
 	}
 	const renderStates = new Map<string, ClipRenderState>(
@@ -403,16 +471,22 @@ export function PublishingComposer({
 	const activeRender = renderStateOf(active);
 	const selectionSummary = renderSummary([...renderStates.values()]);
 	const disabled = busy || !!pending;
-	const unresolved = pairs.filter((p) => !accepted.has(p.key));
+	const matchedPairs = pairs.filter((p) => !accepted.has(p.key) && matches.has(p.key));
+	const uncertainClipIds = [...new Set(matchedPairs.filter((p) => matches.get(p.key)?.kind === "uncertain").map((p) => p.clip.id))];
+	const everySkipped = unresolved.length === 0 && skipped.size > 0;
+	// Skipped duplicates are never sent, so they do not count toward the multi-post plan limit.
+	const campaignBlocked = !config.campaignSchedulingEnabled && pairs.length - skipped.size > 1;
+	const repostable = matchedPairs.some((p) => matches.get(p.key)?.kind !== "uncertain");
 	const issueCount = unresolved.reduce((n, p) => n + issues(p).length, 0);
 	const inboxCount = unresolved.filter(
 		(p) => drafts[p.key]?.deliveryMode === "tiktok_inbox",
 	).length;
 	const directCount = unresolved.length - inboxCount;
-	// Posting slots are the account's own, so the queue is offered when every chosen account has some.
-	const queueAvailable =
-		accounts.length > 0 &&
-		accounts.every((account) => (account.postingSchedule?.slots.length ?? 0) > 0);
+	// Posting slots are the account's own, so the queue is offered when every account that still has a
+	// post in the request has some; accounts whose posts are all skipped duplicates do not count.
+	const queueAvailable = queueSchedulable(
+		unresolved.length ? accounts.filter((account) => unresolved.some((p) => p.account.id === account.id)) : accounts,
+	);
 	// A queued post's time is chosen when it is written, so there is nothing to preview.
 	const needsPreview = timing.scheduleMode !== "now" && timing.scheduleMode !== "queue";
 	const queueBlocked = timing.scheduleMode === "queue" && !queueAvailable;
@@ -420,11 +494,15 @@ export function PublishingComposer({
 		? null
 		: !restored
 			? "Restore the publishing draft before submitting."
-			: !unresolved.length
-				? "Choose at least one post to submit."
-				: issueCount > 0
+			: historyLoading
+				? "Checking earlier posts…"
+				: everySkipped
+					? ALL_SKIPPED_ISSUE
+					: !unresolved.length
+					? "Choose at least one post to submit."
+					: issueCount > 0
 					? "Resolve the highlighted publishing requirements before submitting."
-					: pairs.length > 1 && !config.campaignSchedulingEnabled
+					: campaignBlocked
 						? campaignRequirement
 						: queueBlocked
 							? "Add posting slots to every chosen account, or pick a time."
@@ -436,6 +514,7 @@ export function PublishingComposer({
 									? "Provide a reason to publish without the required approval."
 									: "Request approval in the Review tab before publishing."
 								: null;
+	const accountsHref = socialAccountsHref(config.projectId, clips.map((c) => c.id));
 	const coverPair = coverAccount
 		? pairs.find(
 				(p) => p.clip.id === active.id && p.account.id === coverAccount,
@@ -488,6 +567,11 @@ export function PublishingComposer({
 																</Box>
 															</Flex>
 														</Checkbox>
+														{account.status !== "active" && SOCIAL_PROVIDER_CAPABILITIES[account.platform].publishingEnabled && (
+															<Button variant="ghost" size="xs" mt="1" asChild>
+																<Link href={accountsHref}>Reconnect</Link>
+															</Button>
+														)}
 													</Box>
 												);
 											})}
@@ -497,7 +581,7 @@ export function PublishingComposer({
 												<Link
 													aria-label="Manage accounts"
 													title="Manage accounts"
-													href={`/settings/social-accounts?returnTo=${encodeURIComponent(`/projects/${config.projectId}?publishClips=${clips.map((c) => c.id).join(",")}`)}`}
+													href={accountsHref}
 												>
 													<Settings2 size={16} /> Manage accounts
 												</Link>
@@ -517,7 +601,7 @@ export function PublishingComposer({
 												</Box>
 												<Button variant="subtle" size="sm" asChild>
 													<Link
-														href={`/settings/social-accounts?returnTo=${encodeURIComponent(`/projects/${config.projectId}?publishClips=${clips.map((c) => c.id).join(",")}`)}`}
+														href={accountsHref}
 													>
 														<Plus size={16} /> Connect an account
 													</Link>
@@ -552,7 +636,7 @@ export function PublishingComposer({
 									items={clips.map((clip) => ({
 										clip,
 										render: renderStateOf(clip),
-										needsReview: pairs.some((p) => p.clip.id === clip.id && issues(p).some((issue) => issue !== VIDEO_REQUIRED_ISSUE)),
+										needsReview: pairs.some((p) => p.clip.id === clip.id && !skipped.has(p.key) && issues(p).some((issue) => issue !== VIDEO_REQUIRED_ISSUE)),
 										preview: exports.flatMap((e) => (e.clipId === clip.id ? e.variants : [])).find((v) => v.previewUrl),
 									}))}
 								/>
@@ -652,7 +736,11 @@ export function PublishingComposer({
 										const capability =
 											SOCIAL_PROVIDER_CAPABILITIES[account.platform];
 										const accountOptions = options[account.id];
-										const warnings = issues({ clip: active, account, key });
+										const optionError = optionErrors[account.id];
+const needsReconnect = optionError?.code === RECONNECT_REQUIRED;
+const skippedMatch = skipped.has(key) ? matches.get(key) : undefined;
+// A pair left out of the submission needs nothing fixed; a reconnect gets its own row with the link.
+const warnings = skippedMatch ? [] : issues({ clip: active, account, key }).filter((w) => !(needsReconnect && w === optionError?.message));
 										const media = currentPublicationExport(
 											active,
 											account.platform,
@@ -1009,31 +1097,46 @@ minH="220px" p="4" lineHeight="1.8"
 																description.
 															</Checkbox>
 														)}
-														{optionErrors[account.id] && (
-															<Button
-																size="xs"
-																variant="subtle"
-																onClick={() =>
-																void api
-																		.publishingOptions(config.projectId, account.id)
-																		.then((value) => {
-																			setOptions((o) => ({
-																				...o,
-																				[account.id]: value as Options,
-																			}));
-																			setOptionErrors((o) => {
-																				const next = { ...o };
-																				delete next[account.id];
-																				return next;
-																			});
-																		})
-																		.catch((e) => setError(e.message))
-																}
-															>
-																Retry account settings
-															</Button>
-														)}
-														{warnings.length > 0 && (
+														{needsReconnect ? (
+	<Flex align="center" gap="2" wrap="wrap">
+		<Text fontSize="xs" color="warning.fg">{reconnectMessage(account.platform)}</Text>
+		<Button size="xs" variant="subtle" asChild>
+			<Link href={accountsHref}>Reconnect</Link>
+		</Button>
+	</Flex>
+) : optionError ? (
+	<Button
+		size="xs"
+		variant="subtle"
+		onClick={() =>
+			void api
+				.publishingOptions(config.projectId, account.id)
+				.then((value) => {
+					setOptions((o) => ({
+						...o,
+						[account.id]: value as Options,
+					}));
+					setOptionErrors((o) => {
+						const next = { ...o };
+						delete next[account.id];
+						return next;
+					});
+				})
+				.catch((e) => {
+					setOptionErrors((o) => ({ ...o, [account.id]: { code: isApiError(e) ? e.code : null, message: e.message } }));
+					setError(e.message);
+				})
+		}
+	>
+		Retry account settings
+	</Button>
+) : null}
+{skippedMatch && (
+	<Text fontSize="xs" color="fg.muted">
+		{duplicateCopy(skippedMatch)}
+	</Text>
+)}
+{warnings.length > 0 && (
 															<Stack gap="1">
 																{warnings.map((w) => (
 																	<Text
@@ -1059,8 +1162,17 @@ minH="220px" p="4" lineHeight="1.8"
 																	fontSize="xs"
 																	color="danger.fg"
 																>
-																	This post needs attention.{" "}
-																	{i.errorCode?.replaceAll("_", " ")}
+																	{i.errorCode === RECONNECT_REQUIRED ? (
+																		<>
+																			{reconnectMessage(account.platform)}{" "}
+																			<Link href={accountsHref}>Reconnect</Link>
+																		</>
+																	) : (
+																		<>
+																			This post needs attention.{" "}
+																			{i.errorCode?.replaceAll("_", " ")}
+																		</>
+																	)}
 																</Text>
 															))}
 													</Stack>
@@ -1288,8 +1400,42 @@ minH="220px" p="4" lineHeight="1.8"
 						{error}
 					</Text>
 				)}
-				{!config.campaignSchedulingEnabled && pairs.length > 1 && (
+				{campaignBlocked && (
 					<PlanLimitNotice message={campaignRequirement} upgrade={campaignUpgrade} />
+				)}
+				{clipHistory.isError && (
+					<Text role="status" fontSize="xs" color="fg.muted">
+						Couldn't check earlier posts for duplicates.
+					</Text>
+				)}
+				{matchedPairs.length > 0 && (
+					<Stack gap="2" p="3" bg="warning.subtle" borderRadius="l2" role="status">
+						<Text fontSize="sm" color="warning.fg">
+							{duplicateSummary(matchedPairs.map((p) => matches.get(p.key)!))}{" "}
+							{!repostAnyway
+								? `${matchedPairs.length === 1 ? "It" : "They"} will be skipped.`
+								: uncertainClipIds.length > 0
+									? "Posts that need checking stay skipped; the rest will be posted again."
+									: `${matchedPairs.length === 1 ? "It" : "They"} will be posted again.`}
+						</Text>
+						{uncertainClipIds.length > 0 && (
+							<Flex align="center" gap="2" wrap="wrap">
+								<Text fontSize="xs" color="fg.muted">
+									Check {uncertainClipIds.length === 1 ? "the earlier post" : "the earlier posts"} in Posts first.
+								</Text>
+								{viewPosts && (
+									<Button size="xs" variant="subtle" onClick={() => viewPosts(uncertainClipIds)}>
+										View posts
+									</Button>
+								)}
+							</Flex>
+						)}
+						{repostable && (
+							<Checkbox checked={repostAnyway} disabled={disabled} onCheckedChange={(checked) => setRepostAnyway(checked)}>
+								Post them again anyway
+							</Checkbox>
+						)}
+					</Stack>
 				)}
 				<Flex justify="space-between" gap="3" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
 					<chakra.fieldset disabled={disabled} border="0" p="0" m="0" flex="1" minW="0"><Flex gap="2" align="center" wrap="wrap">
@@ -1343,9 +1489,10 @@ minH="220px" p="4" lineHeight="1.8"
 								busy ||
 								(!pending &&
 									(!restored ||
+										historyLoading ||
 										!unresolved.length ||
 										issueCount > 0 ||
-										(pairs.length > 1 && !config.campaignSchedulingEnabled) ||
+										campaignBlocked ||
 										queueBlocked ||
 										(needsPreview &&
 											(!!previewError || !slots.length)) ||

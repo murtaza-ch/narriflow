@@ -8,6 +8,7 @@ import type {
 	ThumbnailSelectionInput,
 } from "@narriflow/validators";
 import {
+	ALL_SKIPPED_ISSUE,
 	createPublishingCompositionSession,
 	type PublishingCompositionFacts,
 	type PublishingCompositionStorage,
@@ -23,6 +24,15 @@ const account = {
 	publishingEligible: true,
 } as SocialAccountSnapshot;
 const otherAccount = { ...account, id: id(4) };
+const readyOptions = {
+	privacyOptions: [],
+	commentDisabled: false,
+	duetDisabled: false,
+	stitchDisabled: false,
+	maximumDurationSec: 600,
+	inboxEnabled: false,
+	directEnabled: true,
+};
 const facts: PublishingCompositionFacts = {
 	clips: [clip],
 	accounts: [account],
@@ -42,7 +52,10 @@ const submissionFacts = {
 			variants: [{ id: id(41), hasAsset: true, aspectRatio: "9:16", resolution: "1080p" }],
 		} as ClipExportSnapshot,
 	],
-	options: {},
+	options: {
+		[account.id]: readyOptions,
+		[otherAccount.id]: readyOptions,
+	},
 };
 function memory() {
 	const records = new Map<string, string>();
@@ -516,4 +529,101 @@ test("a failed completed-outcome reset cannot contaminate a new intent after res
 	expect(resultB?.items[0]?.socialPostId).toBe(id(950));
 	expect(resultB?.items).toHaveLength(1);
 	expect(restored.getSnapshot().pending).toBeNull();
+});
+
+const earlier = (accountId: string, status: string) =>
+	({
+		postId: id(800),
+		clipId: clip.id,
+		accountId,
+		platform: "youtube_shorts",
+		status,
+		scheduledFor: null,
+		postedAt: status === "posted" ? "2026-09-02T10:00:00.000Z" : null,
+	}) as never;
+const bothAccounts = { ...facts, accounts: [account, otherAccount] };
+function twoAccountSession() {
+	const state = session();
+	state.open([clip.id], bothAccounts);
+	state.selectAccounts([account.id, otherAccount.id]);
+	for (const key of [draftKey, publishingDraftKey(clip.id, otherAccount.id)])
+		state.updateDraft(key, { caption: "Caption" });
+	return state;
+}
+async function sentItems(state: ReturnType<typeof session>, input: object) {
+	let sent: BulkSocialScheduleRequest | null = null;
+	await state.submit({ ...submissionFacts, ...input }, async (payload) => {
+		sent = payload;
+		throw new Error("Response lost");
+	});
+	return (sent as BulkSocialScheduleRequest | null)?.items.map((item) => item.accountId) ?? null;
+}
+
+test("a post waits for its account's options, and an options failure explains itself instead", () => {
+	const state = session();
+	state.open([clip.id], facts);
+	state.updateDraft(draftKey, { caption: "Caption" });
+	const base = { exports: submissionFacts.exports };
+	expect(state.issues(draftKey, { ...base, options: {} })).toContain("Checking the YouTube Shorts connection…");
+	expect(state.issues(draftKey, { ...base, options: submissionFacts.options })).not.toContain(
+		"Checking the YouTube Shorts connection…",
+	);
+	const failed = state.issues(draftKey, {
+		...base,
+		options: {},
+		optionErrors: { [account.id]: { code: "social_account_reconnect_required", message: "Reconnect your YouTube Shorts account to post." } },
+	});
+	expect(failed).toContain("Reconnect your YouTube Shorts account to post.");
+	expect(failed).not.toContain("Checking the YouTube Shorts connection…");
+});
+
+test("pairs with an earlier post are left out of the submitted request", async () => {
+	const state = twoAccountSession();
+	expect(await sentItems(state, { history: [earlier(account.id, "posted")] })).toEqual([otherAccount.id]);
+});
+
+test("Post again anyway includes published, sent and queued pairs but never an uncertain one", async () => {
+	for (const status of ["posted", "inbox_delivered", "scheduled"]) {
+		const state = twoAccountSession();
+		expect(await sentItems(state, { history: [earlier(account.id, status)], repostAnyway: true })).toEqual([
+			account.id,
+			otherAccount.id,
+		]);
+	}
+	const state = twoAccountSession();
+	expect(await sentItems(state, { history: [earlier(account.id, "needs_attention")], repostAnyway: true })).toEqual([
+		otherAccount.id,
+	]);
+});
+
+test("a selection where every pair is skipped sends nothing and says why", async () => {
+	const state = twoAccountSession();
+	let calls = 0;
+	const outcome = await state.submit(
+		{ ...submissionFacts, history: [earlier(account.id, "posted"), earlier(otherAccount.id, "scheduled")] },
+		async () => {
+			calls++;
+			return null;
+		},
+	);
+	expect(outcome).toBeNull();
+	expect(calls).toBe(0);
+	expect(state.getSnapshot().error).toBe(ALL_SKIPPED_ISSUE);
+	expect(state.getSnapshot().pending).toBeNull();
+});
+
+test("a saved pending request is replayed exactly, whatever the history now says", async () => {
+	const state = twoAccountSession();
+	expect(await sentItems(state, {})).toEqual([account.id, otherAccount.id]);
+	const saved = structuredClone(state.getSnapshot().pending);
+	expect(saved?.items).toHaveLength(2);
+	const replayed: BulkSocialScheduleRequest[] = [];
+	await state.submit(
+		{ ...submissionFacts, history: [earlier(account.id, "posted"), earlier(otherAccount.id, "posted")] },
+		async (payload) => {
+			replayed.push(payload);
+			throw new Error("Response lost");
+		},
+	);
+	expect(replayed).toEqual([saved as BulkSocialScheduleRequest]);
 });

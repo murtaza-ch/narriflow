@@ -283,6 +283,50 @@ export const socialPostSnapshotSchema = z.object({
 	createdAt: z.string().datetime(),
 });
 
+/** Statuses that mean a clip already reached, or is still on its way to, an account. */
+export const SOCIAL_CLIP_HISTORY_STATUSES = [
+	"posted",
+	"inbox_delivered",
+	"preparing_video",
+	"scheduled",
+	"publishing",
+	"processing",
+	"reconciling",
+	"needs_attention",
+] as const satisfies ReadonlyArray<z.infer<typeof socialPostStatusSchema>>;
+
+/** The most clips one clip-history read covers; the composer's selection stays under it. */
+export const SOCIAL_CLIP_HISTORY_MAX_CLIPS = 50;
+
+export const socialClipHistoryQuerySchema = z.object({
+	/** Comma-separated clip ids, at most `SOCIAL_CLIP_HISTORY_MAX_CLIPS`. */
+	clipIds: z
+		.string()
+		.transform((value) => [...new Set(value.split(",").filter(Boolean))])
+		.pipe(z.array(z.string().uuid()).min(1).max(SOCIAL_CLIP_HISTORY_MAX_CLIPS)),
+});
+
+/**
+ * Every post of the given clips that is published, sent to the TikTok inbox,
+ * still on its way, or uncertain, so the composer can warn before a repeat.
+ * Failed, cancelled and draft posts never reached a provider and are left out.
+ */
+export const socialClipHistoryResponseSchema = z.object({
+	items: z.array(
+		z.object({
+			postId: z.string().uuid(),
+			clipId: z.string().uuid(),
+			accountId: z.string().uuid(),
+			platform: socialPlatformSchema,
+			status: z.enum(SOCIAL_CLIP_HISTORY_STATUSES),
+			scheduledFor: z.string().datetime().nullable(),
+			postedAt: z.string().datetime().nullable(),
+		}),
+	),
+});
+
+export type SocialClipHistory = z.infer<typeof socialClipHistoryResponseSchema>;
+export type SocialClipHistoryItem = SocialClipHistory["items"][number];
 export type SocialPlatform = z.infer<typeof socialPlatformSchema>;
 export type SocialPostStatus = z.infer<typeof socialPostStatusSchema>;
 export type SocialAccountStatus = z.infer<typeof socialAccountStatusSchema>;

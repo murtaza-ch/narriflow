@@ -35,6 +35,7 @@ import {
 import {
 	appendPublicationDispatch,
 	wakeNextAccountPosts,
+	wakeAccountPostsAfterReconnectFailure,
  recoverPublicationDispatches,
  samePublicationDispatch,
 	publicationExecutionInputHash,
@@ -432,6 +433,32 @@ export class PublicationExecution
 		});
 		await this.ports.register(dispatchIds);
 	}
+	/** Best effort and outside the failing post's transaction: a database error
+	 * here must not roll back the failure the person is waiting to see. */
+	private async wakeAfterReconnectFailure(
+		reference: ExecutionDispatchReference,
+		failed: { accountId: string; postId: string; now: Date },
+	) {
+		try {
+			const dispatchIds = await this.database.$transaction(async (tx) => {
+				const epoch = await this.epoch(tx);
+				if (epoch !== reference.deploymentEpoch) return [];
+				const woken = await wakeAccountPostsAfterReconnectFailure(tx, { accountId: failed.accountId, postId: failed.postId, epoch }, failed.now);
+				return [...new Set([...woken, ...takeExecutionDispatchIds(tx)])];
+			});
+			await this.ports.register(dispatchIds);
+		} catch (error) {
+			console.warn(
+				JSON.stringify({
+					level: "warn",
+					message: "publication_reconnect_wake_skipped",
+					postId: failed.postId,
+					accountId: failed.accountId,
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
+		}
+	}
 	async prepareExecution(
 		reference: ExecutionDispatchReference,
 	): Promise<PublicationPreparation> {
@@ -453,6 +480,7 @@ export class PublicationExecution
   });
   if(repaired.length)await this.ports.register(repaired);
 		await this.expireAccountSlot(reference);
+		let reconnectWake: { accountId: string; postId: string; now: Date } | null = null;
 		const snapshot = await this.database.$transaction(async (tx) => {
 			const epoch = await this.epoch(tx),
 				ledger = (await readExecutionDispatch(tx, reference.dispatchId))
@@ -520,6 +548,11 @@ export class PublicationExecution
      if(grant&&await returnPublicationGrantPost(tx,post,grant))return {kind:"terminal" as const,dispatchIds:await this.wake(tx,post.id,new Date(0),"publication_grant_returned")};
     }
     const mayHaveProvider=sent||Boolean(attempt&&await publicationHasProviderPermission(tx,post.frozenState!.id));
+				// A dead connection fails every due post of the account the same way, with
+				// or without a claim. The others are woken after this commit (best effort),
+				// never in it.
+				if (code === "social_account_reconnect_required" && !mayHaveProvider && post.socialAccountId)
+					reconnectWake = { accountId: post.socialAccountId, postId: post.id, now };
 				if (attempt?.currentClaimId) {
 					const result = await this.stop(
 						tx,
@@ -749,6 +782,7 @@ export class PublicationExecution
 				dispatchIds: [preparationWake],
 			};
 		});
+		if (reconnectWake) await this.wakeAfterReconnectFailure(reference, reconnectWake);
 		if (snapshot.kind !== "stage" && snapshot.kind !== "existing") {
 			if ("dispatchIds" in snapshot)
 				await this.ports.register(snapshot.dispatchIds ?? []);

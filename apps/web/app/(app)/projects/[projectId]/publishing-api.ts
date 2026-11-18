@@ -52,6 +52,9 @@ export function createProjectPublishingApi(transport: ApiTransport, scope: Works
 
 		publishingOptions: async (projectId: string, accountId: string) =>
 			(await publishing.projects[":id"]["social-accounts"][":accountId"]["publishing-options"].$get({ param: { id: projectId, accountId } })).json(),
+		/** Earlier posts of up to `SOCIAL_CLIP_HISTORY_MAX_CLIPS` clips, for the duplicate warning. */
+		clipHistory: async (projectId: string, clipIds: string[]) =>
+			(await publishing.projects[":id"]["social-posts"]["clip-history"].$get({ param: { id: projectId }, query: { clipIds: clipIds.join(",") } })).json(),
 		previewSchedule: async (projectId: string, input: PublishingPreviewRequest) =>
 			(await publishing.projects[":id"]["campaign-operations"].schedule.preview.$post({ param: { id: projectId }, json: input as Json<typeof publishing.projects[":id"]["campaign-operations"]["schedule"]["preview"]["$post"]> })).json(),
 		schedule: async (projectId: string, input: BulkSocialScheduleRequest) =>
