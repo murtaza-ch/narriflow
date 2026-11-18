@@ -359,8 +359,10 @@ Rules, in order:
 6. **Stagger.** Lead and tail rows shift by `style.staggerEm × S × sign`. Row 0 has sign
    `seed % 2 === 0 ? 1 : −1`, the next row the opposite. The hero row takes its sign for
    `motionSign` but does not shift. `motionSign` of every word in a row equals the row's sign.
-7. **Fit.** One block scale: `min(1, CAPTION_FIT_WIDTH_FRACTION × canvas.width / widestRow)`,
-   applied to every word, so the hierarchy holds. Hero fill already targets less than the
+7. **Fit.** One block scale: `min(1, CAPTION_FIT_WIDTH_FRACTION × canvas.width / widestEnvelope)`,
+   applied to every word, so the hierarchy holds. A row's envelope is its resting width
+   grown by the largest entrance scale and horizontal travel of its words, so no entrance
+   frame leaves the safe width. Hero fill already targets less than the
    fit width, so this only bites on long lead or tail rows.
 8. **Anchor.** Centre styles put the block's ink-box centre on the anchor. Left styles put
    the block's left edge at `anchor.xPct` and its vertical ink centre at `anchor.yPct`. A
@@ -406,8 +408,11 @@ Painting:
 - **Timing.** A word's events run from its first spoken time to the cue's visible end.
   Motion tags count from the event start. Unspoken words are not drawn.
 - **Duration cap.** Each word's keyframe times are scaled by
-  `min(1, 0.45 × remainingCueMs / entranceMs)`. With less than 100 ms of cue left, the word
-  appears settled.
+  `min(1, 0.45 × remainingCueMs / entranceMs, gapToNextOnsetMs / entranceMs)`, so every
+  entrance finishes before the next word is spoken and a moving word never overlaps a row
+  that has become visible. With less than 100 ms of cue left, the word appears settled.
+  `layoutCaptionBlock` returns the factor per word (`PlacedWord.entranceTimeScale`); both
+  painters read it rather than computing their own.
 - **Reserved space.** Shared geometry adds each word's maximum entrance travel and scale
   growth to `bounds`, so the safe-area shift covers it.
 - **libass limits** (`caption-style.test.ts` keeps enforcing them): ease is a power curve;
