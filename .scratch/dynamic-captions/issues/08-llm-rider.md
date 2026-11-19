@@ -31,3 +31,10 @@ What shipped:
 Open for the render path (not this ticket's files): `apps/media/src/render-group.ts` line 46 builds the frozen `clip` from named document fields and does not copy `emphasisWords`, so a Modal render would not see them while Studio and the plan do. One line: `...(doc.emphasisWords ? { emphasisWords: doc.emphasisWords } : {})`. Owner of `apps/media/**` (ticket 03b) applies it.
 
 Checks (Bun 1.4.4): `bun run lint` exit 0 (20 warnings, none in these files); `bun run typecheck` 15/15; `bun run test` 14/14 tasks (validators 889, services 1629, composition-plan 127, api 984, web 1140, media 1015, 0 fail); `apps/api test:inventory` 0 problems; `openapi:check` matches; `migrations:check` passes.
+
+### Review (Opus medium, 2026-11-19)
+
+1. High: `apps/media/src/render-group.ts:42-47` drops `emphasisWords` from the frozen render document, so Modal renders and exports pick different heroes than the Studio. Fix pending: one line once ticket 03b releases `apps/media`.
+2. Medium: no Unicode normalisation, so precomposed vs decomposed Urdu madda and Hindi nukta spellings never matched. Fixed: `normaliseWord` decomposes, strips marks, recomposes; test added.
+3. Low, accepted limitation: a stored 2-word unit split across a cue break gets no bonus (the scorer pairs within one cue only).
+4. Low, deploy note: a clip selection in flight across the deploy fails with `selection_input_invalid` (regenerating recovers); an epoch restore with such a run pending throws `restore_selection_input_unavailable`. Deploy this branch when no clip selection is running.

@@ -468,6 +468,13 @@ describe("Clip Emphasis Words", () => {
 });
 
 describe("clipEmphasisWords", () => {
+  test("matches precomposed and decomposed spellings (Urdu madda, Hindi nukta)", () => {
+    const urduSlice = [{ words: [{ word: "\u0627\u0653\u062C" }, { word: "\u06A9\u0627\u0645" }] }];
+    expect(clipEmphasisWords(["\u0622\u062C"], urduSlice as never)).toEqual(["\u0622\u062C"]);
+    const hindiSlice = [{ words: [{ word: "\u0915\u093C\u093E\u0928\u0942\u0928" }] }];
+    expect(clipEmphasisWords(["\u0958\u093E\u0928\u0942\u0928"], hindiSlice as never)).toEqual(["\u0958\u093E\u0928\u0942\u0928"]);
+  });
+
   const slice = [
     { text: "We grew 50 percent, not by luck.", words: ["We", "grew", "50", "percent,", "not", "by", "luck."].map((word) => ({ word })) },
     { text: "یہ بہت اہم ہے", words: ["یہ", "بہت", "اہم", "ہے"].map((word) => ({ word })) },

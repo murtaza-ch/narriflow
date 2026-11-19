@@ -122,9 +122,14 @@ const DEVANAGARI_RE = /\p{Script=Devanagari}/u;
 const LATIN_RE = /\p{Script=Latin}/u;
 const SENTENCE_END_RE = /[.!?…۔؟।॥。！？]["'”’)\]»]*$/u;
 
-/** Lowercase, Urdu letter forms, no Arabic vowel marks, letters/marks/digits and inner apostrophes only. */
+/**
+ * Lowercase, Urdu letter forms, no Arabic vowel marks, letters/marks/digits and inner apostrophes only.
+ * Decomposes first so a precomposed letter and its letter + mark spelling (Urdu آ, Hindi क़) normalise
+ * alike; the model and the transcript provider do not agree on which they write.
+ */
 function normaliseWord(raw: string): string {
   return raw
+    .normalize("NFD")
     .toLowerCase()
     .replace(/[’‘ʼ`]/g, "'")
     .replace(/[ً-ٰٟ]/g, "")
@@ -132,7 +137,8 @@ function normaliseWord(raw: string): string {
     .replace(/[يى]/g, "ی")
     .replace(/ه/g, "ہ")
     .replace(/[^\p{L}\p{M}\p{N}']/gu, "")
-    .replace(/^'+|'+$/g, "");
+    .replace(/^'+|'+$/g, "")
+    .normalize("NFC");
 }
 
 /** Code points excluding combining marks and apostrophes. */
