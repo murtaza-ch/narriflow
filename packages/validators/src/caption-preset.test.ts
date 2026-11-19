@@ -11,6 +11,7 @@ import {
   captionPresetSchema,
   captionPresetsEqual,
   formatCaptionWord,
+  getCaptionPresetById,
   matchCaptionPreset,
   CAPTION_MOTIONS,
   captionBlockPaintLayers,
@@ -216,6 +217,17 @@ describe("caption preset catalog", () => {
     const boldPop = CAPTION_PRESETS.find((named) => named.id === "bold-pop")!;
     expect(matchCaptionPreset({ ...boldPop.preset, fontSize: 90 })).toBeUndefined();
     expect(matchCaptionPreset({ ...boldPop.preset, glowColor: "#FF00FF" })).toBeUndefined();
+  });
+
+  test("applyCaptionPresetLook drops positionX when the horizontal anchor changes", () => {
+    const marker = getCaptionPresetById("marker")!;
+    const boldPop = getCaptionPresetById("bold-pop")!;
+    const headline = getCaptionPresetById("headline")!;
+    const draggedMarker = { ...marker.preset, positionX: 8, positionY: 40 };
+    expect(applyCaptionPresetLook(draggedMarker, boldPop).positionX).toBeUndefined();
+    expect(applyCaptionPresetLook(draggedMarker, boldPop).positionY).toBe(40);
+    expect(applyCaptionPresetLook({ ...headline.preset, positionX: 50 }, marker).positionX).toBe(marker.preset.positionX);
+    expect(applyCaptionPresetLook({ ...headline.preset, positionX: 30 }, boldPop).positionX).toBe(30);
   });
 
   test("applyCaptionPresetLook replaces the look and keeps placement and toggles", () => {

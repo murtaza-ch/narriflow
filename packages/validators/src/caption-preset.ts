@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CAPTION_DYNAMIC_NAMES } from "./caption-dynamic";
+import { CAPTION_DYNAMIC_NAMES, CAPTION_DYNAMIC_STYLES } from "./caption-dynamic";
 import { CAPTION_FONT_NAMES } from "./caption-font";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
 import { stripCaptionEdgePunctuation, toCaptionLowerCase, toCaptionUpperCase } from "./text-script";
@@ -435,13 +435,21 @@ export function matchCaptionPreset(preset: CaptionPreset): NamedCaptionPreset | 
   });
 }
 
+/** How `positionX` is read: the caption's centre, or a left-aligned block's left edge. */
+function captionHorizontalAnchor(preset: CaptionPreset): "center" | "left" {
+  return preset.dynamic ? CAPTION_DYNAMIC_STYLES[preset.dynamic].align : "center";
+}
+
 /**
  * Applies a catalog preset's look to `current`, keeping the user's placement
- * and display toggles.
+ * and display toggles. `positionX` is dropped when the two looks read it
+ * differently (centre against left edge), so the new look takes its own default.
  */
 export function applyCaptionPresetLook(current: CaptionPreset, named: NamedCaptionPreset): CaptionPreset {
   const placement: Partial<CaptionPreset> = {};
+  const anchorChanges = captionHorizontalAnchor(current) !== captionHorizontalAnchor(named.preset);
   for (const key of CAPTION_PLACEMENT_FIELDS) {
+    if (key === "positionX" && anchorChanges) continue;
     if (current[key] !== undefined) Object.assign(placement, { [key]: current[key] });
   }
   return { ...named.preset, ...placement };

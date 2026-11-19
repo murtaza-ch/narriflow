@@ -135,7 +135,7 @@ const clipSnapshotSelect = {
   startSec: true, endSec: true, wholeSource: true, title: true, hookText: true, payoffText: true,
   reasoning: true, category: true, platformFit: true, transcriptSlice: true, captionPreset: true,
   brollUrl: true, brollCues: true, studioEdits: true, deletedRanges: true, sceneBlocks: true,
-  censorSegments: true, mediaMotions: true, viralityScore: true, hookStrengthScore: true,
+  censorSegments: true, mediaMotions: true, emphasisWords: true, viralityScore: true, hookStrengthScore: true,
   emotionalIntensityScore: true, storyCompletenessScore: true, pacingScore: true,
   durationOptimalityScore: true, tiktokScore: true, youtubeScore: true, instagramScore: true,
   previewStorageKey: true, createdAt: true,
