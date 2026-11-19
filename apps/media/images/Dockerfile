@@ -60,7 +60,8 @@ RUN set -eux; \
 # Distribution packages lag YouTube extractor changes by months. Pin the
 # upstream release that removed the broken android_vr default client and added
 # working fallback clients for the August 2026 HTTP 403 regression. Auto-reframe:
-# OpenCV YuNet face detector (CPU-only, MIT, ~232 KB) and numpy. Every wheel is
+# OpenCV YuNet face detector (CPU-only, MIT, ~232 KB) and numpy; LiteRT for the
+# person matte (render profile only, spec 5.12). Every wheel is
 # pinned by version and SHA-256 in the lock; pip refuses anything else.
 RUN bun /opt/narriflow-runtime/check-render-environment.ts --emit-pip-requirements --profile "$MEDIA_PROFILE" > /tmp/requirements.lock \
   && pip3 install --no-cache-dir --break-system-packages --require-hashes --no-deps -r /tmp/requirements.lock \
@@ -74,6 +75,15 @@ RUN if [ "$MEDIA_PROFILE" = render ]; then mkdir -p /usr/local/share/narriflow \
       "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" \
   && echo "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  /usr/local/share/narriflow/face_yunet.onnx" | sha256sum -c -; fi
 ENV REFRAME_MODEL_PATH=/usr/local/share/narriflow/face_yunet.onnx
+
+# Person matte for captions behind the speaker (dynamic captions spec 5.12): the
+# MediaPipe Selfie Segmenter, square float16 v1 (Apache-2.0, ~250 KB), from its
+# immutable versioned URL; refuse any other bytes. LiteRT runs it (render wheels).
+RUN if [ "$MEDIA_PROFILE" = render ]; then mkdir -p /usr/local/share/narriflow \
+  && curl -fsSL --retry 3 -o /usr/local/share/narriflow/selfie_segmenter.tflite \
+      "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite" \
+  && echo "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b  /usr/local/share/narriflow/selfie_segmenter.tflite" | sha256sum -c -; fi
+ENV PERSON_MATTE_MODEL_PATH=/usr/local/share/narriflow/selfie_segmenter.tflite
 
 # Fail the build, not renders, when the toolchain differs from the lock.
 RUN if [ "$MEDIA_PROFILE" = render ]; then bun /opt/narriflow-runtime/check-render-environment.ts --enforce --stage build; fi

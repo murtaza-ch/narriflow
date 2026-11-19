@@ -1424,6 +1424,56 @@
           ]
         ]
       }
+    },
+    {
+      "id": "depth-en",
+      "reference": "13-behind-negative-text.jpg",
+      "style": "depth",
+      "presetId": "depth",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "the",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.3
+        },
+        {
+          "word": "secret",
+          "key": "1340",
+          "startSec": 1.34,
+          "endSec": 1.8
+        },
+        {
+          "word": "sauce",
+          "key": "1840",
+          "startSec": 1.84,
+          "endSec": 2.2
+        }
+      ],
+      "overrides": {
+        "1340": "hero"
+      },
+      "expected": {
+        "roles": [
+          "minor",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      },
+      "notes": "One English cue for Depth: a huge lowercase hero row drawn behind the speaker (block.behind), small rows in front. Frames over the still backgrounds have no person, so the hero shows whole."
     }
   ]
 }

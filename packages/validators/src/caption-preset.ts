@@ -190,7 +190,10 @@ export const captionPresetSchema = z.object({
    * into clusters keeps straight rows (`captionBlockCurve`).
    */
   curve: z.number().min(-1).max(1).optional(),
-  /** Draw the hero row behind the speaker (spec 5.12). Not drawn yet. */
+  /**
+   * Draw the hero row behind the speaker (spec 5.12). Centre-aligned stack styles only
+   * (`captionStyleAllowsBehind`); the plan marks such cues `block.behind` and asks for a matte.
+   */
   heroBehind: z.boolean().optional(),
 });
 
@@ -273,6 +276,11 @@ export const CAPTION_PRESETS = [
     dynamic: "arc", fontName: "DM Serif Display", fontSize: 64, textTransform: "none", letterSpacing: 0,
     primaryColor: "#F3E9C6", highlightColor: "#F3E9C6", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
     curve: 0.55,
+  }),
+  namedPreset("depth", "Depth", "Dynamic", {
+    dynamic: "depth", fontName: "Inter SemiBold", fontSize: 52, textTransform: "lowercase", letterSpacing: 0,
+    primaryColor: "#FFFFFF", highlightColor: "#F5F5F5", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 3,
+    positionY: 32, heroBehind: true,
   }),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {

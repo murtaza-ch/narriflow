@@ -7,6 +7,7 @@ import {
   applyCaptionPresetLook,
   applyCaptionTextTransform,
   captionBlockAnimation,
+  captionStyleAllowsBehind,
   captionPresetIdSchema,
   captionPresetSchema,
   captionPresetsEqual,
@@ -38,10 +39,10 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 31 presets with unique ids and names, the Dynamic group first", () => {
-    expect(CAPTION_PRESETS).toHaveLength(31);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(31);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(31);
+  test("has 32 presets with unique ids and names, the Dynamic group first", () => {
+    expect(CAPTION_PRESETS).toHaveLength(32);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(32);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(32);
     expect(CAPTION_PRESET_GROUPS[0]).toBe("Dynamic");
     expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
     for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic")) {
@@ -51,7 +52,7 @@ describe("caption preset catalog", () => {
 
   test("Dynamic group presets, and only they, set a Dynamic Style", () => {
     const dynamic = CAPTION_PRESETS.filter((named) => named.group === "Dynamic");
-    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack", "groove", "arc"]);
+    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack", "groove", "arc", "depth"]);
     for (const named of CAPTION_PRESETS) {
       expect(named.preset.dynamic !== undefined).toBe(named.group === "Dynamic");
     }
@@ -153,14 +154,28 @@ describe("caption preset catalog", () => {
     // Only the catalog's Arc preset curves.
     for (const named of CAPTION_PRESETS) expect(named.preset.curve).toBe(named.id === "arc" ? 0.55 : undefined);
 
+    const depth = CAPTION_DYNAMIC_STYLES.depth;
+    // Later catalog addition (references 12, 13): Inter SemiBold support, white, S = 52; a lowercase Inter hero in near-white
+    // filling 92% of the frame between 3.0 and 5.5 S, drawn behind the speaker, the block a third of the way down.
+    expect(preset("depth")).toMatchObject({ dynamic: "depth", fontName: "Inter SemiBold", fontSize: 52, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#F5F5F5", outlineWidth: 0, shadow: "soft", animation: "slide", positionY: 32, heroBehind: true });
+    expect(depth).toMatchObject({ layout: "stack", align: "center", heroFontName: "Inter", defaultMotion: "slide", heroFill: { widthFraction: 0.92, minEm: 3, maxEm: 5.5 } });
+    expect(depth.roles.hero).toMatchObject({ font: "hero", transform: "lowercase", colour: "highlight" });
+    // Rule 6: the catalog's `rise` fades for 140 ms and travels 0.32 em; `slide` keeps full opacity within 40 ms and 0.18 em travel.
+    expect(CAPTION_MOTIONS.rise.word.find((frame) => frame.opacity === 1)!.at).toBeGreaterThan(40);
+    // Only Depth draws behind the speaker; every centre stack style may, tile and left styles may not.
+    for (const named of CAPTION_PRESETS) expect(named.preset.heroBehind).toBe(named.id === "depth" ? true : undefined);
+    for (const [name, style] of Object.entries(CAPTION_DYNAMIC_STYLES)) {
+      expect(captionStyleAllowsBehind(style)).toBe(!["cutout", "marker"].includes(name));
+    }
+
     // Rule 1: the hero is at least 2.2 times the body size (Cutout has no hero).
-    for (const style of [CAPTION_DYNAMIC_STYLES.headline, editorial, marker, stack, groove, arc]) {
+    for (const style of [CAPTION_DYNAMIC_STYLES.headline, editorial, marker, stack, groove, arc, depth]) {
       expect(Math.min(style.roles.hero.sizeEm, style.heroFill?.minEm ?? Infinity) / style.roles.body.sizeEm).toBeGreaterThanOrEqual(2.2 - 1e-9);
     }
     // Only Editorial shrinks minor words; the others draw them at body size (ticket 02).
     for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout, groove, arc]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
     // Styles without an outline carry a soft shadow on every word (rule 5); Cutout's tiles carry their own.
-    for (const id of ["headline", "editorial", "marker", "stack", "groove", "arc"]) {
+    for (const id of ["headline", "editorial", "marker", "stack", "groove", "arc", "depth"]) {
       expect(preset(id)).toMatchObject({ outlineWidth: 0, shadow: "soft" });
       expect(CAPTION_DYNAMIC_STYLES[id as "headline"].softShadow!.length).toBeGreaterThan(0);
     }

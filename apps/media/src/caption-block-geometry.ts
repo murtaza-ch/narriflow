@@ -134,6 +134,8 @@ export function measureCaptionBlock(input: {
   readonly cue: CompositionCaptionVisualLayer & { readonly block: CompositionCaptionBlock };
   readonly canvas: { readonly width: number; readonly height: number };
   readonly slots: Readonly<Record<"text" | "hero", CaptionBlockSlot>>;
+  /** The behind lift (`captionBehindPlacement`), canvas px. */
+  readonly liftPx?: number;
 }): CaptionBlockGeometry {
   const { cue, canvas, slots } = input;
   const { block, preset } = cue;
@@ -199,6 +201,7 @@ export function measureCaptionBlock(input: {
     direction,
     cueEndSec: cue.activeRange.endSec,
     language: cue.language,
+    ...(input.liftPx ? { liftPx: input.liftPx } : {}),
   });
   return { layout, words };
 }

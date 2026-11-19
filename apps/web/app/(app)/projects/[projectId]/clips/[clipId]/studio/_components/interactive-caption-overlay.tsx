@@ -12,6 +12,7 @@ import {
 import { CaptionCue } from "./caption-style-engine";
 import { CaptionBlockWords, useCaptionBlockPaint, type CaptionBlockCueInput } from "./caption-block-painter";
 import { captionBlockDragPoint, captionBlockDroppedPosition, captionCueWordsAt } from "./caption-cue-at";
+import { type CaptionPersonSource, PersonMatteLayer, useBehindPlacement, usePersonMatte, usePersonMatteStatus } from "./caption-behind-preview";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -165,10 +166,13 @@ export function InteractiveCaptionOverlay({
   videoContainerRef,
   layer,
   currentTime,
+  personSource = null,
 }: {
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
   layer: CompositionCaptionVisualLayer;
   currentTime: number;
+  /** The main source layer, for heroes drawn behind the speaker (spec 5.12); null when there is none. */
+  personSource?: CaptionPersonSource | null;
 }) {
   const {
     setCaptionPreset,
@@ -206,7 +210,21 @@ export function InteractiveCaptionOverlay({
     () => ({ width: layer.destination.width, height: layer.destination.height }),
     [layer.destination.width, layer.destination.height],
   );
-  const blockPaint = useCaptionBlockPaint(blockCue, blockCanvas);
+  const restPaint = useCaptionBlockPaint(blockCue, blockCanvas);
+
+  // Behind the speaker (spec 5.12): the Studio segments its own preview frames while the hero is on
+  // screen and places the cue once by the shared rule. Until then, or if the segmenter fails, the
+  // hero is drawn in front.
+  const matteStatus = usePersonMatteStatus();
+  const behindCue = layer.block?.behind === true && personSource !== null;
+  const heroIndex = layer.block?.roles.indexOf("hero") ?? -1;
+  const heroOnScreen = heroIndex >= 0 && currentTime >= layer.words[heroIndex]!.startSec && currentTime <= layer.activeRange.endSec;
+  const matteFeed = usePersonMatte(personSource, behindCue && heroOnScreen && matteStatus !== "failed");
+  const placement = useBehindPlacement({ layer, paint: behindCue ? restPaint : null, source: personSource, feed: matteFeed, matteStatus, timeSec: currentTime });
+  const liftPx = placement?.behind ? placement.liftPx : 0;
+  const liftedPaint = useCaptionBlockPaint(liftPx > 0 ? blockCue : null, blockCanvas, liftPx);
+  const blockPaint = liftPx > 0 ? (liftedPaint ?? restPaint) : restPaint;
+  const drawBehind = behindCue && placement?.behind === true && matteStatus === "ready";
   const blockBounds = blockPaint?.layout.bounds ?? null;
   const blockOrigin = useMemo(
     () => ({ x: blockBounds?.x ?? 0, y: blockBounds?.y ?? 0 }),
@@ -228,13 +246,17 @@ export function InteractiveCaptionOverlay({
 
   // Measure preview container width for proportional font scaling
   const [containerWidth, setContainerWidth] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
   useEffect(() => {
     const el = videoContainerRef.current;
     if (!el) return;
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) setContainerWidth(entry.contentRect.width);
+      if (entry) {
+        setContainerWidth(entry.contentRect.width);
+        setContainerHeight(entry.contentRect.height);
+      }
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -354,6 +376,7 @@ export function InteractiveCaptionOverlay({
     // the hit area; resizing changes `fontSize`, which scales the whole block.
     if (!blockPaint || !blockBounds) return null;
     const blockScale = containerWidth > 0 ? containerWidth / layer.destination.width : displayScale;
+    const showPerson = drawBehind && personSource !== null && !personSource.covered && heroOnScreen;
     return (
       <>
         <SnapGuideLines guides={snapGuides} />
@@ -367,6 +390,20 @@ export function InteractiveCaptionOverlay({
             zIndex: 5,
           }}
         >
+          {drawBehind ? (
+            // The hero row under the person; it moves with a drag like the rest of the block.
+            <motion.div style={{ x: motionX, y: motionY, position: "absolute", inset: 0, pointerEvents: "none" }}>
+              <CaptionBlockWords paint={blockPaint} scale={blockScale} origin={blockOrigin} timeSource={playbackClock} reducedMotion={reducedMotion} rows="behind" />
+            </motion.div>
+          ) : null}
+          {showPerson ? (
+            <PersonMatteLayer
+              source={personSource}
+              feed={matteFeed}
+              containerSize={{ width: containerWidth, height: containerHeight }}
+              origin={{ x: -blockBounds.x * blockScale, y: -blockBounds.y * blockScale }}
+            />
+          ) : null}
           <motion.div
             style={{
               x: motionX,
@@ -399,6 +436,7 @@ export function InteractiveCaptionOverlay({
               origin={blockOrigin}
               timeSource={playbackClock}
               reducedMotion={reducedMotion}
+              rows={drawBehind ? "front" : "all"}
             />
           </motion.div>
         </div>

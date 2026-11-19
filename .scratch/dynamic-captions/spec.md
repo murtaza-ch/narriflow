@@ -576,8 +576,11 @@ colours do not change. Slots follow the user's colours.
 - Matte model: MediaPipe Selfie Segmenter (`selfie_segmenter.tflite`, Apache-2.0), one file
   vendored in `apps/media/models/` and copied to `apps/web/public/models/`. A test checks
   both copies have the same hash. CPU only, no API, no GPU.
-- **Plan.** For behind cues the plan adds `mattes: { sourceStartSec, sourceEndSec }[]` to
-  the target, in source time, padded 0.2 s each side and merged. The plan stays pure.
+- **Plan.** For behind cues the plan adds `mattes: { sourceStartSec, sourceEndSec, region }[]`
+  to the target, in source time: each behind hero's onset to its cue's end, padded 0.2 s each
+  side, merged inside a scene and split at scene boundaries and cuts (so smoothing restarts at
+  camera cuts); `region` is every source-video layer's crop (and crop track) in that scene. The
+  plan stays pure. (Ticket 09.)
 - **Worker matte.** `apps/media/python/narriflow_media/person_matte.py` runs the model over
   those ranges at 15 fps on frames downscaled to 256 px, smooths the masks over time
   (exponential, α 0.6), feathers them (1.5 px Gaussian at output size), and writes a
@@ -615,6 +618,16 @@ colours do not change. Slots follow the user's colours.
      `selfie_segmenter.tflite` v1 (SHA-256 `191ac952…658b`) downloaded by URL with a hash
      check in the Dockerfile and recorded in `runtime-lock.json`, like the face detector.
      The web copy in `apps/web/public/models/` is checked against the lock's hash.
+- **As built (ticket 09).** The worker starts the matte for each target right after planning,
+  one target after another, and awaits it just before that target's command is compiled; with
+  several targets a later matte runs while an earlier one encodes. A matte pass then runs the
+  matte through the cuts and the visual stack in matte mode and writes a canvas matte (half the
+  canvas, 15 fps) plus the frames at the heroes' onsets; placement reads those, and the render
+  takes the canvas matte as its last input (crop to the behind box, `alphamerge`, overlay during
+  behind cues only). The person is redrawn in a full-width band around the behind cues' reserved
+  bounds. The shared rule moves the whole block (not only the hero row) so rows never collide.
+  The Studio reads its matte through the plan's crop → destination, and uses the first matte that
+  arrives while the hero is on screen.
 - **Auto-placement above the head.** Once per cue, at the hero's onset frame, take the
   matte's top edge across the hero row's columns (the top of the head). Move the behind row
   up, never down, until the person covers at most the bottom third of the hero's ink. The

@@ -54,6 +54,7 @@ import {
   systemSceneFontPreviewFamily,
 } from "./scene-fonts";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
+import type { CaptionPersonSource } from "./caption-behind-preview";
 import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
@@ -1680,6 +1681,39 @@ export function VideoPreview() {
         })
       : {},
   );
+  // The main source element's frame and style, shared with the caption overlay's person canvas
+  // (heroes behind the speaker, spec 5.12) so the person lands exactly on the video.
+  const mainFrameStyle: React.CSSProperties = plannedSourceFrameStyle ?? (autoMainLayer
+    ? speakerFrameStyle(autoMainLayer)
+    : {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: hasSecondarySource ? "50%" : 0,
+      });
+  const mainVideoStyle: React.CSSProperties = plannedMainVideoStyle ?? autoMainVideoStyle ?? {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: isScreen ? "contain" : "cover",
+    objectPosition: isSplit ? `${SPLIT_TOP_TILE_CX * 100}% 50%` : undefined,
+    display: previewPhase === "ready" ? "block" : "none",
+  };
+  const captionPersonSource: CaptionPersonSource | null =
+    plannedCaptionLayer?.block?.behind && plannedMainSourceLayer && plannedSourceDims && activeVideoUrl
+      ? {
+          videoRef: mainVideoRef,
+          sourceSize: plannedSourceDims,
+          crop: interpolateCompositionCropTrack(plannedMainSourceLayer.sourceCrop, plannedMainSourceLayer.sourceCropTrack, currentTime),
+          destination: plannedMainSourceLayer.destination,
+          frameStyle: mainFrameStyle,
+          maskStyle: plannedMainMaskStyle,
+          videoStyle: mainVideoStyle,
+          covered: brollActive || Boolean(plannedInsertedScene),
+        }
+      : null;
   return (
     <Flex
       direction="column"
@@ -1985,17 +2019,7 @@ export function VideoPreview() {
               Every additional planned source layer gets a muted companion
               using the planner's exact destination and crop. */}
           <Box
-            style={
-              plannedSourceFrameStyle ?? (autoMainLayer
-                ? speakerFrameStyle(autoMainLayer)
-                : {
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: hasSecondarySource ? "50%" : 0,
-                  })
-            }
+            style={mainFrameStyle}
             overflow="visible"
             zIndex={
               plannedMainSourceLayer?.zIndex ?? 1
@@ -2013,17 +2037,7 @@ export function VideoPreview() {
               {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
               <video
                 ref={attachMainVideo}
-                style={
-                  plannedMainVideoStyle ?? autoMainVideoStyle ?? {
-                    position: "absolute",
-                    inset: 0,
-                    width: "100%",
-                    height: "100%",
-                    objectFit: isScreen ? "contain" : "cover",
-                    objectPosition: isSplit ? `${SPLIT_TOP_TILE_CX * 100}% 50%` : undefined,
-                    display: previewPhase === "ready" ? "block" : "none",
-                  }
-                }
+                style={mainVideoStyle}
                 playsInline
                 preload="metadata"
                 onLoadedMetadata={handleLoadedMetadata}
@@ -2247,6 +2261,7 @@ export function VideoPreview() {
               videoContainerRef={videoContainerRef}
               layer={plannedCaptionLayer}
               currentTime={currentTime}
+              personSource={captionPersonSource}
             />
           ) : null}
 

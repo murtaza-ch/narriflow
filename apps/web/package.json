@@ -16,6 +16,7 @@
     "@chakra-ui/react": "3.34.0",
     "@clerk/nextjs": "^6.39.5",
     "@emotion/react": "11.14.0",
+    "@mediapipe/tasks-vision": "1.2.2",
     "@narriflow/api-client": "workspace:*",
     "@narriflow/composition-plan": "workspace:*",
     "@narriflow/ui": "workspace:*",

@@ -16,7 +16,7 @@ bun test apps/media/src apps/media/scripts
 PYTHONPATH=apps/media/python uv run --project apps/media --frozen python -m unittest discover -s apps/media/python/tests -v
 ```
 
-Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face_yunet.onnx`. Download only the immutable source recorded in `runtime-lock.json` and verify its SHA-256. Model bytes are ignored locally and are baked into the render image from that same pin. Golden fixture documents, evidence, expectations and source pins are unchanged by the move.
+Native tests require FFmpeg, fontconfig and the models at `apps/media/models/face_yunet.onnx` and `apps/media/models/selfie_segmenter.tflite` (the person matte for captions behind the speaker; `personMatteModel` in the lock). Download only the immutable sources recorded in `runtime-lock.json` and verify their SHA-256. The behind-the-speaker smoke render runs only when `PERSON_MATTE_PYTHON` (default `python3`) can import `ai_edge_litert`, `numpy` and `cv2`; otherwise it is skipped. Model bytes are ignored locally and are baked into the render image from that same pin. Golden fixture documents, evidence, expectations and source pins are unchanged by the move.
 
 `probe-cli.ts` reads one bounded JSON object from stdin with an absolute local `sourcePath`, then emits the existing normalized probe. Python acquisition uses this CLI instead of parsing ffprobe independently.
 

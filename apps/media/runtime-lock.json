@@ -434,6 +434,48 @@
             "version": "2.5.4",
             "filename": "numpy-2.5.4-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
             "sha256": "6ffa07666f8da0eef81d149934a626d0d95fbd6838432a33e66245423a9062c0"
+          },
+          {
+            "name": "ai-edge-litert",
+            "version": "2.3.0",
+            "filename": "ai_edge_litert-2.3.0-cp313-cp313-manylinux_2_27_x86_64.whl",
+            "sha256": "985ac3823fe1d5d6a04cf5f613cc2adf98a9c8a456af0b5efa8d9ac6b118ea14"
+          },
+          {
+            "name": "ml-dtypes",
+            "version": "0.6.0",
+            "filename": "ml_dtypes-0.6.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+            "sha256": "26b1f1fa4f0435a2946859823f6e2bf06796f1e9f10f5a05b08a5e3c8f46ff69"
+          },
+          {
+            "name": "protobuf",
+            "version": "7.36.2",
+            "filename": "protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl",
+            "sha256": "89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2"
+          },
+          {
+            "name": "flatbuffers",
+            "version": "25.12.19",
+            "filename": "flatbuffers-25.12.19-py2.py3-none-any.whl",
+            "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4"
+          },
+          {
+            "name": "tqdm",
+            "version": "4.70.1",
+            "filename": "tqdm-4.70.1-py3-none-any.whl",
+            "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73"
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.16.0",
+            "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+            "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+          },
+          {
+            "name": "backports.strenum",
+            "version": "1.2.8",
+            "filename": "backports_strenum-1.2.8-py3-none-any.whl",
+            "sha256": "fc297cb26971f7d5e15a478a06a78575197f81daea47975771b1aae996dcccf4"
           }
         ]
       },
@@ -444,6 +486,12 @@
         "repoPath": "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
         "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
         "bytes": 232589
+      },
+      "personMatteModel": {
+        "path": "/usr/local/share/narriflow/selfie_segmenter.tflite",
+        "url": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite",
+        "sha256": "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b",
+        "bytes": 249537
       },
       "fonts": {
         "packages": [
@@ -572,6 +620,12 @@
         "repoPath": "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
         "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
         "bytes": 232589
+      },
+      "personMatteModel": {
+        "path": "apps/media/models/selfie_segmenter.tflite",
+        "url": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite",
+        "sha256": "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b",
+        "bytes": 249537
       },
       "fonts": {
         "packages": [],

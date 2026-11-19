@@ -352,6 +352,31 @@ export const CAPTION_DYNAMIC_STYLES = {
     // reaches rule 5's 3:1 (ticket 07).
     softShadow: SMALL_TEXT_SOFT_SHADOW,
   },
+  /**
+   * References 12 and 13: a huge lowercase white hero drawn behind the speaker (spec 5.12), small
+   * white Inter SemiBold support words in front. The preset sets `heroBehind`; the hero is placed
+   * above the head once per cue (`captionBehindPlacement`). Motion `slide`: the catalog's `rise`
+   * fades every word over 140 ms and travels 0.32 em, against spec 6 rule 6 (full opacity within
+   * 40 ms, support travel 0.2 em or less), the same call ticket 05b made for Marker.
+   */
+  depth: {
+    name: "Depth",
+    layout: "stack",
+    align: "center",
+    roles: {
+      minor: textRole(1),
+      body: textRole(1),
+      hero: { font: "hero", sizeEm: 3, transform: "lowercase", letterSpacing: -0.03, colour: "highlight" },
+    },
+    noHeroSizeEm: 1.5,
+    heroFontName: "Inter",
+    heroColours: ["highlight"],
+    heroFill: { widthFraction: 0.92, minEm: 3, maxEm: 5.5 },
+    rowGapEm: 0.04,
+    staggerEm: 0,
+    defaultMotion: "slide",
+    softShadow: SMALL_TEXT_SOFT_SHADOW,
+  },
 } as const satisfies Record<string, CaptionDynamicStyle>;
 
 export type CaptionDynamicName = keyof typeof CAPTION_DYNAMIC_STYLES;
@@ -378,6 +403,25 @@ export const CAPTION_BLOCK = {
   minWordsPerCue: 2,
   maxWordsPerCue: 5,
 } as const;
+
+/**
+ * The hero behind the speaker (spec 5.12). Once per cue, at the hero's onset, each renderer reads
+ * its own person matte's top edge across the hero's ink (`columns` evenly spaced columns, a pixel
+ * counts as the person at `threshold` or more) and lifts the block until the person covers at
+ * most `maxCoveredFraction` of the hero's ink height, from its bottom. Matte ranges in the plan
+ * extend `paddingSec` before and after each behind hero.
+ */
+export const CAPTION_BEHIND = {
+  maxCoveredFraction: 1 / 3,
+  threshold: 0.5,
+  columns: 48,
+  paddingSec: 0.2,
+} as const;
+
+/** True when the style may draw its hero behind the speaker (`heroBehind`): centre-aligned stack styles with a hero. */
+export function captionStyleAllowsBehind(style: Pick<CaptionDynamicStyle, "layout" | "align" | "emphasis">): boolean {
+  return style.layout === "stack" && style.align === "center" && style.emphasis !== "never";
+}
 
 /**
  * Curved rows (spec 5.11). A row of width W sweeps `curve × maxSweepDeg` of a circle; glyph
@@ -424,6 +468,12 @@ export interface CaptionBlock {
   readonly rows: readonly (readonly number[])[];
   /** Stable per-cue seed: FNV-1a of the first word's key, else of the cue index. */
   readonly seed: number;
+  /**
+   * The hero row (the hero, its underline and stars) is drawn behind the speaker (spec 5.12):
+   * set when the preset's `heroBehind` is on, the style allows it and the cue has a hero. Each
+   * renderer still draws it in front when its matte is unavailable or the head leaves no room.
+   */
+  readonly behind?: true;
 }
 
 /**

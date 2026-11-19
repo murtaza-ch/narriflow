@@ -142,6 +142,8 @@ describe("pinned environment", () => {
     for (const archive of linux.apt.archives) expect(docker).toContain(archive.uri);
     expect(docker).toContain(`raw/${linux.model.commit}/${linux.model.repoPath}`);
     expect(docker).toContain(`${linux.model.sha256}  ${linux.model.path}`);
+    expect(docker).toContain(linux.personMatteModel.url);
+    expect(docker).toContain(`${linux.personMatteModel.sha256}  ${linux.personMatteModel.path}`);
     expect(docker).toContain("--require-hashes");
     for (const name of Object.keys(linux.apt.direct)) expect(linux.apt.installed[name]).toBe(linux.apt.direct[name]!);
     const requirements = pipRequirements(lock).trim().split("\n");

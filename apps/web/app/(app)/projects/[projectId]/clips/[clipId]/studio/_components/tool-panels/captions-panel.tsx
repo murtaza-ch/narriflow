@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid, VisuallyHidden } from "@chakra-ui/react";
 import { PANEL_PX, PanelSegmented, PanelTabs, SectionLabel, chipProps, studioSliderCss } from "./panel-ui";
-import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote, ChevronDown, Link2, Unlink2 } from "lucide-react";
+import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote, ChevronDown, Link2, Unlink2, Layers } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
@@ -15,6 +15,7 @@ import {
   applyCaptionPresetLook,
   captionBlockAnimation,
   captionBlockWordsPerCue,
+  captionStyleAllowsBehind,
   captionStyleCurves,
   clipAspectRatioOptions,
   matchCaptionPreset,
@@ -32,6 +33,7 @@ import { captionActiveWordIndex, captionCueWordsAt, captionLayerAt } from "../ca
 import type { PlaybackClock } from "../playback-clock";
 import { CAPTION_SAMPLE_LOOP_SEC, CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "../../../../../../../_shared/caption-sample-cue";
 import { PresetCard } from "./preset-card";
+import { usePersonMatteStatus } from "../caption-behind-preview";
 import {
   captionEmphasisChanges,
   captionEmphasisFits,
@@ -940,6 +942,8 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
   const colors = captionPanelColors(style);
   // A style without a hero (Cutout) shows no hero colour, emphasis, hero font or emphasis size: they act on nothing.
   const hero = colors.includes("hero");
+  // Spec 5.12: when the preview cannot separate the speaker, its behind heroes are drawn in front.
+  const matteFailed = usePersonMatteStatus() === "failed" && captionPreset.heroBehind === true && captionStyleAllowsBehind(style);
 
   return (
     <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
@@ -964,6 +968,11 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
 
       {hero ? <EmphasisSection /> : null}
       <DisplaySection dynamic />
+      {matteFailed ? (
+        <Text fontSize="12px" color="studio.fgMuted" px="2px" mt="-3" role="status">
+          The preview couldn't find the speaker, so the hero word shows in front here.
+        </Text>
+      ) : null}
 
       <AdvancedDisclosure>
         <TextFontSection label="Text font" />
@@ -1040,7 +1049,20 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
             />
           </Box>
         ) : null}
-        {/* Hero behind speaker (centre stack styles, ticket 09) joins here once a renderer draws it. */}
+        {captionStyleAllowsBehind(style) ? (
+          <Box>
+            <SectionLabel>Depth</SectionLabel>
+            {/* Spec 5.12: the hero row goes behind the person, placed above the head per cue; off is stored as unset. */}
+            <Grid templateColumns="minmax(0, 1fr)" gap="6px">
+              <ToggleChip
+                icon={<Layers size={14} />}
+                label="Hero behind speaker"
+                active={captionPreset.heroBehind === true}
+                onClick={() => update({ heroBehind: captionPreset.heroBehind === true ? undefined : true })}
+              />
+            </Grid>
+          </Box>
+        ) : null}
       </AdvancedDisclosure>
     </Stack>
   );

@@ -24,7 +24,7 @@ import {
 	type SkippedEmoji,
 } from "./caption-glyphs";
 import { captionWordSegmentEnd, type CompositionCaptionBlock, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
-import { captionUnturnedTravel, type PlacedDecoration, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
+import { type CaptionBehindPlacement, captionUnturnedTravel, type PlacedDecoration, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
 import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock } from "./caption-block-geometry";
 import {
 	CAPTION_CUE_TILTS_DEG,
@@ -152,6 +152,8 @@ interface AssEvent {
 	readonly endSec: number;
 	readonly style: "Caption" | "Shape";
 	readonly text: string;
+	/** Drawn behind the speaker (spec 5.12): goes to the behind script. */
+	readonly behind?: true;
 }
 
 interface Span {
@@ -212,8 +214,31 @@ export interface CaptionEmojiOverlay {
 	readonly rotationDeg: number;
 }
 
+/** A cue whose hero row is drawn behind the speaker, as the graph needs it (spec 5.12). */
+export interface CaptionBehindCue {
+	readonly cueIndex: number;
+	/** The hero's onset to the cue's end: when the person is redrawn over the behind script. */
+	readonly startSec: number;
+	readonly endSec: number;
+	/** The lifted block's reserved bounds (rest ink, decorations, entrance travel), canvas px. */
+	readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+}
+
+/** A behind cue measured before placement: what the worker reads its matte against. */
+export interface CaptionBehindCandidate {
+	readonly cueIndex: number;
+	/** The hero's spoken onset, edited seconds: the matte frame placement reads. */
+	readonly onsetSec: number;
+	readonly heroInk: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+}
+
 export interface CaptionTrack {
+	/** Every event drawn in front of the speaker: the whole track when no cue is behind. */
 	readonly ass: string;
+	/** The hero rows drawn behind the speaker; empty when no cue is placed behind. */
+	readonly behindAss: string;
+	readonly behind: readonly CaptionBehindCue[];
 	readonly emoji: readonly CaptionEmojiOverlay[];
 	readonly notices: readonly CaptionGlyphNotice[];
 	/** Code points no pinned face draws, left out of the text (`captionGlyphsOmitted`). */
@@ -244,17 +269,63 @@ export function renderCaptionTrack(input: {
 	canvas: { width: number; height: number };
  fonts?: RenderBrandFonts;
 	omitCodePoints?: ReadonlySet<number>;
+	/**
+	 * Placement of each `block.behind` cue, by cue index (`captionBehindPlacement` on the worker's
+	 * matte). A behind cue without an entry, or placed in front, is drawn wholly in front, unmoved.
+	 */
+	behind?: ReadonlyMap<number, CaptionBehindPlacement>;
 }): CaptionTrack {
 	const first = input.layers[0];
-	if (!first) return { ass: "", emoji: [], notices: [], omitted: [], emojiSkipped: [], geometryUnavailable: [] };
+	if (!first) return { ass: "", behindAss: "", behind: [], emoji: [], notices: [], omitted: [], emojiSkipped: [], geometryUnavailable: [] };
 	const face = (first.preset.fontAsset ? input.fonts?.get(brandFontKey(first.preset.fontAsset))?.face : null) ?? captionFontFace(first.preset.fontName);
 	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], forcedOmissions: input.omitCodePoints ?? new Set() };
-	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector));
-	const ass = [
+	const behindCues: CaptionBehindCue[] = [];
+	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector, input.behind, behindCues));
+	const front = events.filter((event) => !event.behind);
+	const behindEvents = events.filter((event) => event.behind);
+	return {
+		ass: captionAssScript(front, face, first.preset.fontSize, input.canvas),
+		behindAss: behindEvents.length > 0 ? captionAssScript(behindEvents, face, first.preset.fontSize, input.canvas) : "",
+		behind: behindEvents.length > 0 ? behindCues : [],
+		emoji: collector.emoji,
+		notices: [...collector.notices.values()],
+		omitted: [...collector.omitted.values()],
+		emojiSkipped: collector.emojiSkipped,
+		geometryUnavailable: collector.geometryUnavailable,
+	};
+}
+
+/**
+ * The cues drawn with `block.behind`, measured unlifted: each one's hero onset, hero ink and
+ * reserved bounds, for the worker to read its matte against (`captionBehindPlacement`). A cue
+ * HarfBuzz cannot measure is left out; it burns as the classic line in front.
+ */
+export function captionBehindCandidates(input: {
+	layers: readonly CompositionCaptionVisualLayer[];
+	canvas: { width: number; height: number };
+	fonts?: RenderBrandFonts;
+}): CaptionBehindCandidate[] {
+	return input.layers.flatMap((cue) => {
+		if (!cue.block?.behind) return [];
+		const heroIndex = cue.block.roles.indexOf("hero");
+		const onsetSec = cue.words[heroIndex]?.startSec;
+		if (onsetSec === undefined || onsetSec >= cue.activeRange.endSec) return [];
+		try {
+			const { layout } = captionBlockGeometry({ cue: { ...cue, block: cue.block }, canvas: input.canvas, ...(input.fonts ? { fonts: input.fonts } : {}) });
+			return layout.heroInk ? [{ cueIndex: cue.cueIndex, onsetSec, heroInk: layout.heroInk, bounds: layout.bounds }] : [];
+		} catch (error) {
+			if (error instanceof CaptionShapingError) return [];
+			throw error;
+		}
+	});
+}
+
+function captionAssScript(events: readonly AssEvent[], face: CaptionFontFace, fontSize: number, canvas: { width: number; height: number }): string {
+	return [
 		"[Script Info]",
 		"ScriptType: v4.00+",
-		`PlayResX: ${input.canvas.width}`,
-		`PlayResY: ${input.canvas.height}`,
+		`PlayResX: ${canvas.width}`,
+		`PlayResY: ${canvas.height}`,
 		"WrapStyle: 2",
 		"ScaledBorderAndShadow: yes",
 		// libass does not kern unless asked; HarfBuzz measurement and the Studio do.
@@ -262,7 +333,7 @@ export function renderCaptionTrack(input: {
 		"",
 		"[V4+ Styles]",
 		"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-		`Style: Caption,${face.assName},${assFontSize(face, first.preset.fontSize)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,-1`,
+		`Style: Caption,${face.assName},${assFontSize(face, fontSize)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,-1`,
 		"Style: Shape,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
 		"",
 		"[Events]",
@@ -273,7 +344,6 @@ export function renderCaptionTrack(input: {
 		),
 		"",
 	].join("\n");
-	return { ass, emoji: collector.emoji, notices: [...collector.notices.values()], omitted: [...collector.omitted.values()], emojiSkipped: collector.emojiSkipped, geometryUnavailable: collector.geometryUnavailable };
 }
 
 function cueEvents(
@@ -281,13 +351,17 @@ function cueEvents(
 	canvas: { width: number; height: number },
 	customFont: RenderBrandFont | undefined,
 	collector: TrackCollector,
+	placements: ReadonlyMap<number, CaptionBehindPlacement> | undefined,
+	behindCues: CaptionBehindCue[],
 ): AssEvent[] {
 	if (!cue.block) return classicCueEvents(cue, canvas, customFont, collector);
 	const block = { ...cue, block: cue.block };
 	const slots = captionBlockSlots(block, customFont, collector);
+	const placement = cue.block.behind ? placements?.get(cue.cueIndex) : undefined;
+	const behind = placement?.behind === true;
 	let geometry: CaptionBlockGeometry;
 	try {
-		geometry = measureCaptionBlock({ cue: block, canvas, slots });
+		geometry = measureCaptionBlock({ cue: block, canvas, slots, ...(placement && behind && placement.liftPx > 0 ? { liftPx: placement.liftPx } : {}) });
 	} catch (error) {
 		if (!(error instanceof CaptionShapingError)) throw error;
 		// Typed degradation: the cue burns as the classic line, which records the unmeasurable face.
@@ -297,7 +371,12 @@ function cueEvents(
 		}
 		return events;
 	}
-	return blockCueEvents(block, geometry, canvas);
+	const events = blockCueEvents(block, geometry, canvas, behind);
+	if (behind) {
+		const heroIndex = cue.block.roles.indexOf("hero");
+		behindCues.push({ cueIndex: cue.cueIndex, startSec: cue.words[heroIndex]!.startSec, endSec: cue.activeRange.endSec, bounds: geometry.layout.bounds });
+	}
+	return events;
 }
 
 /** The text and hero font slots of a block cue. The text slot takes the uploaded font like a classic line. */
@@ -349,6 +428,8 @@ function blockCueEvents(
 	cue: CompositionCaptionVisualLayer & { readonly block: CompositionCaptionBlock },
 	geometry: CaptionBlockGeometry,
 	canvas: { width: number; height: number },
+	/** Hero words and decorations go to the behind script (spec 5.12). */
+	behind = false,
 ): AssEvent[] {
 	const { block, preset } = cue;
 	const style = captionDynamicStyle(block.style);
@@ -358,7 +439,7 @@ function blockCueEvents(
 	// Tiles go on the lowest layer, every hard shadow before every tile: libass draws one layer in event order.
 	const tileShadows: AssEvent[] = [];
 	const tiles: AssEvent[] = [];
-	geometry.words.forEach((word, index) => {
+	const paintWord = (word: CaptionBlockGeometry["words"][number], index: number) => {
 		const startSec = cue.words[index]!.startSec;
 		if (cueEnd <= startSec) return;
 		const placed = geometry.layout.words[index]!;
@@ -451,11 +532,22 @@ function blockCueEvents(
 				layers: { shadow: LAYER.shadow, outer: LAYER.outer, glow: LAYER.glow, text: LAYER.text },
 			}),
 		);
+	};
+	// Hero words' events and every decoration (the hero's underline and stars) form the hero row.
+	const heroRow = new Set<number>();
+	geometry.words.forEach((word, index) => {
+		const first = events.length;
+		paintWord(word, index);
+		if (block.roles[index] === "hero") for (let at = first; at < events.length; at++) heroRow.add(at);
 	});
 	for (const decoration of geometry.layout.decorations) {
-		if (cueEnd > decoration.startSec) events.push(...decorationEvents(decoration, preset, style.softShadow ?? [CAPTION_SOFT_SHADOW], cueEnd));
+		if (cueEnd <= decoration.startSec) continue;
+		const first = events.length;
+		events.push(...decorationEvents(decoration, preset, style.softShadow ?? [CAPTION_SOFT_SHADOW], cueEnd));
+		for (let at = first; at < events.length; at++) heroRow.add(at);
 	}
-	const all = [...tileShadows, ...tiles, ...events];
+	const marked = behind ? events.map((event, index) => (heroRow.has(index) ? { ...event, behind: true as const } : event)) : events;
+	const all = [...tileShadows, ...tiles, ...marked];
 	return motion.flicker ? applyFlicker(all, cue.activeRange.startSec, motion.flicker) : all;
 }
 
