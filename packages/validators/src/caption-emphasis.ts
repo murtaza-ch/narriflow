@@ -260,19 +260,44 @@ interface WordFacts {
   readonly sentenceEnd: boolean;
 }
 
-function wordFacts(word: CaptionEmphasisWord, language: string | null): WordFacts {
-  const normalised = normaliseWord(word.raw);
+interface ClassFacts {
+  readonly normalised: string;
+  readonly letters: number;
+  readonly inList: (pick: (list: WordList) => ReadonlySet<string>) => boolean;
+  readonly minor: boolean;
+  readonly number: boolean;
+  readonly negation: boolean;
+  readonly power: boolean;
+}
+
+/** The closed-class facts of one transcript token in `language`: the minor classification and what overrides it. */
+function classFacts(raw: string, language: string | null): ClassFacts {
+  const normalised = normaliseWord(raw);
   const letters = letterCount(normalised);
-  const lists = listsForToken(language, word.raw);
+  const lists = listsForToken(language, raw);
   const inList = (pick: (list: WordList) => ReadonlySet<string>) =>
     lists !== null && lists.some((list) => pick(list).has(normalised));
-  const number = NUMERIC_RE.test(word.raw) || inList((list) => list.number);
+  const number = NUMERIC_RE.test(raw) || inList((list) => list.number);
   const negation = inList((list) => list.negation);
   const power = inList((list) => list.power);
   const listedMinor = lists === null
     ? letters <= 2 && !Array.from(normalised).some(isNoSpaceScriptChar)
     : inList((list) => list.minor);
   const minor = !number && !negation && !power && (letters === 0 || listedMinor);
+  return { normalised, letters, inList, minor, number, negation, power };
+}
+
+/**
+ * Whether a transcript token is a minor (closed-class) word in `language`: the scorer's own
+ * classification (the language's word lists; without lists, 2 letters or fewer outside the
+ * no-space scripts), without roles. Cue grouping reads it (spec 5.4).
+ */
+export function captionWordIsMinor(raw: string, language: string | null): boolean {
+  return classFacts(raw, language).minor;
+}
+
+function wordFacts(word: CaptionEmphasisWord, language: string | null): WordFacts {
+  const { normalised, letters, inList, minor, number, negation, power } = classFacts(word.raw, language);
   const sourceLetters = Array.from(word.raw).filter((char) => LETTER_RE.test(char));
   const casedLetters = sourceLetters.filter((char) => char !== char.toUpperCase() || char !== char.toLowerCase());
   return {

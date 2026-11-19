@@ -97,12 +97,12 @@ describe("caption motion spec", () => {
     expect(isDynamicOnlyMotion(slam)).toBe(true);
   });
 
-  test("drop: every word falls 0.2 em and turns from -4 degrees over 120 ms; the hero uses the same track", () => {
+  test("drop: every word falls 0.2 em and turns from -4 degrees over 90 ms; the hero uses the same track", () => {
     const drop = CAPTION_MOTIONS.drop;
     expect(captionKeyframeValue(drop.word, "offsetYEm", 0)).toBe(-0.2);
-    expect(captionKeyframeValue(drop.word, "rotateZDeg", 60)).toBeCloseTo(-2, 6);
+    expect(captionKeyframeValue(drop.word, "rotateZDeg", 45)).toBeCloseTo(-2, 6);
     expect(captionKeyframeValue(drop.word, "opacity", 40)).toBe(1);
-    expect(captionEntranceMs(drop.word)).toBe(120);
+    expect(captionEntranceMs(drop.word)).toBe(90);
     expect(captionEntranceKeyframes(drop, true)).toBe(drop.word);
     expect(isDynamicOnlyMotion(drop)).toBe(true);
   });

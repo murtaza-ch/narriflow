@@ -38,6 +38,7 @@ export const CAPTION_FONT_FACES = [
   { name: "DM Serif Display", file: "DMSerifDisplay-Regular.ttf", assName: "DM Serif Display Regular", weight: 400, style: "normal", ascent: 1.036, descent: 0.335, capHeight: 0.66 },
   { name: "Instrument Serif", file: "InstrumentSerif-Italic.ttf", assName: "Instrument Serif Italic", weight: 400, style: "italic", ascent: 0.99, descent: 0.31, capHeight: 0.72 },
   { name: "Inter", file: "Inter-ExtraBold.ttf", assName: "Inter 28pt ExtraBold", weight: 800, style: "normal", ascent: 1.1079, descent: 0.3223, capHeight: 0.7275 },
+  { name: "Inter Regular", file: "Inter-Regular.ttf", assName: "Inter 28pt Regular", weight: 400, style: "normal", ascent: 1.1079, descent: 0.3223, capHeight: 0.7275 },
   { name: "Inter SemiBold", file: "Inter-SemiBold.ttf", assName: "Inter 28pt SemiBold", weight: 600, style: "normal", ascent: 1.1079, descent: 0.3223, capHeight: 0.7275 },
   { name: "Lilita One", file: "LilitaOne-Regular.ttf", assName: "Lilita One", weight: 400, style: "normal", ascent: 0.923, descent: 0.22, capHeight: 0.701 },
   { name: "Luckiest Guy", file: "LuckiestGuy-Regular.ttf", assName: "Luckiest Guy Regular", weight: 400, style: "normal", ascent: 0.9795, descent: 0.2461, capHeight: 0.7021 },

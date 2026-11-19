@@ -248,7 +248,8 @@ export const CAPTION_MOTIONS = {
     word: [
       { at: 0, offsetYEm: -0.2, rotateZDeg: -4, opacity: 0 },
       { at: 40, opacity: 1 },
-      { at: 120, offsetYEm: 0, rotateZDeg: 0 },
+      // 90 ms: supporting words settle within spec 6 rule 6 (ticket 06b; was 120).
+      { at: 90, offsetYEm: 0, rotateZDeg: 0 },
     ],
     cueFadeMs: 0,
     upcomingOpacity: 0,

@@ -7,6 +7,7 @@ import {
   captionDynamicStyle,
   captionRoleLook,
   captionSoftBreaks,
+  captionWordIsMinor,
   captionWordKey,
   CAPTION_POSITION_Y_DEFAULTS,
   CLIP_AUTO_LAYOUT_MAX_SEGMENTS,
@@ -2505,7 +2506,7 @@ export function captionCueBlock(
     style: preset.dynamic,
     roles: [...roles.roles],
     texts: words.map((word, index) =>
-      applyCaptionTextTransform(word.text, captionRoleLook(preset, style, roles.roles[index]!, seed).transform, language)),
+      applyCaptionTextTransform(word.text, captionRoleLook(preset, style, roles.roles[index]!, seed, word.text).transform, language)),
     keys: words.map((word) => word.key),
     rows: captionBlockRows(roles.roles, roles.heroSpan, style),
     seed,
@@ -2590,6 +2591,7 @@ function captionLayersForTarget(input: {
         visibleWords.map((entry) => entry.formatted),
         wordsPerCue,
         captionSoftBreaks(visibleWords.map((entry, index) => ({ raw: breakRaws[index]!, startSec: entry.word.startSec, endSec: entry.word.endSec }))),
+        visibleWords.map((entry) => captionWordIsMinor(entry.word.text, language)),
       );
       for (const [groupIndex, range] of groups.entries()) {
         const group = visibleWords.slice(range.start, range.end);
@@ -2682,6 +2684,7 @@ function captionLayersForTarget(input: {
         visibleWords.map((entry) => entry.formatted),
         wordsPerCue,
         captionSoftBreaks(visibleWords.map((entry, index) => ({ raw: breakRaws[index]!, ...entry.range }))),
+        visibleWords.map((entry) => captionWordIsMinor(entry.word.word, language)),
       );
       for (const [groupIndex, range] of groups.entries()) {
         const group = visibleWords.slice(range.start, range.end);

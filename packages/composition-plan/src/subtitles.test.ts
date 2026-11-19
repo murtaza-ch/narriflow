@@ -67,10 +67,26 @@ describe("subtitle cues share burn-in's derivation", () => {
 
   test("cuts remove spoken words and shift later cues into edited time", () => {
     const cues = deriveCaptionCues(document({ deletedRanges: [{ startSec: 0.95, endSec: 2.5 }] }));
-    expect(cues.map((cue) => cue.text)).toEqual(["Hello Today we", "build."]);
+    // "we" is a minor word inside the sentence, so it opens the next cue (spec 5.4).
+    expect(cues.map((cue) => cue.text)).toEqual(["Hello Today", "we build."]);
     expect(cues[0]).toMatchObject({ startSec: 0.5 });
-    expect(cues[1]!.startSec).toBeCloseTo(2.25, 6);
+    expect(cues[1]!.startSec).toBeCloseTo(1.95, 6);
     expect(cues[1]!.endSec).toBeCloseTo(2.85, 6);
+  });
+
+  test("a cue never ends on a minor word inside a sentence; subtitles and burn-in agree (spec 5.4)", () => {
+    const line: Word[] = ["We", "made", "a", "week", "of", "content", "in", "one", "hour."].map((word, index) => [word, index * 0.3, index * 0.3 + 0.25]);
+    const doc = document({ transcriptSlice: [utterance(0, line)] }, { wordsPerCue: 4 });
+    const cues = deriveCaptionCues(doc);
+    // Unchanged: no cue ends on a minor word ("one" is a number).
+    expect(cues.map((cue) => cue.text)).toEqual(["We made a week", "of content in one", "hour."]);
+    const shorter = deriveCaptionCues(document({ transcriptSlice: [utterance(0, line.slice(2))] }, { wordsPerCue: 4 }));
+    // Unchanged: "in" already opens the second cue.
+    expect(shorter.map((cue) => cue.text)).toEqual(["a week of content", "in one hour."]);
+    const content: Word[] = ["We", "shot", "a", "week", "of", "content", "in", "an", "hour."].map((word, index) => [word, index * 0.3, index * 0.3 + 0.25]);
+    // Budget alone: "We shot a week" / "of content in an" / "hour.".
+    expect(deriveCaptionCues(document({ transcriptSlice: [utterance(0, content)] }, { wordsPerCue: 4 })).map((cue) => cue.text))
+      .toEqual(["We shot a week", "of content", "in an hour."]);
   });
 
   test("inserted scenes shift later cues and split a cue that spans the scene", () => {

@@ -64,7 +64,13 @@ describe("captionStyleUsesAccent", () => {
     expect(
       captionStyleUsesAccent({
         ...base,
-        tile: { fill: { minor: "#F4B6D2", body: "accent", hero: "#16161A" }, tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08 },
+        tile: { fill: "accent", tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 0 },
+      }),
+    ).toBe(true);
+    expect(
+      captionStyleUsesAccent({
+        ...base,
+        tile: { fill: "#16161A", short: { maxLetters: 2, fill: "accent", ink: "#16161A" }, tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 0 },
       }),
     ).toBe(true);
   });

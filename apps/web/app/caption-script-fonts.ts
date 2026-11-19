@@ -189,6 +189,7 @@ export type CaptionOwnScript = "Cyrillic" | "Greek";
 
 export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionOwnScript[]>> = {
   Inter: ["Cyrillic", "Greek"],
+  "Inter Regular": ["Cyrillic", "Greek"],
   "Inter SemiBold": ["Cyrillic", "Greek"],
   "Open Sans": ["Cyrillic", "Greek"],
   Roboto: ["Cyrillic", "Greek"],

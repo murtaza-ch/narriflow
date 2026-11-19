@@ -163,6 +163,19 @@ describe("caption override", () => {
     expect(deriveCaptionCues(doc).map((cue) => cue.text)).toEqual(["Source words"]);
   });
 
+  test("a dub cue keeps a trailing minor word when the segment ends there, and carries it inside a segment", () => {
+    const doc = document({}, { wordsPerCue: 3 });
+    const words = (texts: string[], from: number) =>
+      texts.map((text, index) => ({ text, startSec: from + index * 0.3, endSec: from + index * 0.3 + 0.25 }));
+    const cues = deriveCaptionCues(doc, {
+      captionOverride: {
+        language: "en",
+        segments: [words(["we", "met", "at", "the", "station"], 0), words(["near", "the"], 3), words(["old", "bridge"], 5)],
+      },
+    });
+    expect(cues.map((cue) => cue.text)).toEqual(["we met", "at the station", "near the", "old bridge"]);
+  });
+
   test("music ducking follows the override words, not the transcript", () => {
     const doc = document({
       studioEdits: studioEditsSchema.parse({

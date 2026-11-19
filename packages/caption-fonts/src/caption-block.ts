@@ -215,6 +215,16 @@ function drawnInNastaliq(text: string, language: string | null | undefined): boo
   return canonicalCaptionLanguage(language) === "ur" && captionRunScript(text) === "arabic";
 }
 
+/** Every cased letter is upper case, and there is at least one (digits and uncased scripts alone are not caps). */
+export function captionTextIsAllCaps(text: string): boolean {
+  let cased = false;
+  for (const char of text) {
+    if (char !== char.toUpperCase()) return false;
+    if (char !== char.toLowerCase()) cased = true;
+  }
+  return cased;
+}
+
 interface Box {
   left: number;
   right: number;
@@ -345,7 +355,10 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       const unit = px.map((size, index) => (roles[index] === "hero" ? 1 : size));
       const perEm = rowWidth(heroRow, unit);
       const target = perEm > 0 ? (style.heroFill.widthFraction * canvas.width) / perEm : S * style.heroFill.minEm;
-      heroPx = Math.min(S * style.heroFill.maxEm, Math.max(S * style.heroFill.minEm, target));
+      const caps = style.heroFill.maxEmCaps !== undefined &&
+        captionTextIsAllCaps(roles.flatMap((role, index) => (role === "hero" ? [block.texts[index]!] : [])).join(""));
+      const maxEm = caps ? style.heroFill.maxEmCaps! : style.heroFill.maxEm;
+      heroPx = Math.min(S * maxEm, Math.max(S * style.heroFill.minEm, target));
     }
     heroPx *= preset.emphasisScale ?? 1;
     roles.forEach((role, index) => {
@@ -416,6 +429,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     // will then use the arc's vertical extent.
     const left = new Array<number>(count).fill(0);
     const rest = emptyBox();
+    const rowBoxes: Box[] = [];
     block.rows.forEach((_, k) => {
       const width = rowWidth(k, sizes);
       const shift = isHeroRow(k) ? 0 : style.staggerEm * S * fit * rowSign[k]!;
@@ -428,6 +442,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
         cursor += measured[item.index]!.advanceEm * sizes[item.index]!;
       });
       include(rest, rowLeft, baselines[k]! - rowInkTop[k]!, rowLeft + width, baselines[k]! + rowInkBottom[k]!);
+      rowBoxes.push({ left: rowLeft, right: rowLeft + width, top: baselines[k]! - rowInkTop[k]!, bottom: baselines[k]! + rowInkBottom[k]! });
     });
 
     // Rule 10, rotation: the block tilt turns each word's centre about the block centre.
@@ -482,15 +497,32 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     }
     if (stars) {
       const T = CAPTION_DECORATION.stars;
-      // The leading top corner, the other top corner, then the bottom corner under the second
-      // (reference 08); odd seeds mirror the set.
+      // Reference 08: the first star overlaps the hero row's top corner on the leading side, the
+      // others sit out from the block's other top corner and the bottom corner under it. Odd seeds
+      // mirror the set.
       const flip = block.seed % 2 === 1 ? -1 : 1;
-      const corners = [{ side: flip, vertical: -1 }, { side: -flip, vertical: -1 }, { side: -flip, vertical: 1 }];
+      const push = T.pushEm * heroPx;
+      const hero = heroRow >= 0 ? rowBoxes[heroRow]! : rest;
+      const above = heroRow > 0 ? rowBoxes[heroRow - 1]! : null;
+      const centres = T.sizesEm.map((sizeEm, at) => {
+        const halfWidth = (sizeEm * heroPx * CAPTION_SHAPES.star.aspect) / 2;
+        if (at === 0) {
+          // Centred on the hero's top edge, `push` out from its side, and clear of the row above's ink box.
+          const x = flip > 0
+            ? Math.max(hero.right + push, above ? above.right + halfWidth : -Infinity)
+            : Math.min(hero.left - push, above ? above.left - halfWidth : Infinity);
+          return { x, y: hero.top };
+        }
+        const side = -flip;
+        const vertical = at === 1 ? -1 : 1;
+        return {
+          x: (side > 0 ? rest.right : rest.left) + side * push,
+          y: (vertical > 0 ? rest.bottom : rest.top) + vertical * push,
+        };
+      });
       T.sizesEm.forEach((sizeEm, at) => {
-        const corner = corners[at % corners.length]!;
-        const push = T.pushEm * heroPx;
-        const x = (corner.side > 0 ? rest.right : rest.left) + corner.side * push - pivotX;
-        const y = (corner.vertical > 0 ? rest.bottom : rest.top) + corner.vertical * push - pivotY;
+        const x = centres[at]!.x - pivotX;
+        const y = centres[at]!.y - pivotY;
         const height = sizeEm * heroPx;
         const width = height * CAPTION_SHAPES.star.aspect;
         const centerX = pivotX + x * cos - y * sin;

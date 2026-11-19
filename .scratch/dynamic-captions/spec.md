@@ -273,6 +273,18 @@ the cue closes after the latest soft break. A soft break never closes a cue that
 overflowing. Without the argument the function is unchanged. `captionLayersForTarget` passes
 it for every preset (owner decision 2).
 
+A fourth optional argument, `minor[i]` (`captionWordIsMinor(raw, language)`: the emphasis
+scorer's closed-class classification, no roles), keeps a cue from ending on a minor word when
+the next token is in the same sentence (ticket 06b). When a cue closes on the budget, its
+trailing run of minor tokens moves to the start of the next cue: "week of content in / one
+hour" becomes "week of content / in one hour". The run stops at a soft break (sentence or
+clause punctuation, or a pause of 0.35 s or more), so nothing crosses one; it never empties
+the closed cue, and a cue made only of minor words keeps them. The cue that takes the carried
+words may hold one word more than the budget; past that it closes on the budget as usual
+(and may carry again). Tokens are grouped per utterance or dub segment, so nothing moves
+across those. `captionLayersForTarget` passes it for every preset, classic ones included, so
+burn-in, the Studio and subtitle files all follow it.
+
 ### 5.5 The block in the plan
 
 ```ts
@@ -350,7 +362,9 @@ Rules, in order:
    or 0 when the right word has `spaceBefore: false`. Tile styles add their padding.
 3. **Hero fill.** If the style sets `heroFill`, scale the hero row so its width (advances
    plus gaps plus stroke and tile extent) equals `heroFill.widthFraction × canvas.width`,
-   clamping the hero size to `[S × minEm, S × maxEm]`. Then multiply by `emphasisScale`.
+   clamping the hero size to `[S × minEm, S × maxEm]` (`maxEmCaps` instead of `maxEm` when
+   every cased letter of the hero is upper case and there is one). Then multiply by
+   `emphasisScale`.
 4. **Row pitch** from measured ink:
    `baseline[k+1] = baseline[k] + maxInkBottom(row k) + style.rowGapEm × S + maxInkTop(row k+1)`,
    where `maxInkTop` and `maxInkBottom` are the row's largest `ink × px` plus stroke.
@@ -437,7 +451,7 @@ New motions (ms, values at 1 em):
 | --- | --- | --- |
 | `slide` | x −0.18 em to 0 over 0 to 90, opacity 0 to 1 by 40 | y 0.12 em to 0 over 0 to 150, blur 0.04 em to 0 by 100 (out), opacity 0 to 1 by 40 |
 | `slam` | scale 1.08 to 1 by 80 (out), opacity 0 to 1 by 40 | scale 1.25 to 0.98 by 110 (out), to 1 by 160, opacity 0 to 1 by 40 |
-| `drop` | y −0.20 em to 0 and rotateZ −4° to 0 over 0 to 120, opacity 0 to 1 by 40 | same |
+| `drop` | y −0.20 em to 0 and rotateZ −4° to 0 over 0 to 90 (120 until ticket 06b), opacity 0 to 1 by 40 | same |
 
 Existing `rise`, `blur`, `punch`, `bounce`, `flip` and `fade` stay available. `jelly` is
 excluded for dynamic styles: 380 ms is longer than most cue windows.
@@ -462,7 +476,8 @@ interface CaptionDynamicStyle {
   readonly heroFontName: CaptionFontName;
   /** Hero colour alternates between these by `seed`. One entry = no alternation. */
   readonly heroColours: readonly CaptionColourSlot[];
-  readonly heroFill?: { readonly widthFraction: number; readonly minEm: number; readonly maxEm: number };
+  /** `maxEmCaps` (optional): the clamp for a hero in all caps (ticket 06b). */
+  readonly heroFill?: { readonly widthFraction: number; readonly minEm: number; readonly maxEm: number; readonly maxEmCaps?: number };
   readonly rowGapEm: number;
   readonly staggerEm: number;
   readonly leftGuidePct?: number;
@@ -472,7 +487,9 @@ interface CaptionDynamicStyle {
   /** Default for `preset.accentColor`. */
   readonly accentColor?: string;
   readonly tile?: {
-    readonly fill: Readonly<Record<CaptionWordRole, CaptionColourSlot | string>>;
+    /** Ticket 06b: one fill, and `short` words (at most `maxLetters` letters and digits) take their own fill and ink. */
+    readonly fill: CaptionColourSlot | string;
+    readonly short?: { readonly maxLetters: number; readonly fill: CaptionColourSlot | string; readonly ink: CaptionColourSlot | string };
     readonly tiltsDeg: readonly number[];
     readonly radiusEm: number; readonly padXEm: number; readonly padYEm: number;
   };
@@ -623,21 +640,21 @@ Names match the existing one-word style.
 
 | Style | Reference | Layout | Support (minor, body) | Hero | Colours | Motion | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Headline | 01 | stack, centre | Inter SemiBold, sentence case, S = 80, minor same size as body | Inter, mixed case, letter spacing −0.03 em, fill 0.80, 2.2 to 3.4 S | white; hero `#36B780` (flat in phase 1) | `slide` | no outline; shadow black 65%, 6 px blur, 2 px down; rowGap 0.06 |
-| Editorial | 06 (foreground type only, an adaptation) | stack, centre | minor Inter SemiBold 44 px, body Instrument Serif 60 px, S = 60 | Instrument Serif, lowercase, 144 px (2.4 S) | all `#F6EFE4`, hero in `highlightColor` default `#F6EFE4` | `slide` | stagger 8 px, rowGap 0.10 |
-| Cutout | 05 | row | Bebas Neue caps, S = 84 | none | body tiles `#16161A` with `#F5923E` ink, minor tiles `#F4B6D2` with `#16161A` ink | `drop` | tiles radius 0.1 em, pad 0.16 × 0.12 em, gap 0.08 em; tilts −2, 1.5, −1, 2; hard shadow 3 px; wordsPerCue 5 |
-| Marker | 04, 07 (partial: one hero, not two) | stack, left, guide 8% | Poppins, lowercase, S = 48 | Poppins, lowercase, 120 px (2.5 S) | white; hero alternates `#FFD248` and `#EF8DB9` by seed | `slide` | rowGap 0.14; underline in phase 2 |
-| Stack | 08 | stack, centre | Inter SemiBold, lowercase, S = 64 | Inter, lowercase, 154 px (2.4 S) | white | `slide` | rowGap 0.04; stars in phase 2 |
+| Headline | 01 | stack, centre | Inter SemiBold, sentence case, S = 80, minor same size as body | Inter, mixed case, letter spacing −0.03 em, fill 0.80, 2.2 to 3.4 S; an all-caps hero caps at 3.0 S | white; hero `#36B780` (flat in phase 1) | `slide` | no outline; shadow black 85%, sigma 0.075 em, 0.03 em down; rowGap 0.04 |
+| Editorial | 06 (foreground type only, an adaptation) | stack, centre | minor Inter SemiBold 52 px `#FFFFFF`, body Instrument Serif 68 px `#F6EFE4`, S = 68 | Instrument Serif, lowercase, 149.6 px (2.2 S) | hero in `highlightColor` default `#F6EFE4` | `slide` | stagger 0.6 S (41 px), rowGap 0.10 |
+| Cutout | 05 | row | Anton caps, S = 105 | none | tiles `#16161A` with `#F5923E` ink; words of 1 or 2 letters on `#F4B6D2` tiles with `#16161A` ink | `drop` (90 ms) | tiles radius 0.1 em, pad 0.16 × 0.12 em, gap 0.08 em; tilts −2, 1.5, −1, 2; hard shadow 3/84 em; wordsPerCue 5 |
+| Marker | 04, 07 (partial: one hero, not two) | stack, left, guide 8% | Inter SemiBold, lowercase, S = 52 | Poppins ExtraBold, lowercase, 120 px (2.31 S) | white; hero alternates `#FFD248` and `#EF8DB9` by seed | `slide` | rowGap 0.14; shadow two black 100% layers (sigma 0.12 and 0.05 em); underline in phase 2 |
+| Stack | 08 | stack, centre | Inter Regular, lowercase, S = 64 | Inter ExtraBold, lowercase, 154 px (2.4 S) | white | `slide` | rowGap 0.04; stars in phase 2 |
 
-Ticket 05b changed Editorial (minor 44 px, `slide`), Cutout's tiles, Marker (`slide`) and Stack (S = 64, hero 2.4 S) after the 05 visual review; Urdu support words drawn in Nastaliq take `CAPTION_BLOCK.nastaliqSupportScale` (1.3). Every phase 1 preset sets `wordsPerCue: 4` except Cutout. A style shrinks minor words only
+Ticket 05b changed Editorial (minor 44 px, `slide`), Cutout's tiles, Marker (`slide`) and Stack (S = 64, hero 2.4 S) after the 05 visual review; ticket 06b set the rows above from the 05b review (Headline rowGap and caps cap, Stack's Inter Regular support, Marker's Inter SemiBold support, Editorial's sizes, colours and stagger, Cutout's Anton, size, tile colours and 90 ms `drop`, Groove's 80 px support, Stack's stars); Urdu support words drawn in Nastaliq take `CAPTION_BLOCK.nastaliqSupportScale` (1.3). Every phase 1 preset sets `wordsPerCue: 4` except Cutout. A style shrinks minor words only
 when its catalog row says so (Editorial). Mixed minor and body sizes in one row looked uneven
 in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body size.
 
 ### Later catalog additions (same release)
 
-- **Groove** (reference 03, phase 2). DM Serif Display caps support at 64 px, Caprasimo
-  capitalised hero at 176 px in `#F59ABB`, white support, rowGap 8 px, outline 0, 4 px soft
-  shadow, motion `slide`. Both faces are new (OFL, static, licence file, metrics, the
+- **Groove** (reference 03, phase 2). DM Serif Display caps support at 80 px (64 px until
+  ticket 06b), Caprasimo capitalised hero at 176 px (2.2 S) in `#F59ABB`, white support,
+  rowGap 8 px, outline 0, 4 px soft shadow, motion `slide`. Both faces are new (OFL, static, licence file, metrics, the
   coverage script, web registration).
 - Phase 2 also gives Headline its gradient (`#A5EBC5` at the top to `#36B780` at the
   bottom), Marker its underline and Stack its stars.
@@ -645,9 +662,11 @@ in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body s
   (the single "4 px" shadow left "W/" at 2.07:1 on the bright frame, rule 5); the gradient
   draws only while the hero colour is the style's own `#36B780` (another hero colour or a
   brand colour wins flat); the underline drops below a hero's descender instead of crossing
-  it; Stack's stars follow the accent colour (default white), three of them (0.28, 0.20,
-  0.20 hero-em) at the leading top corner, the other top corner and the bottom corner under
-  it, mirrored by seed.
+  it; Stack's stars follow the accent colour (default white), three of them, mirrored by
+  seed. Ticket 06b set them to reference 08: 0.36 hero-em centred on the hero row's top edge,
+  0.12 hero-em out from its leading side, so it overlaps the hero's corner (and further out if
+  the row above is wider, clearing that row's box); then 0.26 hero-em each, 0.12 hero-em out
+  on both axes from the block's other top corner and the bottom corner under it.
 - **Arc** (reference 14, phase 3). DM Serif Display, sentence case, all words `#F3E9C6`,
   support S = 64, hero 2.2 S, every row curved at 0.55, soft shadow black 70%, no outline,
   rowGap 0.04, motion `blur`.

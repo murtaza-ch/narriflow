@@ -25,7 +25,7 @@ Dynamic styles are listed first in the gallery. Each one is a single click: Narr
 
 ### Editorial
 
-`editorial`. Small sans-serif minor words, serif body words and a large lowercase serif hero, all in cream. The rows shift slightly left and right. Words slide in; the hero rises into place out of a soft blur.
+`editorial`. Small white sans-serif minor words, cream serif body words and a large lowercase serif hero. The rows above and below the hero sit off-centre, one to the left and one to the right. Words slide in; the hero rises into place out of a soft blur.
 
 <Frame caption="Editorial">
 
@@ -35,17 +35,17 @@ Dynamic styles are listed first in the gallery. Each one is a single click: Narr
 
 ### Cutout
 
-`cutout`. Each word sits on its own tilted tile, caps in orange on dark tiles, short words like "and" and "it" on pink tiles. Cutout has no hero and shows up to five words. Each word drops onto the frame.
+`cutout`. Each word sits on its own tilted tile in tall condensed capitals, orange on dark tiles, and words of one or two letters, like "I" and "it", dark on pink tiles. Cutout has no hero and shows up to five words across most of the frame width. Each word drops onto the frame.
 
 <Frame caption="Cutout">
 
-![Cutout: "AND I KEEP IT SHORT" on alternating dark and pink tiles](/docs/caption-styles/cutout.jpg)
+![Cutout: "AND I KEEP IT SHORT" on tilted tiles, "I" and "IT" on pink, the rest on dark](/docs/caption-styles/cutout.jpg)
 
 </Frame>
 
 ### Marker
 
-`marker`. A left-aligned lowercase stack beside the speaker, with the hero in yellow or pink, alternating from caption to caption. Right-to-left languages such as Urdu align to the right edge instead. Words slide in; the hero rises into place, then a hand-drawn white squiggle draws itself under it.
+`marker`. A left-aligned lowercase stack beside the speaker: plain sans-serif rows around a heavy rounded hero in yellow or pink, alternating from caption to caption. Right-to-left languages such as Urdu align to the right edge instead. Words slide in; the hero rises into place, then a hand-drawn white squiggle draws itself under it.
 
 <Frame caption="Marker">
 
@@ -55,11 +55,11 @@ Dynamic styles are listed first in the gallery. Each one is a single click: Narr
 
 ### Stack
 
-`stack`. A small lowercase row above a very large lowercase hero, all white. Three small stars pop in around the block just after the hero; they take the accent colour.
+`stack`. A small, light lowercase row above a very large, heavy lowercase hero, all white. Three stars pop in just after the hero: a larger one at a top corner of the hero and two smaller ones at the opposite corners of the block. They take the accent colour.
 
 <Frame caption="Stack">
 
-![Stack: "how to edit" above a large white "captions", with small white stars at three corners](/docs/caption-styles/stack.jpg)
+![Stack: "how to edit" in light type above a large white "captions", with white stars at three corners](/docs/caption-styles/stack.jpg)
 
 </Frame>
 
@@ -78,6 +78,8 @@ Dynamic styles are listed first in the gallery. Each one is a single click: Narr
 Narriflow scores the words of each caption from the transcript: numbers with their units (such as "20 dollars"), negations, stressed or drawn-out words, words before a pause and words at the end of a sentence score higher. Small words like "the", "of" and "is" never become the hero. Picking a hero uses no AI model and adds nothing to your credits.
 
 When no word clearly stands out, the caption has no hero and shows as one row. A wrong hero looks worse than none.
+
+Captions break between phrases where they can, and a caption never ends on a small word like "in" or "the" when the sentence goes on: that word starts the next caption instead. This applies to every style, classic ones too, and to subtitle files.
 
 To change it, pause on the caption in Studio and choose another word in the **Captions** panel. You can also join the hero with the next word, turn emphasis off for that caption, or go back to the automatic pick. These choices belong to the clip; applying a style to all clips copies the style, not the choices.
 

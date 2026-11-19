@@ -69,10 +69,11 @@ describe("caption preset catalog", () => {
     });
     const style = CAPTION_DYNAMIC_STYLES.headline;
     expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
-    expect(style.heroFill).toEqual({ widthFraction: 0.8, minEm: 2.2, maxEm: 3.4 });
+    // Ticket 06b: an all-caps hero caps at 3.0 S.
+    expect(style.heroFill).toEqual({ widthFraction: 0.8, minEm: 2.2, maxEm: 3.4, maxEmCaps: 3 });
     expect(style.roles.hero).toMatchObject({ font: "hero", letterSpacing: -0.03, transform: "none", colour: "highlight" });
     expect(style.heroFontName).toBe("Inter");
-    expect(style.rowGapEm).toBe(0.06);
+    expect(style.rowGapEm).toBe(0.04);
     // Strengthened in ticket 05 for white support words on bright frames (black 85%, CSS blur 12 px at S).
     expect(style.softShadow).toEqual([{ offsetYEm: 0.03, blurEm: 0.075, opacity: 0.85 }]);
     // Phase 2: the hero runs from light mint at its top to the hero green at its bottom.
@@ -84,38 +85,45 @@ describe("caption preset catalog", () => {
     const S = (id: string) => preset(id).fontSize;
 
     const editorial = CAPTION_DYNAMIC_STYLES.editorial;
-    expect(preset("editorial")).toMatchObject({ dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 60, primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, animation: "slide", wordsPerCue: 4 });
+    expect(preset("editorial")).toMatchObject({ dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 68, primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, animation: "slide", wordsPerCue: 4 });
     expect(editorial.defaultMotion).toBe("slide");
-    // Minor 44 px sans (ticket 05b: above the 40 px floor after a fit shrink), body 60 px serif, hero 144 px lowercase serif.
-    expect(editorial.roles.minor.sizeEm * S("editorial")).toBeCloseTo(44, 9);
-    expect(editorial.roles.body).toMatchObject({ font: "hero", sizeEm: 1 });
-    expect(editorial.roles.hero).toMatchObject({ font: "hero", sizeEm: 2.4, transform: "lowercase", colour: "highlight" });
+    // Ticket 06b: minor 52 px white sans, body 68 px cream serif, hero 2.2 S (149.6 px) lowercase serif.
+    expect(editorial.roles.minor.sizeEm * S("editorial")).toBeCloseTo(52, 9);
+    expect(editorial.roles.minor.colour).toBe("#FFFFFF");
+    expect(editorial.roles.body).toMatchObject({ font: "hero", sizeEm: 1, colour: "primary" });
+    expect(editorial.roles.hero).toMatchObject({ font: "hero", sizeEm: 2.2, transform: "lowercase", colour: "highlight" });
     expect(editorial.heroFontName).toBe("Instrument Serif");
-    expect(editorial.staggerEm * S("editorial")).toBeCloseTo(8, 9);
+    expect(editorial.staggerEm).toBe(0.6);
     expect(editorial.rowGapEm).toBe(0.1);
 
     const cutout = CAPTION_DYNAMIC_STYLES.cutout;
-    expect(preset("cutout")).toMatchObject({ dynamic: "cutout", fontName: "Bebas Neue", fontSize: 84, textTransform: "uppercase", primaryColor: "#F5923E", animation: "drop", wordsPerCue: 5 });
+    // Ticket 06b: Anton at S = 105, so a 5-word row ("AND I KEEP IT SHORT") spans 81% of the frame.
+    expect(preset("cutout")).toMatchObject({ dynamic: "cutout", fontName: "Anton", fontSize: 105, textTransform: "uppercase", primaryColor: "#F5923E", animation: "drop", wordsPerCue: 5 });
+    expect(cutout.heroFontName).toBe("Anton");
     expect(cutout.layout).toBe("row");
     expect(cutout.emphasis).toBe("never");
     expect(cutout.accentColor).toBe("#F4B6D2");
     expect(cutout.tile).toEqual({
-      fill: { minor: "accent", body: "#16161A", hero: "#16161A" },
+      // Ticket 06b: tile colour by letter count, not by role.
+      fill: "#16161A",
+      short: { maxLetters: 2, fill: "accent", ink: "#16161A" },
       tiltsDeg: [-2, 1.5, -1, 2],
       // Ticket 05b: taller, rounder tiles read closer to reference 05 on the bright frame.
       radiusEm: 0.1, padXEm: 0.16, padYEm: 0.12, gapEm: 0.08, shadowEm: 3 / 84,
     });
-    expect(cutout.roles.minor.colour).toBe("#16161A");
+    expect(cutout.roles.minor.colour).toBe("primary");
 
     const marker = CAPTION_DYNAMIC_STYLES.marker;
-    expect(preset("marker")).toMatchObject({ dynamic: "marker", fontName: "Poppins", fontSize: 48, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFD248", animation: "slide", wordsPerCue: 4 });
+    // Ticket 06b: Inter SemiBold support at 52 px under the 120 px Poppins ExtraBold hero (rule 2).
+    expect(preset("marker")).toMatchObject({ dynamic: "marker", fontName: "Inter SemiBold", fontSize: 52, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFD248", animation: "slide", wordsPerCue: 4 });
     expect(marker.defaultMotion).toBe("slide");
     expect(marker).toMatchObject({ layout: "stack", align: "left", leftGuidePct: 8, rowGapEm: 0.14, heroColours: ["highlight", "accent"], accentColor: "#EF8DB9", heroFontName: "Poppins" });
-    expect(marker.roles.hero.sizeEm * S("marker")).toBe(120);
+    expect(marker.roles.hero.sizeEm * S("marker")).toBeCloseTo(120, 9);
     expect(marker.decorations).toEqual(["underline"]);
 
     const stack = CAPTION_DYNAMIC_STYLES.stack;
-    expect(preset("stack")).toMatchObject({ dynamic: "stack", fontName: "Inter SemiBold", fontSize: 64, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", animation: "slide", wordsPerCue: 4 });
+    // Ticket 06b: support words in Inter Regular, as reference 08's light rows.
+    expect(preset("stack")).toMatchObject({ dynamic: "stack", fontName: "Inter Regular", fontSize: 64, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", animation: "slide", wordsPerCue: 4 });
     expect(stack).toMatchObject({ layout: "stack", align: "center", rowGapEm: 0.04, heroFontName: "Inter" });
     // Ticket 05b: S = 64 and the hero 2.4 S (153.6 px), so support words read at reference 08's share of the hero.
     expect(stack.roles.hero.sizeEm * S("stack")).toBeCloseTo(153.6, 9);
@@ -123,13 +131,17 @@ describe("caption preset catalog", () => {
     expect(stack).toMatchObject({ decorations: ["stars"], accentColor: "#FFFFFF" });
 
     const groove = CAPTION_DYNAMIC_STYLES.groove;
-    // Later catalog addition: DM Serif Display caps at 64 px around a 176 px capitalised Caprasimo hero in pink.
-    expect(preset("groove")).toMatchObject({ dynamic: "groove", fontName: "DM Serif Display", fontSize: 64, textTransform: "uppercase", primaryColor: "#FFFFFF", highlightColor: "#F59ABB", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4 });
+    // Later catalog addition: DM Serif Display caps (80 px since ticket 06b) around a 176 px capitalised Caprasimo hero in pink.
+    expect(preset("groove")).toMatchObject({ dynamic: "groove", fontName: "DM Serif Display", fontSize: 80, textTransform: "uppercase", primaryColor: "#FFFFFF", highlightColor: "#F59ABB", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4 });
     expect(groove).toMatchObject({ layout: "stack", align: "center", heroFontName: "Caprasimo", defaultMotion: "slide" });
     expect(groove.roles.hero).toMatchObject({ font: "hero", transform: "capitalize", colour: "highlight" });
     expect(groove.roles.hero.sizeEm * S("groove")).toBeCloseTo(176, 9);
     expect(groove.rowGapEm * S("groove")).toBeCloseTo(8, 9);
 
+    // Rule 1: the hero is at least 2.2 times the body size (Cutout has no hero).
+    for (const style of [CAPTION_DYNAMIC_STYLES.headline, editorial, marker, stack, groove]) {
+      expect(Math.min(style.roles.hero.sizeEm, style.heroFill?.minEm ?? Infinity) / style.roles.body.sizeEm).toBeGreaterThanOrEqual(2.2 - 1e-9);
+    }
     // Only Editorial shrinks minor words; the others draw them at body size (ticket 02).
     for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout, groove]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
     // Styles without an outline carry a soft shadow on every word (rule 5); Cutout's tiles carry their own.

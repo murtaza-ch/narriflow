@@ -18,7 +18,7 @@ import {
   captionPresetSchema,
   fnv1a32,
 } from "@narriflow/validators";
-import { type CaptionBlockLayoutInput, layoutCaptionBlock, type MeasuredWord, type PlacedWord } from "./caption-block";
+import { type CaptionBlockLayoutInput, captionTextIsAllCaps, layoutCaptionBlock, type MeasuredWord, type PlacedWord } from "./caption-block";
 
 const CANVAS = { width: 1080, height: 1920 };
 const HEADLINE = CAPTION_DYNAMIC_STYLES.headline;
@@ -171,14 +171,30 @@ describe("rule 3, hero fill", () => {
   });
 
   test("the hero size is clamped to [minEm, maxEm] × S, then multiplied by emphasisScale", () => {
-    const short = layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"] });
+    const short = layout({ texts: ["so", "Ok", "then"], roles: ["minor", "hero", "minor"] });
     expect(short.words[1]!.px).toBe(3.4 * S);
-    const scaled = layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"], preset: { emphasisScale: 0.8 } });
+    const scaled = layout({ texts: ["so", "Ok", "then"], roles: ["minor", "hero", "minor"], preset: { emphasisScale: 0.8 } });
     expect(scaled.words[1]!.px).toBeCloseTo(3.4 * S * 0.8, 9);
     const long = layout({ texts: ["it", "abcdefghijklmnop"], roles: ["minor", "hero"] });
     // 8 em at the 2.2 S floor is wider than the fit width, so the fit scale applies on top.
     expect(long.words[1]!.px).toBeCloseTo(2.2 * S * long.scale, 9);
     expect(long.scale).toBeCloseTo((CAPTION_FIT_WIDTH_FRACTION * CANVAS.width) / (8 * 2.2 * S), 9);
+  });
+});
+
+describe("rule 3, all-caps heroes (ticket 06b)", () => {
+  test("a hero whose every cased letter is upper caps at maxEmCaps; digits and mixed case keep maxEm", () => {
+    expect(layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"] }).words[1]!.px).toBe(3 * S);
+    expect(layout({ texts: ["got", "10K", "views"], roles: ["body", "hero", "body"] }).words[1]!.px).toBe(3 * S);
+    expect(layout({ texts: ["so", "50", "then"], roles: ["minor", "hero", "minor"] }).words[1]!.px).toBe(3.4 * S);
+    expect(layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"], preset: { emphasisScale: 1.2 } }).words[1]!.px).toBeCloseTo(3 * S * 1.2, 9);
+    // A 2-word hero counts its words together.
+    expect(layout({ texts: ["the", "BIG", "Deal"], roles: ["minor", "hero", "hero"] }).words[1]!.px).toBeLessThanOrEqual(3.4 * S);
+  });
+
+  test("captionTextIsAllCaps needs a cased letter and no lower-case one", () => {
+    expect(["OK", "NASA's", "10K", "É", "AI!"].map(captionTextIsAllCaps)).toEqual([true, false, true, true, true]);
+    expect(["Ok", "50", "قیمت", "今日", ""].map(captionTextIsAllCaps)).toEqual([false, false, false, false, false]);
   });
 });
 
@@ -624,20 +640,32 @@ describe("decorations (spec 5.10)", () => {
     expect(layout({ ...words, ...timed, style: MARKER, preset: { animation: "rise" } }).decorations).toHaveLength(1);
   });
 
-  test("stars sit at the block's ink corners pushed out 0.3 hero-em, pop 40 ms apart from 60 ms, and mirror by seed", () => {
+  test("the first star overlaps the hero's top corner, the others sit 0.12 hero-em out from the block's corners; pop 40 ms apart from 60 ms; mirror by seed", () => {
     for (const seed of [0, 1]) {
       const result = layout({ texts: ["how", "to", "captions"], roles: ["minor", "minor", "hero"], ...timed, seed, style: STACK });
       const box = inkBox(result);
-      const heroPx = result.words[2]!.px;
+      const hero = result.words[2]!;
+      const heroPx = hero.px;
+      const heroLeft = hero.baselineX;
+      const heroRight = hero.baselineX + advance(hero, result.measured[2]!);
       expect(result.decorations.map((decoration) => decoration.kind)).toEqual(["star", "star", "star"]);
       const lead = seed % 2 === 0 ? 1 : -1;
-      const corners = [[lead, -1], [-lead, -1], [-lead, 1]] as const;
       result.decorations.forEach((star, at) => {
-        const [side, vertical] = corners[at]!;
         const centerX = star.bounds.x + star.bounds.width / 2;
         const centerY = star.bounds.y + star.bounds.height / 2;
-        expect(centerX).toBeCloseTo((side > 0 ? box.right : box.left) + side * T.pushEm * heroPx, 6);
-        expect(centerY).toBeCloseTo((vertical > 0 ? box.bottom : box.top) + vertical * T.pushEm * heroPx, 6);
+        if (at === 0) {
+          // "how to" is narrower than "captions": the star sits on the hero's top edge, pushed out from its side.
+          expect(centerX).toBeCloseTo(lead > 0 ? heroRight + T.pushEm * heroPx : heroLeft - T.pushEm * heroPx, 6);
+          expect(centerY).toBeCloseTo(inkTop(hero, result.measured[2]!), 6);
+          // It overlaps the hero's corner.
+          if (lead > 0) expect(star.bounds.x).toBeLessThan(heroRight);
+          else expect(star.bounds.x + star.bounds.width).toBeGreaterThan(heroLeft);
+        } else {
+          const side = -lead;
+          const vertical = at === 1 ? -1 : 1;
+          expect(centerX).toBeCloseTo((side > 0 ? box.right : box.left) + side * T.pushEm * heroPx, 6);
+          expect(centerY).toBeCloseTo((vertical > 0 ? box.bottom : box.top) + vertical * T.pushEm * heroPx, 6);
+        }
         expect(star.bounds.height).toBeCloseTo(T.sizesEm[at]! * heroPx, 9);
         expect(star.bounds.width).toBeCloseTo(T.sizesEm[at]! * heroPx * CAPTION_SHAPES.star.aspect, 9);
         expect(star.keyframes.map((frame) => frame.at)).toEqual(T.pop.map((frame) => frame.at + T.delayMs + T.staggerMs * at));
@@ -651,6 +679,19 @@ describe("decorations (spec 5.10)", () => {
         expect(star.bounds.y + (1 + grow) * star.bounds.height).toBeLessThanOrEqual(result.bounds.y + result.bounds.height + 1e-6);
       });
       expectInsideSafeArea(result);
+    }
+  });
+
+  test("the first star stays clear of a lead row wider than the hero", () => {
+    for (const seed of [0, 1]) {
+      const result = layout({ texts: ["how", "to", "edit", "these", "now"], roles: ["minor", "minor", "body", "minor", "hero"], ...timed, seed, style: STACK });
+      const star = result.decorations[0]!.bounds;
+      const leadLeft = result.words[0]!.baselineX;
+      const leadRight = result.words[3]!.baselineX + advance(result.words[3]!, result.measured[3]!);
+      const heroRight = result.words[4]!.baselineX + advance(result.words[4]!, result.measured[4]!);
+      expect(leadRight).toBeGreaterThan(heroRight);
+      if (seed % 2 === 0) expect(star.x).toBeCloseTo(leadRight, 6);
+      else expect(star.x + star.width).toBeCloseTo(leadLeft, 6);
     }
   });
 

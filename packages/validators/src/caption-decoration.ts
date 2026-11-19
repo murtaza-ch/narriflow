@@ -42,10 +42,16 @@ export const CAPTION_DECORATION = {
     colour: "#FFFFFF",
   },
   stars: {
-    /** Star heights, in pop order: the first star at the leading top corner, then the other top corner, then the bottom corner under the second. */
-    sizesEm: [0.28, 0.2, 0.2],
-    /** Each star's centre sits this far out from its corner of the block's ink box, on both axes. */
-    pushEm: 0.3,
+    /**
+     * Star heights, in pop order: the first overlaps the hero row's top corner on the leading side,
+     * then the block's other top corner, then the bottom corner under it (reference 08; ticket 06b).
+     */
+    sizesEm: [0.36, 0.26, 0.26],
+    /**
+     * The first star's centre sits on the hero's top edge, this far out from the hero row's side;
+     * the others sit this far out from their corner of the block's ink box, on both axes.
+     */
+    pushEm: 0.12,
     delayMs: 60,
     staggerMs: 40,
     /** Pop from the star's centre: 0 to 1.1 to 1 over 120 ms. */

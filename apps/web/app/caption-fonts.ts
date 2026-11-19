@@ -177,6 +177,21 @@ const captionInter = localFont({
   ],
 });
 
+const captionInterRegular = localFont({
+  src: "../../../packages/caption-fonts/fonts/Inter-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-inter-regular",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.79%" },
+    { prop: "descent-override", value: "32.23%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 const captionInterSemiBold = localFont({
   src: "../../../packages/caption-fonts/fonts/Inter-SemiBold.ttf",
   weight: "600",
@@ -355,6 +370,7 @@ export const captionFontVariables = [
   captionDmSerifDisplay.variable,
   captionInstrumentSerif.variable,
   captionInter.variable,
+  captionInterRegular.variable,
   captionInterSemiBold.variable,
   captionLilitaOne.variable,
   captionLuckiestGuy.variable,

@@ -59,21 +59,35 @@ export function captionSoftBreaks(
  * never closes a cue that is not overflowing. Without it, cues close only on
  * the budget.
  *
+ * `minor` (from `captionWordIsMinor`) keeps a cue from ending on a minor
+ * (closed-class) word when the next token follows in the same sentence: when
+ * a cue closes on the budget, its trailing run of minor tokens moves to the
+ * start of the next cue ("week of content in / one hour" becomes "week of
+ * content / in one hour"). The run stops at a soft break (sentence or clause
+ * punctuation, or a pause of `CAPTION_SOFT_BREAK_GAP_SEC`), so nothing crosses
+ * one, and at least one token stays behind; a cue made only of minor words
+ * keeps them. The cue that takes the carried words may hold one word more
+ * than the budget; past that it closes on the budget as usual. A token list
+ * is one utterance or one dub segment, so nothing moves across those either.
+ *
  * Returns half-open `[start, end)` index ranges covering every token.
  */
 export function groupCaptionTokens(
   texts: readonly string[],
   wordsPerCue: number,
   softBreakAfter?: readonly boolean[],
+  minor?: readonly boolean[],
 ): { start: number; end: number }[] {
   const budget = Math.max(1, Math.floor(wordsPerCue)) * WORD_COST_CHARS;
   const costs = texts.map(captionTokenCost);
   const groups: { start: number; end: number }[] = [];
   let start = 0;
   let used = 0;
+  // Extra room in the open cue for the minor words it took over from the last one.
+  let allowance = 0;
   for (let index = 0; index < texts.length; index += 1) {
     const cost = costs[index]!;
-    while (index > start && used + cost > budget) {
+    while (index > start && used + cost > budget + allowance) {
       let end = index;
       if (softBreakAfter) {
         for (let at = index - 1; at > start; at -= 1) {
@@ -81,6 +95,15 @@ export function groupCaptionTokens(
             end = at + 1;
             break;
           }
+        }
+      }
+      allowance = 0;
+      if (minor) {
+        let cut = end;
+        while (cut > start && minor[cut - 1] && !softBreakAfter?.[cut - 1]) cut -= 1;
+        if (cut > start && cut < end) {
+          end = cut;
+          allowance = WORD_COST_CHARS;
         }
       }
       groups.push({ start, end });

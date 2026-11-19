@@ -47,8 +47,12 @@ export interface CaptionDynamicStyle {
   readonly heroColours: readonly CaptionColourSlot[];
   /** "never": the style draws no hero (tile styles), so the scorer runs with `policy: "never"`. Absent = "auto". */
   readonly emphasis?: "never";
-  /** Scale the hero row to this fraction of the frame width, hero size clamped to `[minEm, maxEm] × S`. */
-  readonly heroFill?: { readonly widthFraction: number; readonly minEm: number; readonly maxEm: number };
+  /**
+   * Scale the hero row to this fraction of the frame width, hero size clamped to `[minEm, maxEm] × S`.
+   * A hero in all caps (every cased letter upper, at least one) clamps at `maxEmCaps` instead: caps
+   * have no x-height, so at the same size they read larger than mixed case.
+   */
+  readonly heroFill?: { readonly widthFraction: number; readonly minEm: number; readonly maxEm: number; readonly maxEmCaps?: number };
   /** Ink-to-ink gap between rows, multiple of S. May be negative. */
   readonly rowGapEm: number;
   /** Sideways shift of lead and tail rows, multiple of S. */
@@ -72,7 +76,13 @@ export interface CaptionDynamicStyle {
    * between neighbouring tiles; it replaces `CAPTION_BLOCK.wordGapEm`.
    */
   readonly tile?: {
-    readonly fill: Readonly<Record<CaptionWordRole, CaptionColourSlot | string>>;
+    /** Tile fill of every word but the short ones; their ink is their role's colour. */
+    readonly fill: CaptionColourSlot | string;
+    /**
+     * Words of at most `maxLetters` letters and digits (`captionTileWordLength`) take this tile
+     * fill and ink instead, whatever their role (Cutout's pink tiles).
+     */
+    readonly short?: { readonly maxLetters: number; readonly fill: CaptionColourSlot | string; readonly ink: CaptionColourSlot | string };
     readonly tiltsDeg: readonly number[];
     readonly radiusEm: number;
     readonly padXEm: number;
@@ -120,7 +130,18 @@ const SMALL_TEXT_SOFT_SHADOW: readonly CaptionSoftShadowLayer[] = [
 ];
 
 /**
- * Groove (S = 64): the small-text layers at 90%. Serif caps have hairline strokes; on the bright
+ * Marker (S = 52, Inter SemiBold since ticket 06b): both layers at 100%, the tight one 0.05 em.
+ * Inter SemiBold's strokes are thinner than the Poppins ExtraBold it replaced; on the bright
+ * fixture frame "in" over the white table read 2.44:1 with the small-text pair, 2.84 with it at
+ * 100%, and 3.05 with this, the weakest tried that reaches 3:1 (ticket 06b).
+ */
+const MARKER_SOFT_SHADOW: readonly CaptionSoftShadowLayer[] = [
+  { offsetYEm: 0.04, blurEm: 0.12, opacity: 1 },
+  { offsetYEm: 0.01, blurEm: 0.05, opacity: 1 },
+];
+
+/**
+ * Groove (S = 64 when chosen; ticket 06b raised it to 80): the small-text layers at 90%. Serif caps have hairline strokes; on the bright
  * fixture frame the catalog's single "4 px soft shadow" (black 85%, sigma 2 px) left "W/" at 2.07:1
  * and the 80% small-text pair at 2.86:1; this is the weakest tried that reaches 3:1 (ticket 06).
  */
@@ -148,8 +169,10 @@ export const CAPTION_DYNAMIC_STYLES = {
     noHeroSizeEm: 1.2,
     heroFontName: "Inter",
     heroColours: ["highlight"],
-    heroFill: { widthFraction: 0.8, minEm: 2.2, maxEm: 3.4 },
-    rowGapEm: 0.06,
+    // Ticket 06b: an all-caps hero caps at 3.0 S, so "AI" or "NASA" does not tower over the rows.
+    heroFill: { widthFraction: 0.8, minEm: 2.2, maxEm: 3.4, maxEmCaps: 3 },
+    // Ticket 06b: 0.06 → 0.04, the rows sit tighter on the hero as in reference 01.
+    rowGapEm: 0.04,
     staggerEm: 0,
     defaultMotion: "slide",
     softShadow: HEADLINE_SOFT_SHADOW,
@@ -157,42 +180,46 @@ export const CAPTION_DYNAMIC_STYLES = {
     gradient: { top: "#A5EBC5", bottom: "#36B780" },
   },
   /**
-   * Reference 06, foreground type only (an adaptation): small sans minor words, serif body
-   * words and a large lowercase serif hero, all cream, with staggered rows. Body words sit on
-   * the hero font slot, so the text slot (`fontName`) is the minor words' sans.
+   * Reference 06, foreground type only (an adaptation): small white sans minor words, cream
+   * serif body words and a large lowercase serif hero, with rows offset left and right. Body
+   * words sit on the hero font slot, so the text slot (`fontName`) is the minor words' sans.
    */
   editorial: {
     name: "Editorial",
     layout: "stack",
     align: "center",
     roles: {
-      // 44 px at S = 60: above the 40 px floor (spec 6 rule 5) once a long hero shrinks the block.
-      minor: textRole(44 / 60),
+      // Ticket 06b: 52 px white at S = 68 (was 44 px cream), closer to reference 06's "with".
+      minor: textRole(52 / 68, "#FFFFFF"),
       body: { font: "hero", sizeEm: 1, transform: "lowercase", letterSpacing: 0, colour: "primary" },
-      hero: { font: "hero", sizeEm: 2.4, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
+      // 2.2 S (149.6 px): the body grew to 68 px, and 144 px would put the hero under rule 1's 2.2 times the body.
+      hero: { font: "hero", sizeEm: 2.2, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
     },
     noHeroSizeEm: 1.4,
     heroFontName: "Instrument Serif",
     heroColours: ["highlight"],
     rowGapEm: 0.1,
-    // 8 px at S = 60.
-    staggerEm: 8 / 60,
+    // Ticket 06b: rows visibly offset (41 px at S = 68), alternating sides by the seed.
+    staggerEm: 0.6,
     // Hero-only blur and short travel (spec 6 rule 6); `blur` stays selectable.
     defaultMotion: "slide",
     softShadow: SMALL_TEXT_SOFT_SHADOW,
   },
-  /** Reference 05: one caps word per tile in two colours, tiles tilted by turns, no hero. */
+  /**
+   * Reference 05: one caps word per tile, tiles tilted by turns, no hero. Words of one or two
+   * letters get pink tiles with dark ink, the rest dark tiles with the text colour.
+   */
   cutout: {
     name: "Cutout",
     layout: "row",
     align: "center",
     roles: {
-      minor: textRole(1, "#16161A"),
+      minor: textRole(1),
       body: textRole(1),
       hero: textRole(1),
     },
     noHeroSizeEm: 1,
-    heroFontName: "Bebas Neue",
+    heroFontName: "Anton",
     heroColours: ["primary"],
     emphasis: "never",
     rowGapEm: 0.06,
@@ -200,7 +227,9 @@ export const CAPTION_DYNAMIC_STYLES = {
     defaultMotion: "drop",
     accentColor: "#F4B6D2",
     tile: {
-      fill: { minor: "accent", body: "#16161A", hero: "#16161A" },
+      fill: "#16161A",
+      // Ticket 06b: by letter count, not by minor role, as in reference 05 ("IT", "SO" pink; "KEEP" dark).
+      short: { maxLetters: 2, fill: "accent", ink: "#16161A" },
       tiltsDeg: [-2, 1.5, -1, 2],
       // Ticket 05b: pad 0.16 x 0.12 em and radius 0.1 em read closer to reference 05 than 0.12 x 0.08 and 0.05.
       radiusEm: 0.1,
@@ -211,7 +240,11 @@ export const CAPTION_DYNAMIC_STYLES = {
       shadowEm: 3 / 84,
     },
   },
-  /** References 04 and 07 (partial: one hero, not two): a left-aligned lowercase stack beside the speaker. */
+  /**
+   * References 04 and 07 (partial: one hero, not two): a left-aligned lowercase stack beside the
+   * speaker. Support words are the text slot (`fontName` Inter SemiBold, "heavy sans hero with
+   * medium sans support"); the hero is Poppins ExtraBold.
+   */
   marker: {
     name: "Marker",
     layout: "stack",
@@ -219,7 +252,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     roles: {
       minor: textRole(1),
       body: textRole(1),
-      hero: { font: "hero", sizeEm: 2.5, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
+      // 120 px at S = 52 (2.31 S).
+      hero: { font: "hero", sizeEm: 120 / 52, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
     },
     noHeroSizeEm: 1.5,
     heroFontName: "Poppins",
@@ -231,11 +265,14 @@ export const CAPTION_DYNAMIC_STYLES = {
     // Travel of 0.18 em or less (spec 6 rule 6); `rise` (0.32 em) stays selectable.
     defaultMotion: "slide",
     accentColor: "#EF8DB9",
-    softShadow: SMALL_TEXT_SOFT_SHADOW,
+    softShadow: MARKER_SOFT_SHADOW,
     // Reference 04's squiggle under the hero.
     decorations: ["underline"],
   },
-  /** Reference 08: small lowercase rows around a huge lowercase hero, all white. */
+  /**
+   * Reference 08: light lowercase rows (`fontName` Inter Regular) around a huge lowercase Inter
+   * ExtraBold hero, all white.
+   */
   stack: {
     name: "Stack",
     layout: "stack",
@@ -269,14 +306,14 @@ export const CAPTION_DYNAMIC_STYLES = {
     roles: {
       minor: textRole(1),
       body: textRole(1),
-      // 176 px at S = 64.
-      hero: { font: "hero", sizeEm: 176 / 64, transform: "capitalize", letterSpacing: 0, colour: "highlight" },
+      // 176 px at S = 80 (2.2 S). Ticket 06b raised the support caps from 64 px toward reference 03's proportion.
+      hero: { font: "hero", sizeEm: 176 / 80, transform: "capitalize", letterSpacing: 0, colour: "highlight" },
     },
     noHeroSizeEm: 1.5,
     heroFontName: "Caprasimo",
     heroColours: ["highlight"],
-    // 8 px at S = 64.
-    rowGapEm: 8 / 64,
+    // 8 px at S = 80.
+    rowGapEm: 8 / 80,
     staggerEm: 0,
     defaultMotion: "slide",
     softShadow: GROOVE_SOFT_SHADOW,
@@ -414,29 +451,41 @@ function slotColour(slot: CaptionColourSlot | string, preset: CaptionPreset, sty
 }
 
 /**
- * How a word of `role` is drawn in a cue with `seed`. Text-slot roles take
- * `textTransform` and `letterSpacing` from the preset when the style says
- * "inherit"; hero-slot roles take both from the style (spec 5.2).
+ * How a word of `role` with display `text` is drawn in a cue with `seed`.
+ * Text-slot roles take `textTransform` and `letterSpacing` from the preset
+ * when the style says "inherit"; hero-slot roles take both from the style
+ * (spec 5.2). A tile style's short words take its `short` fill and ink.
  */
 export function captionRoleLook(
   preset: CaptionPreset,
   style: CaptionDynamicStyle,
   role: CaptionWordRole,
   seed: number,
+  text: string,
 ): CaptionRoleLook {
   const type = style.roles[role];
   const hero = type.font === "hero";
   const colourSlot = role === "hero" && style.heroColours.length > 0
     ? style.heroColours[seed % style.heroColours.length]!
     : type.colour;
+  const short = style.tile?.short && captionTileWordLength(text) <= style.tile.short.maxLetters ? style.tile.short : null;
   return {
     font: type.font,
     fontName: hero ? preset.heroFontName ?? style.heroFontName : preset.fontName,
     transform: type.transform === "inherit" ? preset.textTransform : type.transform,
     letterSpacing: type.letterSpacing === "inherit" ? preset.letterSpacing : type.letterSpacing,
-    color: slotColour(colourSlot, preset, style),
-    tileColor: style.tile ? slotColour(style.tile.fill[role], preset, style) : null,
+    color: slotColour(short ? short.ink : colourSlot, preset, style),
+    tileColor: style.tile ? slotColour(short ? short.fill : style.tile.fill, preset, style) : null,
   };
+}
+
+const TILE_LETTER_RE = /[\p{L}\p{N}]/u;
+
+/** Letters and digits in a word, combining marks excluded: what a tile style's `short` rule counts. */
+export function captionTileWordLength(text: string): number {
+  let count = 0;
+  for (const char of text) if (TILE_LETTER_RE.test(char)) count += 1;
+  return count;
 }
 
 /** False for a style that never draws a hero (`emphasis: "never"`, Cutout): hero colour, font, size and emphasis act on nothing. */
@@ -449,7 +498,7 @@ export function captionStyleUsesAccent(style: CaptionDynamicStyle): boolean {
   const slots: readonly (CaptionColourSlot | string)[] = [
     ...Object.values(style.roles).map((role) => role.colour),
     ...style.heroColours,
-    ...(style.tile ? Object.values(style.tile.fill) : []),
+    ...(style.tile ? [style.tile.fill, ...(style.tile.short ? [style.tile.short.fill, style.tile.short.ink] : [])] : []),
     ...(style.decorations ?? []).map((kind) => captionDecorationSlot(kind)),
   ];
   return slots.includes("accent");

@@ -83,7 +83,7 @@ export function measureCaptionBlock(input: {
   const style = captionDynamicStyle(block.style);
   const direction = captionBlockDirection(block.texts, cue.language);
   const words = block.texts.map((text, index): CaptionBlockWord => {
-    const look = captionRoleLook(preset, style, block.roles[index]!, block.seed);
+    const look = captionRoleLook(preset, style, block.roles[index]!, block.seed, text);
     const slot = slots[look.font];
     const planned = slot.glyphs.plan(text);
     // An RTL word's events start with U+200F, so libass orders neutral characters as the Studio

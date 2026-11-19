@@ -79,7 +79,8 @@ describe("captionBlockTransform", () => {
 
   test("drop turns the word about its centre while it falls", () => {
     const drop = captionEntranceKeyframes(CAPTION_MOTIONS.drop, false);
-    const pose = captionBlockWordPose(drop, 60, 1);
+    // Halfway through the 90 ms fall (ticket 06b).
+    const pose = captionBlockWordPose(drop, 45, 1);
     expect(pose.rotateZDeg).toBeCloseTo(-2, 9);
     expect(pose.offsetYEm).toBeCloseTo(-0.1, 9);
     expect(captionBlockTransform(pose, { rotationDeg: 1.5, motionSign: 1, emPx: 100 }, 20000)).toBe(

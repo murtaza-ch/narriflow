@@ -295,7 +295,7 @@ function buildPaint(
   const pending: (() => Promise<unknown>)[] = [];
   for (const [index, role] of block.roles.entries()) {
     const text = block.texts[index]!;
-    const look = captionRoleLook(preset, style, role, block.seed);
+    const look = captionRoleLook(preset, style, role, block.seed, text);
     const face = wordFace(look.font, look.fontName, customFont, language);
     if (!face) return null;
     const ready = facesLoaded(text, face, language);

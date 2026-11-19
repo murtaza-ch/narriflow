@@ -246,23 +246,23 @@ export const CAPTION_PRESETS = [
     primaryColor: "#FFFFFF", highlightColor: "#36B780", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
   namedPreset("editorial", "Editorial", "Dynamic", {
-    dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 60, textTransform: "lowercase", letterSpacing: 0,
+    dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 68, textTransform: "lowercase", letterSpacing: 0,
     primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
   namedPreset("cutout", "Cutout", "Dynamic", {
-    dynamic: "cutout", fontName: "Bebas Neue", fontSize: 84, textTransform: "uppercase", letterSpacing: 0,
+    dynamic: "cutout", fontName: "Anton", fontSize: 105, textTransform: "uppercase", letterSpacing: 0,
     primaryColor: "#F5923E", highlightColor: "#F5923E", outlineWidth: 0, shadow: "none", animation: "drop", wordsPerCue: 5,
   }),
   namedPreset("marker", "Marker", "Dynamic", {
-    dynamic: "marker", fontName: "Poppins", fontSize: 48, textTransform: "lowercase", letterSpacing: 0,
+    dynamic: "marker", fontName: "Inter SemiBold", fontSize: 52, textTransform: "lowercase", letterSpacing: 0,
     primaryColor: "#FFFFFF", highlightColor: "#FFD248", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
   namedPreset("stack", "Stack", "Dynamic", {
-    dynamic: "stack", fontName: "Inter SemiBold", fontSize: 64, textTransform: "lowercase", letterSpacing: 0,
+    dynamic: "stack", fontName: "Inter Regular", fontSize: 64, textTransform: "lowercase", letterSpacing: 0,
     primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
   namedPreset("groove", "Groove", "Dynamic", {
-    dynamic: "groove", fontName: "DM Serif Display", fontSize: 64, textTransform: "uppercase", letterSpacing: 0,
+    dynamic: "groove", fontName: "DM Serif Display", fontSize: 80, textTransform: "uppercase", letterSpacing: 0,
     primaryColor: "#FFFFFF", highlightColor: "#F59ABB", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
   // Bold
