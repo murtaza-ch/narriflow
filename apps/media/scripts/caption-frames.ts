@@ -17,7 +17,8 @@
  * +200 ms, settled, and cue end - 1 frame, on the 30 fps grid
  * (`<background>-<moment>.jpg`), plus `frames.json` with the exact times so the
  * Studio frames can be taken at the same moments. Onset is the cue's first
- * spoken word; settled is the first frame after every entrance has finished.
+ * spoken word; settled is the first frame after every entrance (decorations
+ * included) has finished.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -116,6 +117,8 @@ function settledSec(cue: CompositionCaptionVisualLayer): number {
       const entranceMs = captionEntranceMs(captionEntranceKeyframes(motion, cue.block!.roles[index] === "hero"));
       return word.startSec + (layout.words[index]!.entranceTimeScale * entranceMs) / 1000;
     }),
+    // Decorations finish after the hero: the underline's wipe, the last star's pop.
+    ...layout.decorations.map((decoration) => decoration.startSec + Math.max(captionEntranceMs(decoration.keyframes), decoration.wipe?.endMs ?? 0) / 1000),
   );
 }
 

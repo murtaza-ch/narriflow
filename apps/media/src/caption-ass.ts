@@ -24,6 +24,7 @@ import {
 	type SkippedEmoji,
 } from "./caption-glyphs";
 import { captionWordSegmentEnd, type CompositionCaptionBlock, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import type { PlacedDecoration, PlacedGradient } from "@narriflow/caption-fonts/caption-block";
 import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock } from "./caption-block-geometry";
 import {
 	CAPTION_CUE_TILTS_DEG,
@@ -36,6 +37,7 @@ import {
 	CAPTION_MOTIONS,
 	CAPTION_PILL,
 	CAPTION_PLATE,
+	CAPTION_SHAPES,
 	CAPTION_SOFT_SHADOW,
 	type CaptionFontFace,
 	type CaptionKeyframe,
@@ -47,6 +49,7 @@ import {
 	captionEntranceKeyframes,
 	captionFontFace,
 	captionKeyframeValue,
+	captionShapeAssDrawing,
 	captionTravelWindow,
 	captionTypewriterLetterDelays,
 	hasSpaceBefore,
@@ -96,6 +99,9 @@ import {
  * (caption-block-geometry.ts), the shared `layoutCaptionBlock` places it, and
  * the word gets one event per paint layer from its first spoken time to the
  * cue's end, at its own `\pos` with `\org` at its centre, carrying its entrance.
+ * A gradient hero (spec 5.10) splits its text layer into horizontal `\clip`
+ * bands (`captionGradientBands`), and decorations (underline, stars) are `\p1`
+ * drawings of the shared shapes on their own two layers.
  *
  * Kerning: every script sets `Kerning: yes`, because libass does not kern by
  * default while HarfBuzz (which measures) and the browser do. A letter-spaced
@@ -130,6 +136,9 @@ const LAYER = {
 	emoji: 12,
 	/** The clipped highlight of a right-to-left karaoke word, above the base line. */
 	sweep: 13,
+	/** Caption Block decorations (underline, stars), their shadows below them. */
+	decorationShadow: 14,
+	decoration: 15,
 } as const;
 
 /** Room left below fallback-face ink that hangs under the baseline. */
@@ -289,7 +298,7 @@ function cueEvents(
 		}
 		return events;
 	}
-	return blockCueEvents(block, geometry);
+	return blockCueEvents(block, geometry, canvas);
 }
 
 /** The text and hero font slots of a block cue. The text slot takes the uploaded font like a classic line. */
@@ -340,6 +349,7 @@ export function captionBlockGeometry(input: {
 function blockCueEvents(
 	cue: CompositionCaptionVisualLayer & { readonly block: CompositionCaptionBlock },
 	geometry: CaptionBlockGeometry,
+	canvas: { width: number; height: number },
 ): AssEvent[] {
 	const { block, preset } = cue;
 	const style = captionDynamicStyle(block.style);
@@ -358,6 +368,7 @@ function blockCueEvents(
 		const scale = placed.entranceTimeScale;
 		const keyframes = scale === 0 ? [] : entrance.map((frame) => ({ ...frame, at: Math.round(frame.at * scale) }));
 		const pose = { motionSign: placed.motionSign, rotationDeg: placed.rotationDeg };
+		const gradient = block.roles[index] === "hero" ? geometry.layout.gradient : null;
 		if (placed.tile && word.look.tileColor) {
 			const tile = placed.tile;
 			// The tile enters with its word: the same travel, turn about the word's centre (\org) and fade.
@@ -395,10 +406,25 @@ function blockCueEvents(
 				pose,
 				letterSpacingEm: word.look.letterSpacing,
 				...(style.softShadow ? { softShadow: style.softShadow } : {}),
+				...(gradient
+					? {
+						// The bands cover the word at rest, its entrance travel and the blur's spill (spec 5.10).
+						textBands: captionGradientBands({
+							top: placed.baselineY - word.measured.inkTopEm * placed.px - heroBandReach(entrance, placed.px, "up"),
+							bottom: placed.baselineY + word.measured.inkBottomEm * placed.px + heroBandReach(entrance, placed.px, "down"),
+							left: 0,
+							right: canvas.width,
+							gradient,
+						}),
+					}
+					: {}),
 				layers: { shadow: LAYER.shadow, outer: LAYER.outer, glow: LAYER.glow, text: LAYER.text },
 			}),
 		);
 	});
+	for (const decoration of geometry.layout.decorations) {
+		if (cueEnd > decoration.startSec) events.push(...decorationEvents(decoration, preset, style.softShadow ?? [CAPTION_SOFT_SHADOW], cueEnd));
+	}
 	const all = [...tileShadows, ...tiles, ...events];
 	return motion.flicker ? applyFlicker(all, cue.activeRange.startSec, motion.flicker) : all;
 }
@@ -802,6 +828,8 @@ function stackEvents(input: {
 	softShadow?: readonly { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number }[];
 	/** Only the fill layer: the shadows, outer stroke and glow are already drawn by another event. */
 	textOnly?: boolean;
+	/** Draw the fill layer as these clipped bands, each in its own colour (a gradient hero); the other layers stay whole. */
+	textBands?: readonly CaptionGradientBand[];
 }): AssEvent[] {
 	const { preset, px } = input;
 	const letterSpacing = input.letterSpacingEm ?? preset.letterSpacing;
@@ -818,6 +846,7 @@ function stackEvents(input: {
 		extraBlurPx: number,
 		bord: number,
 		paint: (span: Span) => { fill: string; outline: string; opacity: number } | null,
+		clip = "",
 	) => {
 		const body = input.spans
 			.map((span, index) => (index > 0 ? (input.separators?.[index] ?? "") : "") + spanText(span, paint(span), preset.primaryColor, input.glyphs, px, letterSpacing))
@@ -831,7 +860,7 @@ function stackEvents(input: {
 			text:
 				`{\\an5\\fn${input.face.assName}${position}${input.common}\\fs${num(assFontSize(input.face, px))}` +
 				`\\fsp${num(letterSpacing * px)}\\bord${num(bord)}\\shad0` +
-				`${motion.tags(extraBlurPx)}}${body}`,
+				`${motion.tags(extraBlurPx)}${clip}}${body}`,
 		});
 	};
 
@@ -876,12 +905,121 @@ function stackEvents(input: {
 			);
 		}
 	}
+	if (input.textBands) {
+		for (const band of input.textBands) {
+			push(input.layers.text, { x: 0, y: 0 }, 0, stroke, (span) =>
+				span.visibility > 0 ? { fill: band.color, outline: preset.outlineColor, opacity: span.visibility } : null,
+				`\\clip(${band.left},${band.top},${band.right},${band.bottom})`,
+			);
+		}
+		return events;
+	}
 	push(input.layers.text, { x: 0, y: 0 }, 0, stroke, (span) =>
 		span.visibility > 0
 			? { fill: span.fill, outline: preset.outlineColor, opacity: span.visibility }
 			: null,
 	);
 	return events;
+}
+
+/** One horizontal band of a gradient hero's fill: a whole-pixel `\clip` rectangle and its colour. */
+export interface CaptionGradientBand {
+	readonly left: number;
+	readonly top: number;
+	readonly right: number;
+	readonly bottom: number;
+	readonly color: string;
+}
+
+/**
+ * Gradient bands (spec 5.10). Bands are at most 8 px tall and their edges fall on even rows: the
+ * ass filter blends into 4:2:0 frames, and an edge on an odd row makes two bands each half-cover one
+ * chroma sample, which shows the background's chroma as a grey seam (ticket 02). A word gets at
+ * most 48 bands, so a cue stays inside the 120-event budget: when 8 px bands would need more, the
+ * bands grow to the smallest even height that covers the span with 48 (heroes past the catalog's
+ * sizes). Each band takes the gradient's colour at its middle row, held flat beyond the gradient box.
+ */
+export const CAPTION_GRADIENT_BANDS = { maxHeightPx: 8, maxPerWord: 48 } as const;
+
+export function captionGradientBands(input: {
+	readonly top: number;
+	readonly bottom: number;
+	readonly left: number;
+	readonly right: number;
+	readonly gradient: PlacedGradient;
+}): CaptionGradientBand[] {
+	const { gradient } = input;
+	const top = 2 * Math.floor(input.top / 2);
+	const span = Math.max(input.bottom - top, 1);
+	const { maxHeightPx, maxPerWord } = CAPTION_GRADIENT_BANDS;
+	const height = Math.ceil(span / maxHeightPx) <= maxPerWord ? maxHeightPx : 2 * Math.ceil(span / (2 * maxPerWord));
+	const count = Math.ceil(span / height);
+	const left = Math.floor(input.left);
+	const right = Math.ceil(input.right);
+	return Array.from({ length: count }, (_, band) => {
+		const y0 = top + band * height;
+		const y1 = y0 + height;
+		const t = gradient.bottom > gradient.top ? ((y0 + y1) / 2 - gradient.top) / (gradient.bottom - gradient.top) : 0;
+		return { left, top: y0, right, bottom: y1, color: mixHex(gradient.topColor, gradient.bottomColor, Math.min(1, Math.max(0, t))) };
+	});
+}
+
+/** How far a gradient hero's ink reaches past its rest box during its entrance: its travel that way plus two sigmas of its blur. */
+function heroBandReach(keyframes: readonly CaptionKeyframe[], px: number, side: "up" | "down"): number {
+	const offsets = keyframes.flatMap((frame) => (frame.offsetYEm === undefined ? [] : [frame.offsetYEm]));
+	const travel = side === "up" ? Math.max(0, ...offsets.map((offset) => -offset)) : Math.max(0, ...offsets);
+	const blur = Math.max(0, ...keyframes.flatMap((frame) => (frame.blurEm === undefined ? [] : [frame.blurEm])));
+	return (travel + 2 * blur) * px;
+}
+
+/** sRGB interpolation between two #RRGGBB colours, as CSS interpolates a linear-gradient. */
+function mixHex(from: string, to: string, t: number): string {
+	const channel = (hex: string, at: number) => Number.parseInt(hex.slice(1 + 2 * at, 3 + 2 * at), 16);
+	return `#${[0, 1, 2].map((at) => Math.round(channel(from, at) + (channel(to, at) - channel(from, at)) * t).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+/**
+ * A decoration's events (spec 5.10): the shared shape as an `\an5` `\p1` drawing filling its box,
+ * from the hero's onset to the cue's end; one shadow event per soft shadow layer (or the hard
+ * shadow) below it, in em of the support size. A star pops through `\fscx`/`\fscy` about its
+ * centre; the underline is wiped by a rectangular `\clip` growing across it (`\t`), shadows too.
+ */
+function decorationEvents(
+	decoration: PlacedDecoration,
+	preset: CaptionPreset,
+	softShadow: readonly { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number }[],
+	cueEnd: number,
+): AssEvent[] {
+	const { bounds, startSec } = decoration;
+	const drawing = captionShapeAssDrawing(CAPTION_SHAPES[decoration.shape], bounds.width, bounds.height);
+	const centerX = bounds.x + bounds.width / 2;
+	const centerY = bounds.y + bounds.height / 2;
+	const motion = motionTags(decoration.keyframes, Math.round((cueEnd - startSec) * 1000), 1);
+	let clip = "";
+	if (decoration.wipe) {
+		const { clip: rect, direction, startMs, endMs } = decoration.wipe;
+		const right = rect.x + rect.width;
+		const bottom = rect.y + rect.height;
+		const edge = direction === "rtl" ? right : rect.x;
+		clip = `\\clip(${edge},${rect.y},${edge},${bottom})\\t(${startMs},${endMs},\\clip(${rect.x},${rect.y},${right},${bottom}))`;
+	}
+	const event = (layer: number, dx: number, dy: number, color: string, opacity: number, blurPx: number): AssEvent => ({
+		layer,
+		startSec,
+		endSec: cueEnd,
+		style: "Shape",
+		text:
+			`{\\an5\\pos(${num(centerX + dx)},${num(centerY + dy)})\\bord0\\shad0\\1c${assColor(color)}\\1a${assAlpha(opacity)}` +
+			`${motion.tags(blurPx)}${clip}\\p1}${drawing}{\\p0}`,
+	});
+	const em = decoration.shadowEmPx;
+	const shadows =
+		preset.shadow === "soft"
+			? softShadow.map((layer) => event(LAYER.decorationShadow, 0, layer.offsetYEm * em, preset.shadowColor, layer.opacity, layer.blurEm * em))
+			: preset.shadow === "none"
+				? []
+				: [event(LAYER.decorationShadow, CAPTION_HARD_SHADOW.offsetXEm * em, CAPTION_HARD_SHADOW.offsetYEm * em, preset.shadowColor, 1, 0)];
+	return [...shadows, event(LAYER.decoration, 0, 0, decoration.color, 1, 0)];
 }
 
 /** One span's override block and text. Hidden spans keep their width (alpha only). */

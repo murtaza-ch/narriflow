@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { CAPTION_MOTIONS, captionEaseProgress, captionEntranceKeyframes, captionEntranceTimeScale } from "@narriflow/validators";
-import { captionBlockTransform, captionBlockWordPose } from "./caption-block-pose";
+import { CAPTION_DECORATION, CAPTION_MOTIONS, captionEaseProgress, captionEntranceKeyframes, captionEntranceTimeScale } from "@narriflow/validators";
+import { captionBlockTransform, captionBlockWordPose, captionDecorationPose, captionWipeClipPath } from "./caption-block-pose";
 
 const slide = CAPTION_MOTIONS.slide;
 const word = captionEntranceKeyframes(slide, false);
@@ -142,5 +142,45 @@ describe("scale pivot (05b finding 3)", () => {
     // Scaling about the ink centre instead would put the word's top edge elsewhere.
     const naive = applyTransform(captionBlockTransform(pose, word, 20000), { x: 0, y: -60 });
     expect(Math.abs(naive.y - applyTransform(transform, { x: 0, y: -60 }).y)).toBeGreaterThan(1);
+  });
+});
+
+describe("captionDecorationPose (spec 5.10)", () => {
+  const T = CAPTION_DECORATION.stars;
+  const U = CAPTION_DECORATION.underline;
+  const star = (at: number) => ({ keyframes: T.pop.map((frame) => ({ ...frame, at: frame.at + T.delayMs + T.staggerMs * at })), wipe: null });
+  const underline = { keyframes: [], wipe: { startMs: U.delayMs, endMs: U.delayMs + U.wipeMs, direction: "ltr" as const, clip: { x: 80, y: 1400, width: 320, height: 60 } } };
+
+  test("a star is hidden until its pop, overshoots to 1.1 and settles at 1, 40 ms after the one before", () => {
+    expect(captionDecorationPose(star(0), 0, false).scale).toBe(0);
+    expect(captionDecorationPose(star(0), 60, false).scale).toBe(0);
+    // Half way through the out-eased rise: the libass power curve (accel 0.5).
+    expect(captionDecorationPose(star(0), 100, false).scale).toBeCloseTo(1.1 * captionEaseProgress("out", 0.5), 9);
+    expect(captionDecorationPose(star(0), 140, false).scale).toBeCloseTo(1.1, 9);
+    expect(captionDecorationPose(star(0), 180, false).scale).toBe(1);
+    expect(captionDecorationPose(star(1), 100, false).scale).toBe(0);
+    expect(captionDecorationPose(star(1), 140, false).scale).toBeCloseTo(1.1 * captionEaseProgress("out", 0.5), 9);
+    expect(captionDecorationPose(star(2), 2000, false)).toEqual({ scale: 1, reveal: 1 });
+  });
+
+  test("the underline's wipe runs linearly from 60 to 180 ms after the hero's onset", () => {
+    expect(captionDecorationPose(underline, 0, false)).toEqual({ scale: 1, reveal: 0 });
+    expect(captionDecorationPose(underline, 60, false).reveal).toBe(0);
+    expect(captionDecorationPose(underline, 120, false).reveal).toBeCloseTo(0.5, 9);
+    expect(captionDecorationPose(underline, 180, false).reveal).toBe(1);
+    expect(captionDecorationPose(underline, 900, false).reveal).toBe(1);
+  });
+
+  test("reduced motion shows decorations settled; a pose is a pure function of time", () => {
+    expect(captionDecorationPose(star(0), 0, true)).toEqual({ scale: 1, reveal: 1 });
+    expect(captionDecorationPose(underline, 0, true)).toEqual({ scale: 1, reveal: 1 });
+    expect(captionDecorationPose(star(1), 130, false)).toEqual(captionDecorationPose(star(1), 130, false));
+  });
+
+  test("the wipe clip insets what the leading edge has not reached, from the reading side", () => {
+    expect(captionWipeClipPath("ltr", 320, 0)).toBe("inset(0px 320px 0px 0px)");
+    expect(captionWipeClipPath("ltr", 320, 0.25)).toBe("inset(0px 240px 0px 0px)");
+    expect(captionWipeClipPath("rtl", 320, 0.25)).toBe("inset(0px 0px 0px 240px)");
+    expect(captionWipeClipPath("ltr", 320, 1)).toBe("inset(0px 0px 0px 0px)");
   });
 });

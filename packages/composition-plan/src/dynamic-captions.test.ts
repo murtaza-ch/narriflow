@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyCaptionTextTransform,
   assignCaptionRoles,
   CAPTION_DYNAMIC_STYLES,
   captionBlockSeed,
@@ -113,7 +114,8 @@ describe("dynamic caption fixtures (spec section 9)", () => {
     expect(block.rows).toEqual(entry.expected.rows.map((row) => [...row]));
     expect(block.keys).toEqual(entry.words.map((word) => word.key));
     expect(block.seed).toBe(captionBlockSeed(entry.words[0]!.key, 0));
-    expect(layer!.words.map((word) => word.text)).toEqual(entry.words.map((word) => word.word));
+    // Subtitle text keeps the preset's case (Groove's caps), never the roles'.
+    expect(layer!.words.map((word) => word.text)).toEqual(entry.words.map((word) => applyCaptionTextTransform(word.word, preset.textTransform, entry.language)));
     expect(layer!.words.every((word) => word.emoji === null)).toBe(true);
   });
 });
@@ -121,7 +123,7 @@ describe("dynamic caption fixtures (spec section 9)", () => {
 describe("phase 1 catalog in the plan", () => {
   test("every style has a fixture case, and Cutout has a long-word fit case", () => {
     const styles = new Set(CASES.map((entry) => entry.style));
-    for (const style of ["headline", "editorial", "cutout", "marker", "stack"]) expect(styles).toContain(style);
+    for (const style of ["headline", "editorial", "cutout", "marker", "stack", "groove"]) expect(styles).toContain(style);
     expect(CASES.map((entry) => entry.id)).toContain("cutout-long-word-fit");
   });
 

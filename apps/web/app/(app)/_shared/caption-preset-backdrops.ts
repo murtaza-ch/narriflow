@@ -32,6 +32,8 @@ const BACKDROP_BY_PRESET: Record<CatalogPresetId, CaptionBackdrop> = {
   // Reference 04 is a bright room; the shadow keeps white words readable on it.
   marker: "bright-room",
   stack: "dark-studio",
+  // Reference 03 is warm daylight; the pink hero and cream-white caps sit well on it.
+  groove: "warm-podcast",
   "bold-pop": "dark-studio",
   blast: "brick-street",
   punch: "green-studio",

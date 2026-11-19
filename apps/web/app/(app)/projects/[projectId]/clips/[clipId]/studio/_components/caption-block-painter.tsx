@@ -7,7 +7,9 @@
  * `measureText` at 100 px once its faces have loaded, placed by the shared
  * `layoutCaptionBlock`, and drawn as absolutely positioned elements, one per
  * paint layer (shadow, outer stroke, glow, text), the same layers the worker
- * writes as ASS events. Nothing here lays text out across words.
+ * writes as ASS events. Nothing here lays text out across words. A gradient
+ * hero fills with `background-clip: text` over the hero's rest ink box (the
+ * worker's bands), and decorations are SVG paths of the shared shapes.
  *
  * Poses come from the playhead. Every tick of the time source computes each
  * word's entrance pose from `timeSec - word.startSec` and writes transform,
@@ -20,7 +22,16 @@
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
-import { captionBlockDirection, captionWordDirection, layoutCaptionBlock, type CaptionBlockLayout, type MeasuredWord, type PlacedWord } from "@narriflow/caption-fonts/caption-block";
+import {
+  captionBlockDirection,
+  captionWordDirection,
+  layoutCaptionBlock,
+  type CaptionBlockLayout,
+  type MeasuredWord,
+  type PlacedDecoration,
+  type PlacedGradient,
+  type PlacedWord,
+} from "@narriflow/caption-fonts/caption-block";
 import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
 import type { CompositionCaptionBlock } from "@narriflow/composition-plan";
 import {
@@ -28,12 +39,14 @@ import {
   CAPTION_GLOW_SIGMAS,
   CAPTION_HARD_SHADOW,
   CAPTION_MOTIONS,
+  CAPTION_SHAPES,
   CAPTION_SOFT_SHADOW,
   captionBlockAnimation,
   captionDynamicStyle,
   captionEntranceKeyframes,
   captionFontFace,
   captionRoleLook,
+  captionShapeSvgPath,
   type CaptionFontName,
   type CaptionKeyframe,
   type CaptionPreset,
@@ -47,7 +60,7 @@ import {
   hasUnspacedScript,
   type CaptionOwnScript,
 } from "@/app/caption-script-fonts";
-import { captionBlockTransform, captionBlockWordPose } from "./caption-block-pose";
+import { captionBlockTransform, captionBlockWordPose, captionDecorationPose, captionWipeClipPath } from "./caption-block-pose";
 import { ASS_CAMERA_DISTANCE_PX, captionFontStyle, captionFontVariable, CaptionText } from "./caption-style-engine";
 
 // ─── Time sources ────────────────────────────────────────────────────────────
@@ -249,6 +262,8 @@ export interface CaptionBlockPaintWord {
   readonly measured: MeasuredWord;
   readonly startSec: number;
   readonly keyframes: readonly CaptionKeyframe[];
+  /** A hero word: it takes the block's gradient when there is one. */
+  readonly hero: boolean;
 }
 
 export interface CaptionBlockPaint {
@@ -316,6 +331,7 @@ function buildPaint(
     measured: measured[index]!,
     startSec: cue.words[index]!.startSec,
     keyframes: captionEntranceKeyframes(motion, block.roles[index] === "hero"),
+    hero: block.roles[index] === "hero",
   }));
   return { status: "ready", paint: { cue, layout, words, language, direction: cueDir } };
 }
@@ -422,6 +438,7 @@ function WordLayer({
   origin,
   children,
   style,
+  gradient,
 }: {
   word: CaptionBlockPaintWord;
   index: number;
@@ -429,15 +446,31 @@ function WordLayer({
   origin: { readonly x: number; readonly y: number };
   children: ReactNode;
   style?: CSSProperties;
+  /** Fill the glyphs with this gradient (`background-clip: text`) instead of a colour. */
+  gradient?: PlacedGradient | null;
 }) {
   const { placed, face } = word;
   // The box's line height is the face's own line box (its ascent and descent overrides), so the
   // baseline sits about `ascent` em below the top whatever fallback face draws part of the word;
   // the probe gives the browser's exact offset at this size.
   const fontPx = placed.px * scale;
-  const left = (placed.baselineX - origin.x) * scale;
+  // A gradient fill only paints inside the box: padding keeps ink that overhangs the advance box
+  // (negative tracking pulls the last glyph past it) inside, and the box moves out by as much, so
+  // the glyphs stay where they were.
+  const pad = gradient ? GRADIENT_PAD_EM * fontPx : 0;
+  const left = (placed.baselineX - origin.x) * scale - pad;
   // Until the probe has run (the layout effect below, before the first paint) the ascent stands in.
-  const top = (placed.baselineY - origin.y) * scale - (baselineOffsetPx(face, fontPx) ?? face.ascent * fontPx);
+  const top = (placed.baselineY - origin.y) * scale - (baselineOffsetPx(face, fontPx) ?? face.ascent * fontPx) - pad;
+  // Stops at the hero's rest ink box (canvas px) in this box's coordinates; CSS holds the end colours beyond them.
+  const fill: CSSProperties = gradient
+    ? {
+      padding: `${pad}px`,
+      color: "transparent",
+      backgroundImage: `linear-gradient(to bottom, ${gradient.topColor} ${(gradient.top - origin.y) * scale - top}px, ${gradient.bottomColor} ${(gradient.bottom - origin.y) * scale - top}px)`,
+      backgroundClip: "text",
+      WebkitBackgroundClip: "text",
+    }
+    : {};
   return (
     <span
       aria-hidden
@@ -460,10 +493,80 @@ function WordLayer({
         pointerEvents: "none",
         paintOrder: "stroke fill",
         ...style,
+        ...fill,
       }}
     >
       {children}
     </span>
+  );
+}
+
+/** Padding around a gradient word's box, em of its size. */
+const GRADIENT_PAD_EM = 0.25;
+
+/**
+ * One decoration (or one of its shadows, `offset` canvas px away, blurred by `blurPx` display px):
+ * the shared shape as an SVG path filling its box, inside a wrapper that is the wipe's clip rectangle
+ * (the underline) or the box itself (a star). The wrapper carries the pose: a star scales about its
+ * own centre (the worker scales each event about its `\pos`), the underline's wrapper is inset by
+ * the wipe. The clip stays put while a shadow sits lower, as the worker's absolute `\clip` does.
+ */
+function DecorationLayer({
+  decoration,
+  index,
+  scale,
+  origin,
+  color,
+  opacity = 1,
+  offset = { x: 0, y: 0 },
+  blurPx = 0,
+}: {
+  decoration: PlacedDecoration;
+  index: number;
+  scale: number;
+  origin: { readonly x: number; readonly y: number };
+  color: string;
+  opacity?: number;
+  offset?: { readonly x: number; readonly y: number };
+  blurPx?: number;
+}) {
+  const { bounds } = decoration;
+  const box = decoration.wipe?.clip ?? bounds;
+  const shapeLeft = (bounds.x + offset.x - box.x) * scale;
+  const shapeTop = (bounds.y + offset.y - box.y) * scale;
+  return (
+    <div
+      aria-hidden
+      data-caption-block-decoration={index}
+      style={{
+        position: "absolute",
+        left: `${(box.x - origin.x) * scale}px`,
+        top: `${(box.y - origin.y) * scale}px`,
+        width: `${box.width * scale}px`,
+        height: `${box.height * scale}px`,
+        transformOrigin: `${shapeLeft + (bounds.width * scale) / 2}px ${shapeTop + (bounds.height * scale) / 2}px`,
+        visibility: "hidden",
+        willChange: "transform, clip-path",
+        pointerEvents: "none",
+      }}
+    >
+      <svg
+        aria-hidden="true"
+        width={bounds.width * scale}
+        height={bounds.height * scale}
+        viewBox={`0 0 ${bounds.width} ${bounds.height}`}
+        style={{
+          position: "absolute",
+          left: `${shapeLeft}px`,
+          top: `${shapeTop}px`,
+          overflow: "visible",
+          opacity,
+          ...(blurPx > 0.01 ? { filter: `blur(${blurPx}px)` } : {}),
+        }}
+      >
+        <path d={captionShapeSvgPath(CAPTION_SHAPES[decoration.shape], bounds.width, bounds.height)} fill={color} />
+      </svg>
+    </div>
   );
 }
 
@@ -596,16 +699,47 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
         }
       });
     };
-    paintAt();
-    return timeSource.subscribe(paintAt);
+    // Decoration elements, per decoration: the fill and its shadows share one pose.
+    const decorations: HTMLElement[][] = paint.layout.decorations.map(() => []);
+    for (const element of root.querySelectorAll<HTMLElement>("[data-caption-block-decoration]")) {
+      decorations[Number(element.dataset.captionBlockDecoration)]?.push(element);
+    }
+    const decorationsWritten = paint.layout.decorations.map(() => "");
+    const paintDecorations = (timeSec: number) => {
+      paint.layout.decorations.forEach((decoration, index) => {
+        const visible = timeSec >= decoration.startSec && timeSec <= endSec;
+        const pose = visible ? captionDecorationPose(decoration, (timeSec - decoration.startSec) * 1000, reducedMotion) : null;
+        const transform = pose && decoration.keyframes.length > 0 ? `scale(${pose.scale})` : "";
+        const clipPath = pose && decoration.wipe ? captionWipeClipPath(decoration.wipe.direction, decoration.wipe.clip.width * scale, pose.reveal) : "";
+        const key = pose ? `${transform}|${clipPath}` : "hidden";
+        if (key === decorationsWritten[index]) return;
+        decorationsWritten[index] = key;
+        for (const element of decorations[index]!) {
+          element.style.visibility = visible ? "visible" : "hidden";
+          if (!visible) continue;
+          element.style.transform = transform;
+          element.style.clipPath = clipPath;
+        }
+      });
+    };
+    const paintAll = () => {
+      paintAt();
+      paintDecorations(timeSource.getSnapshot());
+    };
+    paintAll();
+    return timeSource.subscribe(paintAll);
   }, [paint, scale, timeSource, reducedMotion]);
 
-  const layer = (name: string, render: (word: CaptionBlockPaintWord, ratio: number) => ReactNode) => (
+  const layer = (
+    name: string,
+    render: (word: CaptionBlockPaintWord, ratio: number) => ReactNode,
+    gradientFor: (word: CaptionBlockPaintWord) => PlacedGradient | null = () => null,
+  ) => (
     <div key={name} style={{ position: "absolute", left: 0, top: 0 }}>
       {paint.words.map((word, index) => {
         const content = render(word, word.placed.px / S);
         return content === null ? null : (
-          <WordLayer key={index} word={word} index={index} scale={scale} origin={origin}>
+          <WordLayer key={index} word={word} index={index} scale={scale} origin={origin} gradient={gradientFor(word)}>
             {content}
           </WordLayer>
         );
@@ -690,9 +824,43 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
       );
     }
   }
+  // A gradient hero's text sits straight in its box, so `background-clip: text` clips to its glyphs;
+  // the shadow layers above stay their own elements behind it, as the worker's shadow events are.
+  const gradient = paint.layout.gradient;
+  const gradientFor = (word: CaptionBlockPaintWord) => (word.hero ? gradient : null);
   layers.push(
-    layer("text", (word, ratio) => glyphs(word.text, { color: word.color, ...silhouette(stroke(ratio), preset.outlineColor) })),
+    layer(
+      "text",
+      (word, ratio) => (gradientFor(word) ? <CaptionText text={word.text} /> : glyphs(word.text, { color: word.color, ...silhouette(stroke(ratio), preset.outlineColor) })),
+      gradientFor,
+    ),
   );
+  // Decorations above the words, their shadows first, as the worker's decoration layers are.
+  const decorationShadows: ReactNode[] = [];
+  const decorationFills: ReactNode[] = [];
+  paint.layout.decorations.forEach((decoration, index) => {
+    const em = decoration.shadowEmPx;
+    if (preset.shadow === "soft") {
+      soft.forEach((shadow, at) => {
+        decorationShadows.push(
+          <DecorationLayer key={`${index}-${at}`} decoration={decoration} index={index} scale={scale} origin={origin} color={preset.shadowColor}
+            opacity={shadow.opacity} offset={{ x: 0, y: shadow.offsetYEm * em }} blurPx={shadow.blurEm * em * scale} />,
+        );
+      });
+    } else if (preset.shadow !== "none") {
+      decorationShadows.push(
+        <DecorationLayer key={index} decoration={decoration} index={index} scale={scale} origin={origin} color={preset.shadowColor}
+          offset={{ x: CAPTION_HARD_SHADOW.offsetXEm * em, y: CAPTION_HARD_SHADOW.offsetYEm * em }} />,
+      );
+    }
+    decorationFills.push(<DecorationLayer key={index} decoration={decoration} index={index} scale={scale} origin={origin} color={decoration.color} />);
+  });
+  if (decorationFills.length > 0) {
+    layers.push(
+      <div key="decoration-shadow" style={{ position: "absolute", left: 0, top: 0 }}>{decorationShadows}</div>,
+      <div key="decoration" style={{ position: "absolute", left: 0, top: 0 }}>{decorationFills}</div>,
+    );
+  }
 
   return (
     <div ref={rootRef} lang={paint.language ?? undefined} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", userSelect: "none" }}>

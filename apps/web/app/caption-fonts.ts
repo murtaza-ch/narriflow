@@ -72,6 +72,21 @@ const captionBricolageGrotesque = localFont({
   ],
 });
 
+const captionCaprasimo = localFont({
+  src: "../../../packages/caption-fonts/fonts/Caprasimo-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-caprasimo",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "91.8%" },
+    { prop: "descent-override", value: "22.9%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 const captionChakraPetch = localFont({
   src: "../../../packages/caption-fonts/fonts/ChakraPetch-Bold.ttf",
   weight: "700",
@@ -113,6 +128,21 @@ const captionDelaGothicOne = localFont({
   declarations: [
     { prop: "ascent-override", value: "116%" },
     { prop: "descent-override", value: "28.8%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionDmSerifDisplay = localFont({
+  src: "../../../packages/caption-fonts/fonts/DMSerifDisplay-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-dm-serif-display",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "103.6%" },
+    { prop: "descent-override", value: "33.5%" },
     { prop: "line-gap-override", value: "0%" },
   ],
 });
@@ -318,9 +348,11 @@ export const captionFontVariables = [
   captionArchivoBlack.variable,
   captionBebasNeue.variable,
   captionBricolageGrotesque.variable,
+  captionCaprasimo.variable,
   captionChakraPetch.variable,
   captionCourierPrime.variable,
   captionDelaGothicOne.variable,
+  captionDmSerifDisplay.variable,
   captionInstrumentSerif.variable,
   captionInter.variable,
   captionInterSemiBold.variable,

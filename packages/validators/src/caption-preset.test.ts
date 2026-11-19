@@ -35,10 +35,10 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 29 presets with unique ids and names, the Dynamic group first", () => {
-    expect(CAPTION_PRESETS).toHaveLength(29);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(29);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(29);
+  test("has 30 presets with unique ids and names, the Dynamic group first", () => {
+    expect(CAPTION_PRESETS).toHaveLength(30);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(30);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(30);
     expect(CAPTION_PRESET_GROUPS[0]).toBe("Dynamic");
     expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
     for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic")) {
@@ -48,7 +48,7 @@ describe("caption preset catalog", () => {
 
   test("Dynamic group presets, and only they, set a Dynamic Style", () => {
     const dynamic = CAPTION_PRESETS.filter((named) => named.group === "Dynamic");
-    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack"]);
+    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack", "groove"]);
     for (const named of CAPTION_PRESETS) {
       expect(named.preset.dynamic !== undefined).toBe(named.group === "Dynamic");
     }
@@ -75,9 +75,11 @@ describe("caption preset catalog", () => {
     expect(style.rowGapEm).toBe(0.06);
     // Strengthened in ticket 05 for white support words on bright frames (black 85%, CSS blur 12 px at S).
     expect(style.softShadow).toEqual([{ offsetYEm: 0.03, blurEm: 0.075, opacity: 0.85 }]);
+    // Phase 2: the hero runs from light mint at its top to the hero green at its bottom.
+    expect(style.gradient).toEqual({ top: "#A5EBC5", bottom: "#36B780" });
   });
 
-  test("Editorial, Cutout, Marker and Stack follow the section 6 catalog rows", () => {
+  test("Editorial, Cutout, Marker, Stack and Groove follow the section 6 catalog rows", () => {
     const preset = (id: string) => CAPTION_PRESETS.find((named) => named.id === id)!.preset;
     const S = (id: string) => preset(id).fontSize;
 
@@ -110,17 +112,28 @@ describe("caption preset catalog", () => {
     expect(marker.defaultMotion).toBe("slide");
     expect(marker).toMatchObject({ layout: "stack", align: "left", leftGuidePct: 8, rowGapEm: 0.14, heroColours: ["highlight", "accent"], accentColor: "#EF8DB9", heroFontName: "Poppins" });
     expect(marker.roles.hero.sizeEm * S("marker")).toBe(120);
+    expect(marker.decorations).toEqual(["underline"]);
 
     const stack = CAPTION_DYNAMIC_STYLES.stack;
     expect(preset("stack")).toMatchObject({ dynamic: "stack", fontName: "Inter SemiBold", fontSize: 64, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", animation: "slide", wordsPerCue: 4 });
     expect(stack).toMatchObject({ layout: "stack", align: "center", rowGapEm: 0.04, heroFontName: "Inter" });
     // Ticket 05b: S = 64 and the hero 2.4 S (153.6 px), so support words read at reference 08's share of the hero.
     expect(stack.roles.hero.sizeEm * S("stack")).toBeCloseTo(153.6, 9);
+    // Phase 2: stars in the accent colour, white by default.
+    expect(stack).toMatchObject({ decorations: ["stars"], accentColor: "#FFFFFF" });
+
+    const groove = CAPTION_DYNAMIC_STYLES.groove;
+    // Later catalog addition: DM Serif Display caps at 64 px around a 176 px capitalised Caprasimo hero in pink.
+    expect(preset("groove")).toMatchObject({ dynamic: "groove", fontName: "DM Serif Display", fontSize: 64, textTransform: "uppercase", primaryColor: "#FFFFFF", highlightColor: "#F59ABB", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4 });
+    expect(groove).toMatchObject({ layout: "stack", align: "center", heroFontName: "Caprasimo", defaultMotion: "slide" });
+    expect(groove.roles.hero).toMatchObject({ font: "hero", transform: "capitalize", colour: "highlight" });
+    expect(groove.roles.hero.sizeEm * S("groove")).toBeCloseTo(176, 9);
+    expect(groove.rowGapEm * S("groove")).toBeCloseTo(8, 9);
 
     // Only Editorial shrinks minor words; the others draw them at body size (ticket 02).
-    for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
+    for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout, groove]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
     // Styles without an outline carry a soft shadow on every word (rule 5); Cutout's tiles carry their own.
-    for (const id of ["headline", "editorial", "marker", "stack"]) {
+    for (const id of ["headline", "editorial", "marker", "stack", "groove"]) {
       expect(preset(id)).toMatchObject({ outlineWidth: 0, shadow: "soft" });
       expect(CAPTION_DYNAMIC_STYLES[id as "headline"].softShadow!.length).toBeGreaterThan(0);
     }

@@ -641,6 +641,13 @@ in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body s
   coverage script, web registration).
 - Phase 2 also gives Headline its gradient (`#A5EBC5` at the top to `#36B780` at the
   bottom), Marker its underline and Stack its stars.
+  Ticket 06 built them with these calls: Groove's soft shadow is the small-text pair at 90%
+  (the single "4 px" shadow left "W/" at 2.07:1 on the bright frame, rule 5); the gradient
+  draws only while the hero colour is the style's own `#36B780` (another hero colour or a
+  brand colour wins flat); the underline drops below a hero's descender instead of crossing
+  it; Stack's stars follow the accent colour (default white), three of them (0.28, 0.20,
+  0.20 hero-em) at the leading top corner, the other top corner and the bottom corner under
+  it, mirrored by seed.
 - **Arc** (reference 14, phase 3). DM Serif Display, sentence case, all words `#F3E9C6`,
   support S = 64, hero 2.2 S, every row curved at 0.55, soft shadow black 70%, no outline,
   rowGap 0.04, motion `blur`.

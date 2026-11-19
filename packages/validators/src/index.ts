@@ -9,6 +9,7 @@ export * from "./brand-profile";
 export * from "./broll";
 export * from "./caption-font";
 export * from "./caption-cues";
+export * from "./caption-decoration";
 export * from "./caption-dynamic";
 export * from "./caption-emphasis";
 export * from "./caption-preset";

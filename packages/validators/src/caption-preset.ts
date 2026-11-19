@@ -261,6 +261,10 @@ export const CAPTION_PRESETS = [
     dynamic: "stack", fontName: "Inter SemiBold", fontSize: 64, textTransform: "lowercase", letterSpacing: 0,
     primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
+  namedPreset("groove", "Groove", "Dynamic", {
+    dynamic: "groove", fontName: "DM Serif Display", fontSize: 64, textTransform: "uppercase", letterSpacing: 0,
+    primaryColor: "#FFFFFF", highlightColor: "#F59ABB", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
+  }),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

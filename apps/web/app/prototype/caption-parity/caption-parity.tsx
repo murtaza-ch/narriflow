@@ -179,6 +179,8 @@ export function DynamicCaptionParity({
           ...word.placed,
           measured: word.measured,
         })),
+        decorations: paint.layout.decorations,
+        gradient: paint.layout.gradient,
       }
     : null;
   return (

@@ -930,6 +930,62 @@
         ]
       },
       "notes": "Stack entering with slam: every word scales in, the hero from 1.25 through 0.98, so the real-libass test checks scaled words."
+    },
+    {
+      "id": "groove-en",
+      "reference": "03-groove-get-ready.jpg",
+      "style": "groove",
+      "presetId": "groove",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "get",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.28
+        },
+        {
+          "word": "ready",
+          "key": "1300",
+          "startSec": 1.3,
+          "endSec": 1.68
+        },
+        {
+          "word": "w/",
+          "key": "1700",
+          "startSec": 1.7,
+          "endSec": 1.88
+        },
+        {
+          "word": "me",
+          "key": "1900",
+          "startSec": 1.9,
+          "endSec": 2.2
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "body",
+          "hero",
+          "body",
+          "minor"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2,
+            3
+          ]
+        ]
+      },
+      "notes": "One English cue for Groove (reference 03): serif caps lead and tail rows around a capitalised pink display hero."
     }
   ]
 }

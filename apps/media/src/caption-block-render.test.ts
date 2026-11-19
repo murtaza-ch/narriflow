@@ -57,6 +57,8 @@ const MASK_MIN_PIXELS = 50;
 const MASK_MAX_FRACTION = 0.5;
 /** The block painter's text layer (`LAYER.text` in caption-ass.ts). */
 const TEXT_LAYER = 5;
+/** Decoration fills (`LAYER.decoration`). */
+const DECORATION_LAYER = 15;
 /** A frame at 30 fps. */
 const FRAME_SEC = 1 / 30;
 const ENTRANCE_PROBE_MS = 100;
@@ -238,9 +240,14 @@ const assTime = (seconds: number) => {
   return `${Math.floor(cs / 360000)}:${String(Math.floor((cs % 360000) / 6000)).padStart(2, "0")}:${String(Math.floor((cs % 6000) / 100)).padStart(2, "0")}.${String(cs % 100).padStart(2, "0")}`;
 };
 
-/** The word's text event drawn as a solid white mask: no fade, no blur, full opacity; position and timing untouched. */
-function solidMask(line: string): string {
-  return line
+/**
+ * The event drawn as a solid white mask: no fade, no blur, full opacity, no clip (a gradient band
+ * becomes its whole word, the underline its whole squiggle); position, scale and timing untouched.
+ * `keepClip` keeps the clips (the union of a hero's bands, the underline's wipe).
+ */
+function solidMask(line: string, keepClip = false): string {
+  const unclipped = keepClip ? line : line.replace(/\\t\([^()]*\\clip\([^)]*\)\)/g, "").replace(/\\clip\([^)]*\)/g, "");
+  return unclipped
     .replace(/\\fade\([^)]*\)/g, "")
     .replace(/\\t\([^()]*\\blur[\d.]+\)/g, "")
     .replace(/\\blur[\d.]+/g, "")
@@ -326,6 +333,8 @@ interface ParityRow {
 }
 const parity: ParityRow[] = [];
 const tiles: { fixture: string; word: string; moment: string; expected: MaskBox; drawn: MaskBox }[] = [];
+const bandRows: { fixture: string; word: string; moment: string; bands: number; whole: MaskBox; union: MaskBox }[] = [];
+const decorationRows: { fixture: string; kind: string; moment: string; expected: MaskBox; drawn: MaskBox }[] = [];
 
 describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass", () => {
   const fixtures = dynamicCaptionFixtures();
@@ -372,7 +381,10 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
             expect(extra, "the pose model covers travel, opacity, blur, scale and turn").toEqual([]);
           }
           const text = lines.filter((line) => line.startsWith(`Dialogue: ${TEXT_LAYER},${assTime(startSec)},`));
-          expect(text, `${fixture.id} "${word.text}": one text event`).toHaveLength(1);
+          // A gradient hero's fill is split into clipped bands; any one band, unclipped, is the whole word.
+          const banded = geometry.layout.gradient !== null && layer.block.roles[index] === "hero";
+          if (banded) expect(text.length, `${fixture.id} "${word.text}": gradient bands`).toBeGreaterThan(1);
+          else expect(text, `${fixture.id} "${word.text}": one text event`).toHaveLength(1);
           // Tile events share the word's start on the lowest layer, the hard shadow first, then the tile.
           const shapes = lines.filter((line) => line.startsWith(`Dialogue: 0,${assTime(startSec)},`));
           expect(shapes, `${fixture.id} "${word.text}": tile and shadow events`).toHaveLength(placed.tile ? (placed.tile.shadowOffset > 0 ? 2 : 1) : 0);
@@ -415,6 +427,14 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
               bottom: placed.baselineY + word.measured.inkBottomEm * placed.px,
             };
             parity.push({ fixture: fixture.id, word: word.text, moment: moment.name, geometryBaseline, libassBaseline, expected, ink });
+            if (banded) {
+              // The bands, each kept to its clip, draw exactly the whole word: they cover its rest ink,
+              // its entrance travel and its blur, with no row left out.
+              const whole = maskBox(render(`${header(ass)}${solidMask(text[0]!)}\n`, moment.atSec), `${label} whole`);
+              const union = maskBox(render(`${header(ass)}${text.map((line) => solidMask(line, true)).join("\n")}\n`, moment.atSec), `${label} bands`);
+              bandRows.push({ fixture: fixture.id, word: word.text, moment: moment.name, bands: text.length, whole, union });
+              expect(union, `${label}: the bands' union is the whole word`).toEqual(whole);
+            }
             expect(Math.abs(libassBaseline - geometryBaseline), `${label}: baseline ${libassBaseline} vs ${geometryBaseline}`).toBeLessThanOrEqual(TOLERANCE.baseline);
             expect(Math.abs(ink.left - expected.left), `${label}: left ${ink.left} vs ${expected.left}`).toBeLessThanOrEqual(TOLERANCE.left);
             expect(Math.abs(ink.right - expected.right), `${label}: right ${ink.right} vs ${expected.right}`).toBeLessThanOrEqual(TOLERANCE.bounds);
@@ -427,6 +447,42 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
               tiles.push({ fixture: fixture.id, word: word.text, moment: moment.name, expected: want, drawn });
               for (const side of ["left", "right", "top", "bottom"] as const) {
                 expect(Math.abs(drawn[side] - want[side]), `${label} tile ${side}: ${drawn[side]} vs ${want[side]}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+              }
+            }
+          }
+        });
+        // Decorations: each fill event alone, as a solid mask, against the shared box (scaled about its
+        // centre by the star's pop at that time); the underline also mid-wipe with its clip kept.
+        const fills = lines.filter((line) => line.startsWith(`Dialogue: ${DECORATION_LAYER},`));
+        expect(fills, `${fixture.id}: one fill event per decoration`).toHaveLength(geometry.layout.decorations.length);
+        geometry.layout.decorations.forEach((decoration, at) => {
+          const fill = fills[at]!;
+          const { bounds } = decoration;
+          const probe = (ms: number) => (decoration.startSec + ms / 1000 < end - FRAME_SEC ? [{ name: `+${ms} ms`, ms }] : []);
+          const moments = [...(decoration.kind === "star" ? probe((decoration.keyframes[0]?.at ?? 0) + 40) : probe(120)), { name: "settled", ms: (end - FRAME_SEC - decoration.startSec) * 1000 }];
+          for (const moment of moments) {
+            const atSec = decoration.startSec + moment.ms / 1000;
+            const label = `${fixture.id} ${decoration.kind} ${at} ${moment.name}`;
+            const scale = decoration.keyframes.length > 0 ? captionEntrancePose(decoration.keyframes, libassNowMs(atSec) - Math.round(decoration.startSec * 100) * 10).scaleX : 1;
+            const cx = bounds.x + bounds.width / 2;
+            const cy = bounds.y + bounds.height / 2;
+            const expected = { left: cx - (bounds.width * scale) / 2, right: cx + (bounds.width * scale) / 2, top: cy - (bounds.height * scale) / 2, bottom: cy + (bounds.height * scale) / 2 };
+            const drawn = maskBox(render(`${header(ass)}${solidMask(fill)}\n`, atSec), label);
+            decorationRows.push({ fixture: fixture.id, kind: decoration.kind, moment: moment.name, expected, drawn });
+            for (const side of ["left", "right", "top", "bottom"] as const) {
+              expect(Math.abs(drawn[side] - expected[side]), `${label} ${side}: ${drawn[side]} vs ${expected[side]}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+            }
+            if (decoration.wipe && moment.name !== "settled") {
+              // Mid-wipe the clip's leading edge has run the shared share of the clip's width.
+              const { clip, startMs, endMs } = decoration.wipe;
+              const t = libassNowMs(atSec) - Math.round(decoration.startSec * 100) * 10;
+              const reveal = Math.min(1, Math.max(0, (t - startMs) / (endMs - startMs)));
+              const edge = decoration.wipe.direction === "rtl" ? clip.x + clip.width - reveal * clip.width : clip.x + reveal * clip.width;
+              const wiped = maskBox(render(`${header(ass)}${solidMask(fill, true)}\n`, atSec), `${label} wipe`);
+              const want = decoration.wipe.direction === "rtl" ? { ...expected, left: Math.max(expected.left, edge) } : { ...expected, right: Math.min(expected.right, edge) };
+              decorationRows.push({ fixture: fixture.id, kind: "underline wipe", moment: moment.name, expected: want, drawn: wiped });
+              for (const side of ["left", "right", "top", "bottom"] as const) {
+                expect(Math.abs(wiped[side] - want[side]), `${label} wipe ${side}: ${wiped[side]} vs ${want[side]}`).toBeLessThanOrEqual(TOLERANCE.bounds);
               }
             }
           }
@@ -482,6 +538,20 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
         `${row.drawn.left}-${row.drawn.right} / ${row.drawn.top}-${row.drawn.bottom} | ` +
         `${f(row.drawn.left - row.expected.left)} | ${f(row.drawn.right - row.expected.right)} | ${f(row.drawn.top - row.expected.top)} | ${f(row.drawn.bottom - row.expected.bottom)} |`,
       ),
+    ].join("\n"));
+    console.log([
+      "| Case | Hero | Moment | Bands | Whole word x / y | Bands' union x / y |",
+      "| --- | --- | --- | --- | --- | --- |",
+      ...bandRows.map((row) =>
+        `| ${row.fixture} | ${row.word} | ${row.moment} | ${row.bands} | ${row.whole.left}-${row.whole.right} / ${row.whole.top}-${row.whole.bottom} | ${row.union.left}-${row.union.right} / ${row.union.top}-${row.union.bottom} |`),
+    ].join("\n"));
+    console.log([
+      "| Case | Decoration | Moment | Geometry x / y | libass x / y | Δ left | Δ right | Δ top | Δ bottom |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ...decorationRows.map((row) =>
+        `| ${row.fixture} | ${row.kind} | ${row.moment} | ${f(row.expected.left)}-${f(row.expected.right)} / ${f(row.expected.top)}-${f(row.expected.bottom)} | ` +
+        `${row.drawn.left}-${row.drawn.right} / ${row.drawn.top}-${row.drawn.bottom} | ` +
+        `${f(row.drawn.left - row.expected.left)} | ${f(row.drawn.right - row.expected.right)} | ${f(row.drawn.top - row.expected.top)} | ${f(row.drawn.bottom - row.expected.bottom)} |`),
     ].join("\n"));
   });
 

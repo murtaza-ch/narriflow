@@ -1,3 +1,4 @@
+import type { PlacedDecoration } from "@narriflow/caption-fonts/caption-block";
 import { CAPTION_REST_POSE, captionEntrancePose, type CaptionEntrancePose, type CaptionKeyframe } from "@narriflow/validators";
 
 /**
@@ -52,4 +53,39 @@ export function captionBlockTransform(
     ? `scale(${pose.scaleX}, ${pose.scaleY})`
     : `translate(${scaleOrigin.x}px, ${scaleOrigin.y}px) scale(${pose.scaleX}, ${pose.scaleY}) translate(${-scaleOrigin.x}px, ${-scaleOrigin.y}px)`;
   return `rotate(${theta}deg) translate(${dx}px, ${dy}px)${flip} ${scale}`;
+}
+
+/** A decoration's entrance at one instant (spec 5.10): a star's pop scale and the underline's wipe. */
+export interface CaptionDecorationPose {
+  /** Scale about the decoration's centre; 0 hides a star before its pop. */
+  readonly scale: number;
+  /** Share of the wipe clip the leading edge has crossed, 0 to 1; 1 for stars. */
+  readonly reveal: number;
+}
+
+/**
+ * The pose the export draws `elapsedMs` after the hero's onset (`PlacedDecoration.startSec`): a
+ * star's `\fscx`/`\fscy` keyframes through the shared `captionEntrancePose` (eased segments, as
+ * libass's `\t`), the underline's `\clip` linear from `wipe.startMs` to `wipe.endMs`. Reduced
+ * motion shows decorations settled.
+ */
+export function captionDecorationPose(
+  decoration: Pick<PlacedDecoration, "keyframes" | "wipe">,
+  elapsedMs: number,
+  reducedMotion: boolean,
+): CaptionDecorationPose {
+  if (reducedMotion) return { scale: 1, reveal: 1 };
+  const scale = decoration.keyframes.length > 0 ? captionEntrancePose(decoration.keyframes, Math.max(0, elapsedMs)).scaleX : 1;
+  const wipe = decoration.wipe;
+  const reveal = wipe ? Math.min(1, Math.max(0, (elapsedMs - wipe.startMs) / Math.max(1, wipe.endMs - wipe.startMs))) : 1;
+  return { scale, reveal };
+}
+
+/**
+ * The CSS `clip-path` of a decoration's wipe element, whose box is `wipe.clip` at `scale`
+ * display px per canvas px: everything the leading edge has not reached is inset away.
+ */
+export function captionWipeClipPath(direction: "ltr" | "rtl", widthPx: number, reveal: number): string {
+  const hidden = (1 - reveal) * widthPx;
+  return direction === "rtl" ? `inset(0px 0px 0px ${hidden}px)` : `inset(0px ${hidden}px 0px 0px)`;
 }

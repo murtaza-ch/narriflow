@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import {
   CAPTION_BLOCK,
   CAPTION_CUE_TILTS_DEG,
+  CAPTION_DECORATION,
   CAPTION_DYNAMIC_STYLES,
+  CAPTION_SHAPES,
   CAPTION_FIT_WIDTH_FRACTION,
   CAPTION_MOTIONS,
   type CaptionAnimation,
@@ -537,5 +539,153 @@ describe("Nastaliq support words (ticket 05b)", () => {
     expect(scaled.words[2]!.px / scaled.scale).toBeCloseTo(plain.words[2]!.px / plain.scale, 9);
     const mixed = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], language: "ur" });
     expect(mixed.words[0]!.px / mixed.scale).toBeCloseTo(S, 9);
+  });
+});
+
+describe("decorations (spec 5.10)", () => {
+  const MARKER = CAPTION_DYNAMIC_STYLES.marker;
+  const STACK = CAPTION_DYNAMIC_STYLES.stack;
+  const U = CAPTION_DECORATION.underline;
+  const T = CAPTION_DECORATION.stars;
+  const words = { texts: ["week", "of", "content"], roles: ["body", "minor", "hero"] as CaptionWordRole[] };
+  const timed = { startSec: [1, 1.3, 1.6], cueEndSec: 2.4 };
+
+  test("the underline sits under the hero row's start, 0.12 hero-em below the baseline, 0.6 of its width", () => {
+    const result = layout({ ...words, ...timed, style: MARKER, anchor: { xPct: 8, yPct: 50 } });
+    const [underline] = result.decorations;
+    expect(result.decorations).toHaveLength(1);
+    expect(underline).toMatchObject({ kind: "underline", shape: "squiggle", color: "#FFFFFF", startSec: 1.6, keyframes: [] });
+    const hero = result.words[2]!;
+    const heroWidth = advance(hero, result.measured[2]!);
+    expect(underline!.bounds.x).toBeCloseTo(hero.baselineX, 9);
+    expect(underline!.bounds.width).toBeCloseTo(U.widthFraction * heroWidth, 9);
+    expect(underline!.bounds.height).toBeCloseTo(U.heightEm * hero.px, 9);
+    expect(underline!.bounds.y + underline!.bounds.height / 2).toBeCloseTo(hero.baselineY + U.offsetEm * hero.px, 9);
+    expect(underline!.wipe).toMatchObject({ startMs: U.delayMs, endMs: U.delayMs + U.wipeMs, direction: "ltr" });
+    // The wipe clip is the box grown by the margin on every side, so the shadow's blur survives.
+    const margin = CAPTION_DECORATION.clipMarginEm * S * result.scale;
+    // Whole pixels: libass reads \\clip rectangles as integers.
+    const clip = underline!.wipe!.clip;
+    expect(clip.x).toBe(Math.floor(underline!.bounds.x - margin));
+    expect(clip.y).toBe(Math.floor(underline!.bounds.y - margin));
+    expect(clip.x + clip.width).toBe(Math.ceil(underline!.bounds.x + underline!.bounds.width + margin));
+    expect(clip.y + clip.height).toBe(Math.ceil(underline!.bounds.y + underline!.bounds.height + margin));
+  });
+
+  test("the underline's box is reserved in row pitch and in the bounds", () => {
+    // A hero above a tail row: the tail moves down to clear the underline.
+    const texts = ["the", "content", "is"];
+    const roles = ["minor", "hero", "minor"] as CaptionWordRole[];
+    const plain = layout({ texts, roles, ...timed, style: { ...MARKER, decorations: [] } });
+    const decorated = layout({ texts, roles, ...timed, style: MARKER });
+    const underline = decorated.decorations[0]!;
+    const tail = decorated.words[2]!;
+    const gap = inkTop(tail, decorated.measured[2]!) - (underline.bounds.y + underline.bounds.height);
+    expect(gap).toBeCloseTo(MARKER.rowGapEm * S * decorated.scale, 6);
+    expect(inkTop(tail, decorated.measured[2]!) - inkTop(decorated.words[1]!, decorated.measured[1]!))
+      .toBeGreaterThan(inkTop(plain.words[2]!, plain.measured[2]!) - inkTop(plain.words[1]!, plain.measured[1]!));
+    const bounds = decorated.bounds;
+    expect(underline.bounds.y + underline.bounds.height).toBeLessThanOrEqual(bounds.y + bounds.height + 1e-9);
+  });
+
+  test("a hero with a descender pushes the underline below its ink", () => {
+    // Fake measurement: descender words hang 0.2 em, deeper than 0.12 em minus half the box.
+    const result = layout({ texts: ["week", "of", "captions"], roles: ["body", "minor", "hero"], ...timed, style: MARKER });
+    const underline = result.decorations[0]!;
+    const hero = result.words[2]!;
+    expect(underline.bounds.y).toBeCloseTo(inkBottom(hero, result.measured[2]!) + U.clearanceEm * hero.px, 6);
+    expect(underline.bounds.y + underline.bounds.height / 2).toBeGreaterThan(hero.baselineY + U.offsetEm * hero.px);
+  });
+
+  test("an RTL cue's underline starts at the row's right end and wipes right to left", () => {
+    const result = layout({ texts: ["صرف", "ایک", "گھنٹے"], roles: ["body", "minor", "hero"], ...timed, style: MARKER, direction: "rtl", anchor: { xPct: 8, yPct: 50 } });
+    const underline = result.decorations[0]!;
+    const hero = result.words[2]!;
+    expect(underline.bounds.x + underline.bounds.width).toBeCloseTo(hero.baselineX + advance(hero, result.measured[2]!), 9);
+    expect(underline.wipe!.direction).toBe("rtl");
+  });
+
+  test("drop rule: no decoration with less than 300 ms of cue left at the hero's onset", () => {
+    const short = layout({ ...words, startSec: [1, 1.3, 1.6], cueEndSec: 1.6 + (CAPTION_DECORATION.minRemainingMs - 1) / 1000, style: MARKER });
+    expect(short.decorations).toEqual([]);
+    const enough = layout({ ...words, startSec: [1, 1.3, 1.6], cueEndSec: 1.6 + CAPTION_DECORATION.minRemainingMs / 1000, style: MARKER });
+    expect(enough.decorations).toHaveLength(1);
+    const stars = layout({ ...words, startSec: [1, 1.3, 1.6], cueEndSec: 1.85, style: STACK });
+    expect(stars.decorations).toEqual([]);
+    // No hero, no decoration.
+    expect(layout({ texts: ["and", "then"], roles: ["minor", "minor"], ...timed, style: MARKER }).decorations).toEqual([]);
+    expect(layout({ texts: ["and", "then"], roles: ["minor", "minor"], ...timed, style: STACK }).decorations).toEqual([]);
+  });
+
+  test("the underline is only drawn under an upright hero", () => {
+    // A tilting motion turns the block, and a turning entrance turns the hero: no underline either way.
+    expect(layout({ ...words, ...timed, style: MARKER, preset: { animation: "bounce" } }).decorations).toEqual([]);
+    expect(layout({ ...words, ...timed, style: MARKER, preset: { animation: "drop" } }).decorations).toEqual([]);
+    expect(layout({ ...words, ...timed, style: MARKER, preset: { animation: "rise" } }).decorations).toHaveLength(1);
+  });
+
+  test("stars sit at the block's ink corners pushed out 0.3 hero-em, pop 40 ms apart from 60 ms, and mirror by seed", () => {
+    for (const seed of [0, 1]) {
+      const result = layout({ texts: ["how", "to", "captions"], roles: ["minor", "minor", "hero"], ...timed, seed, style: STACK });
+      const box = inkBox(result);
+      const heroPx = result.words[2]!.px;
+      expect(result.decorations.map((decoration) => decoration.kind)).toEqual(["star", "star", "star"]);
+      const lead = seed % 2 === 0 ? 1 : -1;
+      const corners = [[lead, -1], [-lead, -1], [-lead, 1]] as const;
+      result.decorations.forEach((star, at) => {
+        const [side, vertical] = corners[at]!;
+        const centerX = star.bounds.x + star.bounds.width / 2;
+        const centerY = star.bounds.y + star.bounds.height / 2;
+        expect(centerX).toBeCloseTo((side > 0 ? box.right : box.left) + side * T.pushEm * heroPx, 6);
+        expect(centerY).toBeCloseTo((vertical > 0 ? box.bottom : box.top) + vertical * T.pushEm * heroPx, 6);
+        expect(star.bounds.height).toBeCloseTo(T.sizesEm[at]! * heroPx, 9);
+        expect(star.bounds.width).toBeCloseTo(T.sizesEm[at]! * heroPx * CAPTION_SHAPES.star.aspect, 9);
+        expect(star.keyframes.map((frame) => frame.at)).toEqual(T.pop.map((frame) => frame.at + T.delayMs + T.staggerMs * at));
+        expect(star.color).toBe("#FFFFFF");
+        expect(star.wipe).toBeNull();
+        // The pop's 1.1 overshoot stays inside the reserved bounds.
+        const grow = 0.05;
+        expect(star.bounds.x - grow * star.bounds.width).toBeGreaterThanOrEqual(result.bounds.x - 1e-6);
+        expect(star.bounds.y - grow * star.bounds.height).toBeGreaterThanOrEqual(result.bounds.y - 1e-6);
+        expect(star.bounds.x + (1 + grow) * star.bounds.width).toBeLessThanOrEqual(result.bounds.x + result.bounds.width + 1e-6);
+        expect(star.bounds.y + (1 + grow) * star.bounds.height).toBeLessThanOrEqual(result.bounds.y + result.bounds.height + 1e-6);
+      });
+      expectInsideSafeArea(result);
+    }
+  });
+
+  test("stars follow the accent colour", () => {
+    const result = layout({ texts: ["how", "to", "captions"], roles: ["minor", "minor", "hero"], ...timed, style: STACK, preset: { accentColor: "#FFD248" } });
+    expect(result.decorations.every((star) => star.color === "#FFD248")).toBe(true);
+  });
+
+  test("decorations near the frame edge shift the block into the safe area", () => {
+    const result = layout({ texts: ["how", "to", "captions"], roles: ["minor", "minor", "hero"], ...timed, style: STACK, anchor: { xPct: 50, yPct: 12 } });
+    expectInsideSafeArea(result);
+    const top = Math.min(...result.decorations.map((star) => star.bounds.y - 0.05 * star.bounds.height));
+    expect(top).toBeGreaterThanOrEqual(CAPTION_BLOCK.safeArea.top * CANVAS.height - 1e-6);
+  });
+});
+
+describe("hero gradient box (spec 5.10)", () => {
+  const preset = { highlightColor: "#36B780" };
+
+  test("Headline's gradient spans the hero words' rest ink box", () => {
+    const result = layout({ texts: ["I", "made", "20", "dollars"], roles: ["minor", "body", "hero", "hero"], preset });
+    const heroes = [2, 3];
+    expect(result.gradient).toEqual({
+      top: Math.min(...heroes.map((index) => inkTop(result.words[index]!, result.measured[index]!))),
+      bottom: Math.max(...heroes.map((index) => inkBottom(result.words[index]!, result.measured[index]!))),
+      topColor: "#A5EBC5",
+      bottomColor: "#36B780",
+    });
+  });
+
+  test("no gradient without a hero, with another hero colour, or with a scaling or turning motion", () => {
+    expect(layout({ texts: ["and", "then"], roles: ["minor", "minor"], preset }).gradient).toBeNull();
+    expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset: { highlightColor: "#FF0000" } }).gradient).toBeNull();
+    expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset: { ...preset, animation: "slam" } }).gradient).toBeNull();
+    expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset: { ...preset, animation: "drop" } }).gradient).toBeNull();
+    expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset }).gradient).not.toBeNull();
   });
 });

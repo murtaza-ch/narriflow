@@ -1,11 +1,15 @@
 import {
   CAPTION_BLOCK,
   CAPTION_CUE_TILTS_DEG,
+  CAPTION_DECORATION,
+  CAPTION_SHAPES,
   CAPTION_MOTIONS,
   captionBlockAnimation,
+  captionDecorationColour,
   captionEntranceKeyframes,
   captionEntranceMs,
   captionEntranceTimeScale,
+  captionHeroGradient,
   languageDirection,
   textDirection,
   type CaptionBlock,
@@ -129,10 +133,46 @@ export interface PlacedTile {
   readonly shadowOffset: number;
 }
 
-/** Drawn details (underline, stars); phase 2 fills these, phase 1 has none. */
+/**
+ * A drawn detail (spec 5.10) in canvas px: a shared shape (`CAPTION_SHAPES`) filling `bounds`,
+ * upright. Its events (worker) and elements (Studio) exist from the hero's onset (`startSec`) to
+ * the cue's end; the entrance counts from `startSec`.
+ */
 export interface PlacedDecoration {
   readonly kind: "underline" | "star";
+  readonly shape: keyof typeof CAPTION_SHAPES;
   readonly bounds: CaptionBlockRect;
+  readonly color: string;
+  /** The hero's spoken onset, seconds. */
+  readonly startSec: number;
+  /** A star's pop, scaling about the centre of `bounds`, ms from `startSec` (delay and stagger included). Empty for the underline. */
+  readonly keyframes: readonly CaptionKeyframe[];
+  /**
+   * The underline's wipe: a rectangular clip whose leading edge runs linearly across `clip`
+   * from its start side (left for "ltr") to the other between `startMs` and `endMs` after
+   * `startSec`. `clip` is `bounds` grown by `CAPTION_DECORATION.clipMarginEm` so shadows are
+   * not cut, out to whole pixels (libass reads `\clip` rectangles as integers). Null for stars.
+   */
+  readonly wipe: {
+    readonly startMs: number;
+    readonly endMs: number;
+    readonly direction: CaptionDirection;
+    readonly clip: CaptionBlockRect;
+  } | null;
+  /** Shadow lengths of the style's soft shadow are em of this size: the support size S after fit. */
+  readonly shadowEmPx: number;
+}
+
+/**
+ * The hero gradient (spec 5.10): `topColor` at `top` to `bottomColor` at `bottom`, the hero
+ * words' rest ink box in canvas px, held flat beyond it. Null when the cue draws a flat hero
+ * (`captionHeroGradient`).
+ */
+export interface PlacedGradient {
+  readonly top: number;
+  readonly bottom: number;
+  readonly topColor: string;
+  readonly bottomColor: string;
 }
 
 export interface CaptionBlockLayout {
@@ -143,6 +183,7 @@ export interface CaptionBlockLayout {
   /** Rest ink box of every word plus strokes, tiles, decorations and the reserved entrance travel. */
   readonly bounds: CaptionBlockRect;
   readonly decorations: readonly PlacedDecoration[];
+  readonly gradient: PlacedGradient | null;
   /** The safe-area shift (rule 9) applied to the block, canvas px. The stored position excludes it. */
   readonly shift: { readonly x: number; readonly y: number };
 }
@@ -229,6 +270,13 @@ function extremes(keyframes: readonly CaptionKeyframe[], property: keyof Caption
 
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
 
+/** The smallest whole-pixel rectangle holding the given edges. */
+const wholePixels = (left: number, top: number, right: number, bottom: number): CaptionBlockRect => {
+  const x = Math.floor(left);
+  const y = Math.floor(top);
+  return { x, y, width: Math.ceil(right) - x, height: Math.ceil(bottom) - y };
+};
+
 /**
  * Lays out one Caption Block. Rules in order (spec 5.6): role sizes, word
  * gaps, hero fill, the fit scale, stagger signs, row pitch from measured ink,
@@ -251,7 +299,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     throw new Error("layoutCaptionBlock needs one measurement and one word per block role");
   }
   if (count === 0) {
-    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], shift: { x: 0, y: 0 } };
+    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], gradient: null, shift: { x: 0, y: 0 } };
   }
   const S = preset.fontSize;
   const roles = block.roles;
@@ -327,6 +375,21 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   const cos = Math.cos(radians(blockTilt));
   const sin = Math.sin(radians(blockTilt));
 
+  // Decorations (spec 5.10) need a hero and enough cue left at its onset; the underline also an
+  // upright hero row. Both are decided before sizing, so the underline's box joins the row pitch.
+  const heroIndexes = roles.flatMap((role, index) => (role === "hero" ? [index] : []));
+  const heroStartSec = heroIndexes.length > 0 ? words[heroIndexes[0]!]!.startSec : undefined;
+  const decorationTime = heroStartSec === undefined || input.cueEndSec === undefined ||
+    (input.cueEndSec - heroStartSec) * 1000 >= CAPTION_DECORATION.minRemainingMs;
+  const decorated = (kind: "underline" | "stars") => heroIndexes.length > 0 && decorationTime && (style.decorations ?? []).includes(kind);
+  const heroUpright = heroIndexes.every((index) =>
+    blockTilt === 0 &&
+    (!tile || tile.tiltsDeg.length === 0 || tile.tiltsDeg[(index + block.seed) % tile.tiltsDeg.length] === 0) &&
+    !entrances[index]!.some((frame) => frame.rotateZDeg !== undefined || frame.rotateXDeg !== undefined));
+  const underline = decorated("underline") && heroRow >= 0 && heroUpright;
+  const stars = decorated("stars");
+  const starPeak = Math.max(1, ...CAPTION_DECORATION.stars.pop.map((frame) => frame.scaleX));
+
   /** Rules 4, 5, 6 and 10 at word sizes `sizes`, which carry the fit scale `fit`, in block-local px. */
   const arrange = (sizes: readonly number[], fit: number) => {
     // Rule 4, row pitch from measured ink plus stroke (and tile padding).
@@ -334,6 +397,14 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     const inkBottom = (index: number) => measured[index]!.inkBottomEm * sizes[index]! + stroke(sizes[index]!) + padY(sizes[index]!);
     const rowInkTop = block.rows.map((row) => Math.max(...row.map(inkTop)));
     const rowInkBottom = block.rows.map((row) => Math.max(...row.map(inkBottom)));
+    const heroPx = heroIndexes.length > 0 ? sizes[heroIndexes[0]!]! : 0;
+    // The underline's centre line: 0.12 hero-em below the baseline, lower when the hero's ink hangs
+    // further down (descenders, Nastaliq), so the squiggle never crosses its own word. Its box is
+    // reserved in row pitch, below the hero row's ink.
+    const U = CAPTION_DECORATION.underline;
+    const heroInkBottom = heroRow >= 0 ? Math.max(...block.rows[heroRow]!.map(inkBottom)) : 0;
+    const underlineCenter = Math.max(U.offsetEm * heroPx, heroInkBottom + (U.clearanceEm + U.heightEm / 2) * heroPx);
+    if (underline) rowInkBottom[heroRow] = Math.max(rowInkBottom[heroRow]!, underlineCenter + (U.heightEm / 2) * heroPx);
     const baselines = [0];
     for (let k = 1; k < block.rows.length; k++) {
       baselines.push(baselines[k - 1]! + rowInkBottom[k - 1]! + style.rowGapEm * S * fit + rowInkTop[k]!);
@@ -395,9 +466,47 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       };
     });
 
+    // Decorations, block-local and upright: the underline under the hero row's start, the stars
+    // pushed out from the corners of the block's rest ink box (turned with the block about its centre).
+    const decorations: { kind: "underline" | "star"; left: number; top: number; width: number; height: number; peak: number }[] = [];
+    if (underline) {
+      const items = order[heroRow]!;
+      const first = items[0]!.index;
+      const last = items[items.length - 1]!.index;
+      const rowStart = left[first]!;
+      const rowEnd = left[last]! + measured[last]!.advanceEm * sizes[last]!;
+      const width = (rowEnd - rowStart) * U.widthFraction;
+      const height = U.heightEm * heroPx;
+      const x = style.align === "center" ? (rowStart + rowEnd - width) / 2 : mirrored ? rowEnd - width : rowStart;
+      decorations.push({ kind: "underline", left: x, top: baselines[heroRow]! + underlineCenter - height / 2, width, height, peak: 1 });
+    }
+    if (stars) {
+      const T = CAPTION_DECORATION.stars;
+      // The leading top corner, the other top corner, then the bottom corner under the second
+      // (reference 08); odd seeds mirror the set.
+      const flip = block.seed % 2 === 1 ? -1 : 1;
+      const corners = [{ side: flip, vertical: -1 }, { side: -flip, vertical: -1 }, { side: -flip, vertical: 1 }];
+      T.sizesEm.forEach((sizeEm, at) => {
+        const corner = corners[at % corners.length]!;
+        const push = T.pushEm * heroPx;
+        const x = (corner.side > 0 ? rest.right : rest.left) + corner.side * push - pivotX;
+        const y = (corner.vertical > 0 ? rest.bottom : rest.top) + corner.vertical * push - pivotY;
+        const height = sizeEm * heroPx;
+        const width = height * CAPTION_SHAPES.star.aspect;
+        const centerX = pivotX + x * cos - y * sin;
+        const centerY = pivotY + x * sin + y * cos;
+        decorations.push({ kind: "star", left: centerX - width / 2, top: centerY - height / 2, width, height, peak: starPeak });
+      });
+    }
+
     // Reserved space (spec 5.7): each word's box (and tile) at rest, turned, plus its entrance travel,
-    // scale (about each painted element's own scale origin) and turn.
+    // scale (about each painted element's own scale origin) and turn; and each decoration at its largest.
     const reserved = emptyBox();
+    for (const decoration of decorations) {
+      const growX = (decoration.width * (decoration.peak - 1)) / 2;
+      const growY = (decoration.height * (decoration.peak - 1)) / 2;
+      include(reserved, decoration.left - growX, decoration.top - growY, decoration.left + decoration.width + growX, decoration.top + decoration.height + growY);
+    }
     words.forEach((word, index) => {
       const size = sizes[index]!;
       const frames = entrances[index]!;
@@ -440,7 +549,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
         word.centerY + box.bottom + yHigh * size,
       );
     });
-    return { rest, words, reserved };
+    return { rest, words, reserved, decorations };
   };
 
   // Rule 7, fit: one scale for the whole block, so the hierarchy holds. The envelope is the
@@ -459,7 +568,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     envelopeHeight > 0 ? safeHeight / envelopeHeight : 1,
   );
   for (let index = 0; index < count; index++) px[index] = px[index]! * scale;
-  const { rest, words: local, reserved } = scale === 1 ? natural : arrange(px, scale);
+  const { rest, words: local, reserved, decorations } = scale === 1 ? natural : arrange(px, scale);
 
   // Duration cap (spec 5.7): an entrance ends within 45% of the cue time left and by the next spoken word.
   const entranceTimeScale = roles.map((_, index) => {
@@ -493,6 +602,10 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   dx += shiftX;
   dy += shiftY;
 
+  const gradient = heroIndexes.length > 0 ? captionHeroGradient(preset, style) : null;
+  const clipMargin = CAPTION_DECORATION.clipMarginEm * S * scale;
+  let star = 0;
+
   return {
     scale,
     words: local.map((word, index) => ({
@@ -523,7 +636,44 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       width: reserved.right - reserved.left,
       height: reserved.bottom - reserved.top,
     },
-    decorations: [],
+    decorations: decorations.map((decoration): PlacedDecoration => {
+      const bounds = { x: decoration.left + dx, y: decoration.top + dy, width: decoration.width, height: decoration.height };
+      const base = { bounds, startSec: heroStartSec ?? 0, shadowEmPx: S * scale };
+      if (decoration.kind === "underline") {
+        const U = CAPTION_DECORATION.underline;
+        return {
+          ...base,
+          kind: "underline",
+          shape: "squiggle",
+          color: captionDecorationColour("underline", preset, style),
+          keyframes: [],
+          wipe: {
+            startMs: U.delayMs,
+            endMs: U.delayMs + U.wipeMs,
+            direction,
+            clip: wholePixels(bounds.x - clipMargin, bounds.y - clipMargin, bounds.x + bounds.width + clipMargin, bounds.y + bounds.height + clipMargin),
+          },
+        };
+      }
+      const T = CAPTION_DECORATION.stars;
+      const delay = T.delayMs + T.staggerMs * star++;
+      return {
+        ...base,
+        kind: "star",
+        shape: "star",
+        color: captionDecorationColour("stars", preset, style),
+        keyframes: T.pop.map((frame) => ({ ...frame, at: frame.at + delay })),
+        wipe: null,
+      };
+    }),
+    gradient: gradient
+      ? {
+        top: Math.min(...heroIndexes.map((index) => local[index]!.centerY + dy + local[index]!.inkMid - measured[index]!.inkTopEm * px[index]!)),
+        bottom: Math.max(...heroIndexes.map((index) => local[index]!.centerY + dy + local[index]!.inkMid + measured[index]!.inkBottomEm * px[index]!)),
+        topColor: gradient.top,
+        bottomColor: gradient.bottom,
+      }
+      : null,
     shift: { x: shiftX, y: shiftY },
   };
 }

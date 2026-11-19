@@ -1,7 +1,8 @@
+import { CAPTION_DECORATION } from "./caption-decoration";
 import type { CaptionWordRole } from "./caption-emphasis";
 import type { CaptionFontName } from "./caption-font";
 import type { CaptionPreset } from "./caption-preset";
-import { CAPTION_MOTIONS, type CaptionAnimationName, type CaptionMotionSpec } from "./caption-style";
+import { CAPTION_MOTIONS, captionEntranceKeyframes, type CaptionAnimationName, type CaptionMotionSpec } from "./caption-style";
 
 // Dynamic Styles: caption looks where one word of a cue (the hero) is large
 // and the cue is laid out as a Caption Block of one to three rows. A style is
@@ -80,10 +81,18 @@ export interface CaptionDynamicStyle {
     /** Hard shadow of the tile in the preset's `shadowColor`, offset this far right and down. 0 = none. */
     readonly shadowEm: number;
   };
-  /** Phase 2 only. */
+  /**
+   * Vertical gradient over the hero's rest ink box, top colour to bottom colour (spec 5.10).
+   * Literal colours: style constants. Drawn only while the hero colour is the style's own
+   * (`bottom`) and the hero's motion neither scales nor turns it (`captionHeroGradient`).
+   */
   readonly gradient?: { readonly top: string; readonly bottom: string };
-  readonly decorations?: readonly ("underline" | "stars")[];
+  /** Drawn details placed by the shared geometry (`CAPTION_DECORATION`, spec 5.10). */
+  readonly decorations?: readonly CaptionDecorationKind[];
 }
+
+/** Marker's hand-drawn underline under the hero, Stack's stars at the block's corners. */
+export type CaptionDecorationKind = "underline" | "stars";
 
 const textRole = (sizeEm: number, colour: CaptionColourSlot | string = "primary"): CaptionRoleType => ({
   font: "text",
@@ -111,6 +120,16 @@ const SMALL_TEXT_SOFT_SHADOW: readonly CaptionSoftShadowLayer[] = [
 ];
 
 /**
+ * Groove (S = 64): the small-text layers at 90%. Serif caps have hairline strokes; on the bright
+ * fixture frame the catalog's single "4 px soft shadow" (black 85%, sigma 2 px) left "W/" at 2.07:1
+ * and the 80% small-text pair at 2.86:1; this is the weakest tried that reaches 3:1 (ticket 06).
+ */
+const GROOVE_SOFT_SHADOW: readonly CaptionSoftShadowLayer[] = [
+  { offsetYEm: 0.04, blurEm: 0.12, opacity: 0.9 },
+  { offsetYEm: 0.01, blurEm: 0.04, opacity: 0.9 },
+];
+
+/**
  * The Dynamic Style catalog (spec section 6). Values are starting points for
  * visual review; renderers read them, never copy them.
  */
@@ -134,6 +153,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     staggerEm: 0,
     defaultMotion: "slide",
     softShadow: HEADLINE_SOFT_SHADOW,
+    // Reference 01: light mint at the top of the hero to the hero green at the bottom.
+    gradient: { top: "#A5EBC5", bottom: "#36B780" },
   },
   /**
    * Reference 06, foreground type only (an adaptation): small sans minor words, serif body
@@ -211,6 +232,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     defaultMotion: "slide",
     accentColor: "#EF8DB9",
     softShadow: SMALL_TEXT_SOFT_SHADOW,
+    // Reference 04's squiggle under the hero.
+    decorations: ["underline"],
   },
   /** Reference 08: small lowercase rows around a huge lowercase hero, all white. */
   stack: {
@@ -230,6 +253,33 @@ export const CAPTION_DYNAMIC_STYLES = {
     staggerEm: 0,
     defaultMotion: "slide",
     softShadow: SMALL_TEXT_SOFT_SHADOW,
+    // Reference 08's white stars around the block; they follow the accent colour.
+    decorations: ["stars"],
+    accentColor: "#FFFFFF",
+  },
+  /**
+   * Reference 03: serif caps support around a pink, capitalised display hero ("display hero
+   * with serif caps support", spec section 6 rule 2). Support words are the text slot
+   * (`fontName` DM Serif Display, preset `textTransform` uppercase).
+   */
+  groove: {
+    name: "Groove",
+    layout: "stack",
+    align: "center",
+    roles: {
+      minor: textRole(1),
+      body: textRole(1),
+      // 176 px at S = 64.
+      hero: { font: "hero", sizeEm: 176 / 64, transform: "capitalize", letterSpacing: 0, colour: "highlight" },
+    },
+    noHeroSizeEm: 1.5,
+    heroFontName: "Caprasimo",
+    heroColours: ["highlight"],
+    // 8 px at S = 64.
+    rowGapEm: 8 / 64,
+    staggerEm: 0,
+    defaultMotion: "slide",
+    softShadow: GROOVE_SOFT_SHADOW,
   },
 } as const satisfies Record<string, CaptionDynamicStyle>;
 
@@ -394,12 +444,41 @@ export function captionStyleDrawsHero(style: Pick<CaptionDynamicStyle, "emphasis
   return style.emphasis !== "never";
 }
 
-/** True when some role, hero alternation or tile of `style` is drawn in the accent slot (`accentColor`). */
+/** True when some role, hero alternation, tile or decoration of `style` is drawn in the accent slot (`accentColor`). */
 export function captionStyleUsesAccent(style: CaptionDynamicStyle): boolean {
   const slots: readonly (CaptionColourSlot | string)[] = [
     ...Object.values(style.roles).map((role) => role.colour),
     ...style.heroColours,
     ...(style.tile ? Object.values(style.tile.fill) : []),
+    ...(style.decorations ?? []).map((kind) => captionDecorationSlot(kind)),
   ];
   return slots.includes("accent");
+}
+
+function captionDecorationSlot(kind: CaptionDecorationKind): CaptionColourSlot | string {
+  return kind === "underline" ? CAPTION_DECORATION.underline.colour : CAPTION_DECORATION.stars.colour;
+}
+
+/** The fill of a decoration: the underline is white, stars follow the accent colour. */
+export function captionDecorationColour(kind: CaptionDecorationKind, preset: CaptionPreset, style: CaptionDynamicStyle): string {
+  return slotColour(captionDecorationSlot(kind), preset, style);
+}
+
+/**
+ * The hero gradient a cue draws, or null for the flat hero colour (spec 5.10). Null when the
+ * style has none; when the hero colour is not the style's own (the user or a brand picked
+ * another colour, which then wins flat); and when the block's motion scales or turns the hero
+ * (scale, rotateX/Z keyframes, or a tilting motion), because the worker's gradient bands are
+ * fixed to the screen while the Studio's gradient moves with the word. Both painters ask this.
+ */
+export function captionHeroGradient(
+  preset: CaptionPreset,
+  style: CaptionDynamicStyle,
+): { readonly top: string; readonly bottom: string } | null {
+  const gradient = style.gradient;
+  if (!gradient || preset.highlightColor.toUpperCase() !== gradient.bottom.toUpperCase()) return null;
+  const motion: CaptionMotionSpec = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
+  const posed = captionEntranceKeyframes(motion, true).some((frame) =>
+    frame.scaleX !== undefined || frame.scaleY !== undefined || frame.rotateXDeg !== undefined || frame.rotateZDeg !== undefined);
+  return motion.tilt || posed ? null : gradient;
 }
