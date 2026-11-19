@@ -374,6 +374,8 @@ function BrollPreviewLayer({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+const NO_CAPTION_LAYERS: readonly CompositionCaptionVisualLayer[] = [];
+
 export function VideoPreview() {
   const prefersReducedMotion = usePrefersReducedMotion();
   const {
@@ -417,8 +419,9 @@ export function VideoPreview() {
     splitLayoutFailure,
     autoLayoutAnalysisStatus,
     reportCompositionPlanStatus,
+    reportCaptionLayers,
     compositionPlanQaFixture,
-  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "activeTool", "setActiveTool", "reportLayoutScene", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "compositionPlanQaFixture");
+  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "activeTool", "setActiveTool", "reportLayoutScene", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "reportCaptionLayers", "compositionPlanQaFixture");
   const audioApi = useAudioApi();
   const previewEditorDocument = useMemo(
     () => applyCompositionDocumentQaFixture(
@@ -985,6 +988,19 @@ export function VideoPreview() {
   useEffect(() => {
     reportCompositionPlanStatus(compositionPlanStatus);
   }, [compositionPlanStatus, reportCompositionPlanStatus]);
+  // The Captions panel preview reads the same caption layers the overlay draws.
+  const plannedCaptionLayers = useMemo(
+    () =>
+      compositionPlanResult && compositionPlanResult.status !== "invalid"
+        ? (compositionPlanResult.plan.targets
+            .find((target) => target.id === aspectRatio)
+            ?.visualLayers.filter((layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption") ?? [])
+        : NO_CAPTION_LAYERS,
+    [aspectRatio, compositionPlanResult],
+  );
+  useEffect(() => {
+    reportCaptionLayers(plannedCaptionLayers);
+  }, [plannedCaptionLayers, reportCaptionLayers]);
   const compositionPreview = useMemo(() => {
     if (compositionPlanResult?.status === "invalid") return null;
     return adoptCompositionPreviewResult(

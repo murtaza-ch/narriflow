@@ -21,8 +21,12 @@ import {
 } from "@narriflow/validators";
 import { BrandFontPicker, brandFontReference } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "../studio-shell";
-import { CaptionCue, captionFontStyle, useLiveCaption } from "../caption-style-engine";
-import type { CaptionWord } from "../use-current-caption";
+import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { CaptionCue, captionFontStyle, type CaptionCueWord } from "../caption-style-engine";
+import { CaptionBlockFit, staticTimeSource, type CaptionBlockCueInput, type CaptionTimeSource } from "../caption-block-painter";
+import { captionActiveWordIndex, captionCueWordsAt, captionLayerAt } from "../caption-cue-at";
+import type { PlaybackClock } from "../playback-clock";
+import { CAPTION_SAMPLE_LOOP_SEC, CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "../../../../../../../_shared/caption-sample-cue";
 import { PresetCard } from "./preset-card";
 import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
 import { requireStudioApi } from "../studio-api";
@@ -303,47 +307,130 @@ function EffectRow({
 
 // ─── Live cue preview ────────────────────────────────────────────────────────
 //
-// Renders the ACTUAL current caption cue with full preset styling via the
-// shared caption engine — the same renderer the on-video overlay uses.
+// Renders the ACTUAL current caption cue from the composition plan's caption
+// layers (the one cue derivation, the same layers the on-video overlay draws)
+// with the shared painters: the classic caption engine, or the block painter
+// for a Dynamic Style.
+
+/**
+ * The plan's caption layer under the playhead and its active word. State
+ * changes only when the cue or (for a classic line) the active word changes;
+ * a block cue's poses are painted from the clock by the block painter.
+ */
+function readLiveCaptionLayer(clock: PlaybackClock, layers: readonly CompositionCaptionVisualLayer[]) {
+  const timeSec = clock.getSnapshot();
+  const layer = captionLayerAt(layers, timeSec);
+  return { layer, activeIndex: layer && !layer.block ? captionActiveWordIndex(layer, timeSec) : -1 };
+}
+
+function useLiveCaptionLayer(clock: PlaybackClock, layers: readonly CompositionCaptionVisualLayer[]) {
+  const [live, setLive] = useState(() => readLiveCaptionLayer(clock, layers));
+  useEffect(() => {
+    const update = () => {
+      const next = readLiveCaptionLayer(clock, layers);
+      setLive((previous) => (previous.layer === next.layer && previous.activeIndex === next.activeIndex ? previous : next));
+    };
+    update();
+    return clock.subscribe(update);
+  }, [clock, layers]);
+  return live;
+}
+
+const PREVIEW_CANVAS_FALLBACK = { width: 1080, height: 1920 } as const;
+const SETTLED_SAMPLE = staticTimeSource(CAPTION_SAMPLE_LOOP_SEC - 0.1);
 
 function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
-  const { captionPreset, playbackClock, utterances, clipStartSec, editedTimeMap, aspectRatio, clipInfo } =
-    useStudio("captionPreset", "playbackClock", "utterances", "clipStartSec", "editedTimeMap", "aspectRatio", "clipInfo");
-  const caption = useLiveCaption(playbackClock, utterances, clipStartSec, captionPreset.wordsPerCue, editedTimeMap);
+  const { captionPreset, playbackClock, captionLayers, aspectRatio, clipInfo } =
+    useStudio("captionPreset", "playbackClock", "captionLayers", "aspectRatio", "clipInfo");
+  const live = useLiveCaptionLayer(playbackClock, captionLayers);
   const reducedMotion = useReducedMotion() ?? false;
 
   const stageRef = useRef<HTMLDivElement>(null);
-  const [stageWidth, setStageWidth] = useState(0);
+  const [stage, setStage] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) setStageWidth(entry.contentRect.width);
+      const rect = entries[0]?.contentRect;
+      if (rect) setStage({ width: rect.width, height: rect.height });
     });
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
-  const renderWidth =
-    clipAspectRatioOptions.find((o) => o.value === aspectRatio)?.width ?? 1080;
-
-  // When playback sits between utterances, fall back to the opening words so
-  // the preview always demonstrates the current styling.
-  const fallbackWords = useMemo<CaptionWord[]>(() => {
-    const text = utterances[0]?.text ?? "Your caption style";
-    return text
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, captionPreset.wordsPerCue)
-      .map((word, i) => ({ word, isActive: i === Math.min(1, captionPreset.wordsPerCue - 1) }));
-  }, [utterances, captionPreset.wordsPerCue]);
-
-  const words = caption?.visibleWords?.length ? caption.visibleWords : fallbackWords;
+  const renderOption = clipAspectRatioOptions.find((o) => o.value === aspectRatio);
+  const renderWidth = renderOption?.width ?? 1080;
+  const canvas = useMemo(
+    () => (renderOption ? { width: renderOption.width, height: renderOption.height } : PREVIEW_CANVAS_FALLBACK),
+    [renderOption],
+  );
   // The stage is narrower than the render surface; show the cue at twice the
   // true scale so it stays legible, fitted to the stage like the export.
-  const scale = stageWidth > 0 ? (stageWidth / renderWidth) * 2 : 0.5;
+  const scale = stage.width > 0 ? (stage.width / renderWidth) * 2 : 0.5;
+
+  // Between cues the first cue of the clip stands in, settled; with no cues
+  // at all (captions hidden, no transcript yet) the style's sample phrase.
+  const layer = live.layer ?? captionLayers[0] ?? null;
+  const settledAt = useMemo(
+    () => (layer && !live.layer ? staticTimeSource(layer.activeRange.endSec - 0.001) : null),
+    [layer, live.layer],
+  );
+  const sampleBlock = useMemo(
+    () => (layer ? null : captionSampleBlockCue(captionPreset, { xPct: 50, yPct: 50 }, clipInfo.captionLanguage)),
+    [layer, captionPreset, clipInfo.captionLanguage],
+  );
+
+  let cue: ReactNode = null;
+  if (stage.width > 0) {
+    const blockCue = layer?.block ? (layer as CaptionBlockCueInput) : sampleBlock;
+    if (blockCue) {
+      const timeSource: CaptionTimeSource = layer ? (settledAt ?? playbackClock) : SETTLED_SAMPLE;
+      cue = (
+        <CaptionBlockFit
+          cue={blockCue}
+          canvas={layer ? { width: layer.destination.width, height: layer.destination.height } : canvas}
+          boxWidth={stage.width}
+          boxHeight={stage.height}
+          maxScale={scale}
+          timeSource={timeSource}
+          reducedMotion={reducedMotion}
+        />
+      );
+    } else if (layer) {
+      cue = (
+        <CaptionCue
+          preset={layer.preset}
+          words={captionCueWordsAt(layer, live.layer ? playbackClock.getSnapshot() : layer.activeRange.endSec - 0.001)}
+          scale={scale}
+          frameWidth={stage.width}
+          cueKey={layer.id}
+          cueIndex={layer.cueIndex}
+          showEmojis={layer.preset.emojis === true}
+          reducedMotion={reducedMotion}
+          preformatted
+          language={layer.language}
+        />
+      );
+    } else {
+      const words: CaptionCueWord[] = CAPTION_SAMPLE_WORDS.slice(0, captionPreset.wordsPerCue).map((word, index) => ({
+        word: word.text,
+        isActive: index === Math.min(1, captionPreset.wordsPerCue - 1),
+      }));
+      cue = (
+        <CaptionCue
+          preset={captionPreset}
+          words={words}
+          scale={scale}
+          frameWidth={stage.width}
+          cueKey="sample"
+          showEmojis={captionPreset.emojis === true}
+          reducedMotion={reducedMotion}
+          language={clipInfo.captionLanguage}
+        />
+      );
+    }
+  }
 
   return (
     // Sticky on Customize so the style stays in view while its controls scroll
@@ -367,17 +454,7 @@ function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
         aria-hidden="true"
         style={{ background: "radial-gradient(120% 140% at 30% 20%, #2B3242 0%, #12151B 70%)" }}
       >
-        <CaptionCue
-          preset={captionPreset}
-          words={words}
-          scale={scale}
-          frameWidth={stageWidth}
-          cueKey={caption ? `${caption.utteranceIndex}:${caption.cueIndex}` : "sample"}
-          cueIndex={caption?.cueIndex ?? 0}
-          showEmojis={captionPreset.emojis === true}
-          reducedMotion={reducedMotion}
-          language={clipInfo.captionLanguage}
-        />
+        {cue}
       </Flex>
     </Box>
   );

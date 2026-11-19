@@ -148,7 +148,7 @@ function getActiveTranscriptState(
 ) {
   // The clock reports EDITED time (vizard-parity.md Phase B step 8) —
   // convert through the map to the absolute SOURCE seconds `utterances`'
-  // own startSec/endSec live in, same as captions (use-current-caption.ts).
+  // own startSec/endSec live in.
   const absoluteTime = editedToSource(editedTimeMap, playbackClock.getSnapshot());
   const utteranceIndex = utterances.findIndex(
     (u) => absoluteTime >= u.startSec && absoluteTime < u.endSec,

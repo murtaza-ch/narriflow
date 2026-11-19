@@ -23,6 +23,7 @@ import {
   compositionAssetRef,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
+  type CompositionCaptionVisualLayer,
 } from "@narriflow/composition-plan";
 import {
   getEffectiveClipTiming,
@@ -475,6 +476,10 @@ interface StudioState {
   isDocDirty: boolean;
   exportState: StudioExportState;
   compositionPlanStatus: StudioCompositionPlanStatus;
+  /** The composition plan's caption layers for the current aspect ratio, in
+   *  edited time: the one cue derivation the overlay and the Captions panel
+   *  preview read (reported by the video preview, which builds the plan). */
+  captionLayers: readonly CompositionCaptionVisualLayer[];
   resetState: "idle" | "resetting";
   canUndo: boolean;
   canRedo: boolean;
@@ -671,6 +676,7 @@ interface StudioFields extends StudioState {
   leavingStudio: boolean;
   handleExport: (options: StudioExportOptions) => void;
   reportCompositionPlanStatus: (status: StudioCompositionPlanStatus) => void;
+  reportCaptionLayers: (layers: readonly CompositionCaptionVisualLayer[]) => void;
   compositionPlanQaFixture: CompositionPlanQaFixture | null;
   handleUndo: () => void;
   handleRedo: () => void;
@@ -1352,6 +1358,11 @@ export function StudioShell({
     useState<StudioCompositionPlanStatus>("unresolved");
   const reportCompositionPlanStatus = useCallback(
     (status: StudioCompositionPlanStatus) => setCompositionPlanStatus(status),
+    [],
+  );
+  const [captionLayers, setCaptionLayers] = useState<readonly CompositionCaptionVisualLayer[]>([]);
+  const reportCaptionLayers = useCallback(
+    (layers: readonly CompositionCaptionVisualLayer[]) => setCaptionLayers(layers),
     [],
   );
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
@@ -2371,7 +2382,7 @@ export function StudioShell({
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
     sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, brandAudio, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy, upgradePrompts,
-    saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
+    saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus, captionLayers,
     resetState, canUndo, canRedo, canReset,
     editingElsewhere: draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership,
     handleTakeOverEditing,
@@ -2401,7 +2412,7 @@ export function StudioShell({
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, leaveStudio, leavingStudio, handleExport,
-    reportCompositionPlanStatus, compositionPlanQaFixture,
+    reportCompositionPlanStatus, reportCaptionLayers, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
     insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,
     setCensorSegments, censorWords, setCensorWords, updateProjectCensorTerms, replaceWorkspaceCensorWords, resetWorkspaceCensorWords, recordAutoCensorEvent,

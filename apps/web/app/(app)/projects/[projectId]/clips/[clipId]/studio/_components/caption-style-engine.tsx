@@ -15,8 +15,12 @@ import {
 /**
  * The ONE caption renderer for every caption surface in the web app:
  *   - interactive-caption-overlay.tsx (live WYSIWYG overlay on the video)
- *   - tool-panels/preset-card.tsx (animated preset thumbnails)
+ *   - _shared/caption-preset-preview.tsx (animated preset thumbnails)
  *   - tool-panels/captions-panel.tsx (live panel preview of the current cue)
+ *
+ * Caption Blocks (Dynamic Styles) are drawn by caption-block-painter.tsx
+ * instead: absolutely placed words from the shared block geometry, posed
+ * from the playhead.
  *
  * It mirrors the worker's ASS burn-in (apps/media/src/caption-ass.ts) layer
  * for layer, from the same spec (packages/validators/src/caption-style.ts):
@@ -58,6 +62,7 @@ import {
   CAPTION_PLATE,
   CAPTION_SOFT_SHADOW,
   applyCaptionTextTransform,
+  captionClassicAnimation,
   captionEaseProgress,
   captionFontFace,
   captionTypewriterLetterDelays,
@@ -73,11 +78,7 @@ import {
   type CaptionKeyframe,
   type CaptionMotionSpec,
   type CaptionPreset,
-  type EditedTimeMap,
-  type TranscriptUtterance,
 } from "@narriflow/validators";
-import { getCurrentCaptionState, type CaptionState } from "./use-current-caption";
-import type { PlaybackClock } from "./playback-clock";
 
 // ─── Colour + font helpers ───────────────────────────────────────────────────
 
@@ -89,7 +90,7 @@ export function hexToRgba(hex: string, opacity: number): string {
 }
 
 /** CSS variable app/caption-fonts.ts registers for a caption face. */
-function captionFontVariable(fontName: CaptionFontName): string {
+export function captionFontVariable(fontName: CaptionFontName): string {
   return `--font-caption-${fontName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
 
@@ -110,7 +111,7 @@ export function captionFontStyle(fontName: CaptionFontName, language?: string | 
  * the preview uses the same distance (scaled to the preview) as its CSS
  * perspective so flips foreshorten alike.
  */
-const ASS_CAMERA_DISTANCE_PX = 20000;
+export const ASS_CAMERA_DISTANCE_PX = 20000;
 
 // ─── Keyframes → framer-motion ───────────────────────────────────────────────
 
@@ -160,53 +161,6 @@ function stepTimes(steps: readonly { at: number }[], totalMs: number) {
     times.push(step.at / totalMs);
   });
   return times;
-}
-
-// ─── Live caption subscription ────────────────────────────────────────────────
-
-function captionSignature(caption: CaptionState | null) {
-  if (!caption) return "none";
-  return `${caption.utteranceIndex}:${caption.cueIndex}:${caption.activeWordIndex}:${caption.visibleWords
-    .map((word) => `${word.word}:${word.isActive ? 1 : 0}`)
-    .join("|")}`;
-}
-
-/** Subscribes to the playback clock and returns the current caption cue.
- *  `editedTimeMap` converts the clock's edited-timeline seconds to absolute
- *  source seconds before matching cues (see getCurrentCaptionState's doc
- *  comment) — omit it only where there's genuinely no notion of one. */
-export function useLiveCaption(
-  playbackClock: PlaybackClock,
-  utterances: TranscriptUtterance[],
-  clipStartSec: number,
-  wordsPerCue: number,
-  editedTimeMap?: EditedTimeMap,
-): CaptionState | null {
-  const [caption, setCaption] = useState<CaptionState | null>(() =>
-    getCurrentCaptionState(playbackClock.getSnapshot(), utterances, clipStartSec, wordsPerCue, editedTimeMap),
-  );
-  const signatureRef = useRef(captionSignature(caption));
-
-  useEffect(() => {
-    const update = () => {
-      const next = getCurrentCaptionState(
-        playbackClock.getSnapshot(),
-        utterances,
-        clipStartSec,
-        wordsPerCue,
-        editedTimeMap,
-      );
-      const signature = captionSignature(next);
-      if (signature === signatureRef.current) return;
-      signatureRef.current = signature;
-      setCaption(next);
-    };
-
-    update();
-    return playbackClock.subscribe(update);
-  }, [clipStartSec, playbackClock, utterances, wordsPerCue, editedTimeMap]);
-
-  return caption;
 }
 
 // ─── Cue renderer ─────────────────────────────────────────────────────────────
@@ -311,7 +265,7 @@ function measureCueInk(
 }
 
 /** Text with the cue's letter spacing switched off for scripts that take none (`\fsp0` in the burn-in). */
-function CaptionText({ text }: { text: string }) {
+export function CaptionText({ text }: { text: string }) {
   if (!hasUnspacedScript(text)) return <>{text}</>;
   return (
     <>
@@ -379,7 +333,8 @@ export function CaptionCue({
   const [measured, setMeasured] = useState<CueInkMeasure | null>(null);
   const customFont = useBrandFont(preset.fontAsset);
   const face = customFont?.face ?? captionFontFace(preset.fontName);
-  const spec: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
+  // A classic line cannot draw a dynamic-only motion (slide): it plays `fade`, as in the burn-in.
+  const spec: CaptionMotionSpec = CAPTION_MOTIONS[captionClassicAnimation(preset)];
   const emPx = preset.fontSize * scale;
   const stroke = preset.outlineWidth * scale;
   const outer = (preset.outerOutlineWidth ?? 0) * scale;

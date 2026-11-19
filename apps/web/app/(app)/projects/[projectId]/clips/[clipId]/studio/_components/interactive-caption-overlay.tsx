@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { Box, Flex } from "@chakra-ui/react";
 import { motion, useMotionValue, useReducedMotion } from "framer-motion";
 import { useStudio } from "./studio-shell";
@@ -9,7 +9,9 @@ import {
   clipAspectRatioOptions,
 } from "@narriflow/validators";
 import { CaptionCue } from "./caption-style-engine";
-import { captionWordSegmentEnd, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { CaptionBlockWords, useCaptionBlockPaint, type CaptionBlockCueInput } from "./caption-block-painter";
+import { captionCueWordsAt } from "./caption-cue-at";
+import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -174,7 +176,8 @@ export function InteractiveCaptionOverlay({
     deselectCaption,
     aspectRatio,
     endCoalesce,
-  } = useStudio("setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "aspectRatio", "endCoalesce");
+    playbackClock,
+  } = useStudio("setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "aspectRatio", "endCoalesce", "playbackClock");
   const captionPreset = layer.preset;
 
   // Vizard-parity Phase C subtitle visibility toggle — hidden captions must
@@ -190,21 +193,24 @@ export function InteractiveCaptionOverlay({
   }, [isVisible, captionSelected, deselectCaption]);
 
   const caption = {
-    visibleWords: layer.words.map((word, index) => ({
-      word: word.text,
-      emoji: word.emoji,
-      ...(word.spaceBefore === undefined ? {} : { spaceBefore: word.spaceBefore }),
-      durationMs: Math.max(50, Math.round((word.endSec - word.startSec) * 1000)),
-      // The export's own window for this word's emoji: through the next word's start.
-      emojiWindow: { startSec: word.startSec, endSec: captionWordSegmentEnd(layer.words, index) },
-      isActive:
-        currentTime >= word.startSec &&
-        (currentTime < word.endSec ||
-          (index === layer.words.length - 1 && currentTime <= word.endSec)),
-    })),
+    visibleWords: captionCueWordsAt(layer, currentTime),
     utteranceIndex: layer.cueIndex,
   };
   const reducedMotion = useReducedMotion() ?? false;
+
+  // A Dynamic Style cue: words measured, placed by the shared geometry and
+  // posed from the playback clock by the block painter (no per-frame state).
+  const blockCue = layer.block ? (layer as CaptionBlockCueInput) : null;
+  const blockCanvas = useMemo(
+    () => ({ width: layer.destination.width, height: layer.destination.height }),
+    [layer.destination.width, layer.destination.height],
+  );
+  const blockPaint = useCaptionBlockPaint(blockCue, blockCanvas);
+  const blockBounds = blockPaint?.layout.bounds ?? null;
+  const blockOrigin = useMemo(
+    () => ({ x: blockBounds?.x ?? 0, y: blockBounds?.y ?? 0 }),
+    [blockBounds?.x, blockBounds?.y],
+  );
 
   const [hovered, setHovered] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
@@ -332,6 +338,64 @@ export function InteractiveCaptionOverlay({
 
   const showHoverBorder = hovered && !captionSelected;
   const showSelection = captionSelected;
+
+  if (layer.block) {
+    // The block's bounds (rest ink, strokes and reserved entrance travel) are
+    // the hit area. Dragging moves the stored anchor by the drag delta, as
+    // the classic line does; the safe-area shift stays a rendering concern.
+    if (!blockPaint || !blockBounds) return null;
+    const blockScale = containerWidth > 0 ? containerWidth / layer.destination.width : displayScale;
+    return (
+      <>
+        <SnapGuideLines guides={snapGuides} />
+        <div
+          style={{
+            position: "absolute",
+            left: `${blockBounds.x * blockScale}px`,
+            top: `${blockBounds.y * blockScale}px`,
+            width: `${blockBounds.width * blockScale}px`,
+            height: `${blockBounds.height * blockScale}px`,
+            zIndex: 5,
+          }}
+        >
+          <motion.div
+            style={{
+              x: motionX,
+              y: motionY,
+              position: "absolute",
+              inset: 0,
+              cursor: captionSelected ? (isResizing ? "nwse-resize" : "move") : "pointer",
+            }}
+            drag={captionSelected && !isResizing}
+            dragConstraints={videoContainerRef}
+            dragMomentum={false}
+            dragElastic={0}
+            onDrag={handleDrag}
+            onDragEnd={handleDragEnd}
+            onClick={handleClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+          >
+            <SelectionFrame selected={showSelection} hovered={showHoverBorder} />
+            {showSelection && (
+              <DragResizeHandles
+                onResizeStart={handleResizeStart}
+                onResize={handleResize}
+                onResizeEnd={handleResizeEnd}
+              />
+            )}
+            <CaptionBlockWords
+              paint={blockPaint}
+              scale={blockScale}
+              origin={blockOrigin}
+              timeSource={playbackClock}
+              reducedMotion={reducedMotion}
+            />
+          </motion.div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>

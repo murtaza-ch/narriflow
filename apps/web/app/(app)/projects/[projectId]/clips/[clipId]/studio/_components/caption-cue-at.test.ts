@@ -1,0 +1,72 @@
+import { describe, expect, test } from "bun:test";
+import { planClipComposition, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { captionPresetSchema, editorDocumentSchema, getCaptionPresetById, studioEditsSchema } from "@narriflow/validators";
+import { captionActiveWordIndex, captionCueWordsAt, captionLayerAt } from "./caption-cue-at";
+
+function planLayers(presetId: string, deletedRanges: { startSec: number; endSec: number }[] = []): CompositionCaptionVisualLayer[] {
+  const words = [
+    ["Nobody", 1, 1.4],
+    ["feels", 1.45, 1.8],
+    ["ready.", 1.85, 2.3],
+    ["You", 2.9, 3.1],
+    ["start", 3.15, 3.5],
+    ["anyway", 3.55, 4],
+  ] as const;
+  const document = editorDocumentSchema.parse({
+    version: 1,
+    clipStartSec: 0,
+    clipEndSec: 10,
+    captionPreset: captionPresetSchema.parse(getCaptionPresetById(presetId)!.preset),
+    transcriptSlice: [{
+      index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 1, endSec: 4, confidence: 1,
+      text: words.map(([word]) => word).join(" "),
+      words: words.map(([word, startSec, endSec]) => ({ word, startSec, endSec, confidence: 1 })),
+    }],
+    studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+    brollUrl: null,
+    deletedRanges,
+  });
+  const result = planClipComposition({
+    document,
+    captionLanguage: "en",
+    source: { identity: "source:cue-at", kind: "video", width: 1920, height: 1080 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" }, music: { state: "missing" } },
+    capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
+    targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan.targets[0]!.visualLayers.filter((layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption");
+}
+
+describe("caption cues read from the plan (the one cue derivation)", () => {
+  test("the layer under the playhead, and none between cues", () => {
+    const layers = planLayers("bold-pop");
+    expect(layers.length).toBeGreaterThan(1);
+    const first = layers[0]!;
+    expect(captionLayerAt(layers, first.activeRange.startSec)).toBe(first);
+    expect(captionLayerAt(layers, first.activeRange.endSec - 0.001)).toBe(first);
+    expect(captionLayerAt(layers, 0.2)).toBeNull();
+  });
+
+  test("a cut moves the cue words with the plan: no deleted word is shown", () => {
+    const layers = planLayers("bold-pop", [{ startSec: 1.44, endSec: 1.82 }]);
+    const text = layers.flatMap((layer) => layer.words.map((word) => word.text.toLowerCase()));
+    expect(text).not.toContain("feels");
+  });
+
+  test("classic words carry the active word, emoji window and duration", () => {
+    const layer = planLayers("bold-pop")[0]!;
+    const second = layer.words[1]!;
+    const words = captionCueWordsAt(layer, second.startSec + 0.01);
+    expect(words.map((word) => word.isActive)).toEqual(layer.words.map((_, index) => index === 1));
+    expect(words[1]!.emojiWindow).toEqual({ startSec: second.startSec, endSec: layer.words[2]?.startSec ?? second.endSec });
+    expect(captionActiveWordIndex(layer, layer.words.at(-1)!.endSec)).toBe(layer.words.length - 1);
+  });
+
+  test("a Dynamic Style layer carries its block for the block painter", () => {
+    const layers = planLayers("headline");
+    expect(layers.every((layer) => layer.block !== undefined)).toBe(true);
+    expect(captionLayerAt(layers, layers[0]!.activeRange.startSec)?.block?.style).toBe("headline");
+  });
+});

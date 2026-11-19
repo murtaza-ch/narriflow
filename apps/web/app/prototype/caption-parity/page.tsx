@@ -1,15 +1,31 @@
 import { notFound } from "next/navigation";
-import { CaptionParity } from "./caption-parity";
+import manifest from "../../../../../packages/composition-plan/src/__fixtures__/dynamic-captions/manifest.json";
+import { CaptionParity, DynamicCaptionParity, type DynamicCaptionCase } from "./caption-parity";
 
 export const metadata = {
   title: "Caption parity harness",
   robots: { index: false, follow: false },
 };
 
-// PROTOTYPE — throwaway. Renders the studio caption engine at export scale
-// for one preset and moment, to screenshot beside the libass burn-in frame.
-export default async function Page({ searchParams }: { searchParams: Promise<{ preset?: string; t?: string }> }) {
+// Renders the studio caption painters at export scale, to screenshot beside
+// the worker's libass frames (spec section 9, "Studio frames").
+//   ?case=<fixture id>&t=<seconds>[&scale=<display px per canvas px>][&play]
+//     a Dynamic Style case from packages/composition-plan/src/__fixtures__/dynamic-captions,
+//     through the real composition plan and block painter, on a 1080x1920 canvas.
+//     `play` loops the playhead from 0 to just past the cue instead (per-frame cost checks).
+//   ?preset=<preset id>&t=<seconds>
+//     the classic engine on a fixed script (the original harness).
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ preset?: string; case?: string; t?: string; scale?: string; play?: string }>;
+}) {
   if (process.env.NODE_ENV === "production") notFound();
-  const { preset = "bold-pop", t = "1.1" } = await searchParams;
-  return <CaptionParity presetId={preset} time={Number(t)} />;
+  const { preset = "bold-pop", case: caseId, t, scale, play } = await searchParams;
+  if (caseId !== undefined) {
+    const fixture = (manifest.cases as unknown as readonly DynamicCaptionCase[]).find((entry) => entry.id === caseId);
+    if (!fixture) notFound();
+    return <DynamicCaptionParity fixture={fixture} time={Number(t ?? fixture.words.at(-1)!.endSec - 0.05)} scale={Number(scale ?? 1)} play={play !== undefined} />;
+  }
+  return <CaptionParity presetId={preset} time={Number(t ?? "1.1")} />;
 }

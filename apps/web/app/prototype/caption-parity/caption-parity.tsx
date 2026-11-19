@@ -1,9 +1,27 @@
 "use client";
 
-// PROTOTYPE — throwaway. Same transcript and timing as the worker-side libass
-// harness, rendered at half export scale (540 x 960) on the same background.
-import { CAPTION_POSITION_Y_DEFAULTS, CAPTION_PRESETS } from "@narriflow/validators";
+// Studio caption parity harness (spec section 9). The classic mode renders
+// the same transcript and timing as the worker-side libass harness at half
+// export scale (540 x 960). The fixture mode renders a Dynamic Style case
+// through the real composition plan and the block painter at export scale.
+import { useCallback, useMemo, useState } from "react";
+import { planClipComposition, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import {
+  CAPTION_POSITION_Y_DEFAULTS,
+  CAPTION_PRESETS,
+  captionPresetSchema,
+  editorDocumentSchema,
+  getCaptionPresetById,
+  studioEditsSchema,
+} from "@narriflow/validators";
 import { CaptionCue } from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/caption-style-engine";
+import {
+  CaptionBlockFrame,
+  loopTimeSource,
+  staticTimeSource,
+  type CaptionBlockCueInput,
+  type CaptionBlockPaint,
+} from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/caption-block-painter";
 
 const SCRIPT = [
   "The biggest mistake people make is waiting until they feel ready.",
@@ -62,6 +80,124 @@ export function CaptionParity({ presetId, time }: { presetId: string; time: numb
           />
         </div>
       )}
+    </div>
+  );
+}
+
+/** One case of `packages/composition-plan/src/__fixtures__/dynamic-captions/manifest.json`. */
+export interface DynamicCaptionCase {
+  readonly id: string;
+  readonly presetId: string;
+  readonly preset: Record<string, unknown>;
+  readonly language: string;
+  readonly words: readonly { readonly word: string; readonly key: string; readonly startSec: number; readonly endSec: number; readonly spaceBefore?: boolean }[];
+  readonly overrides: Record<string, "hero" | "pair" | "plain">;
+}
+
+const CANVAS = { width: 1080, height: 1920 } as const;
+
+/** The case's one caption layer, from the same plan the Studio and the worker build. */
+function fixtureCaptionLayer(fixture: DynamicCaptionCase): CompositionCaptionVisualLayer | null {
+  const words = fixture.words;
+  const document = editorDocumentSchema.parse({
+    version: 1,
+    clipStartSec: 0,
+    clipEndSec: 20,
+    captionPreset: captionPresetSchema.parse({ ...getCaptionPresetById(fixture.presetId)?.preset, ...fixture.preset }),
+    transcriptSlice: [
+      {
+        index: 0,
+        speaker: 0,
+        speakerLabel: "Speaker 1",
+        startSec: words[0]!.startSec,
+        endSec: words[words.length - 1]!.endSec,
+        text: words.map((word) => word.word).join(" "),
+        confidence: 1,
+        words: words.map(({ key: _key, ...word }) => ({ ...word, confidence: 1 })),
+      },
+    ],
+    studioEdits: studioEditsSchema.parse({ framing: { mode: "center" }, captionEmphasis: fixture.overrides }),
+    brollUrl: null,
+    deletedRanges: [],
+  });
+  const result = planClipComposition({
+    document,
+    captionLanguage: fixture.language,
+    source: { identity: "source:parity", kind: "video", width: 1920, height: 1080 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" }, music: { state: "missing" } },
+    capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
+    targets: [{ id: "vertical", aspectRatio: "9:16", width: CANVAS.width, height: CANVAS.height }],
+  });
+  if (result.status === "invalid") return null;
+  return result.plan.targets[0]!.visualLayers.find((layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption") ?? null;
+}
+
+/**
+ * A fixture case frozen at `time` (edited seconds), on a 1080x1920 canvas
+ * drawn at `scale` display px per canvas px over the green-studio backdrop.
+ * The page reports the layout (each word's size, baseline and centre in
+ * canvas px) in `<script id="metrics">` and sets `data-ready` once painted.
+ * With `play`, the playhead loops instead, for per-frame cost checks.
+ */
+export function DynamicCaptionParity({
+  fixture,
+  time,
+  scale,
+  play = false,
+}: {
+  fixture: DynamicCaptionCase;
+  time: number;
+  scale: number;
+  /** Loop the playhead from 0 to 0.3 s past the cue instead of freezing it. */
+  play?: boolean;
+}) {
+  const layer = useMemo(() => fixtureCaptionLayer(fixture), [fixture]);
+  const loopSec = (layer?.activeRange.endSec ?? 0) + 0.3;
+  const timeSource = useMemo(() => (play ? loopTimeSource(loopSec) : staticTimeSource(time)), [play, loopSec, time]);
+  const [paint, setPaint] = useState<CaptionBlockPaint | null>(null);
+  const onPaint = useCallback((next: CaptionBlockPaint) => setPaint(next), []);
+  const width = CANVAS.width * scale;
+  const height = CANVAS.height * scale;
+  const metrics = paint
+    ? {
+        case: fixture.id,
+        t: time,
+        scale,
+        canvas: CANVAS,
+        activeRange: paint.cue.activeRange,
+        blockScale: paint.layout.scale,
+        bounds: paint.layout.bounds,
+        words: paint.words.map((word, index) => ({
+          text: word.text,
+          role: paint.cue.block.roles[index],
+          startSec: word.startSec,
+          visible: time >= word.startSec && time <= paint.cue.activeRange.endSec,
+          ...word.placed,
+        })),
+      }
+    : null;
+  return (
+    <div
+      data-parity-frame
+      data-scale={scale}
+      data-ready={paint ? "1" : undefined}
+      style={{
+        position: "relative",
+        width,
+        height,
+        overflow: "hidden",
+        background: "#000 url(/images/caption-backdrops/green-studio.webp) center / cover no-repeat",
+      }}
+    >
+      {layer?.block ? (
+        <CaptionBlockFrame cue={layer as CaptionBlockCueInput} canvas={CANVAS} scale={scale} timeSource={timeSource} onPaint={onPaint} />
+      ) : (
+        <p style={{ color: "#fff", padding: 16, font: "16px system-ui" }}>Case {fixture.id} has no Caption Block.</p>
+      )}
+      {metrics ? (
+        <script type="application/json" id="metrics">{JSON.stringify(metrics)}</script>
+      ) : null}
     </div>
   );
 }

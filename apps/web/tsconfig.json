@@ -5,6 +5,7 @@
     "paths": {
       "@/*": ["./*"],
       "@narriflow/caption-fonts/bidi-order": ["../../packages/caption-fonts/src/bidi-order.ts"],
+      "@narriflow/caption-fonts/caption-block": ["../../packages/caption-fonts/src/caption-block.ts"],
       "@narriflow/caption-fonts/emoji": ["../../packages/caption-fonts/src/emoji.ts"],
       "@narriflow/caption-fonts/glyph-coverage": ["../../packages/caption-fonts/src/glyph-coverage.ts"],
       "@narriflow/caption-fonts/locale-precedence": ["../../packages/caption-fonts/src/locale-precedence.ts"],

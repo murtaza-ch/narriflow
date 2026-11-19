@@ -15,6 +15,8 @@ import {
 } from "@narriflow/validators";
 import { useStudio } from "../studio-shell";
 import { CaptionCue } from "../caption-style-engine";
+import { CaptionBlockFit, staticTimeSource } from "../caption-block-painter";
+import { CAPTION_SAMPLE_LOOP_SEC, captionSampleBlockCue } from "../../../../../../../_shared/caption-sample-cue";
 import { brandQueries } from "@narriflow/api-client/brand";
 import { requireStudioApi } from "../studio-api";
 import { useStudioApi } from "../use-studio-api";
@@ -231,15 +233,20 @@ function LogoSlider({
 /** The preset's sample cue, still, in its own face and colors on a small dark frame. */
 const THUMB_W = 92;
 const SAMPLE_WORDS = ["make", "it", "pop"];
+const THUMB_H = 54;
+const THUMB_CANVAS = { width: 1080, height: 1920 } as const;
+const SETTLED_SAMPLE = staticTimeSource(CAPTION_SAMPLE_LOOP_SEC - 0.1);
 
 function TemplateThumb({ preset }: { preset: CaptionPreset }) {
+  // A Dynamic Style shows its sample block, settled and fitted to the thumbnail.
+  const blockCue = useMemo(() => captionSampleBlockCue(preset, { xPct: 50, yPct: 50 }), [preset]);
   // Show as many sample words as the preset puts on screen, the last one active.
   const shown = SAMPLE_WORDS.slice(-Math.min(preset.wordsPerCue, SAMPLE_WORDS.length));
   const words = shown.map((word, index) => ({ word, isActive: index === shown.length - 1 }));
   return (
     <Flex
       w={`${THUMB_W}px`}
-      h="54px"
+      h={`${THUMB_H}px`}
       flexShrink={0}
       align="center"
       justify="center"
@@ -248,7 +255,19 @@ function TemplateThumb({ preset }: { preset: CaptionPreset }) {
       bg="studio.canvas"
       aria-hidden
     >
-      <CaptionCue preset={preset} words={words} scale={(THUMB_W * 1.7) / 1080} frameWidth={THUMB_W} cueKey="thumb" reducedMotion />
+      {blockCue ? (
+        <CaptionBlockFit
+          cue={blockCue}
+          canvas={THUMB_CANVAS}
+          boxWidth={THUMB_W}
+          boxHeight={THUMB_H}
+          maxScale={(THUMB_W * 1.7) / 1080}
+          timeSource={SETTLED_SAMPLE}
+          reducedMotion
+        />
+      ) : (
+        <CaptionCue preset={preset} words={words} scale={(THUMB_W * 1.7) / 1080} frameWidth={THUMB_W} cueKey="thumb" reducedMotion />
+      )}
     </Flex>
   );
 }
