@@ -2,7 +2,7 @@
 
 **What to build:** The five phase 1 styles separate clearly from each other and match their references more closely, and cues stop ending on a stray function word. From the Opus visual review of the 05b sheets (2026-11-19) with the orchestrator's calls.
 
-**Blocked by:** 06 (it edits the same catalog and font files).
+**Blocked by:** 06 (done).
 
 **Status:** ready-for-agent
 
@@ -16,6 +16,9 @@ Spec: [../spec.md](../spec.md). Update the spec's section 6 catalog rows and 5.4
 4. **Marker.** Support words to Inter SemiBold at about 52 px (hero stays Poppins ExtraBold lowercase), so the pair follows section 6 rule 2.
 5. **Editorial.** `staggerEm` about 0.6 (rows visibly offset, alternating by seed); minor sans 52 px in white `#FFFFFF`; body serif 68 px; hero unchanged. Check legibility on the bright frame.
 6. **Cutout.** Anton instead of Bebas Neue, S about 110 so a 5-word row spans about 80% of the frame (the fit clamp handles long words); pink tiles only for words of 1–2 letters (tile colour by letter count, not by minor role); the `drop` word track compressed to 0–90 ms (rule 6). Re-check the tilt reads at the new size.
+
+7. **Groove.** Support caps read smaller than reference 03: raise support from 64 to about 80 px (keep hero 176 px, check rule 1).
+8. **Stack stars.** Smaller and further out than reference 08: sizes 0.36 and 0.26 hero-em, pushed out 0.12 hero-em instead of 0.3, one star overlapping the hero's top-right corner as in 08.
 
 Render contact sheets for all six styles (worker vs Studio, three backgrounds, entrance moments, references) into `scratchpad/06b/` and record final values in the ticket.
 
