@@ -223,6 +223,20 @@ describe("Caption Blocks in the plan", () => {
     expect(layers[0]!.block).toBeUndefined();
   });
 
+  test("a one-word untimed utterance leaves the next cue's block unchanged", () => {
+    const next: FixtureWord[] = [
+      { word: "money", key: "9000", startSec: 9, endSec: 9.4 },
+      { word: "is", key: "9450", startSec: 9.45, endSec: 9.6 },
+    ];
+    const bare = captionLayers(document({ preset: headline, utterances: [utterance(next, 2)] }), "en");
+    const untimed = { ...utterance(words, 1), startSec: 5, endSec: 6, text: "money", words: [] };
+    const layers = captionLayers(document({ preset: headline, utterances: [untimed, utterance(next, 2)] }), "en");
+    expect(layers).toHaveLength(2);
+    expect(layers[0]!.block).toBeUndefined();
+    expect(bare[0]!.block!.roles).toContain("hero");
+    expect(layers[1]!.block!.roles).toEqual(bare[0]!.block!.roles);
+  });
+
   test("dub captions get automatic roles with null keys and a cue-index seed", () => {
     const override: CaptionOverride = {
       language: "en",
@@ -290,6 +304,21 @@ describe("soft cue breaks in the plan (every preset)", () => {
     ];
     const layers = captionLayers(document({ preset: classic, utterances: [utterance(paused)] }), "en");
     expect(layers.map((layer) => layer.words.map((word) => word.text))).toEqual([["one", "two"], ["three", "four"]]);
+  });
+
+  test("dub captions keep the break of a punctuation-only token hidden by the toggle", () => {
+    const override: CaptionOverride = {
+      language: "en",
+      segments: [[
+        { text: "So", startSec: 0, endSec: 0.2 },
+        { text: "here", startSec: 0.25, endSec: 0.45 },
+        { text: "\u2014", startSec: 0.46, endSec: 0.48 },
+        { text: "we", startSec: 0.5, endSec: 0.7 },
+        { text: "go", startSec: 0.75, endSec: 0.95 },
+      ]],
+    };
+    const layers = captionLayers(document({ preset: { ...classic, punctuation: false }, utterances: [utterance(phrase)] }), "en", override);
+    expect(layers.map((layer) => layer.words.map((word) => word.text))).toEqual([["So", "here"], ["we", "go"]]);
   });
 
   test("dub captions break at clauses too", () => {

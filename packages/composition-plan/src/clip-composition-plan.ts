@@ -2512,6 +2512,21 @@ export function captionCueBlock(
   };
 }
 
+/**
+ * The raw text each visible token contributes to `captionSoftBreaks`. A token
+ * the Punctuation toggle left empty (a lone dash or full stop) is not drawn,
+ * but it still ends a phrase, so its text joins the visible token before it.
+ * Shared by the transcript and dub caption paths.
+ */
+function captionBreakRaws(tokens: readonly { readonly raw: string; readonly visible: boolean }[]): string[] {
+  const raws: string[] = [];
+  for (const token of tokens) {
+    if (token.visible) raws.push(token.raw);
+    else if (raws.length > 0) raws[raws.length - 1] += token.raw;
+  }
+  return raws;
+}
+
 /** A grouped cue waiting for its roles: the scorer runs once over all of a target's cues. */
 interface PendingCaptionCue {
   /** Index into the target's caption layers, or null for an untimed utterance (scored, never a block). */
@@ -2553,11 +2568,14 @@ function captionLayersForTarget(input: {
 
   if (captionOverride) {
     for (const [segmentIndex, segment] of captionOverride.segments.entries()) {
+      const hidden: { raw: string; visible: boolean }[] = [];
       const visibleWords = segment.flatMap((word) => {
         const text = formatCaptionWord(word.text, { punctuation });
         const formatted = applyCaptionTextTransform(text, preset.textTransform, language);
+        hidden.push({ raw: word.text, visible: formatted !== "" });
         return formatted ? [{ word, text, formatted }] : [];
       });
+      const breakRaws = captionBreakRaws(hidden);
       const emphasis = visibleWords.map((entry, index): CaptionEmphasisWord => ({
         key: null,
         raw: entry.word.text,
@@ -2571,7 +2589,7 @@ function captionLayersForTarget(input: {
       const groups = groupCaptionTokens(
         visibleWords.map((entry) => entry.formatted),
         wordsPerCue,
-        captionSoftBreaks(visibleWords.map((entry) => ({ raw: entry.word.text, startSec: entry.word.startSec, endSec: entry.word.endSec }))),
+        captionSoftBreaks(visibleWords.map((entry, index) => ({ raw: breakRaws[index]!, startSec: entry.word.startSec, endSec: entry.word.endSec }))),
       );
       for (const [groupIndex, range] of groups.entries()) {
         const group = visibleWords.slice(range.start, range.end);
@@ -2621,9 +2639,8 @@ function captionLayersForTarget(input: {
       text: string;
       formatted: string;
       masked: boolean;
-      /** Raw text for soft breaks, with any dropped punctuation-only tokens that follow. */
-      breakRaw: string;
     }[] = [];
+    const breakTokens: { raw: string; visible: boolean }[] = [];
     for (const [wordIndex, word] of utterance.words.entries()) {
       const range = sourceWordToEdited(editedTimeMap, word);
       if (!range) continue;
@@ -2643,14 +2660,12 @@ function captionLayersForTarget(input: {
       // Strip punctuation, then mask, then case: see censoredCaptionWordText.
       const text = censoredCaptionWordText(word.word, maskSegment?.captionMaskPolicy ?? null, { punctuation });
       const formatted = applyCaptionTextTransform(text, preset.textTransform, language);
-      if (!formatted) {
-        // A punctuation-only token hidden by the Punctuation toggle still ends a phrase.
-        const previous = visibleWords[visibleWords.length - 1];
-        if (previous) previous.breakRaw += word.word;
-        continue;
-      }
-      visibleWords.push({ word, range, text, formatted, masked: maskSegment !== undefined, breakRaw: word.word });
+      // A punctuation-only token hidden by the Punctuation toggle still ends a phrase.
+      breakTokens.push({ raw: word.word, visible: formatted !== "" });
+      if (!formatted) continue;
+      visibleWords.push({ word, range, text, formatted, masked: maskSegment !== undefined });
     }
+    const breakRaws = captionBreakRaws(breakTokens);
 
     if (utterance.words.length > 0) {
       const emphasis = visibleWords.map((entry, index): CaptionEmphasisWord => ({
@@ -2666,7 +2681,7 @@ function captionLayersForTarget(input: {
       const groups = groupCaptionTokens(
         visibleWords.map((entry) => entry.formatted),
         wordsPerCue,
-        captionSoftBreaks(visibleWords.map((entry) => ({ raw: entry.breakRaw, ...entry.range }))),
+        captionSoftBreaks(visibleWords.map((entry, index) => ({ raw: breakRaws[index]!, ...entry.range }))),
       );
       for (const [groupIndex, range] of groups.entries()) {
         const group = visibleWords.slice(range.start, range.end);
@@ -2729,6 +2744,7 @@ function captionLayersForTarget(input: {
         utteranceFinal: true,
         pauseBeforeSec: pauseBefore(range.startSec, range.endSec),
         masked: false,
+        untimed: true,
       }],
       blockWords: [],
     });

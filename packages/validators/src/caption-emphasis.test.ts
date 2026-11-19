@@ -341,13 +341,31 @@ describe("repeat penalty", () => {
 });
 
 describe("untimed utterances and scripts", () => {
+  /** A cue holding one caption word that stands for a whole utterance. */
+  function untimedCue(raw: string, utt: number): CaptionEmphasisWord[] {
+    return build([[{ raw, dur: 3, utt }]]).map((cue) => cue.map((word) => ({ ...word, untimed: true })))[0]!;
+  }
+
   test("one caption word holding a whole utterance gets no hero", () => {
-    const cues = build([[{ raw: "this whole line had no word timings 2026", dur: 3 }], ["we", "made", "7", "sales"]]);
+    const cues = [untimedCue("this whole line had no word timings 2026", 0), ...build([["we", "made", "7", "sales"]])];
     expect(roles(cues)).toEqual([
       { roles: ["body"], heroSpan: null },
       { roles: ["minor", "body", "hero", "body"], heroSpan: [2, 2] },
     ]);
     expect(baselineCaptionHero({ cues, language: "en" })[0]).toBeNull();
+  });
+
+  test("a one-word untimed utterance does not change the next cue's hero", () => {
+    const timed = build([["so", "money", "talks", "loud."], ["money", "is", "power"]]);
+    const run = (cues: CaptionEmphasisWord[][]) =>
+      assignCaptionRoles({ cues, language: "en", overrides: {}, policy: "auto" });
+    const without = run(timed);
+    const between = [timed[0]!, untimedCue("money", 1), timed[1]!];
+    const withUntimed = run(between);
+    expect(withUntimed[1]).toEqual({ roles: ["body"], heroSpan: null });
+    expect(withUntimed[2]).toEqual(without[1]);
+    expect(withUntimed[0]).toEqual(without[0]);
+    expect(baselineCaptionHero({ cues: between, language: "en" })[1]).toBeNull();
   });
 
   test("Urdu in Arabic script, with Arabic letter forms folded", () => {

@@ -256,6 +256,7 @@ function clipCues(clip: ExportClip): ClipCue[] {
           utteranceFinal: true,
           pauseBeforeSec: pause,
           masked: false,
+          untimed: true,
         }],
         display: [{ text: utterance.text, startSec: round(range.startSec), endSec: round(range.endSec), pauseBeforeSec: round(pause) }],
       });

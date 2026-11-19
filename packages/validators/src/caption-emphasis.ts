@@ -41,6 +41,12 @@ export interface CaptionEmphasisWord {
   readonly pauseBeforeSec: number;
   /** A censor caption mask applies. */
   readonly masked: boolean;
+  /**
+   * The word stands for a whole utterance with no word timings. Such a cue
+   * gets no hero, takes no part in timing or topic statistics, and resets the
+   * repeat penalty.
+   */
+  readonly untimed?: boolean;
 }
 
 export type CaptionEmphasisPolicy = "auto" | "never";
@@ -111,7 +117,6 @@ const MARK_RE = /\p{M}/u;
 const LETTER_RE = /\p{L}/u;
 const NUMERIC_RE = /[\p{Nd}%٪\p{Sc}]/u;
 const DIGIT_RE = /\p{Nd}/u;
-const WHITESPACE_RE = /\s/u;
 const ARABIC_RE = /\p{Script=Arabic}/u;
 const DEVANAGARI_RE = /\p{Script=Devanagari}/u;
 const LATIN_RE = /\p{Script=Latin}/u;
@@ -280,9 +285,9 @@ function wordFacts(word: CaptionEmphasisWord, language: string | null): WordFact
   };
 }
 
-/** One caption word holding a whole utterance (no word timings). */
+/** A cue holding one caption word that stands for a whole utterance (no word timings). */
 function isUntimedCue(cue: readonly CaptionEmphasisWord[]): boolean {
-  return cue.length === 1 && WHITESPACE_RE.test(cue[0]!.raw.trim());
+  return cue.some((word) => word.untimed === true);
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

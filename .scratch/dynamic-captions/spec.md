@@ -192,6 +192,7 @@ interface CaptionEmphasisWord {
   readonly utteranceFinal: boolean;
   readonly pauseBeforeSec: number;    // edited-time gap to the previous kept word
   readonly masked: boolean;           // censor caption mask applies
+  readonly untimed?: boolean;         // one word standing for a whole untimed utterance
 }
 assignCaptionRoles(input: {
   cues: readonly (readonly CaptionEmphasisWord[])[];
@@ -260,7 +261,7 @@ word and the next word of the same cue) or `"plain"` (never hero).
   changes the next.
 
 **Untimed utterances** (one caption word holding a whole utterance) get no block and render
-as the classic line.
+as the classic line. They are flagged `untimed: true` on the scorer input, never detected from the text: no hero, no timing or topic statistics, and the repeat penalty restarts after them.
 
 ### 5.4 Cue breaks
 
