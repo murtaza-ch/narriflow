@@ -619,20 +619,21 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       return { left: rowLeft, width };
     });
 
-    // Curved rows (spec 5.11): a row of width W sweeps θ = curve × maxSweep on a circle of radius
-    // R = W / θ. A cluster whose centre lies `s` along the row from its centre goes to angle φ = s / R:
+    // Curved rows (spec 5.11): one radius per cue. The widest row of width W sweeps
+    // θ = curve × maxSweep, so R = W / θ, and every row uses that R (its own sweep is W_row / R).
+    // A cluster whose centre lies `s` along its row from the row's centre goes to angle φ = s / R:
     // its baseline centre to (centre + R sin φ, baseline + R (1 − cos φ)), turned φ clockwise, drawn
-    // at `1 − edgeShrink × |curve| × (φ / φmax)²` of the word's size. An arch (curve > 0) drops its
-    // ends; a bow (curve < 0, R negative) raises them. Each cluster's ink is the word's ink band
-    // over the cluster's advance, plus stroke, turned with it.
+    // at `1 − edgeShrink × |curve| × (φ / φmax)²` of the word's size, φmax being the row's own
+    // half sweep. An arch (curve > 0) drops its ends; a bow (curve < 0, R negative) raises them.
+    // Each cluster's ink is the word's ink band over the cluster's advance, plus stroke, turned with it.
     const arcs = new Array<CurvedCluster[] | null>(count).fill(null);
     if (curved) {
       const sweep = radians(curve * CAPTION_CURVE.maxSweepDeg);
-      const phiMax = Math.abs(sweep) / 2;
+      const kappa = sweep / Math.max(...rowSpans.map((span) => span.width));
       block.rows.forEach((row, k) => {
         const { left: rowLeft, width } = rowSpans[k]!;
         const centre = rowLeft + width / 2;
-        const kappa = sweep / width;
+        const phiMax = Math.abs(kappa) * width / 2;
         for (const index of row) {
           const size = sizes[index]!;
           const word = measured[index]!;

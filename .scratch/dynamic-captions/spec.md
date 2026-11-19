@@ -538,14 +538,18 @@ colours do not change. Slots follow the user's colours.
   Positive arches the row (middle higher than the ends), negative bows it. Allowed on
   dynamic styles without tiles. The Studio shows it as a Curve slider under Advanced for
   those styles.
-- Geometry, in `caption-block.ts`. A row of width W gets a total sweep
-  `θ = curve × CAPTION_CURVE.maxSweepDeg` (70°) and radius `R = W / θ` (radians). A glyph
-  cluster whose centre sits at arc length `s` from the row centre goes to angle `φ = s / R`:
+- Geometry, in `caption-block.ts`. One radius per cue from its widest row: the widest curved
+  row, of width W, gets a total sweep `θ = curve × CAPTION_CURVE.maxSweepDeg` (70°) and
+  `R = W / θ` (radians). Every row of the cue uses that same R, so a shorter row sweeps only
+  `W_row / R` and its ends turn less (reference 14: concentric arcs, not a tighter bend for short
+  rows). Each row's arc stays centred on the block axis at its own baseline. A glyph
+  cluster whose centre sits at arc length `s` from its row centre goes to angle `φ = s / R`:
   baseline centre `(rowCentreX + R sin φ, baselineY + R (1 − cos φ))` with R signed like the
   curve (ticket 07: the earlier `− sign ×` bowed a positive curve, against "positive arches"),
   rotation `φ`. Fish-eye: cluster size × `1 − CAPTION_CURVE.edgeShrink × |curve| × (φ / φmax)²`,
-  edgeShrink 0.18. Row pitch uses the arc's vertical extent column by column (each cluster's
-  turned ink box), so curved rows nest and never collide; straight rows keep rule 4.
+  φmax the row's own half sweep, edgeShrink 0.18. Row pitch uses the arc's vertical extent
+  column by column (each cluster's turned ink box), so curved rows nest and never collide;
+  straight rows keep rule 4.
 - Clusters. A cluster is a base code point plus its following `\p{M}` marks (no
   `Intl.Segmenter`). The worker gets cluster offsets from HarfBuzz (add
   `captionClusterOffsets` next to `layoutCaptionLine` in `packages/caption-fonts/src/shaping.ts`).

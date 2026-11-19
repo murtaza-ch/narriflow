@@ -835,6 +835,50 @@ describe("curved rows (spec 5.11)", () => {
     expect(ends[1]!.rotationDeg).toBeGreaterThan(0);
   });
 
+  test("one radius per cue: every row sits on the widest row's R, so a short row sweeps less and turns less", () => {
+    const curve = 0.55;
+    const straight = layout(stacked);
+    const curved = layout({ ...stacked, preset: { curve } });
+    expect(curved.scale).toBe(straight.scale);
+    const rows = curved.block.rows;
+    expect(rows.length).toBeGreaterThan(1);
+    const span = (row: readonly number[]) => {
+      const first = straight.words[row[0]!]!;
+      const last = straight.words[row[row.length - 1]!]!;
+      const left = first.baselineX;
+      return { left, right: last.baselineX + advance(last, straight.measured[row[row.length - 1]!]!) };
+    };
+    const widths = rows.map((row) => span(row).right - span(row).left);
+    const widest = Math.max(...widths);
+    const R = widest / radiansOf(curve * 70);
+    const lastTurn = rows.map((row) => curved.words[row[row.length - 1]!]!.clusters!.at(-1)!.rotationDeg);
+    rows.forEach((row, k) => {
+      const { left, right } = span(row);
+      const centreX = (left + right) / 2;
+      // The row's top point (φ = 0) from its first cluster; every cluster of the row is on the circle of radius R below it.
+      const first = curved.words[row[0]!]!.clusters![0]!;
+      const topY = arcPoint(first).y - R * (1 - Math.cos(radiansOf(first.rotationDeg)));
+      for (const index of row) {
+        for (const [at, cluster] of curved.words[index]!.clusters!.entries()) {
+          const point = arcPoint(cluster);
+          expect(Math.hypot(point.x - centreX, point.y - (topY + R)), `row ${k}`).toBeCloseTo(R, 6);
+          const s = straight.words[index]!.baselineX + (0.5 * at + 0.25) * straight.words[index]!.px - centreX;
+          expect(radiansOf(cluster.rotationDeg)).toBeCloseTo(s / R, 9);
+          // Fish-eye is relative to the row's own half sweep, so a short row shrinks as much at its edge.
+          const phiMax = widths[k]! / (2 * R);
+          expect(cluster.px).toBeCloseTo(curved.words[index]!.px * (1 - 0.18 * curve * (radiansOf(cluster.rotationDeg) / phiMax) ** 2), 9);
+        }
+      }
+    });
+    // The widest row sweeps the full θ; a shorter row's end turns by less (W_row / 2R at its edge).
+    const widestAt = widths.indexOf(widest);
+    expect(Math.abs(lastTurn[widestAt]!)).toBeGreaterThan(0);
+    widths.forEach((width, k) => {
+      if (width < widest - 1) expect(Math.abs(lastTurn[k]!)).toBeLessThan(Math.abs(lastTurn[widestAt]!) - 0.5);
+    });
+    expect(widths.some((width) => width < widest - 1)).toBe(true);
+  });
+
   test("a negative curve bows the row: the ends rise and lean inward", () => {
     const result = layout({ ...one, preset: { curve: -0.5 } });
     const first = result.words[0]!.clusters![0]!;
