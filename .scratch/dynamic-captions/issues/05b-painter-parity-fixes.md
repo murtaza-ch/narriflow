@@ -92,3 +92,5 @@ Worker against geometry (real libass, `/private/tmp/claude-501/-Users-murtaza-Do
 
 **Verification** (Bun 1.4.4, worktree root): `bun run lint` exit 0 (the 20 warnings and 1 info baseline); `bun run typecheck` 15/15; `bun run test` 14/14 (validators 910, composition-plan 141, caption-fonts 124, services 1629, api 984, api-client 232, web 1162, media 1033, mcp-core 170, the rest pass; 0 failures); `CAPTION_BLOCK_PARITY=1 bun test apps/media/src/caption-block-render.test.ts` 22 pass; `bun run check:web-split` passed; `bun run --cwd apps/api openapi:check` matches 32 operations (the public document and REST snapshot carry preset ids only, so the catalog changes do not touch them); `test:inventory` 301 routes, 0 problems.
 
+
+Follow-up left open (orchestrator): fallback-face words (Nastaliq, Noto Sans JP) scale about the fallback face's line box in libass but the requested face's in the Studio, 3.5 to 35.8 px apart during slam/punch/bounce entrances only (none is a default motion). Tracked in ticket 10.
