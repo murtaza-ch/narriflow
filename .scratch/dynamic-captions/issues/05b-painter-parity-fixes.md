@@ -2,7 +2,7 @@
 
 **What to build:** The Studio painter and the libass painter agree on easing, word direction, scale pivot and shadow blur, and the Studio probe stops forcing layout during render. Findings from the Opus review of 03b + 03c (2026-11-19).
 
-**Blocked by:** 05 (it edits both painters).
+**Blocked by:** 05 (done).
 
 **Status:** ready-for-agent
 
@@ -19,9 +19,24 @@ Spec: [../spec.md](../spec.md).
 
 Art note from the same review: Urdu support words fall back to Nastaliq and read small and thin at S = 80. Consider a per-script size floor for support words (judge on frames).
 
+Found by the ticket 04 agent: the Captions panel live preview (03c) clips the top of tall blocks in its 112 px box (`scratchpad/04/emphasis-hero.png`). Fit the block into the preview box (scale the stage to the block's reserved bounds) instead of cropping.
+
+## Added after ticket 05 (orchestrator, 2026-11-19)
+
+7. Arabic-script parity: Studio vs worker baselines differ by up to 12.25 px on `headline-urdu` and 6.75 px on `marker-urdu`, because Canvas and HarfBuzz measure Nastaliq ink differently, so row pitch differs. Fix so both renderers feed the shared geometry the same ink for such words. Preferred: for words drawn by a fallback face whose ink the browser measures differently, both sides use the face's pinned line ink (the same numbers `caption-script-fonts` / the glyph planner already pin for line boxes) instead of per-glyph measured ink. Investigate and pick the simplest deterministic option; record the measured result. Tolerances: baselines 2 px.
+8. Art direction (orchestrator calls, judged on the 05 contact sheets):
+   - Stack: support words read too small next to the hero (reference 08 has support at about 45% of the hero's cap height). Raise Stack S to 64 and set the hero to about 2.4 S, keeping section 6 rule 1 (hero at least 2.2 times body after fit).
+   - Cutout: reference 05 tiles are taller and rounder. Try pad 0.16 × 0.12 em and radius 0.1 em; keep whichever reads closer to the reference on the bright frame.
+   - Editorial and Marker default motions break section 6 rule 6 (Editorial `blur` blurs every word for 280 ms; Marker `rise` travels 0.32 em). Set both styles' default motion to `slide` (hero-only blur, short travel). `blur` and `rise` stay selectable.
+   - Editorial minor words sit exactly at the 40 px floor, so any fit shrink breaks rule 5. Raise Editorial minor to 44 px.
+   - Urdu support words read small and thin (see the art note above): apply a per-script floor if the frames confirm it.
+9. No-hero styles (Cutout): the Captions panel hides the Emphasis row and the Hero colour control (they act on nothing), and `applyBrandColorsToCaption` sends the brand primary to the text colour instead of the hero colour for styles with `emphasis: "never"`. Tests for both.
+
+Re-render the contact sheets for every style after these changes (worker vs Studio, three backgrounds) into `scratchpad/05b/`.
+
 ## Acceptance
 
-- [ ] Findings 1 to 5 fixed with tests; 6 tests added.
+- [ ] Findings 1 to 5 and 7 to 9 fixed with tests; 6 tests added; contact sheets re-rendered.
 - [ ] `bun run lint`, `bun run typecheck`, `bun run test` pass (Bun 1.4.4). No PostgreSQL or heavy suites.
 
 ## Comments
