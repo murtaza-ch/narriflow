@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { CAPTION_DYNAMIC_STYLES, applyEditorAction, editorDocumentSchema, DEFAULT_CAPTION_PRESET, studioEditsSchema, EDITOR_DOCUMENT_VERSION } from "@narriflow/validators";
 import type { CaptionBlock, CaptionWordRole } from "@narriflow/validators";
 import {
+  captionPanelColors,
   captionEmphasisChanges,
   captionEmphasisFits,
   captionEmphasisRow,
@@ -36,6 +37,14 @@ function apply(overrides: Record<string, "hero" | "pair" | "plain">, changes: Re
   }
   return doc.studioEdits.captionEmphasis ?? {};
 }
+
+describe("captionPanelColors", () => {
+  test("a style without a hero (Cutout) has no Hero colour; Accent shows only where the style draws it", () => {
+    expect(captionPanelColors(CAPTION_DYNAMIC_STYLES.headline)).toEqual(["text", "hero"]);
+    expect(captionPanelColors(CAPTION_DYNAMIC_STYLES.marker)).toEqual(["text", "hero", "accent"]);
+    expect(captionPanelColors(CAPTION_DYNAMIC_STYLES.cutout)).toEqual(["text", "accent"]);
+  });
+});
 
 describe("captionPanelAnimations", () => {
   test("classic presets never list dynamic-only motions", () => {

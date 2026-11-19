@@ -6,6 +6,8 @@ import {
   captionEntranceKeyframes,
   captionEntranceMs,
   captionEntranceTimeScale,
+  languageDirection,
+  textDirection,
   type CaptionBlock,
   type CaptionDynamicStyle,
   type CaptionKeyframe,
@@ -13,6 +15,7 @@ import {
   type CaptionPreset,
 } from "@narriflow/validators";
 import { type CaptionDirection, captionWordVisualOrder } from "./bidi-order";
+import { canonicalCaptionLanguage, captionRunScript } from "./locale-precedence";
 
 /**
  * Caption Block geometry (spec 5.6, ADR 0020): where every word of a Dynamic
@@ -23,6 +26,28 @@ import { type CaptionDirection, captionWordVisualOrder } from "./bidi-order";
  * Browser-safe: no `node:` import anywhere in this file's import graph
  * (`@narriflow/caption-fonts/caption-block`).
  */
+
+/**
+ * A Caption Block cue's base direction: its first strong character, else the caption
+ * language's direction. Rows read in its bidi visual order; left styles mirror for "rtl".
+ */
+export function captionBlockDirection(texts: readonly string[], language: string | null | undefined): CaptionDirection {
+  return textDirection(texts.join(" "), languageDirection(language));
+}
+
+/**
+ * The direction one block word is measured and drawn in: its own first strong character, else
+ * the cue's. A word without one (`50،`, `(50)`) takes the cue's direction, so in an RTL cue its
+ * neutral characters order right to left in both painters. The Studio gives the word element
+ * `dir`; libass picks a direction from the event's text alone, so the worker starts an RTL word's
+ * events with U+200F (`CAPTION_RTL_MARK`).
+ */
+export function captionWordDirection(text: string, cueDirection: CaptionDirection): CaptionDirection {
+  return textDirection(text, cueDirection);
+}
+
+/** RIGHT-TO-LEFT MARK: starts the worker's events of an RTL word, so libass orders it as the Studio does. */
+export const CAPTION_RTL_MARK = "\u200F";
 
 /** One word measured alone in its role's face, at 1 em. */
 export interface MeasuredWord {
@@ -137,6 +162,16 @@ export interface CaptionBlockLayoutInput {
    * words' `startSec` it sets each `entranceTimeScale`; a missing time leaves its term out.
    */
   readonly cueEndSec?: number;
+  /** The cue's caption language: Urdu support words in Arabic script are drawn in Nastaliq and take `nastaliqSupportScale`. */
+  readonly language?: string | null;
+}
+
+/**
+ * Whether a support word is drawn in Nastaliq: Arabic-script text in an Urdu cue, which the
+ * fallback chain draws in Noto Nastaliq Urdu in both painters.
+ */
+function drawnInNastaliq(text: string, language: string | null | undefined): boolean {
+  return canonicalCaptionLanguage(language) === "ur" && captionRunScript(text) === "arabic";
 }
 
 interface Box {
@@ -227,9 +262,10 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   const padY = (px: number) => (tile ? tile.padYEm * px : 0);
   const stroke = (px: number) => strokePerPx * px;
 
-  // Rule 1, sizes.
-  const px = roles.map((role) =>
-    S * (hasHero || role === "minor" ? style.roles[role].sizeEm : style.noHeroSizeEm));
+  // Rule 1, sizes. Nastaliq support words are scaled up to read at the size of the others.
+  const px = roles.map((role, index) =>
+    S * (hasHero || role === "minor" ? style.roles[role].sizeEm : style.noHeroSizeEm) *
+    (role !== "hero" && drawnInNastaliq(block.texts[index]!, input.language) ? CAPTION_BLOCK.nastaliqSupportScale : 1));
 
   const order = block.rows.map((row) => rowVisualOrder(row, block, words, direction));
 

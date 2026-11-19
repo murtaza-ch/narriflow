@@ -82,9 +82,10 @@ describe("caption preset catalog", () => {
     const S = (id: string) => preset(id).fontSize;
 
     const editorial = CAPTION_DYNAMIC_STYLES.editorial;
-    expect(preset("editorial")).toMatchObject({ dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 60, primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, animation: "blur", wordsPerCue: 4 });
-    // Minor 40 px sans, body 60 px serif, hero 144 px lowercase serif.
-    expect(editorial.roles.minor.sizeEm * S("editorial")).toBeCloseTo(40, 9);
+    expect(preset("editorial")).toMatchObject({ dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 60, primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, animation: "slide", wordsPerCue: 4 });
+    expect(editorial.defaultMotion).toBe("slide");
+    // Minor 44 px sans (ticket 05b: above the 40 px floor after a fit shrink), body 60 px serif, hero 144 px lowercase serif.
+    expect(editorial.roles.minor.sizeEm * S("editorial")).toBeCloseTo(44, 9);
     expect(editorial.roles.body).toMatchObject({ font: "hero", sizeEm: 1 });
     expect(editorial.roles.hero).toMatchObject({ font: "hero", sizeEm: 2.4, transform: "lowercase", colour: "highlight" });
     expect(editorial.heroFontName).toBe("Instrument Serif");
@@ -99,19 +100,22 @@ describe("caption preset catalog", () => {
     expect(cutout.tile).toEqual({
       fill: { minor: "accent", body: "#16161A", hero: "#16161A" },
       tiltsDeg: [-2, 1.5, -1, 2],
-      radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 3 / 84,
+      // Ticket 05b: taller, rounder tiles read closer to reference 05 on the bright frame.
+      radiusEm: 0.1, padXEm: 0.16, padYEm: 0.12, gapEm: 0.08, shadowEm: 3 / 84,
     });
     expect(cutout.roles.minor.colour).toBe("#16161A");
 
     const marker = CAPTION_DYNAMIC_STYLES.marker;
-    expect(preset("marker")).toMatchObject({ dynamic: "marker", fontName: "Poppins", fontSize: 48, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFD248", animation: "rise", wordsPerCue: 4 });
+    expect(preset("marker")).toMatchObject({ dynamic: "marker", fontName: "Poppins", fontSize: 48, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFD248", animation: "slide", wordsPerCue: 4 });
+    expect(marker.defaultMotion).toBe("slide");
     expect(marker).toMatchObject({ layout: "stack", align: "left", leftGuidePct: 8, rowGapEm: 0.14, heroColours: ["highlight", "accent"], accentColor: "#EF8DB9", heroFontName: "Poppins" });
     expect(marker.roles.hero.sizeEm * S("marker")).toBe(120);
 
     const stack = CAPTION_DYNAMIC_STYLES.stack;
-    expect(preset("stack")).toMatchObject({ dynamic: "stack", fontName: "Inter SemiBold", fontSize: 48, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", animation: "slide", wordsPerCue: 4 });
+    expect(preset("stack")).toMatchObject({ dynamic: "stack", fontName: "Inter SemiBold", fontSize: 64, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", animation: "slide", wordsPerCue: 4 });
     expect(stack).toMatchObject({ layout: "stack", align: "center", rowGapEm: 0.04, heroFontName: "Inter" });
-    expect(stack.roles.hero.sizeEm * S("stack")).toBe(144);
+    // Ticket 05b: S = 64 and the hero 2.4 S (153.6 px), so support words read at reference 08's share of the hero.
+    expect(stack.roles.hero.sizeEm * S("stack")).toBeCloseTo(153.6, 9);
 
     // Only Editorial shrinks minor words; the others draw them at body size (ticket 02).
     for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);

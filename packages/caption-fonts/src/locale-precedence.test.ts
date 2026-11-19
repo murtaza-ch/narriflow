@@ -33,6 +33,13 @@ describe("locale font precedence", () => {
     expect(order("xx", "漢字")).toEqual(defaultOrder);
   });
 
+  test("neutral text is led by the language's face, as the Studio's font stack leads every fallback character", () => {
+    expect(order("ur", "،")[0]).toBe("Noto Nastaliq Urdu Regular");
+    expect(order("ja", "。")[0]).toBe("Noto Sans JP");
+    expect(order("en", "،")).toEqual(defaultOrder);
+    expect(order(null, "。")).toEqual(defaultOrder);
+  });
+
   test("a language's face leads only the scripts it owns", () => {
     expect(order("ja", "Hello")).toEqual(defaultOrder);
     expect(order("ur", "漢字")).toEqual(defaultOrder);
@@ -81,5 +88,10 @@ describe("shaping sensitivity by script", () => {
 
   test("punctuation, digits and bare marks are neutral: the text before them decides", () => {
     for (const text of ["", "2026", "!?", ".", "\u064b", "\u200c"]) expect(captionShapingSensitivity(text)).toBe("neutral");
+    // Punctuation of a joining or complex script takes no letter spacing, after any run.
+    for (const text of ["،", "؟", "।"]) expect(captionShapingSensitivity(text)).toBe("sensitive");
+    expect(captionShapingSensitivity("50،")).toBe("sensitive");
+    // Punctuation CJK shares with Mongolian or Tibetan stays neutral.
+    for (const text of ["、", "。", "《"]) expect(captionShapingSensitivity(text)).toBe("neutral");
   });
 });

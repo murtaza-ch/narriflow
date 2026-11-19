@@ -47,6 +47,7 @@ import {
 	captionEntranceKeyframes,
 	captionFontFace,
 	captionKeyframeValue,
+	captionTravelWindow,
 	captionTypewriterLetterDelays,
 	hasSpaceBefore,
 	languageDirection,
@@ -155,6 +156,8 @@ interface Span {
 	readonly sweepMs?: number;
 	/** Typewriter: ms at which each character appears. */
 	readonly letterDelaysMs?: readonly number[];
+	/** The span's planned clusters when the caller planned them (a Caption Block word, with its bidi mark). */
+	readonly clusters?: readonly PlannedCluster[];
 }
 
 type StackLayer = "shadow" | "outer" | "glow" | "text";
@@ -380,7 +383,7 @@ function blockCueEvents(
 				face: word.slot.face,
 				glyphs: word.slot.glyphs,
 				px: placed.px,
-				spans: [{ text: word.text, visibility: 1, fill: word.look.color, glow: preset.glowColor ?? null }],
+				spans: [{ text: word.text, clusters: word.clusters, visibility: 1, fill: word.look.color, glow: preset.glowColor ?? null }],
 				startSec,
 				endSec: cueEnd,
 				position: {
@@ -890,7 +893,7 @@ function spanText(
 	px: number,
 	letterSpacingEm: number,
 ): string {
-	const clusters = glyphs.plan(span.text);
+	const clusters = span.clusters ?? glyphs.plan(span.text);
 	if (!paint) return `{\\alpha&HFF&}${assText(clusters, glyphs.requested, px, letterSpacingEm)}`;
 	const colors = `\\1c${assColor(paint.fill)}\\3c${assColor(paint.outline)}\\alpha${assAlpha(paint.opacity)}`;
 	if (span.sweepMs !== undefined) {
@@ -960,9 +963,10 @@ interface MotionPose {
 
 /**
  * Motion keyframes as ASS tags for one event: `\fscx/\fscy/\frx/\frz/\blur`
- * through `\t` (ease = acceleration), opacity through `\fade` (libass fades
- * linearly; the spec only has rising opacity tracks) and the offsets through
- * one `\move` (linear), so x and y travel share one window. `px` converts em
+ * through `\t` (ease = acceleration), opacity through one `\fade` from its
+ * first to its last keyframe (linear; the spec only has rising opacity tracks)
+ * and the offsets through one `\move` (linear) over `captionTravelWindow`.
+ * The Studio samples the same pose (`captionEntrancePose`). `px` converts em
  * keyframes to canvas px. `pose` (Caption Blocks) flips `offsetXEm` by the
  * row's sign and adds the word's resting rotation as `\frz`; the pivot is
  * the event's `\org`.
@@ -993,7 +997,9 @@ function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, p
 	return {
 		/** `layerBlurPx`: the layer's own Gaussian sigma (soft shadow, glow). */
 		tags(layerBlurPx: number): string {
-			const blur = (em: number) => num((em * px + layerBlurPx) * ASS_BLUR_PER_SIGMA);
+			// A layer's own blur and the entrance blur are two Gaussians in a row (CSS nests them as
+			// filters), so their standard deviations add in quadrature.
+			const blur = (em: number) => num(Math.hypot(em * px, layerBlurPx) * ASS_BLUR_PER_SIGMA);
 			let tags =
 				animate("scaleX", "fscx", (value) => num(value * 100)) +
 				animate("scaleY", "fscy", (value) => num(value * 100)) +
@@ -1013,10 +1019,11 @@ function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, p
 			return tags;
 		},
 		position(x: number, y: number): string {
-			const tracks = [offsetX, offsetY].filter((track) => track.length >= 2);
-			if (tracks.length === 0) return `\\pos(${num(x)},${num(y)})`;
-			const t1 = Math.min(...tracks.map((track) => track[0]!.at));
-			const t2 = Math.max(...tracks.map((track) => track[track.length - 1]!.at));
+			// One \\move over the shared travel window (`captionEntrancePose` samples the same line).
+			const travel = captionTravelWindow(keyframes);
+			if (!travel) return `\\pos(${num(x)},${num(y)})`;
+			const t1 = travel.startMs;
+			const t2 = travel.endMs;
 			const dx = (end: "first" | "last") =>
 				offsetX.length >= 2 ? (end === "first" ? offsetX[0]! : offsetX[offsetX.length - 1]!).offsetXEm! * px * sign : 0;
 			const dy = (end: "first" | "last") =>

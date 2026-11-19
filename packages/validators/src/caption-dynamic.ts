@@ -145,7 +145,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     layout: "stack",
     align: "center",
     roles: {
-      minor: textRole(40 / 60),
+      // 44 px at S = 60: above the 40 px floor (spec 6 rule 5) once a long hero shrinks the block.
+      minor: textRole(44 / 60),
       body: { font: "hero", sizeEm: 1, transform: "lowercase", letterSpacing: 0, colour: "primary" },
       hero: { font: "hero", sizeEm: 2.4, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
     },
@@ -155,7 +156,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     rowGapEm: 0.1,
     // 8 px at S = 60.
     staggerEm: 8 / 60,
-    defaultMotion: "blur",
+    // Hero-only blur and short travel (spec 6 rule 6); `blur` stays selectable.
+    defaultMotion: "slide",
     softShadow: SMALL_TEXT_SOFT_SHADOW,
   },
   /** Reference 05: one caps word per tile in two colours, tiles tilted by turns, no hero. */
@@ -179,9 +181,10 @@ export const CAPTION_DYNAMIC_STYLES = {
     tile: {
       fill: { minor: "accent", body: "#16161A", hero: "#16161A" },
       tiltsDeg: [-2, 1.5, -1, 2],
-      radiusEm: 0.05,
-      padXEm: 0.12,
-      padYEm: 0.08,
+      // Ticket 05b: pad 0.16 x 0.12 em and radius 0.1 em read closer to reference 05 than 0.12 x 0.08 and 0.05.
+      radiusEm: 0.1,
+      padXEm: 0.16,
+      padYEm: 0.12,
       gapEm: 0.08,
       // 3 px at S = 84.
       shadowEm: 3 / 84,
@@ -204,7 +207,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     rowGapEm: 0.14,
     staggerEm: 0,
     leftGuidePct: 8,
-    defaultMotion: "rise",
+    // Travel of 0.18 em or less (spec 6 rule 6); `rise` (0.32 em) stays selectable.
+    defaultMotion: "slide",
     accentColor: "#EF8DB9",
     softShadow: SMALL_TEXT_SOFT_SHADOW,
   },
@@ -216,7 +220,8 @@ export const CAPTION_DYNAMIC_STYLES = {
     roles: {
       minor: textRole(1),
       body: textRole(1),
-      hero: { font: "hero", sizeEm: 3, transform: "lowercase", letterSpacing: -0.03, colour: "highlight" },
+      // 2.4 S (154 px at S = 64): support cap height about 42% of the hero's, as in reference 08.
+      hero: { font: "hero", sizeEm: 2.4, transform: "lowercase", letterSpacing: -0.03, colour: "highlight" },
     },
     noHeroSizeEm: 1.5,
     heroFontName: "Inter",
@@ -242,6 +247,12 @@ export const CAPTION_BLOCK = {
   wordGapEm: 0.232,
   /** The block, its decorations and its entrance travel stay inside these fractions of the frame. */
   safeArea: { left: 0.06, right: 0.94, top: 0.1, bottom: 0.82 },
+  /**
+   * Size of a support word (minor or body) drawn in Nastaliq (Urdu), as a multiple of its role size.
+   * Nastaliq sets its letters small inside a tall em, so at the role size it read about two thirds
+   * as large as the Latin support words around it, and thin (ticket 05b frames). Heroes keep their size.
+   */
+  nastaliqSupportScale: 1.3,
   /** `wordsPerCue` of a dynamic preset is clamped to this range. */
   minWordsPerCue: 2,
   maxWordsPerCue: 5,
@@ -376,6 +387,11 @@ export function captionRoleLook(
     color: slotColour(colourSlot, preset, style),
     tileColor: style.tile ? slotColour(style.tile.fill[role], preset, style) : null,
   };
+}
+
+/** False for a style that never draws a hero (`emphasis: "never"`, Cutout): hero colour, font, size and emphasis act on nothing. */
+export function captionStyleDrawsHero(style: Pick<CaptionDynamicStyle, "emphasis">): boolean {
+  return style.emphasis !== "never";
 }
 
 /** True when some role, hero alternation or tile of `style` is drawn in the accent slot (`accentColor`). */

@@ -624,12 +624,12 @@ Names match the existing one-word style.
 | Style | Reference | Layout | Support (minor, body) | Hero | Colours | Motion | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Headline | 01 | stack, centre | Inter SemiBold, sentence case, S = 80, minor same size as body | Inter, mixed case, letter spacing −0.03 em, fill 0.80, 2.2 to 3.4 S | white; hero `#36B780` (flat in phase 1) | `slide` | no outline; shadow black 65%, 6 px blur, 2 px down; rowGap 0.06 |
-| Editorial | 06 (foreground type only, an adaptation) | stack, centre | minor Inter SemiBold 40 px, body Instrument Serif 60 px, S = 60 | Instrument Serif, lowercase, 144 px (2.4 S) | all `#F6EFE4`, hero in `highlightColor` default `#F6EFE4` | `blur` | stagger 8 px, rowGap 0.10 |
-| Cutout | 05 | row | Bebas Neue caps, S = 84 | none | body tiles `#16161A` with `#F5923E` ink, minor tiles `#F4B6D2` with `#16161A` ink | `drop` | tiles radius 0.05 em, pad 0.12 × 0.08 em, gap 0.08 em; tilts −2, 1.5, −1, 2; hard shadow 3 px; wordsPerCue 5 |
-| Marker | 04, 07 (partial: one hero, not two) | stack, left, guide 8% | Poppins, lowercase, S = 48 | Poppins, lowercase, 120 px (2.5 S) | white; hero alternates `#FFD248` and `#EF8DB9` by seed | `rise` | rowGap 0.14; underline in phase 2 |
-| Stack | 08 | stack, centre | Inter SemiBold, lowercase, S = 48 | Inter, lowercase, 144 px (3.0 S) | white | `slide` | rowGap 0.04; stars in phase 2 |
+| Editorial | 06 (foreground type only, an adaptation) | stack, centre | minor Inter SemiBold 44 px, body Instrument Serif 60 px, S = 60 | Instrument Serif, lowercase, 144 px (2.4 S) | all `#F6EFE4`, hero in `highlightColor` default `#F6EFE4` | `slide` | stagger 8 px, rowGap 0.10 |
+| Cutout | 05 | row | Bebas Neue caps, S = 84 | none | body tiles `#16161A` with `#F5923E` ink, minor tiles `#F4B6D2` with `#16161A` ink | `drop` | tiles radius 0.1 em, pad 0.16 × 0.12 em, gap 0.08 em; tilts −2, 1.5, −1, 2; hard shadow 3 px; wordsPerCue 5 |
+| Marker | 04, 07 (partial: one hero, not two) | stack, left, guide 8% | Poppins, lowercase, S = 48 | Poppins, lowercase, 120 px (2.5 S) | white; hero alternates `#FFD248` and `#EF8DB9` by seed | `slide` | rowGap 0.14; underline in phase 2 |
+| Stack | 08 | stack, centre | Inter SemiBold, lowercase, S = 64 | Inter, lowercase, 154 px (2.4 S) | white | `slide` | rowGap 0.04; stars in phase 2 |
 
-Every phase 1 preset sets `wordsPerCue: 4` except Cutout. A style shrinks minor words only
+Ticket 05b changed Editorial (minor 44 px, `slide`), Cutout's tiles, Marker (`slide`) and Stack (S = 64, hero 2.4 S) after the 05 visual review; Urdu support words drawn in Nastaliq take `CAPTION_BLOCK.nastaliqSupportScale` (1.3). Every phase 1 preset sets `wordsPerCue: 4` except Cutout. A style shrinks minor words only
 when its catalog row says so (Editorial). Mixed minor and body sizes in one row looked uneven
 in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body size.
 

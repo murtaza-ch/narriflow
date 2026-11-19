@@ -212,6 +212,62 @@
       "notes": "Urdu (Arabic script, RTL): a number unit hero; rows keep bidi visual order."
     },
     {
+      "id": "headline-urdu-punctuation",
+      "reference": null,
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {},
+      "language": "ur",
+      "words": [
+        {
+          "word": "قیمت",
+          "key": "6000",
+          "startSec": 6.0,
+          "endSec": 6.27
+        },
+        {
+          "word": "50،",
+          "key": "6300",
+          "startSec": 6.3,
+          "endSec": 6.57
+        },
+        {
+          "word": "اب",
+          "key": "6600",
+          "startSec": 6.6,
+          "endSec": 6.87
+        },
+        {
+          "word": "کم",
+          "key": "6900",
+          "startSec": 6.9,
+          "endSec": 7.17
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "body",
+          "hero",
+          "minor",
+          "body"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2,
+            3
+          ]
+        ]
+      },
+      "notes": "Urdu (RTL) with a neutral word that ends in punctuation (50،): it takes the cue's direction, so both painters draw the Arabic comma on its left (the worker marks the word's events with U+200F)."
+    },
+    {
       "id": "headline-japanese",
       "reference": "01-stack-kalakar-accurate.jpg",
       "style": "headline",

@@ -20,7 +20,7 @@
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
-import { layoutCaptionBlock, type CaptionBlockLayout, type MeasuredWord, type PlacedWord } from "@narriflow/caption-fonts/caption-block";
+import { captionBlockDirection, captionWordDirection, layoutCaptionBlock, type CaptionBlockLayout, type MeasuredWord, type PlacedWord } from "@narriflow/caption-fonts/caption-block";
 import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
 import type { CompositionCaptionBlock } from "@narriflow/composition-plan";
 import {
@@ -34,9 +34,6 @@ import {
   captionEntranceKeyframes,
   captionFontFace,
   captionRoleLook,
-  joinTranscriptWords,
-  languageDirection,
-  textDirection,
   type CaptionFontName,
   type CaptionKeyframe,
   type CaptionPreset,
@@ -152,10 +149,20 @@ function wordFace(
   };
 }
 
-/** Canvas font strings for one face: the face alone, and its whole fallback stack. */
+/**
+ * Canvas font strings for one face: the face alone and its whole fallback stack (for loading),
+ * and the stack to measure with. The DOM draws every caption word with `font-synthesis: none`
+ * and libass never synthesizes, but Canvas has no such switch: at the role's weight (600 or
+ * more) it fake-bolds a script face, which is one regular file, so Nastaliq or Noto Sans JP ink
+ * read 1/64 em taller and deeper than either painter draws them (ticket 05b: 12 px of row pitch
+ * on an Urdu hero). Every caption family holds a single face (one `localFont` per catalog face,
+ * one family per brand font), so `normal 400` selects the same faces the DOM draws and leaves
+ * Canvas nothing to synthesize.
+ */
 function canvasFonts(face: WordFace, language: string | null) {
   const prefix = `${face.style} ${face.weight} ${MEASURE_PX}px`;
-  return { requested: `${prefix} ${face.requestedFamily}`, stack: `${prefix} ${captionFontStack(face.requestedFamily, language)}` };
+  const stack = captionFontStack(face.requestedFamily, language);
+  return { requested: `${prefix} ${face.requestedFamily}`, stack: `${prefix} ${stack}`, measure: `normal 400 ${MEASURE_PX}px ${stack}` };
 }
 
 /**
@@ -182,7 +189,7 @@ function loadFaces(text: string, face: WordFace, language: string | null): Promi
  * scripts that take no letter spacing are measured without it, as they draw.
  */
 function measureWord(text: string, face: WordFace, letterSpacingEm: number, direction: "ltr" | "rtl", language: string | null, cache: boolean): MeasuredWord {
-  const font = canvasFonts(face, language).stack;
+  const font = canvasFonts(face, language).measure;
   const key = `${font}\0${letterSpacingEm}\0${direction}\0${text}`;
   const cached = measureCache.get(key);
   if (cached) return cached;
@@ -238,6 +245,8 @@ export interface CaptionBlockPaintWord {
   readonly tileColor: string | null;
   readonly letterSpacingEm: number;
   readonly placed: PlacedWord;
+  /** What the shared geometry was given for this word, at 1 em (the parity harness reports it). */
+  readonly measured: MeasuredWord;
   readonly startSec: number;
   readonly keyframes: readonly CaptionKeyframe[];
 }
@@ -265,11 +274,8 @@ function buildPaint(
   if (block.roles.length === 0 || block.roles.length !== cue.words.length) return null;
   const style = captionDynamicStyle(block.style);
   const motion = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
-  // The cue's base direction: its first strong character, else the language's (the burn-in's rule).
-  const cueDir = textDirection(
-    joinTranscriptWords(block.texts.map((text, index) => ({ word: text, ...(cue.words[index]!.spaceBefore === undefined ? {} : { spaceBefore: cue.words[index]!.spaceBefore }) }))),
-    languageDirection(language),
-  );
+  // The cue's and each word's direction come from the shared geometry, as the burn-in's do.
+  const cueDir = captionBlockDirection(block.texts, language);
   const prepared = [];
   const pending: (() => Promise<unknown>)[] = [];
   for (const [index, role] of block.roles.entries()) {
@@ -279,7 +285,7 @@ function buildPaint(
     if (!face) return null;
     const ready = facesLoaded(text, face, language);
     if (!ready) pending.push(() => loadFaces(text, face, language));
-    prepared.push({ text, look, face, ready, dir: textDirection(text, cueDir) });
+    prepared.push({ text, look, face, ready, dir: captionWordDirection(text, cueDir) });
   }
   if (pending.length > 0 && !force) return { status: "pending", load: () => Promise.all(pending.map((load) => load())) };
   // The line box middle is where libass anchors and scales a word's event; the Studio scales about the same point.
@@ -297,6 +303,7 @@ function buildPaint(
     anchor: cue.anchor,
     direction: cueDir,
     cueEndSec: cue.activeRange.endSec,
+    language: cue.language,
   });
   const words = prepared.map((word, index): CaptionBlockPaintWord => ({
     text: word.text,
@@ -306,6 +313,7 @@ function buildPaint(
     tileColor: word.look.tileColor,
     letterSpacingEm: word.look.letterSpacing,
     placed: layout.words[index]!,
+    measured: measured[index]!,
     startSec: cue.words[index]!.startSec,
     keyframes: captionEntranceKeyframes(motion, block.roles[index] === "hero"),
   }));
@@ -348,39 +356,62 @@ export function useCaptionBlockPaint(
 
 // ─── Painting ────────────────────────────────────────────────────────────────
 
-const baselineCache = new Map<string, number>();
+/** Probed baseline offsets: per face and quarter-pixel size bucket, the exact size probed and its offset. */
+const baselineCache = new Map<string, { readonly fontPx: number; readonly offset: number }>();
+
+/** Sizes share a probe per quarter pixel, so a resizing preview probes a few sizes, not every frame's. */
+const baselineKey = (face: WordFace, fontPx: number) =>
+  `${face.requestedFamily}\0${face.weight}\0${face.style}\0${Math.round(fontPx * 4) / 4}`;
 
 /**
  * Where the browser puts the baseline inside a word box of `face` at
- * `fontPx` display px, measured from the box top. The box's line height is
- * the face's own line box, but Chrome rounds the face's ascent to whole
- * pixels at each size, so `ascent × size` can be off by most of a pixel; a
- * probe at the real size lands the baseline where the layout says. Called
- * only once the faces have loaded (a paint exists), and cached.
+ * `fontPx` display px, measured from the box top, or null before it has been
+ * probed. The box's line height is the face's own line box, but Chrome
+ * rounds the face's ascent to whole pixels at each size, so `ascent × size`
+ * can be off by most of a pixel. The first size seen in a quarter-pixel bucket
+ * is probed exactly; another size in the same bucket (a preview mid-resize)
+ * follows the ascent from it. A pure cache read: render never forces layout.
  */
-function baselineOffsetPx(face: WordFace, fontPx: number): number {
-  const key = `${face.requestedFamily}\0${face.weight}\0${face.style}\0${fontPx}`;
-  const cached = baselineCache.get(key);
-  if (cached !== undefined) return cached;
-  const box = document.createElement("span");
-  Object.assign(box.style, face.css, {
-    position: "absolute",
-    left: "-99999px",
-    top: "0px",
-    visibility: "hidden",
-    whiteSpace: "pre",
-    lineHeight: String(face.ascent + face.descent),
-    fontSize: `${fontPx}px`,
+function baselineOffsetPx(face: WordFace, fontPx: number): number | null {
+  const probed = baselineCache.get(baselineKey(face, fontPx));
+  return probed === undefined ? null : probed.offset + (fontPx - probed.fontPx) * face.ascent;
+}
+
+/**
+ * Probes the baseline offsets not cached yet, all in one layout: one hidden
+ * box per face and size bucket, read together, then removed. Runs in a layout
+ * effect, once a paint exists (its faces have loaded). True when it probed.
+ */
+function probeBaselineOffsets(requests: readonly { readonly face: WordFace; readonly fontPx: number }[]): boolean {
+  const pending = new Map<string, { face: WordFace; fontPx: number }>();
+  for (const request of requests) {
+    const key = baselineKey(request.face, request.fontPx);
+    if (!baselineCache.has(key) && !pending.has(key)) pending.set(key, request);
+  }
+  if (pending.size === 0) return false;
+  const probes = [...pending].map(([key, { face, fontPx }]) => {
+    const box = document.createElement("span");
+    Object.assign(box.style, face.css, {
+      position: "absolute",
+      left: "-99999px",
+      top: "0px",
+      visibility: "hidden",
+      whiteSpace: "pre",
+      lineHeight: String(face.ascent + face.descent),
+      fontSize: `${fontPx}px`,
+    });
+    const anchor = document.createElement("i");
+    anchor.style.cssText = "display:inline-block;width:0;height:0;vertical-align:baseline";
+    box.append(anchor, "H");
+    document.body.append(box);
+    return { key, fontPx, box, anchor };
   });
-  const anchor = document.createElement("i");
-  anchor.style.cssText = "display:inline-block;width:0;height:0;vertical-align:baseline";
-  box.append(anchor, "H");
-  document.body.append(box);
-  const offset = anchor.getBoundingClientRect().top - box.getBoundingClientRect().top;
-  box.remove();
-  if (baselineCache.size > 2000) baselineCache.clear();
-  baselineCache.set(key, offset);
-  return offset;
+  if (baselineCache.size + probes.length > 2000) baselineCache.clear();
+  for (const { key, fontPx, box, anchor } of probes) {
+    baselineCache.set(key, { fontPx, offset: anchor.getBoundingClientRect().top - box.getBoundingClientRect().top });
+  }
+  for (const { box } of probes) box.remove();
+  return true;
 }
 
 /** One element per word per paint layer; the pose is written on it every tick. */
@@ -405,7 +436,8 @@ function WordLayer({
   // the probe gives the browser's exact offset at this size.
   const fontPx = placed.px * scale;
   const left = (placed.baselineX - origin.x) * scale;
-  const top = (placed.baselineY - origin.y) * scale - baselineOffsetPx(face, fontPx);
+  // Until the probe has run (the layout effect below, before the first paint) the ascent stands in.
+  const top = (placed.baselineY - origin.y) * scale - (baselineOffsetPx(face, fontPx) ?? face.ascent * fontPx);
   return (
     <span
       aria-hidden
@@ -508,6 +540,21 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   const S = preset.fontSize;
   const style = captionDynamicStyle(paint.cue.block.style);
   const soft = style.softShadow ?? [CAPTION_SOFT_SHADOW];
+  // Re-renders the words once baseline probes land, so each is placed from the probed offset.
+  const [, setProbes] = useState(0);
+
+  useLayoutEffect(() => {
+    const requests = paint.words.map((word) => ({ face: word.face, fontPx: word.placed.px * scale }));
+    if (probeBaselineOffsets(requests)) setProbes((count) => count + 1);
+    // A face that loads after the probe (a script fallback) can move the baseline: probe again.
+    const reprobe = () => {
+      baselineCache.clear();
+      probeBaselineOffsets(requests);
+      setProbes((count) => count + 1);
+    };
+    document.fonts.addEventListener("loadingdone", reprobe);
+    return () => document.fonts.removeEventListener("loadingdone", reprobe);
+  }, [paint, scale]);
 
   useLayoutEffect(() => {
     const root = rootRef.current;

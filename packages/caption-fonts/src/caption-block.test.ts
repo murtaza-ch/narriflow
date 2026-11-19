@@ -40,6 +40,7 @@ interface Case {
   readonly canvas?: { width: number; height: number };
   readonly startSec?: readonly number[];
   readonly cueEndSec?: number;
+  readonly language?: string;
 }
 
 function layout(input: Case) {
@@ -74,6 +75,7 @@ function layout(input: Case) {
     anchor: input.anchor ?? { xPct: 50, yPct: 50 },
     direction: input.direction ?? "ltr",
     ...(input.cueEndSec === undefined ? {} : { cueEndSec: input.cueEndSec }),
+    ...(input.language === undefined ? {} : { language: input.language }),
   };
   return { ...layoutCaptionBlock(layoutInput), block, measured: layoutInput.measured };
 }
@@ -436,12 +438,13 @@ describe("tiles", () => {
     for (const [index, word] of result.words.entries()) {
       const measured = result.measured[index]!;
       const tile = word.tile!;
-      expect(tile.width).toBeCloseTo(advance(word, measured) + 2 * 0.12 * px, 9);
-      expect(tile.height).toBeCloseTo((0.7 + 0.2) * px + 2 * 0.08 * px, 9);
+      const { padXEm, padYEm, radiusEm } = CUTOUT.tile;
+      expect(tile.width).toBeCloseTo(advance(word, measured) + 2 * padXEm * px, 9);
+      expect(tile.height).toBeCloseTo((0.7 + 0.2) * px + 2 * padYEm * px, 9);
       expect(tile.centerX).toBeCloseTo(word.centerX, 9);
       // Top of the tile, in the word's own frame: the row's ink top plus the padding above it.
-      expect(tile.centerY - tile.height / 2).toBeCloseTo(word.baselineY - 0.7 * px - 0.08 * px, 9);
-      expect(tile.radius).toBeCloseTo(0.05 * px, 9);
+      expect(tile.centerY - tile.height / 2).toBeCloseTo(word.baselineY - 0.7 * px - padYEm * px, 9);
+      expect(tile.radius).toBeCloseTo(radiusEm * px, 9);
       expect(tile.shadowOffset).toBeCloseTo(3, 9);
     }
   });
@@ -521,3 +524,18 @@ test("the caption-block import graph has no node: modules", async () => {
   expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
   expect(JSON.parse(stdout)).toEqual([]);
 }, 30_000);
+
+describe("Nastaliq support words (ticket 05b)", () => {
+  test("Urdu Arabic-script support words are scaled up; the hero, Latin words and other Arabic-script languages are not", () => {
+    const urdu = { texts: ["یہ", "50", "فیصد", "ہے"], roles: ["minor", "hero", "hero", "minor"] as CaptionWordRole[], direction: "rtl" as const };
+    const plain = layout({ ...urdu, language: "fa" });
+    const scaled = layout({ ...urdu, language: "ur" });
+    expect(scaled.words[0]!.px / scaled.scale).toBeCloseTo(S * CAPTION_BLOCK.nastaliqSupportScale, 9);
+    expect(scaled.words[3]!.px / scaled.scale).toBeCloseTo(S * CAPTION_BLOCK.nastaliqSupportScale, 9);
+    expect(plain.words[0]!.px / plain.scale).toBeCloseTo(S, 9);
+    // The hero row's size comes from the hero fill alone.
+    expect(scaled.words[2]!.px / scaled.scale).toBeCloseTo(plain.words[2]!.px / plain.scale, 9);
+    const mixed = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], language: "ur" });
+    expect(mixed.words[0]!.px / mixed.scale).toBeCloseTo(S, 9);
+  });
+});

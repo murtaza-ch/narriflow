@@ -264,7 +264,10 @@ export function measureCaptionFallbackInkEm(
     const key = `${prefix} ${stack}\0${run}`;
     const cached = inkCache.get(key);
     if (cached) return cached;
-    context.font = `${prefix} ${stack}`;
+    // `normal 400`: the DOM draws with `font-synthesis: none`, and Canvas would fake-bold the
+    // regular-only script faces at a bold weight (ink 1/64 em out on each side). Every caption
+    // family holds one face, so the weight selects nothing else.
+    context.font = `normal 400 ${MEASURE_PX}px ${stack}`;
     const metrics = context.measureText(run);
     const ink = {
       topEm: Math.max(0, metrics.actualBoundingBoxAscent) / MEASURE_PX,

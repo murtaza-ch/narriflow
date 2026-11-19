@@ -1,61 +1,28 @@
-import {
-  captionKeyframeValue,
-  type CaptionKeyframe,
-  type CaptionKeyframeProperty,
-} from "@narriflow/validators";
+import { CAPTION_REST_POSE, captionEntrancePose, type CaptionEntrancePose, type CaptionKeyframe } from "@narriflow/validators";
 
 /**
  * A Caption Block word's entrance pose at one instant (spec 5.7). Offsets
  * and blur are in em of the word's own size; `offsetXEm` is before the
  * word's `motionSign`.
  */
-export interface CaptionBlockPose {
-  readonly opacity: number;
-  readonly offsetXEm: number;
-  readonly offsetYEm: number;
-  readonly scaleX: number;
-  readonly scaleY: number;
-  readonly blurEm: number;
-  readonly rotateZDeg: number;
-  readonly rotateXDeg: number;
-}
-
-const REST: CaptionBlockPose = {
-  opacity: 1,
-  offsetXEm: 0,
-  offsetYEm: 0,
-  scaleX: 1,
-  scaleY: 1,
-  blurEm: 0,
-  rotateZDeg: 0,
-  rotateXDeg: 0,
-};
+export type CaptionBlockPose = CaptionEntrancePose;
 
 /**
- * The pose the export draws `elapsedMs` after the word's onset. Every
- * keyframe time is multiplied by `timeScale`, the word's duration cap from
- * the shared geometry (spec 5.7), so a word near the cue's end or close to
- * the next onset enters faster; 0 draws the word settled (also reduced
- * motion). The pose is a pure function of time: pause, scrub and seeking
- * into an entrance all land on the values the worker's events show.
+ * The pose the export draws `elapsedMs` after the word's onset: the shared
+ * `captionEntrancePose` (linear opacity and travel, as libass's `\fade` and
+ * `\move` are). Every keyframe time is multiplied by `timeScale`, the word's
+ * duration cap from the shared geometry (spec 5.7), so a word near the cue's
+ * end or close to the next onset enters faster; 0 draws the word settled
+ * (also reduced motion). The pose is a pure function of time: pause, scrub
+ * and seeking into an entrance all land on the values the worker's events show.
  */
 export function captionBlockWordPose(
   keyframes: readonly CaptionKeyframe[],
   elapsedMs: number,
   timeScale: number,
 ): CaptionBlockPose {
-  const at = timeScale > 0 ? Math.max(0, elapsedMs) / timeScale : Number.POSITIVE_INFINITY;
-  const value = (property: CaptionKeyframeProperty) => captionKeyframeValue(keyframes, property, at) ?? REST[property];
-  return {
-    opacity: value("opacity"),
-    offsetXEm: value("offsetXEm"),
-    offsetYEm: value("offsetYEm"),
-    scaleX: value("scaleX"),
-    scaleY: value("scaleY"),
-    blurEm: value("blurEm"),
-    rotateZDeg: value("rotateZDeg"),
-    rotateXDeg: value("rotateXDeg"),
-  };
+  if (timeScale <= 0) return CAPTION_REST_POSE;
+  return captionEntrancePose(keyframes, Math.max(0, elapsedMs) / timeScale);
 }
 
 /**

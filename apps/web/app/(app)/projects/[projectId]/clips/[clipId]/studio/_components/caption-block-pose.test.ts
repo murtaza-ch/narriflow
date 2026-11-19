@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CAPTION_MOTIONS, captionEntranceKeyframes, captionEntranceTimeScale } from "@narriflow/validators";
+import { CAPTION_MOTIONS, captionEaseProgress, captionEntranceKeyframes, captionEntranceTimeScale } from "@narriflow/validators";
 import { captionBlockTransform, captionBlockWordPose } from "./caption-block-pose";
 
 const slide = CAPTION_MOTIONS.slide;
@@ -37,6 +37,19 @@ describe("captionBlockWordPose (spec 5.7)", () => {
     expect(captionBlockWordPose(word, 10, 0)).toEqual(settled);
     // With under 100 ms of the cue left the shared cap is 0.
     expect(captionEntranceTimeScale(90, 150)).toBe(0);
+  });
+
+  test("blur and bounce fade in linearly, as the worker's one \\fade does, while blur and scale keep their ease", () => {
+    const blur = CAPTION_MOTIONS.blur.word;
+    const fading = captionBlockWordPose(blur, 70, 1);
+    expect(fading.opacity).toBeCloseTo(70 / 280, 9);
+    expect(fading.blurEm).toBeCloseTo(0.12 * (1 - captionEaseProgress("out", 70 / 280)), 9);
+    const bounce = CAPTION_MOTIONS.bounce.word;
+    const growing = captionBlockWordPose(bounce, 82.5, 1);
+    expect(growing.opacity).toBeCloseTo(0.5, 9);
+    expect(growing.scaleX).toBeCloseTo(0.4 + (1.18 - 0.4) * captionEaseProgress("out", 0.5), 9);
+    // The duration cap stretches the same linear fade.
+    expect(captionBlockWordPose(blur, 35, 0.5).opacity).toBeCloseTo(fading.opacity, 9);
   });
 
   test("holds before the onset and after the entrance", () => {
@@ -79,5 +92,55 @@ describe("captionBlockTransform", () => {
     expect(captionBlockTransform(flip, { rotationDeg: 0, motionSign: 1, emPx: 50 }, 7000)).toBe(
       "rotate(0deg) translate(0px, 0px) perspective(7000px) rotateX(30deg) scale(1, 1)",
     );
+  });
+});
+
+/** Applies a CSS transform string (rotate/translate/scale only) to a point given relative to the transform origin. */
+function applyTransform(transform: string, point: { x: number; y: number }) {
+  const ops = [...transform.matchAll(/(rotate|translate|scale)\(([^)]*)\)/g)].map(([, name, args]) => ({
+    name: name!,
+    values: args!.split(",").map((value) => Number.parseFloat(value)),
+  }));
+  let { x, y } = point;
+  // CSS applies the listed functions right to left to a point.
+  for (const op of ops.reverse()) {
+    if (op.name === "translate") {
+      x += op.values[0]!;
+      y += op.values[1]!;
+    } else if (op.name === "scale") {
+      x *= op.values[0]!;
+      y *= op.values[1] ?? op.values[0]!;
+    } else {
+      const theta = (op.values[0]! * Math.PI) / 180;
+      [x, y] = [x * Math.cos(theta) - y * Math.sin(theta), x * Math.sin(theta) + y * Math.cos(theta)];
+    }
+  }
+  return { x, y };
+}
+
+describe("scale pivot (05b finding 3)", () => {
+  test("a slam hero grows about its scale origin, travels, then turns about its centre, as libass draws an \\an5 event", () => {
+    const hero = captionEntranceKeyframes(CAPTION_MOTIONS.slam, true);
+    const pose = captionBlockWordPose(hero, 33, 1);
+    expect(pose.scaleX).toBeGreaterThan(1.05);
+    // A word turned 1.5 degrees whose line-box middle sits 30 px above its ink centre.
+    const word = { rotationDeg: 1.5, motionSign: 1 as const, emPx: 200 };
+    const origin = { x: 0, y: -30 };
+    const transform = captionBlockTransform(pose, word, 20000, origin);
+    for (const point of [{ x: -120, y: -60 }, { x: 140, y: 45 }, { x: 0, y: 0 }]) {
+      // libass: scale about \\pos (the scale origin), move, then turn about \\org (the centre).
+      const sx = origin.x + (point.x - origin.x) * pose.scaleX;
+      const sy = origin.y + (point.y - origin.y) * pose.scaleY;
+      const tx = sx + pose.offsetXEm * word.emPx;
+      const ty = sy + pose.offsetYEm * word.emPx;
+      const theta = ((word.rotationDeg + pose.rotateZDeg) * Math.PI) / 180;
+      const want = { x: tx * Math.cos(theta) - ty * Math.sin(theta), y: tx * Math.sin(theta) + ty * Math.cos(theta) };
+      const got = applyTransform(transform, point);
+      expect(got.x).toBeCloseTo(want.x, 6);
+      expect(got.y).toBeCloseTo(want.y, 6);
+    }
+    // Scaling about the ink centre instead would put the word's top edge elsewhere.
+    const naive = applyTransform(captionBlockTransform(pose, word, 20000), { x: 0, y: -60 });
+    expect(Math.abs(naive.y - applyTransform(transform, { x: 0, y: -60 }).y)).toBeGreaterThan(1);
   });
 });

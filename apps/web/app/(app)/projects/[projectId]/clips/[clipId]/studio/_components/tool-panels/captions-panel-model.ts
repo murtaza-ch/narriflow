@@ -3,6 +3,8 @@ import {
   CAPTION_MOTIONS,
   captionBlockAnimation,
   captionDynamicStyle,
+  captionStyleDrawsHero,
+  captionStyleUsesAccent,
   isDynamicOnlyMotion,
   type CaptionAnimation,
   type CaptionDynamicStyle,
@@ -31,6 +33,19 @@ export function captionPanelAnimations(style: CaptionDynamicStyle | null): Capti
   return style
     ? ids.filter((id) => captionBlockAnimation({ animation: id }, style) === id)
     : ids.filter((id) => !isDynamicOnlyMotion(CAPTION_MOTIONS[id]));
+}
+
+/**
+ * The colour fields a Dynamic Style's Customize panel shows: Text always, Hero only for a style
+ * that draws a hero (not Cutout), Accent only for a style that draws the accent slot. A style
+ * without a hero also hides the Emphasis row, Hero font and Emphasis size (`captionStyleDrawsHero`).
+ */
+export function captionPanelColors(style: CaptionDynamicStyle): readonly ("text" | "hero" | "accent")[] {
+  return [
+    "text",
+    ...(captionStyleDrawsHero(style) ? (["hero"] as const) : []),
+    ...(captionStyleUsesAccent(style) ? (["accent"] as const) : []),
+  ];
 }
 
 /** "auto": no override in the cue; "none": every word is plain; "custom": a chosen hero. */

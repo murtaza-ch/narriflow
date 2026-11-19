@@ -25,7 +25,8 @@ import type { CaptionFontFace } from "@narriflow/validators";
  * The script faces are tried in catalog order except that the cue's language
  * moves its own face first for the runs it leads (ja -> Noto Sans JP for Han
  * and kana, yue -> Noto Sans TC for Han, ur -> Noto Nastaliq Urdu for Arabic
- * script; `orderCaptionFallbackFaces`, shared with the Studio). A requested or
+ * script, each also for neutral text; `orderCaptionFallbackFaces`, shared with
+ * the Studio). A requested or
  * saved face that covers the glyphs always wins over them.
  *
  * Emoji-presentation clusters skip straight to the last two. A code point no
@@ -190,6 +191,26 @@ export class CaptionGlyphPlanner {
     });
     this.plans.set(text, clusters);
     return clusters;
+  }
+
+  /**
+   * The face to draw a bidi mark (`mark`, e.g. U+200F) in, at the start of a word drawn in
+   * `faces`. libass looks the mark up like any glyph and, when the current face lacks it, draws
+   * it in a face of its own choosing, whose line box joins the one the event is anchored (and
+   * scaled) by. So: one of the word's own faces whose cmap has it, else the face of the chain
+   * that has it and grows the word's line box least (Noto Sans Hebrew fits inside Inter's).
+   */
+  markFace(mark: string, faces: readonly CaptionFace[]): CaptionFace | null {
+    const own = faces.find((face) => fontFileCovers(face.path, mark));
+    if (own) return own;
+    const ascent = Math.max(0, ...faces.map((face) => face.ascentEm));
+    const descent = Math.max(0, ...faces.map((face) => face.descentEm));
+    const growth = (face: CaptionFace) => Math.max(0, face.ascentEm - ascent) + Math.max(0, face.descentEm - descent);
+    let best: CaptionFace | null = null;
+    for (const face of [...this.leading, ...SCRIPT_FACES]) {
+      if (fontFileCovers(face.path, mark) && (!best || growth(face) < growth(best))) best = face;
+    }
+    return best;
   }
 
   private partsFor(cluster: string, current: CaptionFace): Omit<PlannedPart, "spaced">[] {

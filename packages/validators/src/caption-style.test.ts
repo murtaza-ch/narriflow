@@ -5,8 +5,10 @@ import {
   captionEaseProgress,
   captionEntranceKeyframes,
   captionEntranceMs,
+  captionEntrancePose,
   captionEntranceTimeScale,
   captionKeyframeValue,
+  captionTravelWindow,
   captionTypewriterLetterDelays,
   isDynamicOnlyMotion,
   type CaptionKeyframe,
@@ -160,5 +162,44 @@ describe("captionTypewriterLetterDelays", () => {
     expect(captionTypewriterLetterDelays(4, 1000)).toEqual([0, 55, 110, 165]);
     expect(captionTypewriterLetterDelays(4, 100)).toEqual([0, 25, 50, 75]);
     expect(captionTypewriterLetterDelays(0, 100)).toEqual([]);
+  });
+});
+
+describe("captionEntrancePose: what libass draws", () => {
+  test("blur: opacity rises linearly (one \\fade) while the blur follows its eased \\t", () => {
+    const blur = CAPTION_MOTIONS.blur.word;
+    const pose = captionEntrancePose(blur, 70);
+    expect(pose.opacity).toBeCloseTo(70 / 280, 9);
+    // The keyframe's ease shapes the blur, not the fade.
+    expect(pose.blurEm).toBeCloseTo(0.12 * (1 - captionEaseProgress("out", 70 / 280)), 9);
+    expect(captionKeyframeValue(blur, "opacity", 70)).not.toBeCloseTo(pose.opacity, 3);
+  });
+
+  test("bounce: opacity is linear to its last keyframe; the eased scale is untouched", () => {
+    const bounce = CAPTION_MOTIONS.bounce.word;
+    const pose = captionEntrancePose(bounce, 82.5);
+    expect(pose.opacity).toBeCloseTo(0.5, 9);
+    expect(pose.scaleX).toBeCloseTo(captionKeyframeValue(bounce, "scaleX", 82.5)!, 9);
+    expect(captionEntrancePose(bounce, 400)).toEqual({ ...captionEntrancePose(bounce, 400), opacity: 1, scaleX: 1, scaleY: 1 });
+  });
+
+  test("offsets move linearly over one window shared by x and y, from first to last value", () => {
+    const frames: CaptionKeyframe[] = [
+      { at: 0, offsetYEm: 0.2, opacity: 0 },
+      { at: 40, offsetXEm: -0.1, opacity: 1 },
+      { at: 100, offsetXEm: 0 },
+      { at: 120, offsetYEm: 0 },
+    ];
+    expect(captionTravelWindow(frames)).toEqual({ startMs: 0, endMs: 120 });
+    const pose = captionEntrancePose(frames, 60);
+    expect(pose.offsetYEm).toBeCloseTo(0.1, 9);
+    // x spans the whole \\move window too: -0.1 at 0 ms, 0 at 120 ms.
+    expect(pose.offsetXEm).toBeCloseTo(-0.05, 9);
+    expect(captionTravelWindow([{ at: 0, offsetYEm: 0.1 }])).toBeNull();
+    expect(captionEntrancePose([{ at: 0, offsetYEm: 0.1 }], 50).offsetYEm).toBe(0.1);
+  });
+
+  test("a motion without keyframes is at rest", () => {
+    expect(captionEntrancePose([], 10)).toEqual({ opacity: 1, offsetXEm: 0, offsetYEm: 0, scaleX: 1, scaleY: 1, blurEm: 0, rotateXDeg: 0, rotateZDeg: 0 });
   });
 });

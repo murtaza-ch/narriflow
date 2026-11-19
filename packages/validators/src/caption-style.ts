@@ -374,6 +374,87 @@ export function captionKeyframeValue(
   return track[track.length - 1]![property];
 }
 
+/** A word's entrance pose at one instant: what both painters draw (`captionEntrancePose`). Offsets and blur are em of the word's size. */
+export interface CaptionEntrancePose {
+  readonly opacity: number;
+  readonly offsetXEm: number;
+  readonly offsetYEm: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly blurEm: number;
+  readonly rotateXDeg: number;
+  readonly rotateZDeg: number;
+}
+
+export const CAPTION_REST_POSE: CaptionEntrancePose = {
+  opacity: 1,
+  offsetXEm: 0,
+  offsetYEm: 0,
+  scaleX: 1,
+  scaleY: 1,
+  blurEm: 0,
+  rotateXDeg: 0,
+  rotateZDeg: 0,
+};
+
+/**
+ * The window of the one `\move` that carries a word's travel: from the earliest first to the
+ * latest last keyframe of its offset tracks (a track needs two keyframes to move). Null when
+ * nothing travels.
+ */
+export function captionTravelWindow(keyframes: readonly CaptionKeyframe[]): { readonly startMs: number; readonly endMs: number } | null {
+  const tracks = (["offsetXEm", "offsetYEm"] as const)
+    .map((property) => keyframes.filter((frame) => frame[property] !== undefined))
+    .filter((track) => track.length >= 2);
+  if (tracks.length === 0) return null;
+  return {
+    startMs: Math.min(...tracks.map((track) => track[0]!.at)),
+    endMs: Math.max(...tracks.map((track) => track[track.length - 1]!.at)),
+  };
+}
+
+const linearBetween = (from: number, to: number, startMs: number, endMs: number, atMs: number) =>
+  from + (to - from) * Math.max(0, Math.min(1, (atMs - startMs) / Math.max(1, endMs - startMs)));
+
+/**
+ * The pose a word shows `atMs` after its entrance starts, as libass can draw it, so the
+ * Studio samples exactly what the worker writes:
+ * - opacity is linear from its first to its last keyframe (one `\fade`), whatever the keyframes' ease;
+ * - offsets are linear from each track's first to its last value over the shared
+ *   `captionTravelWindow` (one `\move` for x and y);
+ * - scale, blur and turns follow their keyframes segment by segment with each segment's ease
+ *   (one `\t` per segment, the libass power curve).
+ * A track with a single keyframe holds its value; a property no keyframe sets is at rest.
+ */
+export function captionEntrancePose(keyframes: readonly CaptionKeyframe[], atMs: number): CaptionEntrancePose {
+  const track = (property: CaptionKeyframeProperty) => keyframes.filter((frame) => frame[property] !== undefined);
+  const ends = (property: CaptionKeyframeProperty) => {
+    const frames = track(property);
+    return frames.length === 0 ? null : { first: frames[0]!, last: frames[frames.length - 1]! };
+  };
+  const opacity = ends("opacity");
+  const window = captionTravelWindow(keyframes);
+  const travel = (property: "offsetXEm" | "offsetYEm") => {
+    const frames = ends(property);
+    if (!frames) return 0;
+    if (!window || frames.first === frames.last) return frames.first[property]!;
+    return linearBetween(frames.first[property]!, frames.last[property]!, window.startMs, window.endMs, atMs);
+  };
+  const eased = (property: CaptionKeyframeProperty) => captionKeyframeValue(keyframes, property, atMs) ?? CAPTION_REST_POSE[property];
+  return {
+    opacity: opacity
+      ? linearBetween(opacity.first.opacity!, opacity.last.opacity!, opacity.first.at, opacity.last.at, atMs)
+      : 1,
+    offsetXEm: travel("offsetXEm"),
+    offsetYEm: travel("offsetYEm"),
+    scaleX: eased("scaleX"),
+    scaleY: eased("scaleY"),
+    blurEm: eased("blurEm"),
+    rotateXDeg: eased("rotateXDeg"),
+    rotateZDeg: eased("rotateZDeg"),
+  };
+}
+
 /** The keyframes a word of a Caption Block enters with: hero words use `hero ?? word`, others `word`. */
 export function captionEntranceKeyframes(motion: CaptionMotionSpec, hero: boolean): readonly CaptionKeyframe[] {
   return hero ? motion.hero ?? motion.word : motion.word;

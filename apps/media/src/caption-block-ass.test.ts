@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
+import { CAPTION_RTL_MARK } from "@narriflow/caption-fonts/caption-block";
 import type { CompositionCaptionBlock, CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
   CAPTION_MOTIONS,
@@ -136,12 +137,39 @@ describe("Caption Block ASS", () => {
             expect(numbers("org", event.text)).toEqual([Number(num(placed.centerX)), Number(num(placed.centerY))]);
             expect(/\\frz(-?[\d.]+)/.exec(event.text)?.[1]).toBe(turn);
             if (event.layer === TILE_LAYER) expect(event.text).toContain("\\p1}m ");
-            else expect(event.text.replace(/\{[^}]*\}/g, "")).toBe(geometry.words[index]!.text);
+            // An RTL word's events start with the bidi mark, so libass orders it as the Studio does.
+            else expect(event.text.replace(/\{[^}]*\}/g, "")).toBe((geometry.words[index]!.direction === "rtl" ? CAPTION_RTL_MARK : "") + geometry.words[index]!.text);
           }
         });
       }
     });
   }
+
+  test("a neutral word in an RTL cue takes the cue's direction; its events start with U+200F in one of its own faces", () => {
+    const [cue] = blockLayers("headline-urdu-punctuation");
+    const geometry = captionBlockGeometry({ cue: cue!, canvas: CANVAS });
+    const hero = geometry.words.find((word) => word.text === "50،")!;
+    expect(hero.direction).toBe("rtl");
+    // The mark is drawn by a face that has it and that already draws the word, so the line box is the word's own.
+    const mark = hero.parts[0]!;
+    expect(mark.text).toBe(CAPTION_RTL_MARK);
+    expect(hero.parts.slice(1).some((part) => part.face === mark.face)).toBe(true);
+    const text = dialogues(renderCaptionTrack({ layers: [cue!], canvas: CANVAS }).ass).find((event) => event.layer === TEXT_LAYER && event.start === assTime(cue!.words[1]!.startSec))!;
+    expect(text.text).toContain(`\\fn${mark.face.assName}\\fs`);
+    expect(text.text.replace(/\{[^}]*\}/g, "")).toBe(`${CAPTION_RTL_MARK}50،`);
+    // A word with no face of its own that has the mark ("50" in Inter) takes the one that grows its line box least, here none.
+    const [urdu] = blockLayers("headline-urdu");
+    const digits = captionBlockGeometry({ cue: urdu!, canvas: CANVAS }).words.find((word) => word.text === "50")!;
+    const inter = digits.parts[1]!.face;
+    expect(digits.parts[0]!.face).not.toBe(inter);
+    expect(digits.parts[0]!.face.ascentEm).toBeLessThanOrEqual(inter.ascentEm);
+    expect(digits.parts[0]!.face.descentEm).toBeLessThanOrEqual(inter.descentEm);
+    expect(digits.ascentEm).toBe(inter.ascentEm);
+    expect(digits.descentEm).toBe(inter.descentEm);
+    // Latin words keep no mark, in any cue.
+    const [latin] = blockLayers("headline-en");
+    expect(captionBlockGeometry({ cue: latin!, canvas: CANVAS }).words.every((word) => word.direction === "ltr" && word.parts[0]!.text !== CAPTION_RTL_MARK)).toBe(true);
+  });
 
   test("motion: body words slide sideways by the row's sign, the hero rises with its own track, both on the shared time scale", () => {
     const [cue] = blockLayers("headline-en");

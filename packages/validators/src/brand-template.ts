@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { captionDynamicStyle, captionStyleUsesAccent } from "./caption-dynamic";
+import { captionDynamicStyle, captionStyleDrawsHero, captionStyleUsesAccent } from "./caption-dynamic";
 import type { CaptionPreset } from "./caption-preset";
 import { captionPresetSchema } from "./clip";
 import { logoPositionSchema, type LogoPosition } from "./logo-position";
@@ -14,7 +14,8 @@ export { logoPositionSchema, type LogoPosition };
 /**
  * A brand template's two colours on its caption style. Classic styles take
  * the primary as text and the secondary as the highlight. Dynamic Styles keep
- * their support colour (white or cream): the primary becomes the hero and the
+ * their support colour (white or cream): the primary becomes the hero (the
+ * text colour for a style without a hero, Cutout's tile ink) and the
  * secondary the accent, for styles that draw one.
  */
 export function applyBrandColorsToCaption(
@@ -27,7 +28,9 @@ export function applyBrandColorsToCaption(
   // catalog look whose colours are the brand's still matches its catalog entry.
   const style = captionDynamicStyle(preset.dynamic);
   const changesAccent = captionStyleUsesAccent(style) && effectiveAccent(preset).toUpperCase() !== secondaryColor.toUpperCase();
-  return { ...preset, highlightColor: primaryColor, ...(changesAccent ? { accentColor: secondaryColor } : {}) };
+  // The brand primary goes to the hero; a style without one (Cutout) draws it as the text colour.
+  const primarySlot = captionStyleDrawsHero(style) ? "highlightColor" : "primaryColor";
+  return { ...preset, [primarySlot]: primaryColor, ...(changesAccent ? { accentColor: secondaryColor } : {}) };
 }
 
 /** The colour a dynamic preset draws in its accent slot. */
@@ -38,7 +41,8 @@ function effectiveAccent(preset: CaptionPreset): string {
 /** The brand colours a caption look implies, the inverse of `applyBrandColorsToCaption`. */
 export function brandColorsFromCaption(preset: CaptionPreset): { primaryColor: string; secondaryColor: string } {
   if (!preset.dynamic) return { primaryColor: preset.primaryColor, secondaryColor: preset.highlightColor };
-  return { primaryColor: preset.highlightColor, secondaryColor: effectiveAccent(preset) };
+  const primaryColor = captionStyleDrawsHero(captionDynamicStyle(preset.dynamic)) ? preset.highlightColor : preset.primaryColor;
+  return { primaryColor, secondaryColor: effectiveAccent(preset) };
 }
 
 export const brandTemplateInputSchema = z.object({

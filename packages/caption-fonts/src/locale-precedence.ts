@@ -54,8 +54,11 @@ export function canonicalCaptionLanguage(language: string | null | undefined): s
 
 /**
  * `faces` with the faces that lead `text` for `language` moved to the front.
- * Faces keep their relative order; with no language, a language without a
- * face, or text in another script, the list comes back unchanged.
+ * Neutral text (punctuation, digits, spaces and marks only: `،`, `。`) counts as
+ * the language's own, as in the Studio's font stack, which tries the
+ * language's face first for every character the requested face lacks. Faces
+ * keep their relative order; with no language, a language without a face, or
+ * text in another script, the list comes back unchanged.
  */
 export function orderCaptionFallbackFaces<T extends { readonly languages?: readonly string[] }>(
   faces: readonly T[],
@@ -64,7 +67,8 @@ export function orderCaptionFallbackFaces<T extends { readonly languages?: reado
 ): T[] {
   const code = canonicalCaptionLanguage(language);
   const leads = code ? LOCALE_LEAD_SCRIPTS[code] : undefined;
-  if (!code || !leads?.includes(captionRunScript(text))) return [...faces];
+  const neutral = [...text].every((character) => NEUTRAL.test(character));
+  if (!code || !leads || !(neutral || leads.includes(captionRunScript(text)))) return [...faces];
   const leading = faces.filter((face) => face.languages?.includes(code));
   return [...leading, ...faces.filter((face) => !leading.includes(face))];
 }
@@ -78,8 +82,16 @@ const SHAPING_SENSITIVE =
   /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Mongolian}\p{Script=Phags_Pa}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Tibetan}\p{Script=Javanese}\p{Script=Balinese}\p{Script=Sundanese}\p{Script=Cham}\p{Script=Tai_Tham}\p{Script=Tai_Viet}]/u;
 
 /**
+ * Punctuation that belongs to those scripts: its Script_Extensions name one of them and neither
+ * Latin nor Han (the Arabic comma `،`, the Devanagari danda `।`; not the CJK `、`, which Mongolian
+ * shares). It is Common script, but browsers set it without letter spacing even after a spaced
+ * run, and the worker draws it in a script face that takes none.
+ */
+const SHAPING_SENSITIVE_PUNCTUATION = new RegExp(`(?=\\p{P})(?![\\p{Script_Extensions=Latin}\\p{Script_Extensions=Han}])${SHAPING_SENSITIVE.source.replaceAll("Script=", "Script_Extensions=")}`, "u");
+
+/**
  * How `text` takes letter spacing and mid-word tags (the typewriter's per-letter reveal):
- *  - `sensitive`: some character is in a joining or complex script; spacing is 0 and the text is revealed whole;
+ *  - `sensitive`: some character is in a joining or complex script, or is punctuation of one; spacing is 0 and the text is revealed whole;
  *  - `plain`: letters of other scripts only;
  *  - `neutral`: only spaces, punctuation, digits, marks and format characters; the run it sits in decides.
  * Pure, so the Studio applies the very rule the worker burns the captions with, for built-in and uploaded faces alike.
@@ -87,7 +99,7 @@ const SHAPING_SENSITIVE =
 export function captionShapingSensitivity(text: string): "sensitive" | "plain" | "neutral" {
   let plain = false;
   for (const character of text) {
-    if (SHAPING_SENSITIVE.test(character)) return "sensitive";
+    if (SHAPING_SENSITIVE.test(character) || SHAPING_SENSITIVE_PUNCTUATION.test(character)) return "sensitive";
     if (!NEUTRAL.test(character)) plain = true;
   }
   return plain ? "plain" : "neutral";

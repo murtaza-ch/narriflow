@@ -177,6 +177,7 @@ export function DynamicCaptionParity({
           startSec: word.startSec,
           visible: time >= word.startSec && time <= paint.cue.activeRange.endSec,
           ...word.placed,
+          measured: word.measured,
         })),
       }
     : null;

@@ -11,7 +11,8 @@ import {
   captionDynamicStyle,
   captionEntranceKeyframes,
   captionFontFace,
-  captionKeyframeValue,
+  CAPTION_REST_POSE,
+  captionEntrancePose,
   captionPresetSchema,
   getCaptionPresetById,
   textDirection,
@@ -249,7 +250,7 @@ function solidMask(line: string): string {
 
 /** HarfBuzz ink of a word, laid out as libass draws it (letter spacing after every cluster), in em from its advance box's left edge. */
 function inkExtentEm(word: CaptionBlockWord): { left: number; right: number } {
-  const parts = textDirection(word.text, "ltr") === "rtl" ? [...word.parts].reverse() : word.parts;
+  const parts = word.direction === "rtl" ? [...word.parts].reverse() : word.parts;
   let cursor = 0;
   let left = Number.POSITIVE_INFINITY;
   let right = Number.NEGATIVE_INFINITY;
@@ -376,11 +377,14 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
           const shapes = lines.filter((line) => line.startsWith(`Dialogue: 0,${assTime(startSec)},`));
           expect(shapes, `${fixture.id} "${word.text}": tile and shadow events`).toHaveLength(placed.tile ? (placed.tile.shadowOffset > 0 ? 2 : 1) : 0);
           const posed = keyframes.some((frame) => frame.scaleX !== undefined || frame.scaleY !== undefined || frame.rotateZDeg !== undefined);
+          const slides = keyframes.some((frame) => frame.offsetXEm !== undefined);
           const probe = (ms: number) =>
             startSec + ms / 1000 < end - FRAME_SEC ? [{ name: `+${ms} ms`, atSec: startSec + ms / 1000 }] : [];
           const moments = [
             // Scale and turn are largest early in an entrance.
             ...(posed ? probe(33) : []),
+            // Mid-slide: a sideways entrance (90 ms) is half way here, so travel and its sign are checked.
+            ...(slides ? probe(45) : []),
             ...probe(ENTRANCE_PROBE_MS),
             // One frame before the cue ends: every (duration-capped) entrance has finished.
             { name: "settled", atSec: end - FRAME_SEC },
@@ -389,14 +393,13 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
             const label = `${fixture.id} "${word.text}" ${moment.name}`;
             // The shared pose at this time (what the Studio draws), from the geometry's own time scale.
             const tMs = (moment.atSec - startSec) * 1000;
-            const sample = (property: "offsetXEm" | "offsetYEm" | "scaleX" | "scaleY" | "rotateZDeg", rest: number) =>
-              placed.entranceTimeScale === 0 ? rest : (captionKeyframeValue(keyframes, property, tMs / placed.entranceTimeScale) ?? rest);
+            const shared = placed.entranceTimeScale === 0 ? CAPTION_REST_POSE : captionEntrancePose(keyframes, tMs / placed.entranceTimeScale);
             const pose: Pose = {
-              dx: sample("offsetXEm", 0) * placed.px * placed.motionSign,
-              dy: sample("offsetYEm", 0) * placed.px,
-              scaleX: sample("scaleX", 1),
-              scaleY: sample("scaleY", 1),
-              rotationDeg: placed.rotationDeg + sample("rotateZDeg", 0),
+              dx: shared.offsetXEm * placed.px * placed.motionSign,
+              dy: shared.offsetYEm * placed.px,
+              scaleX: shared.scaleX,
+              scaleY: shared.scaleY,
+              rotationDeg: placed.rotationDeg + shared.rotateZDeg,
             };
             // The baseline in the word's own frame (before its turn), scaled about the scale origin.
             const geometryBaseline = placed.scaleOriginY + (placed.baselineY - placed.scaleOriginY) * pose.scaleY + pose.dy;

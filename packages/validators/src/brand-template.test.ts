@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { applyBrandColorsToCaption, brandColorsFromCaption } from "./brand-template";
-import { CAPTION_DYNAMIC_STYLES, captionStyleUsesAccent, type CaptionDynamicStyle } from "./caption-dynamic";
+import { CAPTION_DYNAMIC_STYLES, captionStyleDrawsHero, captionStyleUsesAccent, type CaptionDynamicStyle } from "./caption-dynamic";
 import { CAPTION_PRESETS, getCaptionPresetById, matchCaptionPreset } from "./caption-preset";
 
 const headline = getCaptionPresetById("headline")!.preset;
@@ -24,12 +24,22 @@ describe("applyBrandColorsToCaption", () => {
   });
 
   test("styles with an accent slot take the secondary as the accent", () => {
-    const withAccent = CAPTION_PRESETS.find((named) => named.preset.dynamic && captionStyleUsesAccent(CAPTION_DYNAMIC_STYLES[named.preset.dynamic]));
+    const withAccent = CAPTION_PRESETS.find((named) => named.preset.dynamic && captionStyleUsesAccent(CAPTION_DYNAMIC_STYLES[named.preset.dynamic]) && captionStyleDrawsHero(CAPTION_DYNAMIC_STYLES[named.preset.dynamic]));
     if (!withAccent) return;
     const branded = applyBrandColorsToCaption(withAccent.preset, "#112233", "#445566");
     expect(branded.primaryColor).toBe(withAccent.preset.primaryColor);
     expect(branded.highlightColor).toBe("#112233");
     expect(branded.accentColor).toBe("#445566");
+  });
+
+  test("a style without a hero (Cutout) takes the primary as its text colour, not the unused hero colour", () => {
+    const cutout = getCaptionPresetById("cutout")!.preset;
+    expect(captionStyleDrawsHero(CAPTION_DYNAMIC_STYLES.cutout)).toBe(false);
+    const branded = applyBrandColorsToCaption(cutout, "#112233", "#445566");
+    expect(branded.primaryColor).toBe("#112233");
+    expect(branded.highlightColor).toBe(cutout.highlightColor);
+    expect(branded.accentColor).toBe("#445566");
+    expect(brandColorsFromCaption(branded)).toEqual({ primaryColor: "#112233", secondaryColor: "#445566" });
   });
 
   test("a catalog look's own colours round-trip, so the look still matches the catalog", () => {

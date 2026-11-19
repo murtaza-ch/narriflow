@@ -15,7 +15,6 @@ import {
   applyCaptionPresetLook,
   captionBlockAnimation,
   captionBlockWordsPerCue,
-  captionStyleUsesAccent,
   clipAspectRatioOptions,
   matchCaptionPreset,
   type CaptionAnimation,
@@ -37,6 +36,7 @@ import {
   captionEmphasisFits,
   captionEmphasisRow,
   captionPanelAnimations,
+  captionPanelColors,
   captionPanelStyle,
   type CaptionEmphasisChip,
   type CaptionEmphasisIntent,
@@ -931,8 +931,10 @@ function AdvancedDisclosure({ children }: { children: ReactNode }) {
 function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
   const { captionPreset } = useStudio("captionPreset");
   const update = useCaptionUpdate();
-  const usesAccent = captionStyleUsesAccent(style);
   const heroFont = captionPreset.heroFontName ?? style.heroFontName;
+  const colors = captionPanelColors(style);
+  // A style without a hero (Cutout) shows no hero colour, emphasis, hero font or emphasis size: they act on nothing.
+  const hero = colors.includes("hero");
 
   return (
     <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
@@ -942,10 +944,10 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
       {/* Colors — user caption color values, literal by design */}
       <Box>
         <SectionLabel>Colors</SectionLabel>
-        <Grid templateColumns={`repeat(${usesAccent ? 3 : 2}, minmax(0, 1fr))`} gap="10px">
+        <Grid templateColumns={`repeat(${colors.length}, minmax(0, 1fr))`} gap="10px">
           <ColorField label="Text" value={captionPreset.primaryColor} onChange={(v) => update({ primaryColor: v })} />
-          <ColorField label="Hero" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} />
-          {usesAccent ? (
+          {hero ? <ColorField label="Hero" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} /> : null}
+          {colors.includes("accent") ? (
             <ColorField
               label="Accent"
               value={captionPreset.accentColor ?? style.accentColor ?? captionPreset.highlightColor}
@@ -955,32 +957,36 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
         </Grid>
       </Box>
 
-      <EmphasisSection />
+      {hero ? <EmphasisSection /> : null}
       <DisplaySection dynamic />
 
       <AdvancedDisclosure>
         <TextFontSection label="Text font" />
-        <Box>
-          <SectionLabel>Hero font</SectionLabel>
-          {/* Built-in faces only (spec 5.2); the style's own face is stored as "unset". */}
-          <FontChips value={heroFont} onChange={(f) => update({ heroFontName: f === style.heroFontName ? undefined : f })} />
-        </Box>
+        {hero ? (
+          <Box>
+            <SectionLabel>Hero font</SectionLabel>
+            {/* Built-in faces only (spec 5.2); the style's own face is stored as "unset". */}
+            <FontChips value={heroFont} onChange={(f) => update({ heroFontName: f === style.heroFontName ? undefined : f })} />
+          </Box>
+        ) : null}
         <TextTransformSection />
         <AnimationSection style={style} />
         <WordsOnScreenSection dynamic />
-        <Box>
-          <SectionLabel>Emphasis size</SectionLabel>
-          <ValueSlider
-            label="Emphasis size"
-            value={captionPreset.emphasisScale ?? 1}
-            min={0.7}
-            max={1.4}
-            step={0.05}
-            format={(value) => `${value.toFixed(2)}×`}
-            coalesceKey="caption-emphasisScale"
-            onChange={(value, key) => update({ emphasisScale: Math.abs(value - 1) < 1e-6 ? undefined : value }, key)}
-          />
-        </Box>
+        {hero ? (
+          <Box>
+            <SectionLabel>Emphasis size</SectionLabel>
+            <ValueSlider
+              label="Emphasis size"
+              value={captionPreset.emphasisScale ?? 1}
+              min={0.7}
+              max={1.4}
+              step={0.05}
+              format={(value) => `${value.toFixed(2)}×`}
+              coalesceKey="caption-emphasisScale"
+              onChange={(value, key) => update({ emphasisScale: Math.abs(value - 1) < 1e-6 ? undefined : value }, key)}
+            />
+          </Box>
+        ) : null}
         <ShadowSection />
         <Box>
           <SectionLabel>Effects</SectionLabel>
