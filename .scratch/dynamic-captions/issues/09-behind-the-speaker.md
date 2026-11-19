@@ -91,3 +91,7 @@ Flicker: on pixels where the source is still, the matte's edge band changes by 0
 - Edges on 5 clips: my read is acceptable on MKBHD, Altman and Muse, marginal on Gereon, and Asher limited by placement rather than edges. Owner and Sol to accept or reject from `contact_sheet.jpg`, `edge_zoom.jpg` and the MP4s.
 - 30 s render ≤1.5x: passes on CPU (1.40–1.48x) only with changes 1–3, and in wall time only with 4. As 5.12 is written it fails (1.9–2.3x CPU).
 - Preview ≥20 fps: passes (22.9–24.1 fps at 24 fps source, CPU delegate in a worker).
+
+### G3 decision (owner, 2026-11-19)
+
+Evidence regenerated after the scratch wipe in `.scratch/dynamic-captions/out/g3/` (git-ignored). Owner answers: edges good enough; matte runs alongside the render; behind hero auto-placed above the head (spec 5.12 updated). G3 passed. Engine work may start once ticket 07 is committed.

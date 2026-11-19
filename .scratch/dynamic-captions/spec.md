@@ -590,10 +590,29 @@ colours do not change. Slots follow the user's colours.
   hero renders in front. The worker records the notice `caption_matte_unavailable` on the
   render. The Studio shows a small notice in the Captions panel. A blank or failed matte
   never hides the hero.
-- **Gate G3** (inside ticket 09, before the Studio half): on 5 real clips Sol and the owner
-  accept the edge quality; render time of a 30 s clip whose every cue has a behind hero is
-  at most 1.5 times the same clip without; Studio preview holds 20 fps or better on the
-  owner's laptop. If any fails, stop and report before building more.
+- **Gate G3: passed** (owner, 2026-11-19, on the 5-clip evidence in ticket 09). Owner decisions:
+  edges are good enough with the free CPU model; the matte runs alongside the render; the
+  behind hero is auto-placed above the head (below).
+- **Changes from the G3 spike, now part of this design:**
+  1. The plan passes each matte range its visible source rectangle(s) (`region`; two-up
+     gives two), so the model segments the visible crop, not the whole 16:9 frame.
+  2. The matte is written at ≤540 px tall and scaled up at the head of the matte branch.
+  3. The person is redrawn only inside the behind row's box, not the full frame.
+  4. The matte runs alongside the render (started first, fed as an input when ready), so
+     a behind clip stays near 1.4–1.5× a normal render.
+  5. Temporal smoothing resets at camera cuts (the layout engine's shots).
+  6. Runtime `ai-edge-litert` (pinned in the render profile), the square
+     `selfie_segmenter.tflite` v1 (SHA-256 `191ac952…658b`) downloaded by URL with a hash
+     check in the Dockerfile and recorded in `runtime-lock.json`, like the face detector.
+     The web copy in `apps/web/public/models/` is checked against the lock's hash.
+- **Auto-placement above the head.** Once per cue, at the hero's onset frame, take the
+  matte's top edge across the hero row's columns (the top of the head). Move the behind row
+  up, never down, until the person covers at most the bottom third of the hero's ink. The
+  move is clamped by the safe area. If even the clamped position leaves more than a third
+  covered, that cue's hero is drawn in front. The decision and offset are fixed for the cue
+  (no motion as the head moves). Each renderer decides from its own matte, so placement may
+  differ by a few px between preview and export; this is accepted for behind cues only and
+  recorded as a parity exception.
 
 ### 5.13 LLM rider (built only if G1 fails)
 
