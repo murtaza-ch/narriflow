@@ -14,6 +14,7 @@
 
 import { captionShapingSensitivity, isShapingSensitiveText } from "@narriflow/caption-fonts/locale-precedence";
 import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
+import { captionWordLineBoxEm } from "@narriflow/caption-fonts/fallback-line-boxes";
 
 export interface CaptionScriptFace {
   /** The @font-face family: `family` in packages/caption-fonts/script-fonts.manifest.json. */
@@ -225,6 +226,23 @@ export function captionFaceDraws(cluster: string, ownScripts: readonly CaptionOw
  */
 function addsNoInk(cluster: string, ownScripts: readonly CaptionOwnScript[]): boolean {
   return captionFaceDraws(cluster, ownScripts) && captionShapingSensitivity(cluster) !== "sensitive";
+}
+
+/**
+ * Height above the baseline of the middle of the line box libass anchors, and scales, a word's
+ * `\an5` event by: `(ascent − descent) / 2` of the faces that draw the word, em. For a word a
+ * fallback face draws (Nastaliq, Noto Sans JP) that is the fallback face's box, not the requested
+ * face's, so a scaling entrance (slam, punch, bounce) pivots where the burn-in does. The faces
+ * are chosen as the worker's glyph planner chooses them (`captionWordLineBoxEm`).
+ */
+export function captionWordBoxMiddleEm(
+  text: string,
+  face: { readonly ascent: number; readonly descent: number; readonly ownScripts?: readonly CaptionOwnScript[] },
+  language?: string | null,
+): number {
+  const ownScripts = face.ownScripts ?? [];
+  const box = captionWordLineBoxEm(text, { ascentEm: face.ascent, descentEm: face.descent }, language, (cluster) => captionFaceDraws(cluster, ownScripts));
+  return (box.ascentEm - box.descentEm) / 2;
 }
 
 /**

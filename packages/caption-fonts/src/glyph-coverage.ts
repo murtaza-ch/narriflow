@@ -33,6 +33,9 @@ const inRanges = (ranges: readonly (readonly [number, number])[], codePoint: num
   return false;
 };
 
+/** True for a code point that draws nothing and rides with the glyph before it. */
+export const isCaptionIgnorableCodePoint = (codePoint: number): boolean => inRanges(IGNORABLE_RANGES, codePoint);
+
 /** `U+1F1FA`: the label shown for a code point that cannot be drawn. */
 export function captionCodePointLabel(codePoint: number): string {
   return `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;

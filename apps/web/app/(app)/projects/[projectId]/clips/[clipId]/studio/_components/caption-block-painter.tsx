@@ -58,6 +58,7 @@ import {
   captionFaceDraws,
   captionFontStack,
   captionLetterSpacingRuns,
+  captionWordBoxMiddleEm,
   hasUnspacedScript,
   type CaptionOwnScript,
 } from "@/app/caption-script-fonts";
@@ -356,9 +357,10 @@ function buildPaint(
   }
   if (pending.length > 0 && !force) return { status: "pending", load: () => Promise.all(pending.map((load) => load())) };
   // The line box middle is where libass anchors and scales a word's event; the Studio scales about the same point.
+  // Of the face that draws the word: a fallback face's for Urdu or Japanese, as in the burn-in.
   const measured = prepared.map((word): MeasuredWord => ({
     ...measureWord(word.text, word.face, word.look.letterSpacing, word.dir, language, word.ready),
-    boxMiddleEm: (word.face.ascent - word.face.descent) / 2,
+    boxMiddleEm: captionWordBoxMiddleEm(word.text, word.face, language),
     ...(curved ? { clusters: measureClusters(word.text, word.face, word.look.letterSpacing, language) } : {}),
   }));
   const layout = layoutCaptionBlock({

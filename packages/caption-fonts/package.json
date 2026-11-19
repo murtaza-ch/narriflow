@@ -27,6 +27,10 @@
       "types": "./src/caption-block.ts",
       "default": "./src/caption-block.ts"
     },
+    "./fallback-line-boxes": {
+      "types": "./src/fallback-line-boxes.ts",
+      "default": "./src/fallback-line-boxes.ts"
+    },
     "./glyph-coverage": {
       "types": "./src/glyph-coverage.ts",
       "default": "./src/glyph-coverage.ts"

@@ -357,6 +357,11 @@ const decorationRows: { fixture: string; kind: string; moment: string; expected:
 
 describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass", () => {
   const fixtures = dynamicCaptionFixtures();
+  // Words a fallback face draws (Noto Nastaliq Urdu, Noto Sans JP), entering with `slam`: every word scales about
+  // the middle of the fallback face's line box, so libass checks the scale origin both painters share (ticket 10).
+  const slamCases = fixtures
+    .filter((fixture) => ["headline-urdu", "headline-urdu-punctuation", "headline-japanese"].includes(fixture.id))
+    .map((fixture) => ({ ...fixture, id: `${fixture.id}-slam`, preset: { ...fixture.preset, animation: "slam" } }));
   let baselineOffset = Number.NaN;
 
   test("calibration: libass draws an event's baseline where the line-box model puts it", () => {
@@ -436,7 +441,7 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
     });
   };
 
-  for (const fixture of fixtures) {
+  for (const fixture of [...fixtures, ...slamCases]) {
     test(`${fixture.id}: every word's baseline and ink sit where the geometry says, settled and mid-entrance`, () => {
       expect(Number.isFinite(baselineOffset), "calibration ran first").toBe(true);
       const layers = dynamicCaptionLayers(fixture);
@@ -501,7 +506,12 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
             const event = eventBaseline(text[0]!, libassNowMs(moment.atSec));
             const libassBaseline = event.anchorY + (event.baselineY - event.anchorY) * pose.scaleY + baselineOffset;
             const pivot = { x: placed.centerX, y: placed.centerY };
-            const ink = restBox(render(`${header(ass)}${solidMask(text[0]!)}\n`, moment.atSec), label, { x: placed.scaleOriginX, y: placed.scaleOriginY }, pivot, pose);
+            // libass scales an event about its `\pos`, the middle of its `compute_string_bbox` box, which is the
+            // advance centre unless a cluster's first glyph is offset (Nastaliq: `bboxCenterEm`, shaping.ts). The
+            // Studio and the shared layout pivot about the advance centre, so a word with that offset drifts
+            // `(scale - 1) x offset` horizontally during a scaling entrance (ticket 10, open).
+            const libassOriginX = placed.scaleOriginX + (word.bboxCenterEm - word.measured.advanceEm / 2) * placed.px;
+            const ink = restBox(render(`${header(ass)}${solidMask(text[0]!)}\n`, moment.atSec), label, { x: libassOriginX, y: placed.scaleOriginY }, pivot, pose);
             const extent = inkExtentEm(word);
             const expected = {
               left: placed.baselineX + extent.left * placed.px,
