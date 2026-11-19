@@ -4,6 +4,7 @@ import {
   joinTranscriptWords,
   stripCaptionEdgePunctuation,
   textDirection,
+  toCaptionLowerCase,
   toCaptionUpperCase,
 } from "./text-script";
 
@@ -120,6 +121,65 @@ describe("toCaptionUpperCase", () => {
 
   test("an unusable locale falls back to plain upper-casing", () => {
     expect(toCaptionUpperCase("abc", "not a locale")).toBe("ABC");
+  });
+
+  test("Turkish and Azerbaijani write a dotted capital İ and a dotless capital I", () => {
+    for (const language of ["tr", "az", "tr-TR", "AZ"]) {
+      expect(toCaptionUpperCase("istanbul ılık iyi", language)).toBe("İSTANBUL ILIK İYİ");
+    }
+    expect(toCaptionUpperCase("istanbul ılık", "en")).toBe("ISTANBUL ILIK");
+  });
+
+  test("Lithuanian drops the soft dot from capital I and J", () => {
+    expect(toCaptionUpperCase("i\u0307\u0300 j\u0307 į\u0307", "lt")).toBe("I\u0300 J Į");
+    expect(toCaptionUpperCase("i\u0307", "en")).toBe("I\u0307");
+  });
+
+  test("Greek capitals drop accents, keep the dialytika a lost accent needs, and keep the tonos of ή", () => {
+    expect(toCaptionUpperCase("Μάιος προϊόν άλφα ευρώ ἄνθρωπος ᾠδή", "el")).toBe("ΜΑΪΟΣ ΠΡΟΪΟΝ ΑΛΦΑ ΕΥΡΩ ΑΝΘΡΩΠΟΣ ΩΙΔΗ");
+    expect(toCaptionUpperCase("ναι ή όχι", "el")).toBe("ΝΑΙ Ή ΟΧΙ");
+    expect(toCaptionUpperCase("café άλφα", "el")).toBe("CAFÉ ΑΛΦΑ");
+    expect(toCaptionUpperCase("άλφα", "en")).toBe("ΆΛΦΑ");
+  });
+
+  test("other languages use the language-neutral mapping", () => {
+    expect(toCaptionUpperCase("straße", "de")).toBe("STRASSE");
+    expect(toCaptionUpperCase("ĳs", "nl")).toBe("ĲS");
+    expect(toCaptionUpperCase("хорошо", "uk")).toBe("ХОРОШО");
+    expect(toCaptionUpperCase("çava", "fr")).toBe("ÇAVA");
+  });
+
+  test("never reads the runtime's locale data", () => {
+    const { toLocaleUpperCase, toLocaleLowerCase } = String.prototype;
+    const refuse = () => {
+      throw new Error("locale casing");
+    };
+    String.prototype.toLocaleUpperCase = refuse;
+    String.prototype.toLocaleLowerCase = refuse;
+    try {
+      for (const language of ["tr", "az", "lt", "el", "de", "en", null]) {
+        toCaptionUpperCase("istanbul Μάιος i\u0307", language);
+        toCaptionLowerCase("ISTANBUL İ", language);
+      }
+    } finally {
+      String.prototype.toLocaleUpperCase = toLocaleUpperCase;
+      String.prototype.toLocaleLowerCase = toLocaleLowerCase;
+    }
+  });
+});
+
+describe("toCaptionLowerCase", () => {
+  test("Turkish and Azerbaijani lower I to dotless ı and İ to i", () => {
+    for (const language of ["tr", "az"]) {
+      expect(toCaptionLowerCase("ISTANBUL İYİ", language)).toBe("ıstanbul iyi");
+    }
+  });
+
+  test("other languages use the language-neutral mapping", () => {
+    expect(toCaptionLowerCase("ISTANBUL", "en")).toBe("istanbul");
+    expect(toCaptionLowerCase("ISTANBUL")).toBe("istanbul");
+    expect(toCaptionLowerCase("ΟΔΟΣ", "el")).toBe("οδος");
+    expect(toCaptionLowerCase("ПРИВЕТ", "ru")).toBe("привет");
   });
 });
 

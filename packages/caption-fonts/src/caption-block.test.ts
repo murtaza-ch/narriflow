@@ -5,12 +5,14 @@ import {
   CAPTION_CUE_TILTS_DEG,
   CAPTION_DYNAMIC_STYLES,
   CAPTION_FIT_WIDTH_FRACTION,
+  CAPTION_MOTIONS,
   type CaptionAnimation,
   type CaptionBlock,
   type CaptionDynamicStyle,
   type CaptionPresetInput,
   type CaptionWordRole,
   captionBlockRows,
+  captionEntranceMs,
   captionPresetSchema,
   fnv1a32,
 } from "@narriflow/validators";
@@ -35,6 +37,9 @@ interface Case {
   readonly anchor?: { xPct: number; yPct: number };
   readonly direction?: "ltr" | "rtl";
   readonly spaceBefore?: readonly (boolean | undefined)[];
+  readonly canvas?: { width: number; height: number };
+  readonly startSec?: readonly number[];
+  readonly cueEndSec?: number;
 }
 
 function layout(input: Case) {
@@ -61,12 +66,14 @@ function layout(input: Case) {
     style,
     words: input.texts.map((_, index) => {
       const spaceBefore = input.spaceBefore?.[index];
-      return spaceBefore === undefined ? {} : { spaceBefore };
+      const startSec = input.startSec?.[index];
+      return { ...(spaceBefore === undefined ? {} : { spaceBefore }), ...(startSec === undefined ? {} : { startSec }) };
     }),
     measured: input.texts.map(measure),
-    canvas: CANVAS,
+    canvas: input.canvas ?? CANVAS,
     anchor: input.anchor ?? { xPct: 50, yPct: 50 },
     direction: input.direction ?? "ltr",
+    ...(input.cueEndSec === undefined ? {} : { cueEndSec: input.cueEndSec }),
   };
   return { ...layoutCaptionBlock(layoutInput), block, measured: layoutInput.measured };
 }
@@ -217,16 +224,97 @@ describe("rules 5 and 6, row x and stagger", () => {
   });
 });
 
+/** The safe area of a canvas, px. */
+const safeArea = (canvas: { width: number; height: number }) => ({
+  left: CAPTION_BLOCK.safeArea.left * canvas.width,
+  right: CAPTION_BLOCK.safeArea.right * canvas.width,
+  top: CAPTION_BLOCK.safeArea.top * canvas.height,
+  bottom: CAPTION_BLOCK.safeArea.bottom * canvas.height,
+});
+
+function expectInsideSafeArea(result: ReturnType<typeof layout>, canvas = CANVAS) {
+  const safe = safeArea(canvas);
+  const { x, y, width, height } = result.bounds;
+  expect(x).toBeGreaterThanOrEqual(safe.left - 1e-6);
+  expect(x + width).toBeLessThanOrEqual(safe.right + 1e-6);
+  expect(y).toBeGreaterThanOrEqual(safe.top - 1e-6);
+  expect(y + height).toBeLessThanOrEqual(safe.bottom + 1e-6);
+}
+
 describe("rule 7, fit", () => {
   test("one scale for the whole block keeps the hierarchy", () => {
     const result = layout({ texts: ["abcdefghijkl", "mnopqrstuvwx", "ABCDEFGH"], roles: ["body", "body", "hero"] });
-    expect(result.scale).toBeLessThan(1);
+    // The lead row (12.232 em at S) enters 0.18 em from the left, so its envelope is 12.412 em wide.
+    expect(result.scale).toBeCloseTo((CAPTION_FIT_WIDTH_FRACTION * CANVAS.width) / (12.412 * S), 9);
     const lead = result.block.rows[0]!;
     const width = result.words[lead[1]!]!.baselineX + advance(result.words[lead[1]!]!, result.measured[lead[1]!]!) - result.words[lead[0]!]!.baselineX;
-    expect(width).toBeCloseTo(CAPTION_FIT_WIDTH_FRACTION * CANVAS.width, 9);
+    expect(width).toBeCloseTo(12.232 * S * result.scale, 9);
     expect(result.words[0]!.px).toBeCloseTo(S * result.scale, 9);
     // The hero filled 80% of the width before the block scaled down with everything else.
     expect(advance(result.words[2]!, result.measured[2]!)).toBeCloseTo(0.8 * CANVAS.width * result.scale, 9);
+    expect(result.bounds.width).toBeCloseTo(CAPTION_FIT_WIDTH_FRACTION * CANVAS.width, 9);
+    expectInsideSafeArea(result);
+  });
+
+  test("a punch hero's entrance scale counts: the filled hero shrinks until 1.45× of it fits", () => {
+    const result = layout({ texts: ["with", "Accurate", "captions"], roles: ["minor", "hero", "body"], preset: { animation: "punch" } });
+    // Resting, the hero fills 864 px; at its 1.45 entrance scale it would span 1252.8 px.
+    expect(result.scale).toBeCloseTo((CAPTION_FIT_WIDTH_FRACTION * CANVAS.width) / (0.8 * CANVAS.width * 1.45), 9);
+    expect(advance(result.words[1]!, result.measured[1]!) * 1.45).toBeCloseTo(CAPTION_FIT_WIDTH_FRACTION * CANVAS.width, 9);
+    expectInsideSafeArea(result);
+  });
+
+  test("a long slide row's sideways travel stays inside the safe width", () => {
+    for (const seed of [0, 1]) {
+      const result = layout({ texts: ["abcdefghijkl", "mnopqrstuvwx", "OK"], roles: ["body", "body", "hero"], seed });
+      expectInsideSafeArea(result);
+      const safe = safeArea(CANVAS);
+      const [first, second] = result.words;
+      const travel = 0.18 * first!.px;
+      // Sign +1 enters from the left, sign −1 from the right; either way the first frame is inside.
+      expect(first!.baselineX - (first!.motionSign === 1 ? travel : 0)).toBeGreaterThanOrEqual(safe.left - 1e-6);
+      expect(second!.baselineX + advance(second!, result.measured[1]!) + (second!.motionSign === -1 ? travel : 0)).toBeLessThanOrEqual(safe.right + 1e-6);
+    }
+  });
+
+  test("a short frame fits the block's height into the safe area too", () => {
+    for (const canvas of [{ width: 1920, height: 1080 }, { width: 1080, height: 1080 }]) {
+      // A large preset size: the 3.4 S hero, punched to 1.45×, over two rows is taller than 72% of 1080.
+      const tall = layout({ texts: ["so", "OK", "then"], roles: ["minor", "hero", "minor"], preset: { animation: "punch", fontSize: 200 }, canvas });
+      expect(tall.scale).toBeLessThan(1);
+      expect(tall.bounds.height).toBeCloseTo(0.72 * canvas.height, 6);
+      expect(tall.bounds.width).toBeLessThan(CAPTION_FIT_WIDTH_FRACTION * canvas.width);
+      expectInsideSafeArea(tall, canvas);
+      const wide = layout({ texts: ["you", "will", "never", "guess", "this"], roles: ["minor", "minor", "hero", "body", "body"], preset: { animation: "punch", fontSize: 150 }, canvas });
+      expectInsideSafeArea(wide, canvas);
+    }
+  });
+});
+
+describe("duration cap (spec 5.7)", () => {
+  const slideHeroMs = captionEntranceMs(CAPTION_MOTIONS.slide.hero);
+  const slideWordMs = captionEntranceMs(CAPTION_MOTIONS.slide.word);
+
+  test("in a short cue the hero's entrance has finished by the tail's onset", () => {
+    const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], startSec: [0, 0.08, 0.16], cueEndSec: 0.4 });
+    const [lead, hero, tail] = result.words;
+    expect(0.08 + (hero!.entranceTimeScale * slideHeroMs) / 1000).toBeLessThanOrEqual(0.16 + 1e-9);
+    expect(hero!.entranceTimeScale).toBeCloseTo(80 / slideHeroMs, 9);
+    expect(lead!.entranceTimeScale).toBeCloseTo(80 / slideWordMs, 9);
+    // The last word has no next onset; 45% of its 240 ms covers the 90 ms entrance.
+    expect(tail!.entranceTimeScale).toBe(1);
+  });
+
+  test("the last word uses only the cue time left, and under 100 ms left it is settled", () => {
+    const result = layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], startSec: [0, 0.2], cueEndSec: 0.4 });
+    expect(result.words[1]!.entranceTimeScale).toBeCloseTo((0.45 * 200) / slideHeroMs, 9);
+    const late = layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], startSec: [0, 0.35], cueEndSec: 0.4 });
+    expect(late.words[1]!.entranceTimeScale).toBe(0);
+  });
+
+  test("without word times the entrance plays in full", () => {
+    const result = layout({ texts: ["the", "BEST"], roles: ["minor", "hero"] });
+    expect(result.words.map((word) => word.entranceTimeScale)).toEqual([1, 1]);
   });
 });
 

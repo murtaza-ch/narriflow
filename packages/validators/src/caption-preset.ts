@@ -2,7 +2,7 @@ import { z } from "zod";
 import { CAPTION_DYNAMIC_NAMES } from "./caption-dynamic";
 import { CAPTION_FONT_NAMES } from "./caption-font";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
-import { stripCaptionEdgePunctuation, toCaptionUpperCase } from "./text-script";
+import { stripCaptionEdgePunctuation, toCaptionLowerCase, toCaptionUpperCase } from "./text-script";
 import { brandFontReferenceSchema } from "./timed-edits";
 
 export const BRAND_DEFAULT_CAPTION_PRESET_ID = "brand_default";
@@ -107,7 +107,7 @@ export function applyCaptionTextTransform(
     case "uppercase":
       return toCaptionUpperCase(text, language);
     case "lowercase":
-      return text.toLowerCase();
+      return toCaptionLowerCase(text, language);
     case "capitalize":
       return text.replace(/(^|[\s\-])(\p{L})/gu, (_match, lead: string, letter: string) => lead + toCaptionUpperCase(letter, language));
     default:

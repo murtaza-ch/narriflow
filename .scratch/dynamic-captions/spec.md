@@ -318,7 +318,7 @@ layoutCaptionBlock(input: {
   block: CompositionCaptionBlock; preset: CaptionPreset; style: CaptionDynamicStyle;
   words: readonly CompositionCaptionWord[]; measured: readonly MeasuredWord[];
   canvas: { width: number; height: number }; anchor: { xPct: number; yPct: number };
-  direction: "ltr" | "rtl";
+  direction: "ltr" | "rtl"; cueEndSec: number;  // the layer's activeRange.endSec, for the duration cap
 }): { scale: number; words: readonly PlacedWord[]; bounds: Rect; decorations: readonly PlacedDecoration[] }
 interface PlacedWord {
   readonly px: number;            // font size in canvas px, after fit
@@ -328,6 +328,7 @@ interface PlacedWord {
   readonly centerY: number;
   readonly rotationDeg: number;   // block tilt + tile tilt, clockwise
   readonly motionSign: 1 | -1;    // for direction-flipping motions
+  readonly entranceTimeScale: number; // duration cap (5.7); 0 = settled
 }
 ```
 
@@ -359,11 +360,16 @@ Rules, in order:
 6. **Stagger.** Lead and tail rows shift by `style.staggerEm × S × sign`. Row 0 has sign
    `seed % 2 === 0 ? 1 : −1`, the next row the opposite. The hero row takes its sign for
    `motionSign` but does not shift. `motionSign` of every word in a row equals the row's sign.
-7. **Fit.** One block scale: `min(1, CAPTION_FIT_WIDTH_FRACTION × canvas.width / widestEnvelope)`,
-   applied to every word, so the hierarchy holds. A row's envelope is its resting width
-   grown by the largest entrance scale and horizontal travel of its words, so no entrance
-   frame leaves the safe width. Hero fill already targets less than the
-   fit width, so this only bites on long lead or tail rows.
+7. **Fit.** One block scale:
+   `min(1, CAPTION_FIT_WIDTH_FRACTION × canvas.width / envelopeWidth, safeHeight / envelopeHeight)`,
+   applied to every word, so the hierarchy holds. The envelope is the block's reserved
+   bounds (rule 9) at full size: every row at rest, grown by the largest entrance scale and
+   travel of its words, staggered and tilted. So no entrance frame leaves the safe area:
+   the fit width is the safe width, and `safeHeight` (72% of the frame) binds only on short
+   frames with large sizes. Every length in the block is proportional to the word sizes, so
+   arranging at full size, scaling, and arranging again lands the bounds exactly on the
+   limit. With `punch` a filled hero shrinks until 1.45× of it fits; otherwise this bites
+   on long lead or tail rows.
 8. **Anchor.** Centre styles put the block's ink-box centre on the anchor. Left styles put
    the block's left edge at `anchor.xPct` and its vertical ink centre at `anchor.yPct`. A
    left style's default `positionX` is `style.leftGuidePct`.

@@ -102,6 +102,15 @@ describe("captionEntranceTimeScale (duration cap, spec 5.7)", () => {
     expect(captionEntranceTimeScale(100, 90)).toBeCloseTo(0.5, 9);
     expect(captionEntranceTimeScale(500, 0)).toBe(0);
   });
+
+  test("an entrance also ends by the next word's onset", () => {
+    expect(captionEntranceTimeScale(1000, 150, 80)).toBeCloseTo(80 / 150, 9);
+    expect(captionEntranceTimeScale(200, 150, 500)).toBeCloseTo(0.6, 9);
+    expect(captionEntranceTimeScale(1000, 150, 300)).toBe(1);
+    expect(captionEntranceTimeScale(1000, 150, 0)).toBe(0);
+    expect(captionEntranceTimeScale(1000, 150, -20)).toBe(0);
+    expect(captionEntranceTimeScale(99, 150, 500)).toBe(0);
+  });
 });
 
 describe("captionKeyframeValue", () => {

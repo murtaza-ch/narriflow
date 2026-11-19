@@ -141,24 +141,80 @@ export function textDirection(
 const NON_GEORGIAN_RUN_RE = /[^\p{Script=Georgian}]+/gu;
 
 /**
- * Upper-cases caption text for a language: locale rules (Turkish dotted İ,
- * Lithuanian), a no-op for caseless scripts (Han, Arabic, Indic, ...), and
- * Georgian left alone, because `toUpperCase` would turn Mkhedruli into
- * Mtavruli, which the vendored Georgian faces do not carry.
+ * The languages whose casing differs from the language-neutral Unicode
+ * mapping, by primary subtag. Captions never call the runtime's locale casing
+ * (`toLocaleUpperCase`), so the worker and every browser case text alike
+ * whatever ICU data they ship; these rules are written out instead.
+ */
+function casingLanguage(languageCode: string | null | undefined): string | null {
+  return languageCode?.trim().toLowerCase().split(/[-_]/)[0] || null;
+}
+
+// Greek letters with their combining marks.
+const GREEK_RUN_RE = /(?:\p{Script=Greek}\p{M}*)+/gu;
+// Tonos, oxia, varia, perispomeni, breathings, koronis and ypogegrammeni; the dialytika (U+0308) stays.
+const GREEK_ACCENT_RE = /[̀́̓̔͂̓̈́ͅ]/g;
+// An accented vowel before a bare ι/υ: dropping the accent would read the pair as a diphthong.
+const GREEK_HIATUS_RE =
+  /([αεηιουωΑΕΗΙΟΥΩ][̓̔ͅ]*[̀́͂][̀́̓̔͂ͅ]*[ιυΙΥ])(?![̀-ͯ])/g;
+
+/**
+ * Greek all caps (the ICU `el` rule): accents and breathings drop, an
+ * ι/υ that the accent kept out of a diphthong gains a dialytika (Μάιος →
+ * ΜΑΪΟΣ), and the word ή ("or") keeps its tonos.
+ */
+function greekUpperCase(text: string): string {
+  return text.replace(GREEK_RUN_RE, (run, offset: number, whole: string) => {
+    const decomposed = run.normalize("NFD");
+    const before = whole.slice(0, offset);
+    const after = whole.slice(offset + run.length);
+    if (/^[ηΗ]́$/.test(decomposed) && !/\p{L}\p{M}*$/u.test(before) && !/^\p{L}/u.test(after)) return "Ή";
+    return decomposed
+      .replace(GREEK_HIATUS_RE, "$1̈")
+      .toUpperCase()
+      .replace(GREEK_ACCENT_RE, "")
+      .normalize("NFC");
+  });
+}
+
+function upperCase(segment: string, language: string | null): string {
+  switch (language) {
+    case "tr":
+    case "az":
+      return segment.replace(/i/g, "İ").toUpperCase();
+    case "lt":
+      // The dot that keeps a lowercase i/j dotted under an accent is not written on the capital.
+      return segment.toUpperCase().replace(/([IJĮ])̇/g, "$1");
+    case "el":
+      return greekUpperCase(segment).toUpperCase();
+    default:
+      return segment.toUpperCase();
+  }
+}
+
+/**
+ * Upper-cases caption text for a language: Turkish and Azerbaijani dotted İ,
+ * Lithuanian soft-dotted i, Greek unaccented capitals, a no-op for caseless
+ * scripts (Han, Arabic, Indic, ...), and Georgian left alone, because
+ * `toUpperCase` would turn Mkhedruli into Mtavruli, which the vendored
+ * Georgian faces do not carry. Deterministic: no runtime locale data.
  */
 export function toCaptionUpperCase(
   text: string,
   languageCode?: string | null,
 ): string {
-  const upper = (segment: string) => {
-    if (!languageCode) return segment.toUpperCase();
-    try {
-      return segment.toLocaleUpperCase(languageCode);
-    } catch {
-      return segment.toUpperCase();
-    }
-  };
-  return text.replace(NON_GEORGIAN_RUN_RE, upper);
+  const language = casingLanguage(languageCode);
+  return text.replace(NON_GEORGIAN_RUN_RE, (segment) => upperCase(segment, language));
+}
+
+/** Lower-cases caption text for a language: Turkish and Azerbaijani dotless ı. Deterministic, like `toCaptionUpperCase`. */
+export function toCaptionLowerCase(
+  text: string,
+  languageCode?: string | null,
+): string {
+  const language = casingLanguage(languageCode);
+  if (language === "tr" || language === "az") return text.replace(/İ/g, "i").replace(/I/g, "ı").toLowerCase();
+  return text.toLowerCase();
 }
 
 /**

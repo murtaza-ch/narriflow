@@ -362,10 +362,13 @@ export const CAPTION_ENTRANCE_MAX_SHARE = 0.45;
 /**
  * Duration cap for Caption Block entrances (spec 5.7): every keyframe time of
  * a word is multiplied by this factor, `min(1, 0.45 × remainingCueMs /
- * entranceMs)`. 0 means "draw the word settled": less than 100 ms of the cue
- * is left, or the entrance has no length.
+ * entranceMs, gapToNextOnsetMs / entranceMs)`, so an entrance ends before
+ * the next word of the cue is spoken. The last word of a cue passes no gap.
+ * 0 means "draw the word settled": less than 100 ms of the cue is left, the
+ * next word starts with it, or the entrance has no length.
  */
-export function captionEntranceTimeScale(remainingCueMs: number, entranceMs: number): number {
+export function captionEntranceTimeScale(remainingCueMs: number, entranceMs: number, gapToNextOnsetMs?: number): number {
   if (remainingCueMs < CAPTION_ENTRANCE_MIN_REMAINING_MS || entranceMs <= 0) return 0;
-  return Math.min(1, (CAPTION_ENTRANCE_MAX_SHARE * remainingCueMs) / entranceMs);
+  const gap = gapToNextOnsetMs === undefined ? Infinity : Math.max(0, gapToNextOnsetMs);
+  return Math.min(1, (CAPTION_ENTRANCE_MAX_SHARE * remainingCueMs) / entranceMs, gap / entranceMs);
 }

@@ -148,6 +148,12 @@ describe("caption casing follows the language", () => {
   test("capitalize uses the language's rules for the first letter", () => {
     expect(applyCaptionTextTransform("istanbul iyi", "capitalize", "tr")).toBe("İstanbul İyi");
   });
+
+  test("lowercase uses the language's rules too", () => {
+    expect(applyCaptionTextTransform("ISTANBUL ILIK", "lowercase", "tr")).toBe("ıstanbul ılık");
+    expect(applyCaptionTextTransform("İYİ", "lowercase", "az")).toBe("iyi");
+    expect(applyCaptionTextTransform("ISTANBUL", "lowercase", "en")).toBe("istanbul");
+  });
 });
 
 describe("auto-censor keeps combining marks", () => {
