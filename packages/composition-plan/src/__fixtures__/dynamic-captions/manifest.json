@@ -986,6 +986,444 @@
         ]
       },
       "notes": "One English cue for Groove (reference 03): serif caps lead and tail rows around a capitalised pink display hero."
+    },
+    {
+      "id": "arc-en",
+      "reference": "14-arc-curved-text.jpg",
+      "style": "arc",
+      "presetId": "arc",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "how",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.22
+        },
+        {
+          "word": "to",
+          "key": "1250",
+          "startSec": 1.25,
+          "endSec": 1.4
+        },
+        {
+          "word": "curve",
+          "key": "1750",
+          "startSec": 1.75,
+          "endSec": 2.3
+        },
+        {
+          "word": "text",
+          "key": "2350",
+          "startSec": 2.35,
+          "endSec": 2.7
+        }
+      ],
+      "overrides": {},
+      "notes": "One English cue for Arc (reference 14): lead, hero and tail rows, each arched at 0.55, cluster by cluster.",
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
+    },
+    {
+      "id": "arc-long-fit",
+      "reference": "14-arc-curved-text.jpg",
+      "style": "arc",
+      "presetId": "arc",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "internationally",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.5
+        },
+        {
+          "word": "recognised",
+          "key": "1550",
+          "startSec": 1.55,
+          "endSec": 1.95
+        },
+        {
+          "word": "photographers",
+          "key": "2000",
+          "startSec": 2,
+          "endSec": 2.5
+        },
+        {
+          "word": "agree",
+          "key": "2550",
+          "startSec": 2.55,
+          "endSec": 2.9
+        }
+      ],
+      "overrides": {
+        "2550": "hero"
+      },
+      "notes": "Arc with a long curved lead row that only fits after the block scale shrinks it.",
+      "expected": {
+        "roles": [
+          "body",
+          "body",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
+    },
+    {
+      "id": "arc-urdu",
+      "reference": "14-arc-curved-text.jpg",
+      "style": "arc",
+      "presetId": "arc",
+      "preset": {},
+      "language": "ur",
+      "words": [
+        {
+          "word": "یہ",
+          "key": "4000",
+          "startSec": 4,
+          "endSec": 4.27
+        },
+        {
+          "word": "50",
+          "key": "4300",
+          "startSec": 4.3,
+          "endSec": 4.57
+        },
+        {
+          "word": "فیصد",
+          "key": "4600",
+          "startSec": 4.6,
+          "endSec": 4.87
+        },
+        {
+          "word": "ہے",
+          "key": "4900",
+          "startSec": 4.9,
+          "endSec": 5.17
+        }
+      ],
+      "overrides": {},
+      "notes": "Arc on an Urdu cue: Arabic script would unjoin if split into clusters, so the rows stay straight.",
+      "expected": {
+        "roles": [
+          "minor",
+          "hero",
+          "hero",
+          "minor"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
+    },
+    {
+      "id": "arc-bow",
+      "reference": "14-arc-curved-text.jpg",
+      "style": "arc",
+      "presetId": "arc",
+      "preset": {
+        "curve": -0.55
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "how",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.22
+        },
+        {
+          "word": "to",
+          "key": "1250",
+          "startSec": 1.25,
+          "endSec": 1.4
+        },
+        {
+          "word": "curve",
+          "key": "1750",
+          "startSec": 1.75,
+          "endSec": 2.3
+        },
+        {
+          "word": "text",
+          "key": "2350",
+          "startSec": 2.35,
+          "endSec": 2.7
+        }
+      ],
+      "overrides": {},
+      "notes": "Arc with a negative curve: every row bows (ends higher than the middle).",
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
+    },
+    {
+      "id": "headline-curve",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {
+        "curve": 0.5
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "the",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.27
+        },
+        {
+          "word": "BEST",
+          "key": "1300",
+          "startSec": 1.3,
+          "endSec": 1.57
+        },
+        {
+          "word": "part",
+          "key": "1600",
+          "startSec": 1.6,
+          "endSec": 1.87
+        }
+      ],
+      "overrides": {},
+      "notes": "Headline with the Curve control at 0.5: arched rows, a flat hero colour (no gradient bands on clusters).",
+      "expected": {
+        "roles": [
+          "minor",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      }
+    },
+    {
+      "id": "headline-bow",
+      "reference": "01-stack-kalakar-accurate.jpg",
+      "style": "headline",
+      "presetId": "headline",
+      "preset": {
+        "curve": -0.5
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "the",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.27
+        },
+        {
+          "word": "BEST",
+          "key": "1300",
+          "startSec": 1.3,
+          "endSec": 1.57
+        },
+        {
+          "word": "part",
+          "key": "1600",
+          "startSec": 1.6,
+          "endSec": 1.87
+        }
+      ],
+      "overrides": {},
+      "notes": "Headline with the Curve control at -0.5: bowed rows.",
+      "expected": {
+        "roles": [
+          "minor",
+          "hero",
+          "body"
+        ],
+        "rows": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      }
+    },
+    {
+      "id": "stack-curve",
+      "reference": "08-mixed-size-stars.jpg",
+      "style": "stack",
+      "presetId": "stack",
+      "preset": {
+        "curve": 0.5
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "how",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.32
+        },
+        {
+          "word": "to",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "edit",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "captions",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        }
+      ],
+      "overrides": {},
+      "notes": "Stack with the Curve control at 0.5: arched rows, stars at the arched block's corners.",
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
+    },
+    {
+      "id": "stack-bow",
+      "reference": "08-mixed-size-stars.jpg",
+      "style": "stack",
+      "presetId": "stack",
+      "preset": {
+        "curve": -0.5
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "how",
+          "key": "1000",
+          "startSec": 1,
+          "endSec": 1.32
+        },
+        {
+          "word": "to",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "edit",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "captions",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        }
+      ],
+      "overrides": {},
+      "notes": "Stack with the Curve control at -0.5: bowed rows.",
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import * as hb from "harfbuzzjs";
 import { reorderByLevels, resolveBidiLevels } from "./bidi-order";
+import { captionClusterPositions } from "./caption-block";
 import { isWoff2, woff2ToSfnt } from "./woff2";
 
 /**
@@ -300,4 +301,53 @@ export function layoutCaptionLine(
     inkTopEm: Math.max(0, ...boxes.map((box) => box.inkTop)),
     inkBottomEm: Math.max(0, ...boxes.map((box) => box.inkBottom)),
   };
+}
+
+/** One glyph cluster of a word, in em at 1 em (see `captionClusterOffsets`). */
+export interface CaptionClusterOffset {
+  /** Pen position inside the word, from its left advance edge (kerning and letter spacing before it included). */
+  readonly startEm: number;
+  /** The cluster's advance drawn alone, without letter spacing. */
+  readonly advanceEm: number;
+  /** Middle of the box libass anchors an event holding only this cluster by, from its left edge. */
+  readonly bboxCenterEm: number;
+}
+
+/**
+ * Where each glyph cluster of a left-to-right word sits (curved rows, spec 5.11), measured with
+ * HarfBuzz as libass draws it. `clusters` holds the parts of each `captionTextClusters` entry of
+ * the word, in order. Each prefix ending with cluster k is laid out with the caption's letter
+ * spacing (`layoutCaptionLine`), each cluster alone without it, and `captionClusterPositions` puts
+ * every cluster where the shaped word ends it. The Studio measures the same two things with Canvas
+ * `measureText`. Throws `CaptionShapingError` when a run cannot be shaped.
+ */
+export function captionClusterOffsets(
+  clusters: readonly (readonly CaptionLinePart[])[],
+  letterSpacingEm: number,
+): CaptionClusterOffset[] {
+  const prefixes: number[] = [];
+  const alone: CaptionLineLayout[] = [];
+  clusters.forEach((parts, index) => {
+    const prefix = mergeParts(clusters.slice(0, index + 1).flat());
+    prefixes.push(layoutCaptionLine([{ parts: prefix, gap: null, gapExtraEm: 0 }], letterSpacingEm, "ltr").widthEm);
+    alone.push(layoutCaptionLine([{ parts, gap: null, gapExtraEm: 0 }], 0, "ltr"));
+  });
+  // `layoutCaptionLine` adds the spacing after every cluster of a spaced part.
+  const spacing = clusters.map((parts) => (parts[parts.length - 1]?.spaced ? letterSpacingEm : 0));
+  return captionClusterPositions(prefixes, alone.map((line) => line.widthEm), spacing).map((position, index) => ({
+    ...position,
+    bboxCenterEm: alone[index]!.bboxCenterEm,
+  }));
+}
+
+/** Adjacent parts of one face and spacing joined into one, so a prefix shapes (and kerns) as the word does. */
+function mergeParts(parts: readonly CaptionLinePart[]): CaptionLinePart[] {
+  const merged: CaptionLinePart[] = [];
+  for (const part of parts) {
+    const last = merged[merged.length - 1];
+    if (last && last.fontPath === part.fontPath && last.spaced === part.spaced && last.inked === part.inked) {
+      merged[merged.length - 1] = { ...last, text: last.text + part.text };
+    } else merged.push(part);
+  }
+  return merged;
 }

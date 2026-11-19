@@ -3,14 +3,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
-import { CAPTION_RTL_MARK, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
+import { CAPTION_RTL_MARK, captionUnturnedTravel, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
 import type { CompositionCaptionBlock, CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
+  CAPTION_CURVE,
   CAPTION_DECORATION,
   CAPTION_MOTIONS,
   CAPTION_SHAPES,
   CAPTION_SOFT_SHADOW,
   captionBlockAnimation,
+  captionBlockPaintLayers,
   captionDynamicStyle,
   captionEntranceKeyframes,
   captionPresetSchema,
@@ -123,8 +125,8 @@ describe("Caption Block ASS", () => {
         const geometry = captionBlockGeometry({ cue, canvas: CANVAS });
         const end = assTime(cue.activeRange.endSec);
         const cueEvents = events.filter((event) => cue.words.some((word) => assTime(word.startSec) === event.start));
-        // Spec section 8 budget.
-        expect(cueEvents.length).toBeLessThanOrEqual(120);
+        // Spec section 8 budget; 5.11's for curved cues.
+        expect(cueEvents.length).toBeLessThanOrEqual(geometry.layout.curve !== 0 ? CAPTION_CURVE.maxEvents : 120);
         const style = captionDynamicStyle(cue.block.style);
         cue.words.forEach((word, index) => {
           const placed = geometry.layout.words[index]!;
@@ -132,6 +134,14 @@ describe("Caption Block ASS", () => {
           // One event per soft shadow layer, then the text (one per band for a gradient hero); a tile and its hard shadow below them.
           const shadows = cue.preset.shadow === "soft" ? (style.softShadow?.length ?? 1) : cue.preset.shadow === "none" ? 0 : 1;
           const tiles = placed.tile ? (placed.tile.shadowOffset > 0 ? 2 : 1) : 0;
+          if (placed.clusters) {
+            // A curved word: every paint layer once per cluster, the clusters spelling the word (checked in detail below).
+            expect(own).toHaveLength(placed.clusters.length * (shadows + 1));
+            const text = own.filter((event) => event.layer === TEXT_LAYER).map((event) => event.text.replace(/\{[^}]*\}/g, "")).join("");
+            expect(text).toBe(geometry.words[index]!.text);
+            for (const event of own) expect(event.end).toBe(end);
+            return;
+          }
           const banded = geometry.layout.gradient !== null && cue.block.roles[index] === "hero";
           const texts = own.filter((event) => event.layer === TEXT_LAYER).length;
           if (banded) expect(texts).toBeGreaterThan(1);
@@ -370,6 +380,63 @@ describe("Caption Block ASS", () => {
     } finally {
       rmSync(directory, { recursive: true });
     }
+  });
+
+  test("curved rows: one event per cluster per paint layer, unspaced, turned about the cluster's centre, travel in screen space", () => {
+    for (const id of ["arc-en", "arc-bow", "headline-curve", "stack-curve"]) {
+      const [cue] = blockLayers(id);
+      const geometry = captionBlockGeometry({ cue: cue!, canvas: CANVAS });
+      expect(geometry.layout.curve, id).not.toBe(0);
+      const events = dialogues(renderCaptionTrack({ layers: [cue!], canvas: CANVAS }).ass);
+      const style = captionDynamicStyle(cue!.block.style);
+      const clusters = geometry.layout.words.reduce((total, word) => total + word.clusters!.length, 0);
+      const wordEvents = events.filter((event) => event.layer !== DECORATION_LAYER && event.layer !== DECORATION_SHADOW_LAYER);
+      expect(wordEvents, id).toHaveLength(clusters * captionBlockPaintLayers(cue!.preset, style));
+      expect(events.length, `${id}: the curved-cue budget`).toBeLessThanOrEqual(CAPTION_CURVE.maxEvents);
+      const text = events.filter((event) => event.layer === TEXT_LAYER);
+      geometry.layout.words.forEach((word, index) => {
+        const start = assTime(cue!.words[index]!.startSec);
+        const own = text.filter((event) => event.start === start);
+        word.clusters!.forEach((cluster, at) => {
+          const event = own[at]!;
+          expect(event.text).toContain(`\\org(${num(cluster.centerX)},${num(cluster.centerY)})`);
+          expect(event.text).toContain("\\fsp0\\");
+          if (Math.abs(cluster.rotationDeg) > 0.01) expect(event.text).toContain(`\\frz${num(-cluster.rotationDeg)}`);
+          expect(event.text).not.toMatch(/\\fsc[xy]/);
+          // The \move carries the word's screen travel turned back by the cluster's angle.
+          const move = numbers("move", event.text);
+          if (move && word.entranceTimeScale > 0) {
+            const first = word.keyframes[0]!;
+            const want = captionUnturnedTravel((first.offsetXEm ?? 0) * word.px * word.motionSign, (first.offsetYEm ?? 0) * word.px, cluster.rotationDeg);
+            expect(move[0]! - move[2]!).toBeCloseTo(want.x, 1);
+            expect(move[1]! - move[3]!).toBeCloseTo(want.y, 1);
+          }
+        });
+      });
+    }
+  });
+
+  test("every fixture case stays within its event budget; curved cues within 200", () => {
+    const counts: Record<string, number> = {};
+    for (const entry of fixtures) {
+      for (const cue of dynamicCaptionLayers(entry) as BlockLayer[]) {
+        const count = dialogues(renderCaptionTrack({ layers: [cue], canvas: CANVAS }).ass).length;
+        const curved = captionBlockGeometry({ cue, canvas: CANVAS }).layout.curve !== 0;
+        counts[entry.id] = count;
+        expect(count, entry.id).toBeLessThanOrEqual(curved ? CAPTION_CURVE.maxEvents : 120);
+      }
+    }
+    if (process.env.CAPTION_BLOCK_PARITY) console.log(JSON.stringify(counts));
+  });
+
+  test("an Urdu cue under Arc's curve stays straight: one event per word per layer", () => {
+    const [cue] = blockLayers("arc-urdu");
+    expect(cue!.preset.curve).toBe(0.55);
+    const geometry = captionBlockGeometry({ cue: cue!, canvas: CANVAS });
+    expect(geometry.layout.curve).toBe(0);
+    for (const word of geometry.layout.words) expect(word.clusters).toBeNull();
+    const text = dialogues(renderCaptionTrack({ layers: [cue!], canvas: CANVAS }).ass).filter((event) => event.layer === TEXT_LAYER);
+    expect(text).toHaveLength(cue!.words.length);
   });
 
   test("a classic preset holding a dynamic-only motion draws it as fade", () => {

@@ -18,15 +18,31 @@ import {
   captionPresetSchema,
   fnv1a32,
 } from "@narriflow/validators";
-import { type CaptionBlockLayoutInput, captionTextIsAllCaps, layoutCaptionBlock, type MeasuredWord, type PlacedWord } from "./caption-block";
+import {
+  type CaptionBlockLayoutInput,
+  captionBlockCurve,
+  captionClusterPositions,
+  captionTextClusters,
+  captionTextIsAllCaps,
+  captionUnturnedTravel,
+  layoutCaptionBlock,
+  type MeasuredWord,
+  type PlacedCluster,
+  type PlacedWord,
+} from "./caption-block";
 
 const CANVAS = { width: 1080, height: 1920 };
 const HEADLINE = CAPTION_DYNAMIC_STYLES.headline;
 const S = 80;
 
-/** Fake measurement: 0.5 em per letter, cap ink 0.7 em, descenders 0.2 em. */
+/** Fake measurement: 0.5 em per letter, cap ink 0.7 em, descenders 0.2 em; clusters 0.5 em each, read only on curved rows. */
 function measure(text: string): MeasuredWord {
-  return { advanceEm: 0.5 * Array.from(text).length, inkTopEm: 0.7, inkBottomEm: /[gjpqy]/.test(text) ? 0.2 : 0 };
+  return {
+    advanceEm: 0.5 * Array.from(text).length,
+    inkTopEm: 0.7,
+    inkBottomEm: /[gjpqy]/.test(text) ? 0.2 : 0,
+    clusters: captionTextClusters(text).map((_, index) => ({ startEm: 0.5 * index, advanceEm: 0.5 })),
+  };
 }
 
 interface Case {
@@ -728,5 +744,223 @@ describe("hero gradient box (spec 5.10)", () => {
     expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset: { ...preset, animation: "slam" } }).gradient).toBeNull();
     expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset: { ...preset, animation: "drop" } }).gradient).toBeNull();
     expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"], preset }).gradient).not.toBeNull();
+  });
+});
+
+describe("curved rows (spec 5.11)", () => {
+  const ARC = CAPTION_DYNAMIC_STYLES.arc;
+  const one = { texts: ["and", "then", "it", "was"], roles: ["minor", "minor", "minor", "minor"] as CaptionWordRole[] };
+  const stacked = { texts: ["how", "to", "curve", "text"], roles: ["minor", "minor", "hero", "body"] as CaptionWordRole[], style: ARC };
+  const radiansOf = (degrees: number) => (degrees * Math.PI) / 180;
+  /** A cluster's baseline centre after its turn: the point that lies on the row's arc. */
+  const arcPoint = (cluster: PlacedCluster, advanceEm = 0.5) => {
+    const theta = radiansOf(cluster.rotationDeg);
+    const x = cluster.baselineX + (advanceEm * cluster.px) / 2 - cluster.centerX;
+    const y = cluster.baselineY - cluster.centerY;
+    return { x: cluster.centerX + x * Math.cos(theta) - y * Math.sin(theta), y: cluster.centerY + x * Math.sin(theta) + y * Math.cos(theta) };
+  };
+  /** The turned ink rectangle of a cluster (the word's ink band over the cluster's advance). */
+  const clusterCorners = (cluster: PlacedCluster, measured: MeasuredWord) => {
+    const theta = radiansOf(cluster.rotationDeg);
+    const left = cluster.baselineX;
+    const right = left + 0.5 * cluster.px;
+    const top = cluster.baselineY - measured.inkTopEm * cluster.px;
+    const bottom = cluster.baselineY + measured.inkBottomEm * cluster.px;
+    return [[left, top], [right, top], [right, bottom], [left, bottom]].map(([x, y]) => {
+      const dx = x! - cluster.centerX;
+      const dy = y! - cluster.centerY;
+      return [cluster.centerX + dx * Math.cos(theta) - dy * Math.sin(theta), cluster.centerY + dx * Math.sin(theta) + dy * Math.cos(theta)] as const;
+    });
+  };
+
+  test("captionTextClusters keeps each base code point with its following marks", () => {
+    expect(captionTextClusters("cafe\u0301")).toEqual(["c", "a", "f", "e\u0301"]);
+    expect(captionTextClusters("a\u0308\u0301b")).toEqual(["a\u0308\u0301", "b"]);
+    // Astral code points stay whole; a leading mark is its own cluster.
+    expect(captionTextClusters("😀x")).toEqual(["😀", "x"]);
+    expect(captionTextClusters("\u0301a")).toEqual(["\u0301", "a"]);
+    expect(captionTextClusters("")).toEqual([]);
+  });
+
+  test("captionClusterPositions ends each cluster where its shaped prefix ends, so kerning moves it", () => {
+    // "AV": A alone 0.7, V alone 0.66, the kerned prefix "AV" 1.28 with 0.02 spacing after each.
+    const positions = captionClusterPositions([0.72, 1.28], [0.7, 0.66], [0.02, 0.02]);
+    expect(positions[0]).toEqual({ startEm: 0, advanceEm: 0.7 });
+    expect(positions[1]!.startEm).toBeCloseTo(0.6, 9);
+  });
+
+  test("captionUnturnedTravel is undone by the element's turn", () => {
+    const back = captionUnturnedTravel(10, -4, 23);
+    const theta = radiansOf(23);
+    expect(back.x * Math.cos(theta) - back.y * Math.sin(theta)).toBeCloseTo(10, 9);
+    expect(back.x * Math.sin(theta) + back.y * Math.cos(theta)).toBeCloseTo(-4, 9);
+    expect(captionUnturnedTravel(3, 4, 0)).toEqual({ x: 3, y: 4 });
+  });
+
+  test("straight rows place no clusters and report curve 0", () => {
+    const result = layout(one);
+    expect(result.curve).toBe(0);
+    for (const word of result.words) expect(word.clusters).toBeNull();
+  });
+
+  test("clusters sit on a circle of radius W / θ, turned by φ = s / R, arched for a positive curve", () => {
+    const curve = 0.5;
+    const straight = layout(one);
+    const curved = layout({ ...one, preset: { curve } });
+    expect(curved.curve).toBe(curve);
+    expect(curved.scale).toBe(straight.scale);
+    const left = straight.words[0]!.baselineX;
+    const right = straight.words[3]!.baselineX + advance(straight.words[3]!, straight.measured[3]!);
+    const width = right - left;
+    const theta = radiansOf(curve * 70);
+    const R = width / theta;
+    const centreX = (left + right) / 2;
+    // The row's top point (φ = 0), from the first cluster: every other cluster is on the same circle.
+    const first = curved.words[0]!.clusters![0]!;
+    const middleY = arcPoint(first).y - R * (1 - Math.cos(radiansOf(first.rotationDeg)));
+    const circle = { x: centreX, y: middleY + R };
+    curved.words.forEach((word, index) => {
+      word.clusters!.forEach((cluster, at) => {
+        const point = arcPoint(cluster);
+        expect(Math.hypot(point.x - circle.x, point.y - circle.y)).toBeCloseTo(R, 6);
+        const s = straight.words[index]!.baselineX + (0.5 * at + 0.25) * straight.words[index]!.px - centreX;
+        expect(radiansOf(cluster.rotationDeg)).toBeCloseTo(s / R, 9);
+        expect(point.x).toBeCloseTo(centreX + R * Math.sin(s / R), 6);
+      });
+    });
+    const ends = [curved.words[0]!.clusters![0]!, curved.words[3]!.clusters![2]!];
+    // An arch: the ends are lower than the middle and lean outward, symmetric about the centre.
+    for (const end of ends) expect(arcPoint(end).y).toBeGreaterThan(middleY + 1);
+    expect(ends[0]!.rotationDeg).toBeCloseTo(-ends[1]!.rotationDeg, 6);
+    expect(ends[1]!.rotationDeg).toBeGreaterThan(0);
+  });
+
+  test("a negative curve bows the row: the ends rise and lean inward", () => {
+    const result = layout({ ...one, preset: { curve: -0.5 } });
+    const first = result.words[0]!.clusters![0]!;
+    const middle = result.words[1]!.clusters![3]!;
+    expect(arcPoint(first).y).toBeLessThan(arcPoint(middle).y - 1);
+    expect(first.rotationDeg).toBeGreaterThan(0);
+  });
+
+  test("fish-eye: clusters shrink by edgeShrink × |curve| × (φ / φmax)²", () => {
+    const curve = 0.8;
+    const result = layout({ ...one, preset: { curve } });
+    const phiMax = radiansOf(curve * 70) / 2;
+    result.words.forEach((word) => {
+      for (const cluster of word.clusters!) {
+        const phi = radiansOf(cluster.rotationDeg);
+        expect(cluster.px).toBeCloseTo(word.px * (1 - 0.18 * curve * (phi / phiMax) ** 2), 9);
+      }
+    });
+    const end = result.words[0]!.clusters![0]!;
+    expect(end.px).toBeLessThan(result.words[0]!.px * 0.9);
+    expect(end.px).toBeGreaterThan(result.words[0]!.px * (1 - 0.18 * curve) - 1e-9);
+  });
+
+  test("curved rows nest: no cluster's ink comes within rowGap of the row above's, and they stack tighter than boxes", () => {
+    for (const curve of [0.55, -0.55, 1]) {
+      const result = layout({ ...stacked, preset: { curve } });
+      const rows = result.block.rows.map((row) => row.flatMap((index) => result.words[index]!.clusters!.map((cluster) => clusterCorners(cluster, result.measured[index]!))));
+      const gap = ARC.rowGapEm * S * result.scale;
+      for (let k = 1; k < rows.length; k++) {
+        // Separating-axis test on every pair of turned rectangles, the upper ones grown by the gap (less 0.01 px).
+        for (const upper of rows[k - 1]!) {
+          for (const lower of rows[k]!) {
+            const grown = upper.map(([x, y]) => [x, y + gap - 0.01] as const);
+            const axes = [...[upper, lower].flatMap((poly) => [0, 1].map((i) => [poly[i + 1]![0] - poly[i]![0], poly[i + 1]![1] - poly[i]![1]] as const))];
+            const separated = axes.some(([ax, ay]) => {
+              const project = (poly: readonly (readonly [number, number])[]) => poly.map(([x, y]) => -ay * x + ax * y);
+              const a = [...project(upper), ...project(grown)];
+              const b = project(lower);
+              return Math.max(...a) <= Math.min(...b) + 1e-6 || Math.max(...b) <= Math.min(...a) + 1e-6;
+            });
+            expect(separated, `curve ${curve}: rows ${k - 1} and ${k} touch`).toBe(true);
+          }
+        }
+      }
+    }
+    const straight = layout(stacked);
+    const arched = layout({ ...stacked, preset: { curve: 0.55 } });
+    const step = (result: ReturnType<typeof layout>) => result.words[3]!.baselineY - result.words[0]!.baselineY;
+    // Box pitch would add the lead row's whole drop; column pitch nests the hero under its high middle.
+    const drop = Math.max(...arched.words[0]!.clusters!.map((cluster) => arcPoint(cluster).y)) - Math.min(...arched.words[0]!.clusters!.map((cluster) => arcPoint(cluster).y));
+    expect(step(arched)).toBeLessThan(step(straight) + drop);
+  });
+
+  test("bounds and the safe area hold every turned cluster and the words' travel", () => {
+    const long = { texts: ["internationally", "recognised", "photographers", "agree"], roles: ["body", "body", "body", "hero"] as CaptionWordRole[], style: ARC };
+    for (const anchor of [{ xPct: 50, yPct: 50 }, { xPct: 50, yPct: 80 }, { xPct: 10, yPct: 15 }]) {
+      const result = layout({ ...long, anchor, preset: { curve: 0.55 } });
+      expect(result.scale).toBeLessThan(1);
+      expectInsideSafeArea(result);
+      const { x, y, width, height } = result.bounds;
+      result.words.forEach((word, index) => {
+        for (const cluster of word.clusters!) {
+          for (const [cx, cy] of clusterCorners(cluster, result.measured[index]!)) {
+            expect(cx).toBeGreaterThanOrEqual(x - 1e-6);
+            expect(cx).toBeLessThanOrEqual(x + width + 1e-6);
+            expect(cy).toBeGreaterThanOrEqual(y - 1e-6);
+            expect(cy).toBeLessThanOrEqual(y + height + 1e-6);
+          }
+        }
+      });
+      // The slide's 0.18 em sideways start is reserved too.
+      const first = result.words[0]!;
+      expect(x).toBeLessThanOrEqual(Math.min(...first.clusters!.map((cluster) => cluster.baselineX)) - 0.18 * first.px * 0.5);
+    }
+  });
+
+  test("curved words keep opacity, blur and travel only: no scale, turn, block tilt, gradient or underline", () => {
+    const slam = layout({ ...one, roles: ["minor", "hero", "minor", "minor"], preset: { curve: 0.5, animation: "slam", highlightColor: "#36B780" } });
+    for (const word of slam.words) {
+      for (const frame of word.keyframes) expect(Object.keys(frame).some((key) => key.startsWith("scale") || key.startsWith("rotate"))).toBe(false);
+      expect(word.keyframes.some((frame) => frame.opacity !== undefined)).toBe(true);
+    }
+    expect(slam.gradient).toBeNull();
+    expect(layout({ ...one, roles: ["minor", "hero", "minor", "minor"], preset: { curve: 0.5, highlightColor: "#36B780" } }).gradient).toBeNull();
+    const bounce = layout({ ...one, preset: { curve: 0.5, animation: "bounce" } });
+    for (const word of bounce.words) expect(word.rotationDeg).toBe(0);
+    const marker = layout({ texts: ["one", "week", "of", "content"], roles: ["body", "hero", "minor", "body"], style: CAPTION_DYNAMIC_STYLES.marker, preset: { curve: 0.5 }, startSec: [1, 1.3, 1.6, 1.8], cueEndSec: 3 });
+    expect(marker.curve).toBe(0.5);
+    expect(marker.decorations).toEqual([]);
+    // Straight rows keep the motion's own track.
+    expect(layout({ ...one, preset: { animation: "slam" } }).words[0]!.keyframes).toEqual(CAPTION_MOTIONS.slam.word);
+  });
+
+  test("text that would break apart, tile styles and over-budget cues keep straight rows", () => {
+    const base = captionPresetSchema.parse({ dynamic: "arc", fontName: "DM Serif Display", fontSize: 64, curve: 0.55, outlineWidth: 0 });
+    const curveOf = (texts: string[], preset = base, style: CaptionDynamicStyle = ARC, language: string | null = "en") => captionBlockCurve({ preset, style, texts, language });
+    expect(curveOf(["how", "to", "curve"])).toBe(0.55);
+    expect(curveOf(["Ça", "va", "très", "bien"], base, ARC, "fr")).toBe(0.55);
+    expect(curveOf(["Привет", "мир"], base, ARC, "ru")).toBe(0.55);
+    expect(curveOf(["یہ", "50", "فیصد"], base, ARC, "ur")).toBe(0);
+    expect(curveOf(["50"], base, ARC, "ur")).toBe(0);
+    expect(curveOf(["नमस्ते", "दोस्तों"], base, ARC, "hi")).toBe(0);
+    expect(curveOf(["สวัสดี"], base, ARC, "th")).toBe(0);
+    expect(curveOf(["今日は", "3回"], base, ARC, "ja")).toBe(0);
+    expect(curveOf(["שלום", "עולם"], base, ARC, "he")).toBe(0);
+    expect(curveOf(["mixed", "یہ"])).toBe(0);
+    expect(curveOf(["how", "to"], { ...base, curve: 0 })).toBe(0);
+    expect(curveOf(["HOW", "TO"], base, CAPTION_DYNAMIC_STYLES.cutout)).toBe(0);
+    // Arc draws 3 layers per cluster (two soft shadows and the fill): 66 clusters fit in 200 events, 67 do not.
+    expect(curveOf(["a".repeat(33), "b".repeat(33)])).toBe(0.55);
+    expect(curveOf(["a".repeat(33), "b".repeat(34)])).toBe(0);
+    // Glow adds two layers per cluster.
+    expect(curveOf(["a".repeat(30), "b".repeat(10)], { ...base, glowColor: "#FF00FF" })).toBe(0.55);
+    expect(curveOf(["a".repeat(30), "b".repeat(11)], { ...base, glowColor: "#FF00FF" })).toBe(0);
+    // An Urdu cue under a curved preset lays out straight, cluster measurements or not.
+    const urdu = layout({ texts: ["یہ", "فیصد"], roles: ["minor", "hero"], style: ARC, preset: { curve: 0.55 }, direction: "rtl", language: "ur" });
+    expect(urdu.curve).toBe(0);
+    for (const word of urdu.words) expect(word.clusters).toBeNull();
+  });
+
+  test("a curved cue without cluster measurements fails loudly", () => {
+    const preset = captionPresetSchema.parse({ dynamic: "arc", fontName: "DM Serif Display", fontSize: 64, curve: 0.5 });
+    const block: CaptionBlock = { style: "arc", roles: ["minor", "minor"], texts: ["how", "to"], keys: [null, null], rows: [[0, 1]], seed: 0 };
+    expect(() => layoutCaptionBlock({
+      block, preset, style: ARC, words: [{}, {}], canvas: CANVAS, anchor: { xPct: 50, yPct: 50 }, direction: "ltr",
+      measured: [{ advanceEm: 1.5, inkTopEm: 0.7, inkBottomEm: 0 }, { advanceEm: 1, inkTopEm: 0.7, inkBottomEm: 0 }],
+    })).toThrow(/cluster/);
   });
 });

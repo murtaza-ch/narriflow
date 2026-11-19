@@ -18,7 +18,8 @@ import {
   textDirection,
 } from "@narriflow/validators";
 import { CANVAS, dynamicCaptionFixtures, dynamicCaptionLayers } from "../scripts/dynamic-caption-fixtures";
-import type { CaptionBlockWord } from "./caption-block-geometry";
+import { captionUnturnedTravel } from "@narriflow/caption-fonts/caption-block";
+import type { CaptionBlockCluster, CaptionBlockWord } from "./caption-block-geometry";
 import { captionBlockGeometry, renderCaptionTrack } from "./caption-ass";
 
 /**
@@ -274,6 +275,24 @@ function inkExtentEm(word: CaptionBlockWord): { left: number; right: number } {
   return { left, right };
 }
 
+/** HarfBuzz ink of one cluster drawn alone (no letter spacing), in em from its advance box's left edge and its baseline. */
+function clusterInkEm(cluster: CaptionBlockCluster): { left: number; right: number; top: number; bottom: number } {
+  let cursor = 0;
+  const ink = { left: Number.POSITIVE_INFINITY, right: Number.NEGATIVE_INFINITY, top: 0, bottom: 0 };
+  for (const part of cluster.planned.parts) {
+    const run = shapeCaptionRun(part.face.path, part.text, false);
+    for (const shaped of run.clusters) {
+      if (shaped.inkLeftEm === null || shaped.inkRightEm === null) continue;
+      ink.left = Math.min(ink.left, cursor + shaped.inkLeftEm);
+      ink.right = Math.max(ink.right, cursor + shaped.inkRightEm);
+    }
+    ink.top = Math.max(ink.top, run.inkTopEm);
+    ink.bottom = Math.max(ink.bottom, run.inkBottomEm);
+    cursor += run.advanceEm;
+  }
+  return ink;
+}
+
 /** A word's pose at one instant, in canvas px and degrees. */
 interface Pose {
   readonly dx: number;
@@ -359,6 +378,64 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
     expect(Math.abs(baselineOffset)).toBeLessThan(0.25);
   }, RENDER_TEST_TIMEOUT_MS);
 
+  /**
+   * Every cluster of a curved word as its text event alone, a solid mask taken back through its turn
+   * (about its centre, libass's `\org`) and the word's screen-space travel, against HarfBuzz ink of
+   * the cluster placed at its advance box; and its event's baseline against the arc's.
+   */
+  const checkClusters = (
+    fixtureId: string,
+    ass: string,
+    lines: readonly string[],
+    layer: BlockLayer,
+    geometry: ReturnType<typeof captionBlockGeometry>,
+    index: number,
+    startSec: number,
+  ) => {
+    const word = geometry.words[index]!;
+    const placed = geometry.layout.words[index]!;
+    const clusters = placed.clusters!;
+    const end = layer.activeRange.endSec;
+    for (const frame of placed.keyframes) {
+      expect(Object.keys(frame).filter((key) => ["scaleX", "scaleY", "rotateXDeg", "rotateZDeg"].includes(key)), "curved rows drop scale and turn").toEqual([]);
+    }
+    const text = lines.filter((line) => line.startsWith(`Dialogue: ${TEXT_LAYER},${assTime(startSec)},`));
+    expect(text, `${fixtureId} "${word.text}": one text event per cluster`).toHaveLength(clusters.length);
+    const slides = placed.keyframes.some((frame) => frame.offsetXEm !== undefined || frame.offsetYEm !== undefined);
+    const probe = (ms: number) => (startSec + ms / 1000 < end - FRAME_SEC ? [{ name: `+${ms} ms`, atSec: startSec + ms / 1000 }] : []);
+    const moments = [...(slides ? probe(45) : probe(ENTRANCE_PROBE_MS)), { name: "settled", atSec: end - FRAME_SEC }];
+    clusters.forEach((cluster, at) => {
+      const measured = word.arcClusters![at]!;
+      if (measured.planned.parts.every((part) => part.text.trim() === "")) return;
+      for (const moment of moments) {
+        const label = `${fixtureId} "${word.text}"[${at}] "${cluster.text}" ${moment.name}`;
+        const tMs = (moment.atSec - startSec) * 1000;
+        const shared = placed.entranceTimeScale === 0 ? CAPTION_REST_POSE : captionEntrancePose(placed.keyframes, tMs / placed.entranceTimeScale);
+        // The word's travel in screen space, written in the cluster's turned frame, as \move carries it.
+        const travel = captionUnturnedTravel(shared.offsetXEm * placed.px * placed.motionSign, shared.offsetYEm * placed.px, cluster.rotationDeg);
+        const pose: Pose = { dx: travel.x, dy: travel.y, scaleX: 1, scaleY: 1, rotationDeg: cluster.rotationDeg };
+        const geometryBaseline = cluster.baselineY + travel.y;
+        const event = eventBaseline(text[at]!, libassNowMs(moment.atSec));
+        const libassBaseline = event.baselineY + baselineOffset;
+        const pivot = { x: cluster.centerX, y: cluster.centerY };
+        const ink = restBox(render(`${header(ass)}${solidMask(text[at]!)}\n`, moment.atSec), label, pivot, pivot, pose);
+        const extent = clusterInkEm(measured);
+        const expected = {
+          left: cluster.baselineX + extent.left * cluster.px,
+          right: cluster.baselineX + extent.right * cluster.px,
+          top: cluster.baselineY - extent.top * cluster.px,
+          bottom: cluster.baselineY + extent.bottom * cluster.px,
+        };
+        parity.push({ fixture: fixtureId, word: `${word.text}[${cluster.text}]`, moment: moment.name, geometryBaseline, libassBaseline, expected, ink });
+        expect(Math.abs(libassBaseline - geometryBaseline), `${label}: baseline ${libassBaseline} vs ${geometryBaseline}`).toBeLessThanOrEqual(TOLERANCE.baseline);
+        expect(Math.abs(ink.left - expected.left), `${label}: left ${ink.left} vs ${expected.left}`).toBeLessThanOrEqual(TOLERANCE.left);
+        expect(Math.abs(ink.right - expected.right), `${label}: right ${ink.right} vs ${expected.right}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+        expect(Math.abs(ink.top - expected.top), `${label}: top ${ink.top} vs ${expected.top}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+        expect(Math.abs(ink.bottom - expected.bottom), `${label}: bottom ${ink.bottom} vs ${expected.bottom}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+      }
+    });
+  };
+
   for (const fixture of fixtures) {
     test(`${fixture.id}: every word's baseline and ink sit where the geometry says, settled and mid-entrance`, () => {
       expect(Number.isFinite(baselineOffset), "calibration ran first").toBe(true);
@@ -374,7 +451,13 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
         geometry.words.forEach((word, index) => {
           const placed = geometry.layout.words[index]!;
           const startSec = layer.words[index]!.startSec;
+          if (placed.clusters) {
+            // A curved word (spec 5.11): one text event per cluster, each where the shared arc puts it.
+            checkClusters(fixture.id, ass, lines, layer, geometry, index, startSec);
+            return;
+          }
           const keyframes = captionEntranceKeyframes(motion, layer.block.roles[index] === "hero");
+          expect(placed.keyframes, "straight rows draw the motion's own track").toEqual(keyframes);
           for (const frame of keyframes) {
             const modelled = ["at", "ease", "opacity", "blurEm", "offsetXEm", "offsetYEm", "scaleX", "scaleY", "rotateZDeg"];
             const extra = Object.keys(frame).filter((key) => !modelled.includes(key));

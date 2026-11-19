@@ -23,9 +23,13 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import {
+  captionBlockCurve,
   captionBlockDirection,
+  captionClusterPositions,
+  captionTextClusters,
   captionWordDirection,
   layoutCaptionBlock,
+  type MeasuredCluster,
   type CaptionBlockLayout,
   type MeasuredWord,
   type PlacedDecoration,
@@ -38,12 +42,9 @@ import {
   CAPTION_EXTRUDE,
   CAPTION_GLOW_SIGMAS,
   CAPTION_HARD_SHADOW,
-  CAPTION_MOTIONS,
   CAPTION_SHAPES,
   CAPTION_SOFT_SHADOW,
-  captionBlockAnimation,
   captionDynamicStyle,
-  captionEntranceKeyframes,
   captionFontFace,
   captionRoleLook,
   captionShapeSvgPath,
@@ -236,6 +237,36 @@ function measureWord(text: string, face: WordFace, letterSpacingEm: number, dire
   return measured;
 }
 
+/**
+ * A curved word's glyph clusters placed in the word (spec 5.11): Canvas `measureText` of each
+ * prefix ending with a cluster, with the word's letter spacing (so kerning counts), and of each
+ * cluster alone without it, combined by the shared `captionClusterPositions` exactly as the worker
+ * combines HarfBuzz's. Same font string as `measureWord` (regular weight, ticket 05b).
+ */
+function measureClusters(text: string, face: WordFace, letterSpacingEm: number, language: string | null): MeasuredCluster[] {
+  measureContext ??= document.createElement("canvas").getContext("2d");
+  const context = measureContext!;
+  context.font = canvasFonts(face, language).measure;
+  context.direction = "ltr";
+  const hasSpacing = "letterSpacing" in context;
+  const width = (value: string, spacingEm: number) => {
+    if (hasSpacing) context.letterSpacing = `${spacingEm * MEASURE_PX}px`;
+    const measured = context.measureText(value).width;
+    return (measured + (hasSpacing ? 0 : spacingEm * MEASURE_PX * captionGraphemes(value).length)) / MEASURE_PX;
+  };
+  const clusters = captionTextClusters(text);
+  const prefixes: number[] = [];
+  const alone: number[] = [];
+  let prefix = "";
+  for (const cluster of clusters) {
+    prefix += cluster;
+    prefixes.push(width(prefix, letterSpacingEm));
+    alone.push(width(cluster, 0));
+  }
+  if (hasSpacing) context.letterSpacing = "0px";
+  return captionClusterPositions(prefixes, alone, clusters.map(() => letterSpacingEm));
+}
+
 // ─── Layout ──────────────────────────────────────────────────────────────────
 
 /** A cue the painter can draw: a plan caption layer with a block fits, and so does a sample cue. */
@@ -246,6 +277,25 @@ export interface CaptionBlockCueInput {
   readonly language: string | null;
   readonly anchor: { readonly xPct: number; readonly yPct: number };
   readonly activeRange: { readonly startSec: number; readonly endSec: number };
+}
+
+/**
+ * One drawn element group of a word: the word itself on a straight row, or one of its glyph
+ * clusters on a curved row (spec 5.11). Every paint layer draws each item once.
+ */
+export interface CaptionBlockPaintItem {
+  readonly text: string;
+  readonly px: number;
+  readonly baselineX: number;
+  readonly baselineY: number;
+  readonly centerX: number;
+  readonly centerY: number;
+  readonly scaleOriginX: number;
+  readonly scaleOriginY: number;
+  readonly rotationDeg: number;
+  readonly letterSpacingEm: number;
+  /** A curved cluster: the word's travel stays in screen space while the cluster turns. */
+  readonly screenTravel: boolean;
 }
 
 /** One word ready to paint: its text, face, colour, placement and entrance. */
@@ -264,6 +314,8 @@ export interface CaptionBlockPaintWord {
   readonly keyframes: readonly CaptionKeyframe[];
   /** A hero word: it takes the block's gradient when there is one. */
   readonly hero: boolean;
+  /** What each paint layer draws for the word: the word, or its clusters on a curved row. */
+  readonly items: readonly CaptionBlockPaintItem[];
 }
 
 export interface CaptionBlockPaint {
@@ -288,7 +340,7 @@ function buildPaint(
   const { block, preset, language } = cue;
   if (block.roles.length === 0 || block.roles.length !== cue.words.length) return null;
   const style = captionDynamicStyle(block.style);
-  const motion = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
+  const curved = captionBlockCurve({ preset, style, texts: block.texts, language }) !== 0;
   // The cue's and each word's direction come from the shared geometry, as the burn-in's do.
   const cueDir = captionBlockDirection(block.texts, language);
   const prepared = [];
@@ -307,6 +359,7 @@ function buildPaint(
   const measured = prepared.map((word): MeasuredWord => ({
     ...measureWord(word.text, word.face, word.look.letterSpacing, word.dir, language, word.ready),
     boxMiddleEm: (word.face.ascent - word.face.descent) / 2,
+    ...(curved ? { clusters: measureClusters(word.text, word.face, word.look.letterSpacing, language) } : {}),
   }));
   const layout = layoutCaptionBlock({
     block,
@@ -320,19 +373,33 @@ function buildPaint(
     cueEndSec: cue.activeRange.endSec,
     language: cue.language,
   });
-  const words = prepared.map((word, index): CaptionBlockPaintWord => ({
-    text: word.text,
-    dir: word.dir,
-    face: word.face,
-    color: word.look.color,
-    tileColor: word.look.tileColor,
-    letterSpacingEm: word.look.letterSpacing,
-    placed: layout.words[index]!,
-    measured: measured[index]!,
-    startSec: cue.words[index]!.startSec,
-    keyframes: captionEntranceKeyframes(motion, block.roles[index] === "hero"),
-    hero: block.roles[index] === "hero",
-  }));
+  const words = prepared.map((word, index): CaptionBlockPaintWord => {
+    const placed = layout.words[index]!;
+    const items: CaptionBlockPaintItem[] = placed.clusters
+      ? placed.clusters.map((cluster) => ({
+        ...cluster,
+        scaleOriginX: cluster.centerX,
+        scaleOriginY: cluster.centerY,
+        letterSpacingEm: 0,
+        screenTravel: true,
+      }))
+      : [{ ...placed, text: word.text, letterSpacingEm: word.look.letterSpacing, screenTravel: false }];
+    return {
+      text: word.text,
+      dir: word.dir,
+      face: word.face,
+      color: word.look.color,
+      tileColor: word.look.tileColor,
+      letterSpacingEm: word.look.letterSpacing,
+      placed: layout.words[index]!,
+      measured: measured[index]!,
+      startSec: cue.words[index]!.startSec,
+      // The shared entrance (spec 5.7, 5.11): curved rows have no scale or turn keyframes.
+      keyframes: placed.keyframes,
+      hero: block.roles[index] === "hero",
+      items,
+    };
+  });
   return { status: "ready", paint: { cue, layout, words, language, direction: cueDir } };
 }
 
@@ -433,6 +500,7 @@ function probeBaselineOffsets(requests: readonly { readonly face: WordFace; read
 /** One element per word per paint layer; the pose is written on it every tick. */
 function WordLayer({
   word,
+  item,
   index,
   scale,
   origin,
@@ -441,6 +509,8 @@ function WordLayer({
   gradient,
 }: {
   word: CaptionBlockPaintWord;
+  /** The word, or one of its clusters on a curved row. */
+  item: CaptionBlockPaintItem;
   index: number;
   scale: number;
   origin: { readonly x: number; readonly y: number };
@@ -449,7 +519,8 @@ function WordLayer({
   /** Fill the glyphs with this gradient (`background-clip: text`) instead of a colour. */
   gradient?: PlacedGradient | null;
 }) {
-  const { placed, face } = word;
+  const { face } = word;
+  const placed = item;
   // The box's line height is the face's own line box (its ascent and descent overrides), so the
   // baseline sits about `ascent` em below the top whatever fallback face draws part of the word;
   // the probe gives the browser's exact offset at this size.
@@ -477,6 +548,8 @@ function WordLayer({
       data-caption-block-word={index}
       data-scale-x={(placed.scaleOriginX - placed.centerX) * scale}
       data-scale-y={(placed.scaleOriginY - placed.centerY) * scale}
+      data-rotation={item.rotationDeg}
+      data-screen-travel={item.screenTravel ? "1" : undefined}
       dir={word.dir}
       style={{
         position: "absolute",
@@ -485,7 +558,7 @@ function WordLayer({
         whiteSpace: "pre",
         lineHeight: face.ascent + face.descent,
         fontSize: `${fontPx}px`,
-        letterSpacing: `${word.letterSpacingEm}em`,
+        letterSpacing: `${item.letterSpacingEm}em`,
         ...face.css,
         transformOrigin: `${(placed.centerX - origin.x) * scale - left}px ${(placed.centerY - origin.y) * scale - top}px`,
         visibility: "hidden",
@@ -647,7 +720,7 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   const [, setProbes] = useState(0);
 
   useLayoutEffect(() => {
-    const requests = paint.words.map((word) => ({ face: word.face, fontPx: word.placed.px * scale }));
+    const requests = paint.words.flatMap((word) => word.items.map((item) => ({ face: word.face, fontPx: item.px * scale })));
     if (probeBaselineOffsets(requests)) setProbes((count) => count + 1);
     // A face that loads after the probe (a script fallback) can move the baseline: probe again.
     const reprobe = () => {
@@ -663,10 +736,13 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
     const root = rootRef.current;
     if (!root) return;
     // Each element with its scale origin, as an offset from the word centre in display px.
-    const elements: { element: HTMLElement; scaleOrigin: { x: number; y: number } }[][] = paint.words.map(() => []);
+    // Each element with its scale origin (an offset from its centre in display px) and its own rest
+    // turn: a curved word's clusters each turn by their angle on the arc and travel in screen space.
+    const elements: { element: HTMLElement; scaleOrigin: { x: number; y: number }; rotationDeg: number | null; screenTravel: boolean }[][] = paint.words.map(() => []);
     for (const element of root.querySelectorAll<HTMLElement>("[data-caption-block-word]")) {
       const scaleOrigin = { x: Number(element.dataset.scaleX ?? 0), y: Number(element.dataset.scaleY ?? 0) };
-      elements[Number(element.dataset.captionBlockWord)]?.push({ element, scaleOrigin });
+      const rotationDeg = element.dataset.rotation === undefined ? null : Number(element.dataset.rotation);
+      elements[Number(element.dataset.captionBlockWord)]?.push({ element, scaleOrigin, rotationDeg, screenTravel: element.dataset.screenTravel === "1" });
     }
     const written = paint.words.map(() => "");
     const perspectivePx = ASS_CAMERA_DISTANCE_PX * scale;
@@ -685,16 +761,18 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
           opacity = String(pose.opacity);
           filter = pose.blurEm * emPx > 0.01 ? `blur(${pose.blurEm * emPx}px)` : "none";
         }
-        const transformFor = (scaleOrigin: { x: number; y: number }) =>
-          pose ? captionBlockTransform(pose, { rotationDeg: word.placed.rotationDeg, motionSign: word.placed.motionSign, emPx }, perspectivePx, scaleOrigin) : "";
+        const transformFor = (scaleOrigin: { x: number; y: number }, rotationDeg: number | null = null, screenTravel = false) =>
+          pose
+            ? captionBlockTransform(pose, { rotationDeg: rotationDeg ?? word.placed.rotationDeg, motionSign: word.placed.motionSign, emPx }, perspectivePx, scaleOrigin, screenTravel)
+            : "";
         const key = pose ? `${opacity}|${transformFor({ x: 0, y: 0 })}|${filter}` : "hidden";
         if (key === written[index]) return;
         written[index] = key;
-        for (const { element, scaleOrigin } of elements[index]!) {
+        for (const { element, scaleOrigin, rotationDeg, screenTravel } of elements[index]!) {
           element.style.visibility = visible ? "visible" : "hidden";
           if (!visible) continue;
           element.style.opacity = opacity;
-          element.style.transform = transformFor(scaleOrigin);
+          element.style.transform = transformFor(scaleOrigin, rotationDeg, screenTravel);
           element.style.filter = filter;
         }
       });
@@ -730,20 +808,22 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
     return timeSource.subscribe(paintAll);
   }, [paint, scale, timeSource, reducedMotion]);
 
+  // One element per paint layer for every item: each word, or each cluster of a curved word.
   const layer = (
     name: string,
-    render: (word: CaptionBlockPaintWord, ratio: number) => ReactNode,
+    render: (word: CaptionBlockPaintWord, item: CaptionBlockPaintItem, ratio: number) => ReactNode,
     gradientFor: (word: CaptionBlockPaintWord) => PlacedGradient | null = () => null,
   ) => (
     <div key={name} style={{ position: "absolute", left: 0, top: 0 }}>
-      {paint.words.map((word, index) => {
-        const content = render(word, word.placed.px / S);
-        return content === null ? null : (
-          <WordLayer key={index} word={word} index={index} scale={scale} origin={origin} gradient={gradientFor(word)}>
-            {content}
-          </WordLayer>
-        );
-      })}
+      {paint.words.flatMap((word, index) =>
+        word.items.map((item, at) => {
+          const content = render(word, item, item.px / S);
+          return content === null ? null : (
+            <WordLayer key={`${index}-${at}`} word={word} item={item} index={index} scale={scale} origin={origin} gradient={gradientFor(word)}>
+              {content}
+            </WordLayer>
+          );
+        }))}
     </div>
   );
 
@@ -783,28 +863,28 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
     // One element per soft shadow layer, lowest first, as the worker writes one event per layer.
     soft.forEach((shadow, at) => {
       layers.push(
-        layer(`shadow-${at}`, (word, ratio) =>
-          glyphs(word.text, {
+        layer(`shadow-${at}`, (_word, item, ratio) =>
+          glyphs(item.text, {
             color: preset.shadowColor,
             ...silhouette(stroke(ratio) + outer(ratio), preset.shadowColor),
             opacity: shadow.opacity,
             transform: `translateY(${shadow.offsetYEm}em)`,
-            filter: `blur(${shadow.blurEm * word.placed.px * scale}px)`,
+            filter: `blur(${shadow.blurEm * item.px * scale}px)`,
           })),
       );
     });
   } else if (preset.shadow !== "none") {
     layers.push(
-      layer("shadow", (word, ratio) => {
+      layer("shadow", (_word, item, ratio) => {
         const base: CSSProperties = { color: preset.shadowColor, ...silhouette(stroke(ratio) + outer(ratio), preset.shadowColor) };
         if (preset.shadow === "hard") {
-          return glyphs(word.text, { ...base, transform: `translate(${CAPTION_HARD_SHADOW.offsetXEm}em, ${CAPTION_HARD_SHADOW.offsetYEm}em)` });
+          return glyphs(item.text, { ...base, transform: `translate(${CAPTION_HARD_SHADOW.offsetXEm}em, ${CAPTION_HARD_SHADOW.offsetYEm}em)` });
         }
         return Array.from({ length: CAPTION_EXTRUDE.steps }, (_, step) => {
           const distance = (CAPTION_EXTRUDE.steps - step) * CAPTION_EXTRUDE.stepEm;
           return (
             <span key={step} style={{ position: step === 0 ? "relative" : "absolute", left: 0, top: 0, ...base, transform: `translate(${distance}em, ${distance}em)` }}>
-              <CaptionText text={word.text} />
+              <CaptionText text={item.text} />
             </span>
           );
         });
@@ -813,14 +893,14 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   }
   if ((preset.outerOutlineWidth ?? 0) > 0 && preset.outerOutlineColor) {
     const color = preset.outerOutlineColor;
-    layers.push(layer("outer", (word, ratio) => glyphs(word.text, { color, ...silhouette(stroke(ratio) + outer(ratio), color) })));
+    layers.push(layer("outer", (_word, item, ratio) => glyphs(item.text, { color, ...silhouette(stroke(ratio) + outer(ratio), color) })));
   }
   if (preset.glowColor) {
     const color = preset.glowColor;
     for (const sigma of CAPTION_GLOW_SIGMAS) {
       layers.push(
-        layer(`glow-${sigma}`, (word, ratio) =>
-          glyphs(word.text, { color, filter: `blur(${sigma * (preset.glowIntensity ?? 8) * ratio * scale}px)` })),
+        layer(`glow-${sigma}`, (_word, item, ratio) =>
+          glyphs(item.text, { color, filter: `blur(${sigma * (preset.glowIntensity ?? 8) * ratio * scale}px)` })),
       );
     }
   }
@@ -831,7 +911,7 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   layers.push(
     layer(
       "text",
-      (word, ratio) => (gradientFor(word) ? <CaptionText text={word.text} /> : glyphs(word.text, { color: word.color, ...silhouette(stroke(ratio), preset.outlineColor) })),
+      (word, item, ratio) => (gradientFor(word) ? <CaptionText text={item.text} /> : glyphs(item.text, { color: word.color, ...silhouette(stroke(ratio), preset.outlineColor) })),
       gradientFor,
     ),
   );

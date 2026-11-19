@@ -34,6 +34,8 @@ const BACKDROP_BY_PRESET: Record<CatalogPresetId, CaptionBackdrop> = {
   stack: "dark-studio",
   // Reference 03 is warm daylight; the pink hero and cream-white caps sit well on it.
   groove: "warm-podcast",
+  // Reference 14's arched cream serif reads best over an outdoor frame, as most of its examples are.
+  arc: "sunset-coast",
   "bold-pop": "dark-studio",
   blast: "brick-street",
   punch: "green-studio",

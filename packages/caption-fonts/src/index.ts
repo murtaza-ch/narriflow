@@ -9,6 +9,8 @@ export {
   resolveBidiLevels,
 } from "./bidi-order";
 export {
+  type CaptionClusterOffset,
+  captionClusterOffsets,
   type CaptionLineLayout,
   type CaptionLinePart,
   type CaptionLineWord,

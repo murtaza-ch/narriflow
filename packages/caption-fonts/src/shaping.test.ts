@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { create } from "fontkit";
 import { CAPTION_FONT_FACES } from "@narriflow/validators";
 import { CAPTION_FALLBACK_FONTS, captionFallbackFontPath } from "./fallback-fonts";
-import { type CaptionLineWord, CaptionShapingError, layoutCaptionLine, shapeCaptionRun } from "./shaping";
+import { captionTextClusters } from "./caption-block";
+import { captionClusterOffsets, type CaptionLineWord, CaptionShapingError, layoutCaptionLine, shapeCaptionRun } from "./shaping";
 import { captionFontFilePath } from "./paths";
 
 describe("vendored caption faces", () => {
@@ -169,5 +170,40 @@ describe("caption line layout in visual order", () => {
     // Geist as TTF is a different file with the same design: its advance for the same text is within a hair.
     const ttf = shapeCaptionRun(join(import.meta.dir, "../../../apps/web/assets/fonts/geist/Geist-Regular.ttf"), "Hello world");
     expect(Math.abs(run.advanceEm - ttf.advanceEm)).toBeLessThan(0.15);
+  });
+});
+
+describe("captionClusterOffsets (curved rows, spec 5.11)", () => {
+  const face = (name: string) => captionFontFilePath(CAPTION_FONT_FACES.find((entry) => entry.name === name)!.file);
+  const parts = (text: string, path: string) => captionTextClusters(text).map((cluster) => [{ text: cluster, fontPath: path, spaced: true, inked: true }]);
+
+  test("each cluster ends where its shaped prefix ends; the last one at the word's advance", () => {
+    const path = face("DM Serif Display");
+    for (const spacing of [0, -0.03, 0.05]) {
+      const text = "AVATAR curved";
+      const offsets = captionClusterOffsets(parts(text, path), spacing);
+      const word = layoutCaptionLine([{ parts: [{ text, fontPath: path, spaced: true, inked: true }], gap: null, gapExtraEm: 0 }], spacing, "ltr");
+      const last = offsets[offsets.length - 1]!;
+      expect(last.startEm + last.advanceEm + spacing).toBeCloseTo(word.widthEm, 9);
+      for (let index = 1; index < offsets.length; index++) expect(offsets[index]!.startEm).toBeGreaterThan(offsets[index - 1]!.startEm);
+    }
+  });
+
+  test("kerning moves the second cluster of a kerned pair, as the shaped word draws it", () => {
+    const path = face("Inter");
+    const [a, v] = captionClusterOffsets(parts("AV", path), 0);
+    const alone = shapeCaptionRun(path, "A").advanceEm;
+    expect(a!.startEm).toBe(0);
+    expect(a!.advanceEm).toBeCloseTo(alone, 9);
+    // Kerned: V starts before A's own advance ends.
+    expect(v!.startEm).toBeLessThan(alone - 0.01);
+    expect(v!.startEm + v!.advanceEm).toBeCloseTo(shapeCaptionRun(path, "AV").advanceEm, 9);
+  });
+
+  test("a base letter and its combining mark are one cluster with one box", () => {
+    const path = face("Inter");
+    const offsets = captionClusterOffsets(parts("cafe\u0301", path), 0);
+    expect(offsets).toHaveLength(4);
+    expect(offsets[3]!.advanceEm).toBeCloseTo(shapeCaptionRun(path, "e\u0301").advanceEm, 9);
   });
 });

@@ -24,7 +24,7 @@ import {
 	type SkippedEmoji,
 } from "./caption-glyphs";
 import { captionWordSegmentEnd, type CompositionCaptionBlock, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
-import type { PlacedDecoration, PlacedGradient } from "@narriflow/caption-fonts/caption-block";
+import { captionUnturnedTravel, type PlacedDecoration, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
 import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock } from "./caption-block-geometry";
 import {
 	CAPTION_CUE_TILTS_DEG,
@@ -46,7 +46,6 @@ import {
 	captionBlockAnimation,
 	captionClassicAnimation,
 	captionDynamicStyle,
-	captionEntranceKeyframes,
 	captionFontFace,
 	captionKeyframeValue,
 	captionShapeAssDrawing,
@@ -363,8 +362,8 @@ function blockCueEvents(
 		const startSec = cue.words[index]!.startSec;
 		if (cueEnd <= startSec) return;
 		const placed = geometry.layout.words[index]!;
-		// The shared duration cap (spec 5.7); 0 draws the word settled.
-		const entrance = captionEntranceKeyframes(motion, block.roles[index] === "hero");
+		// The shared entrance and duration cap (spec 5.7, 5.11); 0 draws the word settled.
+		const entrance = placed.keyframes;
 		const scale = placed.entranceTimeScale;
 		const keyframes = scale === 0 ? [] : entrance.map((frame) => ({ ...frame, at: Math.round(frame.at * scale) }));
 		const pose = { motionSign: placed.motionSign, rotationDeg: placed.rotationDeg };
@@ -387,6 +386,37 @@ function blockCueEvents(
 			});
 			if (tile.shadowOffset > 0) tileShadows.push(shape(tile.shadowOffset, preset.shadowColor));
 			tiles.push(shape(0, word.look.tileColor));
+		}
+		if (placed.clusters && word.arcClusters) {
+			// A curved word (spec 5.11): one event per cluster per paint layer, each at its place on the
+			// arc, turned about its own centre, entering with the word (its travel in screen space).
+			placed.clusters.forEach((cluster, at) => {
+				const measured = word.arcClusters![at]!;
+				events.push(
+					...stackEvents({
+						preset,
+						face: word.slot.face,
+						glyphs: word.slot.glyphs,
+						px: cluster.px,
+						motionPx: placed.px,
+						spans: [{ text: measured.text, clusters: [measured.planned], visibility: 1, fill: word.look.color, glow: preset.glowColor ?? null }],
+						startSec,
+						endSec: cueEnd,
+						position: {
+							x: cluster.centerX + (measured.bboxCenterEm - measured.advanceEm / 2) * cluster.px,
+							y: cluster.baselineY - ((measured.ascentEm - measured.descentEm) / 2) * cluster.px,
+						},
+						common: `\\org(${num(cluster.centerX)},${num(cluster.centerY)})`,
+						keyframes,
+						pose: { motionSign: placed.motionSign, rotationDeg: cluster.rotationDeg, screenTravel: true },
+						// Letter spacing is in the cluster's place; a lone cluster with \\fsp would pad its own box.
+						letterSpacingEm: 0,
+						...(style.softShadow ? { softShadow: style.softShadow } : {}),
+						layers: { shadow: LAYER.shadow, outer: LAYER.outer, glow: LAYER.glow, text: LAYER.text },
+					}),
+				);
+			});
+			return;
 		}
 		events.push(
 			...stackEvents({
@@ -824,6 +854,8 @@ function stackEvents(input: {
 	pose?: MotionPose;
 	/** Letter spacing in em; the preset's when absent (a Caption Block's role may set its own). */
 	letterSpacingEm?: number;
+	/** Canvas px per em of the entrance's travel and blur; `px` when absent (a curved cluster moves with its word). */
+	motionPx?: number;
 	/** The soft shadow layers (lowest first), in em of the word's size; `CAPTION_SOFT_SHADOW` when absent (a Dynamic Style may set its own). */
 	softShadow?: readonly { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number }[];
 	/** Only the fill layer: the shadows, outer stroke and glow are already drawn by another event. */
@@ -838,7 +870,7 @@ function stackEvents(input: {
 	const stroke = preset.outlineWidth * fitScale;
 	const outer = (preset.outerOutlineWidth ?? 0) * fitScale;
 	const durationMs = Math.round((input.endSec - input.startSec) * 1000);
-	const motion = motionTags(input.keyframes ?? [], durationMs, px, input.pose);
+	const motion = motionTags(input.keyframes ?? [], durationMs, input.motionPx ?? px, input.pose);
 	const events: AssEvent[] = [];
 	const push = (
 		layer: number,
@@ -1097,6 +1129,12 @@ interface MotionPose {
 	readonly motionSign: 1 | -1;
 	/** Resting rotation, degrees clockwise; `rotateZDeg` keyframes turn on top of it. */
 	readonly rotationDeg: number;
+	/**
+	 * The travel stays in screen space although the event turns (a curved cluster, spec 5.11):
+	 * `\move` takes it turned back by `rotationDeg` (`captionUnturnedTravel`), so the turn about
+	 * `\org` brings it back.
+	 */
+	readonly screenTravel?: boolean;
 }
 
 /**
@@ -1162,11 +1200,14 @@ function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, p
 			if (!travel) return `\\pos(${num(x)},${num(y)})`;
 			const t1 = travel.startMs;
 			const t2 = travel.endMs;
-			const dx = (end: "first" | "last") =>
-				offsetX.length >= 2 ? (end === "first" ? offsetX[0]! : offsetX[offsetX.length - 1]!).offsetXEm! * px * sign : 0;
-			const dy = (end: "first" | "last") =>
-				offsetY.length >= 2 ? (end === "first" ? offsetY[0]! : offsetY[offsetY.length - 1]!).offsetYEm! * px : 0;
-			return `\\move(${num(x + dx("first"))},${num(y + dy("first"))},${num(x + dx("last"))},${num(y + dy("last"))},${t1},${t2})`;
+			const offset = (end: "first" | "last") => {
+				const dx = offsetX.length >= 2 ? (end === "first" ? offsetX[0]! : offsetX[offsetX.length - 1]!).offsetXEm! * px * sign : 0;
+				const dy = offsetY.length >= 2 ? (end === "first" ? offsetY[0]! : offsetY[offsetY.length - 1]!).offsetYEm! * px : 0;
+				return pose?.screenTravel ? captionUnturnedTravel(dx, dy, restDeg) : { x: dx, y: dy };
+			};
+			const first = offset("first");
+			const last = offset("last");
+			return `\\move(${num(x + first.x)},${num(y + first.y)},${num(x + last.x)},${num(y + last.y)},${t1},${t2})`;
 		},
 	};
 }

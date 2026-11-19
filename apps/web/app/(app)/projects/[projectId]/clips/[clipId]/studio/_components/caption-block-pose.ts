@@ -1,4 +1,4 @@
-import type { PlacedDecoration } from "@narriflow/caption-fonts/caption-block";
+import { captionUnturnedTravel, type PlacedDecoration } from "@narriflow/caption-fonts/caption-block";
 import { CAPTION_REST_POSE, captionEntrancePose, type CaptionEntrancePose, type CaptionKeyframe } from "@narriflow/validators";
 
 /**
@@ -37,16 +37,20 @@ export function captionBlockWordPose(
  * `PlacedWord.scaleOriginX/Y`, or a tile's centre.
  * `emPx` is the word's size in display px; `perspectivePx` is the display
  * camera distance for `rotateXDeg` (the classic engine's flip distance).
+ * `screenTravel` (a curved cluster, spec 5.11) turns the travel back by the
+ * rest turn first, so the cluster moves in screen space with its word, as the
+ * worker's `\move` does (`captionUnturnedTravel`).
  */
 export function captionBlockTransform(
   pose: CaptionBlockPose,
   word: { readonly rotationDeg: number; readonly motionSign: 1 | -1; readonly emPx: number },
   perspectivePx: number,
   scaleOrigin: { readonly x: number; readonly y: number } = { x: 0, y: 0 },
+  screenTravel = false,
 ): string {
   const theta = word.rotationDeg + pose.rotateZDeg;
-  const dx = pose.offsetXEm * word.motionSign * word.emPx;
-  const dy = pose.offsetYEm * word.emPx;
+  const travel = { x: pose.offsetXEm * word.motionSign * word.emPx, y: pose.offsetYEm * word.emPx };
+  const { x: dx, y: dy } = screenTravel ? captionUnturnedTravel(travel.x, travel.y, word.rotationDeg) : travel;
   const flip = pose.rotateXDeg !== 0 ? ` perspective(${perspectivePx}px) rotateX(${pose.rotateXDeg}deg)` : "";
   const scaled = pose.scaleX === 1 && pose.scaleY === 1;
   const scale = scaled || (scaleOrigin.x === 0 && scaleOrigin.y === 0)

@@ -2,7 +2,14 @@ import { CAPTION_DECORATION } from "./caption-decoration";
 import type { CaptionWordRole } from "./caption-emphasis";
 import type { CaptionFontName } from "./caption-font";
 import type { CaptionPreset } from "./caption-preset";
-import { CAPTION_MOTIONS, captionEntranceKeyframes, type CaptionAnimationName, type CaptionMotionSpec } from "./caption-style";
+import {
+  CAPTION_EXTRUDE,
+  CAPTION_GLOW_SIGMAS,
+  CAPTION_MOTIONS,
+  captionEntranceKeyframes,
+  type CaptionAnimationName,
+  type CaptionMotionSpec,
+} from "./caption-style";
 
 // Dynamic Styles: caption looks where one word of a cue (the hero) is large
 // and the cue is laid out as a Caption Block of one to three rows. A style is
@@ -318,6 +325,33 @@ export const CAPTION_DYNAMIC_STYLES = {
     defaultMotion: "slide",
     softShadow: GROOVE_SOFT_SHADOW,
   },
+  /**
+   * Reference 14: cream serif rows arched on a curve, the hero a larger line of the same face.
+   * Every row bends by the preset's `curve` (0.55 in the catalog preset, spec 5.11). Curved rows
+   * drop scale and turn keyframes, so the motion is `slide`: the catalog's `blur` fades every word
+   * in over 280 ms behind a blur, which breaks spec 6 rule 6 (full opacity within 40 ms, the hero
+   * the only blur), as Editorial's did in ticket 05b.
+   */
+  arc: {
+    name: "Arc",
+    layout: "stack",
+    align: "center",
+    roles: {
+      minor: textRole(1),
+      body: textRole(1),
+      hero: { font: "hero", sizeEm: 2.2, transform: "none", letterSpacing: 0, colour: "highlight" },
+    },
+    noHeroSizeEm: 1.5,
+    heroFontName: "DM Serif Display",
+    heroColours: ["highlight"],
+    rowGapEm: 0.04,
+    staggerEm: 0,
+    defaultMotion: "slide",
+    // The catalog's single 70% shadow left the cream "how" at 2.43:1 on the bright fixture frame;
+    // Headline's 85% layer 2.59, the small-text pair at 70% 2.93, at 80% 3.13: the weakest that
+    // reaches rule 5's 3:1 (ticket 07).
+    softShadow: SMALL_TEXT_SOFT_SHADOW,
+  },
 } as const satisfies Record<string, CaptionDynamicStyle>;
 
 export type CaptionDynamicName = keyof typeof CAPTION_DYNAMIC_STYLES;
@@ -344,6 +378,38 @@ export const CAPTION_BLOCK = {
   minWordsPerCue: 2,
   maxWordsPerCue: 5,
 } as const;
+
+/**
+ * Curved rows (spec 5.11). A row of width W sweeps `curve × maxSweepDeg` of a circle; glyph
+ * clusters shrink toward its ends by up to `edgeShrink × |curve|` (fish-eye). A curved cue may
+ * write at most `maxEvents` worker events; one that would need more keeps straight rows.
+ */
+export const CAPTION_CURVE = {
+  maxSweepDeg: 70,
+  edgeShrink: 0.18,
+  maxEvents: 200,
+} as const;
+
+/** True when the style may bend its rows (`curve`): every style without tiles. */
+export function captionStyleCurves(style: Pick<CaptionDynamicStyle, "tile">): boolean {
+  return style.tile === undefined;
+}
+
+/**
+ * How many worker events (and Studio elements) one block word, or one glyph cluster of a curved
+ * word, is drawn with: its shadow layers, outer stroke, glow layers and fill. The curved-cue
+ * budget counts these; the painters' layer lists must stay in step (caption-ass.ts `stackEvents`,
+ * caption-block-painter.tsx).
+ */
+export function captionBlockPaintLayers(preset: CaptionPreset, style: CaptionDynamicStyle): number {
+  const shadow = preset.shadow === "none" ? 0
+    : preset.shadow === "soft" ? (style.softShadow?.length ?? 1)
+      : preset.shadow === "hard" ? 1
+        : CAPTION_EXTRUDE.steps;
+  const outer = (preset.outerOutlineWidth ?? 0) > 0 && preset.outerOutlineColor ? 1 : 0;
+  const glow = preset.glowColor ? CAPTION_GLOW_SIGMAS.length : 0;
+  return shadow + outer + glow + 1;
+}
 
 /** A cue laid out as one to three rows (Caption Block). Lives on a caption layer as `block`. */
 export interface CaptionBlock {

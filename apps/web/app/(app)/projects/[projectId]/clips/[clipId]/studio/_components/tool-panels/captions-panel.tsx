@@ -15,6 +15,7 @@ import {
   applyCaptionPresetLook,
   captionBlockAnimation,
   captionBlockWordsPerCue,
+  captionStyleCurves,
   clipAspectRatioOptions,
   matchCaptionPreset,
   type CaptionAnimation,
@@ -237,6 +238,7 @@ function ValueSlider({
   format = (value) => String(value),
   onChange,
   coalesceKey,
+  origin,
 }: {
   label: string;
   /** Visible name beside the slider, for sliders nested under an effect. */
@@ -248,6 +250,8 @@ function ValueSlider({
   format?: (value: number) => string;
   onChange: (value: number, coalesceKey: string) => void;
   coalesceKey: string;
+  /** "center": the filled range grows from the middle (a signed value such as Curve). */
+  origin?: "start" | "center";
 }) {
   const { endCoalesce } = useStudio("endCoalesce");
   return (
@@ -265,6 +269,7 @@ function ValueSlider({
         step={step}
         onValueChange={(e) => onChange(e.value[0]!, coalesceKey)}
         onValueChangeEnd={endCoalesce}
+        origin={origin}
         size="sm"
         css={studioSliderCss}
         flex="1"
@@ -1018,8 +1023,24 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
             </EffectRow>
           </Stack>
         </Box>
-        {/* Curve (styles without tiles, ticket 07) and Hero behind speaker (centre
-            stack styles, ticket 09) join here once a renderer draws them. */}
+        {captionStyleCurves(style) ? (
+          <Box>
+            <SectionLabel>Curve</SectionLabel>
+            {/* Spec 5.11: positive arches the rows, negative bows them; 0 is straight and stored as unset. */}
+            <ValueSlider
+              label="Curve"
+              value={captionPreset.curve ?? 0}
+              min={-1}
+              max={1}
+              step={0.05}
+              origin="center"
+              format={(value) => (Math.abs(value) < 1e-6 ? "Off" : value.toFixed(2))}
+              coalesceKey="caption-curve"
+              onChange={(value, key) => update({ curve: Math.abs(value) < 1e-6 ? undefined : Math.round(value * 100) / 100 }, key)}
+            />
+          </Box>
+        ) : null}
+        {/* Hero behind speaker (centre stack styles, ticket 09) joins here once a renderer draws it. */}
       </AdvancedDisclosure>
     </Stack>
   );

@@ -541,21 +541,27 @@ colours do not change. Slots follow the user's colours.
 - Geometry, in `caption-block.ts`. A row of width W gets a total sweep
   `θ = curve × CAPTION_CURVE.maxSweepDeg` (70°) and radius `R = W / θ` (radians). A glyph
   cluster whose centre sits at arc length `s` from the row centre goes to angle `φ = s / R`:
-  centre `(rowCentreX + R sin φ, baselineY − sign × R (1 − cos φ))`, rotation `φ`. Fish-eye:
-  cluster size × `1 − CAPTION_CURVE.edgeShrink × |curve| × (φ / φmax)²`, edgeShrink 0.18.
-  Row pitch uses the arc's vertical extent, so curved rows never collide.
+  baseline centre `(rowCentreX + R sin φ, baselineY + R (1 − cos φ))` with R signed like the
+  curve (ticket 07: the earlier `− sign ×` bowed a positive curve, against "positive arches"),
+  rotation `φ`. Fish-eye: cluster size × `1 − CAPTION_CURVE.edgeShrink × |curve| × (φ / φmax)²`,
+  edgeShrink 0.18. Row pitch uses the arc's vertical extent column by column (each cluster's
+  turned ink box), so curved rows nest and never collide; straight rows keep rule 4.
 - Clusters. A cluster is a base code point plus its following `\p{M}` marks (no
   `Intl.Segmenter`). The worker gets cluster offsets from HarfBuzz (add
   `captionClusterOffsets` next to `layoutCaptionLine` in `packages/caption-fonts/src/shaping.ts`).
-  The Studio gets them from Canvas `measureText` of each prefix, which includes kerning.
+  The Studio gets them from Canvas `measureText` of each prefix, which includes kerning. Both
+  measure each prefix (with letter spacing) and each cluster alone, and the shared
+  `captionClusterPositions` ends each cluster where its prefix ends.
 - Painting. One event (worker) or element (Studio) per cluster per paint layer, same pivot
   rule as 5.6. Words keep their entrance, applied to all of their clusters together:
-  opacity, blur and screen-space travel only. Scale and rotation keyframes are dropped on
-  curved rows, so curved styles default to `blur`.
-- Shaping-sensitive text (Arabic script, Indic, Thai) and no-space scripts keep straight
-  rows, because splitting them into clusters breaks joining.
-- Budget: 200 events per curved cue. Curved styles carry a shadow and no outline, so each
-  cluster is 2 layers.
+  opacity, blur and screen-space travel only. Scale and rotation keyframes (and the block tilt)
+  are dropped on curved rows in shared code (`PlacedWord.keyframes`). A curved hero is flat (no
+  gradient bands) and has no underline.
+- Shaping-sensitive text (Arabic script, Hebrew, Indic, Thai) and no-space scripts keep straight
+  rows, because splitting them into clusters breaks joining; so does any right-to-left cue
+  (`captionBlockCurve`, per cue).
+- Budget: 200 events per curved cue, enforced: a cue whose clusters × paint layers (plus stars)
+  would pass 200 keeps straight rows. Arc carries two shadow layers, so each cluster is 3.
 
 ### 5.12 Behind the speaker (references 12, 13)
 
@@ -687,8 +693,9 @@ in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body s
   the row above is wider, clearing that row's box); then 0.26 hero-em each, 0.12 hero-em out
   on both axes from the block's other top corner and the bottom corner under it.
 - **Arc** (reference 14, phase 3). DM Serif Display, sentence case, all words `#F3E9C6`,
-  support S = 64, hero 2.2 S, every row curved at 0.55, soft shadow black 70%, no outline,
-  rowGap 0.04, motion `blur`.
+  support S = 64, hero 2.2 S, every row curved at 0.55, no outline, rowGap 0.04. Ticket 07: soft
+  shadow is the small-text pair at 80% (black 70% left "how" at 2.43:1 on the bright frame) and
+  motion `slide` (`blur` fades every word over 280 ms, against rule 6).
 - **Depth** (references 12, 13, phase 4). Inter SemiBold support, white, S = 52; Inter hero,
   lowercase, white at 96%, fill 0.92, 3.0 to 5.5 S; `heroBehind: true`; default
   `positionY` 32 so the hero sits behind the head and shoulders; motion `rise`.

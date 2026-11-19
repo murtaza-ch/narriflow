@@ -12,6 +12,9 @@ import {
   captionPresetsEqual,
   formatCaptionWord,
   matchCaptionPreset,
+  CAPTION_MOTIONS,
+  captionBlockPaintLayers,
+  captionStyleCurves,
 } from ".";
 
 describe("captionPresetSchema defaults", () => {
@@ -35,10 +38,10 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 30 presets with unique ids and names, the Dynamic group first", () => {
-    expect(CAPTION_PRESETS).toHaveLength(30);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(30);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(30);
+  test("has 31 presets with unique ids and names, the Dynamic group first", () => {
+    expect(CAPTION_PRESETS).toHaveLength(31);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(31);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(31);
     expect(CAPTION_PRESET_GROUPS[0]).toBe("Dynamic");
     expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
     for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic")) {
@@ -48,7 +51,7 @@ describe("caption preset catalog", () => {
 
   test("Dynamic group presets, and only they, set a Dynamic Style", () => {
     const dynamic = CAPTION_PRESETS.filter((named) => named.group === "Dynamic");
-    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack", "groove"]);
+    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack", "groove", "arc"]);
     for (const named of CAPTION_PRESETS) {
       expect(named.preset.dynamic !== undefined).toBe(named.group === "Dynamic");
     }
@@ -80,7 +83,7 @@ describe("caption preset catalog", () => {
     expect(style.gradient).toEqual({ top: "#A5EBC5", bottom: "#36B780" });
   });
 
-  test("Editorial, Cutout, Marker, Stack and Groove follow the section 6 catalog rows", () => {
+  test("Editorial, Cutout, Marker, Stack, Groove and Arc follow the section 6 catalog rows", () => {
     const preset = (id: string) => CAPTION_PRESETS.find((named) => named.id === id)!.preset;
     const S = (id: string) => preset(id).fontSize;
 
@@ -138,14 +141,26 @@ describe("caption preset catalog", () => {
     expect(groove.roles.hero.sizeEm * S("groove")).toBeCloseTo(176, 9);
     expect(groove.rowGapEm * S("groove")).toBeCloseTo(8, 9);
 
+    const arc = CAPTION_DYNAMIC_STYLES.arc;
+    // Later catalog addition (reference 14): cream DM Serif Display, sentence case, hero 2.2 S, every row curved at 0.55.
+    expect(preset("arc")).toMatchObject({ dynamic: "arc", fontName: "DM Serif Display", fontSize: 64, textTransform: "none", primaryColor: "#F3E9C6", highlightColor: "#F3E9C6", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4, curve: 0.55 });
+    expect(arc).toMatchObject({ layout: "stack", align: "center", heroFontName: "DM Serif Display", rowGapEm: 0.04, staggerEm: 0, defaultMotion: "slide" });
+    expect(arc.roles.hero).toMatchObject({ font: "hero", sizeEm: 2.2, transform: "none", colour: "highlight" });
+    // Ticket 07: the single 70% shadow failed rule 5 on the bright frame; the small-text pair at 80% passes.
+    expect(arc.softShadow).toEqual([{ offsetYEm: 0.04, blurEm: 0.12, opacity: 0.8 }, { offsetYEm: 0.01, blurEm: 0.04, opacity: 0.8 }]);
+    // Curves keep opacity, blur and travel only, and the hero is the only blur (rule 6): slide, not blur.
+    expect(CAPTION_MOTIONS.slide.word.some((frame) => frame.blurEm !== undefined)).toBe(false);
+    // Only the catalog's Arc preset curves.
+    for (const named of CAPTION_PRESETS) expect(named.preset.curve).toBe(named.id === "arc" ? 0.55 : undefined);
+
     // Rule 1: the hero is at least 2.2 times the body size (Cutout has no hero).
-    for (const style of [CAPTION_DYNAMIC_STYLES.headline, editorial, marker, stack, groove]) {
+    for (const style of [CAPTION_DYNAMIC_STYLES.headline, editorial, marker, stack, groove, arc]) {
       expect(Math.min(style.roles.hero.sizeEm, style.heroFill?.minEm ?? Infinity) / style.roles.body.sizeEm).toBeGreaterThanOrEqual(2.2 - 1e-9);
     }
     // Only Editorial shrinks minor words; the others draw them at body size (ticket 02).
-    for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout, groove]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
+    for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout, groove, arc]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
     // Styles without an outline carry a soft shadow on every word (rule 5); Cutout's tiles carry their own.
-    for (const id of ["headline", "editorial", "marker", "stack", "groove"]) {
+    for (const id of ["headline", "editorial", "marker", "stack", "groove", "arc"]) {
       expect(preset(id)).toMatchObject({ outlineWidth: 0, shadow: "soft" });
       expect(CAPTION_DYNAMIC_STYLES[id as "headline"].softShadow!.length).toBeGreaterThan(0);
     }
@@ -268,5 +283,20 @@ describe("formatCaptionWord (vizard-parity Phase C — punctuation on/off)", () 
 
   test("preserves a mid-word apostrophe with no edge punctuation", () => {
     expect(formatCaptionWord("y'all", { punctuation: false })).toBe("y'all");
+  });
+});
+
+describe("curved rows (spec 5.11)", () => {
+  test("every style without tiles may curve; Cutout's tiles may not", () => {
+    for (const [name, style] of Object.entries(CAPTION_DYNAMIC_STYLES)) expect(captionStyleCurves(style)).toBe(name !== "cutout");
+  });
+
+  test("paint layers per word: shadow layers, outer stroke, glow layers and the fill", () => {
+    const arc = CAPTION_PRESETS.find((named) => named.id === "arc")!.preset;
+    expect(captionBlockPaintLayers(arc, CAPTION_DYNAMIC_STYLES.arc)).toBe(3);
+    expect(captionBlockPaintLayers({ ...arc, shadow: "none" }, CAPTION_DYNAMIC_STYLES.arc)).toBe(1);
+    expect(captionBlockPaintLayers({ ...arc, shadow: "extrude" }, CAPTION_DYNAMIC_STYLES.arc)).toBe(7);
+    expect(captionBlockPaintLayers({ ...arc, glowColor: "#FF00FF", outerOutlineWidth: 4, outerOutlineColor: "#000000" }, CAPTION_DYNAMIC_STYLES.arc)).toBe(6);
+    expect(captionBlockPaintLayers(CAPTION_PRESETS[0]!.preset, CAPTION_DYNAMIC_STYLES.headline)).toBe(2);
   });
 });

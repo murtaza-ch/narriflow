@@ -184,7 +184,11 @@ export const captionPresetSchema = z.object({
   accentColor: hexColor.optional(),
   /** Multiplies the hero size after fill-to-width. 1 = the style's size. */
   emphasisScale: z.number().min(0.7).max(1.4).optional(),
-  /** Curved rows (spec 5.11): positive arches, negative bows. Absent or 0 = straight. Not drawn yet. */
+  /**
+   * Curved rows (spec 5.11): positive arches (the middle higher than the ends), negative bows.
+   * Absent or 0 = straight. Dynamic styles without tiles only; text that would break when split
+   * into clusters keeps straight rows (`captionBlockCurve`).
+   */
   curve: z.number().min(-1).max(1).optional(),
   /** Draw the hero row behind the speaker (spec 5.12). Not drawn yet. */
   heroBehind: z.boolean().optional(),
@@ -264,6 +268,11 @@ export const CAPTION_PRESETS = [
   namedPreset("groove", "Groove", "Dynamic", {
     dynamic: "groove", fontName: "DM Serif Display", fontSize: 80, textTransform: "uppercase", letterSpacing: 0,
     primaryColor: "#FFFFFF", highlightColor: "#F59ABB", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
+  }),
+  namedPreset("arc", "Arc", "Dynamic", {
+    dynamic: "arc", fontName: "DM Serif Display", fontSize: 64, textTransform: "none", letterSpacing: 0,
+    primaryColor: "#F3E9C6", highlightColor: "#F3E9C6", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
+    curve: 0.55,
   }),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {

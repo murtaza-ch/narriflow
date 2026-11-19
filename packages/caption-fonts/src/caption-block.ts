@@ -1,6 +1,7 @@
 import {
   CAPTION_BLOCK,
   CAPTION_CUE_TILTS_DEG,
+  CAPTION_CURVE,
   CAPTION_DECORATION,
   CAPTION_SHAPES,
   CAPTION_MOTIONS,
@@ -9,7 +10,10 @@ import {
   captionEntranceKeyframes,
   captionEntranceMs,
   captionEntranceTimeScale,
+  captionBlockPaintLayers,
   captionHeroGradient,
+  captionStyleCurves,
+  isNoSpaceScriptChar,
   languageDirection,
   textDirection,
   type CaptionBlock,
@@ -19,7 +23,7 @@ import {
   type CaptionPreset,
 } from "@narriflow/validators";
 import { type CaptionDirection, captionWordVisualOrder } from "./bidi-order";
-import { canonicalCaptionLanguage, captionRunScript } from "./locale-precedence";
+import { canonicalCaptionLanguage, captionRunScript, isShapingSensitiveText } from "./locale-precedence";
 
 /**
  * Caption Block geometry (spec 5.6, ADR 0020): where every word of a Dynamic
@@ -53,6 +57,87 @@ export function captionWordDirection(text: string, cueDirection: CaptionDirectio
 /** RIGHT-TO-LEFT MARK: starts the worker's events of an RTL word, so libass orders it as the Studio does. */
 export const CAPTION_RTL_MARK = "\u200F";
 
+const MARK_RE = /\p{M}/u;
+
+/**
+ * A word's glyph clusters for curved rows (spec 5.11): each base code point with the combining
+ * marks (`\p{M}`) that follow it. Code points, never `Intl.Segmenter`, so the browser and the
+ * worker split text alike whatever ICU data they ship.
+ */
+export function captionTextClusters(text: string): string[] {
+  const clusters: string[] = [];
+  for (const character of text) {
+    if (clusters.length > 0 && MARK_RE.test(character)) clusters[clusters.length - 1] += character;
+    else clusters.push(character);
+  }
+  return clusters;
+}
+
+/**
+ * The curve a cue's rows are drawn with (spec 5.11), 0 for straight rows: the preset's `curve` on a
+ * style without tiles, unless some word would break when split into clusters (a joining or complex
+ * script: Arabic, Hebrew, Indic, Thai...; a no-space script; any right-to-left text) or the cue
+ * would need more than `CAPTION_CURVE.maxEvents` worker events (each cluster takes every paint
+ * layer, and stars their own). Both painters ask this before measuring clusters.
+ */
+export function captionBlockCurve(input: {
+  readonly preset: CaptionPreset;
+  readonly style: CaptionDynamicStyle;
+  readonly texts: readonly string[];
+  readonly language?: string | null;
+}): number {
+  const { preset, style, texts } = input;
+  const curve = preset.curve ?? 0;
+  if (curve === 0 || !captionStyleCurves(style) || texts.length === 0) return 0;
+  if (captionBlockDirection(texts, input.language) === "rtl") return 0;
+  for (const text of texts) {
+    if (isShapingSensitiveText(text) || textDirection(text) === "rtl" || [...text].some(isNoSpaceScriptChar)) return 0;
+  }
+  const layers = captionBlockPaintLayers(preset, style);
+  const clusters = texts.reduce((total, text) => total + captionTextClusters(text).length, 0);
+  const stars = (style.decorations ?? []).includes("stars") ? CAPTION_DECORATION.stars.sizesEm.length * layers : 0;
+  return clusters * layers + stars <= CAPTION_CURVE.maxEvents ? curve : 0;
+}
+
+/** One glyph cluster of a word measured in place, at 1 em, from the word's left advance edge. */
+export interface MeasuredCluster {
+  /** Pen position of the cluster inside the word (kerning and letter spacing before it included). */
+  readonly startEm: number;
+  /** The cluster's own advance when drawn alone, without letter spacing. */
+  readonly advanceEm: number;
+}
+
+/**
+ * Cluster positions from two measurements every renderer can make (spec 5.11): the advance of each
+ * prefix of the word ending with cluster k, letter spacing after every cluster included (HarfBuzz
+ * `layoutCaptionLine`, Canvas `measureText`), and each cluster's advance alone without spacing. A
+ * cluster ends where its prefix ends, less its trailing spacing, so kerning against the cluster
+ * before it moves it as it does in the shaped word.
+ */
+export function captionClusterPositions(
+  prefixAdvancesEm: readonly number[],
+  aloneAdvancesEm: readonly number[],
+  /** The letter spacing drawn after each cluster, em (0 where its face takes none). */
+  spacingAfterEm: readonly number[],
+): MeasuredCluster[] {
+  return aloneAdvancesEm.map((advanceEm, index) => ({
+    startEm: prefixAdvancesEm[index]! - spacingAfterEm[index]! - advanceEm,
+    advanceEm,
+  }));
+}
+
+/**
+ * A screen-space travel (dx, dy) written in the frame of an element that turns `rotationDeg`
+ * (clockwise) about its pivot after it moves: libass turns a moved event about its fixed `\org`,
+ * and CSS `rotate() translate()` turns the translation too. Curved clusters travel together in
+ * screen space (spec 5.11), so each one's travel is turned back by its own angle first.
+ */
+export function captionUnturnedTravel(dx: number, dy: number, rotationDeg: number): { readonly x: number; readonly y: number } {
+  if (rotationDeg === 0) return { x: dx, y: dy };
+  const theta = radians(-rotationDeg);
+  return { x: dx * Math.cos(theta) - dy * Math.sin(theta), y: dx * Math.sin(theta) + dy * Math.cos(theta) };
+}
+
 /** One word measured alone in its role's face, at 1 em. */
 export interface MeasuredWord {
   /** Advance at 1 em, including letter spacing, excluding trailing spacing. */
@@ -67,6 +152,11 @@ export interface MeasuredWord {
    * Absent = the ink middle. Only scaling entrances read it (`PlacedWord.scaleOriginY`).
    */
   readonly boxMiddleEm?: number;
+  /**
+   * The word's glyph clusters (`captionTextClusters`), placed in the word. Required for every word
+   * of a cue whose `captionBlockCurve` is not 0; read only then.
+   */
+  readonly clusters?: readonly MeasuredCluster[];
 }
 
 /** What the layout reads of each caption word (a `CompositionCaptionWord` fits). */
@@ -115,6 +205,34 @@ export interface PlacedWord {
   readonly entranceTimeScale: number;
   /** The word's tile, for tile styles; null otherwise. */
   readonly tile: PlacedTile | null;
+  /**
+   * The entrance both painters draw (before `entranceTimeScale`): the motion's `hero ?? word`
+   * track, without scale and turn keyframes on curved rows (spec 5.11).
+   */
+  readonly keyframes: readonly CaptionKeyframe[];
+  /**
+   * A curved row's word, drawn cluster by cluster (spec 5.11): each cluster is its own event or
+   * element per paint layer, placed here, while the word's fields above stay its place on the
+   * straight row. The word's entrance (opacity, blur and travel, in px of the word's `px`) moves
+   * every cluster together in screen space (`captionUnturnedTravel`). Null on straight rows.
+   */
+  readonly clusters: readonly PlacedCluster[] | null;
+}
+
+/**
+ * One glyph cluster of a curved word, with the same meaning as a `PlacedWord`'s fields: drawn at
+ * `px` (fish-eye included) with its advance box's left baseline end at (`baselineX`, `baselineY`),
+ * then turned by `rotationDeg` about (`centerX`, `centerY`), the advance centre at the word's ink
+ * middle. Turned, its baseline centre lies on the row's arc.
+ */
+export interface PlacedCluster {
+  readonly text: string;
+  readonly px: number;
+  readonly baselineX: number;
+  readonly baselineY: number;
+  readonly centerX: number;
+  readonly centerY: number;
+  readonly rotationDeg: number;
 }
 
 /**
@@ -184,6 +302,8 @@ export interface CaptionBlockLayout {
   readonly bounds: CaptionBlockRect;
   readonly decorations: readonly PlacedDecoration[];
   readonly gradient: PlacedGradient | null;
+  /** The curve the rows are drawn with (`captionBlockCurve`); 0 = straight. */
+  readonly curve: number;
   /** The safe-area shift (rule 9) applied to the block, canvas px. The stored position excludes it. */
   readonly shift: { readonly x: number; readonly y: number };
 }
@@ -280,6 +400,55 @@ function extremes(keyframes: readonly CaptionKeyframe[], property: keyof Caption
 
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
 
+/** Corners of a rectangle centred on (x, y), turned `phi` radians clockwise about that centre. */
+function turnedRect(x: number, y: number, left: number, right: number, top: number, bottom: number, phi: number): [number, number][] {
+  const cos = Math.cos(phi);
+  const sin = Math.sin(phi);
+  return ([[left, top], [right, top], [right, bottom], [left, bottom]] as const).map(([dx, dy]) => [x + dx * cos - dy * sin, y + dx * sin + dy * cos]);
+}
+
+/** Lowest and highest y of a convex polygon on the vertical line at `x`, or null off it. */
+function polygonYRange(polygon: readonly (readonly [number, number])[], x: number): [number, number] | null {
+  let low = Infinity;
+  let high = -Infinity;
+  for (let index = 0; index < polygon.length; index++) {
+    const [px, py] = polygon[index]!;
+    const [qx, qy] = polygon[(index + 1) % polygon.length]!;
+    if (x < Math.min(px, qx) || x > Math.max(px, qx)) continue;
+    const ys = px === qx ? [py, qy] : [py + ((x - px) / (qx - px)) * (qy - py)];
+    for (const y of ys) {
+      low = Math.min(low, y);
+      high = Math.max(high, y);
+    }
+  }
+  return low <= high ? [low, high] : null;
+}
+
+/**
+ * The smallest baseline step that keeps the lower row's ink below the upper row's, column by
+ * column: the largest `bottom of upper(x) − top of lower(x)` over every x both rows ink, each row
+ * relative to its own baseline. Both outlines are unions of convex polygons, so the difference is
+ * piecewise linear and its maximum lies at one of their corners' x. Null when no column is shared.
+ */
+function columnPitch(upper: readonly (readonly (readonly [number, number])[])[], lower: readonly (readonly (readonly [number, number])[])[]): number | null {
+  const xs = [...upper, ...lower].flatMap((polygon) => polygon.map(([x]) => x));
+  let pitch: number | null = null;
+  for (const x of xs) {
+    let bottom = -Infinity;
+    let top = Infinity;
+    for (const polygon of upper) {
+      const range = polygonYRange(polygon, x);
+      if (range) bottom = Math.max(bottom, range[1]);
+    }
+    for (const polygon of lower) {
+      const range = polygonYRange(polygon, x);
+      if (range) top = Math.min(top, range[0]);
+    }
+    if (bottom > -Infinity && top < Infinity) pitch = Math.max(pitch ?? -Infinity, bottom - top);
+  }
+  return pitch;
+}
+
 /** The smallest whole-pixel rectangle holding the given edges. */
 const wholePixels = (left: number, top: number, right: number, bottom: number): CaptionBlockRect => {
   const x = Math.floor(left);
@@ -309,10 +478,19 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     throw new Error("layoutCaptionBlock needs one measurement and one word per block role");
   }
   if (count === 0) {
-    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], gradient: null, shift: { x: 0, y: 0 } };
+    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], gradient: null, curve: 0, shift: { x: 0, y: 0 } };
   }
   const S = preset.fontSize;
   const roles = block.roles;
+  const curve = captionBlockCurve({ preset, style, texts: block.texts, language: input.language });
+  const curved = curve !== 0;
+  if (curved) {
+    block.texts.forEach((text, index) => {
+      if (measured[index]!.clusters?.length !== captionTextClusters(text).length) {
+        throw new Error(`layoutCaptionBlock: a curved cue needs one measured cluster per captionTextClusters entry ("${text}")`);
+      }
+    });
+  }
   const hasHero = roles.includes("hero");
   const strokePerPx = (preset.outlineWidth + (preset.outerOutlineWidth ?? 0)) / S;
   const tile = style.tile;
@@ -383,8 +561,13 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   });
 
   const motion: CaptionMotionSpec = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
-  const entrances = roles.map((role) => captionEntranceKeyframes(motion, role === "hero"));
-  const blockTilt = motion.tilt ? CAPTION_CUE_TILTS_DEG[block.seed % CAPTION_CUE_TILTS_DEG.length]! : 0;
+  // Curved rows keep opacity, blur and travel only (spec 5.11): a cluster's scale or turn would
+  // pull it off the arc, so those keyframes and the block tilt are dropped here, for both painters.
+  const entrances = roles.map((role) => {
+    const frames = captionEntranceKeyframes(motion, role === "hero");
+    return curved ? flatEntrance(frames) : frames;
+  });
+  const blockTilt = motion.tilt && !curved ? CAPTION_CUE_TILTS_DEG[block.seed % CAPTION_CUE_TILTS_DEG.length]! : 0;
   const cos = Math.cos(radians(blockTilt));
   const sin = Math.sin(radians(blockTilt));
 
@@ -395,7 +578,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   const decorationTime = heroStartSec === undefined || input.cueEndSec === undefined ||
     (input.cueEndSec - heroStartSec) * 1000 >= CAPTION_DECORATION.minRemainingMs;
   const decorated = (kind: "underline" | "stars") => heroIndexes.length > 0 && decorationTime && (style.decorations ?? []).includes(kind);
-  const heroUpright = heroIndexes.every((index) =>
+  const heroUpright = !curved && heroIndexes.every((index) =>
     blockTilt === 0 &&
     (!tile || tile.tiltsDeg.length === 0 || tile.tiltsDeg[(index + block.seed) % tile.tiltsDeg.length] === 0) &&
     !entrances[index]!.some((frame) => frame.rotateZDeg !== undefined || frame.rotateXDeg !== undefined));
@@ -418,19 +601,11 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     const heroInkBottom = heroRow >= 0 ? Math.max(...block.rows[heroRow]!.map(inkBottom)) : 0;
     const underlineCenter = Math.max(U.offsetEm * heroPx, heroInkBottom + (U.clearanceEm + U.heightEm / 2) * heroPx);
     if (underline) rowInkBottom[heroRow] = Math.max(rowInkBottom[heroRow]!, underlineCenter + (U.heightEm / 2) * heroPx);
-    const baselines = [0];
-    for (let k = 1; k < block.rows.length; k++) {
-      baselines.push(baselines[k - 1]! + rowInkBottom[k - 1]! + style.rowGapEm * S * fit + rowInkTop[k]!);
-    }
-
     // Rule 5, row x (and rule 6's shift). Block-local coordinates: x = 0 is the centre axis, or the
-    // left edge of a left style (the right edge when it mirrors for RTL); y = 0 is row 0's baseline.
-    // Curved rows (spec 5.11) will replace this straight placement per glyph cluster, and row pitch
-    // will then use the arc's vertical extent.
+    // left edge of a left style (the right edge when it mirrors for RTL); y = 0 is each row's own
+    // baseline until the pitch below stacks the rows.
     const left = new Array<number>(count).fill(0);
-    const rest = emptyBox();
-    const rowBoxes: Box[] = [];
-    block.rows.forEach((_, k) => {
+    const rowSpans = block.rows.map((_, k) => {
       const width = rowWidth(k, sizes);
       const shift = isHeroRow(k) ? 0 : style.staggerEm * S * fit * rowSign[k]!;
       const rowLeft = (style.align === "center" ? -width / 2 : mirrored ? -width : 0) + shift;
@@ -441,8 +616,61 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
         left[item.index] = cursor;
         cursor += measured[item.index]!.advanceEm * sizes[item.index]!;
       });
-      include(rest, rowLeft, baselines[k]! - rowInkTop[k]!, rowLeft + width, baselines[k]! + rowInkBottom[k]!);
-      rowBoxes.push({ left: rowLeft, right: rowLeft + width, top: baselines[k]! - rowInkTop[k]!, bottom: baselines[k]! + rowInkBottom[k]! });
+      return { left: rowLeft, width };
+    });
+
+    // Curved rows (spec 5.11): a row of width W sweeps θ = curve × maxSweep on a circle of radius
+    // R = W / θ. A cluster whose centre lies `s` along the row from its centre goes to angle φ = s / R:
+    // its baseline centre to (centre + R sin φ, baseline + R (1 − cos φ)), turned φ clockwise, drawn
+    // at `1 − edgeShrink × |curve| × (φ / φmax)²` of the word's size. An arch (curve > 0) drops its
+    // ends; a bow (curve < 0, R negative) raises them. Each cluster's ink is the word's ink band
+    // over the cluster's advance, plus stroke, turned with it.
+    const arcs = new Array<CurvedCluster[] | null>(count).fill(null);
+    if (curved) {
+      const sweep = radians(curve * CAPTION_CURVE.maxSweepDeg);
+      const phiMax = Math.abs(sweep) / 2;
+      block.rows.forEach((row, k) => {
+        const { left: rowLeft, width } = rowSpans[k]!;
+        const centre = rowLeft + width / 2;
+        const kappa = sweep / width;
+        for (const index of row) {
+          const size = sizes[index]!;
+          const word = measured[index]!;
+          arcs[index] = word.clusters!.map((cluster) => {
+            const phi = (left[index]! + (cluster.startEm + cluster.advanceEm / 2) * size - centre) * kappa;
+            const px = size * (1 - CAPTION_CURVE.edgeShrink * Math.abs(curve) * (phi / phiMax) ** 2);
+            const x = centre + Math.sin(phi) / kappa;
+            const y = (1 - Math.cos(phi)) / kappa;
+            const advance = cluster.advanceEm * px;
+            const top = word.inkTopEm * px + stroke(px);
+            const bottom = word.inkBottomEm * px + stroke(px);
+            return { x, y, phi, px, advance, inkMid: ((word.inkTopEm - word.inkBottomEm) / 2) * px, polygon: turnedRect(x, y, -advance / 2, advance / 2, -top, bottom, phi) };
+          });
+        }
+      });
+    }
+    const rowPolygons = block.rows.map((row) => row.flatMap((index) => (arcs[index] ?? []).map((arc) => arc.polygon)));
+
+    // Rule 4, row pitch from measured ink. Straight rows stack their ink boxes (plus stroke, tile
+    // padding and the underline). Curved rows stack by their arcs' ink column by column, so arched
+    // rows nest as in reference 14 and never collide.
+    const rowExtent = block.rows.map((_, k) => {
+      if (!curved) return { left: rowSpans[k]!.left, right: rowSpans[k]!.left + rowSpans[k]!.width, top: rowInkTop[k]!, bottom: rowInkBottom[k]! };
+      const box = emptyBox();
+      for (const polygon of rowPolygons[k]!) for (const [x, y] of polygon) include(box, x, y, x, y);
+      return { left: box.left, right: box.right, top: -box.top, bottom: box.bottom };
+    });
+    const gap = style.rowGapEm * S * fit;
+    const baselines = [0];
+    for (let k = 1; k < block.rows.length; k++) {
+      const columns = curved ? columnPitch(rowPolygons[k - 1]!, rowPolygons[k]!) : null;
+      baselines.push(baselines[k - 1]! + (columns ?? rowExtent[k - 1]!.bottom + rowExtent[k]!.top) + gap);
+    }
+    const rest = emptyBox();
+    const rowBoxes: Box[] = rowExtent.map((extent, k) => {
+      const box = { left: extent.left, right: extent.right, top: baselines[k]! - extent.top, bottom: baselines[k]! + extent.bottom };
+      include(rest, box.left, box.top, box.right, box.bottom);
+      return box;
     });
 
     // Rule 10, rotation: the block tilt turns each word's centre about the block centre.
@@ -478,6 +706,13 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
         centerY: pivotY + x * sin + y * cos,
         rotationDeg: blockTilt + tileTilt,
         motionSign: rowSign[rowOf[index]!]!,
+        // Curved clusters, block-local: the arc point is the cluster's turned baseline centre, and
+        // its centre sits the word's ink middle above that point, along the cluster's own up.
+        clusters: arcs[index]?.map((arc) => {
+          const centerX = arc.x + arc.inkMid * Math.sin(arc.phi);
+          const centerY = baselines[k]! + arc.y - arc.inkMid * Math.cos(arc.phi);
+          return { px: arc.px, advance: arc.advance, inkMid: arc.inkMid, centerX, centerY, rotationDeg: (arc.phi * 180) / Math.PI };
+        }) ?? null,
       };
     });
 
@@ -542,6 +777,18 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     words.forEach((word, index) => {
       const size = sizes[index]!;
       const frames = entrances[index]!;
+      if (curved) {
+        // A curved word: every cluster's turned ink box at rest, moved by the word's travel.
+        const [xLow, xHigh] = extremes(frames, "offsetXEm", 0).map((value) => value * size * word.motionSign);
+        const [yLow, yHigh] = extremes(frames, "offsetYEm", 0).map((value) => value * size);
+        const k = rowOf[index]!;
+        for (const arc of arcs[index]!) {
+          for (const [x, y] of arc.polygon) {
+            include(reserved, x + Math.min(xLow!, xHigh!), baselines[k]! + y + yLow!, x + Math.max(xLow!, xHigh!), baselines[k]! + y + yHigh!);
+          }
+        }
+        return;
+      }
       const [xLow, xHigh] = extremes(frames, "offsetXEm", 0);
       const [yLow, yHigh] = extremes(frames, "offsetYEm", 0);
       const [scaleXLow, scaleXHigh] = extremes(frames, "scaleX", 1);
@@ -634,7 +881,9 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   dx += shiftX;
   dy += shiftY;
 
-  const gradient = heroIndexes.length > 0 ? captionHeroGradient(preset, style) : null;
+  // A curved hero would need its gradient bands on every cluster, past the event budget: it is flat.
+  const gradient = heroIndexes.length > 0 && !curved ? captionHeroGradient(preset, style) : null;
+  const clusterTexts = block.texts.map((text) => captionTextClusters(text));
   const clipMargin = CAPTION_DECORATION.clipMarginEm * S * scale;
   let star = 0;
 
@@ -651,6 +900,16 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       rotationDeg: word.rotationDeg,
       motionSign: word.motionSign,
       entranceTimeScale: entranceTimeScale[index]!,
+      keyframes: entrances[index]!,
+      clusters: word.clusters?.map((cluster, at): PlacedCluster => ({
+        text: clusterTexts[index]![at]!,
+        px: cluster.px,
+        baselineX: cluster.centerX + dx - cluster.advance / 2,
+        baselineY: cluster.centerY + dy + cluster.inkMid,
+        centerX: cluster.centerX + dx,
+        centerY: cluster.centerY + dy,
+        rotationDeg: cluster.rotationDeg,
+      })) ?? null,
       tile: word.tileBox
         ? {
           centerX: word.centerX + dx,
@@ -706,6 +965,25 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
         bottomColor: gradient.bottom,
       }
       : null,
+    curve,
     shift: { x: shiftX, y: shiftY },
   };
+}
+
+/** An entrance without scale and turn keyframes (curved rows); keyframes left with no property go. */
+function flatEntrance(frames: readonly CaptionKeyframe[]): CaptionKeyframe[] {
+  return frames
+    .map(({ scaleX: _scaleX, scaleY: _scaleY, rotateXDeg: _rotateX, rotateZDeg: _rotateZ, ...frame }) => frame)
+    .filter((frame) => Object.keys(frame).some((key) => key !== "at" && key !== "ease"));
+}
+
+/** A curved row's cluster while arranging, block-local, its y relative to its row's baseline. */
+interface CurvedCluster {
+  readonly x: number;
+  readonly y: number;
+  readonly phi: number;
+  readonly px: number;
+  readonly advance: number;
+  readonly inkMid: number;
+  readonly polygon: [number, number][];
 }
