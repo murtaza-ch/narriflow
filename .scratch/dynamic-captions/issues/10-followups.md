@@ -2,7 +2,7 @@
 
 **What to build:** Small items left open by earlier tickets, picked up after ticket 09.
 
-**Blocked by:** 09
+**Blocked by:** None
 
 **Status:** ready-for-agent
 

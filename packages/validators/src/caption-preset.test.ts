@@ -168,10 +168,10 @@ describe("caption preset catalog", () => {
 
   test("dynamic preset fields are optional and range-checked", () => {
     const parsed = captionPresetSchema.parse({});
-    for (const key of ["dynamic", "heroFontName", "accentColor", "emphasisScale", "curve", "heroBehind"] as const) {
+    for (const key of ["dynamic", "heroFontName", "accentColor", "emphasisScale", "curve"] as const) {
       expect(parsed[key]).toBeUndefined();
     }
-    expect(captionPresetSchema.safeParse({ dynamic: "headline", heroFontName: "Anton", accentColor: "#112233", emphasisScale: 1.2, curve: -0.5, heroBehind: true }).success).toBe(true);
+    expect(captionPresetSchema.safeParse({ dynamic: "headline", heroFontName: "Anton", accentColor: "#112233", emphasisScale: 1.2, curve: -0.5 }).success).toBe(true);
     expect(captionPresetSchema.safeParse({ dynamic: "nope" }).success).toBe(false);
     expect(captionPresetSchema.safeParse({ heroFontName: "Impact" }).success).toBe(false);
     expect(captionPresetSchema.safeParse({ emphasisScale: 0.6 }).success).toBe(false);

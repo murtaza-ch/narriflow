@@ -1040,7 +1040,6 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
             />
           </Box>
         ) : null}
-        {/* Hero behind speaker (centre stack styles, ticket 09) joins here once a renderer draws it. */}
       </AdvancedDisclosure>
     </Stack>
   );

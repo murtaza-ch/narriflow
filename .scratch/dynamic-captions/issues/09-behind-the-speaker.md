@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** dropped
 
 Spec: [../spec.md](../spec.md). Follow the spec; where a ticket and the spec disagree, the spec wins.
 
@@ -95,3 +95,7 @@ Flicker: on pixels where the source is still, the matte's edge band changes by 0
 ### G3 decision (owner, 2026-11-19)
 
 Evidence regenerated after the scratch wipe in `.scratch/dynamic-captions/out/g3/` (git-ignored). Owner answers: edges good enough; matte runs alongside the render; behind hero auto-placed above the head (spec 5.12 updated). G3 passed. Engine work may start once ticket 07 is committed.
+
+### Dropped (orchestrator, 2026-11-19)
+
+Removed by owner decision (2026-11-19) after the implementation was shown: the template is not shipped. Code reverted in `308f1eba`; spike code and the `heroBehind` field removed.

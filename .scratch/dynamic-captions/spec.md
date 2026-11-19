@@ -1,8 +1,8 @@
 # Dynamic captions
 
 **Status:** accepted by the owner (2026-11-19) with the decisions in section 13. One
-release: everything in this file ships together, including curved text and text behind the
-speaker. "Phase" below only orders the work.
+release: everything in this file ships together, including curved text. Text behind the
+speaker was built and then removed by the owner (5.12). "Phase" below only orders the work.
 
 **Readers:** Opus implements from this file. Sol reviews the visuals and the code against
 it. Reference images are in `references/`. Section 10 is the build order, section 11 the
@@ -47,7 +47,7 @@ places words at shared coordinates. Neither needs replacing.
 | Gradient hero | 01 | Works with limits (5.10) | 2 |
 | Squiggle underline, stars | 04, 08 | Works | 2 |
 | Text on a curve | 14 | Works per glyph, simple scripts only (5.11) | 3 |
-| Big word behind the speaker | 12, 13 | Needs a person matte (5.12) | 4 |
+| Big word behind the speaker | 12, 13 | Removed by owner decision (5.12) | Out |
 | Two emphasised words in one cue | 04 | Not in this plan. One hero (or one 2-word hero) per cue | Out |
 | Scattered words around the face, title cards | 06, 09, 11 | Not captions | Out |
 
@@ -567,62 +567,11 @@ colours do not change. Slots follow the user's colours.
 - Budget: 200 events per curved cue, enforced: a cue whose clusters × paint layers (plus stars)
   would pass 200 keeps straight rows. Arc carries two shadow layers, so each cluster is 3.
 
-### 5.12 Behind the speaker (references 12, 13)
+### 5.12 Behind the speaker (removed)
 
-- Preset field `heroBehind: z.boolean().optional()`. When true, the hero row of a cue that
-  has a hero (the hero, its underline and stars) is drawn behind the person. Everything
-  else stays in front. Offered on centre-aligned stack styles, as a toggle under Advanced.
-  `block.behind` marks such cues in the plan.
-- Matte model: MediaPipe Selfie Segmenter (`selfie_segmenter.tflite`, Apache-2.0), one file
-  vendored in `apps/media/models/` and copied to `apps/web/public/models/`. A test checks
-  both copies have the same hash. CPU only, no API, no GPU.
-- **Plan.** For behind cues the plan adds `mattes: { sourceStartSec, sourceEndSec }[]` to
-  the target, in source time, padded 0.2 s each side and merged. The plan stays pure.
-- **Worker matte.** `apps/media/python/narriflow_media/person_matte.py` runs the model over
-  those ranges at 15 fps on frames downscaled to 256 px, smooths the masks over time
-  (exponential, α 0.6), feathers them (1.5 px Gaussian at output size), and writes a
-  grayscale video at the source's size. That video is cut and retimed by the same edit
-  plan as the source video, so it shares the edited clock.
-- **Worker graph.** The matte input goes through the same visual stack as the source, in a
-  matte mode of `compileCompositionPlanVideo`: source layers get the matte, every other
-  layer (B-roll, inserted scenes, background, logo, text layers) is drawn black. That gives
-  a matte that follows crops, two-up tiles and screen layouts, and is zero wherever
-  something covers the speaker. The caption stage becomes:
-  `scene → split; behind ASS on one copy; alphamerge the other copy with the matte → person;
-  overlay person; front ASS; emoji`. `renderCaptionTrack` returns `ass` and `behindAss`.
-  Without behind cues the graph is unchanged.
-- **Studio.** `@mediapipe/tasks-vision` `ImageSegmenter` with the same model file, in a
-  Web Worker, fed preview frames through `requestVideoFrameCallback`, at most 15 fps,
-  only while a behind hero is visible. Overlay order: video, behind hero row, a person
-  canvas, front captions. The person canvas draws the current frame masked by the result
-  (`destination-in`), with the same CSS geometry the preview gives the video element.
-- **Typed degradation.** If the matte cannot be made (model load or inference fails), the
-  hero renders in front. The worker records the notice `caption_matte_unavailable` on the
-  render. The Studio shows a small notice in the Captions panel. A blank or failed matte
-  never hides the hero.
-- **Gate G3: passed** (owner, 2026-11-19, on the 5-clip evidence in ticket 09). Owner decisions:
-  edges are good enough with the free CPU model; the matte runs alongside the render; the
-  behind hero is auto-placed above the head (below).
-- **Changes from the G3 spike, now part of this design:**
-  1. The plan passes each matte range its visible source rectangle(s) (`region`; two-up
-     gives two), so the model segments the visible crop, not the whole 16:9 frame.
-  2. The matte is written at ≤540 px tall and scaled up at the head of the matte branch.
-  3. The person is redrawn only inside the behind row's box, not the full frame.
-  4. The matte runs alongside the render (started first, fed as an input when ready), so
-     a behind clip stays near 1.4–1.5× a normal render.
-  5. Temporal smoothing resets at camera cuts (the layout engine's shots).
-  6. Runtime `ai-edge-litert` (pinned in the render profile), the square
-     `selfie_segmenter.tflite` v1 (SHA-256 `191ac952…658b`) downloaded by URL with a hash
-     check in the Dockerfile and recorded in `runtime-lock.json`, like the face detector.
-     The web copy in `apps/web/public/models/` is checked against the lock's hash.
-- **Auto-placement above the head.** Once per cue, at the hero's onset frame, take the
-  matte's top edge across the hero row's columns (the top of the head). Move the behind row
-  up, never down, until the person covers at most the bottom third of the hero's ink. The
-  move is clamped by the safe area. If even the clamped position leaves more than a third
-  covered, that cue's hero is drawn in front. The decision and offset are fixed for the cue
-  (no motion as the head moves). Each renderer decides from its own matte, so placement may
-  differ by a few px between preview and export; this is accepted for behind cues only and
-  recorded as a parity exception.
+Built and then removed by owner decision (2026-11-19, after the ticket 09 evidence): the
+release ships without text behind the speaker. The spike and implementation are in git
+history (`d2ea27f7`, `3319f7f5`, reverted in `308f1eba`).
 
 ### 5.13 LLM rider (built only if G1 fails)
 
@@ -700,10 +649,6 @@ in the ticket 02 proof, so Headline, Marker and Stack draw minor words at body s
   support S = 64, hero 2.2 S, every row curved at 0.55, no outline, rowGap 0.04. Ticket 07: soft
   shadow is the small-text pair at 80% (black 70% left "how" at 2.43:1 on the bright frame) and
   motion `slide` (`blur` fades every word over 280 ms, against rule 6).
-- **Depth** (references 12, 13, phase 4). Inter SemiBold support, white, S = 52; Inter hero,
-  lowercase, white at 96%, fill 0.92, 3.0 to 5.5 S; `heroBehind: true`; default
-  `positionY` 32 so the hero sits behind the head and shoulders; motion `rise`.
-
 Not in this release: reference 11 (script plus heavy caps) and glow (10).
 
 ## 7. Studio
@@ -714,7 +659,7 @@ Not in this release: reference 11 (script plus heavy caps) and glow (10).
   colour, Hero colour (the Highlight control, renamed), Accent colour (only for styles that
   use the accent slot), and Emphasis. Under Advanced: Text font, Hero font, Text transform,
   Animation (word-reveal motions), Words on screen, Emphasis size, Outline, Shadow, Glow.
-  Curve (styles without tiles) and Hero behind speaker (centre stack styles) also sit under
+  Curve (styles without tiles) also sits under
   Advanced. Subtitles and Punctuation toggles stay where they are. Emoji, highlight pill and backdrop
   are hidden.
 - **Emphasis row.** Chips for the words of the cue under the playhead, hero chip filled.
@@ -745,8 +690,6 @@ Not in this release: reference 11 (script plus heavy caps) and glow (10).
   same machine. Ticket 02 measured 1.05x locally (M1 Pro, still background, system
   libass). That is a local measurement, not a bound for real footage or the worker image's
   libass build; ticket 03b re-measures on the worker image.
-- Person matte (ticket 09): CPU in the render only over behind-hero ranges, plus the
-  browser model in the Studio. Measured in G3.
 - Studio: the current cue's words are positioned and transformed imperatively each frame.
   Ticket 03c checks playback holds frame rate on the owner's laptop.
 
@@ -816,9 +759,7 @@ cases and a real-libass test for cluster placement. Blocked by 06 (uses DM Serif
 
 **08. LLM rider.** 5.13. Only if G1 failed after one tuning round. Blocked by 01.
 
-**09. Behind the speaker.** 5.12. Order inside the ticket: matte script and model vendoring,
-worker graph and split caption track, gate G3 on 5 real clips, then the Studio half, the
-Depth style and the toggle. Blocked by 06.
+**09. Behind the speaker.** Removed by owner decision.
 
 Gates:
 
@@ -833,7 +774,7 @@ Gates:
   baseline rule. If neither reaches 80% after one tuning round, build ticket 08.
 - **G2, look proof.** Sol compares the proof frames with reference 01 for hierarchy,
   spacing and colour.
-- **G3, person matte.** See 5.12.
+- **G3, person matte.** Passed, then the feature was removed (5.12).
 
 ## 11. Review protocol for Sol
 
@@ -892,9 +833,12 @@ Code review focus:
 
 ## 13. Owner decisions (answered 2026-11-19)
 
-1. **Plan gating:** dynamic styles on every plan, including behind the speaker.
+1. **Plan gating:** dynamic styles on every plan.
 2. **Phrase-aware cue breaks for classic presets:** yes. Existing renders may change; there
    are no production users.
 3. **Release:** everything in one release, phases 1 to 4.
 4. **LLM rider:** allowed if G1 fails (ticket 08).
 5. **Curved text and text behind the speaker:** in this release (tickets 07 and 09).
+6. **Text behind the speaker removed** (2026-11-19): after seeing the ticket 09 result
+   (about 2.3× render time for behind clips and close-up placement problems), the owner
+   asked for the template to be removed.

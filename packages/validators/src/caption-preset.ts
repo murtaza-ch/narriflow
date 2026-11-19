@@ -190,8 +190,6 @@ export const captionPresetSchema = z.object({
    * into clusters keeps straight rows (`captionBlockCurve`).
    */
   curve: z.number().min(-1).max(1).optional(),
-  /** Draw the hero row behind the speaker (spec 5.12). Not drawn yet. */
-  heroBehind: z.boolean().optional(),
 });
 
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;

@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 (done).
 
-**Status:** ready-for-agent
+**Status:** dropped
 
 Spec: [../spec.md](../spec.md). Update 5.12 "Auto-placement above the head" and the Depth catalog entry to match.
 
@@ -20,3 +20,7 @@ Spec: [../spec.md](../spec.md). Update 5.12 "Auto-placement above the head" and 
 - [ ] `bun run lint`, `bun run typecheck`, `bun run test` pass. No PostgreSQL or heavy suites.
 
 ## Comments
+
+### Dropped (orchestrator, 2026-11-19)
+
+Dropped with ticket 09 (owner removed text behind the speaker).
