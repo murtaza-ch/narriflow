@@ -63,6 +63,9 @@ export interface ShapedCluster {
   /** `x_offset` of the cluster's first glyph (libass takes the cluster's position from it). */
   readonly offsetEm: number;
   readonly advanceEm: number;
+  /** Horizontal ink of the cluster's glyphs in em from the run start, without letter spacing; null when nothing is inked. */
+  readonly inkLeftEm: number | null;
+  readonly inkRightEm: number | null;
 }
 
 export interface ShapedRun {
@@ -107,21 +110,28 @@ export function shapeCaptionRun(path: string, text: string, rtl: boolean | null 
     let inkTop = 0;
     let inkBottom = 0;
     const glyphs = buffer.getGlyphInfosAndPositions();
-    const clusters: { startEm: number; offsetEm: number; advanceEm: number }[] = [];
+    const clusters: { startEm: number; offsetEm: number; advanceEm: number; inkLeftEm: number | null; inkRightEm: number | null }[] = [];
     let clusterValue = -1;
     for (const glyph of glyphs) {
       if (clusters.length === 0 || glyph.cluster !== clusterValue) {
         clusterValue = glyph.cluster;
-        clusters.push({ startEm: advance / upem, offsetEm: (glyph.xOffset ?? 0) / upem, advanceEm: 0 });
+        clusters.push({ startEm: advance / upem, offsetEm: (glyph.xOffset ?? 0) / upem, advanceEm: 0, inkLeftEm: null, inkRightEm: null });
       }
-      clusters[clusters.length - 1]!.advanceEm += (glyph.xAdvance ?? 0) / upem;
-      advance += glyph.xAdvance ?? 0;
+      const cluster = clusters[clusters.length - 1]!;
+      cluster.advanceEm += (glyph.xAdvance ?? 0) / upem;
       if (glyph.codepoint === 0) notdef = true;
       const extents = font.glyphExtents(glyph.codepoint);
       if (extents) {
         inkTop = Math.max(inkTop, (extents.yBearing + (glyph.yOffset ?? 0)) / upem);
         inkBottom = Math.max(inkBottom, -(extents.yBearing + extents.height + (glyph.yOffset ?? 0)) / upem);
+        if (extents.width !== 0 && extents.height !== 0) {
+          const left = (advance + (glyph.xOffset ?? 0) + extents.xBearing) / upem;
+          const right = left + extents.width / upem;
+          cluster.inkLeftEm = Math.min(cluster.inkLeftEm ?? left, left, right);
+          cluster.inkRightEm = Math.max(cluster.inkRightEm ?? right, left, right);
+        }
       }
+      advance += glyph.xAdvance ?? 0;
     }
     const run = { advanceEm: advance / upem, clusters, glyphCount: glyphs.length, notdef, inkTopEm: inkTop, inkBottomEm: inkBottom };
     if (shaped.size > 20_000) shaped.clear();

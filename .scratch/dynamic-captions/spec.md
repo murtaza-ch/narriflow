@@ -387,13 +387,10 @@ Painting:
   libass does not kern by default, while HarfBuzz and the browser do; ticket 02 measured a
   10 px drift on "Accurate" without it. This applies to classic presets too, so ticket 03b
   updates the ticket 00 snapshot on purpose and says so in its commit.
-- **Letter spacing keeps kerning.** libass drops kerning for any glyph that carries a
-  non-zero `\fsp`, even with `Kerning: yes`. A word with letter spacing therefore gets one
-  `\fsp` per glyph cluster: the tracking plus that pair's HarfBuzz kerning. Ticket 02's
-  follow-up measured "Accurate" 10 px too wide without this and within 2 px with it. The
-  classic painter has the same drift wherever a preset sets letter spacing; ticket 03b
-  fixes it there too and updates the snapshot on purpose.
-
+- **Letter spacing keeps kerning.** With the worker's `Encoding: -1` style and
+  `Kerning: yes`, one `\fsp` per word kerns correctly (ticket 03b measured "AVAVAV" at 564 px
+  against HarfBuzz's 562). The per-glyph `\fsp` workaround from the ticket 02 proof was only
+  needed for that proof's `Encoding: 1` style and double-kerns here, so it is not used.
 - **Worker.** Each word gets one event per paint layer (shadow, outer, glow, text) with
   `\an5\pos(centerX, centerY)\org(centerX, centerY)\frz(−rotationDeg)` plus its motion
   tags. Tiles are `\p1` shapes with the same `\pos` and `\org`. Reuse the per-word

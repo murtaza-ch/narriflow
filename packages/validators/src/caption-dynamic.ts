@@ -180,6 +180,21 @@ export function captionBlockAnimation(preset: Pick<CaptionPreset, "animation">, 
   return usable ? preset.animation : style.defaultMotion;
 }
 
+/**
+ * Motions only a Caption Block can draw (spec 5.7, "Motion pickers"): they
+ * travel sideways (`offsetXEm`), turn (`rotateZDeg`) or give the hero its own
+ * track.
+ */
+export function isDynamicOnlyMotion(motion: CaptionMotionSpec): boolean {
+  const frames = [...motion.word, ...(motion.hero ?? [])];
+  return motion.hero !== undefined || frames.some((frame) => frame.offsetXEm !== undefined || frame.rotateZDeg !== undefined);
+}
+
+/** The motion a classic (single-line) preset draws: a dynamic-only motion renders as `fade` in both painters. */
+export function captionClassicAnimation(preset: Pick<CaptionPreset, "animation">): CaptionAnimationName {
+  return isDynamicOnlyMotion(CAPTION_MOTIONS[preset.animation]) ? "fade" : preset.animation;
+}
+
 /** `wordsPerCue` of a dynamic preset, clamped to 2..5. */
 export function captionBlockWordsPerCue(wordsPerCue: number): number {
   return Math.min(CAPTION_BLOCK.maxWordsPerCue, Math.max(CAPTION_BLOCK.minWordsPerCue, wordsPerCue));

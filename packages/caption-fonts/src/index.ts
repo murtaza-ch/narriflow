@@ -14,6 +14,7 @@ export {
   type CaptionLineWord,
   CaptionShapingError,
   layoutCaptionLine,
+  type ShapedCluster,
   type ShapedRun,
   shapeCaptionRun,
 } from "./shaping";

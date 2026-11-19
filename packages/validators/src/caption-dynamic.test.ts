@@ -8,6 +8,7 @@ import {
   captionBlockRows,
   captionBlockSeed,
   captionBlockWordsPerCue,
+  captionClassicAnimation,
   captionPresetSchema,
   captionRoleLook,
   fnv1a32,
@@ -46,6 +47,17 @@ describe("captionBlockSeed", () => {
   test("depends only on the first word's key, so cuts elsewhere never reshuffle a cue", () => {
     expect(captionBlockSeed("12340", 0)).toBe(captionBlockSeed("12340", 9));
     expect(captionBlockSeed("12340", 0)).not.toBe(captionBlockSeed("12341", 0));
+  });
+});
+
+describe("captionClassicAnimation", () => {
+  test("a classic preset draws dynamic-only motions as fade and keeps every other motion", () => {
+    expect(captionClassicAnimation({ animation: "slide" })).toBe("fade");
+    for (const name of Object.keys(CAPTION_MOTIONS) as (keyof typeof CAPTION_MOTIONS)[]) {
+      const motion = CAPTION_MOTIONS[name] as (typeof CAPTION_MOTIONS)[keyof typeof CAPTION_MOTIONS] & { hero?: unknown };
+      const dynamicOnly = motion.hero !== undefined || motion.word.some((frame) => "offsetXEm" in frame || "rotateZDeg" in frame);
+      expect(captionClassicAnimation({ animation: name })).toBe(dynamicOnly ? "fade" : name);
+    }
   });
 });
 

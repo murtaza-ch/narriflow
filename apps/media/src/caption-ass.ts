@@ -23,7 +23,8 @@ import {
 	type PlannedCluster,
 	type SkippedEmoji,
 } from "./caption-glyphs";
-import { captionWordSegmentEnd, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { captionWordSegmentEnd, type CompositionCaptionBlock, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock } from "./caption-block-geometry";
 import {
 	CAPTION_CUE_TILTS_DEG,
 	CAPTION_EASE_ACCEL,
@@ -40,6 +41,10 @@ import {
 	type CaptionKeyframe,
 	type CaptionMotionSpec,
 	type CaptionPreset,
+	captionBlockAnimation,
+	captionClassicAnimation,
+	captionDynamicStyle,
+	captionEntranceKeyframes,
 	captionFontFace,
 	captionKeyframeValue,
 	captionTypewriterLetterDelays,
@@ -84,6 +89,25 @@ import {
  * ASS cannot draw colour emoji, so the active word's emoji is not in the
  * script: it comes back as an overlay schedule the FFmpeg graph composites from
  * the shared atlas (see CaptionEmojiOverlay).
+ *
+ * A cue with a Caption Block (Dynamic Styles, ADR 0020) is painted differently:
+ * libass lays out no line. Every word is measured alone
+ * (caption-block-geometry.ts), the shared `layoutCaptionBlock` places it, and
+ * the word gets one event per paint layer from its first spoken time to the
+ * cue's end, at its own `\pos` with `\org` at its centre, carrying its entrance.
+ *
+ * Kerning: every script sets `Kerning: yes`, because libass does not kern by
+ * default while HarfBuzz (which measures) and the browser do. A letter-spaced
+ * word keeps one `\fsp` and stays kerned, because the Caption style's Encoding
+ * is -1. Measured on libass 0.17.5 with Inter ExtraBold at 150 px and `\fsp`
+ * -0.03 em, ink widths against HarfBuzz's kerned layout: "AVAVAV" 564 px
+ * (HarfBuzz 562), "Accurate" 626 (624). With Encoding 1, libass drops
+ * kerning for any glyph with a non-zero `\fsp` (644 and 632 px); the ticket 02
+ * proof used Encoding 1, which is why the spec asked for per-glyph `\fsp`.
+ * Under Encoding -1, per-glyph `\fsp` holding the tracking plus HarfBuzz's
+ * kerning is wrong: neighbouring glyphs with equal values share a shaping run
+ * that libass kerns again ("AVAVAV" 501 px), and splitting runs would unjoin
+ * cursive text.
  */
 
 // The pill sits above the shadows so they never darken it, and below the
@@ -222,6 +246,8 @@ export function renderCaptionTrack(input: {
 		`PlayResY: ${input.canvas.height}`,
 		"WrapStyle: 2",
 		"ScaledBorderAndShadow: yes",
+		// libass does not kern unless asked; HarfBuzz measurement and the Studio do.
+		"Kerning: yes",
 		"",
 		"[V4+ Styles]",
 		"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -242,11 +268,122 @@ export function renderCaptionTrack(input: {
 function cueEvents(
 	cue: CompositionCaptionVisualLayer,
 	canvas: { width: number; height: number },
+	customFont: RenderBrandFont | undefined,
+	collector: TrackCollector,
+): AssEvent[] {
+	if (!cue.block) return classicCueEvents(cue, canvas, customFont, collector);
+	const block = { ...cue, block: cue.block };
+	const slots = captionBlockSlots(block, customFont, collector);
+	let geometry: CaptionBlockGeometry;
+	try {
+		geometry = measureCaptionBlock({ cue: block, canvas, slots });
+	} catch (error) {
+		if (!(error instanceof CaptionShapingError)) throw error;
+		// Typed degradation: the cue burns as the classic line, which records the unmeasurable face.
+		const events = classicCueEvents(cue, canvas, customFont, collector);
+		if (!collector.geometryUnavailable.some((entry) => entry.cueIndex === cue.cueIndex)) {
+			collector.geometryUnavailable.push({ code: "caption_geometry_unavailable", cueIndex: cue.cueIndex, fontPath: error.fontPath });
+		}
+		return events;
+	}
+	return blockCueEvents(block, geometry);
+}
+
+/** The text and hero font slots of a block cue. The text slot takes the uploaded font like a classic line. */
+function captionBlockSlots(
+	cue: CompositionCaptionVisualLayer & { readonly block: CompositionCaptionBlock },
+	customFont: RenderBrandFont | undefined,
+	collector: TrackCollector,
+): Record<"text" | "hero", CaptionBlockSlot> {
+	const preset = cue.preset;
+	const planner = (requested: CaptionFace, saved: CaptionFace | null) =>
+		new CaptionGlyphPlanner(requested, saved, collector, cue.cueIndex, collector.forcedOmissions, cue.language);
+	const textFace = customFont?.face ?? captionFontFace(preset.fontName);
+	const heroFace = captionFontFace(preset.heroFontName ?? captionDynamicStyle(cue.block.style).heroFontName);
+	return {
+		text: {
+			face: textFace,
+			glyphs: customFont
+				? planner(brandCaptionFace(textFace, customFont.path), catalogCaptionFace(captionFontFace(preset.fontName), "saved"))
+				: planner(catalogCaptionFace(textFace, "requested"), null),
+		},
+		hero: { face: heroFace, glyphs: planner(catalogCaptionFace(heroFace, "requested"), null) },
+	};
+}
+
+/**
+ * Where every word of a block cue lands (spec 5.6), measured as the painter
+ * measures it. For tests and the golden-frame script; notices are discarded.
+ */
+export function captionBlockGeometry(input: {
+	cue: CompositionCaptionVisualLayer & { readonly block: CompositionCaptionBlock };
+	canvas: { width: number; height: number };
+	fonts?: RenderBrandFonts;
+}): CaptionBlockGeometry {
+	const { cue } = input;
+	const customFont = cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined;
+	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], forcedOmissions: new Set() };
+	return measureCaptionBlock({ cue, canvas: input.canvas, slots: captionBlockSlots(cue, customFont, collector) });
+}
+
+/**
+ * A Caption Block: one event per word per paint layer (shadow, outer stroke,
+ * glow, text), from the word's first spoken time to the cue's end, at the
+ * shared geometry's position (spec 5.6, 5.7). `\pos` is corrected by the
+ * word's own libass box, as the classic overlay is, so the drawn advance box
+ * and baseline land where the layout put them; `\org` is the word's centre,
+ * the pivot of its rotation. Unspoken words are not drawn.
+ */
+function blockCueEvents(
+	cue: CompositionCaptionVisualLayer & { readonly block: CompositionCaptionBlock },
+	geometry: CaptionBlockGeometry,
+): AssEvent[] {
+	const { block, preset } = cue;
+	const style = captionDynamicStyle(block.style);
+	const motion: CaptionMotionSpec = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
+	const cueEnd = cue.activeRange.endSec;
+	const events: AssEvent[] = [];
+	geometry.words.forEach((word, index) => {
+		const startSec = cue.words[index]!.startSec;
+		if (cueEnd <= startSec) return;
+		const placed = geometry.layout.words[index]!;
+		// The shared duration cap (spec 5.7); 0 draws the word settled.
+		const entrance = captionEntranceKeyframes(motion, block.roles[index] === "hero");
+		const scale = placed.entranceTimeScale;
+		events.push(
+			...stackEvents({
+				preset,
+				face: word.slot.face,
+				glyphs: word.slot.glyphs,
+				px: placed.px,
+				spans: [{ text: word.text, visibility: 1, fill: word.look.color, glow: preset.glowColor ?? null }],
+				startSec,
+				endSec: cueEnd,
+				position: {
+					x: placed.centerX + (word.bboxCenterEm - word.measured.advanceEm / 2) * placed.px,
+					y: placed.baselineY - ((word.ascentEm - word.descentEm) / 2) * placed.px,
+				},
+				common: `\\org(${num(placed.centerX)},${num(placed.centerY)})`,
+				keyframes: scale === 0 ? [] : entrance.map((frame) => ({ ...frame, at: Math.round(frame.at * scale) })),
+				pose: { motionSign: placed.motionSign, rotationDeg: placed.rotationDeg },
+				letterSpacingEm: word.look.letterSpacing,
+				...(style.softShadow ? { softShadow: style.softShadow } : {}),
+				layers: { shadow: LAYER.shadow, outer: LAYER.outer, glow: LAYER.glow, text: LAYER.text },
+			}),
+		);
+	});
+	return motion.flicker ? applyFlicker(events, cue.activeRange.startSec, motion.flicker) : events;
+}
+
+function classicCueEvents(
+	cue: CompositionCaptionVisualLayer,
+	canvas: { width: number; height: number },
  customFont: RenderBrandFont | undefined,
 	collector: TrackCollector,
 ): AssEvent[] {
 	const preset = cue.preset;
-	const motion: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
+	// A dynamic-only motion (sideways travel, rotation, a hero track) draws as `fade` on a classic line (spec 5.7).
+	const motion: CaptionMotionSpec = CAPTION_MOTIONS[captionClassicAnimation(preset)];
 	const face = customFont?.face ?? captionFontFace(preset.fontName);
 	const glyphs = new CaptionGlyphPlanner(
 		customFont ? brandCaptionFace(face, customFont.path) : catalogCaptionFace(face, "requested"),
@@ -508,7 +645,7 @@ function cueGeometry(
 	collector: TrackCollector,
 ): CueGeometry {
 	const preset = cue.preset;
-	const motion = CAPTION_MOTIONS[preset.animation];
+	const motion = CAPTION_MOTIONS[captionClassicAnimation(preset)];
 	const requested = glyphs.requested;
 	const anchorX = (cue.anchor.xPct / 100) * canvas.width;
 	const anchorY = (cue.anchor.yPct / 100) * canvas.height;
@@ -629,15 +766,23 @@ function stackEvents(input: {
 	common: string;
 	layers: Record<StackLayer, number>;
 	keyframes?: readonly CaptionKeyframe[];
+	/** Caption Block word: `offsetXEm` direction and resting rotation (clockwise degrees) for the motion tags. */
+	pose?: MotionPose;
+	/** Letter spacing in em; the preset's when absent (a Caption Block's role may set its own). */
+	letterSpacingEm?: number;
+	/** The soft shadow, in em of the word's size; `CAPTION_SOFT_SHADOW` when absent (a Dynamic Style may set its own). */
+	softShadow?: { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number };
 	/** Only the fill layer: the shadows, outer stroke and glow are already drawn by another event. */
 	textOnly?: boolean;
 }): AssEvent[] {
 	const { preset, px } = input;
+	const letterSpacing = input.letterSpacingEm ?? preset.letterSpacing;
+	const softShadow = input.softShadow ?? CAPTION_SOFT_SHADOW;
 	const fitScale = px / preset.fontSize;
 	const stroke = preset.outlineWidth * fitScale;
 	const outer = (preset.outerOutlineWidth ?? 0) * fitScale;
 	const durationMs = Math.round((input.endSec - input.startSec) * 1000);
-	const motion = motionTags(input.keyframes ?? [], durationMs, px);
+	const motion = motionTags(input.keyframes ?? [], durationMs, px, input.pose);
 	const events: AssEvent[] = [];
 	const push = (
 		layer: number,
@@ -647,7 +792,7 @@ function stackEvents(input: {
 		paint: (span: Span) => { fill: string; outline: string; opacity: number } | null,
 	) => {
 		const body = input.spans
-			.map((span, index) => (index > 0 ? (input.separators?.[index] ?? "") : "") + spanText(span, paint(span), preset.primaryColor, input.glyphs, px, preset.letterSpacing))
+			.map((span, index) => (index > 0 ? (input.separators?.[index] ?? "") : "") + spanText(span, paint(span), preset.primaryColor, input.glyphs, px, letterSpacing))
 			.join("");
 		const position = motion.position(input.position.x + offset.x, input.position.y + offset.y);
 		events.push({
@@ -657,7 +802,7 @@ function stackEvents(input: {
 			style: "Caption",
 			text:
 				`{\\an5\\fn${input.face.assName}${position}${input.common}\\fs${num(assFontSize(input.face, px))}` +
-				`\\fsp${num(preset.letterSpacing * px)}\\bord${num(bord)}\\shad0` +
+				`\\fsp${num(letterSpacing * px)}\\bord${num(bord)}\\shad0` +
 				`${motion.tags(extraBlurPx)}}${body}`,
 		});
 	};
@@ -671,10 +816,10 @@ function stackEvents(input: {
 		if (preset.shadow === "soft") {
 			push(
 				input.layers.shadow,
-				{ x: 0, y: CAPTION_SOFT_SHADOW.offsetYEm * px },
-				CAPTION_SOFT_SHADOW.blurEm * px,
+				{ x: 0, y: softShadow.offsetYEm * px },
+				softShadow.blurEm * px,
 				silhouette,
-				shadowPaint(CAPTION_SOFT_SHADOW.opacity),
+				shadowPaint(softShadow.opacity),
 			);
 		} else if (preset.shadow === "hard") {
 			push(
@@ -784,17 +929,30 @@ function assText(
 	return text;
 }
 
+/** A Caption Block word's pose for its motion tags (spec 5.6, 5.7). */
+interface MotionPose {
+	/** Multiplies `offsetXEm`: the row's stagger sign. */
+	readonly motionSign: 1 | -1;
+	/** Resting rotation, degrees clockwise; `rotateZDeg` keyframes turn on top of it. */
+	readonly rotationDeg: number;
+}
+
 /**
- * Motion keyframes as ASS tags for one event: `\fscx/\fscy/\frx/\blur` through
- * `\t` (ease = acceleration), opacity through `\fade` (libass fades linearly;
- * the spec only has rising opacity tracks) and the vertical offset through
- * `\move` (linear). `px` converts em keyframes to canvas px.
+ * Motion keyframes as ASS tags for one event: `\fscx/\fscy/\frx/\frz/\blur`
+ * through `\t` (ease = acceleration), opacity through `\fade` (libass fades
+ * linearly; the spec only has rising opacity tracks) and the offsets through
+ * one `\move` (linear), so x and y travel share one window. `px` converts em
+ * keyframes to canvas px. `pose` (Caption Blocks) flips `offsetXEm` by the
+ * row's sign and adds the word's resting rotation as `\frz`; the pivot is
+ * the event's `\org`.
  */
-function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, px: number) {
+function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, px: number, pose?: MotionPose) {
 	const frames = (property: keyof Omit<CaptionKeyframe, "at" | "ease">) =>
 		keyframes.filter((frame) => frame[property] !== undefined);
+	const sign = pose?.motionSign ?? 1;
+	const restDeg = pose?.rotationDeg ?? 0;
 	const animate = (
-		property: "scaleX" | "scaleY" | "rotateXDeg" | "blurEm",
+		property: "scaleX" | "scaleY" | "rotateXDeg" | "rotateZDeg" | "blurEm",
 		tag: string,
 		format: (value: number) => string,
 	) => {
@@ -809,7 +967,8 @@ function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, p
 		return tags;
 	};
 	const opacity = frames("opacity");
-	const offset = frames("offsetYEm");
+	const offsetX = frames("offsetXEm");
+	const offsetY = frames("offsetYEm");
 	return {
 		/** `layerBlurPx`: the layer's own Gaussian sigma (soft shadow, glow). */
 		tags(layerBlurPx: number): string {
@@ -819,6 +978,9 @@ function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, p
 				animate("scaleY", "fscy", (value) => num(value * 100)) +
 				// CSS rotateX(-a) tips the top edge toward the viewer; ASS \frx turns the other way.
 				animate("rotateXDeg", "frx", (value) => num(-value));
+			// ASS \frz turns counter-clockwise; the spec's rotation is clockwise like CSS.
+			if (frames("rotateZDeg").length > 0) tags += animate("rotateZDeg", "frz", (value) => num(-(restDeg + value)));
+			else if (restDeg !== 0) tags += `\\frz${num(-restDeg)}`;
 			if (frames("blurEm").length > 0) tags += animate("blurEm", "blur", blur);
 			else if (layerBlurPx > 0) tags += `\\blur${blur(0)}`;
 			if (opacity.length >= 2) {
@@ -830,10 +992,15 @@ function motionTags(keyframes: readonly CaptionKeyframe[], durationMs: number, p
 			return tags;
 		},
 		position(x: number, y: number): string {
-			if (offset.length < 2) return `\\pos(${num(x)},${num(y)})`;
-			const from = offset[0]!;
-			const to = offset[offset.length - 1]!;
-			return `\\move(${num(x)},${num(y + from.offsetYEm! * px)},${num(x)},${num(y + to.offsetYEm! * px)},${from.at},${to.at})`;
+			const tracks = [offsetX, offsetY].filter((track) => track.length >= 2);
+			if (tracks.length === 0) return `\\pos(${num(x)},${num(y)})`;
+			const t1 = Math.min(...tracks.map((track) => track[0]!.at));
+			const t2 = Math.max(...tracks.map((track) => track[track.length - 1]!.at));
+			const dx = (end: "first" | "last") =>
+				offsetX.length >= 2 ? (end === "first" ? offsetX[0]! : offsetX[offsetX.length - 1]!).offsetXEm! * px * sign : 0;
+			const dy = (end: "first" | "last") =>
+				offsetY.length >= 2 ? (end === "first" ? offsetY[0]! : offsetY[offsetY.length - 1]!).offsetYEm! * px : 0;
+			return `\\move(${num(x + dx("first"))},${num(y + dy("first"))},${num(x + dx("last"))},${num(y + dy("last"))},${t1},${t2})`;
 		},
 	};
 }

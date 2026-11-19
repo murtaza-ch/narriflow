@@ -44,6 +44,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
     editorDocumentVersion: doc.version, startSec: doc.clipStartSec, endSec: doc.clipEndSec, captionPreset: doc.captionPreset,
     transcriptSlice: doc.transcriptSlice, studioEdits: doc.studioEdits, brollUrl: doc.brollUrl, deletedRanges: doc.deletedRanges,
     sceneBlocks: doc.sceneBlocks, censorSegments: doc.censorSegments, mediaMotions: doc.mediaMotions,
+    ...(doc.emphasisWords ? { emphasisWords: doc.emphasisWords } : {}),
     autoLayoutAnalysis: input.prepared.result.layout.automatic, layoutAnalysis: input.prepared.result.layout.screen, splitLayoutAnalysis: input.prepared.result.layout.split };
   const frozen = { sourceStorageKey: source.storageKey, sourceSizeBytes: source.byteLength, sourceDurationSeconds: input.preparation.sourceProbe.durationSec,
     frozenWatermark: input.watermark,
