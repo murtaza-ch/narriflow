@@ -2788,7 +2788,8 @@ function withCaptionBlocks(
     cues: pending.map((cue) => cue.emphasis),
     language,
     overrides: document.studioEdits.captionEmphasis ?? {},
-    policy: "auto",
+    // A style without a hero (tile styles) never picks one, whatever the overrides say.
+    policy: captionDynamicStyle(preset.dynamic).emphasis ?? "auto",
     ...(emphasisWords ? { emphasisWords } : {}),
   });
   pending.forEach((cue, index) => {

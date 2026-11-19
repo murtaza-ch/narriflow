@@ -1,5 +1,6 @@
 import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
+import { CAPTION_PRESETS } from "@narriflow/validators";
 import { clipView, uploadView, progressView, confirmationView } from "./mcp-apps/v2/views";
 
 describe("Assistant card product projections", () => {
@@ -21,6 +22,12 @@ describe("Assistant card product projections", () => {
     const received = uploadView({ outcome: "queued_for_ingest" }, {});
     expect(received.badge).toBe("Upload received");
     expect(received.html).not.toContain('type="file"');
+  }));
+  test("upload names each Dynamic caption style as the catalog does", bindServiceTestEnvironment(() => {
+    for (const named of CAPTION_PRESETS.filter((preset) => preset.group === "Dynamic")) {
+      const card = uploadView({}, { generationContext: { contentPack: { captionPreset: named.id } } });
+      expect(card.html).toContain(`<dd>${named.name}</dd>`);
+    }
   }));
   test("confirmation shows the selected destination, exact format/version, caption and settings without tokens", bindServiceTestEnvironment(() => {
     const card = confirmationView({ accountDisplayName: "Narriflow demo", preparationToken: "private-token", intent: { caption: "<script>bad()</script>", platform: "tiktok", aspectRatio: "9:16", resolution: "1080p", expectedEditorRevision: 4, scheduledFor: "2026-10-06T14:00:00Z", deliveryMode: "direct", accountId: "private-account", clipExportId: "private-export", providerSettings: { disableComments: true } } }, "en-US");

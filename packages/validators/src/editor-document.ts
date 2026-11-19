@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { CLIP_EMPHASIS_WORD_MAX_LENGTH, CLIP_EMPHASIS_WORDS_LIMIT } from "./caption-emphasis";
+import {
+  CAPTION_EMPHASIS_OVERRIDE_LIMIT,
+  CLIP_EMPHASIS_WORD_MAX_LENGTH,
+  CLIP_EMPHASIS_WORDS_LIMIT,
+  captionEmphasisOverrideSchema,
+} from "./caption-emphasis";
 import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
 import { joinTranscriptWords } from "./text-script";
 import {
@@ -18,8 +23,10 @@ import {
   type SourceRange,
 } from "./edit-ranges";
 import {
+  captionWordKeySchema,
   studioEditsEqual,
   studioEditsSchema,
+  withCaptionEmphasis,
   type StudioEdits,
   type StudioSfxPlacement,
   type StudioTextLayer,
@@ -243,6 +250,12 @@ export const editorActionSchema = z.discriminatedUnion("type", [
     text: z.string().trim().min(1),
   }),
   z.object({ type: z.literal("setStudioEdits"), studioEdits: studioEditsSchema }),
+  /** Caption emphasis overrides by Word Key; `value: null` clears them (spec section 7). */
+  z.strictObject({
+    type: z.literal("setCaptionEmphasis"),
+    keys: z.array(captionWordKeySchema).min(1).max(CAPTION_EMPHASIS_OVERRIDE_LIMIT),
+    value: captionEmphasisOverrideSchema.nullable(),
+  }),
   z.object({ type: z.literal("setBrollUrl"), brollUrl: z.string().url().nullable() }),
   z.object({ type: z.literal("deleteRange"), range: sourceRangeSchema }),
   z.object({ type: z.literal("revertRange"), range: sourceRangeSchema }),
@@ -749,6 +762,13 @@ export function applyEditorAction(
       return studioEditsSchema.safeParse(action.studioEdits).success
         ? { ...doc, studioEdits: action.studioEdits }
         : doc;
+    case "setCaptionEmphasis": {
+      // Beyond the override cap the edit is refused, as the save would refuse it.
+      const studioEdits = withCaptionEmphasis(doc.studioEdits, action.keys, action.value);
+      return studioEdits === null || studioEditsEqual(studioEdits, doc.studioEdits)
+        ? doc
+        : { ...doc, studioEdits };
+    }
     case "setBrollUrl":
       return action.brollUrl === doc.brollUrl
         ? doc

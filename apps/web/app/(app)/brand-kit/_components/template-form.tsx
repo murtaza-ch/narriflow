@@ -21,7 +21,9 @@ import {
   CAPTION_POSITION_Y_DEFAULTS,
   CAPTION_PRESETS,
   type NamedCaptionPreset,
+  applyBrandColorsToCaption,
   applyCaptionPresetLook,
+  brandColorsFromCaption,
   brandTemplateInputSchema,
   captionPresetSchema,
   matchCaptionPreset,
@@ -147,11 +149,7 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
   useEffect(() => {
     setState((prev) => ({
       ...prev,
-      captionPreset: {
-        ...prev.captionPreset,
-        primaryColor: prev.primaryColor,
-        highlightColor: prev.secondaryColor,
-      },
+      captionPreset: applyBrandColorsToCaption(prev.captionPreset, prev.primaryColor, prev.secondaryColor),
     }));
   }, [state.primaryColor, state.secondaryColor]);
 
@@ -271,8 +269,7 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
   function applyLook(named: NamedCaptionPreset) {
     setState((prev) => ({
       ...prev,
-      primaryColor: named.preset.primaryColor,
-      secondaryColor: named.preset.highlightColor,
+      ...brandColorsFromCaption(named.preset),
       captionPreset: applyCaptionPresetLook(prev.captionPreset, named),
     }));
   }

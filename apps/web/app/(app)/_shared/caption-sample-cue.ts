@@ -6,6 +6,7 @@ import {
   type CaptionEmphasisOverride,
   type CaptionEmphasisWord,
   type CaptionPreset,
+  captionDynamicStyle,
 } from "@narriflow/validators";
 import type { CaptionBlockCueInput } from "../projects/[projectId]/clips/[clipId]/studio/_components/caption-block-painter";
 
@@ -27,7 +28,8 @@ const SAMPLE_CUE_END_SEC = 2.05;
  * (`assignCaptionRoles`, then `captionCueBlock`) so a thumbnail shows what
  * the style renders. When the scorer's confidence gate leaves the phrase
  * without a hero, its last non-minor word is made the hero with an override,
- * so the card always shows the style. Null for a classic preset.
+ * so the card always shows the style; a style that draws no hero (tiles)
+ * keeps none. Null for a classic preset.
  */
 export function captionSampleBlockCue(
   preset: CaptionPreset,
@@ -46,10 +48,11 @@ export function captionSampleBlockCue(
     pauseBeforeSec: 0,
     masked: false,
   }));
+  const policy = captionDynamicStyle(preset.dynamic).emphasis ?? "auto";
   const score = (overrides: Readonly<Record<string, CaptionEmphasisOverride>>) =>
-    assignCaptionRoles({ cues: [emphasis], language, overrides, policy: "auto" })[0]!;
+    assignCaptionRoles({ cues: [emphasis], language, overrides, policy })[0]!;
   let roles = score({});
-  if (roles.heroSpan === null) {
+  if (roles.heroSpan === null && policy === "auto") {
     let candidate = roles.roles.length - 1;
     while (candidate > 0 && roles.roles[candidate] === "minor") candidate--;
     roles = score({ [emphasis[candidate]!.key!]: "hero" });

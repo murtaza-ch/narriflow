@@ -300,6 +300,10 @@
                 "enum": [
                   "brand_default",
                   "headline",
+                  "editorial",
+                  "cutout",
+                  "marker",
+                  "stack",
                   "bold-pop",
                   "blast",
                   "punch",
@@ -856,6 +860,10 @@
             "enum": [
               "brand_default",
               "headline",
+              "editorial",
+              "cutout",
+              "marker",
+              "stack",
               "bold-pop",
               "blast",
               "punch",

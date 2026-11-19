@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { captionPresetSchema, getCaptionPresetById } from "@narriflow/validators";
+import { CAPTION_PRESETS, captionPresetSchema, getCaptionPresetById } from "@narriflow/validators";
 import { CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "./caption-sample-cue";
 
 describe("captionSampleBlockCue", () => {
@@ -17,6 +17,17 @@ describe("captionSampleBlockCue", () => {
     expect(heroRow).toBeDefined();
     expect(cue.words.map((word) => word.startSec)).toEqual(CAPTION_SAMPLE_WORDS.map((word) => word.startSec));
     expect(cue.activeRange.endSec).toBeGreaterThan(CAPTION_SAMPLE_WORDS.at(-1)!.endSec);
+  });
+
+  test("every Dynamic preset samples its own style; only Cutout, which draws no hero, keeps none", () => {
+    for (const named of CAPTION_PRESETS.filter((candidate) => candidate.group === "Dynamic")) {
+      const cue = captionSampleBlockCue(named.preset, { xPct: 50, yPct: 60 })!;
+      expect(cue.block.style).toBe(named.preset.dynamic!);
+      expect(cue.block.roles.includes("hero")).toBe(named.id !== "cutout");
+    }
+    const cutout = captionSampleBlockCue(getCaptionPresetById("cutout")!.preset, { xPct: 50, yPct: 60 })!;
+    expect(cutout.block.texts).toEqual(["MAKE", "IT", "POP"]);
+    expect(cutout.block.rows).toEqual([[0, 1, 2]]);
   });
 
   test("a dynamic preset showing two words samples the last two", () => {

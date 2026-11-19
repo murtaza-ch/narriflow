@@ -11,6 +11,13 @@ import { CAPTION_MOTIONS, type CaptionAnimationName, type CaptionMotionSpec } fr
 /** Which of the preset's colours a role is drawn in. */
 export type CaptionColourSlot = "primary" | "highlight" | "accent";
 
+/** One layer of a style's soft shadow, in em of the word's size; `blurEm` is the Gaussian standard deviation. */
+export interface CaptionSoftShadowLayer {
+  readonly offsetYEm: number;
+  readonly blurEm: number;
+  readonly opacity: number;
+}
+
 /** How one Caption Role is typeset in a style. */
 export interface CaptionRoleType {
   /** "text": the preset's `fontName`/`fontAsset`. "hero": `heroFontName`, else the style's. */
@@ -21,7 +28,8 @@ export interface CaptionRoleType {
   readonly transform: "inherit" | "uppercase" | "lowercase" | "capitalize" | "none";
   /** Em. "inherit" is the preset's `letterSpacing`. */
   readonly letterSpacing: number | "inherit";
-  readonly colour: CaptionColourSlot;
+  /** A slot follows the user's colours; a literal hex string is a style constant (Cutout's ink on pink tiles). */
+  readonly colour: CaptionColourSlot | string;
 }
 
 export interface CaptionDynamicStyle {
@@ -36,6 +44,8 @@ export interface CaptionDynamicStyle {
   readonly heroFontName: CaptionFontName;
   /** Hero colour alternates between these by the block seed. One entry = no alternation. */
   readonly heroColours: readonly CaptionColourSlot[];
+  /** "never": the style draws no hero (tile styles), so the scorer runs with `policy: "never"`. Absent = "auto". */
+  readonly emphasis?: "never";
   /** Scale the hero row to this fraction of the frame width, hero size clamped to `[minEm, maxEm] × S`. */
   readonly heroFill?: { readonly widthFraction: number; readonly minEm: number; readonly maxEm: number };
   /** Ink-to-ink gap between rows, multiple of S. May be negative. */
@@ -49,29 +59,56 @@ export interface CaptionDynamicStyle {
   /** `accentColor` when the preset has none. */
   readonly accentColor?: string;
   /**
-   * The soft shadow when the preset's `shadow` is "soft", in em of each word's own size, so it scales
-   * with the word. Absent = `CAPTION_SOFT_SHADOW`. `blurEm` is the Gaussian standard deviation.
+   * The soft shadow when the preset's `shadow` is "soft": one or more layers, drawn in order (the
+   * first lowest), in em of each word's own size, so it scales with the word. Absent =
+   * `CAPTION_SOFT_SHADOW`. `blurEm` is the Gaussian standard deviation.
    */
-  readonly softShadow?: { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number };
+  readonly softShadow?: readonly CaptionSoftShadowLayer[];
+  /**
+   * One rounded rectangle behind each word, sharing the word's pivot and entrance. Lengths are
+   * em of the word's own size. The tile spans the word's advance plus `padXEm` on each side and
+   * its row's ink plus `padYEm`, so tiles of one row share a height. `gapEm` is the visible gap
+   * between neighbouring tiles; it replaces `CAPTION_BLOCK.wordGapEm`.
+   */
   readonly tile?: {
     readonly fill: Readonly<Record<CaptionWordRole, CaptionColourSlot | string>>;
     readonly tiltsDeg: readonly number[];
     readonly radiusEm: number;
     readonly padXEm: number;
     readonly padYEm: number;
+    readonly gapEm: number;
+    /** Hard shadow of the tile in the preset's `shadowColor`, offset this far right and down. 0 = none. */
+    readonly shadowEm: number;
   };
   /** Phase 2 only. */
   readonly gradient?: { readonly top: string; readonly bottom: string };
   readonly decorations?: readonly ("underline" | "stars")[];
 }
 
-const textRole = (sizeEm: number): CaptionRoleType => ({
+const textRole = (sizeEm: number, colour: CaptionColourSlot | string = "primary"): CaptionRoleType => ({
   font: "text",
   sizeEm,
   transform: "inherit",
   letterSpacing: "inherit",
-  colour: "primary",
+  colour,
 });
+
+/*
+ * Soft shadows of the styles drawn without an outline (spec section 6 rule 5). Each is the weakest
+ * shadow tried that gives every white support word of the style's fixture cases at least 3:1
+ * contrast (WCAG AA for large text) against the mean luminance of a ring 1 px to 0.075 em around
+ * its ink, on the bright fixture frame (ticket 05 comments). Lengths are em of each word's size.
+ */
+/** Headline (S = 80): black 85%, CSS blur 12 px (sigma 6 px), 2.4 px down. */
+const HEADLINE_SOFT_SHADOW: readonly CaptionSoftShadowLayer[] = [{ offsetYEm: 0.03, blurEm: 0.075, opacity: 0.85 }];
+/**
+ * Small support sizes (40 to 60 px) need a tight edge as well as a wide halo: a wide layer (black
+ * 80%, sigma 0.12 em, 0.04 em down) under a tight one (black 80%, sigma 0.04 em, 0.01 em down).
+ */
+const SMALL_TEXT_SOFT_SHADOW: readonly CaptionSoftShadowLayer[] = [
+  { offsetYEm: 0.04, blurEm: 0.12, opacity: 0.8 },
+  { offsetYEm: 0.01, blurEm: 0.04, opacity: 0.8 },
+];
 
 /**
  * The Dynamic Style catalog (spec section 6). Values are starting points for
@@ -96,8 +133,98 @@ export const CAPTION_DYNAMIC_STYLES = {
     rowGapEm: 0.06,
     staggerEm: 0,
     defaultMotion: "slide",
-    // Black 65%, CSS 6 px blur (sigma 3 px), 2 px down at S = 80.
-    softShadow: { offsetYEm: 0.025, blurEm: 0.0375, opacity: 0.65 },
+    softShadow: HEADLINE_SOFT_SHADOW,
+  },
+  /**
+   * Reference 06, foreground type only (an adaptation): small sans minor words, serif body
+   * words and a large lowercase serif hero, all cream, with staggered rows. Body words sit on
+   * the hero font slot, so the text slot (`fontName`) is the minor words' sans.
+   */
+  editorial: {
+    name: "Editorial",
+    layout: "stack",
+    align: "center",
+    roles: {
+      minor: textRole(40 / 60),
+      body: { font: "hero", sizeEm: 1, transform: "lowercase", letterSpacing: 0, colour: "primary" },
+      hero: { font: "hero", sizeEm: 2.4, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
+    },
+    noHeroSizeEm: 1.4,
+    heroFontName: "Instrument Serif",
+    heroColours: ["highlight"],
+    rowGapEm: 0.1,
+    // 8 px at S = 60.
+    staggerEm: 8 / 60,
+    defaultMotion: "blur",
+    softShadow: SMALL_TEXT_SOFT_SHADOW,
+  },
+  /** Reference 05: one caps word per tile in two colours, tiles tilted by turns, no hero. */
+  cutout: {
+    name: "Cutout",
+    layout: "row",
+    align: "center",
+    roles: {
+      minor: textRole(1, "#16161A"),
+      body: textRole(1),
+      hero: textRole(1),
+    },
+    noHeroSizeEm: 1,
+    heroFontName: "Bebas Neue",
+    heroColours: ["primary"],
+    emphasis: "never",
+    rowGapEm: 0.06,
+    staggerEm: 0,
+    defaultMotion: "drop",
+    accentColor: "#F4B6D2",
+    tile: {
+      fill: { minor: "accent", body: "#16161A", hero: "#16161A" },
+      tiltsDeg: [-2, 1.5, -1, 2],
+      radiusEm: 0.05,
+      padXEm: 0.12,
+      padYEm: 0.08,
+      gapEm: 0.08,
+      // 3 px at S = 84.
+      shadowEm: 3 / 84,
+    },
+  },
+  /** References 04 and 07 (partial: one hero, not two): a left-aligned lowercase stack beside the speaker. */
+  marker: {
+    name: "Marker",
+    layout: "stack",
+    align: "left",
+    roles: {
+      minor: textRole(1),
+      body: textRole(1),
+      hero: { font: "hero", sizeEm: 2.5, transform: "lowercase", letterSpacing: 0, colour: "highlight" },
+    },
+    noHeroSizeEm: 1.5,
+    heroFontName: "Poppins",
+    // Yellow, then pink, by the cue's seed.
+    heroColours: ["highlight", "accent"],
+    rowGapEm: 0.14,
+    staggerEm: 0,
+    leftGuidePct: 8,
+    defaultMotion: "rise",
+    accentColor: "#EF8DB9",
+    softShadow: SMALL_TEXT_SOFT_SHADOW,
+  },
+  /** Reference 08: small lowercase rows around a huge lowercase hero, all white. */
+  stack: {
+    name: "Stack",
+    layout: "stack",
+    align: "center",
+    roles: {
+      minor: textRole(1),
+      body: textRole(1),
+      hero: { font: "hero", sizeEm: 3, transform: "lowercase", letterSpacing: -0.03, colour: "highlight" },
+    },
+    noHeroSizeEm: 1.5,
+    heroFontName: "Inter",
+    heroColours: ["highlight"],
+    rowGapEm: 0.04,
+    staggerEm: 0,
+    defaultMotion: "slide",
+    softShadow: SMALL_TEXT_SOFT_SHADOW,
   },
 } as const satisfies Record<string, CaptionDynamicStyle>;
 
@@ -208,6 +335,8 @@ export interface CaptionRoleLook {
   readonly transform: CaptionPreset["textTransform"];
   readonly letterSpacing: number;
   readonly color: string;
+  /** Fill of the word's tile; null when the style has no tiles. */
+  readonly tileColor: string | null;
 }
 
 function slotColour(slot: CaptionColourSlot | string, preset: CaptionPreset, style: CaptionDynamicStyle): string {
@@ -245,5 +374,16 @@ export function captionRoleLook(
     transform: type.transform === "inherit" ? preset.textTransform : type.transform,
     letterSpacing: type.letterSpacing === "inherit" ? preset.letterSpacing : type.letterSpacing,
     color: slotColour(colourSlot, preset, style),
+    tileColor: style.tile ? slotColour(style.tile.fill[role], preset, style) : null,
   };
+}
+
+/** True when some role, hero alternation or tile of `style` is drawn in the accent slot (`accentColor`). */
+export function captionStyleUsesAccent(style: CaptionDynamicStyle): boolean {
+  const slots: readonly (CaptionColourSlot | string)[] = [
+    ...Object.values(style.roles).map((role) => role.colour),
+    ...style.heroColours,
+    ...(style.tile ? Object.values(style.tile.fill) : []),
+  ];
+  return slots.includes("accent");
 }

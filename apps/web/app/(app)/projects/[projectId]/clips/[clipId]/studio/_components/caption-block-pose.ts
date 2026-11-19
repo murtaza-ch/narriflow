@@ -63,6 +63,10 @@ export function captionBlockWordPose(
  * centre: `rotate(θ) translate(dx, dy) scale(sx, sy)`, applied right to
  * left. That is libass's order: `\move` translates in screen space, then
  * `\frz` turns about the fixed `\org` at the rest centre (spec 5.6).
+ * libass scales an `\an5` event about its `\pos`, not about `\org`, so the
+ * scale is taken about `scaleOrigin`, the element's own scale origin as an
+ * offset from the transform origin in display px: the word's
+ * `PlacedWord.scaleOriginX/Y`, or a tile's centre.
  * `emPx` is the word's size in display px; `perspectivePx` is the display
  * camera distance for `rotateXDeg` (the classic engine's flip distance).
  */
@@ -70,10 +74,15 @@ export function captionBlockTransform(
   pose: CaptionBlockPose,
   word: { readonly rotationDeg: number; readonly motionSign: 1 | -1; readonly emPx: number },
   perspectivePx: number,
+  scaleOrigin: { readonly x: number; readonly y: number } = { x: 0, y: 0 },
 ): string {
   const theta = word.rotationDeg + pose.rotateZDeg;
   const dx = pose.offsetXEm * word.motionSign * word.emPx;
   const dy = pose.offsetYEm * word.emPx;
   const flip = pose.rotateXDeg !== 0 ? ` perspective(${perspectivePx}px) rotateX(${pose.rotateXDeg}deg)` : "";
-  return `rotate(${theta}deg) translate(${dx}px, ${dy}px)${flip} scale(${pose.scaleX}, ${pose.scaleY})`;
+  const scaled = pose.scaleX === 1 && pose.scaleY === 1;
+  const scale = scaled || (scaleOrigin.x === 0 && scaleOrigin.y === 0)
+    ? `scale(${pose.scaleX}, ${pose.scaleY})`
+    : `translate(${scaleOrigin.x}px, ${scaleOrigin.y}px) scale(${pose.scaleX}, ${pose.scaleY}) translate(${-scaleOrigin.x}px, ${-scaleOrigin.y}px)`;
+  return `rotate(${theta}deg) translate(${dx}px, ${dy}px)${flip} ${scale}`;
 }

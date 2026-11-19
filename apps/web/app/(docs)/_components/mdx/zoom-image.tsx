@@ -27,9 +27,13 @@ function Viewer({ src, alt, onClose }: { src?: string | Blob; alt: string; onClo
   );
 }
 
+/** A static image import, which the MDX build makes of a Markdown image under `public`. */
+type ImageSource = ComponentPropsWithoutRef<"img">["src"] | { readonly src: string };
+
 /** Markdown images, rounded, and a button that enlarges them. */
-export function ZoomImage({ alt = "", src }: ComponentPropsWithoutRef<"img">) {
+export function ZoomImage({ alt = "", src: source }: Omit<ComponentPropsWithoutRef<"img">, "src"> & { src?: ImageSource }) {
   const [open, setOpen] = useState(false);
+  const src = typeof source === "object" && source !== null && "src" in source ? source.src : source;
   return (
     <>
       <chakra.button type="button" display="block" maxW="full" cursor="zoom-in" onClick={() => setOpen(true)} aria-label={`Enlarge image${alt ? `: ${alt}` : ""}`}>

@@ -53,6 +53,27 @@ describe("captionBlockTransform", () => {
     );
   });
 
+  test("scales about the element's own scale origin, as libass scales an event about its \\pos", () => {
+    const pose = { ...captionBlockWordPose(word, 1000, 1), scaleX: 1.25, scaleY: 1.25 };
+    expect(captionBlockTransform(pose, { rotationDeg: 2, motionSign: 1, emPx: 100 }, 20000, { x: 0, y: -12 })).toBe(
+      "rotate(2deg) translate(0px, 0px) translate(0px, -12px) scale(1.25, 1.25) translate(0px, 12px)",
+    );
+    // At rest the origin changes nothing, so it is left out.
+    expect(captionBlockTransform({ ...pose, scaleX: 1, scaleY: 1 }, { rotationDeg: 2, motionSign: 1, emPx: 100 }, 20000, { x: 0, y: -12 })).toBe(
+      "rotate(2deg) translate(0px, 0px) scale(1, 1)",
+    );
+  });
+
+  test("drop turns the word about its centre while it falls", () => {
+    const drop = captionEntranceKeyframes(CAPTION_MOTIONS.drop, false);
+    const pose = captionBlockWordPose(drop, 60, 1);
+    expect(pose.rotateZDeg).toBeCloseTo(-2, 9);
+    expect(pose.offsetYEm).toBeCloseTo(-0.1, 9);
+    expect(captionBlockTransform(pose, { rotationDeg: 1.5, motionSign: 1, emPx: 100 }, 20000)).toBe(
+      `rotate(${1.5 + pose.rotateZDeg}deg) translate(0px, ${pose.offsetYEm * 100}px) scale(1, 1)`,
+    );
+  });
+
   test("adds the classic flip camera only for a rotateX pose", () => {
     const flip = { ...captionBlockWordPose(word, 1000, 1), rotateXDeg: 30 };
     expect(captionBlockTransform(flip, { rotationDeg: 0, motionSign: 1, emPx: 50 }, 7000)).toBe(

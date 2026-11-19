@@ -86,16 +86,19 @@ export function measureCaptionBlock(input: {
     // `layoutCaptionLine` counts libass's spacing after every cluster; the layout's advance excludes the trailing one.
     const trailing = parts[parts.length - 1]?.spaced ? look.letterSpacing : 0;
     const faces = parts.length > 0 ? parts.map((part) => part.face) : [slot.glyphs.requested];
+    const ascentEm = Math.max(...faces.map((face) => face.ascentEm));
+    const descentEm = Math.max(...faces.map((face) => face.descentEm));
     return {
       text,
       look,
       slot,
       clusters,
       parts,
-      measured: { advanceEm: line.widthEm - trailing, inkTopEm: line.inkTopEm, inkBottomEm: line.inkBottomEm },
+      // The line box middle: libass anchors (and scales) an `\an5` event holding only this word there.
+      measured: { advanceEm: line.widthEm - trailing, inkTopEm: line.inkTopEm, inkBottomEm: line.inkBottomEm, boxMiddleEm: (ascentEm - descentEm) / 2 },
       bboxCenterEm: line.bboxCenterEm,
-      ascentEm: Math.max(...faces.map((face) => face.ascentEm)),
-      descentEm: Math.max(...faces.map((face) => face.descentEm)),
+      ascentEm,
+      descentEm,
     };
   });
   const layout = layoutCaptionBlock({

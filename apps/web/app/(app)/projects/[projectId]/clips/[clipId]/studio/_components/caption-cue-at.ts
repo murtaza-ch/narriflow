@@ -37,3 +37,39 @@ export function captionCueWordsAt(layer: Pick<CompositionCaptionVisualLayer, "wo
     isActive: index === active,
   }));
 }
+
+/** Where a Caption Block is drawn and stored, for dragging it on the canvas. */
+export interface CaptionBlockPlacement {
+  /** The stored anchor: block centre, or the left edge for a left style (right edge, mirrored, for RTL). */
+  readonly anchor: { readonly xPct: number; readonly yPct: number };
+  /** The layout's safe-area shift, canvas px. */
+  readonly shift: { readonly x: number; readonly y: number };
+  readonly canvas: { readonly width: number; readonly height: number };
+  /** A left style drawing an RTL cue: its anchor is the right edge, at `100 − xPct`. */
+  readonly mirrored: boolean;
+}
+
+/**
+ * The point a drag moves, in frame percent: the drawn block's centre, or its
+ * left (mirrored: right) edge, including the safe-area shift.
+ */
+export function captionBlockDragPoint(placement: CaptionBlockPlacement): { xPct: number; yPct: number } {
+  const edge = placement.mirrored ? 100 - placement.anchor.xPct : placement.anchor.xPct;
+  return {
+    xPct: edge + (placement.shift.x / placement.canvas.width) * 100,
+    yPct: placement.anchor.yPct + (placement.shift.y / placement.canvas.height) * 100,
+  };
+}
+
+/**
+ * The stored position for a block dropped with its drag point at `point`:
+ * where the user put it. Rendering shifts it again only if that place is
+ * outside the safe area; the stored value never includes the shift.
+ */
+export function captionBlockDroppedPosition(
+  point: { readonly xPct: number; readonly yPct: number },
+  mirrored: boolean,
+): { positionX: number; positionY: number } {
+  const xPct = Math.max(0, Math.min(100, point.xPct));
+  return { positionX: mirrored ? 100 - xPct : xPct, positionY: Math.max(0, Math.min(100, point.yPct)) };
+}

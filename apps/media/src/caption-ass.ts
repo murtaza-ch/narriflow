@@ -343,6 +343,9 @@ function blockCueEvents(
 	const motion: CaptionMotionSpec = CAPTION_MOTIONS[captionBlockAnimation(preset, style)];
 	const cueEnd = cue.activeRange.endSec;
 	const events: AssEvent[] = [];
+	// Tiles go on the lowest layer, every hard shadow before every tile: libass draws one layer in event order.
+	const tileShadows: AssEvent[] = [];
+	const tiles: AssEvent[] = [];
 	geometry.words.forEach((word, index) => {
 		const startSec = cue.words[index]!.startSec;
 		if (cueEnd <= startSec) return;
@@ -350,6 +353,27 @@ function blockCueEvents(
 		// The shared duration cap (spec 5.7); 0 draws the word settled.
 		const entrance = captionEntranceKeyframes(motion, block.roles[index] === "hero");
 		const scale = placed.entranceTimeScale;
+		const keyframes = scale === 0 ? [] : entrance.map((frame) => ({ ...frame, at: Math.round(frame.at * scale) }));
+		const pose = { motionSign: placed.motionSign, rotationDeg: placed.rotationDeg };
+		if (placed.tile && word.look.tileColor) {
+			const tile = placed.tile;
+			// The tile enters with its word: the same travel, turn about the word's centre (\org) and fade.
+			// libass scales a drawing about its \pos, the tile's centre; the Studio scales it there too.
+			const tileMotion = motionTags(keyframes, Math.round((cueEnd - startSec) * 1000), placed.px, pose);
+			const shape = (offset: number, color: string): AssEvent => ({
+				layer: LAYER.plate,
+				startSec,
+				endSec: cueEnd,
+				style: "Shape",
+				text:
+					`{\\an5${tileMotion.position(tile.centerX + offset, tile.centerY + offset)}\\org(${num(placed.centerX)},${num(placed.centerY)})` +
+					`\\bord0\\shad0\\1c${assColor(color)}\\1a&H00&${tileMotion.tags(0)}\\p1}` +
+					roundedRectPath(tile.width, tile.height, tile.radius) +
+					"{\\p0}",
+			});
+			if (tile.shadowOffset > 0) tileShadows.push(shape(tile.shadowOffset, preset.shadowColor));
+			tiles.push(shape(0, word.look.tileColor));
+		}
 		events.push(
 			...stackEvents({
 				preset,
@@ -364,15 +388,16 @@ function blockCueEvents(
 					y: placed.baselineY - ((word.ascentEm - word.descentEm) / 2) * placed.px,
 				},
 				common: `\\org(${num(placed.centerX)},${num(placed.centerY)})`,
-				keyframes: scale === 0 ? [] : entrance.map((frame) => ({ ...frame, at: Math.round(frame.at * scale) })),
-				pose: { motionSign: placed.motionSign, rotationDeg: placed.rotationDeg },
+				keyframes,
+				pose,
 				letterSpacingEm: word.look.letterSpacing,
 				...(style.softShadow ? { softShadow: style.softShadow } : {}),
 				layers: { shadow: LAYER.shadow, outer: LAYER.outer, glow: LAYER.glow, text: LAYER.text },
 			}),
 		);
 	});
-	return motion.flicker ? applyFlicker(events, cue.activeRange.startSec, motion.flicker) : events;
+	const all = [...tileShadows, ...tiles, ...events];
+	return motion.flicker ? applyFlicker(all, cue.activeRange.startSec, motion.flicker) : all;
 }
 
 function classicCueEvents(
@@ -770,14 +795,14 @@ function stackEvents(input: {
 	pose?: MotionPose;
 	/** Letter spacing in em; the preset's when absent (a Caption Block's role may set its own). */
 	letterSpacingEm?: number;
-	/** The soft shadow, in em of the word's size; `CAPTION_SOFT_SHADOW` when absent (a Dynamic Style may set its own). */
-	softShadow?: { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number };
+	/** The soft shadow layers (lowest first), in em of the word's size; `CAPTION_SOFT_SHADOW` when absent (a Dynamic Style may set its own). */
+	softShadow?: readonly { readonly offsetYEm: number; readonly blurEm: number; readonly opacity: number }[];
 	/** Only the fill layer: the shadows, outer stroke and glow are already drawn by another event. */
 	textOnly?: boolean;
 }): AssEvent[] {
 	const { preset, px } = input;
 	const letterSpacing = input.letterSpacingEm ?? preset.letterSpacing;
-	const softShadow = input.softShadow ?? CAPTION_SOFT_SHADOW;
+	const softShadow = input.softShadow ?? [CAPTION_SOFT_SHADOW];
 	const fitScale = px / preset.fontSize;
 	const stroke = preset.outlineWidth * fitScale;
 	const outer = (preset.outerOutlineWidth ?? 0) * fitScale;
@@ -814,13 +839,9 @@ function stackEvents(input: {
 				? { fill: preset.shadowColor, outline: preset.shadowColor, opacity: span.visibility * opacity }
 				: null;
 		if (preset.shadow === "soft") {
-			push(
-				input.layers.shadow,
-				{ x: 0, y: softShadow.offsetYEm * px },
-				softShadow.blurEm * px,
-				silhouette,
-				shadowPaint(softShadow.opacity),
-			);
+			for (const layer of softShadow) {
+				push(input.layers.shadow, { x: 0, y: layer.offsetYEm * px }, layer.blurEm * px, silhouette, shadowPaint(layer.opacity));
+			}
 		} else if (preset.shadow === "hard") {
 			push(
 				input.layers.shadow,

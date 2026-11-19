@@ -38,6 +38,7 @@ import {
   buildTranscriptSliceForWindow,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
+  type CaptionEmphasisOverride,
   type CaptionPreset,
   type CaptionAnimation,
   type LogoPosition,
@@ -279,6 +280,11 @@ function projectStudioSaveState(
   }
 }
 export type { CaptionAnimation, CaptionPreset };
+/** One `setCaptionEmphasis` action: these Word Keys take `value`, or lose their override when it is null. */
+export interface CaptionEmphasisChange {
+  readonly keys: readonly string[];
+  readonly value: CaptionEmphasisOverride | null;
+}
 export type ToolId =
   "captions"
   | "brand"
@@ -654,6 +660,8 @@ interface StudioFields extends StudioState {
     p: StudioEdits | ((prev: StudioEdits) => StudioEdits),
     coalesceKey?: string,
   ) => void;
+  /** Applies caption emphasis changes in order as one undo step (`setCaptionEmphasis` actions). */
+  setCaptionEmphasis: (changes: readonly CaptionEmphasisChange[]) => void;
   setBrollUrl: (url: string | null, coalesceKey?: string) => void;
   setBrollPreviewAsset: (asset: StudioBrollPreviewAsset | null) => void;
   /** Breaks the document's coalesce chain without recording an undo step —
@@ -1465,6 +1473,24 @@ export function StudioShell({
       });
     },
     [getStudioDocument, studioSession],
+  );
+
+  // One emphasis gesture (clear a cue, then pick its hero) is one undo step:
+  // its actions share a coalescing key nothing else uses, then the chain ends.
+  const emphasisGestureRef = useRef(0);
+  const setCaptionEmphasis = useCallback(
+    (changes: readonly CaptionEmphasisChange[]) => {
+      const coalesceKey = `caption-emphasis:${++emphasisGestureRef.current}`;
+      for (const change of changes) {
+        studioSession.dispatch({
+          type: "document.edit",
+          action: { type: "setCaptionEmphasis", keys: [...change.keys], value: change.value },
+          coalesceKey,
+        });
+      }
+      studioSession.dispatch({ type: "gesture.end" });
+    },
+    [studioSession],
   );
 
   // Fix 8b: gesture end (slider pointer-up, resize-drag pointer-up) breaks
@@ -2409,7 +2435,7 @@ export function StudioShell({
     reportLayoutScene, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
     selectTextLayer, deselectTextLayer,
-    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
+    setTranscriptOnly, setSegments, setStudioEdits, setCaptionEmphasis, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, leaveStudio, leavingStudio, handleExport,
     reportCompositionPlanStatus, reportCaptionLayers, compositionPlanQaFixture,

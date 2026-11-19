@@ -1,0 +1,82 @@
+---
+title: Caption styles
+sidebarTitle: Caption styles
+description: Dynamic styles stack each caption into a few rows around one large word. Classic styles keep one line.
+---
+
+Every clip has one caption style. Choose it in Studio under **Captions**, on a Brand Profile's caption style, or by ID with `captionPreset` in the API and your assistants. Styles come in two kinds.
+
+- **Dynamic styles** set each caption as a small block of rows. Narriflow picks one word per caption to show large, the hero, and sets the words around it smaller.
+- **Classic styles** show each caption on one line in one font and size. Only the word being spoken changes, by colour, a highlight or a short animation.
+
+## Dynamic styles
+
+Dynamic styles are listed first in the gallery. Each one is a single click: Narriflow picks the hero, builds the rows, fits the block to the frame and keeps it clear of the top 10% and the bottom 18%, where platform buttons sit.
+
+### Headline
+
+`headline`. Small white rows above and below a heavy green hero that fills most of the frame width. Words slide in; the hero rises into place.
+
+<Frame caption="Headline">
+
+![Headline: "stop wasting time" in small white type above a large green "NOW"](/docs/caption-styles/headline.jpg)
+
+</Frame>
+
+### Editorial
+
+`editorial`. Small sans-serif minor words, serif body words and a large lowercase serif hero, all in cream. The rows shift slightly left and right. Words fade in from a blur.
+
+<Frame caption="Editorial">
+
+![Editorial: "a big" above a large italic "problem", with "with" below](/docs/caption-styles/editorial.jpg)
+
+</Frame>
+
+### Cutout
+
+`cutout`. Each word sits on its own tilted tile, caps in orange on dark tiles, short words like "and" and "it" on pink tiles. Cutout has no hero and shows up to five words. Each word drops onto the frame.
+
+<Frame caption="Cutout">
+
+![Cutout: "AND I KEEP IT SHORT" on alternating dark and pink tiles](/docs/caption-styles/cutout.jpg)
+
+</Frame>
+
+### Marker
+
+`marker`. A left-aligned lowercase stack beside the speaker, with the hero in yellow or pink, alternating from caption to caption. Right-to-left languages such as Urdu align to the right edge instead. Words rise into place.
+
+<Frame caption="Marker">
+
+![Marker: "week of" above a large yellow "content", with "in" below, aligned to the left](/docs/caption-styles/marker.jpg)
+
+</Frame>
+
+### Stack
+
+`stack`. A small lowercase row above a very large lowercase hero, all white.
+
+<Frame caption="Stack">
+
+![Stack: "how to edit" above a large white "captions"](/docs/caption-styles/stack.jpg)
+
+</Frame>
+
+## How the hero is chosen
+
+Narriflow scores the words of each caption from the transcript: numbers with their units (such as "20 dollars"), negations, stressed or drawn-out words, words before a pause and words at the end of a sentence score higher. Small words like "the", "of" and "is" never become the hero. Picking a hero uses no AI model and adds nothing to your credits.
+
+When no word clearly stands out, the caption has no hero and shows as one row. A wrong hero looks worse than none.
+
+To change it, pause on the caption in Studio and choose another word in the **Captions** panel. You can also join the hero with the next word, turn emphasis off for that caption, or go back to the automatic pick. These choices belong to the clip; applying a style to all clips copies the style, not the choices.
+
+## What you can change
+
+The size slider and resizing on the video scale the whole block. Text colour sets the small words, and hero colour sets the hero. Styles that use a third colour, such as Cutout's pink tiles and Marker's second hero colour, also show an accent colour. Fonts, animation, words per caption and the hero's size are under **Advanced**.
+
+Subtitle files (SRT and WebVTT) and editor timelines keep the transcript's words as they are. Dynamic styles change only how the burned-in captions look.
+
+## Classic styles
+
+Classic styles are grouped as Bold, Clean, Expressive and Effects. Use their IDs, such as `bold-pop` or `karaoke`, the same way. The [API reference](/docs/api/introduction) lists every ID.

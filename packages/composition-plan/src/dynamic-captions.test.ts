@@ -108,13 +108,45 @@ describe("dynamic caption fixtures (spec section 9)", () => {
     const [layer] = layers;
     expect(layer!.block).toBeDefined();
     const block = layer!.block!;
-    expect(block.style).toBe("headline");
+    expect(block.style).toBe(entry.style);
     expect(block.roles).toEqual([...entry.expected.roles]);
     expect(block.rows).toEqual(entry.expected.rows.map((row) => [...row]));
     expect(block.keys).toEqual(entry.words.map((word) => word.key));
     expect(block.seed).toBe(captionBlockSeed(entry.words[0]!.key, 0));
     expect(layer!.words.map((word) => word.text)).toEqual(entry.words.map((word) => word.word));
     expect(layer!.words.every((word) => word.emoji === null)).toBe(true);
+  });
+});
+
+describe("phase 1 catalog in the plan", () => {
+  test("every style has a fixture case, and Cutout has a long-word fit case", () => {
+    const styles = new Set(CASES.map((entry) => entry.style));
+    for (const style of ["headline", "editorial", "cutout", "marker", "stack"]) expect(styles).toContain(style);
+    expect(CASES.map((entry) => entry.id)).toContain("cutout-long-word-fit");
+  });
+
+  test("a style without a hero ignores hero overrides: Cutout never picks one", () => {
+    const cutout = getCaptionPresetById("cutout")!.preset;
+    const entry = CASES.find((candidate) => candidate.id === "cutout-en")!;
+    const overrides = { [entry.words[2]!.key]: "hero" as const, [entry.words[0]!.key]: "pair" as const };
+    const [layer] = captionLayers(document({ preset: cutout, utterances: [utterance(entry.words)], captionEmphasis: overrides }), "en");
+    expect(layer!.block!.roles).toEqual(["minor", "minor", "body", "minor", "body"]);
+    expect(layer!.block!.rows).toEqual([[0, 1, 2, 3, 4]]);
+  });
+
+  test("Editorial's body words take the hero slot's lowercase; minor words the preset's case", () => {
+    const editorial = { ...getCaptionPresetById("editorial")!.preset, textTransform: "uppercase" as const };
+    const entry = CASES.find((candidate) => candidate.id === "editorial-en")!;
+    const [layer] = captionLayers(document({ preset: editorial, utterances: [utterance(entry.words)] }), "en");
+    expect(layer!.block!.texts).toEqual(["A", "big", "problem", "WITH"]);
+    // Subtitles keep the preset transform.
+    expect(layer!.words.map((word) => word.text)).toEqual(["A", "BIG", "PROBLEM", "WITH"]);
+  });
+
+  test("Marker defaults to its left guide", () => {
+    const entry = CASES.find((candidate) => candidate.id === "marker-en")!;
+    const [layer] = captionLayers(document({ preset: getCaptionPresetById("marker")!.preset, utterances: [utterance(entry.words)] }), "en");
+    expect(layer!.anchor.xPct).toBe(8);
   });
 });
 

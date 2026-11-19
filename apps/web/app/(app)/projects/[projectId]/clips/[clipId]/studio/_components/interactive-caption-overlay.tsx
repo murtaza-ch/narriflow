@@ -6,11 +6,12 @@ import { motion, useMotionValue, useReducedMotion } from "framer-motion";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
 import {
+  captionDynamicStyle,
   clipAspectRatioOptions,
 } from "@narriflow/validators";
 import { CaptionCue } from "./caption-style-engine";
 import { CaptionBlockWords, useCaptionBlockPaint, type CaptionBlockCueInput } from "./caption-block-painter";
-import { captionCueWordsAt } from "./caption-cue-at";
+import { captionBlockDragPoint, captionBlockDroppedPosition, captionCueWordsAt } from "./caption-cue-at";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -242,9 +243,19 @@ export function InteractiveCaptionOverlay({
   // Display px per canvas px — the cue renders at true export scale.
   const displayScale = containerWidth > 0 ? containerWidth / renderWidth : 0.35;
 
-  // Position: derive from preset or enum
-  const posX = layer.anchor.xPct;
-  const posY = layer.anchor.yPct;
+  // The point a drag moves. A classic line drags its stored anchor. A block
+  // drags its drawn centre, or its left edge for a left style (right edge for
+  // an RTL cue), including the safe-area shift, so a dropped block is stored
+  // where the user put it; the shift is reapplied only when rendering.
+  const blockMirrored = layer.block
+    ? captionDynamicStyle(layer.block.style).align === "left" && blockPaint?.direction === "rtl"
+    : false;
+  const dragPoint = blockPaint
+    ? captionBlockDragPoint({ anchor: layer.anchor, shift: blockPaint.layout.shift, canvas: blockCanvas, mirrored: blockMirrored })
+    : layer.anchor;
+  const posX = dragPoint.xPct;
+  const posY = dragPoint.yPct;
+  const isBlock = blockPaint !== null;
 
   // Click handler
   const handleClick = useCallback(
@@ -294,14 +305,13 @@ export function InteractiveCaptionOverlay({
     motionX.set(0);
     motionY.set(0);
 
-    setCaptionPreset((p) => ({
-      ...p,
-      positionX: snapped.x,
-      positionY: snapped.y,
-    }));
+    const position = isBlock
+      ? captionBlockDroppedPosition({ xPct: snapped.x, yPct: snapped.y }, blockMirrored)
+      : { positionX: snapped.x, positionY: snapped.y };
+    setCaptionPreset((p) => ({ ...p, ...position }));
 
     setSnapGuides([]);
-  }, [videoContainerRef, posX, posY, motionX, motionY, setCaptionPreset]);
+  }, [videoContainerRef, posX, posY, motionX, motionY, setCaptionPreset, isBlock, blockMirrored]);
 
   // Resize handlers
   const handleResizeStart = useCallback(() => {
@@ -341,8 +351,7 @@ export function InteractiveCaptionOverlay({
 
   if (layer.block) {
     // The block's bounds (rest ink, strokes and reserved entrance travel) are
-    // the hit area. Dragging moves the stored anchor by the drag delta, as
-    // the classic line does; the safe-area shift stays a rendering concern.
+    // the hit area; resizing changes `fontSize`, which scales the whole block.
     if (!blockPaint || !blockBounds) return null;
     const blockScale = containerWidth > 0 ? containerWidth / layer.destination.width : displayScale;
     return (

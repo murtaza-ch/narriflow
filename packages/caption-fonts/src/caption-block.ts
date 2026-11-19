@@ -32,6 +32,12 @@ export interface MeasuredWord {
   readonly inkTopEm: number;
   /** Ink below the baseline, positive. */
   readonly inkBottomEm: number;
+  /**
+   * Height above the baseline of the middle of the line box the painter anchors the word by:
+   * the point libass scales an `\an5` event about, `(ascent − descent) / 2` of the word's faces.
+   * Absent = the ink middle. Only scaling entrances read it (`PlacedWord.scaleOriginY`).
+   */
+  readonly boxMiddleEm?: number;
 }
 
 /** What the layout reads of each caption word (a `CompositionCaptionWord` fits). */
@@ -62,6 +68,13 @@ export interface PlacedWord {
   /** Centre of the advance box, vertically at the middle of the word's ink. The pivot of every transform. */
   readonly centerX: number;
   readonly centerY: number;
+  /**
+   * The point a scaling entrance scales the word's glyphs about, before the word's rotation:
+   * the middle of its line box (`MeasuredWord.boxMiddleEm`), where libass anchors an `\an5`
+   * event. The Studio scales about the same point, so both painters grow a word alike.
+   */
+  readonly scaleOriginX: number;
+  readonly scaleOriginY: number;
   /** Block tilt plus tile tilt, degrees clockwise. */
   readonly rotationDeg: number;
   /** Multiplies `offsetXEm` of direction-flipping motions; equals the row's stagger sign. */
@@ -71,6 +84,24 @@ export interface PlacedWord {
    * 0 draws the word settled. Both painters read it, never their own cap.
    */
   readonly entranceTimeScale: number;
+  /** The word's tile, for tile styles; null otherwise. */
+  readonly tile: PlacedTile | null;
+}
+
+/**
+ * A word's tile (spec 5.8 `tile`) in canvas px, before the word's rotation: a rounded rectangle
+ * centred on (`centerX`, `centerY`), turned with the word about the word's centre and entering
+ * with it. A scaling entrance scales the tile about its own centre (libass scales a `\p1`
+ * drawing about its `\an5` anchor). The hard shadow is the same rectangle moved
+ * `shadowOffset` right and down before the turn.
+ */
+export interface PlacedTile {
+  readonly centerX: number;
+  readonly centerY: number;
+  readonly width: number;
+  readonly height: number;
+  readonly radius: number;
+  readonly shadowOffset: number;
 }
 
 /** Drawn details (underline, stars); phase 2 fills these, phase 1 has none. */
@@ -87,6 +118,8 @@ export interface CaptionBlockLayout {
   /** Rest ink box of every word plus strokes, tiles, decorations and the reserved entrance travel. */
   readonly bounds: CaptionBlockRect;
   readonly decorations: readonly PlacedDecoration[];
+  /** The safe-area shift (rule 9) applied to the block, canvas px. The stored position excludes it. */
+  readonly shift: { readonly x: number; readonly y: number };
 }
 
 export interface CaptionBlockLayoutInput {
@@ -183,7 +216,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     throw new Error("layoutCaptionBlock needs one measurement and one word per block role");
   }
   if (count === 0) {
-    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [] };
+    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], shift: { x: 0, y: 0 } };
   }
   const S = preset.fontSize;
   const roles = block.roles;
@@ -201,8 +234,12 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   const order = block.rows.map((row) => rowVisualOrder(row, block, words, direction));
 
   // Rule 2, gaps; a row's width includes the outer stroke and tile extent at both ends.
-  const gapBefore = (left: number, right: number, spaced: boolean, sizes: readonly number[]) =>
-    (spaced ? CAPTION_BLOCK.wordGapEm * Math.max(sizes[left]!, sizes[right]!) : 0) + padX(sizes[left]!) + padX(sizes[right]!);
+  // Tiles are separate objects: neighbours keep the tile gap whether or not the words are spaced.
+  const gapBefore = (left: number, right: number, spaced: boolean, sizes: readonly number[]) => {
+    const larger = Math.max(sizes[left]!, sizes[right]!);
+    const gap = tile ? tile.gapEm * larger : spaced ? CAPTION_BLOCK.wordGapEm * larger : 0;
+    return gap + padX(sizes[left]!) + padX(sizes[right]!);
+  };
   const rowWidth = (k: number, sizes: readonly number[]) => {
     const items = order[k]!;
     if (items.length === 0) return 0;
@@ -295,9 +332,26 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       const x = left[index]! + advance / 2 - pivotX;
       const y = baselines[rowOf[index]!]! - inkMid - pivotY;
       const tileTilt = tile && tile.tiltsDeg.length > 0 ? tile.tiltsDeg[(index + block.seed) % tile.tiltsDeg.length]! : 0;
+      const size = sizes[index]!;
+      const k = rowOf[index]!;
+      // Offsets from the word's centre, before its rotation: the scale origin, and the tile's
+      // edges (its row's ink plus padding, so a row's tiles share a height).
+      const boxMiddle = measured[index]!.boxMiddleEm;
+      const scaleOriginDy = boxMiddle === undefined ? 0 : inkMid - boxMiddle * size;
+      const tileBox = tile
+        ? {
+          halfWidth: advance / 2 + stroke(size) + padX(size),
+          top: inkMid - rowInkTop[k]!,
+          bottom: inkMid + rowInkBottom[k]!,
+          radius: tile.radiusEm * size,
+          shadowOffset: tile.shadowEm * size,
+        }
+        : null;
       return {
         advance,
         inkMid,
+        scaleOriginDy,
+        tileBox,
         centerX: pivotX + x * cos - y * sin,
         centerY: pivotY + x * sin + y * cos,
         rotationDeg: blockTilt + tileTilt,
@@ -305,35 +359,49 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       };
     });
 
-    // Reserved space (spec 5.7): each word's box at rest, turned, plus its entrance travel and scale growth.
+    // Reserved space (spec 5.7): each word's box (and tile) at rest, turned, plus its entrance travel,
+    // scale (about each painted element's own scale origin) and turn.
     const reserved = emptyBox();
     words.forEach((word, index) => {
       const size = sizes[index]!;
-      const halfW = word.advance / 2 + stroke(size) + padX(size);
-      const halfH = ((measured[index]!.inkTopEm + measured[index]!.inkBottomEm) / 2) * size + stroke(size) + padY(size);
       const frames = entrances[index]!;
       const [xLow, xHigh] = extremes(frames, "offsetXEm", 0);
       const [yLow, yHigh] = extremes(frames, "offsetYEm", 0);
-      const [, scaleXHigh] = extremes(frames, "scaleX", 1);
-      const [, scaleYHigh] = extremes(frames, "scaleY", 1);
+      const [scaleXLow, scaleXHigh] = extremes(frames, "scaleX", 1);
+      const [scaleYLow, scaleYHigh] = extremes(frames, "scaleY", 1);
       const [zLow, zHigh] = extremes(frames, "rotateZDeg", 0);
-      const grow = Math.max(1, scaleXHigh, scaleYHigh);
-      let spanW = 0;
-      let spanH = 0;
-      for (const extra of [0, zLow, zHigh]) {
-        const theta = radians(word.rotationDeg + extra);
-        spanW = Math.max(spanW, Math.abs(halfW * Math.cos(theta)) + Math.abs(halfH * Math.sin(theta)));
-        spanH = Math.max(spanH, Math.abs(halfW * Math.sin(theta)) + Math.abs(halfH * Math.cos(theta)));
+      const halfW = word.advance / 2 + stroke(size);
+      const halfH = ((measured[index]!.inkTopEm + measured[index]!.inkBottomEm) / 2) * size + stroke(size);
+      // Rectangles relative to the word's centre, each with the y its entrance scales about.
+      const rects = [{ left: -halfW, right: halfW, top: -halfH, bottom: halfH, originY: word.scaleOriginDy }];
+      if (word.tileBox) {
+        const { halfWidth, top, bottom, shadowOffset } = word.tileBox;
+        rects.push({ left: -halfWidth, right: halfWidth + shadowOffset, top, bottom: bottom + shadowOffset, originY: (top + bottom) / 2 });
       }
-      spanW *= grow;
-      spanH *= grow;
+      const box = emptyBox();
+      for (const rect of rects) {
+        for (const [sx, sy] of [[scaleXLow, scaleYLow], [scaleXHigh, scaleYHigh]] as const) {
+          for (const extra of [0, zLow, zHigh]) {
+            const theta = radians(word.rotationDeg + extra);
+            for (const x of [rect.left, rect.right]) {
+              for (const y of [rect.top, rect.bottom]) {
+                const qx = x * sx;
+                const qy = rect.originY + (y - rect.originY) * sy;
+                const rx = qx * Math.cos(theta) - qy * Math.sin(theta);
+                const ry = qx * Math.sin(theta) + qy * Math.cos(theta);
+                include(box, rx, ry, rx, ry);
+              }
+            }
+          }
+        }
+      }
       const travelX = [xLow * size * word.motionSign, xHigh * size * word.motionSign];
       include(
         reserved,
-        word.centerX - spanW + Math.min(...travelX),
-        word.centerY - spanH + yLow * size,
-        word.centerX + spanW + Math.max(...travelX),
-        word.centerY + spanH + yHigh * size,
+        word.centerX + box.left + Math.min(...travelX),
+        word.centerY + box.top + yLow * size,
+        word.centerX + box.right + Math.max(...travelX),
+        word.centerY + box.bottom + yHigh * size,
       );
     });
     return { rest, words, reserved };
@@ -384,8 +452,10 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     if (high > max) return max - high;
     return 0;
   };
-  dx += keepInside(reserved.left + dx, reserved.right + dx, safe.left * canvas.width, safe.right * canvas.width);
-  dy += keepInside(reserved.top + dy, reserved.bottom + dy, safe.top * canvas.height, safe.bottom * canvas.height);
+  const shiftX = keepInside(reserved.left + dx, reserved.right + dx, safe.left * canvas.width, safe.right * canvas.width);
+  const shiftY = keepInside(reserved.top + dy, reserved.bottom + dy, safe.top * canvas.height, safe.bottom * canvas.height);
+  dx += shiftX;
+  dy += shiftY;
 
   return {
     scale,
@@ -395,9 +465,21 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       baselineY: word.centerY + dy + word.inkMid,
       centerX: word.centerX + dx,
       centerY: word.centerY + dy,
+      scaleOriginX: word.centerX + dx,
+      scaleOriginY: word.centerY + dy + word.scaleOriginDy,
       rotationDeg: word.rotationDeg,
       motionSign: word.motionSign,
       entranceTimeScale: entranceTimeScale[index]!,
+      tile: word.tileBox
+        ? {
+          centerX: word.centerX + dx,
+          centerY: word.centerY + dy + (word.tileBox.top + word.tileBox.bottom) / 2,
+          width: 2 * word.tileBox.halfWidth,
+          height: word.tileBox.bottom - word.tileBox.top,
+          radius: word.tileBox.radius,
+          shadowOffset: word.tileBox.shadowOffset,
+        }
+        : null,
     })),
     bounds: {
       x: reserved.left + dx,
@@ -406,5 +488,6 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       height: reserved.bottom - reserved.top,
     },
     decorations: [],
+    shift: { x: shiftX, y: shiftY },
   };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { planClipComposition, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import { captionPresetSchema, editorDocumentSchema, getCaptionPresetById, studioEditsSchema } from "@narriflow/validators";
-import { captionActiveWordIndex, captionCueWordsAt, captionLayerAt } from "./caption-cue-at";
+import { captionActiveWordIndex, captionBlockDragPoint, captionBlockDroppedPosition, captionCueWordsAt, captionLayerAt } from "./caption-cue-at";
 
 function planLayers(presetId: string, deletedRanges: { startSec: number; endSec: number }[] = []): CompositionCaptionVisualLayer[] {
   const words = [
@@ -68,5 +68,38 @@ describe("caption cues read from the plan (the one cue derivation)", () => {
     const layers = planLayers("headline");
     expect(layers.every((layer) => layer.block !== undefined)).toBe(true);
     expect(captionLayerAt(layers, layers[0]!.activeRange.startSec)?.block?.style).toBe("headline");
+  });
+});
+
+describe("dragging a Caption Block", () => {
+  const canvas = { width: 1080, height: 1920 };
+
+  test("a centre style drags its centre; an unshifted block stores exactly the dropped point", () => {
+    const point = captionBlockDragPoint({ anchor: { xPct: 50, yPct: 40 }, shift: { x: 0, y: 0 }, canvas, mirrored: false });
+    expect(point).toEqual({ xPct: 50, yPct: 40 });
+    expect(captionBlockDroppedPosition({ xPct: point.xPct + 5, yPct: point.yPct - 10 }, false)).toEqual({ positionX: 55, positionY: 30 });
+  });
+
+  test("a left style drags its left edge, stored as positionX", () => {
+    const point = captionBlockDragPoint({ anchor: { xPct: 8, yPct: 50 }, shift: { x: 0, y: 0 }, canvas, mirrored: false });
+    expect(captionBlockDroppedPosition({ xPct: point.xPct + 4, yPct: point.yPct }, false)).toEqual({ positionX: 12, positionY: 50 });
+  });
+
+  test("an RTL cue in a left style drags its right edge: moving right lowers positionX", () => {
+    const point = captionBlockDragPoint({ anchor: { xPct: 8, yPct: 50 }, shift: { x: 0, y: 0 }, canvas, mirrored: true });
+    expect(point.xPct).toBe(92);
+    expect(captionBlockDroppedPosition({ xPct: point.xPct + 2, yPct: point.yPct }, true)).toEqual({ positionX: 6, positionY: 50 });
+  });
+
+  test("the drag starts where the block is drawn: a block the safe area pushed up lands where it is dropped", () => {
+    // Stored at 90%, drawn 192 px (10%) higher by the safe-area shift.
+    const point = captionBlockDragPoint({ anchor: { xPct: 50, yPct: 90 }, shift: { x: 0, y: -192 }, canvas, mirrored: false });
+    expect(point.yPct).toBeCloseTo(80, 9);
+    const dropped = captionBlockDroppedPosition({ xPct: point.xPct, yPct: point.yPct - 20 }, false);
+    expect(dropped.positionY).toBeCloseTo(60, 9);
+  });
+
+  test("dropped positions stay inside the frame", () => {
+    expect(captionBlockDroppedPosition({ xPct: -4, yPct: 130 }, false)).toEqual({ positionX: 0, positionY: 100 });
   });
 });

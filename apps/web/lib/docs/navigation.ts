@@ -14,7 +14,7 @@ const TABS: Array<{ tab: string; icon: string; groups: GroupConfig[] }> = [
     icon: "book-open",
     groups: [
       { group: "Get started", pages: ["index", "quickstart"] },
-      { group: "Features", pages: ["search", "recipes", "publishing-queue", "standing-grants", "editor-timelines"] },
+      { group: "Features", pages: ["caption-styles", "search", "recipes", "publishing-queue", "standing-grants", "editor-timelines"] },
     ],
   },
   {

@@ -12,6 +12,7 @@ import {
   captionPresetSchema,
   captionRoleLook,
   fnv1a32,
+  getCaptionPresetById,
 } from ".";
 
 const headline = CAPTION_DYNAMIC_STYLES.headline;
@@ -96,14 +97,14 @@ describe("captionRoleLook", () => {
 
   test("text-slot roles inherit the preset's face, case and spacing", () => {
     expect(captionRoleLook(preset, headline, "body", 0)).toEqual({
-      font: "text", fontName: "Poppins", transform: "uppercase", letterSpacing: 0.02, color: "#EEEEEE",
+      font: "text", fontName: "Poppins", transform: "uppercase", letterSpacing: 0.02, color: "#EEEEEE", tileColor: null,
     });
     expect(captionRoleLook(preset, headline, "minor", 0).fontName).toBe("Poppins");
   });
 
   test("hero-slot roles take case and spacing from the style, the face from heroFontName or the style", () => {
     expect(captionRoleLook(preset, headline, "hero", 0)).toEqual({
-      font: "hero", fontName: "Inter", transform: "none", letterSpacing: -0.03, color: "#36B780",
+      font: "hero", fontName: "Inter", transform: "none", letterSpacing: -0.03, color: "#36B780", tileColor: null,
     });
     expect(captionRoleLook({ ...preset, heroFontName: "Anton" }, headline, "hero", 0).fontName).toBe("Anton");
   });
@@ -114,5 +115,29 @@ describe("captionRoleLook", () => {
     expect(captionRoleLook(preset, alternating, "hero", 3).color).toBe("#EF8DB9");
     expect(captionRoleLook({ ...preset, accentColor: "#123456" }, alternating, "hero", 3).color).toBe("#123456");
     expect(captionRoleLook(preset, { ...alternating, accentColor: undefined }, "hero", 3).color).toBe("#36B780");
+  });
+
+  test("Marker's hero alternates yellow and pink by seed", () => {
+    const marker = captionPresetSchema.parse({ ...getCaptionPresetById("marker")!.preset });
+    expect(captionRoleLook(marker, CAPTION_DYNAMIC_STYLES.marker, "hero", 0).color).toBe("#FFD248");
+    expect(captionRoleLook(marker, CAPTION_DYNAMIC_STYLES.marker, "hero", 1).color).toBe("#EF8DB9");
+    expect(captionRoleLook(marker, CAPTION_DYNAMIC_STYLES.marker, "body", 1).color).toBe("#FFFFFF");
+  });
+
+  test("Cutout's tiles: dark body tiles with the text colour, accent minor tiles with dark ink", () => {
+    const cutout = captionPresetSchema.parse({ ...getCaptionPresetById("cutout")!.preset });
+    const style = CAPTION_DYNAMIC_STYLES.cutout;
+    expect(captionRoleLook(cutout, style, "body", 0)).toMatchObject({ color: "#F5923E", tileColor: "#16161A", fontName: "Bebas Neue" });
+    expect(captionRoleLook(cutout, style, "minor", 0)).toMatchObject({ color: "#16161A", tileColor: "#F4B6D2" });
+    // The accent follows the user's colour; the literal ink and tile colours are style constants.
+    expect(captionRoleLook({ ...cutout, accentColor: "#00FF00", primaryColor: "#FFFFFF" }, style, "minor", 0)).toMatchObject({ color: "#16161A", tileColor: "#00FF00" });
+    expect(captionRoleLook({ ...cutout, primaryColor: "#FFFFFF" }, style, "body", 0).color).toBe("#FFFFFF");
+  });
+
+  test("Editorial's body words use the serif hero face in lowercase; minor words the preset's sans", () => {
+    const editorial = captionPresetSchema.parse({ ...getCaptionPresetById("editorial")!.preset });
+    const style = CAPTION_DYNAMIC_STYLES.editorial;
+    expect(captionRoleLook(editorial, style, "body", 0)).toMatchObject({ font: "hero", fontName: "Instrument Serif", transform: "lowercase" });
+    expect(captionRoleLook(editorial, style, "minor", 0)).toMatchObject({ font: "text", fontName: "Inter SemiBold" });
   });
 });

@@ -135,7 +135,7 @@ function fixtureCaptionLayer(fixture: DynamicCaptionCase): CompositionCaptionVis
 
 /**
  * A fixture case frozen at `time` (edited seconds), on a 1080x1920 canvas
- * drawn at `scale` display px per canvas px over the green-studio backdrop.
+ * drawn at `scale` display px per canvas px over a preset backdrop (green-studio by default).
  * The page reports the layout (each word's size, baseline and centre in
  * canvas px) in `<script id="metrics">` and sets `data-ready` once painted.
  * With `play`, the playhead loops instead, for per-frame cost checks.
@@ -145,10 +145,13 @@ export function DynamicCaptionParity({
   time,
   scale,
   play = false,
+  backdrop = "green-studio",
 }: {
   fixture: DynamicCaptionCase;
   time: number;
   scale: number;
+  /** A file under `public/images/caption-backdrops`, without its extension. */
+  backdrop?: string;
   /** Loop the playhead from 0 to 0.3 s past the cue instead of freezing it. */
   play?: boolean;
 }) {
@@ -187,7 +190,7 @@ export function DynamicCaptionParity({
         width,
         height,
         overflow: "hidden",
-        background: "#000 url(/images/caption-backdrops/green-studio.webp) center / cover no-repeat",
+        background: `#000 url(/images/caption-backdrops/${backdrop}.webp) center / cover no-repeat`,
       }}
     >
       {layer?.block ? (

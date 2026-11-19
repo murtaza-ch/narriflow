@@ -38,7 +38,13 @@ import { captionBlockGeometry, renderCaptionTrack } from "./caption-ass";
  *   black, solid white at full opacity, without fade or blur. Ink is every
  *   pixel at 50 % coverage or more. Empty, tiny or frame-filling masks are
  *   rejected. The expected box is HarfBuzz glyph ink placed at the geometry's
- *   advance box, moved by the pose.
+ *   advance box. A posed word (both painters scale it about the geometry's
+ *   scale origin, move it, then turn it about its centre by its rotation plus
+ *   the entrance's `rotateZDeg`) is compared in its rest frame: the mask's
+ *   pixels are taken back through the shared pose (`restBox`).
+ * - Tiles, the same way: the tile event alone as a solid mask, taken back
+ *   through the pose (scaled about the tile's own centre, moved and turned with
+ *   its word), against the geometry's tile rectangle.
  *
  * Tolerances (1080 wide): baselines 2 px, left edges 4 px, ink bounds 4 px.
  * `CAPTION_BLOCK_PARITY=1` prints the measured table.
@@ -189,7 +195,7 @@ function drawnRuns(text: string): { fontName: string; fs: number }[] {
 }
 
 /** The baseline libass draws for one `\an5` Dialogue line at libass time `nowMs`, before calibration. */
-function eventBaseline(line: string, nowMs: number): { baselineY: number; x: number } {
+function eventBaseline(line: string, nowMs: number): { baselineY: number; anchorY: number; x: number } {
   const fields = line.split(",");
   const startMs = Math.round(assSeconds(fields[1]!) * 100) * 10;
   const text = fields.slice(9).join(",");
@@ -219,7 +225,7 @@ function eventBaseline(line: string, nowMs: number): { baselineY: number; x: num
   } else {
     throw new Error(`event without \\pos or \\move: ${line.slice(0, 120)}`);
   }
-  return { baselineY: y + (ascent - descent) / 2, x };
+  return { baselineY: y + (ascent - descent) / 2, anchorY: y, x };
 }
 
 function header(ass: string): string {
@@ -260,6 +266,54 @@ function inkExtentEm(word: CaptionBlockWord): { left: number; right: number } {
   return { left, right };
 }
 
+/** A word's pose at one instant, in canvas px and degrees. */
+interface Pose {
+  readonly dx: number;
+  readonly dy: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly rotationDeg: number;
+}
+
+/**
+ * The solid-mask ink box taken back to the element's rest frame: every pixel at 50 % coverage or
+ * more is turned back about `pivot` (the word centre, libass's fixed \org) by the pose's turn,
+ * moved back by its travel and unscaled about `origin`, the element's scale origin. That undoes
+ * the painters' pose (scale about the origin, then travel, then turn about the centre), so the
+ * box compares with the unposed geometry without modelling glyph outlines under rotation.
+ * Pixel centres are used, widened by half a pixel, so an unposed mask gives `maskBox` exactly.
+ */
+function restBox(
+  rgb: Buffer,
+  label: string,
+  origin: { readonly x: number; readonly y: number },
+  pivot: { readonly x: number; readonly y: number },
+  pose: Pose,
+): MaskBox {
+  maskBox(rgb, label);
+  const theta = (-pose.rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  const box = { left: Number.POSITIVE_INFINITY, right: Number.NEGATIVE_INFINITY, top: Number.POSITIVE_INFINITY, bottom: Number.NEGATIVE_INFINITY };
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const at = (y * WIDTH + x) * 3;
+      if (Math.max(rgb[at]!, rgb[at + 1]!, rgb[at + 2]!) < COVERAGE) continue;
+      const px = x + 0.5 - pivot.x;
+      const py = y + 0.5 - pivot.y;
+      const rx = pivot.x + px * cos - py * sin - pose.dx;
+      const ry = pivot.y + px * sin + py * cos - pose.dy;
+      const ux = origin.x + (rx - origin.x) / pose.scaleX;
+      const uy = origin.y + (ry - origin.y) / pose.scaleY;
+      box.left = Math.min(box.left, ux - 0.5);
+      box.right = Math.max(box.right, ux + 0.5);
+      box.top = Math.min(box.top, uy - 0.5);
+      box.bottom = Math.max(box.bottom, uy + 0.5);
+    }
+  }
+  return box;
+}
+
 interface ParityRow {
   readonly fixture: string;
   readonly word: string;
@@ -270,6 +324,7 @@ interface ParityRow {
   readonly ink: MaskBox;
 }
 const parity: ParityRow[] = [];
+const tiles: { fixture: string; word: string; moment: string; expected: MaskBox; drawn: MaskBox }[] = [];
 
 describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass", () => {
   const fixtures = dynamicCaptionFixtures();
@@ -309,17 +364,24 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
         geometry.words.forEach((word, index) => {
           const placed = geometry.layout.words[index]!;
           const startSec = layer.words[index]!.startSec;
-          expect(placed.rotationDeg, "Headline words are upright; turned words need a rotated ink model").toBe(0);
           const keyframes = captionEntranceKeyframes(motion, layer.block.roles[index] === "hero");
           for (const frame of keyframes) {
-            const modelled = ["at", "ease", "opacity", "blurEm", "offsetXEm", "offsetYEm"];
+            const modelled = ["at", "ease", "opacity", "blurEm", "offsetXEm", "offsetYEm", "scaleX", "scaleY", "rotateZDeg"];
             const extra = Object.keys(frame).filter((key) => !modelled.includes(key));
-            expect(extra, "the pose model covers travel, opacity and blur only").toEqual([]);
+            expect(extra, "the pose model covers travel, opacity, blur, scale and turn").toEqual([]);
           }
           const text = lines.filter((line) => line.startsWith(`Dialogue: ${TEXT_LAYER},${assTime(startSec)},`));
           expect(text, `${fixture.id} "${word.text}": one text event`).toHaveLength(1);
+          // Tile events share the word's start on the lowest layer, the hard shadow first, then the tile.
+          const shapes = lines.filter((line) => line.startsWith(`Dialogue: 0,${assTime(startSec)},`));
+          expect(shapes, `${fixture.id} "${word.text}": tile and shadow events`).toHaveLength(placed.tile ? (placed.tile.shadowOffset > 0 ? 2 : 1) : 0);
+          const posed = keyframes.some((frame) => frame.scaleX !== undefined || frame.scaleY !== undefined || frame.rotateZDeg !== undefined);
+          const probe = (ms: number) =>
+            startSec + ms / 1000 < end - FRAME_SEC ? [{ name: `+${ms} ms`, atSec: startSec + ms / 1000 }] : [];
           const moments = [
-            ...(startSec + ENTRANCE_PROBE_MS / 1000 < end - FRAME_SEC ? [{ name: `+${ENTRANCE_PROBE_MS} ms`, atSec: startSec + ENTRANCE_PROBE_MS / 1000 }] : []),
+            // Scale and turn are largest early in an entrance.
+            ...(posed ? probe(33) : []),
+            ...probe(ENTRANCE_PROBE_MS),
             // One frame before the cue ends: every (duration-capped) entrance has finished.
             { name: "settled", atSec: end - FRAME_SEC },
           ];
@@ -327,19 +389,27 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
             const label = `${fixture.id} "${word.text}" ${moment.name}`;
             // The shared pose at this time (what the Studio draws), from the geometry's own time scale.
             const tMs = (moment.atSec - startSec) * 1000;
-            const sample = (property: "offsetXEm" | "offsetYEm") =>
-              placed.entranceTimeScale === 0 ? 0 : (captionKeyframeValue(keyframes, property, tMs / placed.entranceTimeScale) ?? 0);
-            const dx = sample("offsetXEm") * placed.px * placed.motionSign;
-            const dy = sample("offsetYEm") * placed.px;
-            const geometryBaseline = placed.baselineY + dy;
-            const libassBaseline = eventBaseline(text[0]!, libassNowMs(moment.atSec)).baselineY + baselineOffset;
-            const ink = maskBox(render(`${header(ass)}${solidMask(text[0]!)}\n`, moment.atSec), label);
+            const sample = (property: "offsetXEm" | "offsetYEm" | "scaleX" | "scaleY" | "rotateZDeg", rest: number) =>
+              placed.entranceTimeScale === 0 ? rest : (captionKeyframeValue(keyframes, property, tMs / placed.entranceTimeScale) ?? rest);
+            const pose: Pose = {
+              dx: sample("offsetXEm", 0) * placed.px * placed.motionSign,
+              dy: sample("offsetYEm", 0) * placed.px,
+              scaleX: sample("scaleX", 1),
+              scaleY: sample("scaleY", 1),
+              rotationDeg: placed.rotationDeg + sample("rotateZDeg", 0),
+            };
+            // The baseline in the word's own frame (before its turn), scaled about the scale origin.
+            const geometryBaseline = placed.scaleOriginY + (placed.baselineY - placed.scaleOriginY) * pose.scaleY + pose.dy;
+            const event = eventBaseline(text[0]!, libassNowMs(moment.atSec));
+            const libassBaseline = event.anchorY + (event.baselineY - event.anchorY) * pose.scaleY + baselineOffset;
+            const pivot = { x: placed.centerX, y: placed.centerY };
+            const ink = restBox(render(`${header(ass)}${solidMask(text[0]!)}\n`, moment.atSec), label, { x: placed.scaleOriginX, y: placed.scaleOriginY }, pivot, pose);
             const extent = inkExtentEm(word);
             const expected = {
-              left: placed.baselineX + dx + extent.left * placed.px,
-              right: placed.baselineX + dx + extent.right * placed.px,
-              top: geometryBaseline - word.measured.inkTopEm * placed.px,
-              bottom: geometryBaseline + word.measured.inkBottomEm * placed.px,
+              left: placed.baselineX + extent.left * placed.px,
+              right: placed.baselineX + extent.right * placed.px,
+              top: placed.baselineY - word.measured.inkTopEm * placed.px,
+              bottom: placed.baselineY + word.measured.inkBottomEm * placed.px,
             };
             parity.push({ fixture: fixture.id, word: word.text, moment: moment.name, geometryBaseline, libassBaseline, expected, ink });
             expect(Math.abs(libassBaseline - geometryBaseline), `${label}: baseline ${libassBaseline} vs ${geometryBaseline}`).toBeLessThanOrEqual(TOLERANCE.baseline);
@@ -347,6 +417,15 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
             expect(Math.abs(ink.right - expected.right), `${label}: right ${ink.right} vs ${expected.right}`).toBeLessThanOrEqual(TOLERANCE.bounds);
             expect(Math.abs(ink.top - expected.top), `${label}: top ${ink.top} vs ${expected.top}`).toBeLessThanOrEqual(TOLERANCE.bounds);
             expect(Math.abs(ink.bottom - expected.bottom), `${label}: bottom ${ink.bottom} vs ${expected.bottom}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+            if (placed.tile) {
+              const tile = placed.tile;
+              const drawn = restBox(render(`${header(ass)}${solidMask(shapes.at(-1)!)}\n`, moment.atSec), `${label} tile`, { x: tile.centerX, y: tile.centerY }, pivot, pose);
+              const want = { left: tile.centerX - tile.width / 2, right: tile.centerX + tile.width / 2, top: tile.centerY - tile.height / 2, bottom: tile.centerY + tile.height / 2 };
+              tiles.push({ fixture: fixture.id, word: word.text, moment: moment.name, expected: want, drawn });
+              for (const side of ["left", "right", "top", "bottom"] as const) {
+                expect(Math.abs(drawn[side] - want[side]), `${label} tile ${side}: ${drawn[side]} vs ${want[side]}`).toBeLessThanOrEqual(TOLERANCE.bounds);
+              }
+            }
           }
         });
       }
@@ -392,6 +471,38 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
       ),
     ];
     console.log(lines.join("\n"));
+    console.log([
+      "| Case | Word | Moment | Geometry tile x / y | libass tile x / y | Δ left | Δ right | Δ top | Δ bottom |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ...tiles.map((row) =>
+        `| ${row.fixture} | ${row.word} | ${row.moment} | ${Math.round(row.expected.left)}-${Math.round(row.expected.right)} / ${Math.round(row.expected.top)}-${Math.round(row.expected.bottom)} | ` +
+        `${row.drawn.left}-${row.drawn.right} / ${row.drawn.top}-${row.drawn.bottom} | ` +
+        `${f(row.drawn.left - row.expected.left)} | ${f(row.drawn.right - row.expected.right)} | ${f(row.drawn.top - row.expected.top)} | ${f(row.drawn.bottom - row.expected.bottom)} |`,
+      ),
+    ].join("\n"));
+  });
+
+  test("restBox undoes the painters' pose: an unposed mask equals maskBox, a turned block comes back upright", () => {
+    const block = Buffer.alloc(WIDTH * HEIGHT * 3);
+    const paint = (inside: (x: number, y: number) => boolean) => {
+      block.fill(0);
+      for (let y = 800; y < 1200; y++) for (let x = 300; x < 800; x++) if (inside(x + 0.5, y + 0.5)) block.fill(255, (y * WIDTH + x) * 3, (y * WIDTH + x) * 3 + 3);
+    };
+    const pivot = { x: 540, y: 1000 };
+    const rest = { dx: 0, dy: 0, scaleX: 1, scaleY: 1, rotationDeg: 0 };
+    paint((x, y) => x >= 440 && x < 640 && y >= 950 && y < 1050);
+    expect(restBox(block, "upright", pivot, pivot, rest)).toEqual(maskBox(block, "upright"));
+    // The same 200x100 box scaled 1.2 about the pivot, moved 10 px down and turned 5 degrees.
+    const theta = (5 * Math.PI) / 180;
+    paint((x, y) => {
+      const ux = pivot.x + (x - pivot.x) * Math.cos(-theta) - (y - pivot.y) * Math.sin(-theta);
+      const uy = pivot.y + (x - pivot.x) * Math.sin(-theta) + (y - pivot.y) * Math.cos(-theta) - 10;
+      const sx = pivot.x + (ux - pivot.x) / 1.2;
+      const sy = pivot.y + (uy - pivot.y) / 1.2;
+      return sx >= 440 && sx < 640 && sy >= 950 && sy < 1050;
+    });
+    const back = restBox(block, "posed", pivot, pivot, { dx: 0, dy: 10, scaleX: 1.2, scaleY: 1.2, rotationDeg: 5 });
+    for (const [side, want] of [["left", 440], ["right", 640], ["top", 950], ["bottom", 1050]] as const) expect(Math.abs(back[side] - want)).toBeLessThan(1);
   });
 
   test("a rejected mask fails loudly instead of passing", () => {

@@ -8,6 +8,7 @@ import {
   captionEntranceTimeScale,
   captionKeyframeValue,
   captionTypewriterLetterDelays,
+  isDynamicOnlyMotion,
   type CaptionKeyframe,
   type CaptionMotionSpec,
 } from ".";
@@ -80,6 +81,28 @@ describe("caption motion spec", () => {
     expect(captionKeyframeValue(slide.hero, "blurEm", 25)).toBeCloseTo(0.04 * (1 - captionEaseProgress("out", 0.25)), 6);
     expect(captionKeyframeValue(slide.hero, "opacity", 40)).toBe(1);
     expect(captionEntranceMs(slide.hero)).toBe(150);
+  });
+
+  test("slam: support words settle from 1.08 by 80 ms, the hero overshoots to 0.98 and settles by 160 ms", () => {
+    const slam = CAPTION_MOTIONS.slam;
+    expect(captionKeyframeValue(slam.word, "scaleX", 0)).toBe(1.08);
+    expect(captionKeyframeValue(slam.word, "opacity", 40)).toBe(1);
+    expect(captionEntranceMs(slam.word)).toBe(80);
+    expect(captionKeyframeValue(slam.hero, "scaleY", 0)).toBe(1.25);
+    expect(captionKeyframeValue(slam.hero, "scaleY", 110)).toBe(0.98);
+    expect(captionKeyframeValue(slam.hero, "scaleY", 135)).toBeCloseTo(0.99, 6);
+    expect(captionEntranceMs(slam.hero)).toBe(160);
+    expect(isDynamicOnlyMotion(slam)).toBe(true);
+  });
+
+  test("drop: every word falls 0.2 em and turns from -4 degrees over 120 ms; the hero uses the same track", () => {
+    const drop = CAPTION_MOTIONS.drop;
+    expect(captionKeyframeValue(drop.word, "offsetYEm", 0)).toBe(-0.2);
+    expect(captionKeyframeValue(drop.word, "rotateZDeg", 60)).toBeCloseTo(-2, 6);
+    expect(captionKeyframeValue(drop.word, "opacity", 40)).toBe(1);
+    expect(captionEntranceMs(drop.word)).toBe(120);
+    expect(captionEntranceKeyframes(drop, true)).toBe(drop.word);
+    expect(isDynamicOnlyMotion(drop)).toBe(true);
   });
 
   test("hero words fall back to the word track when a motion has no hero track", () => {

@@ -131,12 +131,21 @@ describe("rule 2, gaps", () => {
   });
 
   test("tile styles add their padding to the gap", () => {
-    const tiled = styleWith({ layout: "row", tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08 } });
+    const tiled = styleWith({ layout: "row", tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 3 / 84 } });
     const result = layout({ texts: ["keep", "it"], roles: ["body", "minor"], style: tiled, heroSpan: null });
     const [first, second] = result.words;
     const px = HEADLINE.noHeroSizeEm * S;
+    // The tile gap replaces the word gap, and each tile's padding is added on its side.
     expect(second!.baselineX - (first!.baselineX + advance(first!, result.measured[0]!)))
-      .toBeCloseTo(CAPTION_BLOCK.wordGapEm * px + 0.12 * px + 0.12 * S, 9);
+      .toBeCloseTo(0.08 * px + 0.12 * px + 0.12 * S, 9);
+  });
+
+  test("tiles keep their gap between words joined without a space", () => {
+    const tiled = styleWith({ layout: "row", tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [0], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 0 } });
+    const result = layout({ texts: ["今日", "は"], roles: ["body", "body"], style: tiled, heroSpan: null, spaceBefore: [undefined, false] });
+    const [first, second] = result.words;
+    const px = HEADLINE.noHeroSizeEm * S;
+    expect(second!.baselineX - (first!.baselineX + advance(first!, result.measured[0]!))).toBeCloseTo((0.08 + 0.24) * px, 9);
   });
 });
 
@@ -351,6 +360,11 @@ describe("rule 9, safe area", () => {
     expect(bottom).toBeCloseTo(0.82 * CANVAS.height, 9);
     const hero = result.words[1]!;
     expect(bottom - inkBox(result).bottom).toBeCloseTo(0.12 * hero.px, 9);
+    // The shift is reported, so the Studio can store a dragged block where it is drawn.
+    const unshifted = layout({ texts: ["with", "ACCURATE"], roles: ["minor", "hero"], anchor: { xPct: 50, yPct: 50 } });
+    expect(result.shift.x).toBe(0);
+    expect(result.shift.y).toBeCloseTo(result.bounds.y - (unshifted.bounds.y + 0.45 * CANVAS.height), 9);
+    expect(result.shift.y).toBeLessThan(0);
   });
 
   test("reserved sideways travel keeps a left style's entering words inside 6%", () => {
@@ -368,13 +382,14 @@ describe("rule 9, safe area", () => {
     expect(result.bounds.y + result.bounds.height).toBeLessThan(0.82 * CANVAS.height);
     const box = inkBox(result);
     expect((box.top + box.bottom) / 2).toBeCloseTo(0.5 * CANVAS.height, 9);
+    expect(result.shift).toEqual({ x: 0, y: 0 });
   });
 });
 
 describe("rule 10, rotation", () => {
   const tiled = styleWith({
     layout: "row",
-    tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [-2, 1.5, -1, 2], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08 },
+    tile: { fill: { hero: "accent", body: "#16161A", minor: "#F4B6D2" }, tiltsDeg: [-2, 1.5, -1, 2], radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 3 / 84 },
   });
   const words = { texts: ["keep", "it", "short"], roles: ["body", "minor", "body"] as const, style: tiled, heroSpan: null, seed: 5 };
 
@@ -406,6 +421,79 @@ describe("rule 10, rotation", () => {
       expect(word.centerX - word.baselineX).toBeCloseTo(advance(word, measured) / 2, 9);
       expect(word.baselineY - word.centerY).toBeCloseTo(((measured.inkTopEm - measured.inkBottomEm) / 2) * word.px, 9);
     });
+  });
+});
+
+describe("tiles", () => {
+  const CUTOUT = CAPTION_DYNAMIC_STYLES.cutout;
+  const cutout = (texts: readonly string[], roles: readonly CaptionWordRole[], preset: CaptionPresetInput = {}) =>
+    layout({ texts, roles, style: CUTOUT, heroSpan: null, seed: 1, preset: { animation: "drop", fontSize: 84, ...preset } });
+
+  test("each word's tile spans its advance plus padding and its row's ink plus padding", () => {
+    // "keep" has a descender, so the whole row's tiles reach down to it.
+    const result = cutout(["AND", "keep", "IT"], ["minor", "body", "minor"]);
+    const px = 84;
+    for (const [index, word] of result.words.entries()) {
+      const measured = result.measured[index]!;
+      const tile = word.tile!;
+      expect(tile.width).toBeCloseTo(advance(word, measured) + 2 * 0.12 * px, 9);
+      expect(tile.height).toBeCloseTo((0.7 + 0.2) * px + 2 * 0.08 * px, 9);
+      expect(tile.centerX).toBeCloseTo(word.centerX, 9);
+      // Top of the tile, in the word's own frame: the row's ink top plus the padding above it.
+      expect(tile.centerY - tile.height / 2).toBeCloseTo(word.baselineY - 0.7 * px - 0.08 * px, 9);
+      expect(tile.radius).toBeCloseTo(0.05 * px, 9);
+      expect(tile.shadowOffset).toBeCloseTo(3, 9);
+    }
+  });
+
+  test("words turn by the tile tilts, offset by the seed", () => {
+    const result = cutout(["AND", "I", "KEEP", "IT", "SHORT"], ["minor", "minor", "body", "minor", "body"]);
+    expect(result.words.map((word) => word.rotationDeg)).toEqual([1.5, -1, 2, -2, 1.5]);
+  });
+
+  test("the reserved bounds hold every turned tile, its shadow and the drop", () => {
+    const result = cutout(["AND", "I", "KEEP", "IT", "SHORT"], ["minor", "minor", "body", "minor", "body"]);
+    const bounds = result.bounds;
+    for (const word of result.words) {
+      const tile = word.tile!;
+      // Tile corners plus the shadow, turned about the word centre, as far as the drop's -4 degrees.
+      for (const extra of [0, -4]) {
+        const theta = ((word.rotationDeg + extra) * Math.PI) / 180;
+        for (const x of [-tile.width / 2, tile.width / 2 + tile.shadowOffset]) {
+          for (const y of [tile.centerY - word.centerY - tile.height / 2, tile.centerY - word.centerY + tile.height / 2 + tile.shadowOffset]) {
+            const cx = word.centerX + x * Math.cos(theta) - y * Math.sin(theta);
+            const cy = word.centerY + x * Math.sin(theta) + y * Math.cos(theta);
+            expect(cx).toBeGreaterThanOrEqual(bounds.x - 1e-9);
+            expect(cx).toBeLessThanOrEqual(bounds.x + bounds.width + 1e-9);
+            expect(cy).toBeGreaterThanOrEqual(bounds.y - 0.2 * word.px - 1e-9);
+            expect(cy).toBeLessThanOrEqual(bounds.y + bounds.height + 1e-9);
+          }
+        }
+      }
+    }
+  });
+
+  test("styles without tiles place none", () => {
+    expect(layout({ texts: ["the", "BEST"], roles: ["minor", "hero"] }).words.every((word) => word.tile === null)).toBe(true);
+  });
+});
+
+describe("scale origin", () => {
+  test("is the middle of the line box when the painter reports one, else the word centre", () => {
+    const plain = layout({ texts: ["the", "BEST"], roles: ["minor", "hero"] });
+    for (const word of plain.words) {
+      expect(word.scaleOriginX).toBe(word.centerX);
+      expect(word.scaleOriginY).toBe(word.centerY);
+    }
+  });
+
+  test("slam's hero growth is reserved about the scale origin", () => {
+    const result = layout({ texts: ["the", "BEST", "part"], roles: ["minor", "hero", "body"], preset: { animation: "slam" } });
+    const hero = result.words[1]!;
+    const measured = result.measured[1]!;
+    const halfW = (advance(hero, measured) / 2) * 1.25;
+    expect(result.bounds.x).toBeLessThanOrEqual(hero.centerX - halfW + 1e-9);
+    expect(result.bounds.x + result.bounds.width).toBeGreaterThanOrEqual(hero.centerX + halfW - 1e-9);
   });
 });
 

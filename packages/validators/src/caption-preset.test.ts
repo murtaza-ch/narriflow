@@ -35,10 +35,10 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 25 presets with unique ids and names, the Dynamic group first", () => {
-    expect(CAPTION_PRESETS).toHaveLength(25);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(25);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(25);
+  test("has 29 presets with unique ids and names, the Dynamic group first", () => {
+    expect(CAPTION_PRESETS).toHaveLength(29);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(29);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(29);
     expect(CAPTION_PRESET_GROUPS[0]).toBe("Dynamic");
     expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
     for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic")) {
@@ -48,7 +48,7 @@ describe("caption preset catalog", () => {
 
   test("Dynamic group presets, and only they, set a Dynamic Style", () => {
     const dynamic = CAPTION_PRESETS.filter((named) => named.group === "Dynamic");
-    expect(dynamic.map((named) => named.id)).toEqual(["headline"]);
+    expect(dynamic.map((named) => named.id)).toEqual(["headline", "editorial", "cutout", "marker", "stack"]);
     for (const named of CAPTION_PRESETS) {
       expect(named.preset.dynamic !== undefined).toBe(named.group === "Dynamic");
     }
@@ -73,7 +73,53 @@ describe("caption preset catalog", () => {
     expect(style.roles.hero).toMatchObject({ font: "hero", letterSpacing: -0.03, transform: "none", colour: "highlight" });
     expect(style.heroFontName).toBe("Inter");
     expect(style.rowGapEm).toBe(0.06);
-    expect(style.softShadow).toEqual({ offsetYEm: 0.025, blurEm: 0.0375, opacity: 0.65 });
+    // Strengthened in ticket 05 for white support words on bright frames (black 85%, CSS blur 12 px at S).
+    expect(style.softShadow).toEqual([{ offsetYEm: 0.03, blurEm: 0.075, opacity: 0.85 }]);
+  });
+
+  test("Editorial, Cutout, Marker and Stack follow the section 6 catalog rows", () => {
+    const preset = (id: string) => CAPTION_PRESETS.find((named) => named.id === id)!.preset;
+    const S = (id: string) => preset(id).fontSize;
+
+    const editorial = CAPTION_DYNAMIC_STYLES.editorial;
+    expect(preset("editorial")).toMatchObject({ dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 60, primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, animation: "blur", wordsPerCue: 4 });
+    // Minor 40 px sans, body 60 px serif, hero 144 px lowercase serif.
+    expect(editorial.roles.minor.sizeEm * S("editorial")).toBeCloseTo(40, 9);
+    expect(editorial.roles.body).toMatchObject({ font: "hero", sizeEm: 1 });
+    expect(editorial.roles.hero).toMatchObject({ font: "hero", sizeEm: 2.4, transform: "lowercase", colour: "highlight" });
+    expect(editorial.heroFontName).toBe("Instrument Serif");
+    expect(editorial.staggerEm * S("editorial")).toBeCloseTo(8, 9);
+    expect(editorial.rowGapEm).toBe(0.1);
+
+    const cutout = CAPTION_DYNAMIC_STYLES.cutout;
+    expect(preset("cutout")).toMatchObject({ dynamic: "cutout", fontName: "Bebas Neue", fontSize: 84, textTransform: "uppercase", primaryColor: "#F5923E", animation: "drop", wordsPerCue: 5 });
+    expect(cutout.layout).toBe("row");
+    expect(cutout.emphasis).toBe("never");
+    expect(cutout.accentColor).toBe("#F4B6D2");
+    expect(cutout.tile).toEqual({
+      fill: { minor: "accent", body: "#16161A", hero: "#16161A" },
+      tiltsDeg: [-2, 1.5, -1, 2],
+      radiusEm: 0.05, padXEm: 0.12, padYEm: 0.08, gapEm: 0.08, shadowEm: 3 / 84,
+    });
+    expect(cutout.roles.minor.colour).toBe("#16161A");
+
+    const marker = CAPTION_DYNAMIC_STYLES.marker;
+    expect(preset("marker")).toMatchObject({ dynamic: "marker", fontName: "Poppins", fontSize: 48, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFD248", animation: "rise", wordsPerCue: 4 });
+    expect(marker).toMatchObject({ layout: "stack", align: "left", leftGuidePct: 8, rowGapEm: 0.14, heroColours: ["highlight", "accent"], accentColor: "#EF8DB9", heroFontName: "Poppins" });
+    expect(marker.roles.hero.sizeEm * S("marker")).toBe(120);
+
+    const stack = CAPTION_DYNAMIC_STYLES.stack;
+    expect(preset("stack")).toMatchObject({ dynamic: "stack", fontName: "Inter SemiBold", fontSize: 48, textTransform: "lowercase", primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", animation: "slide", wordsPerCue: 4 });
+    expect(stack).toMatchObject({ layout: "stack", align: "center", rowGapEm: 0.04, heroFontName: "Inter" });
+    expect(stack.roles.hero.sizeEm * S("stack")).toBe(144);
+
+    // Only Editorial shrinks minor words; the others draw them at body size (ticket 02).
+    for (const style of [CAPTION_DYNAMIC_STYLES.headline, marker, stack, cutout]) expect(style.roles.minor.sizeEm).toBe(style.roles.body.sizeEm);
+    // Styles without an outline carry a soft shadow on every word (rule 5); Cutout's tiles carry their own.
+    for (const id of ["headline", "editorial", "marker", "stack"]) {
+      expect(preset(id)).toMatchObject({ outlineWidth: 0, shadow: "soft" });
+      expect(CAPTION_DYNAMIC_STYLES[id as "headline"].softShadow!.length).toBeGreaterThan(0);
+    }
   });
 
   test("dynamic preset fields are optional and range-checked", () => {

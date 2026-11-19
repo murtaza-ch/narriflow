@@ -5,6 +5,7 @@ import {
   applyEditorAction,
   applyWithHistory,
   createEditorHistory,
+  editorActionSchema,
   editorDocumentSchema,
   redoEditor,
   undoEditor,
@@ -367,5 +368,42 @@ describe("Clip Editor Document", () => {
     expect(applied.past).toHaveLength(1);
     expect(undoEditor(applied).present.censorSegments).toEqual([]);
     expect(redoEditor(undoEditor(applied)).present.censorSegments).toEqual(reviewed);
+  });
+
+  test("caption emphasis overrides are strict, undoable, redoable, capped and no-op stable", () => {
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmphasis", keys: ["1200"], value: "hero" }).success).toBe(true);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmphasis", keys: ["1200"], value: null }).success).toBe(true);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmphasis", keys: [], value: "hero" }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmphasis", keys: ["1.2"], value: "hero" }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmphasis", keys: ["1200"], value: "big" }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmphasis", keys: ["1200"], value: "hero", extra: 1 }).success).toBe(false);
+
+    const base = editorDocumentSchema.parse(currentDocument());
+    let history = createEditorHistory(base);
+    history = applyWithHistory(history, { type: "setCaptionEmphasis", keys: ["1200", "1500", "1800"], value: "plain" });
+    expect(history.present.studioEdits.captionEmphasis).toEqual({ "1200": "plain", "1500": "plain", "1800": "plain" });
+    // One gesture (clear the cue, then pick its hero) is one undo step.
+    history = applyWithHistory(history, { type: "setCaptionEmphasis", keys: ["1200", "1500", "1800"], value: null }, { coalesceKey: "emphasis:1" });
+    history = applyWithHistory(history, { type: "setCaptionEmphasis", keys: ["1500"], value: "pair" }, { coalesceKey: "emphasis:1" });
+    expect(history.present.studioEdits.captionEmphasis).toEqual({ "1500": "pair" });
+    expect(history.past).toHaveLength(2);
+    expect(editorDocumentSchema.parse(history.present)).toEqual(history.present);
+
+    expect(applyWithHistory(history, { type: "setCaptionEmphasis", keys: ["1500"], value: "pair" })).toBe(history);
+    expect(applyWithHistory(history, { type: "setCaptionEmphasis", keys: ["9999"], value: null })).toBe(history);
+
+    const undone = undoEditor(history);
+    expect(undone.present.studioEdits.captionEmphasis).toEqual({ "1200": "plain", "1500": "plain", "1800": "plain" });
+    expect(redoEditor(undone).present.studioEdits.captionEmphasis).toEqual({ "1500": "pair" });
+
+    // Clearing the last override drops the field.
+    const cleared = applyEditorAction(history.present, { type: "setCaptionEmphasis", keys: ["1500"], value: null });
+    expect("captionEmphasis" in cleared.studioEdits).toBe(false);
+
+    const keys = Array.from({ length: 2000 }, (_, index) => String(index));
+    const full = applyEditorAction(base, { type: "setCaptionEmphasis", keys, value: "plain" });
+    expect(Object.keys(full.studioEdits.captionEmphasis ?? {})).toHaveLength(2000);
+    expect(applyEditorAction(full, { type: "setCaptionEmphasis", keys: ["5000"], value: "hero" })).toBe(full);
+    expect(applyEditorAction(full, { type: "setCaptionEmphasis", keys: ["0"], value: "hero" }).studioEdits.captionEmphasis?.["0"]).toBe("hero");
   });
 });

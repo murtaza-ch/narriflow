@@ -234,6 +234,8 @@ export interface CaptionBlockPaintWord {
   readonly dir: "ltr" | "rtl";
   readonly face: WordFace;
   readonly color: string;
+  /** Fill of the word's tile (tile styles), else null. */
+  readonly tileColor: string | null;
   readonly letterSpacingEm: number;
   readonly placed: PlacedWord;
   readonly startSec: number;
@@ -245,6 +247,8 @@ export interface CaptionBlockPaint {
   readonly layout: CaptionBlockLayout;
   readonly words: readonly CaptionBlockPaintWord[];
   readonly language: string | null;
+  /** The cue's base direction; a left style mirrors to the right edge for "rtl". */
+  readonly direction: "ltr" | "rtl";
 }
 
 type PaintResult =
@@ -278,7 +282,11 @@ function buildPaint(
     prepared.push({ text, look, face, ready, dir: textDirection(text, cueDir) });
   }
   if (pending.length > 0 && !force) return { status: "pending", load: () => Promise.all(pending.map((load) => load())) };
-  const measured = prepared.map((word) => measureWord(word.text, word.face, word.look.letterSpacing, word.dir, language, word.ready));
+  // The line box middle is where libass anchors and scales a word's event; the Studio scales about the same point.
+  const measured = prepared.map((word): MeasuredWord => ({
+    ...measureWord(word.text, word.face, word.look.letterSpacing, word.dir, language, word.ready),
+    boxMiddleEm: (word.face.ascent - word.face.descent) / 2,
+  }));
   const layout = layoutCaptionBlock({
     block,
     preset,
@@ -295,12 +303,13 @@ function buildPaint(
     dir: word.dir,
     face: word.face,
     color: word.look.color,
+    tileColor: word.look.tileColor,
     letterSpacingEm: word.look.letterSpacing,
     placed: layout.words[index]!,
     startSec: cue.words[index]!.startSec,
     keyframes: captionEntranceKeyframes(motion, block.roles[index] === "hero"),
   }));
-  return { status: "ready", paint: { cue, layout, words, language } };
+  return { status: "ready", paint: { cue, layout, words, language, direction: cueDir } };
 }
 
 const subscribeNothing = () => () => undefined;
@@ -401,6 +410,8 @@ function WordLayer({
     <span
       aria-hidden
       data-caption-block-word={index}
+      data-scale-x={(placed.scaleOriginX - placed.centerX) * scale}
+      data-scale-y={(placed.scaleOriginY - placed.centerY) * scale}
       dir={word.dir}
       style={{
         position: "absolute",
@@ -421,6 +432,55 @@ function WordLayer({
     >
       {children}
     </span>
+  );
+}
+
+/**
+ * A word's tile (or its hard shadow, moved `offset` canvas px right and down): a rounded
+ * rectangle that turns and travels with its word about the word's centre, and scales about
+ * its own centre, as the worker's `\p1` tile event does.
+ */
+function TileLayer({
+  word,
+  index,
+  scale,
+  origin,
+  color,
+  offset,
+}: {
+  word: CaptionBlockPaintWord;
+  index: number;
+  scale: number;
+  origin: { readonly x: number; readonly y: number };
+  color: string;
+  offset: number;
+}) {
+  const { placed } = word;
+  const tile = placed.tile!;
+  const centerX = tile.centerX + offset;
+  const centerY = tile.centerY + offset;
+  const left = (centerX - tile.width / 2 - origin.x) * scale;
+  const top = (centerY - tile.height / 2 - origin.y) * scale;
+  return (
+    <div
+      aria-hidden
+      data-caption-block-word={index}
+      data-scale-x={(centerX - placed.centerX) * scale}
+      data-scale-y={(centerY - placed.centerY) * scale}
+      style={{
+        position: "absolute",
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${tile.width * scale}px`,
+        height: `${tile.height * scale}px`,
+        borderRadius: `${tile.radius * scale}px`,
+        background: color,
+        transformOrigin: `${(placed.centerX - origin.x) * scale - left}px ${(placed.centerY - origin.y) * scale - top}px`,
+        visibility: "hidden",
+        willChange: "transform, opacity",
+        pointerEvents: "none",
+      }}
+    />
   );
 }
 
@@ -447,14 +507,16 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   const { preset } = paint.cue;
   const S = preset.fontSize;
   const style = captionDynamicStyle(paint.cue.block.style);
-  const soft = style.softShadow ?? CAPTION_SOFT_SHADOW;
+  const soft = style.softShadow ?? [CAPTION_SOFT_SHADOW];
 
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-    const elements: HTMLElement[][] = paint.words.map(() => []);
+    // Each element with its scale origin, as an offset from the word centre in display px.
+    const elements: { element: HTMLElement; scaleOrigin: { x: number; y: number } }[][] = paint.words.map(() => []);
     for (const element of root.querySelectorAll<HTMLElement>("[data-caption-block-word]")) {
-      elements[Number(element.dataset.captionBlockWord)]?.push(element);
+      const scaleOrigin = { x: Number(element.dataset.scaleX ?? 0), y: Number(element.dataset.scaleY ?? 0) };
+      elements[Number(element.dataset.captionBlockWord)]?.push({ element, scaleOrigin });
     }
     const written = paint.words.map(() => "");
     const perspectivePx = ASS_CAMERA_DISTANCE_PX * scale;
@@ -465,23 +527,24 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
         // Unspoken words are not drawn; a word stays until the cue ends.
         const visible = timeSec >= word.startSec && timeSec <= endSec;
         let opacity = "";
-        let transform = "";
         let filter = "";
+        let pose: ReturnType<typeof captionBlockWordPose> | null = null;
+        const emPx = word.placed.px * scale;
         if (visible) {
-          const emPx = word.placed.px * scale;
-          const pose = captionBlockWordPose(word.keyframes, (timeSec - word.startSec) * 1000, reducedMotion ? 0 : word.placed.entranceTimeScale);
+          pose = captionBlockWordPose(word.keyframes, (timeSec - word.startSec) * 1000, reducedMotion ? 0 : word.placed.entranceTimeScale);
           opacity = String(pose.opacity);
-          transform = captionBlockTransform(pose, { rotationDeg: word.placed.rotationDeg, motionSign: word.placed.motionSign, emPx }, perspectivePx);
           filter = pose.blurEm * emPx > 0.01 ? `blur(${pose.blurEm * emPx}px)` : "none";
         }
-        const key = visible ? `${opacity}|${transform}|${filter}` : "hidden";
+        const transformFor = (scaleOrigin: { x: number; y: number }) =>
+          pose ? captionBlockTransform(pose, { rotationDeg: word.placed.rotationDeg, motionSign: word.placed.motionSign, emPx }, perspectivePx, scaleOrigin) : "";
+        const key = pose ? `${opacity}|${transformFor({ x: 0, y: 0 })}|${filter}` : "hidden";
         if (key === written[index]) return;
         written[index] = key;
-        for (const element of elements[index]!) {
+        for (const { element, scaleOrigin } of elements[index]!) {
           element.style.visibility = visible ? "visible" : "hidden";
           if (!visible) continue;
           element.style.opacity = opacity;
-          element.style.transform = transform;
+          element.style.transform = transformFor(scaleOrigin);
           element.style.filter = filter;
         }
       });
@@ -513,18 +576,46 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   );
 
   const layers: ReactNode[] = [];
-  if (preset.shadow !== "none") {
+  // Tiles sit below every text layer, their hard shadows below every tile (the worker's layer 0).
+  const tile = style.tile;
+  if (tile && tile.shadowEm > 0) {
+    layers.push(
+      <div key="tile-shadow" style={{ position: "absolute", left: 0, top: 0 }}>
+        {paint.words.map((word, index) =>
+          word.placed.tile && word.tileColor ? (
+            <TileLayer key={index} word={word} index={index} scale={scale} origin={origin} color={preset.shadowColor} offset={word.placed.tile.shadowOffset} />
+          ) : null)}
+      </div>,
+    );
+  }
+  if (tile) {
+    layers.push(
+      <div key="tile" style={{ position: "absolute", left: 0, top: 0 }}>
+        {paint.words.map((word, index) =>
+          word.placed.tile && word.tileColor ? (
+            <TileLayer key={index} word={word} index={index} scale={scale} origin={origin} color={word.tileColor} offset={0} />
+          ) : null)}
+      </div>,
+    );
+  }
+  if (preset.shadow === "soft") {
+    // One element per soft shadow layer, lowest first, as the worker writes one event per layer.
+    soft.forEach((shadow, at) => {
+      layers.push(
+        layer(`shadow-${at}`, (word, ratio) =>
+          glyphs(word.text, {
+            color: preset.shadowColor,
+            ...silhouette(stroke(ratio) + outer(ratio), preset.shadowColor),
+            opacity: shadow.opacity,
+            transform: `translateY(${shadow.offsetYEm}em)`,
+            filter: `blur(${shadow.blurEm * word.placed.px * scale}px)`,
+          })),
+      );
+    });
+  } else if (preset.shadow !== "none") {
     layers.push(
       layer("shadow", (word, ratio) => {
         const base: CSSProperties = { color: preset.shadowColor, ...silhouette(stroke(ratio) + outer(ratio), preset.shadowColor) };
-        if (preset.shadow === "soft") {
-          return glyphs(word.text, {
-            ...base,
-            opacity: soft.opacity,
-            transform: `translateY(${soft.offsetYEm}em)`,
-            filter: `blur(${soft.blurEm * word.placed.px * scale}px)`,
-          });
-        }
         if (preset.shadow === "hard") {
           return glyphs(word.text, { ...base, transform: `translate(${CAPTION_HARD_SHADOW.offsetXEm}em, ${CAPTION_HARD_SHADOW.offsetYEm}em)` });
         }

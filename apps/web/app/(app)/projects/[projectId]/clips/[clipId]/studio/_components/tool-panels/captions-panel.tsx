@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid, VisuallyHidden } from "@chakra-ui/react";
 import { PANEL_PX, PanelSegmented, PanelTabs, SectionLabel, chipProps, studioSliderCss } from "./panel-ui";
-import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote } from "lucide-react";
+import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote, ChevronDown, Link2, Unlink2 } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
@@ -13,9 +13,13 @@ import {
   CAPTION_PRESET_GROUPS,
   CAPTION_PRESETS,
   applyCaptionPresetLook,
+  captionBlockAnimation,
+  captionBlockWordsPerCue,
+  captionStyleUsesAccent,
   clipAspectRatioOptions,
   matchCaptionPreset,
   type CaptionAnimation,
+  type CaptionDynamicStyle,
   type CaptionPreset,
   type CaptionShadow,
 } from "@narriflow/validators";
@@ -28,16 +32,24 @@ import { captionActiveWordIndex, captionCueWordsAt, captionLayerAt } from "../ca
 import type { PlaybackClock } from "../playback-clock";
 import { CAPTION_SAMPLE_LOOP_SEC, CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "../../../../../../../_shared/caption-sample-cue";
 import { PresetCard } from "./preset-card";
+import {
+  captionEmphasisChanges,
+  captionEmphasisFits,
+  captionEmphasisRow,
+  captionPanelAnimations,
+  captionPanelStyle,
+  type CaptionEmphasisChip,
+  type CaptionEmphasisIntent,
+} from "./captions-panel-model";
 import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
 import { requireStudioApi } from "../studio-api";
 import { useStudioApi } from "../use-studio-api";
 import { studioCaptionOmissionNote } from "@/lib/caption-omissions";
 import { StudioCaptionOmissionNote } from "./caption-omission-note";
 
-const ANIMATIONS = Object.entries(CAPTION_MOTIONS).map(([id, spec]) => ({
-  id: id as CaptionAnimation,
-  label: spec.label,
-}));
+const ANIMATION_LABELS = Object.fromEntries(
+  Object.entries(CAPTION_MOTIONS).map(([id, spec]) => [id, spec.label]),
+) as Record<CaptionAnimation, string>;
 
 const SHADOWS: { value: CaptionShadow; label: string }[] = [
   { value: "none", label: "None" },
@@ -499,159 +511,277 @@ function PresetsGrid() {
 }
 
 // ─── Customize Controls ──────────────────────────────────────────────────────
+//
+// A classic preset keeps its full control set. A Dynamic Style (spec section 7)
+// shows Size, Position, its colours and the Emphasis row, with fonts, motion
+// and effects under Advanced; controls a block does not draw (emoji, highlight
+// pill, backdrop, active-word glow, second outline) are hidden, never greyed.
 
-function CustomizeControls() {
-  const { captionPreset, setCaptionPreset } = useStudio("captionPreset", "setCaptionPreset");
+function useCaptionUpdate() {
+  const { setCaptionPreset } = useStudio("setCaptionPreset");
+  return (patch: Partial<CaptionPreset>, coalesceKey?: string) => setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
+}
 
-  const update = (patch: Partial<CaptionPreset>, coalesceKey?: string) =>
-    setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
+function FontChips({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (font: (typeof CAPTION_FONT_NAMES)[number]) => void;
+}) {
+  return (
+    <Flex gap="6px" wrap="wrap">
+      {CAPTION_FONT_NAMES.map((f) => (
+        <Chip key={f} active={value === f} onClick={() => onChange(f)}>
+          <Text as="span" fontSize="13px" style={captionFontStyle(f)}>
+            {f}
+          </Text>
+        </Chip>
+      ))}
+    </Flex>
+  );
+}
 
+function TextFontSection({ label }: { label: string }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  return (
+    <Box>
+      <SectionLabel>{label}</SectionLabel>
+      <FontChips value={captionPreset.fontAsset ? null : captionPreset.fontName} onChange={(fontName) => update({ fontName, fontAsset: null })} />
+      <Box mt="4">
+        <BrandFontPicker studio value={captionPreset.fontAsset} onChange={(font) => update({ fontName: "Montserrat", fontAsset: font ? brandFontReference(font) : null })} />
+      </Box>
+    </Box>
+  );
+}
+
+function SizeSection({ label }: { label: string }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  return (
+    <Box>
+      <SectionLabel>{label}</SectionLabel>
+      <ValueSlider
+        label={label}
+        value={captionPreset.fontSize}
+        min={16}
+        max={200}
+        step={1}
+        coalesceKey="caption-fontSize"
+        onChange={(value, key) => update({ fontSize: value }, key)}
+      />
+    </Box>
+  );
+}
+
+function TextTransformSection() {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  return (
+    <Box>
+      <SectionLabel>Text transform</SectionLabel>
+      <PanelSegmented
+        ariaLabel="Text transform"
+        value={captionPreset.textTransform}
+        onChange={(textTransform) => update({ textTransform })}
+        items={TEXT_TRANSFORMS}
+      />
+    </Box>
+  );
+}
+
+function AnimationSection({ style }: { style: CaptionDynamicStyle | null }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  const options = captionPanelAnimations(style);
+  // A block draws `captionBlockAnimation`: the style's default stands in for a motion it cannot use.
+  const current = style ? captionBlockAnimation(captionPreset, style) : captionPreset.animation;
+  return (
+    <Box>
+      <SectionLabel>Animation</SectionLabel>
+      <Grid templateColumns="repeat(3, minmax(0, 1fr))" gap="6px">
+        {options.map((id) => (
+          <Chip fill key={id} active={current === id} onClick={() => update({ animation: id })}>
+            {ANIMATION_LABELS[id]}
+          </Chip>
+        ))}
+      </Grid>
+    </Box>
+  );
+}
+
+function WordsOnScreenSection({ dynamic }: { dynamic: boolean }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  const counts = dynamic ? [2, 3, 4, 5] : [1, 2, 3, 4, 5];
+  const value = dynamic ? captionBlockWordsPerCue(captionPreset.wordsPerCue) : captionPreset.wordsPerCue;
+  return (
+    <Box>
+      <SectionLabel>Words on screen</SectionLabel>
+      <PanelSegmented
+        ariaLabel="Words on screen"
+        value={String(value)}
+        onChange={(count) => update({ wordsPerCue: Number(count) })}
+        items={counts.map((count) => ({
+          value: String(count),
+          label: (
+            <>
+              {count}
+              <VisuallyHidden>{` word${count === 1 ? "" : "s"} at a time`}</VisuallyHidden>
+            </>
+          ),
+        }))}
+      />
+    </Box>
+  );
+}
+
+function PositionSection({ style }: { style: CaptionDynamicStyle | null }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  // A left-aligned style stores its block's left edge; its default is the style's guide.
+  const defaultX = style?.align === "left" ? (style.leftGuidePct ?? 50) : 50;
   const positionY = captionPreset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[captionPreset.position];
-  const positionX = captionPreset.positionX ?? 50;
+  const positionX = captionPreset.positionX ?? defaultX;
   const activePosition =
     POSITIONS.find(
-      (pos) => Math.abs(positionX - 50) < 5 && Math.abs(positionY - CAPTION_POSITION_Y_DEFAULTS[pos.id]) < 5,
+      (pos) => Math.abs(positionX - defaultX) < 5 && Math.abs(positionY - CAPTION_POSITION_Y_DEFAULTS[pos.id]) < 5,
     )?.id ?? "custom";
+  return (
+    <Box>
+      <SectionLabel>Position</SectionLabel>
+      <PanelSegmented
+        ariaLabel="Caption position"
+        value={activePosition}
+        onChange={(pos) => {
+          if (pos !== "custom") update({ position: pos, positionX: undefined, positionY: undefined });
+        }}
+        items={POSITIONS.map((pos) => ({
+          value: pos.id,
+          label: (
+            <>
+              {pos.icon}
+              {pos.label}
+            </>
+          ),
+        }))}
+      />
+      {captionPreset.positionX !== undefined && (
+        <Flex gap="12px" mt="8px" align="center">
+          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
+            X: {captionPreset.positionX.toFixed(1)}%
+          </Text>
+          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
+            Y: {captionPreset.positionY?.toFixed(1)}%
+          </Text>
+          <Box
+            as="button"
+            ml="auto"
+            fontSize="12px"
+            color="studio.accentFg"
+            cursor="pointer"
+            onClick={() => update({ positionX: undefined, positionY: undefined })}
+          >
+            Reset
+          </Box>
+        </Flex>
+      )}
+    </Box>
+  );
+}
+
+function DisplaySection({ dynamic }: { dynamic: boolean }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  return (
+    <Box>
+      <SectionLabel>Display</SectionLabel>
+      <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="6px">
+        {dynamic ? null : (
+          <>
+            <ToggleChip
+              icon={<Type size={14} />}
+              label="Outline"
+              active={captionPreset.outlineWidth > 0}
+              onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 6 })}
+            />
+            <ToggleChip
+              icon={<Smile size={14} />}
+              label="Emoji"
+              active={captionPreset.emojis === true}
+              onClick={() => update({ emojis: !captionPreset.emojis })}
+            />
+          </>
+        )}
+        <ToggleChip
+          icon={<Captions size={14} />}
+          label="Subtitles"
+          active={captionPreset.visible !== false}
+          onClick={() => update({ visible: captionPreset.visible === false })}
+        />
+        <ToggleChip
+          icon={<Quote size={14} />}
+          label="Punctuation"
+          active={captionPreset.punctuation !== false}
+          onClick={() => update({ punctuation: captionPreset.punctuation === false })}
+        />
+      </Grid>
+    </Box>
+  );
+}
+
+function ShadowSection() {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  return (
+    <Box>
+      <SectionLabel
+        action={
+          captionPreset.shadow !== "none" ? (
+            <Box my="-5px">
+              <ColorField compact label="Shadow" value={captionPreset.shadowColor} onChange={(v) => update({ shadowColor: v })} />
+            </Box>
+          ) : null
+        }
+      >
+        Shadow
+      </SectionLabel>
+      <PanelSegmented ariaLabel="Shadow" value={captionPreset.shadow} onChange={(shadow) => update({ shadow })} items={SHADOWS} />
+    </Box>
+  );
+}
+
+function GlowIntensitySlider() {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  return (
+    <ValueSlider
+      label="Glow intensity"
+      caption="Intensity"
+      value={captionPreset.glowIntensity ?? 12}
+      min={0}
+      max={20}
+      step={1}
+      coalesceKey="caption-glowIntensity"
+      onChange={(value, key) => update({ glowIntensity: value }, key)}
+    />
+  );
+}
+
+function ClassicCustomizeControls() {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
 
   return (
     <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
-      <Box>
-        <SectionLabel>Font</SectionLabel>
-        <Flex gap="6px" wrap="wrap">
-          {CAPTION_FONT_NAMES.map((f) => (
-            <Chip key={f} active={!captionPreset.fontAsset && captionPreset.fontName === f} onClick={() => update({ fontName: f, fontAsset: null })}>
-              <Text as="span" fontSize="13px" style={captionFontStyle(f)}>
-                {f}
-              </Text>
-            </Chip>
-          ))}
-        </Flex>
-        <Box mt="4">
-          <BrandFontPicker studio value={captionPreset.fontAsset} onChange={(font) => update({ fontName: "Montserrat", fontAsset: font ? brandFontReference(font) : null })} />
-        </Box>
-      </Box>
-
-      <Box>
-        <SectionLabel>Font size</SectionLabel>
-        <ValueSlider
-          label="Font size"
-          value={captionPreset.fontSize}
-          min={16}
-          max={200}
-          step={1}
-          coalesceKey="caption-fontSize"
-          onChange={(value, key) => update({ fontSize: value }, key)}
-        />
-      </Box>
-
-      <Box>
-        <SectionLabel>Text transform</SectionLabel>
-        <PanelSegmented
-          ariaLabel="Text transform"
-          value={captionPreset.textTransform}
-          onChange={(textTransform) => update({ textTransform })}
-          items={TEXT_TRANSFORMS}
-        />
-      </Box>
-
-      <Box>
-        <SectionLabel>Animation</SectionLabel>
-        <Grid templateColumns="repeat(3, minmax(0, 1fr))" gap="6px">
-          {ANIMATIONS.map((anim) => (
-            <Chip fill key={anim.id} active={captionPreset.animation === anim.id} onClick={() => update({ animation: anim.id })}>
-              {anim.label}
-            </Chip>
-          ))}
-        </Grid>
-      </Box>
-
-      <Box>
-        <SectionLabel>Words on screen</SectionLabel>
-        <PanelSegmented
-          ariaLabel="Words on screen"
-          value={String(captionPreset.wordsPerCue)}
-          onChange={(count) => update({ wordsPerCue: Number(count) })}
-          items={[1, 2, 3, 4, 5].map((count) => ({
-            value: String(count),
-            label: (
-              <>
-                {count}
-                <VisuallyHidden>{` word${count === 1 ? "" : "s"} at a time`}</VisuallyHidden>
-              </>
-            ),
-          }))}
-        />
-      </Box>
-
-      <Box>
-        <SectionLabel>Position</SectionLabel>
-        <PanelSegmented
-          ariaLabel="Caption position"
-          value={activePosition}
-          onChange={(pos) => {
-            if (pos !== "custom") update({ position: pos, positionX: undefined, positionY: undefined });
-          }}
-          items={POSITIONS.map((pos) => ({
-            value: pos.id,
-            label: (
-              <>
-                {pos.icon}
-                {pos.label}
-              </>
-            ),
-          }))}
-        />
-        {captionPreset.positionX !== undefined && (
-          <Flex gap="12px" mt="8px" align="center">
-            <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
-              X: {captionPreset.positionX.toFixed(1)}%
-            </Text>
-            <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
-              Y: {captionPreset.positionY?.toFixed(1)}%
-            </Text>
-            <Box
-              as="button"
-              ml="auto"
-              fontSize="12px"
-              color="studio.accentFg"
-              cursor="pointer"
-              onClick={() => update({ positionX: undefined, positionY: undefined })}
-            >
-              Reset
-            </Box>
-          </Flex>
-        )}
-      </Box>
-
-      <Box>
-        <SectionLabel>Display</SectionLabel>
-        <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="6px">
-          <ToggleChip
-            icon={<Type size={14} />}
-            label="Outline"
-            active={captionPreset.outlineWidth > 0}
-            onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 6 })}
-          />
-          <ToggleChip
-            icon={<Smile size={14} />}
-            label="Emoji"
-            active={captionPreset.emojis === true}
-            onClick={() => update({ emojis: !captionPreset.emojis })}
-          />
-          <ToggleChip
-            icon={<Captions size={14} />}
-            label="Subtitles"
-            active={captionPreset.visible !== false}
-            onClick={() => update({ visible: captionPreset.visible === false })}
-          />
-          <ToggleChip
-            icon={<Quote size={14} />}
-            label="Punctuation"
-            active={captionPreset.punctuation !== false}
-            onClick={() => update({ punctuation: captionPreset.punctuation === false })}
-          />
-        </Grid>
-      </Box>
+      <TextFontSection label="Font" />
+      <SizeSection label="Font size" />
+      <TextTransformSection />
+      <AnimationSection style={null} />
+      <WordsOnScreenSection dynamic={false} />
+      <PositionSection style={null} />
+      <DisplaySection dynamic={false} />
 
       {/* Colors — user caption color values, literal by design */}
       <Box>
@@ -676,20 +806,7 @@ function CustomizeControls() {
         />
       </Box>
 
-      <Box>
-        <SectionLabel
-          action={
-            captionPreset.shadow !== "none" ? (
-              <Box my="-5px">
-                <ColorField compact label="Shadow" value={captionPreset.shadowColor} onChange={(v) => update({ shadowColor: v })} />
-              </Box>
-            ) : null
-          }
-        >
-          Shadow
-        </SectionLabel>
-        <PanelSegmented ariaLabel="Shadow" value={captionPreset.shadow} onChange={(shadow) => update({ shadow })} items={SHADOWS} />
-      </Box>
+      <ShadowSection />
 
       <Box>
         <SectionLabel>Effects</SectionLabel>
@@ -770,21 +887,269 @@ function CustomizeControls() {
           />
           {(captionPreset.glowColor || captionPreset.highlightGlowColor) && (
             <Box py="6px">
-              <ValueSlider
-                label="Glow intensity"
-                caption="Intensity"
-                value={captionPreset.glowIntensity ?? 12}
-                min={0}
-                max={20}
-                step={1}
-                coalesceKey="caption-glowIntensity"
-                onChange={(value, key) => update({ glowIntensity: value }, key)}
-              />
+              <GlowIntensitySlider />
             </Box>
           )}
         </Stack>
       </Box>
     </Stack>
+  );
+}
+
+/** Advanced disclosure: a soft row that opens the less-used block controls. */
+function AdvancedDisclosure({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Stack gap="6">
+      <Flex
+        as="button"
+        aria-expanded={open}
+        align="center"
+        justify="space-between"
+        h="40px"
+        px="3"
+        bg="studio.subtle"
+        borderRadius="12px"
+        color="studio.fg"
+        fontSize="13px"
+        fontWeight="500"
+        cursor="pointer"
+        transition="background 120ms ease"
+        _hover={{ bg: "studio.surface" }}
+        onClick={() => setOpen((value) => !value)}
+      >
+        Advanced
+        <Box color="studio.fgMuted" transform={open ? "rotate(180deg)" : undefined} transition="transform 120ms ease">
+          <ChevronDown size={14} />
+        </Box>
+      </Flex>
+      {open ? children : null}
+    </Stack>
+  );
+}
+
+function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  const usesAccent = captionStyleUsesAccent(style);
+  const heroFont = captionPreset.heroFontName ?? style.heroFontName;
+
+  return (
+    <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
+      <SizeSection label="Size" />
+      <PositionSection style={style} />
+
+      {/* Colors — user caption color values, literal by design */}
+      <Box>
+        <SectionLabel>Colors</SectionLabel>
+        <Grid templateColumns={`repeat(${usesAccent ? 3 : 2}, minmax(0, 1fr))`} gap="10px">
+          <ColorField label="Text" value={captionPreset.primaryColor} onChange={(v) => update({ primaryColor: v })} />
+          <ColorField label="Hero" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} />
+          {usesAccent ? (
+            <ColorField
+              label="Accent"
+              value={captionPreset.accentColor ?? style.accentColor ?? captionPreset.highlightColor}
+              onChange={(v) => update({ accentColor: v })}
+            />
+          ) : null}
+        </Grid>
+      </Box>
+
+      <EmphasisSection />
+      <DisplaySection dynamic />
+
+      <AdvancedDisclosure>
+        <TextFontSection label="Text font" />
+        <Box>
+          <SectionLabel>Hero font</SectionLabel>
+          {/* Built-in faces only (spec 5.2); the style's own face is stored as "unset". */}
+          <FontChips value={heroFont} onChange={(f) => update({ heroFontName: f === style.heroFontName ? undefined : f })} />
+        </Box>
+        <TextTransformSection />
+        <AnimationSection style={style} />
+        <WordsOnScreenSection dynamic />
+        <Box>
+          <SectionLabel>Emphasis size</SectionLabel>
+          <ValueSlider
+            label="Emphasis size"
+            value={captionPreset.emphasisScale ?? 1}
+            min={0.7}
+            max={1.4}
+            step={0.05}
+            format={(value) => `${value.toFixed(2)}×`}
+            coalesceKey="caption-emphasisScale"
+            onChange={(value, key) => update({ emphasisScale: Math.abs(value - 1) < 1e-6 ? undefined : value }, key)}
+          />
+        </Box>
+        <ShadowSection />
+        <Box>
+          <SectionLabel>Effects</SectionLabel>
+          <Stack gap="0" px="14px" py="6px" bg="studio.subtle" borderRadius="12px">
+            <EffectRow
+              label="Outline"
+              value={captionPreset.outlineWidth > 0 ? captionPreset.outlineColor : undefined}
+              fallback={captionPreset.outlineColor}
+              onChange={(v) => update(v ? { outlineColor: v, outlineWidth: captionPreset.outlineWidth > 0 ? captionPreset.outlineWidth : 6 } : { outlineWidth: 0 })}
+            >
+              <ValueSlider
+                label="Outline width"
+                caption="Width"
+                value={captionPreset.outlineWidth}
+                min={1}
+                max={16}
+                step={1}
+                coalesceKey="caption-outlineWidth"
+                onChange={(value, key) => update({ outlineWidth: value }, key)}
+              />
+            </EffectRow>
+            <EffectRow
+              label="Glow"
+              value={captionPreset.glowColor}
+              fallback="#FF2BD6"
+              onChange={(v) => update({ glowColor: v, glowIntensity: captionPreset.glowIntensity ?? 12 })}
+            >
+              <GlowIntensitySlider />
+            </EffectRow>
+          </Stack>
+        </Box>
+        {/* Curve (styles without tiles, ticket 07) and Hero behind speaker (centre
+            stack styles, ticket 09) join here once a renderer draws them. */}
+      </AdvancedDisclosure>
+    </Stack>
+  );
+}
+
+function CustomizeControls() {
+  const { captionPreset } = useStudio("captionPreset");
+  const style = captionPanelStyle(captionPreset);
+  return style ? <DynamicCustomizeControls style={style} /> : <ClassicCustomizeControls />;
+}
+
+// ─── Emphasis row ────────────────────────────────────────────────────────────
+
+/** The words of the cue under the playhead; tapping one makes it the hero. */
+function EmphasisSection() {
+  const { playbackClock, captionLayers, studioEdits, setCaptionEmphasis } = useStudio(
+    "playbackClock",
+    "captionLayers",
+    "studioEdits",
+    "setCaptionEmphasis",
+  );
+  const live = useLiveCaptionLayer(playbackClock, captionLayers);
+  const overrides = studioEdits.captionEmphasis;
+  const layer = live.layer;
+  const row = layer ? captionEmphasisRow(layer, overrides) : null;
+
+  const run = (intent: CaptionEmphasisIntent) => {
+    if (!layer) return;
+    const changes = captionEmphasisChanges(layer, intent);
+    if (changes.length === 0) return;
+    if (!captionEmphasisFits(overrides, changes)) {
+      toaster.create({
+        type: "error",
+        title: "Too many emphasis changes in this clip",
+        description: "Set some captions back to Auto first.",
+      });
+      return;
+    }
+    setCaptionEmphasis(changes);
+  };
+
+  return (
+    <Box>
+      <SectionLabel>Emphasis</SectionLabel>
+      {row ? (
+        <Stack gap="10px">
+          <Flex gap="6px" wrap="wrap">
+            {row.chips.map((chip) => (
+              <EmphasisChip
+                key={chip.indices.join("-")}
+                chip={chip}
+                editable={row.editable}
+                join={chip.hero && (row.canJoin || row.joined) ? (row.joined ? "unjoin" : "join") : null}
+                onIntent={run}
+              />
+            ))}
+          </Flex>
+          {row.editable ? (
+            <PanelSegmented
+              ariaLabel="Emphasis for this caption"
+              size="sm"
+              value={row.mode}
+              onChange={(mode) => run({ kind: mode === "none" ? "none" : "auto" })}
+              items={[
+                { value: "auto", label: "Auto" },
+                { value: "none", label: "No emphasis" },
+              ]}
+            />
+          ) : (
+            <Text fontSize="12px" color="studio.fgMuted">
+              Dubbed captions use automatic emphasis.
+            </Text>
+          )}
+        </Stack>
+      ) : (
+        <Text fontSize="12px" color="studio.fgMuted">
+          Move the playhead onto a caption to choose its emphasis.
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+function EmphasisChip({
+  chip,
+  editable,
+  join,
+  onIntent,
+}: {
+  chip: CaptionEmphasisChip;
+  editable: boolean;
+  /** The hero chip's Join next toggle: "join" pairs it with the next word, "unjoin" splits the pair. */
+  join: "join" | "unjoin" | null;
+  onIntent: (intent: CaptionEmphasisIntent) => void;
+}) {
+  const word = (
+    <Flex
+      as={editable ? "button" : "span"}
+      aria-pressed={editable ? chip.hero : undefined}
+      aria-label={editable && !chip.hero ? `Emphasise “${chip.text}”` : undefined}
+      align="center"
+      minW="0"
+      maxW="100%"
+      cursor={editable && !chip.hero ? "pointer" : "default"}
+      {...chipProps(chip.hero)}
+      _hover={editable && !chip.hero ? chipProps(false)._hover : undefined}
+      borderEndRadius={join ? "0" : "8px"}
+      onClick={editable && !chip.hero ? () => onIntent({ kind: "hero", index: chip.indices[0]! }) : undefined}
+    >
+      <Text as="span" truncate>
+        {chip.text}
+      </Text>
+    </Flex>
+  );
+  if (!editable || !join) return word;
+  const label = join === "join" ? "Join next word" : "Split the joined words";
+  return (
+    <Flex minW="0" maxW="100%" gap="1px">
+      {word}
+      <Flex
+        as="button"
+        aria-label={label}
+        aria-pressed={join === "unjoin"}
+        title={label}
+        align="center"
+        justify="center"
+        flexShrink={0}
+        cursor="pointer"
+        {...chipProps(true)}
+        px="8px"
+        borderStartRadius="0"
+        onClick={() => onIntent({ kind: join })}
+      >
+        {join === "join" ? <Link2 size={14} aria-hidden /> : <Unlink2 size={14} aria-hidden />}
+      </Flex>
+    </Flex>
   );
 }
 

@@ -223,6 +223,37 @@ export const CAPTION_MOTIONS = {
     upcomingOpacity: 0,
     tilt: false,
   },
+  slam: {
+    label: "Slam",
+    reveal: "word",
+    word: [
+      { at: 0, scaleX: 1.08, scaleY: 1.08, opacity: 0 },
+      { at: 40, opacity: 1 },
+      { at: 80, scaleX: 1, scaleY: 1, ease: "out" },
+    ],
+    hero: [
+      { at: 0, scaleX: 1.25, scaleY: 1.25, opacity: 0 },
+      { at: 40, opacity: 1 },
+      { at: 110, scaleX: 0.98, scaleY: 0.98, ease: "out" },
+      scale(160, 1),
+    ],
+    cueFadeMs: 0,
+    upcomingOpacity: 0,
+    tilt: false,
+  },
+  drop: {
+    label: "Drop",
+    reveal: "word",
+    // The hero drops the same way (no `hero` track).
+    word: [
+      { at: 0, offsetYEm: -0.2, rotateZDeg: -4, opacity: 0 },
+      { at: 40, opacity: 1 },
+      { at: 120, offsetYEm: 0, rotateZDeg: 0 },
+    ],
+    cueFadeMs: 0,
+    upcomingOpacity: 0,
+    tilt: false,
+  },
   typewriter: {
     label: "Typewriter",
     reveal: "word",

@@ -476,6 +476,404 @@
         ]
       },
       "notes": "\"No emphasis\": every word of the cue is plain, so the cue has no hero."
+    },
+    {
+      "id": "editorial-en",
+      "reference": "06-editorial-scatter-problem.jpg",
+      "style": "editorial",
+      "presetId": "editorial",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "a",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.32
+        },
+        {
+          "word": "big",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "problem",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "with",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "body",
+          "hero",
+          "minor"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "One English cue for Editorial: small sans minor words, a serif body word, a lowercase serif hero, staggered lead and tail rows."
+    },
+    {
+      "id": "cutout-en",
+      "reference": "05-cutout-keep-it-short.jpg",
+      "style": "cutout",
+      "presetId": "cutout",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "AND",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.32
+        },
+        {
+          "word": "I",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "KEEP",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "IT",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        },
+        {
+          "word": "SHORT",
+          "key": "2440",
+          "startSec": 2.44,
+          "endSec": 2.76
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "body",
+          "minor",
+          "body"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2,
+            3,
+            4
+          ]
+        ]
+      },
+      "notes": "One English cue for Cutout: five caps words on one row, one tile each (pink for minor words, dark for body words), tilted by turns, no hero."
+    },
+    {
+      "id": "cutout-long-word-fit",
+      "reference": "05-cutout-keep-it-short.jpg",
+      "style": "cutout",
+      "presetId": "cutout",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "AND",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.32
+        },
+        {
+          "word": "THAT",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "WAS",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "ABSOLUTELY",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        },
+        {
+          "word": "UNBELIEVABLE",
+          "key": "2440",
+          "startSec": 2.44,
+          "endSec": 2.76
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "minor",
+          "body",
+          "body"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2,
+            3,
+            4
+          ]
+        ]
+      },
+      "notes": "Two long words make the tiled row wider than the fit width, so the block fit scale (rule 7) drops below 1; tiles, gaps and padding shrink with the words."
+    },
+    {
+      "id": "marker-en",
+      "reference": "04-marker-week-hour.jpg",
+      "style": "marker",
+      "presetId": "marker",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "week",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.32
+        },
+        {
+          "word": "of",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "content",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "in",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "body",
+          "minor",
+          "hero",
+          "minor"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "One English cue for Marker: left-aligned at the 8% guide; the seed is even, so the hero is the highlight colour (yellow)."
+    },
+    {
+      "id": "marker-urdu",
+      "reference": "04-marker-week-hour.jpg",
+      "style": "marker",
+      "presetId": "marker",
+      "preset": {},
+      "language": "ur",
+      "words": [
+        {
+          "word": "صرف",
+          "key": "2000",
+          "startSec": 2.0,
+          "endSec": 2.32
+        },
+        {
+          "word": "ایک",
+          "key": "2360",
+          "startSec": 2.36,
+          "endSec": 2.68
+        },
+        {
+          "word": "گھنٹے",
+          "key": "2720",
+          "startSec": 2.72,
+          "endSec": 3.04
+        },
+        {
+          "word": "میں",
+          "key": "3080",
+          "startSec": 3.08,
+          "endSec": 3.4
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "body",
+          "minor",
+          "hero",
+          "minor"
+        ],
+        "rows": [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "Urdu (RTL) in a left style: the block mirrors to the right edge at 100 - 8 = 92%; rows keep bidi visual order; the seed is odd, so the hero is the accent colour (pink)."
+    },
+    {
+      "id": "stack-en",
+      "reference": "08-mixed-size-stars.jpg",
+      "style": "stack",
+      "presetId": "stack",
+      "preset": {},
+      "language": "en",
+      "words": [
+        {
+          "word": "how",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.32
+        },
+        {
+          "word": "to",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "edit",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "captions",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "One English cue for Stack: a small lowercase row above a huge lowercase hero, all white."
+    },
+    {
+      "id": "stack-slam",
+      "reference": "08-mixed-size-stars.jpg",
+      "style": "stack",
+      "presetId": "stack",
+      "preset": {
+        "animation": "slam"
+      },
+      "language": "en",
+      "words": [
+        {
+          "word": "how",
+          "key": "1000",
+          "startSec": 1.0,
+          "endSec": 1.32
+        },
+        {
+          "word": "to",
+          "key": "1360",
+          "startSec": 1.36,
+          "endSec": 1.68
+        },
+        {
+          "word": "edit",
+          "key": "1720",
+          "startSec": 1.72,
+          "endSec": 2.04
+        },
+        {
+          "word": "captions",
+          "key": "2080",
+          "startSec": 2.08,
+          "endSec": 2.4
+        }
+      ],
+      "overrides": {},
+      "expected": {
+        "roles": [
+          "minor",
+          "minor",
+          "body",
+          "hero"
+        ],
+        "rows": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      "notes": "Stack entering with slam: every word scales in, the hero from 1.25 through 0.98, so the real-libass test checks scaled words."
     }
   ]
 }

@@ -467,12 +467,15 @@ export const studioVisualBrollPlacementSchema = z.strictObject({
   path: ["endSec"],
 });
 
+/** A Word Key: a word's source start in whole milliseconds. */
+export const captionWordKeySchema = z.string().regex(/^\d+$/);
+
 /**
  * Caption emphasis overrides by Word Key (a word's source start in whole
  * milliseconds). Overrides whose key matches no word are kept and ignored.
  */
 export const studioCaptionEmphasisSchema = z
-  .record(z.string().regex(/^\d+$/), captionEmphasisOverrideSchema)
+  .record(captionWordKeySchema, captionEmphasisOverrideSchema)
   .refine((overrides) => Object.keys(overrides).length <= CAPTION_EMPHASIS_OVERRIDE_LIMIT, {
     message: `at most ${CAPTION_EMPHASIS_OVERRIDE_LIMIT} caption emphasis overrides`,
   });
@@ -608,6 +611,28 @@ function studioVisualBrollEqual(
       placement.fit === candidate.fit
     );
   });
+}
+
+/**
+ * `edits` with every key in `keys` set to `value`, or cleared when `value`
+ * is null. The field is dropped once no override is left. Null when the
+ * result would hold more than `CAPTION_EMPHASIS_OVERRIDE_LIMIT` overrides.
+ */
+export function withCaptionEmphasis(
+  edits: StudioEdits,
+  keys: readonly string[],
+  value: CaptionEmphasisOverride | null,
+): StudioEdits | null {
+  const next: Record<string, CaptionEmphasisOverride> = { ...edits.captionEmphasis };
+  for (const key of keys) {
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  const count = Object.keys(next).length;
+  if (count > CAPTION_EMPHASIS_OVERRIDE_LIMIT) return null;
+  if (count > 0) return { ...edits, captionEmphasis: next };
+  const { captionEmphasis: _cleared, ...rest } = edits;
+  return rest;
 }
 
 function captionEmphasisEqual(

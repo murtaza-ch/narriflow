@@ -3,6 +3,7 @@ import { workspaceService } from "./workspace.service";
 import { randomUUID } from "node:crypto";
 import type { BrandTemplate, Prisma as PrismaTypes } from "@prisma/client";
 import {
+  applyBrandColorsToCaption,
   brandTemplateInputSchema,
   brandTemplateUpdateSchema,
   captionPresetSchema,
@@ -12,7 +13,6 @@ import {
   type BrandTemplateSnapshot,
   type BrandTemplateSummary,
   type BrandTemplateUpdate,
-  type CaptionPreset,
   type PresignBrandLogoInput,
 } from "@narriflow/validators";
 import {
@@ -87,19 +87,6 @@ function toSummary(template: BrandTemplate): BrandTemplateSummary {
     accentColor: template.accentColor,
     createdAt: template.createdAt.toISOString(),
     updatedAt: template.updatedAt.toISOString(),
-  };
-}
-
-function applyBrandColorsToCaption(
-  preset: CaptionPreset,
-  primaryColor: string,
-  secondaryColor: string,
-): CaptionPreset {
-  return {
-    ...preset,
-    primaryColor,
-    highlightColor: secondaryColor,
-    outlineColor: preset.outlineColor,
   };
 }
 

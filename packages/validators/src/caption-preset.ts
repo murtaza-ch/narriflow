@@ -245,6 +245,22 @@ export const CAPTION_PRESETS = [
     dynamic: "headline", fontName: "Inter SemiBold", fontSize: 80, textTransform: "none", letterSpacing: 0,
     primaryColor: "#FFFFFF", highlightColor: "#36B780", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
   }),
+  namedPreset("editorial", "Editorial", "Dynamic", {
+    dynamic: "editorial", fontName: "Inter SemiBold", fontSize: 60, textTransform: "lowercase", letterSpacing: 0,
+    primaryColor: "#F6EFE4", highlightColor: "#F6EFE4", outlineWidth: 0, shadow: "soft", animation: "blur", wordsPerCue: 4,
+  }),
+  namedPreset("cutout", "Cutout", "Dynamic", {
+    dynamic: "cutout", fontName: "Bebas Neue", fontSize: 84, textTransform: "uppercase", letterSpacing: 0,
+    primaryColor: "#F5923E", highlightColor: "#F5923E", outlineWidth: 0, shadow: "none", animation: "drop", wordsPerCue: 5,
+  }),
+  namedPreset("marker", "Marker", "Dynamic", {
+    dynamic: "marker", fontName: "Poppins", fontSize: 48, textTransform: "lowercase", letterSpacing: 0,
+    primaryColor: "#FFFFFF", highlightColor: "#FFD248", outlineWidth: 0, shadow: "soft", animation: "rise", wordsPerCue: 4,
+  }),
+  namedPreset("stack", "Stack", "Dynamic", {
+    dynamic: "stack", fontName: "Inter SemiBold", fontSize: 48, textTransform: "lowercase", letterSpacing: 0,
+    primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
+  }),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

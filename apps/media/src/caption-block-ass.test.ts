@@ -52,7 +52,8 @@ const numbers = (tag: string, text: string) => {
   return match ? match[1]!.split(",").map(Number) : null;
 };
 
-/** Block paint layers in caption-ass.ts (`LAYER.shadow`, `LAYER.text`): Headline draws no outline or glow. */
+/** Block paint layers in caption-ass.ts (`LAYER.plate`, `LAYER.shadow`, `LAYER.text`): no catalog style draws an outline or glow. */
+const TILE_LAYER = 0;
 const SHADOW_LAYER = 1;
 const TEXT_LAYER = 5;
 /**
@@ -118,12 +119,24 @@ describe("Caption Block ASS", () => {
         cue.words.forEach((word, index) => {
           const placed = geometry.layout.words[index]!;
           const own = cueEvents.filter((event) => event.start === assTime(word.startSec));
-          expect(own.map((event) => event.layer).sort()).toEqual([SHADOW_LAYER, TEXT_LAYER]);
+          // One event per soft shadow layer, then the text; a tile and its hard shadow below them.
+          const style = captionDynamicStyle(cue.block.style);
+          const shadows = cue.preset.shadow === "soft" ? (style.softShadow?.length ?? 1) : cue.preset.shadow === "none" ? 0 : 1;
+          const tiles = placed.tile ? (placed.tile.shadowOffset > 0 ? 2 : 1) : 0;
+          expect(own.map((event) => event.layer).sort((a, b) => a - b)).toEqual([
+            ...Array<number>(tiles).fill(TILE_LAYER),
+            ...Array<number>(shadows).fill(SHADOW_LAYER),
+            TEXT_LAYER,
+          ]);
+          const turn = /\\frz(-?[\d.]+)/.exec(own.find((event) => event.layer === TEXT_LAYER)!.text)?.[1];
           for (const event of own) {
             expect(event.end).toBe(end);
             expect(event.text.startsWith("{\\an5")).toBe(true);
+            // Tiles share the word's pivot and turn, so they enter and settle with it.
             expect(numbers("org", event.text)).toEqual([Number(num(placed.centerX)), Number(num(placed.centerY))]);
-            expect(event.text.replace(/\{[^}]*\}/g, "")).toBe(geometry.words[index]!.text);
+            expect(/\\frz(-?[\d.]+)/.exec(event.text)?.[1]).toBe(turn);
+            if (event.layer === TILE_LAYER) expect(event.text).toContain("\\p1}m ");
+            else expect(event.text.replace(/\{[^}]*\}/g, "")).toBe(geometry.words[index]!.text);
           }
         });
       }

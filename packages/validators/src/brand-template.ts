@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { captionDynamicStyle, captionStyleUsesAccent } from "./caption-dynamic";
+import type { CaptionPreset } from "./caption-preset";
 import { captionPresetSchema } from "./clip";
 import { logoPositionSchema, type LogoPosition } from "./logo-position";
 
@@ -8,6 +10,36 @@ const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 // doc comment for why it was split out (avoids a clip.ts <-> studio-edits.ts
 // <-> brand-template.ts import cycle).
 export { logoPositionSchema, type LogoPosition };
+
+/**
+ * A brand template's two colours on its caption style. Classic styles take
+ * the primary as text and the secondary as the highlight. Dynamic Styles keep
+ * their support colour (white or cream): the primary becomes the hero and the
+ * secondary the accent, for styles that draw one.
+ */
+export function applyBrandColorsToCaption(
+  preset: CaptionPreset,
+  primaryColor: string,
+  secondaryColor: string,
+): CaptionPreset {
+  if (!preset.dynamic) return { ...preset, primaryColor, highlightColor: secondaryColor };
+  // The accent is written only where the style draws one and it changes, so a
+  // catalog look whose colours are the brand's still matches its catalog entry.
+  const style = captionDynamicStyle(preset.dynamic);
+  const changesAccent = captionStyleUsesAccent(style) && effectiveAccent(preset).toUpperCase() !== secondaryColor.toUpperCase();
+  return { ...preset, highlightColor: primaryColor, ...(changesAccent ? { accentColor: secondaryColor } : {}) };
+}
+
+/** The colour a dynamic preset draws in its accent slot. */
+function effectiveAccent(preset: CaptionPreset): string {
+  return preset.accentColor ?? (preset.dynamic ? captionDynamicStyle(preset.dynamic).accentColor : undefined) ?? preset.highlightColor;
+}
+
+/** The brand colours a caption look implies, the inverse of `applyBrandColorsToCaption`. */
+export function brandColorsFromCaption(preset: CaptionPreset): { primaryColor: string; secondaryColor: string } {
+  if (!preset.dynamic) return { primaryColor: preset.primaryColor, secondaryColor: preset.highlightColor };
+  return { primaryColor: preset.highlightColor, secondaryColor: effectiveAccent(preset) };
+}
 
 export const brandTemplateInputSchema = z.object({
   name: z.string().min(1).max(60),

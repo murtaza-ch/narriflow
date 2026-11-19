@@ -27,6 +27,11 @@ export type CaptionBackdrop = (typeof CAPTION_BACKDROPS)[number];
 const BACKDROP_BY_PRESET: Record<CatalogPresetId, CaptionBackdrop> = {
   // The ticket 02 look proof was judged over this frame.
   headline: "green-studio",
+  editorial: "lamp-study",
+  cutout: "pastel-room",
+  // Reference 04 is a bright room; the shadow keeps white words readable on it.
+  marker: "bright-room",
+  stack: "dark-studio",
   "bold-pop": "dark-studio",
   blast: "brick-street",
   punch: "green-studio",

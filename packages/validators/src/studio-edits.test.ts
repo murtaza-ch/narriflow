@@ -862,4 +862,8 @@ describe("studioEdits.captionEmphasis", () => {
     expect(studioEditsEqual(hero, studioEditsSchema.parse({ captionEmphasis: { "1300": "hero" } }))).toBe(false);
     expect(studioEditsEqual(hero, studioEditsSchema.parse({ captionEmphasis: { "1200": "hero" } }))).toBe(true);
   });
+
+  test("stays per clip: the apply-to-all patch cannot carry it", () => {
+    expect(applyStudioEditsPatchSchema.safeParse({ captionEmphasis: { "1200": "hero" } }).success).toBe(false);
+  });
 });
