@@ -402,6 +402,12 @@ export const clipDetectionLlmResponseSchema = z.object({
       // property to be listed in the JSON schema's `required` array — but the
       // array itself is allowed to be empty for a pure talking-head clip.
       broll_cues: z.array(clipDetectionBrollCueSchema),
+      // Clip Emphasis Words as the model wrote them. Required in the JSON
+      // schema for the same strict-mode reason, but an optional enrichment
+      // here: a malformed list becomes [] instead of dropping the clip.
+      // `clipEmphasisWords` bounds and checks them against the final
+      // transcript slice before they are stored.
+      emphasis_words: z.array(z.string()).catch([]),
     }),
   ),
 });

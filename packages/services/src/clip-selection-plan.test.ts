@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { contentPackSchema, type TranscriptUtterance } from "@narriflow/validators";
 import { buildClipSelectionPlan, finalizeClipSelectionCandidates } from "./clip-selection-plan";
+import { normalizeLlmClip } from "./clip-selection-policy";
 
 const pack = contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 45, platformPlaybookVersion: "platform-playbook-v1" });
 function utterances(seconds: number): TranscriptUtterance[] {
@@ -58,4 +59,14 @@ test("the global pass deduplicates shared boundary candidates once before rankin
   expect(new Set(result.clips.map(clip => `${clip.startSec}:${clip.endSec}`)).size).toBe(3);
   expect(result.rawClipCount).toBe(4);
   expect(result.dedupedCandidateCount).toBe(3);
+});
+
+test("Clip Emphasis Words travel from the model's clip to the finalized clip unchanged", () => {
+  const plan = buildClipSelectionPlan(input(1200));
+  if (plan.kind !== "selection") throw new Error("Expected selection");
+  const raw = normalizeLlmClip({ title: "A moment", start_time: 0, end_time: 45, hook_text: "A hook", payoff_text: "A payoff", reasoning: "A complete story", category: "story",
+    platform_fit: ["tiktok"], hook_strength: 80, emotional_intensity: 80, story_completeness_score: 95, broll_cues: [], emphasis_words: ["thought", "invented"] });
+  expect(raw?.emphasisWords).toEqual(["thought", "invented"]);
+  // Filtering against the final transcript happens once, when the clip row is built.
+  expect(finalizeClipSelectionCandidates(plan, [raw!]).clips[0]!.emphasisWords).toEqual(["thought", "invented"]);
 });

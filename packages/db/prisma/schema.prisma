@@ -1693,6 +1693,13 @@ model Clip {
   // falls back to keyword-derived Pexels queries.
   brollCues Json?
 
+  // Clip Emphasis Words from the clip-detection call: up to 8 words or 2-word
+  // units, as text (clip timing is refined after the model answers), kept only
+  // when they occur in the clip's transcript. Part of the editor document but
+  // set only at creation; editor saves never write it. Dynamic caption roles
+  // favour them. NULL: none (older clips, caption-only clips).
+  emphasisWords Json?
+
   // Screen-mode layout analysis (vizard-parity.md element-segmentation spike,
   // landed fc5acb1): the worker's `pip_detect.py`/`classifyScreencast`/
   // `selectPipRect` pass over this clip's source range, persisted so the

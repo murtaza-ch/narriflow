@@ -15,6 +15,8 @@ test("selection retains the Responses structured-output contract in one bounded 
       reasoning: { effort: "medium" }, text: { format: { type: "json_schema", name: "clip_detection", strict: true,
         schema: { type: "object", additionalProperties: false, required: ["clips"] } } }, max_output_tokens: 32_000 });
     expect(body.text.format.schema.properties.clips.items.required).toContain("broll_cues");
+    expect(body.text.format.schema.properties.clips.items.required).toContain("emphasis_words");
+    expect(body.text.format.schema.properties.clips.items.properties.emphasis_words).toEqual({ type: "array", maxItems: 8, items: { type: "string", minLength: 1, maxLength: 40 } });
     return Response.json({ status: "completed", output: [{ content: [{ type: "output_text", text: '{"clips":[]}' }] }], usage: { total_tokens: 135 } },
       { headers: { "x-request-id": "request-1", "x-ratelimit-remaining-requests": "4" } });
   } });

@@ -30,3 +30,13 @@ test("window results salvage valid raw candidates and retain oversized optional 
   expect(decoded).toMatchObject({ tokensUsed: 123, providerRequestId: "req_test", windowIndex: 1 });
   await expect(decodeClipSelectionResult(encoded.bytes, encoded, { ...binding, windowIndex: 0 })).rejects.toThrow("lineage");
 });
+
+test("window results carry Clip Emphasis Words; a missing or malformed list is stored as empty, never dropping the clip", async () => {
+  const binding = { parentId: parent.id, parentGeneration: 1, selectionHash: "d".repeat(64), windowIndex: 0 };
+  const clip = { title: "A story", start_time: 10, end_time: 55, hook_text: "A hook", payoff_text: "A payoff", reasoning: "A complete story", category: "story", platform_fit: ["tiktok"],
+    hook_strength: 80, emotional_intensity: 80, story_completeness_score: 95, broll_cues: [] };
+  const encoded = await encodeClipSelectionResult(binding, JSON.stringify({ clips: [{ ...clip, emphasis_words: ["growth", "50 percent"] }, clip, { ...clip, emphasis_words: "growth" }] }),
+    { tokensUsed: 1, providerRequestId: null });
+  const decoded = await decodeClipSelectionResult(encoded.bytes, encoded, binding);
+  expect(decoded.clips.map((entry) => entry.emphasis_words)).toEqual([["growth", "50 percent"], [], []]);
+});

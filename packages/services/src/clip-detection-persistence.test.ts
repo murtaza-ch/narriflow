@@ -65,3 +65,20 @@ describe("clip cleanup at generation", () => {
     expect(run([fillerWordKey(1, de[0]!.words[1]!)])).toEqual([]);
   });
 });
+
+describe("Clip Emphasis Words at generation", () => {
+  const build = (emphasisWords: string[] | undefined) => {
+    const seed = prepareDetectedClipSeed(project, buildGenerationContentPack({}), { quietRanges, languageCode: "en" });
+    return buildDetectedClipRows({ projectId: "p", workflowRunId: "w", clips: [{ ...clip(), ...(emphasisWords ? { emphasisWords } : {}) }], seed,
+      llmMeta: { provider: "openai", model: "m", totalTokensUsed: 1 } })[0]!;
+  };
+
+  test("keeps the words found in the clip's transcript and drops the rest", () => {
+    expect(build(["GO", "we go", "rocket", "so we go"]).emphasisWords).toEqual(["GO", "we go"]);
+  });
+
+  test("no words, or only invented ones, leave the column empty", () => {
+    expect("emphasisWords" in build(undefined)).toBe(false);
+    expect("emphasisWords" in build(["rocket"])).toBe(false);
+  });
+});

@@ -1100,3 +1100,29 @@ describe("Clip Editor Document plan deltas", () => {
     expect(result.document.studioEdits.transition).toEqual(fade);
   });
 });
+
+describe("Clip Emphasis Words", () => {
+  const withWords = () => document({ emphasisWords: ["three", "one two"] });
+
+  test("the codec stores them in their column and reads null or an omitted column as none", () => {
+    const encoded = encodeClipEditorDocumentForStorage(withWords(), { durationSec: 300, wholeSource: false });
+    expect(encoded.emphasisWords).toEqual(["three", "one two"]);
+    expect(decodeClipEditorDocumentFromStorage(encoded, { durationSec: 300, wholeSource: false })).toEqual(withWords());
+    expect("emphasisWords" in encodeClipEditorDocumentForStorage(document(), { durationSec: 300, wholeSource: false })).toBe(false);
+    const none = decodeClipEditorDocumentFromStorage({ ...encoded, emphasisWords: null }, { durationSec: 300, wholeSource: false });
+    expect("emphasisWords" in none).toBe(false);
+    const { emphasisWords: _omitted, ...narrow } = encoded;
+    expect(decodeClipEditorDocumentFromStorage(narrow, { durationSec: 300, wholeSource: false })).toEqual(document());
+  });
+
+  test("an editor save keeps the stored words whatever the client sends", async () => {
+    const { persistence, scope, store } = setup(stored({ document: withWords() }));
+    const current = await persistence.readDocument(scope);
+    const { emphasisWords: _dropped, ...withoutWords } = current.document;
+    await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: current.revision, document: { ...withoutWords, brollUrl: "https://example.test/a.mp4" } } });
+    expect((await store.read(scope))!.document.emphasisWords).toEqual(["three", "one two"]);
+    const next = await persistence.readDocument(scope);
+    const result = await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: next.revision, document: { ...next.document, emphasisWords: ["four"], brollUrl: null } } });
+    expect(result.document.emphasisWords).toEqual(["three", "one two"]);
+  });
+});

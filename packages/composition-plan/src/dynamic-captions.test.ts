@@ -184,6 +184,33 @@ describe("Caption Blocks in the plan", () => {
     expect(automatic.map((layer) => layer.block!.roles)).toEqual(expected.map((cue) => cue.roles));
   });
 
+  test("Clip Emphasis Words on the document lift the matching word; none, or none matching, is today's plan", () => {
+    const plain = captionLayers(document({ preset: headline, utterances: [utterance(words)] }), "en");
+    const lifted = captionLayers(editorDocumentSchema.parse({ ...document({ preset: headline, utterances: [utterance(words)] }), emphasisWords: ["Money"] }), "en");
+    expect(plain[0]!.block!.roles[3]).toBe("hero");
+    expect(lifted[0]!.block!.roles).toEqual(["minor", "hero", "minor", "body"]);
+    const unmatched = captionLayers(editorDocumentSchema.parse({ ...document({ preset: headline, utterances: [utterance(words)] }), emphasisWords: ["rocket"] }), "en");
+    expect(unmatched).toEqual(plain);
+    // Subtitle cues never read roles.
+    expect(deriveCaptionCues(editorDocumentSchema.parse({ ...document({ preset: headline, utterances: [utterance(words)] }), emphasisWords: ["Money"] }), { language: "en" }))
+      .toEqual(deriveCaptionCues(document({ preset: headline, utterances: [utterance(words)] }), { language: "en" }));
+  });
+
+  test("dub captions ignore Clip Emphasis Words, which are in the source language", () => {
+    const override: CaptionOverride = {
+      language: "en",
+      segments: [[
+        { text: "we", startSec: 0, endSec: 0.3 },
+        { text: "made", startSec: 0.3, endSec: 0.6 },
+        { text: "20", startSec: 0.6, endSec: 0.9 },
+        { text: "dollars.", startSec: 0.9, endSec: 1.2 },
+      ]],
+    };
+    const base = document({ preset: headline, utterances: [utterance(words)] });
+    expect(captionLayers(editorDocumentSchema.parse({ ...base, emphasisWords: ["made"] }), "en", override))
+      .toEqual(captionLayers(base, "en", override));
+  });
+
   test("wordsPerCue of a dynamic preset is clamped to 2..5", () => {
     const one = captionLayers(document({ preset: { ...headline, wordsPerCue: 1 }, utterances: [utterance(words)] }), "en");
     expect(one.map((layer) => layer.words.length)).toEqual([2, 2, 1]);

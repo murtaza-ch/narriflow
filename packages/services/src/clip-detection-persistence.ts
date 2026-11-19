@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { BRAND_DEFAULT_CAPTION_PRESET_ID, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, brandProfileSnapshotSchema, captionPresetSchema, captionedVideoFramingEdits,
-  clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema,
+  clipEmphasisWords, clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema,
   type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges, type FillerTaggingOutcome, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 
@@ -31,6 +31,9 @@ export interface DetectedClip {
    *  rows predate the column. When absent the render falls back to the
    *  keyword-derived Pexels query. */
   brollCues?: BrollCue[];
+  /** Clip Emphasis Words as the selection model wrote them. Only those found
+   *  in `transcriptSlice` are stored; absent on the caption-only path. */
+  emphasisWords?: string[];
 }
 
 export interface LlmMeta {
@@ -112,6 +115,7 @@ export function buildDetectedClipRows(input: { projectId: string; workflowRunId:
   const quietRanges = cleanup.quietRanges ? decodeQuietRanges(cleanup.quietRanges) : null;
   const aiFillerKeys = cleanup.aiFillers ? new Set(cleanup.aiFillers.keys) : null;
     return clips.map((clip, i) => {
+      const emphasisWords = clipEmphasisWords(clip.emphasisWords ?? [], clip.transcriptSlice);
 		const editorDocument = encodeClipEditorDocumentForStorage(
 			{
 				version: EDITOR_DOCUMENT_VERSION,
@@ -126,6 +130,7 @@ export function buildDetectedClipRows(input: { projectId: string; workflowRunId:
 				sceneBlocks: [],
 				censorSegments: [],
 				mediaMotions: [],
+				...(emphasisWords.length > 0 ? { emphasisWords } : {}),
 			},
         { durationSec: seed.sourceDurationSec, wholeSource: seed.wholeSource },
       );

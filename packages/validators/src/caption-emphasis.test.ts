@@ -6,6 +6,8 @@ import {
   baselineCaptionHero,
   CAPTION_EMPHASIS_WEIGHTS,
   captionWordKey,
+  CLIP_EMPHASIS_WORDS_LIMIT,
+  clipEmphasisWords,
   type CaptionEmphasisOverride,
   type CaptionEmphasisWeights,
   type CaptionEmphasisWord,
@@ -398,5 +400,74 @@ describe("shipped weights (tuned on the G1 tuning sheet)", () => {
     const cues = build([["and", "then", "we", "talked"]]);
     const result = assignCaptionRoles({ cues, language: "en", overrides: {}, policy: "auto" });
     expect(heroes(cues, result)).toEqual(["talked"]);
+  });
+});
+
+describe("Clip Emphasis Words", () => {
+  const shipped = (cues: CaptionEmphasisWord[][], emphasisWords?: readonly string[]) =>
+    assignCaptionRoles({ cues, language: "en", overrides: {}, policy: "auto", ...(emphasisWords ? { emphasisWords } : {}) });
+
+  test("a matching single word becomes the hero, matched by case and edge punctuation", () => {
+    const cues = build([["we", "lost", "the", "contract", { raw: "yesterday.", final: true }]]);
+    expect(heroes(cues, shipped(cues))).toEqual(["yesterday."]);
+    expect(heroes(cues, shipped(cues, ["Contract"]))).toEqual(["contract"]);
+  });
+
+  test("a 2-word suggestion forms a unit, with the bonus counted once", () => {
+    const cues = build([["this", "is", "really", "important", "stuff"]]);
+    const result = shipped(cues, ["really important", "important"]);
+    expect(heroes(cues, result)).toEqual(["really important"]);
+    expect(result[0]!.roles).toEqual(["minor", "minor", "hero", "hero", "body"]);
+    // With only the LLM signal, a pair that also holds a single suggestion
+    // scores 3, not 6, so it ties a lone suggested word and the gate refuses.
+    const scored = assignCaptionRoles({ cues, language: "en", overrides: {}, policy: "auto",
+      emphasisWords: ["really important", "important", "stuff"], weights: only({ llm: 3 }, 0.5) });
+    expect(scored[0]!.heroSpan).toBeNull();
+  });
+
+  test("a pair with one minor word still forms a unit; a masked word never does", () => {
+    const cues = build([["it", "changed", "my", "life"]]);
+    expect(heroes(cues, shipped(cues, ["my life"]))).toEqual(["my life"]);
+    const masked = build([["it", "changed", "my", { raw: "life", masked: true }]]);
+    expect(heroes(masked, shipped(masked, ["my life"]))).not.toEqual(["my life"]);
+  });
+
+  test("no match, or no words at all, scores exactly as today", () => {
+    const cues = build([
+      ["we", "made", "7", "sales"],
+      ["and", "then", "we", "talked"],
+      ["NEVER", "give", { raw: "up", pause: 0.4, final: true }],
+    ]);
+    const today = shipped(cues);
+    expect(shipped(cues, [])).toEqual(today);
+    expect(shipped(cues, ["banana", "three words here", ""])).toEqual(today);
+  });
+
+  test("a minor or filler suggestion cannot make a word the hero", () => {
+    const cues = build([["the", "plan", "basically"]]);
+    expect(shipped(cues, ["the", "basically"])).toEqual(shipped(cues));
+  });
+});
+
+describe("clipEmphasisWords", () => {
+  const slice = [
+    { text: "We grew 50 percent, not by luck.", words: ["We", "grew", "50", "percent,", "not", "by", "luck."].map((word) => ({ word })) },
+    { text: "یہ بہت اہم ہے", words: ["یہ", "بہت", "اہم", "ہے"].map((word) => ({ word })) },
+    { text: "untimed fallback text", words: [] },
+  ];
+
+  test("keeps suggestions found in the clip's text and drops invented ones", () => {
+    expect(clipEmphasisWords(["LUCK", "50 percent", "اہم", "fallback", "million", "grew luck", "percent not"], slice))
+      .toEqual(["LUCK", "50 percent", "اہم", "fallback", "percent not"]);
+  });
+
+  test("trims, de-duplicates by normalised text, and bounds count, words and length", () => {
+    expect(clipEmphasisWords(["  grew  ", "Grew", "grew 50 percent", "", "x".repeat(41)], slice)).toEqual(["grew"]);
+    const many = Array.from({ length: 12 }, (_, index) => `w${index}`);
+    expect(clipEmphasisWords(many, [{ text: many.join(" "), words: [] }])).toHaveLength(CLIP_EMPHASIS_WORDS_LIMIT);
+  });
+
+  test("a 2-word unit must be adjacent inside one utterance", () => {
+    expect(clipEmphasisWords(["luck. یہ", "fallback text"], slice)).toEqual(["fallback text"]);
   });
 });

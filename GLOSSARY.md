@@ -59,6 +59,10 @@ _Avoid_: Template, caption theme, animated preset
 The part a word plays in a Caption Block: `hero`, `body` or `minor`. The hero is the emphasised word, or 2-word unit, of a cue. Minor words are closed-class words (the, of, to, is, ka, ki, hai). Body is everything else. Roles come from a deterministic scorer or a user's override, never from per-word styling.
 _Avoid_: Emphasis style, word weight, highlight
 
+**Clip Emphasis Words**:
+Up to 8 words or 2-word units (`Clip.emphasisWords`) the clip selection call marks for emphasis. They are stored as text, only if they occur in the clip's transcript, and set once when the clip is created. They add to a word's score in the Caption Role scorer; source captions use them, dub captions do not.
+_Avoid_: Keywords, highlights, LLM emphasis
+
 **Caption Block**:
 A cue laid out as one to three rows of role-typed words (`block` on a caption layer): a lead row, the hero alone, and a tail row, or one row when the cue has no hero. Subtitles and the clip timeline read the cue's plain words, never the block.
 _Avoid_: Caption line, multi-line caption, stack

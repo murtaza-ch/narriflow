@@ -1,5 +1,5 @@
 import { computeDurationOptimality, computePacingScore, computePlatformScore, computeViralityScore } from "./clip-scoring";
-import { getEffectiveClipTiming, normalizeTranscriptSliceForClip, type BrollCue, type ClipCategory, type ClipPlatformTarget, type ContentPack, type TranscriptUtterance } from "@narriflow/validators";
+import { CLIP_EMPHASIS_WORD_MAX_LENGTH, CLIP_EMPHASIS_WORDS_LIMIT, getEffectiveClipTiming, normalizeTranscriptSliceForClip, type BrollCue, type ClipCategory, type ClipPlatformTarget, type ContentPack, type TranscriptUtterance } from "@narriflow/validators";
 
 export function buildCaptionOnlyTranscriptSlice(
   utterances: TranscriptUtterance[],
@@ -107,6 +107,7 @@ For each clip, provide:
 - Emotional intensity score (1-100): how emotionally resonant the content is
 - Story completeness score (1-100): whether the clip has a full setup/escalation/payoff arc
 - B-roll cue moments: 2-4 moments within the clip where a brief stock-footage cutaway would strengthen it, each with a timestamp, a visual search query, and a one-line reason (return an empty list only when the clip is a pure talking-head with no good insertion point)
+- Emphasis words: up to 8 words a short-form editor would blow up on screen in this clip's captions
 
 Respond with a JSON object containing a "clips" array. Each clip object must have these exact fields:
 - title: string
@@ -121,11 +122,17 @@ Respond with a JSON object containing a "clips" array. Each clip object must hav
 - emotional_intensity: integer 1-100
 - story_completeness_score: integer 1-100
 - broll_cues: array of { at_sec, query, reason } — 2-4 B-roll cue moments, or [] for a pure talking-head clip
+- emphasis_words: array of up to 8 strings, each one word or a 2-word unit, or [] when nothing stands out
 
 B-roll cue guidance:
 - at_sec is seconds from the START of this clip (0 = the clip's own start), NOT the video's absolute timeline — unlike start_time/end_time, which are absolute.
 - query must be a short (2-5 word), visually concrete stock-footage search term describing something a camera could literally film — e.g. "city skyline at night", "hands typing on laptop", "stock market chart screen". Never restate the clip's title, hook, or wording verbatim, and never use abstract, idiomatic, or hyperbolic phrasing (for example, a clip about "mistakes killing your ad budget" must NOT produce a query like "killing" or "mistakes" — describe the visual scene instead, such as "marketing dashboard declining" or "frustrated person at desk"). A literal reading of the query is what gets searched, so avoid any wording that could match violent, graphic, or otherwise unsafe footage when taken literally.
 - reason is a one-line explanation of why a cutaway helps at that moment.
+
+Emphasis word guidance:
+- Pick the words a short-form editor would blow up on screen: key nouns or verbs, numbers with their unit (e.g. "50 percent"), and negations.
+- Copy each one exactly as it is written in this clip's own transcript text, in the transcript's language and script. Never translate, transliterate, or paraphrase it.
+- Each entry is a single word, or two adjacent words that belong together. Skip filler, pronouns, and function words.
 
 Important constraints:
 - Each returned clip must stay within the request's required duration window.
@@ -278,6 +285,8 @@ export interface RawDetectedClip {
   emotionalIntensity: number;
   storyCompleteness: number;
   brollCues?: BrollCue[];
+  /** Clip Emphasis Words as the model wrote them; checked against the final slice when stored. */
+  emphasisWords?: string[];
 }
 
 export interface FinalDetectedClip {
@@ -300,6 +309,7 @@ export interface FinalDetectedClip {
   instagramScore: number;
   transcriptSlice: TranscriptUtterance[];
   brollCues?: BrollCue[];
+  emphasisWords?: string[];
 }
 
 export interface ClipCandidate extends FinalDetectedClip {
@@ -467,6 +477,7 @@ export function normalizeLlmClip(clip: {
   emotional_intensity: number;
   story_completeness_score: number;
   broll_cues: Array<{ at_sec: number; query: string; reason: string }>;
+  emphasis_words: string[];
 }): RawDetectedClip | null {
   if (!Number.isFinite(clip.start_time) || !Number.isFinite(clip.end_time)) {
     return null;
@@ -493,6 +504,7 @@ export function normalizeLlmClip(clip: {
       query: c.query,
       reason: c.reason,
     })),
+    emphasisWords: clip.emphasis_words,
   };
 }
 
@@ -665,6 +677,7 @@ export function buildMarketCompliantClipCandidates(input: {
       instagramScore,
       transcriptSlice: clipUtterances,
       brollCues: raw.brollCues,
+      emphasisWords: raw.emphasisWords,
       rawStartSec: raw.startSec,
       rawEndSec: raw.endSec,
       rawDurationSec,
@@ -742,6 +755,7 @@ export const CLIP_DETECTION_JSON_SCHEMA = {
           "emotional_intensity",
           "story_completeness_score",
           "broll_cues",
+          "emphasis_words",
         ],
         properties: {
           title: { type: "string", minLength: 1 },
@@ -792,6 +806,11 @@ export const CLIP_DETECTION_JSON_SCHEMA = {
                 reason: { type: "string", minLength: 1 },
               },
             },
+          },
+          emphasis_words: {
+            type: "array",
+            maxItems: CLIP_EMPHASIS_WORDS_LIMIT,
+            items: { type: "string", minLength: 1, maxLength: CLIP_EMPHASIS_WORD_MAX_LENGTH },
           },
         },
       },

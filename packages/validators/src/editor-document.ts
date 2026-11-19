@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { CLIP_EMPHASIS_WORD_MAX_LENGTH, CLIP_EMPHASIS_WORDS_LIMIT } from "./caption-emphasis";
 import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
 import { joinTranscriptWords } from "./text-script";
 import {
@@ -69,6 +70,14 @@ export const editorDocumentSchema = z
 		sceneBlocks: z.array(sceneBlockSchema).max(TIMED_EDIT_LIMITS.sceneBlocks).default([]),
 		censorSegments: z.array(censorSegmentSchema).max(TIMED_EDIT_LIMITS.censorSegments).default([]),
 		mediaMotions: z.array(mediaMotionSchema).max(TIMED_EDIT_LIMITS.mediaMotions).default([]),
+    /**
+     * Clip Emphasis Words (`Clip.emphasisWords`): words or 2-word units the
+     * clip selection call marked for emphasis, checked against the clip's
+     * transcript when the clip was created. Dynamic caption roles favour
+     * them. Set only at creation: editor saves keep the stored value. Absent
+     * for clips without them.
+     */
+    emphasisWords: z.array(z.string().min(1).max(CLIP_EMPHASIS_WORD_MAX_LENGTH)).max(CLIP_EMPHASIS_WORDS_LIMIT).optional(),
   })
   .refine((doc) => doc.clipEndSec > doc.clipStartSec, {
     message: "clipEndSec must be greater than clipStartSec",

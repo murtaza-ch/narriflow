@@ -200,16 +200,26 @@ function cleanupIntents(
   return [...new Map(intents.map((intent) => [intent.objectKey, intent])).values()];
 }
 
+/** Clip Emphasis Words are set when the clip is created; a client's
+ * document never changes them, and the commit never writes their column. */
+function withStoredEmphasisWords(
+  document: EditorDocument,
+  stored: EditorDocument,
+): EditorDocument {
+  const { emphasisWords: _client, ...rest } = document;
+  return stored.emphasisWords ? { ...rest, emphasisWords: stored.emphasisWords } : rest;
+}
+
 function planNextDocument(
   state: ClipEditorDocumentStoredState,
   intent: ClipEditorDocumentMutationIntent,
 ): EditorDocument | null {
   if (intent.kind === "replace") {
-    return canonicalizeDocument(intent.document, sourceOf(state));
+    return withStoredEmphasisWords(canonicalizeDocument(intent.document, sourceOf(state)), state.document);
   }
   if (intent.kind === "reset") {
     return state.original
-      ? canonicalizeDocument(state.original, sourceOf(state))
+      ? withStoredEmphasisWords(canonicalizeDocument(state.original, sourceOf(state)), state.document)
       : null;
   }
   if (intent.kind === "set_boundaries") {
@@ -920,6 +930,8 @@ export function encodeClipEditorDocumentForStorage(
   sceneBlocks: Prisma.InputJsonValue;
   censorSegments: Prisma.InputJsonValue;
   mediaMotions: Prisma.InputJsonValue;
+  /** Absent when the clip has none, so its column stays NULL. */
+  emphasisWords?: Prisma.InputJsonValue;
 } {
   const document = canonicalizeDocument(value, source);
   return {
@@ -935,6 +947,7 @@ export function encodeClipEditorDocumentForStorage(
     sceneBlocks: toPrismaJson(document.sceneBlocks),
     censorSegments: toPrismaJson(document.censorSegments),
     mediaMotions: toPrismaJson(document.mediaMotions),
+    ...(document.emphasisWords ? { emphasisWords: toPrismaJson(document.emphasisWords) } : {}),
   };
 }
 

@@ -22,6 +22,11 @@ export type CaptionEmphasisOverride = z.infer<typeof captionEmphasisOverrideSche
 /** Stored overrides per clip. Overrides whose key matches no word are kept, not cleaned up. */
 export const CAPTION_EMPHASIS_OVERRIDE_LIMIT = 2000;
 
+/** Clip Emphasis Words: at most this many per clip, from the clip selection call. */
+export const CLIP_EMPHASIS_WORDS_LIMIT = 8;
+/** Longest stored Clip Emphasis Word (a word or a 2-word unit), in UTF-16 code units. */
+export const CLIP_EMPHASIS_WORD_MAX_LENGTH = 40;
+
 export interface CaptionEmphasisWord {
   /** Word Key; null for dub captions. */
   readonly key: string | null;
@@ -59,6 +64,8 @@ export const CAPTION_EMPHASIS_WEIGHTS = {
   lengthPerLetter: 0.1,
   lengthMax: 1,
   repeat: -1.0,
+  /** A word or 2-word unit the clip selection model marked for emphasis (Clip Emphasis Words). */
+  llm: 3.0,
   gateMinScore: 0.5,
   gateMargin: 0,
 } as const;
@@ -70,6 +77,12 @@ export interface CaptionEmphasisInput {
   readonly language: string | null;
   readonly overrides: Readonly<Record<string, CaptionEmphasisOverride>>;
   readonly policy: CaptionEmphasisPolicy;
+  /**
+   * Clip Emphasis Words: words or 2-word units the clip selection model marked
+   * for emphasis, matched by normalised text. Absent for dub captions and for
+   * clips without them, which score exactly as before.
+   */
+  readonly emphasisWords?: readonly string[];
   /** Tuning only; production uses `CAPTION_EMPHASIS_WEIGHTS`. */
   readonly weights?: CaptionEmphasisWeights;
 }
@@ -126,6 +139,64 @@ function letterCount(normalised: string): number {
 
 function wordSet(words: string): ReadonlySet<string> {
   return new Set(words.split(/\s+/).filter(Boolean).map(normaliseWord));
+}
+
+/** A Clip Emphasis Word as 1 or 2 normalised tokens, or null when it is neither. */
+function emphasisTokens(text: string): string[] | null {
+  const tokens = text.trim().split(/\s+/u).filter(Boolean).map(normaliseWord);
+  return tokens.length >= 1 && tokens.length <= 2 && tokens.every(Boolean) ? tokens : null;
+}
+
+/**
+ * The Clip Emphasis Words worth storing: each suggestion trimmed, 1 or 2
+ * words, at most `CLIP_EMPHASIS_WORD_MAX_LENGTH` long, and present in the
+ * clip's own transcript after the scorer's normalisation (a 2-word unit as
+ * adjacent words of one utterance). Suggestions the model invented are
+ * dropped, duplicates keep the first, and at most `CLIP_EMPHASIS_WORDS_LIMIT`
+ * remain, in the model's order.
+ */
+export function clipEmphasisWords(
+  suggestions: readonly string[],
+  utterances: readonly { readonly text: string; readonly words: readonly { readonly word: string }[] }[],
+): string[] {
+  const singles = new Set<string>();
+  const pairs = new Set<string>();
+  for (const utterance of utterances) {
+    const tokens = (utterance.words.length > 0 ? utterance.words.map((word) => word.word) : utterance.text.split(/\s+/u))
+      .map(normaliseWord)
+      .filter(Boolean);
+    tokens.forEach((token, index) => {
+      singles.add(token);
+      if (index > 0) pairs.add(`${tokens[index - 1]} ${token}`);
+    });
+  }
+  const kept = new Map<string, string>();
+  for (const suggestion of suggestions) {
+    const text = suggestion.trim().replace(/\s+/gu, " ");
+    if (!text || text.length > CLIP_EMPHASIS_WORD_MAX_LENGTH) continue;
+    const tokens = emphasisTokens(text);
+    if (!tokens) continue;
+    const key = tokens.join(" ");
+    if (kept.has(key) || !(tokens.length === 1 ? singles : pairs).has(key)) continue;
+    kept.set(key, text);
+    if (kept.size === CLIP_EMPHASIS_WORDS_LIMIT) break;
+  }
+  return [...kept.values()];
+}
+
+interface EmphasisMatches {
+  readonly singles: ReadonlySet<string>;
+  readonly pairs: ReadonlySet<string>;
+}
+
+function emphasisMatches(words: readonly string[] | undefined): EmphasisMatches {
+  const singles = new Set<string>();
+  const pairs = new Set<string>();
+  for (const word of words ?? []) {
+    const tokens = emphasisTokens(word);
+    if (tokens) (tokens.length === 1 ? singles : pairs).add(tokens.join(" "));
+  }
+  return { singles, pairs };
 }
 
 function wordList(source: Readonly<Record<keyof WordList, string>>): WordList {
@@ -232,6 +303,8 @@ interface ScoredWord {
   readonly eligible: boolean;
   readonly score: number;
   readonly sentenceInitial: boolean;
+  /** Matched a single Clip Emphasis Word; `score` includes the bonus. */
+  readonly llm: boolean;
 }
 
 interface Candidate {
@@ -240,7 +313,11 @@ interface Candidate {
   readonly score: number;
 }
 
-function scoreWords(input: CaptionEmphasisInput, weights: CaptionEmphasisWeights): (ScoredWord[] | null)[] {
+function scoreWords(
+  input: CaptionEmphasisInput,
+  weights: CaptionEmphasisWeights,
+  emphasis: EmphasisMatches,
+): (ScoredWord[] | null)[] {
   const language = normalizeProviderLanguageCode(input.language);
   const timed = input.cues.map((cue) => !isUntimedCue(cue));
   const facts = input.cues.map((cue, cueIndex) =>
@@ -295,26 +372,49 @@ function scoreWords(input: CaptionEmphasisInput, weights: CaptionEmphasisWeights
       if (index === cue.length - 1) score += weights.cueFinal;
       if (fact.capitalised && !sentenceInitial) score += weights.capitalised;
       score += Math.min(weights.lengthMax, fact.letters * weights.lengthPerLetter);
+      const llm = fact.normalised !== "" && emphasis.singles.has(fact.normalised);
+      if (llm) score += weights.llm;
       return {
         word,
         facts: fact,
         eligible: !fact.minor && !fact.filler && !word.masked,
         score,
         sentenceInitial,
+        llm,
       };
     });
   });
 }
 
-/** Single words and 2-word units that can be the cue's hero. */
-function cueCandidates(words: readonly ScoredWord[]): Candidate[] {
+/**
+ * Single words and 2-word units that can be the cue's hero. A 2-word Clip
+ * Emphasis Word forms a unit when neither word is masked and at least one can
+ * be the hero; it scores as its better word plus the bonus, counted once.
+ */
+function cueCandidates(
+  words: readonly ScoredWord[],
+  emphasis: EmphasisMatches,
+  weights: CaptionEmphasisWeights,
+): Candidate[] {
   const candidates: Candidate[] = [];
   const titled = (entry: ScoredWord | undefined) =>
     entry !== undefined && entry.eligible && entry.facts.capitalised && !entry.sentenceInitial;
   for (let index = 0; index < words.length; index += 1) {
     const entry = words[index]!;
-    if (!entry.eligible) continue;
     const next = words[index + 1];
+    const pairText = next === undefined ? null : `${entry.facts.normalised} ${next.facts.normalised}`;
+    if (
+      next !== undefined && pairText !== null && emphasis.pairs.has(pairText) &&
+      !entry.word.masked && !next.word.masked && (entry.eligible || next.eligible)
+    ) {
+      const base = Math.max(
+        ...[entry, next].filter((word) => word.eligible).map((word) => word.score - (word.llm ? weights.llm : 0)),
+      );
+      candidates.push({ span: [index, index + 1], text: pairText, score: base + weights.llm });
+      index += 1;
+      continue;
+    }
+    if (!entry.eligible) continue;
     if (entry.facts.number && next !== undefined && next.facts.unit && !next.word.masked) {
       candidates.push({ span: [index, index + 1], text: `${entry.facts.normalised} ${next.facts.normalised}`, score: entry.score });
       index += 1;
@@ -376,14 +476,15 @@ function overriddenPick(
  */
 export function assignCaptionRoles(input: CaptionEmphasisInput): CaptionCueRoles[] {
   const weights = input.weights ?? CAPTION_EMPHASIS_WEIGHTS;
-  const scored = scoreWords(input, weights);
+  const emphasis = emphasisMatches(input.emphasisWords);
+  const scored = scoreWords(input, weights, emphasis);
   let previousAutomatic: string | null = null;
   return scored.map((words, cueIndex) => {
     if (words === null) {
       previousAutomatic = null;
       return { roles: input.cues[cueIndex]!.map(() => "body" as const), heroSpan: null };
     }
-    const candidates = cueCandidates(words);
+    const candidates = cueCandidates(words, emphasis, weights);
     const automatic = gatedPick(candidates, previousAutomatic, weights);
     let heroSpan: readonly [number, number] | null = null;
     if (input.policy === "auto") {

@@ -2610,7 +2610,8 @@ function captionLayersForTarget(input: {
         });
       }
     }
-    return withCaptionBlocks(layers, pending, document, language);
+    // Dub captions are in another language: Clip Emphasis Words do not apply.
+    return withCaptionBlocks(layers, pending, document, language, undefined);
   }
 
   for (const utterance of document.transcriptSlice) {
@@ -2754,7 +2755,7 @@ function captionLayersForTarget(input: {
     });
   }
 
-  return withCaptionBlocks(layers, pending, document, language);
+  return withCaptionBlocks(layers, pending, document, language, document.emphasisWords);
 }
 
 /** Roles as a second pass over every cue of a target, then one Caption Block per timed cue. */
@@ -2763,6 +2764,7 @@ function withCaptionBlocks(
   pending: readonly PendingCaptionCue[],
   document: EditorDocument,
   language: string | null,
+  emphasisWords: readonly string[] | undefined,
 ): CompositionCaptionVisualLayer[] {
   const preset = document.captionPreset;
   if (!preset.dynamic || pending.length === 0) return layers;
@@ -2771,6 +2773,7 @@ function withCaptionBlocks(
     language,
     overrides: document.studioEdits.captionEmphasis ?? {},
     policy: "auto",
+    ...(emphasisWords ? { emphasisWords } : {}),
   });
   pending.forEach((cue, index) => {
     if (cue.layerIndex === null) return;

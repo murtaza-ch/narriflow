@@ -235,6 +235,8 @@ export interface DetectedClipArtifactInput {
   platformFit?: string[];
   transcriptSlice: Prisma.InputJsonValue;
   brollCues?: unknown;
+  /** Clip Emphasis Words from `buildDetectedClipRows`. */
+  emphasisWords?: Prisma.InputJsonValue;
   captionPreset: Prisma.InputJsonValue;
   studioEdits: Prisma.InputJsonValue;
   brollUrl: string | null;

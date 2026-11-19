@@ -137,6 +137,8 @@ function decodeStoredDocument(row: unknown): EditorDocument {
   const sceneBlocks = Reflect.get(row, "sceneBlocks");
   const censorSegments = Reflect.get(row, "censorSegments");
   const mediaMotions = Reflect.get(row, "mediaMotions");
+  // Null or absent (a select that leaves the column out): no Clip Emphasis Words.
+  const emphasisWords = Reflect.get(row, "emphasisWords") ?? undefined;
   if (editorDocumentVersion !== EDITOR_DOCUMENT_VERSION) {
     persistenceError("unsupported_editor_document_version", "Stored Clip Editor Document uses an unsupported version");
   }
@@ -177,6 +179,7 @@ function decodeStoredDocument(row: unknown): EditorDocument {
     studioEdits: studio.data,
     brollUrl,
     deletedRanges: ranges.data,
+    ...(emphasisWords === undefined ? {} : { emphasisWords }),
   });
   if (!decoded.success) {
     persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");

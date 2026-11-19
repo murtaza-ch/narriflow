@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULT_CAPTION_PRESET } from "./caption-preset";
+import { clipDetectionLlmResponseSchema } from "./clip";
 import {
   EDITOR_HISTORY_LIMIT,
   applyEditorAction,
@@ -1035,5 +1036,28 @@ describe("setStudioEdits keeps the document saveable", () => {
     expect(set(doc, { visualBroll: placements(visualBroll + 1) })).toBe(doc);
     expect(set(doc, { textLayers: [layer(0, "a".repeat(textLayerChars))] })).not.toBe(doc);
     expect(set(doc, { textLayers: [{ ...layer(0), text: "a".repeat(textLayerChars + 1) }] })).toBe(doc);
+  });
+});
+
+describe("Clip Emphasis Words on the document", () => {
+  test("are optional and bounded", () => {
+    const document = makeDocument();
+    expect("emphasisWords" in document).toBe(false);
+    expect(editorDocumentSchema.parse({ ...document, emphasisWords: ["growth", "50 percent"] }).emphasisWords).toEqual(["growth", "50 percent"]);
+    expect(editorDocumentSchema.safeParse({ ...document, emphasisWords: Array.from({ length: 9 }, () => "word") }).success).toBe(false);
+    expect(editorDocumentSchema.safeParse({ ...document, emphasisWords: ["x".repeat(41)] }).success).toBe(false);
+    expect(editorDocumentSchema.safeParse({ ...document, emphasisWords: [""] }).success).toBe(false);
+  });
+});
+
+describe("clipDetectionLlmResponseSchema emphasis_words", () => {
+  const clip = { title: "T", start_time: 1, end_time: 40, hook_text: "H", payoff_text: "P", reasoning: "R", category: "story", platform_fit: ["tiktok"],
+    hook_strength: 50, emotional_intensity: 50, story_completeness_score: 50, broll_cues: [] };
+
+  test("keeps the model's list and turns a missing or malformed one into an empty list", () => {
+    const parse = (extra: Record<string, unknown>) => clipDetectionLlmResponseSchema.parse({ clips: [{ ...clip, ...extra }] }).clips[0]!.emphasis_words;
+    expect(parse({ emphasis_words: ["growth", "not"] })).toEqual(["growth", "not"]);
+    expect(parse({})).toEqual([]);
+    expect(parse({ emphasis_words: [1, "growth"] })).toEqual([]);
   });
 });

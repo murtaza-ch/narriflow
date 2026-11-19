@@ -239,6 +239,7 @@ function frozenClipSnapshot(clip: {
   brollCues: Prisma.JsonValue | null;
   studioEdits: Prisma.JsonValue | null;
   deletedRanges: Prisma.JsonValue | null;
+  emphasisWords: Prisma.JsonValue | null;
   layoutAnalysis: Prisma.JsonValue | null;
   autoLayoutAnalysis: Prisma.JsonValue | null;
   splitLayoutAnalysis: Prisma.JsonValue | null;
@@ -270,6 +271,7 @@ function frozenClipSnapshot(clip: {
     sceneBlocks: document.sceneBlocks,
     censorSegments: document.censorSegments,
     mediaMotions: document.mediaMotions,
+    ...(document.emphasisWords ? { emphasisWords: document.emphasisWords } : {}),
     layoutAnalysis: clip.layoutAnalysis ?? Prisma.JsonNull,
     autoLayoutAnalysis: clip.autoLayoutAnalysis ?? Prisma.JsonNull,
     splitLayoutAnalysis: clip.splitLayoutAnalysis ?? Prisma.JsonNull,
