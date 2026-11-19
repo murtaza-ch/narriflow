@@ -128,8 +128,8 @@ const nextConfig: NextConfig = {
               "font-src 'self' data:",
               "style-src 'self' 'unsafe-inline'",
               // Google Identity Services and Picker, and the Dropbox Chooser, for the upload page's cloud pickers.
-              `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://apis.google.com https://www.dropbox.com https://www.youtube.com https://cdn.jsdelivr.net`,
-              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://*.r2.cloudflarestorage.com https://accounts.google.com https://cdn.jsdelivr.net`,
+              `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://apis.google.com https://www.dropbox.com https://www.youtube.com`,
+              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://*.r2.cloudflarestorage.com https://accounts.google.com`,
               `frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://docs.google.com https://content.googleapis.com https://www.dropbox.com https://www.youtube.com https://www.youtube-nocookie.com`,
               "worker-src 'self' blob:",
               `report-uri ${CSP_REPORT_URL}`,

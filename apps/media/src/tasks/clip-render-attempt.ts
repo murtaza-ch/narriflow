@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { RenderAttemptTelemetry, renderReplicaResources } from "../render-diagnostic-adapter";
 import { executorProcessFailure } from "../worker-process";
-import { readFile, statfs } from "node:fs/promises";
+import { statfs } from "node:fs/promises";
 import { transportRenderCommand } from "../render-command-transport";
 import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
 import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
@@ -89,8 +89,6 @@ import {
 	type HdrColor,
 } from "../composition-ffmpeg-adapter";
 import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../caption-ass";
-import { CAPTION_MATTE_UNAVAILABLE, captionBehindGraphInput, type PersonMatteOutcome, preparePersonMatte } from "../caption-behind";
-import type { CompositionCaptionBehindInput } from "../composition-ffmpeg-adapter";
 import {
 	CAPTION_RENDER_DIAGNOSTIC_PATTERN,
 	type CaptionGlyphUnavailableError,
@@ -656,10 +654,6 @@ interface PendingRenderOutput {
 	captionWarnings?: CaptionWarnings;
 	/** Code points forced out of the text after libass reported them. */
 	captionOmitCodePoints?: Set<number>;
-	/** Heroes behind the speaker (spec 5.12): the prepared matte, and the graph input once a cue is behind. */
-	personMatte?: Extract<PersonMatteOutcome, { status: "ready" }>;
-	behindSubtitlePath?: string;
-	captionBehind?: CompositionCaptionBehindInput | null;
 	/** Target resolution for this specific render row (vizard-parity Phase C
 	 *  export options) — read off the ClipRender row, already entitlement-
 	 *  clamped by clip.service's triggerClipRendering/autoQueueDefaultRenders.
@@ -1121,8 +1115,6 @@ interface CaptionWarnings {
 	emojiSkipped: SkippedEmoji[];
 	/** Cues whose pills, plate and overlays were dropped because HarfBuzz could not shape their font. */
 	geometryUnavailable: CaptionGeometryUnavailable[];
-	/** The person matte could not be made, so behind heroes were drawn in front (`caption_matte_unavailable`). */
-	matteUnavailable?: boolean;
 }
 
 /** The caption script, emoji overlays and glyph notices for one output. A
@@ -1135,9 +1127,8 @@ function compileCaptionTrack(
 	fonts: Parameters<typeof compileCompositionPlanCaptions>[2],
 	context: Record<string, unknown>,
 	omitCodePoints?: ReadonlySet<number>,
-	behind?: Parameters<typeof compileCompositionPlanCaptions>[4],
 ): CaptionTrack {
-	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints, behind);
+	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints);
 	for (const notice of track.notices) {
 		log("info", notice.code, {
 			...context,
@@ -1207,7 +1198,6 @@ function withCaptionWarningCodes(
 		...(warnings && warnings.omitted.size > 0 ? ["caption_glyph_omitted"] : []),
 		...(warnings && warnings.emojiSkipped.length > 0 ? ["caption_emoji_skipped"] : []),
 		...(warnings && warnings.geometryUnavailable.length > 0 ? ["caption_geometry_unavailable"] : []),
-		...(warnings?.matteUnavailable ? [CAPTION_MATTE_UNAVAILABLE] : []),
 	];
 	if (codes.length === 0) return analytics;
 	return { ...analytics, fallbackCode: [...new Set([...analytics.fallbackCode.filter((code) => code !== "none"), ...codes])].sort() };
@@ -3702,14 +3692,9 @@ async function renderClipGroup(input: {
 				customFonts,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
 				omit,
-				output.personMatte?.placements,
 			);
 			recordCaptionWarnings(output, track);
 			await currentRenderAdapters().workspace.writeFile(output.subtitlePath, track.ass, "utf-8");
-			// The graph keeps its behind stage: rewrite that script with the same placements.
-			if (output.captionBehind && output.behindSubtitlePath) {
-				await currentRenderAdapters().workspace.writeFile(output.behindSubtitlePath, track.behindAss, "utf-8");
-			}
 		};
 	{
 		const backgroundImageAvailability =
@@ -3909,72 +3894,6 @@ async function renderClipGroup(input: {
 		}
 	}
 
-	// Heroes behind the speaker (spec 5.12). The captions above draw every cue in front. A target
-	// whose plan asks for a person matte starts it now, before any render, one target after
-	// another, so a later target's matte runs while an earlier one encodes. Each output awaits
-	// its own matte just before its command is compiled (`applyPersonMatte`).
-	const personMattes = new Map<string, Promise<{ outcome: PersonMatteOutcome } | { error: unknown }>>();
-	if (compositionPlan && probe.hasVideo) {
-		const plan: ClipCompositionPlan = compositionPlan;
-		let previous: Promise<unknown> = Promise.resolve();
-		for (const output of outputs) {
-			if (!plan.targets.find((target) => target.id === output.clipRenderId)?.mattes?.length) continue;
-			const deadlineMs = encodeDeadlineFor(probe, plan.editedDurationSec, false);
-			const job = previous.then(() => preparePersonMatte({
-				plan, targetId: output.clipRenderId, sourcePath, startSec: clipStartSec, endSec: clipEndSec, source: probe, cutPlan,
-				fonts: customFonts, directory: tempDir, python: currentRenderConfig().reframePython, modelPath: currentRenderConfig().personMatteModelPath,
-				run: async (command, args) => {
-					const result = await currentRenderAdapters().workerProcess.execute({
-						command, args, signal: currentRenderSignal() ?? new AbortController().signal, deadlineMs, captureStdout: true,
-						acceptableExitCodes: command === "ffmpeg" ? [0, 1] : [0, 1, 2, 3],
-						diagnose: diagnoseRenderProcessOperation,
-					});
-					return { exitCode: result.exitCode, stdout: result.stdout.toString("utf8") };
-				},
-				writeFile: (path, contents) => currentRenderAdapters().workspace.writeFile(path, contents, "utf-8"),
-				readFile: async (path) => new Uint8Array(await readFile(path)),
-			})).then((outcome) => ({ outcome }), (error: unknown) => ({ error }));
-			personMattes.set(output.clipRenderId, job);
-			previous = job;
-		}
-	}
-	/** Waits for an output's matte and redraws its captions with the behind cues placed; failure keeps them in front. */
-	const applyPersonMatte = async (output: PendingRenderOutput): Promise<void> => {
-		const job = personMattes.get(output.clipRenderId);
-		if (!job || !compositionPlan || !output.subtitlePath) return;
-		const settled = await job;
-		const context = { workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId };
-		if ("error" in settled) rethrowRenderControlFlow(settled.error);
-		// Any other failure (a deadline, an unreadable file) is typed degradation, never a failed render.
-		const outcome: PersonMatteOutcome = "error" in settled
-			? { status: "unavailable", reason: settled.error instanceof WorkflowFailure ? settled.error.code : "matte_failed" }
-			: settled.outcome;
-		if (outcome.status === "none") return;
-		if (outcome.status === "unavailable") {
-			const warnings: CaptionWarnings = output.captionWarnings ?? { omitted: new Map(), emojiSkipped: [], geometryUnavailable: [] };
-			warnings.matteUnavailable = true;
-			output.captionWarnings = warnings;
-			log("error", CAPTION_MATTE_UNAVAILABLE, { ...context, phase: "caption_matte", disposition: "degraded", reason: outcome.reason });
-			return;
-		}
-		const track = compileCaptionTrack(compositionPlan, output.clipRenderId, customFonts, context, output.captionOmitCodePoints, outcome.placements);
-		recordCaptionWarnings(output, track);
-		await currentRenderAdapters().workspace.writeFile(output.subtitlePath, track.ass, "utf-8");
-		output.personMatte = outcome;
-		const target = compositionPlan.targets.find((candidate) => candidate.id === output.clipRenderId)!;
-		const behindPath = output.subtitlePath.replace(/\.ass$/, "-behind.ass");
-		output.captionBehind = captionBehindGraphInput({ track, matte: outcome, subtitlePath: behindPath, canvas: target.canvas });
-		if (output.captionBehind) {
-			await currentRenderAdapters().workspace.writeFile(behindPath, track.behindAss, "utf-8");
-			output.behindSubtitlePath = behindPath;
-		}
-		log("info", "clip_render_caption_behind", {
-			...context, phase: "caption_matte",
-			behindCues: track.behind.length,
-			frontCues: [...outcome.placements.values()].filter((placement) => !placement.behind).length,
-		});
-	};
-
   const validateOutput = (output: PendingRenderOutput, plan: ClipCompositionPlan, audio: BoundCompositionAudioRenderRequest, mixPeak: MixPeakResult | null) => requireExecutionContext().telemetry.measure("validate", "output", () => validateRenderOutput({
     path: output.outputPath,
     expected: compositionOutputExpectation({ plan, targetId: output.clipRenderId, source: probe, audio, hdrAssets: Object.keys(hdrAssets).length > 0 }),
@@ -4127,7 +4046,6 @@ async function renderClipGroup(input: {
 			};
 			let outputSlot: RenderReservation | null = null;
 			try {
-				await applyPersonMatte(output);
 				const resolvedBrollAssets = {
 					...Object.fromEntries(
 						plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
@@ -4166,7 +4084,6 @@ async function renderClipGroup(input: {
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,
 							captionEmoji: output.captionEmoji,
-							captionBehind: output.captionBehind ?? null,
 						},
 					});
 				const ffmpegArgs = compileVideo(null);

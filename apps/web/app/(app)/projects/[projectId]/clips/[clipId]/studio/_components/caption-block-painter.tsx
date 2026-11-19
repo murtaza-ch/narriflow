@@ -336,7 +336,6 @@ function buildPaint(
   canvas: { readonly width: number; readonly height: number },
   customFont: BrandFontChoice | null,
   force: boolean,
-  liftPx = 0,
 ): PaintResult | null {
   const { block, preset, language } = cue;
   if (block.roles.length === 0 || block.roles.length !== cue.words.length) return null;
@@ -373,7 +372,6 @@ function buildPaint(
     direction: cueDir,
     cueEndSec: cue.activeRange.endSec,
     language: cue.language,
-    ...(liftPx > 0 ? { liftPx } : {}),
   });
   const words = prepared.map((word, index): CaptionBlockPaintWord => {
     const placed = layout.words[index]!;
@@ -416,8 +414,6 @@ const subscribeNothing = () => () => undefined;
 export function useCaptionBlockPaint(
   cue: CaptionBlockCueInput | null,
   canvas: { readonly width: number; readonly height: number },
-  /** The behind lift (`captionBehindPlacement`), canvas px. */
-  liftPx = 0,
 ): CaptionBlockPaint | null {
   const client = useSyncExternalStore(subscribeNothing, () => true, () => false);
   const customFont = useBrandFont(cue?.preset.fontAsset);
@@ -425,8 +421,8 @@ export function useCaptionBlockPaint(
   const [settledFor, setSettledFor] = useState<CaptionBlockCueInput | null>(null);
   const { width, height } = canvas;
   const result = useMemo(
-    () => (client && cue && width > 0 && height > 0 ? buildPaint(cue, { width, height }, customFont, settledFor === cue, liftPx) : null),
-    [client, cue, width, height, customFont, settledFor, liftPx],
+    () => (client && cue && width > 0 && height > 0 ? buildPaint(cue, { width, height }, customFont, settledFor === cue) : null),
+    [client, cue, width, height, customFont, settledFor],
   );
   useEffect(() => {
     if (result?.status !== "pending" || !cue) return;
@@ -707,11 +703,6 @@ interface CaptionBlockWordsProps {
   timeSource: CaptionTimeSource;
   /** Settled words, as classic presets show with reduced motion. */
   reducedMotion: boolean;
-  /**
-   * Which rows to draw (spec 5.12): "behind" is the hero row (hero words, decorations), drawn under
-   * the person; "front" every other word. Default "all".
-   */
-  rows?: "all" | "behind" | "front";
 }
 
 /**
@@ -719,9 +710,7 @@ interface CaptionBlockWordsProps {
  * siblings in the export's layer order (every shadow below every outer
  * stroke, glow and text), as the worker's per-layer events stack.
  */
-export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale, origin, timeSource, reducedMotion, rows = "all" }: CaptionBlockWordsProps) {
-  const drawn = (word: CaptionBlockPaintWord) => rows === "all" || (rows === "behind") === word.hero;
-  const drawsDecorations = rows !== "front";
+export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale, origin, timeSource, reducedMotion }: CaptionBlockWordsProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const { preset } = paint.cue;
   const S = preset.fontSize;
@@ -827,7 +816,7 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
   ) => (
     <div key={name} style={{ position: "absolute", left: 0, top: 0 }}>
       {paint.words.flatMap((word, index) =>
-        !drawn(word) ? [] : word.items.map((item, at) => {
+        word.items.map((item, at) => {
           const content = render(word, item, item.px / S);
           return content === null ? null : (
             <WordLayer key={`${index}-${at}`} word={word} item={item} index={index} scale={scale} origin={origin} gradient={gradientFor(word)}>
@@ -854,7 +843,7 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
     layers.push(
       <div key="tile-shadow" style={{ position: "absolute", left: 0, top: 0 }}>
         {paint.words.map((word, index) =>
-          word.placed.tile && word.tileColor && drawn(word) ? (
+          word.placed.tile && word.tileColor ? (
             <TileLayer key={index} word={word} index={index} scale={scale} origin={origin} color={preset.shadowColor} offset={word.placed.tile.shadowOffset} />
           ) : null)}
       </div>,
@@ -864,7 +853,7 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
     layers.push(
       <div key="tile" style={{ position: "absolute", left: 0, top: 0 }}>
         {paint.words.map((word, index) =>
-          word.placed.tile && word.tileColor && drawn(word) ? (
+          word.placed.tile && word.tileColor ? (
             <TileLayer key={index} word={word} index={index} scale={scale} origin={origin} color={word.tileColor} offset={0} />
           ) : null)}
       </div>,
@@ -946,7 +935,7 @@ export const CaptionBlockWords = memo(function CaptionBlockWords({ paint, scale,
     }
     decorationFills.push(<DecorationLayer key={index} decoration={decoration} index={index} scale={scale} origin={origin} color={decoration.color} />);
   });
-  if (decorationFills.length > 0 && drawsDecorations) {
+  if (decorationFills.length > 0) {
     layers.push(
       <div key="decoration-shadow" style={{ position: "absolute", left: 0, top: 0 }}>{decorationShadows}</div>,
       <div key="decoration" style={{ position: "absolute", left: 0, top: 0 }}>{decorationFills}</div>,

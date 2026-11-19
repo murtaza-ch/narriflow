@@ -4,18 +4,17 @@
 
 **Blocked by:** 06
 
-**Status:** done
+**Status:** ready-for-agent
 
 Spec: [../spec.md](../spec.md). Follow the spec; where a ticket and the spec disagree, the spec wins.
 
 ## Acceptance
 
-- [x] Model vendored in both places with a hash test; `person_matte.py`; plan `mattes`; matte mode of the visual stack; split caption track and graph.
-- [x] Typed degradation `caption_matte_unavailable` in worker and Studio.
-- [x] G3 on 5 real clips recorded before the Studio half starts.
-- [x] Studio segmenter worker, person canvas, layer order; Depth style; toggle.
-- [ ] Sol visual review recorded.
-- [x] `bun run lint`, `bun run typecheck`, `bun run test` pass (Bun 1.4.4). No PostgreSQL or heavy suites.
+- [ ] Model vendored in both places with a hash test; `person_matte.py`; plan `mattes`; matte mode of the visual stack; split caption track and graph.
+- [ ] Typed degradation `caption_matte_unavailable` in worker and Studio.
+- [ ] G3 on 5 real clips recorded before the Studio half starts.
+- [ ] Studio segmenter worker, person canvas, layer order; Depth style; toggle; Sol visual review recorded.
+- [ ] `bun run lint`, `bun run typecheck`, `bun run test` pass (Bun 1.4.4). No PostgreSQL or heavy suites.
 
 ## Comments
 
@@ -96,56 +95,3 @@ Flicker: on pixels where the source is still, the matte's edge band changes by 0
 ### G3 decision (owner, 2026-11-19)
 
 Evidence regenerated after the scratch wipe in `.scratch/dynamic-captions/out/g3/` (git-ignored). Owner answers: edges good enough; matte runs alongside the render; behind hero auto-placed above the head (spec 5.12 updated). G3 passed. Engine work may start once ticket 07 is committed.
-
-### Opus, 2026-11-19: behind the speaker landed
-
-Not committed. Sol's visual review is the only open box. Evidence is in `.scratch/dynamic-captions/out/09/` (git-ignored).
-
-**Render pipeline, in plain words** (critical path; what changed and why it is safe)
-
-1. Planning is unchanged except that a target whose captions have `block.behind` cues now carries `mattes` (source ranges and the visible crop rectangles).
-2. Right after planning, for each output whose target has `mattes`, the attempt starts `preparePersonMatte` (`apps/media/src/caption-behind.ts`), chained one target after another. It runs `person_matte.py` over the plan's ranges (one decode per group of close ranges, region mode, ≤540 px, smoothing reset per range), then one ffmpeg *matte pass*: the matte goes through the same cut-concat and `compileCompositionPlanVideo` in a new matte mode (source layers get the matte; background, B-roll and inserted scenes are black; drawn blacks land at Y 16 in the yuv chain, so ≤16 is cleared to 0) and comes out as a half-canvas 15 fps gray "canvas matte", plus raw frames at each behind hero's onset.
-3. Each output, inside its existing per-output `try`, first awaits its own matte (`applyPersonMatte`). If ready, the shared rule places every behind cue from those onset frames, the caption track is recompiled with the placements (front script overwrites the same `.ass`; hero rows go to `-behind.ass`), and the command gets `captionBehind`. Control-flow failures (abort, attempt lost, executor faults) are rethrown exactly as before; any other matte failure (exit 3, deadline, unreadable probe) records `caption_matte_unavailable` (log + analytics fallback code on the render) and leaves the all-front track from planning untouched.
-4. The graph change lives only in the caption stage: `scene → split; behind ASS; [matte input]crop→scale→gray; scene crop to the behind band; alphamerge; overlay during behind cues (enable); front ASS; emoji`. The matte is the last input, after the dub, so no other input index moves. With no behind cue (all non-Depth clips, toggle off, matte failed, every cue placed in front) `captionBehind` is null and the command is byte-identical (unit test; all caption snapshots and adapter goldens unchanged).
-5. Glyph recovery (missing-glyph re-render) reuses the stored placements and rewrites both scripts.
-Not added: resource-budget accounting for the matte process (it runs outside `trackEncode`); a matte job still running when the group throws before the output loop is bounded only by its deadline and the abort signal.
-
-**Deviation: "alongside" is limited.** The matte starts first and is fed in when ready, but placement must be known before libass reads the scripts, so for a single output the matte and the encode run one after the other. Overlap happens only across outputs (output 2's matte runs while output 1 encodes). True overlap would need the matte streamed into ffmpeg through a FIFO plus an onset-only placement pre-pass and mid-stream failure handling; I judged that too risky for this critical path without an owner call. It is the main lever left (see timing).
-
-**Measurements** (M1 Pro, local ffmpeg 7.1.5, x264 veryfast crf 21, 1080x1920; load average 9 to 28 from other jobs; min of 3)
-
-30 s Depth clip (Gereon 720p looped to 30 s; 20 cues, mattes cover 20.8 s, 10 cues placed behind):
-
-| | wall s | CPU s |
-| --- | --- | --- |
-| render, toggle off (same Depth look, all front) | 3.63 | 23.2 |
-| `person_matte.py` | 2.76 | 8.8 (with the pass) |
-| matte pass | 0.65 | |
-| render with the behind stage | 4.79 | 27.4 |
-
-Ratios: render alone 1.32x wall / 1.18x CPU; total CPU 1.56x; sequential wall (matte + pass + render) 2.26x. Before two optimisations made here (finish only inside the regions' union; one decode per group of ranges under 1.5 s apart) the matte took 13.5 CPU-s (1.76x total). Modal 4-core estimate stays CPU-bound: about 1.5–1.6x if overlapped, about 2x as built for one output.
-
-**Evidence**
-
-- 15 s renders through the real plan/matte/pass/track/command (`scripts/behind-harness.ts`, a faithful harness of the attempt's steps; synthetic words because the G3 cuts have no transcripts): `gereon/gereon.mp4` (5 of 9 cues behind, lifted 243–275 px), `muse/muse.mp4` (3 of 10 behind: wide two-shots with no person under the hero; close-ups in front), `altman/altman.mp4` (0 of 10), `mkbhd/mkbhd.mp4` (0 of 8): their head tops sit at 100–220 px, above the 192 px safe line, so the rule sends every hero to the front. Frames: `contact-sheet.jpg`, `frames/<clip>-<n>-full.jpg`.
-- Studio (temporary browser harness of the real segmenter worker, person canvas, placement and painter over the Gereon clip, deleted afterwards): `studio/worker-vs-studio-gereon.jpg` (top worker, bottom Studio). Lifts 253 vs 275 px (cue 0; the Studio decided from t = 1.0 because the page opened mid-cue) and 277 vs 269 px (cue 3): the recorded parity exception. The third column pair sits on the word's own onset (opacity 0 in the Studio), so it is not a fair comparison.
-- Worker fixture frames `fixture/depth-en/` (no matte; hero whole). Real-libass parity for `depth-en`: baseline 0.02 px, edges ≤ 1.98 px.
-- Docs frame `apps/web/public/docs/caption-styles/depth.jpg`: the real pipeline over the green-studio backdrop moved down (top filled with blurred backdrop), lift 104 px.
-- Browser playback fps was not re-measured (autoplay did not advance in the headless tab); the spike's numbers stand.
-
-**Interpretations**
-
-1. "Move the behind row up": the whole block moves (lead and tail rows too), so rows never collide (rule 7). "Top of the head" = the highest matte point across 48 columns over the hero's advance box; "covers at most the bottom third" = that point is at or below inkTop + 2/3 of the ink height. The clamp is the block's reserved bounds against the 10% line; when it binds, the hero is drawn in front, unmoved.
-2. Depth: hero colour `#F5F5F5` for "white at 96%" (there is no per-role opacity); `wordsPerCue` 3; letter spacing −0.03 em on the hero (as Stack); rowGap 0.04; small-text soft shadow; backdrop `office`. Motion `slide`, not `rise`: rise reaches full opacity at 140 ms and travels 0.32 em (rule 6), the call 05b made for Marker.
-3. `block.behind` is set by the plan when `heroBehind` is on, the style is a centre-aligned stack with a hero, and the cue has a hero. Any such style may use the toggle (Headline, Editorial, Stack, Groove, Arc, Depth).
-4. The person is redrawn in a full-width band around all behind cues' reserved bounds, grown by a quarter of its height (covers the hero's soft shadow under the person), enabled only during behind cues.
-5. Smoothing resets at plan scene boundaries (the layout engine's shots in Automatic) and at cuts; in Center mode a camera cut inside one scene is not a reset.
-6. Mid-text layers and the logo below captions are not blacked in the matte: they are in the scene copy the person is cut from, so they stay over the person, which is the same picture.
-7. Studio: the segmenter reads the main source layer's crop; the person canvas uses the main video's frame/mask/element styles; secondary two-up tiles get no person in the preview (the export does); B-roll or an inserted scene on screen = no person, hero stays behind unmoved (the export's matte is zero there). Placement uses the first matte that arrives while the hero shows and is kept for the session.
-8. WASM: the package's exports do not expose the WASM files, so the worker loads them from jsDelivr's versioned path (`@mediapipe/tasks-vision@1.2.2`, a test keeps it equal to the installed version); jsDelivr is added to the report-only CSP. Turbopack emits the worker as a classic script, so the classic loader is tried first, then the module loader. The model stays same-origin (`/models/selfie_segmenter.tflite`, hash test against the lock).
-9. Gallery thumbnails and the panel preview draw Depth's hero in front (no matte there).
-10. `env:check` fails in this worktree only because `apps/api/.dev.vars` and `packages/db/.env` are absent; no env file changed.
-
-**Art note for Sol/owner:** with the literal rule, tight talking heads (MKBHD, Altman) never qualify, and Depth then draws a 3–5.5 S white hero over the face at y ≈ 32%. Options if that reads badly: allow more cover, lower the default position, or move front-placed heroes clear of the face.
-
-**Verification** (Bun 1.4.4, worktree root): `bun run lint` 0 errors (baseline 20 warnings, 1 info); `bun run typecheck` 15/15; `bun run test` 14/14 (validators 929, composition-plan 160, caption-fonts 166, services 1629, api 984, api-client 232, web 1171, media 1072 with the real-runtime smoke skipped, mcp-core 170, the rest pass); `bun run check:web-split` passed; `openapi:check` 32 operations; `test:inventory` 301 routes, 0 problems; `CAPTION_BLOCK_PARITY=1` real-libass test 32 pass; `apps/media/python/tests/test_person_matte.py` 21 pass in a LiteRT venv (system Python 3.9: 11 pass, 10 skipped); `caption-behind.test.ts` 12 pass with `PERSON_MATTE_PYTHON` set to that venv (smoke render included). No PostgreSQL or heavy suites, no Docker, no `next build`.

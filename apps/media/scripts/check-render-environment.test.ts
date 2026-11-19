@@ -12,7 +12,6 @@ function runtime(packages: Record<string, string>): RuntimeFingerprint {
     linkedLibraries: [], filters: {}, encoders: {}, fontconfig: "fontconfig2.15.0", fontProbes: [],
     glyphRender: { sha256: "c".repeat(32), error: null }, scriptRender: {}, captionFonts: {}, fallbackFonts: {},
     model: { path: "/model.onnx", sha256: "d".repeat(64) },
-    personMatteModel: { path: "/selfie_segmenter.tflite", sha256: "e".repeat(64) },
     python: { version: "3.13.5", packages, wheelProbeError: null },
   };
 }

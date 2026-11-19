@@ -4,8 +4,6 @@ import {
   captionBlockRows,
   captionBlockSeed,
   captionBlockWordsPerCue,
-  captionStyleAllowsBehind,
-  CAPTION_BEHIND,
   captionDynamicStyle,
   captionRoleLook,
   captionSoftBreaks,
@@ -594,26 +592,9 @@ export interface CompositionTargetPlan {
   };
   readonly visualLayers: readonly CompositionVisualLayer[];
   readonly scenes: readonly CompositionScene[];
-  /**
-   * Where the worker needs a person matte for heroes drawn behind the speaker (spec 5.12), in
-   * source time, sorted and disjoint. Absent when no cue has `block.behind`.
-   */
-  readonly mattes?: readonly CompositionPersonMatte[];
 }
 
-/**
- * One source range the person matte covers and the source rectangles the target shows during it
- * (one per source-video layer: a two-up scene gives two). Ranges are the behind heroes' times
- * padded by `CAPTION_BEHIND.paddingSec`, merged inside a scene and split at scene boundaries and
- * cuts, so the matte's temporal smoothing restarts at every camera cut and jump.
- */
-export interface CompositionPersonMatte {
-  readonly sourceStartSec: number;
-  readonly sourceEndSec: number;
-  readonly region: readonly CompositionRect[];
-}
-
-type CompositionBaseTargetPlan = Omit<CompositionTargetPlan, "visualLayers" | "mattes">;
+type CompositionBaseTargetPlan = Omit<CompositionTargetPlan, "visualLayers">;
 
 export interface CompositionEvidenceRequest {
   readonly key: string;
@@ -2529,7 +2510,6 @@ export function captionCueBlock(
     keys: words.map((word) => word.key),
     rows: captionBlockRows(roles.roles, roles.heroSpan, style),
     seed,
-    ...(preset.heroBehind && roles.heroSpan !== null && captionStyleAllowsBehind(style) ? { behind: true as const } : {}),
   };
 }
 
@@ -2822,68 +2802,6 @@ function withCaptionBlocks(
     if (block) layers[cue.layerIndex] = { ...layer, block };
   });
   return layers;
-}
-
-/**
- * The person mattes a target needs (spec 5.12): for every cue drawn with `block.behind`, its
- * hero's onset to the cue's end, padded, per scene of the pre-insertion timeline, mapped through
- * the cuts to source time. A scene's region is every source-video layer's crop (and crop track),
- * so the matte segments only what the target shows. Pure: reads the plan's own layers and scenes.
- */
-function personMattesForTarget(
-  layers: readonly CompositionVisualLayer[],
-  scenes: readonly CompositionScene[],
-  editedTimeMap: EditedTimeMap,
-): CompositionPersonMatte[] {
-  const pad = CAPTION_BEHIND.paddingSec;
-  const windows = layers.flatMap((layer) => {
-    if (layer.kind !== "caption" || !layer.block?.behind) return [];
-    const heroIndex = layer.block.roles.indexOf("hero");
-    const onset = layer.words[heroIndex]?.startSec;
-    if (onset === undefined) return [];
-    return [{ startSec: onset - pad, endSec: layer.activeRange.endSec + pad }];
-  }).sort((left, right) => left.startSec - right.startSec);
-  if (windows.length === 0) return [];
-  const round = (value: number) => Math.round(value * 1000) / 1000;
-  const mattes: CompositionPersonMatte[] = [];
-  for (const scene of scenes) {
-    const region: CompositionRect[] = [];
-    for (const layer of scene.layers) {
-      if (layer.kind !== "source-video") continue;
-      let x0 = layer.sourceCrop.x, y0 = layer.sourceCrop.y;
-      let x1 = x0 + layer.sourceCrop.width, y1 = y0 + layer.sourceCrop.height;
-      for (const key of layer.sourceCropTrack ?? []) {
-        x0 = Math.min(x0, key.x); y0 = Math.min(y0, key.y);
-        x1 = Math.max(x1, key.x + key.width); y1 = Math.max(y1, key.y + key.height);
-      }
-      const rect = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-      if (!region.some((other) => other.x === rect.x && other.y === rect.y && other.width === rect.width && other.height === rect.height)) region.push(rect);
-    }
-    if (region.length === 0) continue;
-    const merged: { startSec: number; endSec: number }[] = [];
-    for (const window of windows) {
-      const startSec = Math.max(scene.startSec, window.startSec);
-      const endSec = Math.min(scene.endSec, window.endSec);
-      if (endSec <= startSec) continue;
-      const last = merged[merged.length - 1];
-      if (last && startSec <= last.endSec) last.endSec = Math.max(last.endSec, endSec);
-      else merged.push({ startSec, endSec });
-    }
-    for (const range of merged) {
-      for (const segment of editedTimeMap.segments) {
-        const length = segment.sourceEndSec - segment.sourceStartSec;
-        const from = Math.max(range.startSec, segment.editedStartSec);
-        const to = Math.min(range.endSec, segment.editedStartSec + length);
-        if (to - from < 0.001) continue;
-        mattes.push({
-          sourceStartSec: round(segment.sourceStartSec + (from - segment.editedStartSec)),
-          sourceEndSec: round(segment.sourceStartSec + (to - segment.editedStartSec)),
-          region,
-        });
-      }
-    }
-  }
-  return mattes.sort((left, right) => left.sourceStartSec - right.sourceStartSec);
 }
 
 function visualLayersForTarget(input: {
@@ -3999,16 +3917,6 @@ export function planClipComposition(
     const targetInput = input.targets.find(
       (candidate) => candidate.id === baseTarget.id,
     )!;
-    const baseVisualLayers = visualLayersForTarget({
-      document: input.document,
-      target: targetInput,
-      scenes: baseTarget.scenes,
-      editedTimeMap,
-      logo: input.assets.logo,
-      captionLanguage: input.captionLanguage ?? null,
-      captionOverride: input.captionOverride,
-    });
-    const mattes = personMattesForTarget(baseVisualLayers, baseTarget.scenes, editedTimeMap);
     const target = {
       ...addInsertedSceneBlocks(
         addBrollLayers(baseTarget, brollPlacements),
@@ -4016,11 +3924,18 @@ export function planClipComposition(
         sceneTextRenders,
       ),
       visualLayers: retimeVisualLayersForInsertedScenes(
-        baseVisualLayers,
+        visualLayersForTarget({
+          document: input.document,
+          target: targetInput,
+          scenes: baseTarget.scenes,
+          editedTimeMap,
+          logo: input.assets.logo,
+          captionLanguage: input.captionLanguage ?? null,
+          captionOverride: input.captionOverride,
+        }),
         input.document.sceneBlocks,
         totalEditedDurationSec,
       ),
-      ...(mattes.length > 0 ? { mattes } : {}),
     } satisfies CompositionTargetPlan;
     const planned = applyTargetMediaMotion({
       target,

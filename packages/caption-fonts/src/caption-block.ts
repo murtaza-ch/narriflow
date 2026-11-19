@@ -1,5 +1,4 @@
 import {
-  CAPTION_BEHIND,
   CAPTION_BLOCK,
   CAPTION_CUE_TILTS_DEG,
   CAPTION_CURVE,
@@ -305,16 +304,8 @@ export interface CaptionBlockLayout {
   readonly gradient: PlacedGradient | null;
   /** The curve the rows are drawn with (`captionBlockCurve`); 0 = straight. */
   readonly curve: number;
-  /**
-   * The safe-area shift (rule 9) plus the behind lift (`liftPx`, negative y) applied to the block,
-   * canvas px. The stored position excludes it.
-   */
+  /** The safe-area shift (rule 9) applied to the block, canvas px. The stored position excludes it. */
   readonly shift: { readonly x: number; readonly y: number };
-  /**
-   * The hero words' rest box: their advance boxes across, their ink top to bottom, canvas px.
-   * Null for a cue without a hero. `captionBehindPlacement` reads it.
-   */
-  readonly heroInk: CaptionBlockRect | null;
 }
 
 export interface CaptionBlockLayoutInput {
@@ -334,11 +325,6 @@ export interface CaptionBlockLayoutInput {
   readonly cueEndSec?: number;
   /** The cue's caption language: Urdu support words in Arabic script are drawn in Nastaliq and take `nastaliqSupportScale`. */
   readonly language?: string | null;
-  /**
-   * Moves the whole block up by this many canvas px after the safe-area shift: the behind lift
-   * a renderer got from `captionBehindPlacement`, which keeps the block inside the safe area.
-   */
-  readonly liftPx?: number;
 }
 
 /**
@@ -492,7 +478,7 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
     throw new Error("layoutCaptionBlock needs one measurement and one word per block role");
   }
   if (count === 0) {
-    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], gradient: null, curve: 0, shift: { x: 0, y: 0 }, heroInk: null };
+    return { scale: 1, words: [], bounds: { x: canvas.width * anchor.xPct / 100, y: canvas.height * anchor.yPct / 100, width: 0, height: 0 }, decorations: [], gradient: null, curve: 0, shift: { x: 0, y: 0 } };
   }
   const S = preset.fontSize;
   const roles = block.roles;
@@ -893,9 +879,8 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
   };
   const shiftX = keepInside(reserved.left + dx, reserved.right + dx, safe.left * canvas.width, safe.right * canvas.width);
   const shiftY = keepInside(reserved.top + dy, reserved.bottom + dy, safe.top * canvas.height, safe.bottom * canvas.height);
-  const lift = Math.max(0, input.liftPx ?? 0);
   dx += shiftX;
-  dy += shiftY - lift;
+  dy += shiftY;
 
   // A curved hero would need its gradient bands on every cluster, past the event budget: it is flat.
   const gradient = heroIndexes.length > 0 && !curved ? captionHeroGradient(preset, style) : null;
@@ -982,72 +967,8 @@ export function layoutCaptionBlock(input: CaptionBlockLayoutInput): CaptionBlock
       }
       : null,
     curve,
-    shift: { x: shiftX, y: shiftY - lift },
-    heroInk: heroIndexes.length > 0
-      ? (() => {
-        const left = Math.min(...heroIndexes.map((index) => local[index]!.centerX + dx - local[index]!.advance / 2));
-        const right = Math.max(...heroIndexes.map((index) => local[index]!.centerX + dx + local[index]!.advance / 2));
-        const top = Math.min(...heroIndexes.map((index) => local[index]!.centerY + dy + local[index]!.inkMid - measured[index]!.inkTopEm * px[index]!));
-        const bottom = Math.max(...heroIndexes.map((index) => local[index]!.centerY + dy + local[index]!.inkMid + measured[index]!.inkBottomEm * px[index]!));
-        return { x: left, y: top, width: right - left, height: bottom - top };
-      })()
-      : null,
+    shift: { x: shiftX, y: shiftY },
   };
-}
-
-/** Where the behind hero of one cue goes (spec 5.12): behind the person lifted by `liftPx`, or in front where it was. */
-export interface CaptionBehindPlacement {
-  readonly behind: boolean;
-  readonly liftPx: number;
-}
-
-/** A person matte covering the whole canvas at any resolution, `channels` bytes per pixel (the first is read), 0 to 255. */
-export interface CaptionCanvasMatte {
-  readonly width: number;
-  readonly height: number;
-  readonly data: ArrayLike<number>;
-  readonly channels?: number;
-}
-
-/** The canvas x of each column a renderer samples its matte at for `captionBehindPlacement`. */
-export function captionBehindColumns(heroInk: CaptionBlockRect): number[] {
-  const count = CAPTION_BEHIND.columns;
-  return Array.from({ length: count }, (_, index) => heroInk.x + ((index + 0.5) * heroInk.width) / count);
-}
-
-/** The top edge of the person in canvas column `x`: the top of the first matte row at `CAPTION_BEHIND.threshold` or more, in canvas px; null when the column holds no person. */
-export function captionMatteColumnTop(matte: CaptionCanvasMatte, canvas: { readonly width: number; readonly height: number }, x: number): number | null {
-  const column = Math.floor((x / canvas.width) * matte.width);
-  if (column < 0 || column >= matte.width) return null;
-  const channels = matte.channels ?? 1;
-  const threshold = CAPTION_BEHIND.threshold * 255;
-  for (let row = 0; row < matte.height; row++) {
-    if (matte.data[(row * matte.width + column) * channels]! >= threshold) return (row / matte.height) * canvas.height;
-  }
-  return null;
-}
-
-/**
- * The shared auto-placement rule (spec 5.12), decided once per cue from the renderer's own matte
- * at the hero's onset. `personTop` holds the matte's top edge at `captionBehindColumns(heroInk)`
- * (null where a column has no person); its highest point is the top of the head. The block moves
- * up, never down, until the person covers at most the bottom `maxCoveredFraction` of the hero's
- * ink. The move may not take the block's reserved `bounds` above the safe area; when it would
- * have to, the hero is drawn in front, unmoved. `heroInk` and `bounds` come from the unlifted layout.
- */
-export function captionBehindPlacement(input: {
-  readonly heroInk: CaptionBlockRect;
-  readonly bounds: CaptionBlockRect;
-  readonly canvas: { readonly width: number; readonly height: number };
-  readonly personTop: readonly (number | null)[];
-}): CaptionBehindPlacement {
-  const tops = input.personTop.filter((top): top is number => top !== null && Number.isFinite(top));
-  if (tops.length === 0) return { behind: true, liftPx: 0 };
-  const head = Math.min(...tops);
-  const allowedTop = input.heroInk.y + (1 - CAPTION_BEHIND.maxCoveredFraction) * input.heroInk.height;
-  const lift = Math.max(0, allowedTop - head);
-  const room = Math.max(0, input.bounds.y - CAPTION_BLOCK.safeArea.top * input.canvas.height);
-  return lift <= room + 1e-6 ? { behind: true, liftPx: lift } : { behind: false, liftPx: 0 };
 }
 
 /** An entrance without scale and turn keyframes (curved rows); keyframes left with no property go. */

@@ -138,8 +138,6 @@ export interface RuntimeFingerprint {
   /** Pinned glyph fallback faces (Noto scripts, symbols, monochrome emoji). */
   fallbackFonts: Record<string, string>;
   model: { path: string | null; sha256: string | null };
-  /** The person matte model for captions behind the speaker (dynamic captions spec 5.12). */
-  personMatteModel: { path: string | null; sha256: string | null };
   python: { version: string | null; packages: Record<string, string>; wheelProbeError: string | null };
 }
 
@@ -169,7 +167,6 @@ export interface RuntimeLock {
     };
     python: { version: string; wheels: Array<{ name: string; version: string; filename: string; sha256: string }> };
     model: { path: string; sourceRepo: string; commit: string; repoPath: string; sha256: string; bytes: number };
-    personMatteModel: { path: string; url: string; sha256: string; bytes: number };
     fonts: { packages: string[]; probes: Array<{ query: string; expectedSha256: string | null }> };
   }>;
   captionFonts: { directory: string; sha256: Record<string, string> };
@@ -376,7 +373,6 @@ export interface CollectOptions {
   repoRoot?: string;
   lock?: RuntimeLock;
   modelPath?: string;
-  personMatteModelPath?: string;
   /** Fonts directory handed to libass for the glyph probe. */
   captionFontsDirectory?: string;
 }
@@ -395,7 +391,6 @@ export async function collectRuntimeFingerprint(options: CollectOptions = {}): P
   const encodersOut = ffmpegPath ? (await run(ffmpegPath, ["-hide_banner", "-encoders"])).stdout : "";
   const hasWord = (listing: string, name: string) => new RegExp(`^\\s*[A-Z.]{1,6}\\s+${name}\\s`, "m").test(listing);
   const modelPath = options.modelPath ?? process.env.REFRAME_MODEL_PATH?.trim() ?? [platformLock.model.path, join(repoRoot, "apps/media/models/face_yunet.onnx")].find((candidate) => existsSync(candidate)) ?? null;
-  const personMatteModelPath = options.personMatteModelPath ?? process.env.PERSON_MATTE_MODEL_PATH?.trim() ?? [platformLock.personMatteModel.path, join(repoRoot, "apps/media/models/selfie_segmenter.tflite")].find((candidate) => existsSync(candidate)) ?? null;
   const fontsDirectory = options.captionFontsDirectory ?? join(repoRoot, lock.captionFonts.directory);
   const fontconfig = await run("fc-match", ["--version"]);
   const osRelease = process.platform === "linux" ? (await run("sh", ["-c", ". /etc/os-release && echo \"$ID $VERSION_CODENAME $VERSION_ID\""])).stdout.trim() : (await run("sw_vers", ["-productVersion"])).stdout.trim();
@@ -427,7 +422,6 @@ export async function collectRuntimeFingerprint(options: CollectOptions = {}): P
     captionFonts: await captionFontHashes(repoRoot, lock.captionFonts.directory, { exclude: new Set(Object.keys(lock.fallbackFonts.sha256)) }),
     fallbackFonts: await captionFontHashes(repoRoot, lock.fallbackFonts.directory, { only: new Set(Object.keys(lock.fallbackFonts.sha256)) }),
     model: { path: modelPath, sha256: modelPath && existsSync(modelPath) ? await sha256File(modelPath) : null },
-    personMatteModel: { path: personMatteModelPath, sha256: personMatteModelPath && existsSync(personMatteModelPath) ? await sha256File(personMatteModelPath) : null },
     python: await pythonFacts(),
   };
 }
@@ -450,7 +444,6 @@ export function fingerprintIdentity(fingerprint: RuntimeFingerprint): unknown {
     // the golden baseline was captured, and lockFindings pins their hashes instead (a differing consumer fails
     // --enforce). scriptRender only has to be non-empty, which lockFindings checks.
     model: fingerprint.model.sha256,
-    personMatteModel: fingerprint.personMatteModel.sha256,
     python: orderedPythonFacts(fingerprint.python).packages,
   };
 }
@@ -487,8 +480,6 @@ export async function lockFindings(fingerprint: RuntimeFingerprint, lock: Runtim
   // Platform-independent inputs: the face model and the vendored caption faces.
   const modelPin = lock.platforms["linux-x64"]!.model.sha256;
   if (fingerprint.model.sha256 !== modelPin) findings.push({ level: "mismatch", check: "model", detail: `face model ${fingerprint.model.path} has SHA-256 ${fingerprint.model.sha256}, expected ${modelPin}` });
-  const personMattePin = lock.platforms["linux-x64"]!.personMatteModel.sha256;
-  if (fingerprint.personMatteModel.sha256 !== personMattePin) findings.push({ level: "mismatch", check: "personMatteModel", detail: `person matte model ${fingerprint.personMatteModel.path} has SHA-256 ${fingerprint.personMatteModel.sha256}, expected ${personMattePin}` });
   if (stage !== "build") {
     const tampered = Object.entries(lock.captionFonts.sha256).filter(([file, sha]) => fingerprint.captionFonts[file] !== sha);
     if (tampered.length > 0) findings.push({ level: "mismatch", check: "captionFonts", detail: `vendored caption faces differ: ${tampered.map(([file]) => file).join(", ")}` });
@@ -548,18 +539,9 @@ export async function assertRenderEnvironment(options: CollectOptions & { stage?
   return fingerprint;
 }
 
-/**
- * Wheels only the render profile installs: the face detector (OpenCV, numpy) and the person matte
- * runtime (LiteRT and its dependencies).
- */
-export const RENDER_ONLY_WHEELS: ReadonlySet<string> = new Set([
-  "numpy", "opencv-python-headless",
-  "ai-edge-litert", "ml-dtypes", "protobuf", "flatbuffers", "tqdm", "typing-extensions", "backports.strenum",
-]);
-
 /** `name==version --hash=sha256:...` lines for `pip install --require-hashes --no-deps`. */
 export function pipRequirements(lock: RuntimeLock, profile: "render" | "lean" = "render"): string {
-  return lock.platforms["linux-x64"]!.python.wheels.filter((wheel) => profile === "render" || !RENDER_ONLY_WHEELS.has(wheel.name)).map((wheel) => `${wheel.name}==${wheel.version} --hash=sha256:${wheel.sha256}`).join("\n") + "\n";
+  return lock.platforms["linux-x64"]!.python.wheels.filter((wheel) => profile === "render" || !["numpy", "opencv-python-headless"].includes(wheel.name)).map((wheel) => `${wheel.name}==${wheel.version} --hash=sha256:${wheel.sha256}`).join("\n") + "\n";
 }
 
 export interface LeanRuntimeFacts {
@@ -591,7 +573,7 @@ export async function assertLeanEnvironment(lock: RuntimeLock = loadLock()) {
       !ffprobe.stdout.includes(`ffprobe version ${expected.ffmpeg.versionString} `) || deno.code !== 0) {
     throw new Error("Lean media binary versions differ from runtime-lock.json");
   }
-  for (const wheel of expected.python.wheels.filter((wheel) => !RENDER_ONLY_WHEELS.has(wheel.name))) {
+  for (const wheel of expected.python.wheels.filter((wheel) => !["numpy", "opencv-python-headless"].includes(wheel.name))) {
     if (python.packages[wheel.name] !== wheel.version) throw new Error(`Lean media wheel ${wheel.name} differs from runtime-lock.json`);
   }
   const requiredPackages = ["ffmpeg", "python3", "python3-pip", "curl", "ca-certificates", ...Object.keys(expected.ffmpeg.libraries)];

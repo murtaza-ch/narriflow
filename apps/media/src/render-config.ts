@@ -17,8 +17,6 @@ export interface RenderConfig {
   readonly reframeModelPath: string;
   readonly reframeSampleFps: number;
   readonly reframeSceneThreshold: number;
-  /** The person matte model (spec 5.12), baked into the render image and pinned in runtime-lock.json. */
-  readonly personMatteModelPath: string;
   readonly autoLayoutBatchSize: number;
   readonly autoLayoutLeaseMs: number;
   readonly autoLayoutFailureBackoffMs: number;
@@ -226,9 +224,6 @@ export function parseRenderConfig(
       4,
     ),
     reframeSceneThreshold,
-    personMatteModelPath:
-      environment.PERSON_MATTE_MODEL_PATH?.trim() ||
-      "/usr/local/share/narriflow/selfie_segmenter.tflite",
     autoLayoutBatchSize: boundedInteger(environment, "WORKER_AUTO_LAYOUT_BATCH_SIZE", 2, 1, 10),
     autoLayoutLeaseMs: boundedInteger(environment, "WORKER_AUTO_LAYOUT_LEASE_MS", 180_000, 30_000, 900_000),
     autoLayoutFailureBackoffMs: boundedInteger(environment, "WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS", 300_000, 0),

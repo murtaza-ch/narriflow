@@ -7,7 +7,6 @@ import {
 	captionEmojiMotionTiming,
 	captionEmojiScaleExpression,
 } from "@narriflow/caption-fonts";
-import type { CaptionBehindPlacement } from "@narriflow/caption-fonts/caption-block";
 import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import {
 	clipAspectRatioOptions,
@@ -682,51 +681,6 @@ function captionEmojiFilters(input: {
 	return parts;
 }
 
-/**
- * The behind half of the caption stage (spec 5.12): the scene is split; one copy takes the behind
- * script; the other, cropped to `box`, is masked by the canvas-space person matte (written by the
- * matte pass, `compileCompositionPlanMatteCommand`) and laid back over it during the behind
- * cues only. The front script and emoji follow on the result.
- */
-export interface CompositionCaptionBehind {
-	readonly subtitlePath: string;
-	readonly matteInputIndex: number;
-	/** The canvas matte's frame size (`personMatteCanvasSize`). */
-	readonly matteSize: { readonly width: number; readonly height: number };
-	readonly canvas: { readonly width: number; readonly height: number };
-	/** Union of the behind cues' reserved bounds, canvas px; the only area the person is redrawn in. */
-	readonly box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
-	/** When a behind hero shows, edited seconds. */
-	readonly windows: readonly { readonly startSec: number; readonly endSec: number }[];
-}
-
-function captionBehindFilters(input: {
-	source: string;
-	stageIndex: number;
-	behind: CompositionCaptionBehind;
-	fontsDirectory: string;
-}): { parts: string[]; output: string } {
-	const { behind, stageIndex } = input;
-	const label = (name: string) => `[composition_caption_${stageIndex}_${name}]`;
-	const { box, matteSize, canvas } = behind;
-	const mx = Math.round((box.x * matteSize.width) / canvas.width);
-	const my = Math.round((box.y * matteSize.height) / canvas.height);
-	const mw = Math.max(1, Math.min(matteSize.width - mx, Math.round((box.width * matteSize.width) / canvas.width)));
-	const mh = Math.max(1, Math.min(matteSize.height - my, Math.round((box.height * matteSize.height) / canvas.height)));
-	const enable = behind.windows.map((window) => `between(t\\,${window.startSec.toFixed(3)}\\,${window.endSec.toFixed(3)})`).join("+");
-	return {
-		parts: [
-			`${input.source}split=2${label("scene")}${label("person_source")}`,
-			`${label("scene")}ass='${escapeSubtitlePath(behind.subtitlePath)}':fontsdir='${escapeSubtitlePath(input.fontsDirectory)}'${label("behind")}`,
-			`[${behind.matteInputIndex}:v]crop=${mw}:${mh}:${mx}:${my},scale=${box.width}:${box.height},format=gray${label("matte")}`,
-			`${label("person_source")}crop=${box.width}:${box.height}:${box.x}:${box.y}${label("person_box")}`,
-			`${label("person_box")}${label("matte")}alphamerge${label("person")}`,
-			`${label("behind")}${label("person")}overlay=${box.x}:${box.y}:format=auto:enable='${enable}'${label("composite")}`,
-		],
-		output: label("composite"),
-	};
-}
-
 /** Translates the target's already-ordered visual schedule into FFmpeg syntax.
  * It does not inspect the editor document or select timing, precedence,
  * entitlement, geometry, or optional-media fallbacks. */
@@ -740,8 +694,6 @@ export function compileCompositionPlanVisualLayers(input: {
 	captionEmoji?: readonly CaptionEmojiOverlay[];
 	subtitlePath?: string | null;
 	logoInputIndex?: number | null;
-	/** Heroes drawn behind the speaker (spec 5.12); absent leaves the caption stage as it was. */
-	captionBehind?: CompositionCaptionBehind | null;
 }): {
 	filterParts: string[];
 	logoInput: { sourceRef: string; inputIndex: number } | null;
@@ -801,10 +753,8 @@ export function compileCompositionPlanVisualLayers(input: {
 					? `ass='${escapeSubtitlePath(input.subtitlePath)}':fontsdir='${escapeSubtitlePath(input.captionFontsDirectory ?? CAPTION_FONTS_DIRECTORY)}'`
 					: `subtitles='${escapeSubtitlePath(input.subtitlePath)}'`;
 				const emoji = input.captionEmoji ?? [];
-				const behind = input.captionBehind ? captionBehindFilters({ source, stageIndex, behind: input.captionBehind, fontsDirectory: input.captionFontsDirectory ?? CAPTION_FONTS_DIRECTORY }) : null;
-				const front = behind ? behind.output : source;
-				if (emoji.length === 0) return { parts: [...(behind?.parts ?? []), `${front}${filter}${output}`] };
-				return { parts: [...(behind?.parts ?? []), ...captionEmojiFilters({ source: front, filter, output, stageIndex, overlays: emoji })] };
+				if (emoji.length === 0) return { parts: [`${source}${filter}${output}`] };
+				return { parts: captionEmojiFilters({ source, filter, output, stageIndex, overlays: emoji }) };
 			});
 		} else if (layer.kind === "logo") {
 			stages.push((source, output, stageIndex) => {
@@ -1205,8 +1155,6 @@ function compileInsertedSceneSequence(input: {
 	>;
 	resolvedSceneFonts?: Readonly<Record<string, string>>;
 	sceneInputStartIndex?: number;
-	/** Matte mode: every inserted scene is black (see `compileCompositionPlanVideo`). */
-	matte?: boolean;
 }) {
 	const target = input.plan.targets.find(
 		(candidate) => candidate.id === input.targetId,
@@ -1228,10 +1176,10 @@ function compileInsertedSceneSequence(input: {
 				.map((layer) => [layer.sourceRef!, layer]),
 		).values(),
 	];
-	if (!input.matte && uniqueLayers.length > 0 && input.sceneInputStartIndex == null) {
+	if (uniqueLayers.length > 0 && input.sceneInputStartIndex == null) {
 		throw new Error("clip_composition_scene_input_index_missing");
 	}
-	const sceneInputs = input.matte ? [] : uniqueLayers.map((layer, index) => {
+	const sceneInputs = uniqueLayers.map((layer, index) => {
 		const asset = input.resolvedSceneAssets?.[layer.sourceRef!];
 		if (!asset || asset.kind !== layer.content.kind) {
 			throw new Error("clip_composition_scene_input_missing");
@@ -1276,12 +1224,6 @@ function compileInsertedSceneSequence(input: {
 			const source = input.compiledSourceScenes.get(scene.id);
 			if (!source) throw new Error("invalid_clip_composition_source_scenes");
 			parts.push(`${source}null${output}`);
-			return;
-		}
-		if (input.matte) {
-			parts.push(
-				`color=c=0x000000:s=${target.canvas.width}x${target.canvas.height}:r=${fps}:d=${duration.toFixed(3)},format=yuv420p${output}`,
-			);
 			return;
 		}
 		const color =
@@ -1651,13 +1593,6 @@ export function compileCompositionPlanVideo(input: {
 	>;
 	resolvedSceneFonts?: Readonly<Record<string, string>>;
 	sceneInputStartIndex?: number;
-	/**
-	 * Matte mode (spec 5.12): `videoInputLabel` carries the person matte instead of the source.
-	 * Source layers get the matte through the same crops, tiles and masks; every other layer
-	 * (backgrounds, B-roll, inserted scenes) is drawn black, so the matte is zero wherever
-	 * something covers the speaker. Needs no other input.
-	 */
-	matte?: boolean;
 }): {
 	filterParts: string[];
 	backgroundImageInputRequired: boolean;
@@ -1697,11 +1632,10 @@ export function compileCompositionPlanVideo(input: {
 				.map((layer) => [layer.sourceRef!, layer]),
 		).values(),
 	];
-	const matte = input.matte === true;
-	if (!matte && uniqueSceneLayers.length > 0 && input.sceneInputStartIndex == null) {
+	if (uniqueSceneLayers.length > 0 && input.sceneInputStartIndex == null) {
 		throw new Error("clip_composition_scene_input_index_missing");
 	}
-	const sceneInputs = matte ? [] : uniqueSceneLayers.map((layer, index) => {
+	const sceneInputs = uniqueSceneLayers.map((layer, index) => {
 		const asset = input.resolvedSceneAssets?.[layer.sourceRef!];
 		if (!asset || asset.kind !== layer.content.kind) {
 			throw new Error("clip_composition_scene_input_missing");
@@ -1735,10 +1669,10 @@ export function compileCompositionPlanVideo(input: {
 		input.plan,
 		input.targetId,
 	);
-	if (!matte && brollPlacements.length > 0 && input.brollInputStartIndex == null) {
+	if (brollPlacements.length > 0 && input.brollInputStartIndex == null) {
 		throw new Error("clip_composition_broll_input_index_missing");
 	}
-	const brollInputs = matte ? [] : brollPlacements.map((placement, index) => {
+	const brollInputs = brollPlacements.map((placement, index) => {
 		const path = input.resolvedBrollAssets?.[placement.sourceRef];
 		if (!path) throw new Error("clip_composition_broll_input_missing");
 		return {
@@ -1751,25 +1685,14 @@ export function compileCompositionPlanVideo(input: {
 			motion: placement.motion,
 		};
 	});
-	const matteBroll = matte && brollPlacements.length > 0;
 	const baseOutputLabel =
-		brollInputs.length > 0 || matteBroll ? "[composition_base]" : input.outputLabel;
+		brollInputs.length > 0 ? "[composition_base]" : input.outputLabel;
 	const trailingSuffix = input.trailingChain ? `,${input.trailingChain}` : "";
-	const baseSuffix = brollInputs.length === 0 && !matteBroll ? trailingSuffix : "";
+	const baseSuffix = brollInputs.length === 0 ? trailingSuffix : "";
 	const finalize = (result: {
 		filterParts: string[];
 		backgroundImageInputRequired: boolean;
 	}) => {
-		if (matteBroll) {
-			// B-roll covers the speaker: black over every visible range.
-			const visible = brollPlacements.flatMap((placement) => placement.visibleRanges).map(
-				(range) => `gte(t,${range.startSec})*lt(t,${range.endSec})`,
-			).join("+");
-			result.filterParts.push(
-				`${baseOutputLabel}drawbox=x=0:y=0:w=iw:h=ih:color=0x000000:t=fill:enable='${visible}'${trailingSuffix}${input.outputLabel}`,
-			);
-			return { ...result, brollInputs, sceneInputs };
-		}
 		if (brollInputs.length === 0) {
 			return { ...result, brollInputs, sceneInputs };
 		}
@@ -1831,7 +1754,7 @@ export function compileCompositionPlanVideo(input: {
 				`${sourceClock}split=${target.scenes.length}${sceneInputs.join("")}`,
 			);
 		}
-		const imageBackgroundSceneIndexes = matte ? [] : target.scenes.flatMap((scene, index) =>
+		const imageBackgroundSceneIndexes = target.scenes.flatMap((scene, index) =>
 			scene.layers.some(
 				(layer) => layer.kind === "background" && layer.imageRef !== null,
 			)
@@ -2039,7 +1962,7 @@ export function compileCompositionPlanVideo(input: {
 					`[composition_scene_${sceneIndex}_layer_${layerIndex}_src]`,
 			);
 			let composite = `[composition_scene_${sceneIndex}_base]`;
-			if (backgroundLayer?.imageRef && !matte) {
+			if (backgroundLayer?.imageRef) {
 				const backgroundInput = imageBackgroundInputs.get(sceneIndex);
 				if (!backgroundInput) {
 					throw new Error("clip_composition_background_input_missing");
@@ -2061,7 +1984,7 @@ export function compileCompositionPlanVideo(input: {
 						`${target.canvas.height},fps=${fps}${composite}`,
 				);
 			} else {
-				const backgroundColor = matte ? "#000000" : backgroundLayer?.color ?? "#000000";
+				const backgroundColor = backgroundLayer?.color ?? "#000000";
 				parts.push(
 					`${trimLabel}split=${layers.length + 1}${baseSource}${layerSources.join("")}`,
 					`${baseSource}scale=${target.canvas.width}:${target.canvas.height},` +
@@ -2117,7 +2040,6 @@ export function compileCompositionPlanVideo(input: {
 				resolvedSceneAssets: input.resolvedSceneAssets,
 				resolvedSceneFonts: input.resolvedSceneFonts,
 				sceneInputStartIndex: input.sceneInputStartIndex,
-				matte,
 			});
 			parts.push(...sequence.filterParts);
 		} else if (sceneOutputs.length === 1) {
@@ -2182,7 +2104,7 @@ export function compileCompositionPlanVideo(input: {
 			`${input.videoInputLabel}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
 			`scale=${sourceLayer.destination.width}:${sourceLayer.destination.height}` +
 			",setsar=1";
-		if (backgroundLayer.imageRef && !matte) {
+		if (backgroundLayer.imageRef) {
 			if (input.backgroundImageInputIndex == null) {
 				throw new Error("clip_composition_background_input_missing");
 			}
@@ -2203,7 +2125,7 @@ export function compileCompositionPlanVideo(input: {
 			filterParts: [
 				`${sourceChain},pad=${target.canvas.width}:${target.canvas.height}:` +
 					`${sourceLayer.destination.x}:${sourceLayer.destination.y}:` +
-					`color=${(matte ? "#000000" : backgroundLayer.color).replace("#", "0x")},` +
+					`color=${backgroundLayer.color.replace("#", "0x")},` +
 					`format=yuv420p${baseSuffix}${baseOutputLabel}`,
 			],
 			backgroundImageInputRequired: false,
@@ -2284,86 +2206,6 @@ export interface ClipCompositionCommandInput {
 		fonts?: Readonly<Record<string, string>>;
  captionFontsDirectory?: string;
 	captionEmoji?: readonly CaptionEmojiOverlay[];
-		/** Heroes behind the speaker: the behind script and the canvas matte from the matte pass. */
-		captionBehind?: CompositionCaptionBehindInput | null;
-	};
-}
-
-/** `CompositionCaptionBehind` before input indexes are assigned: the matte is a file. */
-export type CompositionCaptionBehindInput = Omit<CompositionCaptionBehind, "matteInputIndex"> & { readonly mattePath: string };
-
-/** The person matte's rate and the canvas matte's size (spec 5.12). */
-export const PERSON_MATTE_FPS = 15;
-
-/** The canvas matte is written at half the canvas size, even dimensions. */
-export function personMatteCanvasSize(canvas: { readonly width: number; readonly height: number }): { width: number; height: number } {
-	return { width: Math.max(2, Math.floor(canvas.width / 4) * 2), height: Math.max(2, Math.floor(canvas.height / 4) * 2) };
-}
-
-/** The canvas matte frame shown at edited time `timeSec` (the frame the render holds then). */
-export function personMatteFrameIndex(timeSec: number): number {
-	return Math.max(0, Math.floor(timeSec * PERSON_MATTE_FPS + 1e-6));
-}
-
-/**
- * The matte pass (spec 5.12): the person matte (`person_matte.py`, source clock, the clip's
- * window) runs through the same cuts and the visual stack in matte mode, so it follows crops,
- * two-up tiles and screen layouts and is zero under B-roll and inserted scenes. It writes the
- * canvas matte (`outputPath`, gray, `personMatteCanvasSize`, `PERSON_MATTE_FPS`) that the render
- * alphamerges, and the frames at `probeTimesSec` as raw gray (`probePath`, in `probeFrames`
- * order) that placement reads. Black drawn in the yuv chain lands at 16, so values up to 16
- * are cleared to 0 at the end.
- */
-export function compileCompositionPlanMatteCommand(input: {
-	plan: ClipCompositionPlan;
-	targetId: string;
-	mattePath: string;
-	startSec: number;
-	source: WorkerMediaInspection;
-	cutPlan?: ClipCutPlan | null;
-	outputPath: string;
-	probePath: string;
-	probeTimesSec: readonly number[];
-}): { args: string[]; probeFrames: number[]; size: { width: number; height: number } } {
-	const target = input.plan.targets.find((candidate) => candidate.id === input.targetId);
-	if (!target) throw new Error("clip_composition_target_missing");
-	const isCut = Boolean(input.cutPlan && !input.cutPlan.isUncut);
-	const rate = generatedFrameRate(generatedFrameRateOf(input.source));
-	const size = personMatteCanvasSize(target.canvas);
-	const parts = [
-		`[0:v]fps=${rate}:start_time=0,scale=${input.plan.source.width}:${input.plan.source.height},setsar=1,format=yuv420p[composition_matte_source]`,
-	];
-	const cutConcat = isCut
-		? buildCutConcatFilter({ cutPlan: input.cutPlan!, clipStartSec: input.startSec, includeAudio: false, videoInputRef: "[composition_matte_source]", videoOutLabel: "[composition_matte_cut]" })
-		: null;
-	if (cutConcat) parts.push(...cutConcat.filterParts);
-	const compiled = compileCompositionPlanVideo({
-		plan: input.plan,
-		targetId: input.targetId,
-		videoInputLabel: cutConcat ? cutConcat.videoLabel! : "[composition_matte_source]",
-		videoClockIsEdited: isCut,
-		outputLabel: "[composition_matte_base]",
-		fps: generatedFrameRateOf(input.source),
-		matte: true,
-	});
-	parts.push(...compiled.filterParts);
-	const probeFrames = [...new Set(input.probeTimesSec.map(personMatteFrameIndex))].sort((left, right) => left - right);
-	const select = probeFrames.map((frame) => `eq(n\\,${frame})`).join("+");
-	parts.push(
-		`[composition_matte_base]fps=${PERSON_MATTE_FPS},format=gray,lut=c0='if(lte(val\\,16)\\,0\\,val)',` +
-			`scale=${size.width}:${size.height},split=2[composition_matte_out][composition_matte_probe_source]`,
-		`[composition_matte_probe_source]select='${select || "0"}'[composition_matte_probe]`,
-	);
-	const duration = input.plan.editedDurationSec.toFixed(3);
-	return {
-		args: [
-			"-y", "-i", input.mattePath,
-			"-filter_complex", parts.join(";"),
-			"-map", "[composition_matte_out]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-pix_fmt", "gray", "-t", duration, input.outputPath,
-			"-map", "[composition_matte_probe]", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-t", duration, input.probePath,
-		],
-		probeFrames,
-		size,
 	};
 }
 
@@ -2395,7 +2237,6 @@ export function compileClipCompositionCommand(
 		resolvedSceneFonts: input.assets.fonts,
  captionFontsDirectory: input.assets.captionFontsDirectory,
 		captionEmoji: input.assets.captionEmoji,
-		captionBehind: input.source.hasVideo ? (input.assets.captionBehind ?? null) : null,
 	};
 	if (!input.source.hasVideo)
 		return buildAudiogramArgs({
@@ -2456,15 +2297,12 @@ export function compileCompositionPlanCaptions(
 	targetId: string,
  fonts?: RenderBrandFonts,
 	omitCodePoints?: ReadonlySet<number>,
-	/** Placements of behind cues from the person matte (`preparePersonMatte`); absent draws every cue in front. */
-	behind?: ReadonlyMap<number, CaptionBehindPlacement>,
 ): CaptionTrack {
 	const target = plan.targets.find((candidate) => candidate.id === targetId);
 	if (!target) throw new Error("clip_composition_target_missing");
 	return renderCaptionTrack({
  fonts,
 		omitCodePoints,
-		...(behind ? { behind } : {}),
 		layers: target.visualLayers.filter(
 			(layer): layer is CompositionCaptionVisualLayer =>
 				layer.kind === "caption",
@@ -3116,7 +2954,6 @@ function buildSingleVideoArgs(params: {
 	>;
 	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedSceneFonts?: Readonly<Record<string, string>>;
-	captionBehind?: CompositionCaptionBehindInput | null;
 }) {
 	assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
 	if (params.cutPlan?.isEmpty) {
@@ -3201,7 +3038,6 @@ function buildSingleVideoArgs(params: {
 	const musicInputIndex = params.audio.music ? nextInputIndex++ : null;
 	const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
 	const dubInputIndex = dub ? nextInputIndex++ : null;
-	const matteInputIndex = params.captionBehind ? nextInputIndex++ : null;
 
 	const filterParts: string[] = [
 		...(dubInputIndex === null
@@ -3255,7 +3091,6 @@ function buildSingleVideoArgs(params: {
  captionFontsDirectory: params.captionFontsDirectory,
 		captionEmoji: params.captionEmoji,
 		logoInputIndex,
-		...(params.captionBehind && matteInputIndex !== null ? { captionBehind: { ...params.captionBehind, matteInputIndex } } : {}),
 	});
 	filterParts.push(...visual.filterParts);
 	if (
@@ -3305,7 +3140,6 @@ function buildSingleVideoArgs(params: {
 	}
 
 	if (dub) args.push("-i", dub.path);
-	if (params.captionBehind) args.push("-i", params.captionBehind.mattePath);
 
 	const audioForRender = dubAudio
 		? dubAudio
@@ -3406,7 +3240,6 @@ function buildBrollVideoArgs(params: {
 	>;
 	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedSceneFonts?: Readonly<Record<string, string>>;
-	captionBehind?: CompositionCaptionBehindInput | null;
 }) {
 	assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
 	if (Object.keys(params.resolvedBrollAssets).length === 0) {
@@ -3556,16 +3389,6 @@ function buildBrollVideoArgs(params: {
  captionFontsDirectory: params.captionFontsDirectory,
 		captionEmoji: params.captionEmoji,
 		logoInputIndex,
-		// The matte is the last input, after the dub.
-		...(params.captionBehind
-			? {
-				captionBehind: {
-					...params.captionBehind,
-					matteInputIndex: 1 + bgOffset + cutawayCount + sceneAssetRefs.length + (plannedLogo ? 1 : 0) +
-						(params.audio.music ? 1 : 0) + params.audio.soundEffects.length + (dub ? 1 : 0),
-				},
-			}
-			: {}),
 	});
 	parts.push(...visual.filterParts);
 	if (
@@ -3647,7 +3470,6 @@ function buildBrollVideoArgs(params: {
 			}),
 		);
 	}
-	if (params.captionBehind) args.push("-i", params.captionBehind.mattePath);
 
 	const audioForRender = dubAudio
 		? dubAudio
