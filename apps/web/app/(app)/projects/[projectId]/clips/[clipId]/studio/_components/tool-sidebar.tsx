@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useEffect } from "react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
@@ -99,6 +100,18 @@ export function ReadOnlyPanelNotice({ onTakeOver }: { onTakeOver: () => void }) 
  */
 export function ToolSidebar() {
   const { activeTool, setActiveTool, editingElsewhere, handleTakeOverEditing } = useStudio("activeTool", "setActiveTool", "editingElsewhere", "handleTakeOverEditing");
+
+  // The library list is prefetched with the Studio; warm the Music panel's code
+  // too once the page is idle, so the first open paints rows, not a spinner.
+  useEffect(() => {
+    const warm = () => void import("./tool-panels/music-panel");
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(warm, { timeout: 4000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const timer = window.setTimeout(warm, 2000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const handleToolClick = (id: ToolId) => {
     setActiveTool(activeTool === id ? null : id);

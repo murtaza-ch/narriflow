@@ -24,3 +24,12 @@ describe("audioArt", () => {
     expect(covers.size).toBeGreaterThan(20);
   });
 });
+
+describe("formatAssetDuration", () => {
+  test("short sounds read in seconds, longer ones as mm:ss", async () => {
+    const { formatAssetDuration } = await import("./audio-list");
+    expect(formatAssetDuration(0.42)).toBe("0.4s");
+    expect(formatAssetDuration(9.95)).toBe("9.9s");
+    expect(formatAssetDuration(65)).not.toContain("s");
+  });
+});

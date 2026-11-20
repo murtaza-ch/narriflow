@@ -17,6 +17,12 @@ import {
   X,
 } from "lucide-react";
 import { formatDuration } from "@/lib/format";
+
+/** Short sounds read in seconds ("0.4s"), so a sub-second effect never shows as 0:00. */
+export function formatAssetDuration(durationSec: number): string {
+  if (durationSec > 0 && durationSec < 10) return `${durationSec.toFixed(1)}s`;
+  return formatDuration(durationSec);
+}
 import { audioArt } from "./audio-art";
 import {
   type AudioAssetListRow,
@@ -186,7 +192,7 @@ export function AudioRow({
           </Text>
           <Flex align="center" gap="1.5" minW="0" fontSize="12px" color="studio.fgMuted">
             <Text as="span" flexShrink={0} fontVariantNumeric="tabular-nums">
-              {formatDuration(asset.durationSec)}
+              {formatAssetDuration(asset.durationSec)}
             </Text>
             {asset.artist ? (
               <Text as="span" truncate minW="0">

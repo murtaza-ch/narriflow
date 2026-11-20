@@ -5,12 +5,19 @@ import { readJson, writeJson } from "./util";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 
-/** Music by sortOrder then title; SFX by category (chip order) then title. Music first. */
+/**
+ * Music by sortOrder then title; SFX by category (chip order) then title. Music first.
+ * SFX get their sortOrder from that order, so the library lists them grouped by
+ * category the way the chips read, instead of alphabetically.
+ */
 export function sortEntries(entries: readonly ManifestEntry[]): ManifestEntry[] {
   const byTitle = (a: ManifestEntry, b: ManifestEntry) => a.title.localeCompare(b.title, "en", { sensitivity: "base" });
   const category = (entry: ManifestEntry) => SFX_CATEGORIES.indexOf((entry.moods[0] ?? "") as (typeof SFX_CATEGORIES)[number]);
   const music = entries.filter((entry) => entry.kind === "music").sort((a, b) => a.sortOrder - b.sortOrder || byTitle(a, b));
-  const sfx = entries.filter((entry) => entry.kind === "sfx").sort((a, b) => category(a) - category(b) || byTitle(a, b));
+  const sfx = entries
+    .filter((entry) => entry.kind === "sfx")
+    .sort((a, b) => category(a) - category(b) || byTitle(a, b))
+    .map((entry, index) => ({ ...entry, sortOrder: (category(entry) + 1) * 1000 + index }));
   return [...music, ...sfx];
 }
 
