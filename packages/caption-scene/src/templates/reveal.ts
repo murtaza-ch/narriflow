@@ -2,18 +2,18 @@ import type { DemoScript } from "../demo";
 import { type Frames, prog, EASES } from "../ease";
 import type { SceneInput, SceneProgram, SceneCue } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, fitScale, rowsFromRoles, rowVisualOrder, rowWidth, sceneSpace } from "../layout";
-import type { Piece, ShapePiece, TextPiece } from "../scene";
-import { centredRect } from "../shapes";
+import type { Piece, TextPiece } from "../scene";
 import { sampleFrames } from "../frames";
 
 /**
- * Reveal (`samples/templates/10-reveal.js`): every word rises out of an invisible slit, a hairline
- * draws under the lead row, and the cue leaves the same way it came. The hero is a big italic serif.
+ * Reveal (`samples/templates/10-reveal.js`): every word rises out of an invisible slit and the cue leaves
+ * the same way it came. The hero is a big italic serif. The sample's hairline under the lead row is left
+ * out (owner's call): the rows stack without it.
  *
  * Geometry is the sample's, read from its layout in Chrome (`.scratch/motion-captions/tools/probe-sample.ts`):
  * a word's slit is its box padded 0.12 em at the sides, 0.1 em above and 0.2 em (hero 0.32 em)
- * below; a row is 1.3 em tall (hero 1.42 em) with a 0.24 em gap between words; the rule is 300 x 3
- * with 10 px above it; the hero row sits 18 px up and takes 56 px less below. The block is centred on
+ * below; a row is 1.3 em tall (hero 1.42 em) with a 0.24 em gap between words; the hero row sits 18 px
+ * up and takes 56 px less below. The block is centred on
  * the anchor line (y 1300). Baselines sit 0.862 em (Inter Tight) and 0.839 em (Instrument Serif)
  * below the top of a `line-height: 1` box.
  */
@@ -35,7 +35,6 @@ const BODY_FACE = "Inter Tight SemiBold" as const;
 const HERO_FACE = "Instrument Serif" as const;
 const BASELINE = { body: 0.862, hero: 0.839 } as const;
 const LETTER_SPACING = { body: -0.015, hero: -0.02 } as const;
-const RULE = { width: 300, height: 3, above: 10, alpha: 0.85, shadowBlur: 4, shadowDy: 2, shadowAlpha: 0.5 } as const;
 const HERO_MARGIN = { top: -18, bottom: -56 } as const;
 const SLIT = { side: 0.12, above: 0.1, below: 0.2, belowHero: 0.32 } as const;
 const GAP_EM = 0.24;
@@ -119,18 +118,12 @@ function buildCue(cue: SceneCue, input: SceneInput, cueNumber: number): Piece[] 
   const tailRows = makeRows(tail, false, bodySize);
   const ordered: Row[] = [...leadRows, ...heroRows, ...tailRows];
 
-  // Stack the rows like the sample's flex column: the rule sits 10 px under the last lead row.
-  const ruleAfter = hasHero && leadRows.length > 0 ? leadRows[leadRows.length - 1]! : null;
+  // Stack the rows like the sample's flex column.
   let cursor = 0;
-  let ruleTop = 0;
   for (const row of ordered) {
     cursor += row.marginTop;
     row.top = cursor;
     cursor += row.height + row.marginBottom;
-    if (row === ruleAfter) {
-      ruleTop = cursor + RULE.above * u;
-      cursor = ruleTop + RULE.height * u;
-    }
   }
   const blockTop = space.y(ANCHOR_LINE) - cursor / 2;
 
@@ -189,25 +182,6 @@ function buildCue(cue: SceneCue, input: SceneInput, cueNumber: number): Piece[] 
     }
   }
 
-  if (ruleAfter) {
-    const ruleDraw = (t: number) => EASES.outExpo(prog(t, cue.startMs, 560)) * (1 - EASES.in(prog(t, exitFrom, EXIT)));
-    const drawEnd = cue.startMs + 560;
-    const sx: Frames = drawEnd <= exitFrom
-      ? [[fromMs, 0], [cue.startMs, 0], [drawEnd, 1, "outExpo"], [exitFrom, 1], [toMs, 0, "in"]]
-      : sampleFrames(ruleDraw, [fromMs, cue.startMs, drawEnd, exitFrom, toMs], 0.05);
-    const rule: ShapePiece = {
-      id: `reveal:${cueNumber}:rule`,
-      kind: "shape",
-      z: 1,
-      fromMs,
-      toMs,
-      track: { x: [[fromMs, space.x(540)]], y: [[fromMs, blockTop + ruleTop + (RULE.height * u) / 2]], sx },
-      path: centredRect(RULE.width * u, RULE.height * u),
-      fill: { colour: input.colours.primary, alpha: RULE.alpha },
-      shadows: [{ dx: 0, dy: RULE.shadowDy * u, blur: RULE.shadowBlur * u, colour: input.colours.shadow, alpha: RULE.shadowAlpha }],
-    };
-    pieces.push(rule);
-  }
   return clampToSafeArea(pieces, space.safe, input.measure);
 }
 

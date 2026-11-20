@@ -1,19 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { demoCues } from "./demo";
 import { REVEAL_DEMO, revealProgram, revealRisePercent } from "./templates/reveal";
-import { evaluatePiece, type ShapePiece, type TextPiece } from "./scene";
+import { evaluatePiece, type TextPiece } from "./scene";
 import { sceneInput } from "./test-support";
 
 const { cues } = demoCues(REVEAL_DEMO);
 const scene = revealProgram.build(sceneInput(cues));
 const texts = scene.pieces.filter((piece): piece is TextPiece => piece.kind === "text");
-const rules = scene.pieces.filter((piece): piece is ShapePiece => piece.kind === "shape");
 const cueOf = (piece: { id: string }) => cues[Number(piece.id.split(":")[1])]!;
 
 describe("Reveal", () => {
-  test("a word per piece, a hairline only under a lead row that has a hero", () => {
+  test("a word per piece and nothing else: no hairline between the lead and the hero", () => {
     expect(texts).toHaveLength(cues.reduce((sum, cue) => sum + cue.words.length, 0));
-    expect(rules.map((rule) => rule.id)).toEqual(["reveal:1:rule", "reveal:3:rule"]);
+    expect(scene.pieces).toHaveLength(texts.length);
   });
 
   test("the hero is the big italic serif in the highlight colour, body words the semibold sans", () => {
@@ -59,23 +58,11 @@ describe("Reveal", () => {
     }
   });
 
-  test("the hairline draws in 560 ms from the cue start and leaves with the cue", () => {
-    const rule = rules[0]!;
-    const cue = cues[1]!;
-    expect(evaluatePiece(rule, cue.startMs).sx).toBe(0);
-    expect(evaluatePiece(rule, cue.startMs + 560).sx).toBeCloseTo(1, 6);
-    expect(evaluatePiece(rule, cue.endMs - 190).sx).toBeCloseTo(1, 6);
-    expect(evaluatePiece(rule, cue.endMs - 1).sx).toBeLessThan(0.02);
-    expect(rule.fill).toEqual({ colour: "#FFFFFF", alpha: 0.85 });
-  });
-
-  test("the block is centred on the anchor line and the hairline sits between lead and hero", () => {
+  test("the hero row sits straight under the lead row, where the sample's rule (10 px gap + 3 px) was", () => {
     const talent = texts.find((piece) => piece.text === "talent")!;
     const lead = texts.find((piece) => piece.text === "about" && piece.id.startsWith("reveal:1"))!;
-    const rule = rules[0]!;
-    const ruleY = evaluatePiece(rule, 2000).y;
-    expect(evaluatePiece(lead, 2300).y).toBeLessThan(ruleY);
-    expect(evaluatePiece(talent, 3000).y).toBeGreaterThan(ruleY);
+    // With the rule the baselines were 165.72 px apart (fake measure); the 13 px it took are gone, the block still centred.
+    expect(evaluatePiece(talent, 3000).y - evaluatePiece(lead, 3000).y).toBeCloseTo(165.72 - 13, 1);
   });
 
   test("a longer cue wraps its lead evenly and a very long hero shrinks to fit, never leaving the canvas", () => {
