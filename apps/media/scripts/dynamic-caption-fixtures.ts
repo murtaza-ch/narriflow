@@ -85,7 +85,7 @@ export function dynamicCaptionLayers(fixture: DynamicCaptionFixture): Compositio
     captionLanguage: fixture.language,
     source: { identity: `source:${fixture.id}`, kind: "video", width: 1920, height: 1080 },
     evidence: { automaticLayout: { state: "missing" } },
-    assets: { backgroundImage: { state: "missing" }, music: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" }, music: {} },
     capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
     targets: [{ id: "vertical", aspectRatio: "9:16", width: CANVAS.width, height: CANVAS.height }],
   });

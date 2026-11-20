@@ -162,7 +162,7 @@ export function compositionOutputExpectation(input: {
 		scene.layers.some((layer) => layer.kind === "inserted-scene"),
 	);
 	const mixed =
-		Boolean(input.audio.music) ||
+		input.audio.music.length > 0 ||
 		input.audio.soundEffects.length > 0 ||
 		input.audio.censors.some((censor) => censor.treatment === "beep") ||
 		sceneAudio;

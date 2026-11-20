@@ -23,6 +23,7 @@ import {
   Captions,
   Clapperboard,
   Type,
+  Music,
 } from "lucide-react";
 import {
   editedToSource,
@@ -68,6 +69,7 @@ import {
 import { labelForTimelineSegment } from "./subtitle-lines";
 import { manualBrollPreviewWindow } from "./broll-preview";
 import { studioSliderCss } from "./tool-panels/panel-ui";
+import { MUSIC_LANE_EMPTY_HEIGHT, MUSIC_LANE_HEIGHT, MusicLane } from "./music-lane";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -2241,9 +2243,14 @@ export function Timeline() {
   const wordTrackTop =
     brollTrackTop + (hasBrollLane ? BROLL_TRACK_HEIGHT + 4 : 0);
   const waveformTrackTop = wordTrackTop + WORD_CHIPS_HEIGHT + 4;
-  const textTrackTop = waveformTrackTop + WAVEFORM_HEIGHT + 6;
+  // The music lane is always there: a slim "Add music" slot until a block exists.
+  const musicLaneHeight =
+    studioEdits.music.blocks.length > 0 ? MUSIC_LANE_HEIGHT : MUSIC_LANE_EMPTY_HEIGHT;
+  const musicTrackTop = waveformTrackTop + WAVEFORM_HEIGHT + 6;
+  const textTrackTop = musicTrackTop + musicLaneHeight + 6;
   const trackAreaHeight =
     waveformTrackTop + WAVEFORM_HEIGHT + 8 +
+    (musicLaneHeight + 6) +
     (hasTextLayers ? TEXT_TRACK_HEIGHT + 6 : 0);
 
   return (
@@ -2439,6 +2446,7 @@ export function Timeline() {
             ...(hasBrollLane ? [{ top: brollTrackTop, height: BROLL_TRACK_HEIGHT, icon: <ImageIcon size={13} /> }] : []),
             { top: wordTrackTop, height: WORD_CHIPS_HEIGHT, icon: <Captions size={13} /> },
             { top: waveformTrackTop, height: WAVEFORM_HEIGHT, icon: <AudioLines size={13} /> },
+            { top: musicTrackTop, height: musicLaneHeight, icon: <Music size={13} /> },
             ...(hasTextLayers ? [{ top: textTrackTop, height: TEXT_TRACK_HEIGHT, icon: <Type size={13} /> }] : []),
           ].map((lane) => (
             <Flex
@@ -2889,6 +2897,20 @@ export function Timeline() {
                 />
 							))}
             </Box>
+
+            {/* ── Music lane: Music Blocks (move, trim, split, fades) ── */}
+            <MusicLane
+              left={LEFT_GUTTER}
+              top={musicTrackTop}
+              width={totalWidth}
+              height={musicLaneHeight}
+              pxPerSec={TIMELINE_PX_PER_SEC}
+              clipDurationSec={baseDuration}
+              timelineDurationSec={safeDuration}
+              visibleRange={visibleRange}
+              guideTop={RULER_HEIGHT - musicTrackTop}
+              guideHeight={trackAreaHeight - RULER_HEIGHT}
+            />
 
             {/* ── Text overlay track (Vizard-parity Phase C step 1) ── */}
             {hasTextLayers && (

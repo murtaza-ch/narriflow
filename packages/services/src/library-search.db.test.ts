@@ -288,7 +288,7 @@ dbDescribe("Library search PostgreSQL contracts", () => {
     }
 
     const styledEdits = () => studioEditsSchema.parse({
-      music: { url: "https://example.test/song.mp3", title: "Song", volume: 40, startOffsetSec: 0, fadeInSec: 0, fadeOutSec: 0 },
+      music: { blocks: [{ id: "bed", url: "https://example.test/song.mp3", title: "Song", startSec: 0, volume: 40 }] },
       logo: { enabled: true, position: null, opacity: null, scalePct: null },
       sourceAudio: { volume: 55, muted: true },
       transition: { type: "fade", durationSec: 0.6 },
@@ -375,7 +375,7 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const edits = studioEditsSchema.parse(row.studioEdits);
       expect(edits.visualBroll).toEqual([]);
       expect(edits.textLayers).toEqual([]);
-      expect(edits.music?.url).toBe("https://example.test/song.mp3");
+      expect(edits.music.blocks.map(block => block.url)).toEqual(["https://example.test/song.mp3"]);
       expect(edits.sourceAudio).toEqual({ volume: 55, muted: true });
       expect(row.captionPreset).toEqual(getCaptionPresetById("blast")!.preset);
     })));

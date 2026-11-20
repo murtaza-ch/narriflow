@@ -97,7 +97,7 @@ test("encoded music ducks at the speech's final time after a Scene Block", async
         }],
         studioEdits: studioEditsSchema.parse({
           framing: { mode: "center" },
-          music: { url: "https://example.com/music.wav", volume: 100, ducking: true, fadeInSec: 0, fadeOutSec: 0 },
+          music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 100 }], ducking: true },
         }),
         brollUrl: null, deletedRanges: [],
         sceneBlocks: [{
@@ -108,7 +108,7 @@ test("encoded music ducks at the speech's final time after a Scene Block", async
       }),
       source: { identity: "source:audio-clock", kind: "video", width: 90, height: 160 },
       evidence: { automaticLayout: { state: "missing" } },
-      assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed", durationSec: 6 } },
+      assets: { backgroundImage: { state: "missing" }, music: { bed: { state: "available", ref: "music:bed", durationSec: 6 } } },
       capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
     });
@@ -116,7 +116,7 @@ test("encoded music ducks at the speech's final time after a Scene Block", async
     const source = await productionWorkerProcessModule.inspectMedia({ sourcePath, signal, deadlineMs: 5000 });
     await execute(compileClipCompositionCommand({
       sourcePath, outputPath, startSec: 0, endSec: 4, source, plan: result.plan, targetId: "vertical",
-      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), { music: { sourceRef: "music:bed", path: musicPath } }),
+      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), { music: [{ id: "bed", sourceRef: "music:bed", path: musicPath }] }),
       encoder: { preset: "ultrafast", crf: "18" }, assets: { subtitlePath: null },
     }));
     const decoded = await execute(["-i", outputPath, "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"]);
@@ -1278,25 +1278,28 @@ describe("composition FFmpeg adapter", () => {
 					gain: 0.65,
 					muted: false,
 				},
-				music: {
-					sourceRef: "music:bed",
-					activeRange: { startSec: 0, endSec: 5 },
-					gain: 0.4,
-					startOffsetSec: 3,
-					sourceDurationSec: 10,
-					loop: true,
-					fades: {
-						fadeIn: { startSec: 0, endSec: 2 },
-						fadeOut: { startSec: 4, endSec: 5 },
+				music: [
+					{
+						id: "bed",
+						sourceRef: "music:bed",
+						activeRange: { startSec: 0, endSec: 5 },
+						gain: 0.4,
+						sourceStartSec: 3,
+						sourceDurationSec: 10,
+						loop: true,
+						fades: {
+							fadeIn: { startSec: 0, endSec: 2 },
+							fadeOut: { startSec: 4, endSec: 5 },
+						},
+						ducking: {
+							enabled: true,
+							windows: [{ startSec: 1, endSec: 2 }],
+							duckedGainFraction: 0.3,
+							attackSec: 0.25,
+							releaseSec: 0.4,
+						},
 					},
-					ducking: {
-						enabled: true,
-						windows: [{ startSec: 1, endSec: 2 }],
-						duckedGainFraction: 0.3,
-						attackSec: 0.25,
-						releaseSec: 0.4,
-					},
-				},
+				],
 				soundEffects: [
 					{
 						id: "sting",
@@ -1332,25 +1335,28 @@ describe("composition FFmpeg adapter", () => {
 				gain: 0.65,
 				muted: false,
 			},
-			music: {
-				sourceRef: "music:bed",
-				activeRange: { startSec: 0, endSec: 5 },
-				gain: 0.4,
-				startOffsetSec: 3,
-				sourceDurationSec: 10,
-				loop: true,
-				fades: {
-					fadeIn: { startSec: 0, endSec: 2 },
-					fadeOut: { startSec: 4, endSec: 5 },
+			music: [
+				{
+					id: "bed",
+					sourceRef: "music:bed",
+					activeRange: { startSec: 0, endSec: 5 },
+					gain: 0.4,
+					sourceStartSec: 3,
+					sourceDurationSec: 10,
+					loop: true,
+					fades: {
+						fadeIn: { startSec: 0, endSec: 2 },
+						fadeOut: { startSec: 4, endSec: 5 },
+					},
+					ducking: {
+						enabled: true,
+						windows: [{ startSec: 1, endSec: 2 }],
+						duckedGainFraction: 0.3,
+						attackSec: 0.25,
+						releaseSec: 0.4,
+					},
 				},
-				ducking: {
-					enabled: true,
-					windows: [{ startSec: 1, endSec: 2 }],
-					duckedGainFraction: 0.3,
-					attackSec: 0.25,
-					releaseSec: 0.4,
-				},
-			},
+			],
 			soundEffects: [
 				{
 					id: "sting",
@@ -3347,7 +3353,7 @@ describe("composition FFmpeg adapter", () => {
 				transcriptSlice: [],
 				studioEdits: studioEditsSchema.parse({
 					framing: { mode: "center" },
-					music: { url: "https://example.com/music.wav", volume: 30 },
+					music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 30 }] },
 				}),
 				brollUrl: null,
 				deletedRanges: [],
@@ -3396,14 +3402,14 @@ describe("composition FFmpeg adapter", () => {
 			},
 			assets: {
 				backgroundImage: { state: "missing" },
-				music: { state: "available", ref: "music:censor-real", durationSec: 4 },
+				music: { bed: { state: "available", ref: "music:censor-real", durationSec: 4 } },
 			},
 			targets: [{ id: "real", aspectRatio: "9:16", width: 180, height: 320 }],
 		});
 		if (planned.status === "invalid") throw new Error(planned.error.code);
 		const audio = bindCompositionPlanAudioInputs(
 			compileCompositionPlanAudioSchedule(planned.plan),
-			{ music: { sourceRef: "music:censor-real", path: musicPath } },
+			{ music: [{ id: "bed", sourceRef: "music:censor-real", path: musicPath }] },
 		);
 		const args = compileClipCompositionCommand({
 			sourcePath,

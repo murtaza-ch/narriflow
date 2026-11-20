@@ -63,7 +63,7 @@ function plan(doc: ReturnType<typeof document>, captionOverride?: CaptionOverrid
     ...(captionOverride ? { captionOverride } : {}),
     source: { identity: "source:override", kind: "video", width: 320, height: 180 },
     evidence: { automaticLayout: { state: "missing" } },
-    assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed" } },
+    assets: { backgroundImage: { state: "missing" }, music: { bed: { state: "available", ref: "music:bed" } } },
     capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
     targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
   });
@@ -180,16 +180,16 @@ describe("caption override", () => {
     const doc = document({
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
-        music: { url: "https://example.com/music.mp3", ducking: true },
+        music: { blocks: [{ id: "bed", url: "https://example.com/music.mp3", startSec: 0 }], ducking: true },
       }),
     });
-    const transcriptWindows = plan(doc).audioSchedule.music!.ducking.windows;
+    const transcriptWindows = plan(doc).audioSchedule.music[0]!.ducking.windows;
     expect(transcriptWindows).toHaveLength(1);
     expect(transcriptWindows[0]!.endSec).toBeLessThan(2);
     const windows = plan(doc, {
       language: "ur",
       segments: [[{ text: "late", startSec: 6, endSec: 6.5 }]],
-    }).audioSchedule.music!.ducking.windows;
+    }).audioSchedule.music[0]!.ducking.windows;
     expect(windows).toHaveLength(1);
     expect(windows[0]!.startSec).toBeGreaterThan(5);
     expect(windows[0]!.endSec).toBeGreaterThan(6.5);
@@ -200,13 +200,13 @@ describe("caption override", () => {
       sceneBlocks: [SCENE],
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
-        music: { url: "https://example.com/music.mp3", ducking: true },
+        music: { blocks: [{ id: "bed", url: "https://example.com/music.mp3", startSec: 0 }], ducking: true },
       }),
     });
     const windows = plan(doc, {
       language: "ur",
       segments: [[{ text: "late", startSec: 2, endSec: 2.5 }]],
-    }).audioSchedule.music!.ducking.windows;
+    }).audioSchedule.music[0]!.ducking.windows;
     expect(windows).toHaveLength(1);
     expect(windows[0]!.startSec).toBeCloseTo(2.88, 8);
     expect(windows[0]!.endSec).toBeCloseTo(3.62, 8);

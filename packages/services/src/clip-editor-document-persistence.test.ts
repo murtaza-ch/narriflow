@@ -675,7 +675,9 @@ describe("Clip Editor Document Persistence", () => {
   });
 
   test.each([
-    studioEditsSchema.parse({ music: { url: "http://127.0.0.1/music.mp3" } }),
+    studioEditsSchema.parse({
+      music: { blocks: [{ id: "bed", url: "http://127.0.0.1/music.mp3", startSec: 0 }] },
+    }),
     studioEditsSchema.parse({
       background: {
         mode: "image",

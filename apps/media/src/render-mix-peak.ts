@@ -74,7 +74,7 @@ export class MixPeakError extends WorkflowFailure {
 export function mixCanClip(
 	audio: Pick<BoundCompositionAudioRenderRequest, "music" | "soundEffects">,
 ): boolean {
-	return Boolean(audio.music) || audio.soundEffects.length > 0;
+	return audio.music.length > 0 || audio.soundEffects.length > 0;
 }
 
 export function exceedsFullScale(facts: MixPeakFacts): boolean {

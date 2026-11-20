@@ -31,7 +31,7 @@ function planLayers(presetId: string, deletedRanges: { startSec: number; endSec:
     captionLanguage: "en",
     source: { identity: "source:cue-at", kind: "video", width: 1920, height: 1080 },
     evidence: { automaticLayout: { state: "missing" } },
-    assets: { backgroundImage: { state: "missing" }, music: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" }, music: {} },
     capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
     targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
   });

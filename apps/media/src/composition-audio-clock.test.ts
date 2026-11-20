@@ -41,7 +41,7 @@ function plannedCommand(options: {
       deletedRanges: options.deletedRanges ?? [],
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
-        ...(options.music ? { music: { url: "https://example.com/music.wav", volume: 20, ducking: false, fadeInSec: 0, fadeOutSec: 0 } } : {}),
+        ...(options.music ? { music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 20 }] } } : {}),
       }),
       brollUrl: null,
       sceneBlocks: options.scene
@@ -56,7 +56,7 @@ function plannedCommand(options: {
     evidence: { automaticLayout: { state: "missing" } },
     assets: {
       backgroundImage: { state: "missing" },
-      ...(options.music ? { music: { state: "available", ref: "music:bed", durationSec: options.music.durationSec } } as const : {}),
+      ...(options.music ? { music: { bed: { state: "available", ref: "music:bed", durationSec: options.music.durationSec } } } as const : {}),
     },
     capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
     targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
@@ -71,7 +71,7 @@ function plannedCommand(options: {
       sourcePath: options.sourcePath ?? "/source.mp4", outputPath: options.outputPath ?? "/out.mp4",
       startSec: options.startSec, endSec: options.endSec, source: options.source, plan: result.plan, targetId: "vertical",
       cutPlan,
-      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), options.music ? { music: { sourceRef: "music:bed", path: options.music.path } } : {}),
+      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), options.music ? { music: [{ id: "bed", sourceRef: "music:bed", path: options.music.path }] } : {}),
       encoder: { preset: "ultrafast", crf: "24" },
       assets: { subtitlePath: null, ...(options.scene ? { scenes: { [sceneRef]: { path: options.scene.path, kind: "video" as const, hasAudio: true } } } : {}) },
     }),

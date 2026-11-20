@@ -51,7 +51,7 @@ test.each([
         captionPreset: captionPresetSchema.parse({ visible: false }), transcriptSlice: [], deletedRanges: [],
         studioEdits: studioEditsSchema.parse({
           framing: { mode: "center" }, sourceAudio: { muted, volume: 25 },
-          ...(music ? { music: { url: "https://example.com/music.wav", volume: 20, ducking: false, fadeInSec: 0, fadeOutSec: 0 } } : {}),
+          ...(music ? { music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 20 }] } } : {}),
         }),
         brollUrl: mode === "broll" ? "https://example.com/cutaway.mp4" : null,
         sceneBlocks: [{
@@ -64,7 +64,7 @@ test.each([
       evidence: { automaticLayout: { state: "missing" } },
       assets: {
         backgroundImage: { state: "missing" },
-        ...(music ? { music: { state: "available", ref: "music:bed", durationSec: 3 } } as const : {}),
+        ...(music ? { music: { bed: { state: "available", ref: "music:bed", durationSec: 3 } } } as const : {}),
         ...(mode === "broll" ? { broll: { state: "available", placements: [{ id: "cutaway", ref: "broll:clip", startSec: 0, endSec: 0.5 }] } } as const : {}),
       },
       capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
@@ -73,7 +73,7 @@ test.each([
     if (result.status === "invalid") throw new Error(result.error.code);
     await execute(compileClipCompositionCommand({
       sourcePath, outputPath, startSec: 0, endSec: 2, source: inspection, plan: result.plan, targetId: "vertical",
-      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), music ? { music: { sourceRef: "music:bed", path: musicPath } } : {}),
+      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), music ? { music: [{ id: "bed", sourceRef: "music:bed", path: musicPath }] } : {}),
       encoder: { preset: "ultrafast", crf: "24" },
       assets: { subtitlePath: null, scenes: { [sceneRef]: { path: scenePath, kind: "video", hasAudio: true } }, ...(mode === "broll" ? { broll: { "broll:clip": videoPath } } : {}) },
     }));

@@ -46,6 +46,7 @@ export const STUDIO_EDIT_LIMITS = {
   textLayerChars: 280,
   sfx: 20,
   visualBroll: 20,
+  musicBlocks: 12,
 } as const;
 
 export const studioTextLayerSchema = z
@@ -93,29 +94,77 @@ export const studioTransitionSchema = z.object({
   durationSec: z.number().min(0.1).max(2).default(0.4),
 });
 
-export const studioMusicSchema = z.object({
-  url: httpUrlSchema.nullable().default(null),
-  title: z.string().trim().max(120).nullable().default(null),
-  volume: z.number().min(0).max(100).default(35),
-  startOffsetSec: z.number().min(0).default(0),
-  fadeInSec: z.number().min(0).max(5).default(0),
-  fadeOutSec: z.number().min(0).max(5).default(0),
-  // Music/SFX library (vizard-parity.md "Music/SFX library"): when set,
-  // identifies an AudioAsset row and WINS over `url` at render time — the
-  // worker resolves the actual audio through
-  // `audioAssetService.resolveRenderSource(ownerUserId, assetId)`, never
-  // `url`, once this is non-null. `url` doubles as the preview playback URL
-  // (populated from the asset's presigned download URL when the user picks
-  // one from the library) and stays the escape hatch for pasted links when
-  // `assetId` is null.
-  assetId: z.string().uuid().nullable().default(null),
-  // Auto-ducking v1 (vizard-parity.md): lowers music under detected speech
-  // when true. The window/gain math lives in `computeSpeechWindows` /
-  // `duckingGainMultiplierAt` below — the SAME functions the worker's timed
-  // volume automation and the studio preview's gain node both call, so
-  // preview and burn-in can't fork on the ducking curve.
-  ducking: z.boolean().default(false),
-});
+/** Shortest Music Block the Studio can make by trimming or splitting. */
+export const MUSIC_BLOCK_MIN_DURATION_SEC = 0.5;
+
+/**
+ * A Music Block: one stretch of a music track on the clip's music lane.
+ *
+ * `startSec`/`endSec` are EDITED-timeline seconds, the same convention as
+ * `studioTextLayerSchema` and `studioSfxPlacementSchema`; `endSec: null`
+ * means "until the clip ends", so a full-length bed survives trims. The
+ * renderer clamps a block to the clip and skips one that starts at or past
+ * the end. `sourceStartSec` is the in-point inside the track: the block
+ * plays the track from there and loops it when the block outlasts it.
+ *
+ * `assetId` identifies an AudioAsset row and wins over `url` at render time
+ * (the worker resolves it through `audioAssetService.resolveRenderSource`).
+ * `url` doubles as the preview playback hint and stays the escape hatch for
+ * pasted links when `assetId` is null. `title` is a display-only cache.
+ */
+export const studioMusicBlockSchema = z
+  .object({
+    id: z.string().min(1).max(80),
+    assetId: z.string().uuid().nullable().default(null),
+    url: httpUrlSchema.nullable().default(null),
+    title: z.string().trim().max(120).nullable().default(null),
+    startSec: z.number().finite().min(0),
+    endSec: z.number().finite().min(0).nullable().default(null),
+    sourceStartSec: z.number().finite().min(0).default(0),
+    volume: z.number().min(0).max(100).default(35),
+    fadeInSec: z.number().min(0).max(5).default(0),
+    fadeOutSec: z.number().min(0).max(5).default(0),
+  })
+  .refine((block) => block.assetId !== null || block.url !== null, {
+    message: "a music block needs an assetId or a url",
+    path: ["assetId"],
+  })
+  .refine((block) => block.endSec === null || block.endSec > block.startSec, {
+    message: "endSec must be greater than startSec",
+    path: ["endSec"],
+  });
+
+/**
+ * The clip's music lane: Music Blocks that never overlap, plus the
+ * clip-wide auto-ducking switch. Blocks are stored in timeline order; only
+ * the last block may run to the clip end (`endSec: null`).
+ *
+ * Auto-ducking (vizard-parity.md) lowers every block under detected speech.
+ * The window/gain math lives in `computeSpeechWindows` /
+ * `duckingGainMultiplierAt` below, the SAME functions the worker's timed
+ * volume automation and the Studio preview both call.
+ */
+export const studioMusicSchema = z
+  .object({
+    blocks: z.array(studioMusicBlockSchema).max(STUDIO_EDIT_LIMITS.musicBlocks).default([]),
+    ducking: z.boolean().default(false),
+  })
+  .superRefine((music, context) => {
+    if (new Set(music.blocks.map((block) => block.id)).size !== music.blocks.length) {
+      context.addIssue({ code: "custom", path: ["blocks"], message: "music block ids must be unique" });
+    }
+    music.blocks.forEach((block, index) => {
+      const next = music.blocks[index + 1];
+      if (!next) return;
+      if (block.endSec === null || block.endSec > next.startSec) {
+        context.addIssue({
+          code: "custom",
+          path: ["blocks", index],
+          message: "music blocks must be in timeline order and cannot overlap",
+        });
+      }
+    });
+  });
 
 /**
  * Shared fade-window policy for music fades so the browser preview and the
@@ -430,16 +479,10 @@ export const studioFramingSchema = z.object({
 
 const STUDIO_FRAMING_DEFAULT = { mode: "auto" } as const;
 
-const STUDIO_MUSIC_DEFAULT = {
-  url: null,
-  title: null,
-  volume: 35,
-  startOffsetSec: 0,
-  fadeInSec: 0,
-  fadeOutSec: 0,
-  assetId: null,
+const STUDIO_MUSIC_DEFAULT: z.output<typeof studioMusicSchema> = {
+  blocks: [],
   ducking: false,
-} as const;
+};
 
 // One-shot SFX placement (vizard-parity.md "Music/SFX library"): plays once
 // from `startSec` — EDITED-timeline seconds, the same convention as
@@ -535,6 +578,7 @@ export const updateClipStudioEditsSchema = z.object({
 export type StudioTextLayer = z.infer<typeof studioTextLayerSchema>;
 export type StudioTransition = z.infer<typeof studioTransitionSchema>;
 export type StudioMusic = z.infer<typeof studioMusicSchema>;
+export type StudioMusicBlock = z.infer<typeof studioMusicBlockSchema>;
 export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
 export type StudioLogo = z.infer<typeof studioLogoSchema>;
 export type StudioBackground = z.infer<typeof studioBackgroundSchema>;
@@ -571,6 +615,30 @@ function studioTextLayersEqual(
         layer.bold === candidate.bold &&
         layer.outlineColor === candidate.outlineColor &&
         layer.outlineWidth === candidate.outlineWidth)
+    );
+  });
+}
+
+function studioMusicBlocksEqual(
+  left: readonly StudioMusicBlock[],
+  right: readonly StudioMusicBlock[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((block, index) => {
+    const candidate = right[index]!;
+    return (
+      block === candidate ||
+      (block.id === candidate.id &&
+        block.assetId === candidate.assetId &&
+        block.url === candidate.url &&
+        block.title === candidate.title &&
+        block.startSec === candidate.startSec &&
+        block.endSec === candidate.endSec &&
+        block.sourceStartSec === candidate.sourceStartSec &&
+        block.volume === candidate.volume &&
+        block.fadeInSec === candidate.fadeInSec &&
+        block.fadeOutSec === candidate.fadeOutSec)
     );
   });
 }
@@ -654,14 +722,8 @@ export function studioEditsEqual(
   return (
     left.transition.type === right.transition.type &&
     left.transition.durationSec === right.transition.durationSec &&
-    left.music.url === right.music.url &&
-    left.music.title === right.music.title &&
-    left.music.volume === right.music.volume &&
-    left.music.startOffsetSec === right.music.startOffsetSec &&
-    left.music.fadeInSec === right.music.fadeInSec &&
-    left.music.fadeOutSec === right.music.fadeOutSec &&
-    left.music.assetId === right.music.assetId &&
     left.music.ducking === right.music.ducking &&
+    studioMusicBlocksEqual(left.music.blocks, right.music.blocks) &&
     left.sourceAudio.volume === right.sourceAudio.volume &&
     left.sourceAudio.muted === right.sourceAudio.muted &&
     left.logo.enabled === right.logo.enabled &&

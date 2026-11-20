@@ -45,6 +45,7 @@ import type {
 	ClipRenderResolution,
 	EditorDocument,
 	StudioEdits,
+	StudioMusicBlock,
 } from "@narriflow/validators";
 import { buildClipCutPlan } from "./cut-plan";
 import {
@@ -125,6 +126,8 @@ interface BrollPlan {
 }
 
 interface ResolvedMusicAsset {
+	/** The Music Block this download plays for. */
+	id: string;
 	path: string;
 	ref: string;
 	durationSec?: number;
@@ -530,7 +533,7 @@ export function deriveRenderCompositionAssets(input: {
 	brandLogo: LogoOverlay | null;
 	brandLogoWasRequested: boolean;
 	plannedLogoSettings: ReturnType<typeof resolveEffectiveLogoSettings> | null;
-	musicPlan: ResolvedMusicAsset | null;
+	musicPlans: ResolvedMusicAsset[];
 	sfxPlans: ResolvedSfxAsset[];
 }): NonNullable<ClipCompositionPlanInput["assets"]> {
 	const {
@@ -544,7 +547,7 @@ export function deriveRenderCompositionAssets(input: {
 		brandLogo,
 		brandLogoWasRequested,
 		plannedLogoSettings,
-		musicPlan,
+		musicPlans,
 		sfxPlans,
 	} = input;
 	const studioEdits = document.studioEdits;
@@ -560,24 +563,28 @@ export function deriveRenderCompositionAssets(input: {
 	);
 	const brollAvailable = Boolean(brollPlan) || visualBrollAvailable;
 	const logoAvailable = Boolean(brandLogo);
-	const musicAvailable = Boolean(musicPlan);
 	const soundEffectsAvailable = sfxPlans.length > 0;
 	return {
 		backgroundImage,
 		sceneVisuals: sceneVisualAvailability,
 		sceneFonts: sceneFontAvailability,
-		...(studioEdits.music.assetId || studioEdits.music.url
-			? {
-					music:
-						musicAvailable && musicPlan?.ref
-							? {
-									state: "available" as const,
-									ref: musicPlan.ref,
-									durationSec: musicPlan.durationSec,
-								}
-							: { state: "failed" as const },
-				}
-			: {}),
+		music: Object.fromEntries(
+			studioEdits.music.blocks.map((block) => {
+				const resolved = musicPlans.find(
+					(candidate) => candidate.id === block.id,
+				);
+				return [
+					block.id,
+					resolved?.ref
+						? {
+								state: "available" as const,
+								ref: resolved.ref,
+								durationSec: resolved.durationSec,
+							}
+						: { state: "failed" as const },
+				];
+			}),
+		),
 		soundEffects: Object.fromEntries(
 			studioEdits.sfx.map((placement) => {
 				const resolved = soundEffectsAvailable
@@ -2353,113 +2360,170 @@ async function resolveClipAudioAssets(input: {
 		tempDir,
 		touchedOptionalAssetClasses,
 	} = input;
-	let musicPlan: ResolvedMusicAsset | null = null;
-	// Library asset (vizard-parity.md "Music/SFX library" —
-	// `studioMusicSchema.assetId`) wins over the pasted `url` at render
-	// time — same precedence the schema's own doc comment documents.
-	// Resolution failure (deleted row, DB hiccup) is treated exactly like
-	// a failed download below: log and skip music entirely, never fail
-	// the whole clip (the existing `music_download_failed` policy this
-	// mirrors never actually fails the clip either — see the catch below,
-	// which only logs).
-	let musicUrl: string | null = null;
-	let musicDurationSec: number | undefined;
-	// M6 (vizard-parity.md "Music/SFX library"): an AudioAsset-resolved
-	// music track already passed the AUDIO_UPLOAD_MAX_BYTES gate once at
-	// upload time (or is a curated row seeded well under it) — downloading
-	// it back down for a render must not silently inherit the much larger
-	// 250MB pasted-URL/B-roll budget. A pasted `url` (no assetId) predates
-	// this change and keeps the original 250MB policy.
-	let musicUrlIsAssetResolved = false;
-	if (studioEdits.music.assetId) {
-		try {
-			const resolved =
-				await currentRenderAdapters().audioAsset.resolveRenderSource(
-					frozenState.workspaceOwnerUserId,
-					studioEdits.music.assetId,
-					frozenState.workspaceId,
-				);
-			musicUrl = resolved?.url ?? null;
-			musicDurationSec = resolved?.durationSec;
-			musicUrlIsAssetResolved = Boolean(resolved);
-			if (!resolved) {
+	// Music Blocks (`studioEdits.music.blocks`). A library asset
+	// (vizard-parity.md "Music/SFX library" — `studioMusicBlockSchema.assetId`)
+	// wins over the pasted `url` at render time, the precedence the schema's
+	// own doc comment documents. Each block is resolved independently and
+	// best-effort: a lookup, download or decode failure is logged and skips
+	// THAT block only, never the clip (the existing `music_download_failed`
+	// policy). Blocks that reuse a track share one download, keyed by asset
+	// id or URL.
+	const musicPlans: ResolvedMusicAsset[] = [];
+	const musicSources = new Map<
+		string,
+		Promise<{ path: string; durationSec: number | undefined } | null>
+	>();
+	const resolveMusicSource = async (
+		block: StudioMusicBlock,
+		sourceIndex: number,
+	) => {
+		let musicUrl: string | null = null;
+		let musicDurationSec: number | undefined;
+		// M6 (vizard-parity.md "Music/SFX library"): an AudioAsset-resolved
+		// music track already passed the AUDIO_UPLOAD_MAX_BYTES gate once at
+		// upload time (or is a curated row seeded well under it) — downloading
+		// it back down for a render must not silently inherit the much larger
+		// 250MB pasted-URL/B-roll budget. A pasted `url` (no assetId) predates
+		// this change and keeps the original 250MB policy.
+		let musicUrlIsAssetResolved = false;
+		const context = {
+			workflowRunId: run.id,
+			clipId: clip.id,
+			musicBlockId: block.id,
+		};
+		if (block.assetId) {
+			try {
+				const resolved =
+					await currentRenderAdapters().audioAsset.resolveRenderSource(
+						frozenState.workspaceOwnerUserId,
+						block.assetId,
+						frozenState.workspaceId,
+					);
+				musicUrl = resolved?.url ?? null;
+				musicDurationSec = resolved?.durationSec;
+				musicUrlIsAssetResolved = Boolean(resolved);
+				if (!resolved) {
+					diagnoseOptionalAssetFallback({
+						assetClass: "music",
+						phase: "lookup",
+						failureCode: "music_asset_unavailable",
+						context,
+					});
+				}
+			} catch (error) {
+				rethrowOptionalAssetFailure(error);
+				const accessFailure = optionalAccessFailure(error, "music");
 				diagnoseOptionalAssetFallback({
 					assetClass: "music",
-					phase: "lookup",
-					failureCode: "music_asset_unavailable",
-					context: { workflowRunId: run.id, clipId: clip.id },
+					...accessFailure,
+					context,
 				});
 			}
-		} catch (error) {
-			rethrowOptionalAssetFailure(error);
-			const accessFailure = optionalAccessFailure(error, "music");
-			diagnoseOptionalAssetFallback({
-				assetClass: "music",
-				...accessFailure,
-				context: { workflowRunId: run.id, clipId: clip.id },
-			});
+		} else {
+			musicUrl = block.url;
 		}
-	} else {
-		musicUrl = studioEdits.music.url;
-	}
+		if (!musicUrl) return null;
 
-	if (musicUrl) {
-		let musicUrlSafe = false;
 		try {
 			currentRenderAdapters().optionalAssets.assertUrlAllowed(musicUrl);
-			musicUrlSafe = true;
 		} catch {
 			diagnoseOptionalAssetFallback({
 				assetClass: "music",
 				phase: "lookup",
 				failureCode: "music_url_rejected",
-				context: { workflowRunId: run.id, clipId: clip.id },
+				context,
 			});
+			return null;
 		}
-		if (musicUrlSafe) {
-			touchedOptionalAssetClasses.add("music");
-			const musicPath = join(tempDir, `music-${clip.id}.bin`);
-			try {
-				await currentRenderAdapters().optionalAssets.downloadUrlToFile(
-					musicUrl,
-					musicPath,
-					"music_download_failed",
-					musicUrlIsAssetResolved
-						? { maxBytes: AUDIO_UPLOAD_MAX_BYTES }
-						: undefined,
+		touchedOptionalAssetClasses.add("music");
+		const musicPath = join(tempDir, `music-${clip.id}-${sourceIndex}.bin`);
+		try {
+			await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+				musicUrl,
+				musicPath,
+				"music_download_failed",
+				musicUrlIsAssetResolved
+					? { maxBytes: AUDIO_UPLOAD_MAX_BYTES }
+					: undefined,
+			);
+		} catch (error) {
+			rethrowOptionalAssetFailure(error);
+			diagnoseOptionalAssetFallback({
+				assetClass: "music",
+				phase: "download",
+				failureCode: "music_download_failed",
+				context,
+			});
+			return null;
+		}
+		return { path: musicPath, durationSec: musicDurationSec };
+	};
+	for (const block of studioEdits.music.blocks) {
+		const blockStartSec = block.startSec;
+		const blockEndSec = Math.min(block.endSec ?? clipDurationSec, clipDurationSec);
+		if (!(blockEndSec > blockStartSec)) {
+			log("info", "clip_music_block_skipped_beyond_duration", {
+				workflowRunId: run.id,
+				clipId: clip.id,
+				musicBlockId: block.id,
+				startSec: block.startSec,
+				clipDurationSec,
+			});
+			continue;
+		}
+		const sourceKey = block.assetId ? `asset:${block.assetId}` : `url:${block.url}`;
+		let source = musicSources.get(sourceKey);
+		if (!source) {
+			source = resolveMusicSource(block, musicSources.size);
+			musicSources.set(sourceKey, source);
+		}
+		const resolved = await source;
+		if (!resolved) continue;
+		try {
+			// The block plays the track from its in-point and loops it, so the
+			// probe window is the block's own length, with the in-point folded
+			// into the track when its length is known.
+			const inPointSec =
+				resolved.durationSec && resolved.durationSec > 0
+					? block.sourceStartSec % resolved.durationSec
+					: block.sourceStartSec;
+			const decodable =
+				await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+					resolved.path,
+					"audio",
+					{ startSec: inPointSec, durationSec: blockEndSec - blockStartSec },
 				);
-				const decodable =
-					await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-						musicPath,
-						"audio",
-      { startSec: studioEdits.music.startOffsetSec, durationSec: clipDurationSec },
-					);
-				if (decodable) {
-					musicPlan = {
-						path: musicPath,
-						ref: compositionAssetRef(
-							"music",
-							studioEdits.music.assetId ?? musicUrl,
-						),
-						durationSec: musicDurationSec,
-					};
-				} else {
-					diagnoseOptionalAssetFallback({
-						assetClass: "music",
-						phase: "decode",
-						failureCode: "music_media_invalid",
-						context: { workflowRunId: run.id, clipId: clip.id },
-					});
-				}
-			} catch (error) {
-				rethrowOptionalAssetFailure(error);
+			if (decodable) {
+				musicPlans.push({
+					id: block.id,
+					path: resolved.path,
+					ref: compositionAssetRef("music", block.assetId ?? block.url!),
+					durationSec: resolved.durationSec,
+				});
+			} else {
 				diagnoseOptionalAssetFallback({
 					assetClass: "music",
-					phase: "download",
-					failureCode: "music_download_failed",
-					context: { workflowRunId: run.id, clipId: clip.id },
+					phase: "decode",
+					failureCode: "music_media_invalid",
+					context: {
+						workflowRunId: run.id,
+						clipId: clip.id,
+						musicBlockId: block.id,
+					},
 				});
 			}
+		} catch (error) {
+			rethrowOptionalAssetFailure(error);
+			diagnoseOptionalAssetFallback({
+				assetClass: "music",
+				phase: "decode",
+				failureCode: "music_media_invalid",
+				context: {
+					workflowRunId: run.id,
+					clipId: clip.id,
+					musicBlockId: block.id,
+				},
+			});
 		}
 	}
 
@@ -2593,7 +2657,7 @@ async function resolveClipAudioAssets(input: {
 		}
 	}
 
-	return { musicPlan, sfxPlans };
+	return { musicPlans, sfxPlans };
 }
 
 // Private clip-group phase. Frozen revisions share evidence and assets; their
@@ -3560,7 +3624,7 @@ async function renderClipGroup(input: {
 	const splitLayoutEvidenceForPlan = layoutEvidence.availability.splitLayout;
 	const screenLayoutEvidenceForPlan = layoutEvidence.availability.screenLayout;
 
-	const { musicPlan, sfxPlans } = await resolveClipAudioAssets({
+	const { musicPlans, sfxPlans } = await resolveClipAudioAssets({
 		run,
 		clip,
 		frozenState,
@@ -3723,7 +3787,7 @@ async function renderClipGroup(input: {
 			assets: deriveRenderCompositionAssets({
 				document: compositionDocument, resolvedSceneAssets, sceneVisualAvailability, sceneFontAvailability,
 				backgroundImage: backgroundImageAvailability, brollPlan, userBrollUrl, brandLogo,
-				brandLogoWasRequested, plannedLogoSettings, musicPlan, sfxPlans,
+				brandLogoWasRequested, plannedLogoSettings, musicPlans, sfxPlans,
 			}),
 			capabilities: {
 				automaticSpeakerLayout: true,
@@ -3804,9 +3868,9 @@ async function renderClipGroup(input: {
 			audioScheduleFingerprint: planned.plan.audioSchedule.fingerprint,
 			audioSchedule: {
 				sourceAvailable: planned.plan.audioSchedule.source.available,
-				musicIncluded: Boolean(planned.plan.audioSchedule.music),
+				musicBlockCount: planned.plan.audioSchedule.music.length,
 				duckingWindowCount:
-					planned.plan.audioSchedule.music?.ducking.windows.length ?? 0,
+					planned.plan.audioSchedule.music[0]?.ducking.windows.length ?? 0,
 				soundEffectCount: planned.plan.audioSchedule.soundEffects.length,
 			},
 			planningDurationMs,
@@ -3849,9 +3913,11 @@ async function renderClipGroup(input: {
 		plannedAudio = bindCompositionPlanAudioInputs(
 			compileCompositionPlanAudioSchedule(compositionPlan),
 			{
-				music: musicPlan
-					? { sourceRef: musicPlan.ref, path: musicPlan.path }
-					: null,
+				music: musicPlans.map((music) => ({
+					id: music.id,
+					sourceRef: music.ref,
+					path: music.path,
+				})),
 				soundEffects: sfxPlans.map((effect) => ({
 					id: effect.id,
 					sourceRef: effect.ref,

@@ -32,7 +32,7 @@ export const brandApprovalRuleSchema = z.enum([
 ]);
 
 /** One Brand Profile audio reference, frozen into the Project: the id the
- * editor and renderer resolve (`studioEdits.music.assetId` / `sfx[].assetId`),
+ * editor and renderer resolve (`studioEdits.music.blocks[].assetId` / `sfx[].assetId`),
  * plus the display fields the Studio lists without a lookup. */
 export const brandAudioReferenceSchema = z.strictObject({
   assetId: idSchema,

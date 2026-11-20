@@ -116,7 +116,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 if source_mismatch:
                     script=script.replace('delete raw.sourcePath;', 'delete raw.sourcePath;raw.sourceProbe.video.width++;raw.sourceProbe.facts.videos[0].width++;')
                 if many_assets:
-                    script=script.replace('const value=clipPreparationInputSchema',f'raw.document.studioEdits.music={{assetId:{json.dumps(audio[-1]["id"])}}};const value=clipPreparationInputSchema')
+                    script=script.replace('const value=clipPreparationInputSchema',f'raw.document.studioEdits.music={{blocks:[{{id:'bed',assetId:{json.dumps(audio[-1]["id"])},url:null,title:null,startSec:0,endSec:null,sourceStartSec:0,volume:35,fadeInSec:0,fadeOutSec:0}}],ducking:false}};const value=clipPreparationInputSchema')
                 if long_source:
                     script=script.replace('const value=clipPreparationInputSchema',"raw.document.clipStartSec+=5400;raw.document.clipEndSec+=5406;for(const utterance of raw.document.transcriptSlice){utterance.startSec+=5400;utterance.endSec+=5400;for(const word of utterance.words??[]){word.startSec+=5400;word.endSec+=5400;}}const value=clipPreparationInputSchema")
                 if fixture_document is not None:

@@ -46,7 +46,7 @@ export function planScenario(scenario: DubScenario) {
 			studioEdits: studioEditsSchema.parse({
 				framing: { mode: "center" },
 				sourceAudio: { muted: scenario.sourceMuted ?? false, volume: scenario.sourceVolume ?? 100 },
-				...(scenario.music ? { music: { url: "https://example.com/music.wav", volume: 20, ducking: true, fadeInSec: 0, fadeOutSec: 0 } } : {}),
+				...(scenario.music ? { music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 20 }], ducking: true } } : {}),
 			}),
 			brollUrl: null,
 			deletedRanges: scenario.cut ? deletedRanges : [],
@@ -60,7 +60,7 @@ export function planScenario(scenario: DubScenario) {
 		evidence: { automaticLayout: { state: "missing" } },
 		assets: {
 			backgroundImage: { state: "missing" },
-			...(scenario.music ? { music: { state: "available", ref: "music:bed", durationSec: 30 } } as const : {}),
+			...(scenario.music ? { music: { bed: { state: "available", ref: "music:bed", durationSec: 30 } } } as const : {}),
 			...(scenario.builder === "broll" ? { broll: { state: "available", placements: [{ id: "cutaway", ref: "broll:clip", startSec: 0.5, endSec: 1.5 }] } } as const : {}),
 		},
 		capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
@@ -78,7 +78,7 @@ export function scenarioArgs(scenario: DubScenario, dubPath?: string): string[] 
 		sourcePath: "/tmp/source.mp4", outputPath: "/tmp/output.mp4", startSec: 0, endSec: durationSec, source: probe, plan, targetId: "variant-1",
 		...(scenario.cut ? { cutPlan: buildClipCutPlan(deletedRanges, { startSec: 0, endSec: durationSec }) } : {}),
 		audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(plan), {
-			...(scenario.music ? { music: { sourceRef: "music:bed", path: "/tmp/music.wav" } } : {}),
+			...(scenario.music ? { music: [{ id: "bed", sourceRef: "music:bed", path: "/tmp/music.wav" }] } : {}),
 			...(dubPath ? { dub: { path: dubPath } } : {}),
 		}),
 		encoder: { preset: "veryfast", crf: "21" },

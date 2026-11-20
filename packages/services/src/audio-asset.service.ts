@@ -404,7 +404,7 @@ export class AudioAssetService {
    * user exactly like `getPlaybackSource` above (`OR: [{ userId: null },
    * { userId: ownerUserId }]`) — M4: a render must never resolve another
    * tenant's private upload just because it captured the row's id from a
-   * `studioEdits.music.assetId`/`sfx[].assetId` value.
+   * `studioEdits.music.blocks[].assetId`/`sfx[].assetId` value.
    *
    * M3: also filters `deletedAt: null`. `deleteUserAsset` above HARD-deletes
    * the R2 object (soft-delete is only for the DB row/library visibility),

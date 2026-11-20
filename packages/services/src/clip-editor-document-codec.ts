@@ -95,7 +95,7 @@ export function canonicalizeDocument(
   assertDocumentWindow(parsed.data, source);
   for (const externalUrl of [
     parsed.data.brollUrl,
-    parsed.data.studioEdits.music.url,
+    ...parsed.data.studioEdits.music.blocks.map((block) => block.url),
     parsed.data.studioEdits.background.imageUrl,
   ]) {
     if (externalUrl !== null) assertPublicHttpUrl(externalUrl);

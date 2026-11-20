@@ -122,14 +122,15 @@ export function plannedCompositionAudioState(
           ),
       }
     : null;
-  const music = schedule.music;
-  let plannedMusic: {
+  const plannedMusic: {
+    id: string;
     sourceRef: string;
     timelineTimeSec: number;
     loop: true;
     volume: number;
-  } | null = null;
-  if (music && rangeContains(music.activeRange, timeSec)) {
+  }[] = [];
+  for (const music of schedule.music) {
+    if (!rangeContains(music.activeRange, timeSec)) continue;
     let volume = music.gain;
     const fadeInDuration = music.fades.fadeIn.endSec - music.fades.fadeIn.startSec;
     if (fadeInDuration > 0 && timeSec < music.fades.fadeIn.endSec) {
@@ -157,15 +158,19 @@ export function plannedCompositionAudioState(
         releaseSec: music.ducking.releaseSec,
       });
     }
-    plannedMusic = {
+    // The in-point plus time elapsed inside the block, wrapped over the track.
+    const trackTimeSec =
+      music.sourceStartSec + (timeSec - music.activeRange.startSec);
+    plannedMusic.push({
+      id: music.id,
       sourceRef: music.sourceRef,
       timelineTimeSec:
         music.sourceDurationSec && music.sourceDurationSec > 0
-          ? (music.startOffsetSec + timeSec) % music.sourceDurationSec
-          : music.startOffsetSec + timeSec,
+          ? trackTimeSec % music.sourceDurationSec
+          : trackTimeSec,
       loop: true,
       volume: Math.max(0, Math.min(1, volume * outputGain)),
-    };
+    });
   }
   const soundEffects = schedule.soundEffects
     .filter((effect) => rangeContains(effect.activeRange, timeSec))
@@ -178,7 +183,7 @@ export function plannedCompositionAudioState(
   const peakGainSum =
     sourceEnvelopeGain * schedule.source.gain +
     (beep?.volume ?? 0) +
-    (plannedMusic?.volume ?? 0) +
+    plannedMusic.reduce((sum, block) => sum + block.volume, 0) +
     soundEffects.reduce((sum, effect) => sum + effect.volume, 0);
   // The browser plays media elements and the oscillator through separate
   // output nodes, so it cannot share FFmpeg's final limiter. While a beep is
@@ -195,7 +200,7 @@ export function plannedCompositionAudioState(
       envelopeGain: sourceEnvelopeGain * mixGain,
     },
     beep: beep ? { ...beep, volume: beep.volume * mixGain } : null,
-    music: plannedMusic ? { ...plannedMusic, volume: plannedMusic.volume * mixGain } : null,
+    music: plannedMusic.map((block) => ({ ...block, volume: block.volume * mixGain })),
     soundEffects: soundEffects.map((effect) => ({
       ...effect,
       volume: effect.volume * mixGain,

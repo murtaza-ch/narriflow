@@ -24,10 +24,12 @@ import {
 } from "./edit-ranges";
 import {
   captionWordKeySchema,
+  MUSIC_BLOCK_MIN_DURATION_SEC,
   studioEditsEqual,
   studioEditsSchema,
   withCaptionEmphasis,
   type StudioEdits,
+  type StudioMusicBlock,
   type StudioSfxPlacement,
   type StudioTextLayer,
   type StudioSpeakerLayoutOverride,
@@ -491,6 +493,59 @@ function rebaseSfxPlacements(
   return changed ? rebased : placements;
 }
 
+/**
+ * Rebases every Music Block's `startSec` and `endSec` (when not null) through
+ * edited -> absolute source -> edited, like `rebaseTextLayers`, so a block
+ * stays on the footage it was laid over. `sourceStartSec` (the in-point
+ * inside the track) never changes, and `endSec: null` stays "until the clip
+ * ends". A block squeezed under `MUSIC_BLOCK_MIN_DURATION_SEC` is dropped
+ * (an edit never silently stretches a block). A block that would overlap the
+ * previous kept block is clamped to start at that block's end, and dropped
+ * if too little is left. Returns the input array (same reference) when
+ * nothing moves.
+ */
+function rebaseMusicBlocks(
+  blocks: StudioMusicBlock[],
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+): StudioMusicBlock[] {
+  if (blocks.length === 0) return blocks;
+  const newDurationSec = newMap.editedDurationSec;
+
+  let changed = false;
+  const rebased: StudioMusicBlock[] = [];
+  let previousEndSec = 0;
+  for (const block of blocks) {
+    let nextStart = Math.min(
+      newDurationSec,
+      sourceToEdited(newMap, editedToSource(oldMap, block.startSec)),
+    );
+    let nextEnd = block.endSec;
+    if (block.endSec !== null) {
+      nextEnd = Math.min(
+        newDurationSec,
+        sourceToEdited(newMap, editedToSource(oldMap, block.endSec)),
+      );
+    }
+    nextStart = Math.max(nextStart, previousEndSec);
+
+    const effectiveEnd = nextEnd ?? newDurationSec;
+    if (effectiveEnd - nextStart < MUSIC_BLOCK_MIN_DURATION_SEC) {
+      changed = true;
+      continue;
+    }
+    previousEndSec = effectiveEnd;
+
+    if (nextStart === block.startSec && nextEnd === block.endSec) {
+      rebased.push(block);
+      continue;
+    }
+    changed = true;
+    rebased.push({ ...block, startSec: nextStart, endSec: nextEnd });
+  }
+  return changed ? rebased : blocks;
+}
+
 /** Keep manual speaker-scene edits attached to the same source footage when
  * cuts or clip boundaries move the edited timeline. Overrides whose source
  * scene is fully removed are dropped; partially retained scenes clamp to the
@@ -584,6 +639,7 @@ function rebaseStudioEdits(
 ): StudioEdits {
   const textLayers = rebaseTextLayers(doc.studioEdits.textLayers, oldMap, newMap);
   const sfx = rebaseSfxPlacements(doc.studioEdits.sfx, oldMap, newMap);
+  const musicBlocks = rebaseMusicBlocks(doc.studioEdits.music.blocks, oldMap, newMap);
   const speakerLayoutOverrides = rebaseSpeakerLayoutOverrides(
     doc.studioEdits.speakerLayoutOverrides,
     oldMap,
@@ -597,6 +653,7 @@ function rebaseStudioEdits(
   if (
     textLayers === doc.studioEdits.textLayers &&
     sfx === doc.studioEdits.sfx &&
+    musicBlocks === doc.studioEdits.music.blocks &&
     speakerLayoutOverrides === doc.studioEdits.speakerLayoutOverrides &&
     sceneLayouts === doc.studioEdits.sceneLayouts
   ) {
@@ -606,6 +663,10 @@ function rebaseStudioEdits(
     ...doc.studioEdits,
     textLayers,
     sfx,
+    music:
+      musicBlocks === doc.studioEdits.music.blocks
+        ? doc.studioEdits.music
+        : { ...doc.studioEdits.music, blocks: musicBlocks },
     speakerLayoutOverrides,
     sceneLayouts,
   };

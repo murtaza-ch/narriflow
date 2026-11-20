@@ -264,7 +264,8 @@ export interface ClipCompositionPlanInput {
      * requested but could not yet be resolved. */
     readonly broll?: CompositionBrollAvailability;
     readonly logo?: CompositionLogoAvailability;
-    readonly music?: CompositionAssetAvailability;
+    /** Keyed by Music Block id, like `soundEffects` by placement id. */
+    readonly music?: Readonly<Record<string, CompositionAssetAvailability>>;
     readonly soundEffects?: Readonly<
       Record<string, CompositionSoundEffectAvailability>
     >;
@@ -630,11 +631,16 @@ export interface CompositionAudioSchedule {
     readonly gain: number;
     readonly muted: boolean;
   };
-  readonly music: {
+  /** One entry per playable Music Block, in timeline order. Every range is
+   * output (plan) seconds; `fades` are absolute plan ranges inside the
+   * block's `activeRange`; ducking windows are clip-wide plan ranges. */
+  readonly music: readonly {
+    readonly id: string;
     readonly sourceRef: string;
     readonly activeRange: CompositionActiveRange;
     readonly gain: number;
-    readonly startOffsetSec: number;
+    /** In-point inside the track; playback loops past the track end. */
+    readonly sourceStartSec: number;
     readonly sourceDurationSec: number | null;
     readonly loop: true;
     readonly fades: {
@@ -648,7 +654,7 @@ export interface CompositionAudioSchedule {
       readonly attackSec: number;
       readonly releaseSec: number;
     };
-  } | null;
+  }[];
   readonly soundEffects: readonly {
     readonly id: string;
     readonly sourceRef: string;
@@ -775,10 +781,13 @@ function resolveRequestedAudioAssets(
       ? { state: "failed" }
       : availability;
   return {
-    music: {
-      requested: Boolean(musicSettings.assetId || musicSettings.url),
-      availability: input.assets.music,
-    },
+    // A block that starts at or past the clip end is never played, so it
+    // raises no asset notice either.
+    music: musicSettings.blocks.flatMap((block) =>
+      block.startSec < editedDurationSec
+        ? [{ block, availability: input.assets.music?.[block.id] }]
+        : [],
+    ),
     soundEffects: input.document.studioEdits.sfx.flatMap((placement) =>
       placement.startSec < editedDurationSec
         ? [
@@ -818,13 +827,7 @@ function buildAudioSchedule(
     },
   };
   const sourceAudio = input.document.studioEdits.sourceAudio;
-  const musicAvailability = resolvedAssets.music.availability;
   const musicSettings = input.document.studioEdits.music;
-  const fadeWindows = resolveMusicFadeWindows(
-    musicSettings.fadeInSec,
-    musicSettings.fadeOutSec,
-    editedDurationSec,
-  );
   const editedTimeMap = buildClipCutPlan(input.document.deletedRanges, {
     startSec: input.document.clipStartSec,
     endSec: input.document.clipEndSec,
@@ -850,36 +853,62 @@ function buildAudioSchedule(
         ),
       )
     : [];
-  const music =
-    resolvedAssets.music.requested && musicAvailability?.state === "available"
-      ? {
-          sourceRef: musicAvailability.ref,
-          activeRange,
-          gain: clampUnit(musicSettings.volume / 100),
-          startOffsetSec: Math.max(0, musicSettings.startOffsetSec),
-          sourceDurationSec:
-            musicAvailability.durationSec &&
-            Number.isFinite(musicAvailability.durationSec) &&
-            musicAvailability.durationSec > 0
-              ? musicAvailability.durationSec
-              : null,
-          loop: true as const,
-          fades: {
-            fadeIn: { startSec: 0, endSec: fadeWindows.fadeInSec },
-            fadeOut: {
-              startSec: fadeWindows.fadeOutStartSec,
-              endSec: editedDurationSec,
-            },
+  const musicDucking = {
+    enabled: musicSettings.ducking,
+    windows: duckingWindows,
+    duckedGainFraction: DUCKING_DEFAULTS.duckedGainFraction,
+    attackSec: DUCKING_DEFAULTS.attackSec,
+    releaseSec: DUCKING_DEFAULTS.releaseSec,
+  };
+  const music = resolvedAssets.music.flatMap(({ block, availability }) => {
+    if (availability?.state !== "available") return [];
+    // Blocks are stored on the base edited timeline, but the Studio lane
+    // draws them on the composite clock, so a block plays straight through
+    // any Scene Block inserted inside it.
+    const blockStartSec = Math.min(
+      editedDurationSec,
+      baseEditedToOutputSec(block.startSec, insertionAnchors, "start"),
+    );
+    const blockEndSec = Math.min(
+      block.endSec === null
+        ? editedDurationSec
+        : baseEditedToOutputSec(block.endSec, insertionAnchors, "end"),
+      editedDurationSec,
+    );
+    if (!(blockEndSec > blockStartSec)) return [];
+    const fadeWindows = resolveMusicFadeWindows(
+      block.fadeInSec,
+      block.fadeOutSec,
+      blockEndSec - blockStartSec,
+    );
+    return [
+      {
+        id: block.id,
+        sourceRef: availability.ref,
+        activeRange: { startSec: blockStartSec, endSec: blockEndSec },
+        gain: clampUnit(block.volume / 100),
+        sourceStartSec: Math.max(0, block.sourceStartSec),
+        sourceDurationSec:
+          availability.durationSec &&
+          Number.isFinite(availability.durationSec) &&
+          availability.durationSec > 0
+            ? availability.durationSec
+            : null,
+        loop: true as const,
+        fades: {
+          fadeIn: {
+            startSec: blockStartSec,
+            endSec: blockStartSec + fadeWindows.fadeInSec,
           },
-          ducking: {
-            enabled: musicSettings.ducking,
-            windows: duckingWindows,
-            duckedGainFraction: DUCKING_DEFAULTS.duckedGainFraction,
-            attackSec: DUCKING_DEFAULTS.attackSec,
-            releaseSec: DUCKING_DEFAULTS.releaseSec,
+          fadeOut: {
+            startSec: blockStartSec + fadeWindows.fadeOutStartSec,
+            endSec: blockEndSec,
           },
-        }
-      : null;
+        },
+        ducking: musicDucking,
+      },
+    ];
+  });
   const soundEffects = resolvedAssets.soundEffects.flatMap(
     ({ placement, availability }) => {
     if (availability?.state !== "available") return [];
@@ -2308,6 +2337,23 @@ function insertedBaseAnchors(blocks: readonly SceneBlock[]) {
       insertedBeforeSec += block.durationSec;
       return { block, baseAnchorSec };
     });
+}
+
+/** Maps a base edited instant onto the composition clock. A Scene Block
+ * inserted exactly at the instant comes after a range's start and before a
+ * range's end, so a range never swallows a scene that only touches it. */
+function baseEditedToOutputSec(
+  baseSec: number,
+  anchors: ReturnType<typeof insertedBaseAnchors>,
+  edge: "start" | "end",
+) {
+  return anchors.reduce(
+    (sum, { baseAnchorSec, block }) =>
+      (edge === "start" ? baseAnchorSec <= baseSec : baseAnchorSec < baseSec)
+        ? sum + block.durationSec
+        : sum,
+    baseSec,
+  );
 }
 
 /** One retained source interval can straddle a Scene Block. Each slice keeps
@@ -3999,11 +4045,9 @@ export function planClipComposition(
     );
   }
 
-  if (
-    resolvedAudioAssets.music.requested &&
-    resolvedAudioAssets.music.availability?.state !== "available"
-  ) {
-    const pending = resolvedAudioAssets.music.availability?.state === "pending";
+  for (const { block, availability } of resolvedAudioAssets.music) {
+    if (availability?.state === "available") continue;
+    const pending = availability?.state === "pending";
     notices.push(
       ...targets.map((target) => ({
         code: pending ? "music_asset_pending" : "music_asset_unavailable",
@@ -4012,6 +4056,7 @@ export function planClipComposition(
         sceneId: null,
         effectiveFallback: target.effectiveMode,
         userActionPossible: !pending,
+        assetId: block.id,
       })),
     );
   }

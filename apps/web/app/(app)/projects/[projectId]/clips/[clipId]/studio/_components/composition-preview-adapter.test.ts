@@ -209,11 +209,13 @@ describe("composition preview adapter", () => {
         gain: 0.65,
         muted: false,
       },
-      music: {
+      music: [
+        {
+        id: "bed",
         sourceRef: "music:one",
         activeRange: { startSec: 0, endSec: 8 },
         gain: 0.4,
-        startOffsetSec: 3,
+        sourceStartSec: 3,
         sourceDurationSec: 4,
         loop: true as const,
         fades: {
@@ -228,6 +230,7 @@ describe("composition preview adapter", () => {
           releaseSec: 0.4,
         },
       },
+      ],
       soundEffects: [
         {
           id: "sting",
@@ -242,18 +245,21 @@ describe("composition preview adapter", () => {
     const state = plannedCompositionAudioState(schedule, 1.5);
     expect({
       ...state,
-      music: state.music ? { ...state.music, volume: undefined } : null,
+      music: state.music.map((block) => ({ ...block, volume: undefined })),
     }).toEqual({
       scheduleFingerprint: "audio:fingerprint",
       mixGain: 1,
       source: { muted: false, volume: 0.65, outputGain: 1, envelopeGain: 1 },
       beep: null,
-      music: {
-        sourceRef: "music:one",
-        timelineTimeSec: 0.5,
-        loop: true,
-        volume: undefined,
-      },
+      music: [
+        {
+          id: "bed",
+          sourceRef: "music:one",
+          timelineTimeSec: 0.5,
+          loop: true,
+          volume: undefined,
+        },
+      ],
       soundEffects: [
         {
           id: "sting",
@@ -263,11 +269,72 @@ describe("composition preview adapter", () => {
         },
       ],
     });
-    expect(state.music?.volume).toBeCloseTo(0.045, 8);
+    expect(state.music[0]?.volume).toBeCloseTo(0.045, 8);
     expect(plannedCompositionAudioState(schedule, 0.02).source.volume).toBeCloseTo(
       0.325,
       8,
     );
+  });
+
+  test("plays each Music Block from its own in-point and loops past the track end", () => {
+    const duck = {
+      enabled: false,
+      windows: [],
+      duckedGainFraction: 0.3,
+      attackSec: 0.25,
+      releaseSec: 0.4,
+    };
+    const noFades = {
+      fadeIn: { startSec: 0, endSec: 0 },
+      fadeOut: { startSec: 0, endSec: 0 },
+    };
+    const schedule = {
+      fingerprint: "audio:blocks",
+      outputFades: noFades,
+      source: {
+        sourceRef: "source:one",
+        available: true,
+        activeRange: { startSec: 0, endSec: 20 },
+        gain: 1,
+        muted: false,
+      },
+      music: [
+        {
+          id: "a",
+          sourceRef: "music:a",
+          activeRange: { startSec: 2, endSec: 8 },
+          gain: 0.5,
+          sourceStartSec: 1,
+          sourceDurationSec: 10,
+          loop: true as const,
+          fades: noFades,
+          ducking: duck,
+        },
+        {
+          id: "b",
+          sourceRef: "music:b",
+          activeRange: { startSec: 10, endSec: 20 },
+          gain: 0.25,
+          sourceStartSec: 0,
+          sourceDurationSec: 4,
+          loop: true as const,
+          fades: noFades,
+          ducking: duck,
+        },
+      ],
+      soundEffects: [],
+      censors: [],
+    };
+
+    expect(plannedCompositionAudioState(schedule, 1).music).toEqual([]);
+    const inFirst = plannedCompositionAudioState(schedule, 5).music;
+    expect(inFirst.map((block) => block.id)).toEqual(["a"]);
+    expect(inFirst[0]?.timelineTimeSec).toBeCloseTo(4, 8);
+    expect(plannedCompositionAudioState(schedule, 9).music).toEqual([]);
+    const inSecond = plannedCompositionAudioState(schedule, 15).music;
+    expect(inSecond.map((block) => block.id)).toEqual(["b"]);
+    expect(inSecond[0]?.timelineTimeSec).toBeCloseTo(1, 8);
+    expect(inSecond[0]?.volume).toBeCloseTo(0.25, 8);
   });
 
   test("matches sequential export fades for a sub-160ms planned schedule", () => {
@@ -284,7 +351,7 @@ describe("composition preview adapter", () => {
         gain: 1,
         muted: false,
       },
-      music: null,
+      music: [],
       soundEffects: [],
       censors: [],
     };
@@ -313,7 +380,7 @@ describe("composition preview adapter", () => {
         gain: 0.8,
         muted: false,
       },
-      music: null,
+      music: [],
       soundEffects: [],
       censors: [
         {
@@ -367,11 +434,12 @@ describe("composition preview adapter", () => {
         gain: 1,
         muted: false,
       },
-      music: {
+      music: [{
+        id: "bed",
         sourceRef: "music:one",
         activeRange: { startSec: 0, endSec: 3 },
         gain: 1,
-        startOffsetSec: 0,
+        sourceStartSec: 0,
         sourceDurationSec: 3,
         loop: true as const,
         fades: {
@@ -385,7 +453,7 @@ describe("composition preview adapter", () => {
           attackSec: 0.25,
           releaseSec: 0.4,
         },
-      },
+      }],
       soundEffects: [{
         id: "sting",
         sourceRef: "sfx:one",
@@ -407,7 +475,7 @@ describe("composition preview adapter", () => {
     expect(state.mixGain).toBeCloseTo(0.38, 8);
     expect(
       (state.beep?.volume ?? 0) +
-      (state.music?.volume ?? 0) +
+      state.music.reduce((sum, block) => sum + block.volume, 0) +
       state.soundEffects.reduce((sum, effect) => sum + effect.volume, 0),
     ).toBeCloseTo(0.95, 8);
     expect(state.source.envelopeGain).toBe(0);

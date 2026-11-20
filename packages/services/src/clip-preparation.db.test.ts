@@ -718,7 +718,7 @@ suite("Clip Preparation authority and publication", () => {
     const own = await db.audioAsset.create({ data: { kind: "sfx", title: "Current", storageKey: `audio/${crypto.randomUUID()}`, durationSec: 1, workspaceId: f.workspace.id } });
     const denied = await db.audioAsset.create({ data: { kind: "music", title: "Foreign", storageKey: `audio/${crypto.randomUUID()}`, durationSec: 1, workspaceId: foreign.id } });
     const document = editorDocumentSchema.parse({ ...documents.cases["solo-auto-vertical"].document, clipEndSec: 10,
-      studioEdits: { ...documents.cases["solo-auto-vertical"].document.studioEdits, music: { assetId: denied.id }, sfx: [{ id: "curated", assetId: curated.id, startSec: 0 }, { id: "own", assetId: own.id, startSec: 1 }] } });
+      studioEdits: { ...documents.cases["solo-auto-vertical"].document.studioEdits, music: { blocks: [{ id: "denied", assetId: denied.id, startSec: 0 }] }, sfx: [{ id: "curated", assetId: curated.id, startSec: 0 }, { id: "own", assetId: own.id, startSec: 1 }] } });
     await db.clip.update({ where: { id: f.clip.id }, data: encodeClipEditorDocumentForStorage(document, { durationSec: 20, wholeSource: false }) });
     const execution = await native(f);
     await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));

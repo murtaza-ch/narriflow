@@ -133,6 +133,12 @@ export function compileCompositionPlanAudiogram(
 	};
 }
 
+
+/** Plan ranges are derived arithmetic (start + fade, start + length - fade);
+ * edges that are equal on paper can differ by an ulp, which must not fail a
+ * render. */
+const MUSIC_SCHEDULE_TOLERANCE_SEC = 1e-6;
+
 export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
 	if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
 		throw new Error("unsupported_clip_composition_plan_version");
@@ -160,19 +166,34 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
 	) {
 		throw new Error("invalid_clip_composition_audio_schedule");
 	}
+	// Music Blocks: one entry each, in timeline order, never overlapping, with
+	// fades inside the block's own range.
 	const music = schedule.music;
 	if (
-		music &&
-		(!validRange(music.activeRange) ||
-			!validFadeRange(music.fades.fadeIn) ||
-			!validFadeRange(music.fades.fadeOut) ||
-			music.fades.fadeIn.endSec > music.fades.fadeOut.startSec ||
-			!Number.isFinite(music.gain) ||
-			music.gain < 0 ||
-			music.gain > 1 ||
-			!Number.isFinite(music.startOffsetSec) ||
-			music.startOffsetSec < 0 ||
-			music.ducking.windows.some((window) => !validRange(window)))
+		music.some((block, index) => {
+			const previous = music[index - 1];
+			return (
+				!validRange(block.activeRange) ||
+				(previous !== undefined &&
+					previous.activeRange.endSec >
+						block.activeRange.startSec + MUSIC_SCHEDULE_TOLERANCE_SEC) ||
+				!validFadeRange(block.fades.fadeIn) ||
+				!validFadeRange(block.fades.fadeOut) ||
+				block.fades.fadeIn.startSec <
+					block.activeRange.startSec - MUSIC_SCHEDULE_TOLERANCE_SEC ||
+				block.fades.fadeOut.endSec >
+					block.activeRange.endSec + MUSIC_SCHEDULE_TOLERANCE_SEC ||
+				block.fades.fadeIn.endSec >
+					block.fades.fadeOut.startSec + MUSIC_SCHEDULE_TOLERANCE_SEC ||
+				!Number.isFinite(block.gain) ||
+				block.gain < 0 ||
+				block.gain > 1 ||
+				!Number.isFinite(block.sourceStartSec) ||
+				block.sourceStartSec < 0 ||
+				block.ducking.windows.some((window) => !validRange(window))
+			);
+		}) ||
+		new Set(music.map((block) => block.id)).size !== music.length
 	) {
 		throw new Error("invalid_clip_composition_audio_schedule");
 	}
@@ -220,18 +241,17 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
 			gain: schedule.source.gain,
 			muted: schedule.source.muted,
 		},
-		music: music
-			? {
-					sourceRef: music.sourceRef,
-					activeRange: music.activeRange,
-					gain: music.gain,
-					startOffsetSec: music.startOffsetSec,
-					sourceDurationSec: music.sourceDurationSec,
-					loop: music.loop,
-					fades: music.fades,
-					ducking: music.ducking,
-				}
-			: null,
+		music: music.map((block) => ({
+			id: block.id,
+			sourceRef: block.sourceRef,
+			activeRange: block.activeRange,
+			gain: block.gain,
+			sourceStartSec: block.sourceStartSec,
+			sourceDurationSec: block.sourceDurationSec,
+			loop: block.loop,
+			fades: block.fades,
+			ducking: block.ducking,
+		})),
 		soundEffects: schedule.soundEffects.map((effect) => ({
 			id: effect.id,
 			sourceRef: effect.sourceRef,
@@ -249,7 +269,7 @@ export type CompositionAudioRenderRequest = ReturnType<
 export function bindCompositionPlanAudioInputs(
 	request: CompositionAudioRenderRequest,
 	resolved: {
-		music?: { sourceRef: string; path: string } | null;
+		music?: readonly { id: string; sourceRef: string; path: string }[];
 		soundEffects?: readonly {
 			id: string;
 			sourceRef: string;
@@ -260,14 +280,15 @@ export function bindCompositionPlanAudioInputs(
 		dub?: { path: string } | null;
 	},
 ) {
-	const music = request.music
-		? resolved.music?.sourceRef === request.music.sourceRef
-			? { ...request.music, path: resolved.music.path }
-			: null
-		: null;
-	if (request.music && !music) {
-		throw new Error("clip_composition_music_input_missing");
-	}
+	const music = request.music.map((planned) => {
+		const input = resolved.music?.find(
+			(candidate) =>
+				candidate.id === planned.id &&
+				candidate.sourceRef === planned.sourceRef,
+		);
+		if (!input) throw new Error("clip_composition_music_input_missing");
+		return { ...planned, path: input.path };
+	});
 	const soundEffects = request.soundEffects.map((planned) => {
 		const input = resolved.soundEffects?.find(
 			(candidate) =>
@@ -2595,36 +2616,34 @@ function buildCensorBeepAudioFilter(params: {
 }
 
 /**
- * User-configured music fade in/out (`studioEdits.music.fadeInSec/fadeOutSec`,
- * 0-5s each), as an `afade` filter suffix applied to the music branch only —
- * additive to (not a replacement for) the fixed click-guard chain on the
- * final mixed track.
+ * User-configured fade in/out of one Music Block (0-5s each), as `afade`
+ * filters on that block's own branch, additive to (not a replacement for)
+ * the fixed click-guard chain on the final mixed track.
  *
- * Clamping/overlap resolution comes from the shared
- * `resolveMusicFadeWindows` policy (packages/validators/src/studio-edits.ts)
- * rather than clamping each fade independently here — this used to clamp
- * fadeIn and fadeOut to the clip duration separately, which let a long
- * fade-in + long fade-out on a short clip overlap (e.g. both landing at full
- * length, fading in and out over the SAME seconds) instead of scaling both
- * down proportionally so fade-in ends before fade-out begins. The studio
- * preview already uses the shared helper; this keeps the render in lockstep.
+ * The plan's fade ranges are absolute clip seconds inside the block's
+ * `activeRange` and were clamped by the shared `resolveMusicFadeWindows`
+ * policy against the BLOCK length (so a long fade-in plus fade-out scales
+ * down instead of overlapping, exactly as the Studio preview does). They are
+ * made block-relative here because the fades run BEFORE `adelay`, while the
+ * branch still starts at 0.
  */
 function buildMusicUserFadeSuffix(
-	music: NonNullable<BoundCompositionAudioRenderRequest["music"]>,
+	music: BoundCompositionAudioRenderRequest["music"][number],
 ): string {
 	const parts: string[] = [];
+	const blockStartSec = music.activeRange.startSec;
 	const fadeInSec = music.fades.fadeIn.endSec - music.fades.fadeIn.startSec;
 	const fadeOutSec = music.fades.fadeOut.endSec - music.fades.fadeOut.startSec;
 	if (fadeInSec > 0) {
-		const startSec =
-			music.fades.fadeIn.startSec === 0
-				? "0"
-				: music.fades.fadeIn.startSec.toFixed(3);
-		parts.push(`afade=t=in:st=${startSec}:d=${fadeInSec.toFixed(3)}`);
+		const startSec = Math.max(0, music.fades.fadeIn.startSec - blockStartSec);
+		parts.push(
+			`afade=t=in:st=${startSec === 0 ? "0" : startSec.toFixed(3)}:d=${fadeInSec.toFixed(3)}`,
+		);
 	}
 	if (fadeOutSec > 0) {
+		const startSec = Math.max(0, music.fades.fadeOut.startSec - blockStartSec);
 		parts.push(
-			`afade=t=out:st=${music.fades.fadeOut.startSec.toFixed(3)}:d=${fadeOutSec.toFixed(3)}`,
+			`afade=t=out:st=${startSec.toFixed(3)}:d=${fadeOutSec.toFixed(3)}`,
 		);
 	}
 	return parts.length ? `,${parts.join(",")}` : "";
@@ -2672,18 +2691,54 @@ function buildSfxAudioFilter(params: {
 }
 
 /**
- * Ducking automation suffix for the music branch (vizard-parity.md
+ * One Music Block branch. The input is `-stream_loop -1`'d, so the track
+ * repeats forever and the block cuts exactly its own length out of it:
+ *
+ *   atrim(in-point, block length) -> reset clock -> gain -> block-relative
+ *   user fades -> adelay (to the block's start on the clip) + re-clock ->
+ *   apad -> atrim(clip length) -> ducking
+ *
+ * The user fades come BEFORE `adelay`, where the branch still starts at 0,
+ * so their `st` is block-relative. The ducking windows are clip time, so the
+ * ducking expression comes AFTER `adelay`, when `t` is clip time again.
+ * `apad` runs before the final `atrim` for the reason `buildSfxAudioFilter`
+ * documents: `atrim=duration` is a maximum, so the branch has to be padded
+ * with silence first or it ends at the block's end and, with no dialogue to
+ * anchor `amix duration=first`, would truncate the whole encode. A block
+ * that starts at the clip start needs no `adelay`.
+ */
+function buildMusicAudioFilter(params: {
+	musicInputIndex: number;
+	music: BoundCompositionAudioRenderRequest["music"][number];
+	clipDurationSec: number;
+	label: string;
+}): string {
+	const { music } = params;
+	const blockDurationSec = music.activeRange.endSec - music.activeRange.startSec;
+	const delayMs = Math.max(0, Math.round(music.activeRange.startSec * 1000));
+	// `adelay` emits its first frames without timestamps after a non-zero
+	// in-point (measured on ffmpeg 7.1: `atrim=start=1.5` -> `adelay` yields
+	// NOPTS frames, and the clip-length `atrim` then drops the delay and cuts
+	// the branch short). Re-clocking by sample count fixes the branch's clock,
+	// which is also what the ducking expression's `t` reads.
+	const delay =
+		delayMs > 0 ? `,adelay=${delayMs}:all=1,asetpts=N/SR/TB` : "";
+	return `[${params.musicInputIndex}:a]atrim=start=${music.sourceStartSec.toFixed(3)}:duration=${blockDurationSec.toFixed(3)},asetpts=PTS-STARTPTS,volume=${music.gain.toFixed(3)}${buildMusicUserFadeSuffix(music)}${delay},apad,atrim=duration=${params.clipDurationSec.toFixed(3)}${buildMusicDuckingSuffix(music)}${params.label}`;
+}
+
+/**
+ * Ducking automation suffix for a Music Block branch (vizard-parity.md
  * "Music/SFX library" — `studioMusicSchema.ducking`): a single-quoted
  * ffmpeg `volume=` expression, same quoting technique as
  * `enable='between(t,...)'` elsewhere in this file, so the commas inside
  * `buildDuckingVolumeExpression`'s `if(...)`/`between(...)` calls don't get
- * misread as filter-chain separators. Applied AFTER the music's base
- * `volume=` and user fade suffix, composing rather than replacing them.
+ * misread as filter-chain separators. The windows are CLIP time, so this runs
+ * AFTER the block's `adelay` (when `t` is clip time again), never before it.
  * `""` (no-op, byte-identical output) whenever `duckingWindows` is
  * absent/empty — the common case for every clip that isn't using ducking.
  */
 function buildMusicDuckingSuffix(
-	music: NonNullable<BoundCompositionAudioRenderRequest["music"]>,
+	music: BoundCompositionAudioRenderRequest["music"][number],
 ): string {
 	if (!music.ducking.enabled || music.ducking.windows.length === 0) return "";
 	const expr = buildDuckingVolumeExpression([...music.ducking.windows], {
@@ -2750,7 +2805,8 @@ function buildAudioMixFilter(params: {
 	 *  dialogue mix reads the concatenated edited-timeline audio, same as
 	 *  every other downstream audio consumer (vizard-parity Phase B step 7). */
 	dialogueInputRef?: string;
-	musicInputIndex: number | null;
+	/** One input per Music Block, in `audio.music` order. */
+	musicInputIndexes: readonly number[];
 	sfxInputIndexes: readonly number[];
 	/** Limiter ceiling of a corrective re-encode (linear); every other mix
 	 *  keeps its exact graph. */
@@ -2803,19 +2859,22 @@ function buildAudioMixFilter(params: {
 		branchLabels.push(label);
 	});
 
-	if (params.audio.music && params.musicInputIndex != null) {
-		const plan = params.audio.music;
-		const label = "[musica]";
-		const userFadeSuffix = buildMusicUserFadeSuffix(plan);
-		const duckingSuffix = buildMusicDuckingSuffix(plan);
-		// start=<offset> seeks into the (infinitely -stream_loop'd) music input
-		// so the user's chosen point in the track plays first, instead of
-		// always the first `duration` seconds of the file.
+	params.audio.music.forEach((plan, index) => {
+		const inputIndex = params.musicInputIndexes[index];
+		if (inputIndex === undefined || plan.activeRange.startSec >= duration) {
+			return;
+		}
+		const label = `[music${index}a]`;
 		branchFilters.push(
-			`[${params.musicInputIndex}:a]atrim=start=${plan.startOffsetSec.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${plan.gain.toFixed(3)}${userFadeSuffix}${duckingSuffix}${label}`,
+			buildMusicAudioFilter({
+				musicInputIndex: inputIndex,
+				music: plan,
+				clipDurationSec: duration,
+				label,
+			}),
 		);
 		branchLabels.push(label);
-	}
+	});
 
 	sfxEntries.forEach(({ inputIndex, plan }, index) => {
 		const label = `[sfx${index}a]`;
@@ -3035,7 +3094,7 @@ function buildSingleVideoArgs(params: {
 		sceneAssetRefs.length > 0 ? nextInputIndex : null;
 	nextInputIndex += sceneAssetRefs.length;
 	const logoInputIndex = plannedLogo ? nextInputIndex++ : null;
-	const musicInputIndex = params.audio.music ? nextInputIndex++ : null;
+	const musicInputIndexes = params.audio.music.map(() => nextInputIndex++);
 	const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
 	const dubInputIndex = dub ? nextInputIndex++ : null;
 
@@ -3130,8 +3189,8 @@ function buildSingleVideoArgs(params: {
 		args.push("-i", params.logo.filePath);
 	}
 
-	if (params.audio.music) {
-		args.push("-stream_loop", "-1", "-i", params.audio.music.path);
+	for (const music of params.audio.music) {
+		args.push("-stream_loop", "-1", "-i", music.path);
 	}
 
 	for (const sfx of params.audio.soundEffects) {
@@ -3147,7 +3206,7 @@ function buildSingleVideoArgs(params: {
 			? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
 			: params.audio;
 	const hasMixedAudio =
-		Boolean(params.audio.music) ||
+		musicInputIndexes.length > 0 ||
 		sfxInputIndexes.length > 0 ||
 		params.audio.censors.some((censor) => censor.treatment === "beep");
 	if (hasMixedAudio) {
@@ -3163,7 +3222,7 @@ function buildSingleVideoArgs(params: {
 						: cutConcat
 							? cutConcat.audioLabel!
 							: alignedAudio?.label),
-				musicInputIndex,
+				musicInputIndexes,
 				sfxInputIndexes,
 			}),
 		);
@@ -3440,17 +3499,19 @@ function buildBrollVideoArgs(params: {
 	if (plannedLogo && params.logo) args.push("-i", params.logo.filePath);
 
 	// Music, then SFX, each consume the next input slot — same order as
-	// buildSingleVideoArgs. musicInputIndex is computed unconditionally
-	// (even when music is absent) so sfxInputIndexes can be derived from it
-	// without duplicating the bgOffset/cutawayCount/logo arithmetic.
+	// buildSingleVideoArgs. musicInputIndex is the first music slot, computed
+	// unconditionally (even when music is absent) so the later indexes can be
+	// derived from it without duplicating the bgOffset/cutawayCount/logo
+	// arithmetic.
 	const musicInputIndex =
 		1 + bgOffset + cutawayCount + sceneAssetRefs.length + (plannedLogo ? 1 : 0);
+	const musicInputIndexes = params.audio.music.map((_, i) => musicInputIndex + i);
 	const sfxInputIndexes = params.audio.soundEffects.map(
-		(_, i) => musicInputIndex + (params.audio.music ? 1 : 0) + i,
+		(_, i) => musicInputIndex + params.audio.music.length + i,
 	);
 
-	if (params.audio.music) {
-		args.push("-stream_loop", "-1", "-i", params.audio.music.path);
+	for (const music of params.audio.music) {
+		args.push("-stream_loop", "-1", "-i", music.path);
 	}
 	for (const sfx of params.audio.soundEffects) {
 		args.push("-i", sfx.path);
@@ -3465,7 +3526,7 @@ function buildBrollVideoArgs(params: {
 				targetId: params.composition.targetId,
 				inputIndex:
 					musicInputIndex +
-					(params.audio.music ? 1 : 0) +
+					params.audio.music.length +
 					params.audio.soundEffects.length,
 			}),
 		);
@@ -3477,7 +3538,7 @@ function buildBrollVideoArgs(params: {
 			? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
 			: params.audio;
 	const hasMixedAudio =
-		Boolean(params.audio.music) ||
+		musicInputIndexes.length > 0 ||
 		sfxInputIndexes.length > 0 ||
 		params.audio.censors.some((censor) => censor.treatment === "beep");
 	if (hasMixedAudio) {
@@ -3493,7 +3554,7 @@ function buildBrollVideoArgs(params: {
 						: cutConcat
 							? cutConcat.audioLabel!
 							: alignedAudio?.label),
-				musicInputIndex: params.audio.music ? musicInputIndex : null,
+				musicInputIndexes,
 				sfxInputIndexes,
 			}),
 		);
@@ -3641,7 +3702,7 @@ function buildAudiogramArgs(params: {
 	// gate) both mix into the OUTPUT track only, never the waveform — the
 	// waveform always visualizes the raw dialogue signal.
 	const hasMusicOrSfx =
-		Boolean(params.audio.music) ||
+		params.audio.music.length > 0 ||
 		params.audio.soundEffects.length > 0 ||
 		params.audio.censors.some((censor) => censor.treatment === "beep");
 	const audioForRender = dubAudio
@@ -3660,12 +3721,15 @@ function buildAudiogramArgs(params: {
 	const sceneInputStartIndex = sceneAssetRefs.length > 0 ? 1 : null;
 	const logoInputIndex = plannedLogo ? 1 + sceneAssetRefs.length : null;
 	const musicInputIndex = 1 + sceneAssetRefs.length + (plannedLogo ? 1 : 0);
+	const musicInputIndexes = params.audio.music.map(
+		(_, index) => musicInputIndex + index,
+	);
 	const sfxInputIndexes = params.audio.soundEffects.map(
-		(_, index) => musicInputIndex + (params.audio.music ? 1 : 0) + index,
+		(_, index) => musicInputIndex + params.audio.music.length + index,
 	);
 	const dubInputIndex =
 		musicInputIndex +
-		(params.audio.music ? 1 : 0) +
+		params.audio.music.length +
 		params.audio.soundEffects.length;
 	const chain: string[] = [
 		...(dub
@@ -3786,8 +3850,8 @@ function buildAudiogramArgs(params: {
 	if (plannedLogo && params.logo) {
 		args.push("-i", params.logo.filePath);
 	}
-	if (params.audio.music) {
-		args.push("-stream_loop", "-1", "-i", params.audio.music.path);
+	for (const music of params.audio.music) {
+		args.push("-stream_loop", "-1", "-i", music.path);
 	}
 	for (const sfx of params.audio.soundEffects) {
 		args.push("-i", sfx.path);
@@ -3801,7 +3865,7 @@ function buildAudiogramArgs(params: {
 				audio: audioForRender,
 				clipDurationSec: outputDurationSec,
 				dialogueInputRef: dialogueAudioLabel,
-				musicInputIndex: params.audio.music ? musicInputIndex : null,
+				musicInputIndexes,
 				sfxInputIndexes,
 			}),
 		);

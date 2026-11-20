@@ -75,6 +75,10 @@ _Avoid_: Word ID, word index
 A bounded visual insertion that occupies edited time in one Clip Editor Document and may contain video, an image, a color card, or a text card.
 _Avoid_: Timeline clip, composition scene, intro file
 
+**Music Block**:
+One stretch of a music track on a Clip's single music lane (`studioEdits.music.blocks`): an edited-time start, an end or "to the clip end", an in-point inside the track (which loops when the block outlasts it), a volume and fades. Blocks never overlap. Splitting one makes two independent blocks. Ducking applies to the whole lane.
+_Avoid_: Music bed, audio clip, track segment
+
 **Censor Segment**:
 A timed Clip Editor Document instruction that masks caption text, replaces source audio with a beep, or silences source audio without changing the transcript.
 _Avoid_: Transcript correction, muted word, profanity flag

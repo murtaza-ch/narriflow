@@ -24,6 +24,8 @@ import {
 import { toaster } from "@narriflow/ui/components/toaster";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
+import type { StudioMusicBlock } from "@narriflow/validators";
+import { addMusicTrack, patchMusicBlock, selectedOrOnlyBlock, type MusicTrack } from "../music-blocks";
 import {
   brandAudioRows,
   useAudioApi,
@@ -39,8 +41,6 @@ interface MusicTabProps {
   player: PreviewPlayer;
   onOpenUploads: () => void;
 }
-
-const START_OFFSET_FALLBACK_MAX_SEC = 600;
 
 function CategoryChip({
   label,
@@ -335,8 +335,34 @@ function TrackRow({
 
 export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   const audioApi = useAudioApi();
-  const { studioEdits, setStudioEdits, endCoalesce, brandAudio } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "brandAudio");
+  const {
+    studioEdits,
+    setStudioEdits,
+    endCoalesce,
+    brandAudio,
+    selectedMusicBlockId,
+    selectMusicBlock,
+    deselectMusicBlock,
+    playbackClock,
+    compositeToBaseEdited,
+    editedTimeMap,
+  } = useStudio(
+    "studioEdits",
+    "setStudioEdits",
+    "endCoalesce",
+    "brandAudio",
+    "selectedMusicBlockId",
+    "selectMusicBlock",
+    "deselectMusicBlock",
+    "playbackClock",
+    "compositeToBaseEdited",
+    "editedTimeMap",
+  );
   const music = studioEdits.music;
+  const selectedBlock = selectedOrOnlyBlock(music.blocks, selectedMusicBlockId);
+  // The latest document, for work that finishes after an await.
+  const studioEditsRef = useRef(studioEdits);
+  studioEditsRef.current = studioEdits;
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
   const { assets, moodTags, loading, error, retry, setFavorite, hasMore, loadingMore, loadMoreError, loadMore } = useAudioAssetList(
@@ -345,18 +371,13 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
     reloadKey,
     { search, favorited: category === "saved" ? true : undefined },
   );
-  const [showMix, setShowMix] = useState(Boolean(music.assetId || music.url));
+  const [showMix, setShowMix] = useState(music.blocks.length > 0);
   const [showLinkInput, setShowLinkInput] = useState(false);
-  const [urlDraft, setUrlDraft] = useState(music.url ?? "");
-  const [titleDraft, setTitleDraft] = useState(music.title ?? "");
+  const [urlDraft, setUrlDraft] = useState("");
+  const [titleDraft, setTitleDraft] = useState("");
   const applyRequest = useRef(0);
 
   useEffect(() => () => { applyRequest.current++; }, []);
-
-  useEffect(() => {
-    setUrlDraft(music.url ?? "");
-    setTitleDraft(music.title ?? "");
-  }, [music]);
 
   const visibleAssets = useMemo(() => {
     const active = player.activeAsset;
@@ -370,41 +391,77 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
     [brandRows, visibleAssets, category, search],
   );
 
-  const selectedAssetDurationSec = [...brandRows, ...assets].find((asset) => asset.id === music.assetId)?.durationSec;
-  const startOffsetMaxSec =
-    selectedAssetDurationSec && selectedAssetDurationSec > 0
-      ? Math.max(1, Math.ceil(selectedAssetDurationSec))
-      : START_OFFSET_FALLBACK_MAX_SEC;
-
   const updateMusic = (patch: Partial<typeof music>, coalesceKey?: string) =>
     setStudioEdits((prev) => ({ ...prev, music: { ...prev.music, ...patch } }), coalesceKey);
+
+  const updateBlock = (patch: Partial<StudioMusicBlock>, field: string) => {
+    if (!selectedBlock) return;
+    const id = selectedBlock.id;
+    setStudioEdits(
+      (prev) => ({
+        ...prev,
+        music: { ...prev.music, blocks: patchMusicBlock(prev.music.blocks, id, patch) },
+      }),
+      `music-block-${id}-${field}`,
+    );
+  };
+
+  const removeBlock = (id: string) => {
+    applyRequest.current++;
+    updateMusic({ blocks: studioEditsRef.current.music.blocks.filter((block) => block.id !== id) });
+    if (selectedMusicBlockId === id) deselectMusicBlock();
+  };
+
+  /** What "Use" does depends on the playhead: see `addMusicTrack`. */
+  const placeTrack = (track: MusicTrack) => {
+    const blocks = studioEditsRef.current.music.blocks;
+    const playheadSec = compositeToBaseEdited(playbackClock.getSnapshot());
+    const result = addMusicTrack(blocks, track, playheadSec, editedTimeMap.editedDurationSec, crypto.randomUUID());
+    if (result.kind === "no-room") {
+      toaster.create({
+        type: "info",
+        title: "No room for a track here",
+        description: "Move the playhead to open space, or trim the next block.",
+      });
+      return false;
+    }
+    if (result.kind === "limit") {
+      toaster.create({
+        type: "info",
+        title: "The music lane is full",
+        description: "Delete a block to add another track.",
+      });
+      return false;
+    }
+    updateMusic({ blocks: result.blocks });
+    selectMusicBlock(result.blockId);
+    setShowMix(true);
+    return true;
+  };
 
   const applyTrack = async (asset: AudioAssetListRow) => {
     const request = ++applyRequest.current;
     try {
       const url = await resolveAudioPlaybackUrl(asset.id, audioApi);
       if (request !== applyRequest.current) return;
-      updateMusic({ assetId: asset.id, title: asset.title, url });
-      setShowMix(true);
+      placeTrack({ assetId: asset.id, title: asset.title, url });
     } catch {
       if (request !== applyRequest.current) return;
       toaster.create({ type: "error", title: "Couldn't apply this track", description: "Please try again." });
     }
   };
 
-  const clearMusic = () => {
-    applyRequest.current++;
-    setUrlDraft("");
-    setTitleDraft("");
-    setShowLinkInput(false);
-    updateMusic({ assetId: null, title: null, url: null });
-  };
-
   const applyLink = () => {
     applyRequest.current++;
     const trimmedUrl = urlDraft.trim();
-    updateMusic({ assetId: null, url: trimmedUrl || null, title: titleDraft.trim() || null });
-    if (trimmedUrl) setShowMix(true);
+    if (!/^https?:\/\/\S+$/i.test(trimmedUrl)) {
+      toaster.create({ type: "error", title: "Enter a full link", description: "It should start with https://." });
+      return;
+    }
+    if (placeTrack({ assetId: null, url: trimmedUrl, title: titleDraft.trim() || null })) {
+      setUrlDraft("");
+      setTitleDraft("");
+    }
   };
 
   const toggleFavorite = async (asset: AudioAssetListRow) => {
@@ -489,7 +546,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                   key={asset.id}
                   asset={asset}
                   player={player}
-                  selected={music.assetId === asset.id}
+                  selected={selectedBlock?.assetId === asset.id}
                   onUse={() => void applyTrack(asset)}
                 />
               ))}
@@ -531,7 +588,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                 key={asset.id}
                 asset={asset}
                 player={player}
-                selected={music.assetId === asset.id}
+                selected={selectedBlock?.assetId === asset.id}
                 onUse={() => void applyTrack(asset)}
                 onFavorite={() => void toggleFavorite(asset)}
               />
@@ -541,20 +598,42 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         </Stack>
       </Box>
 
-      {music.assetId || music.url ? (
+      {selectedBlock ? (
         <Flex align="center" justify="space-between" gap="2" p="2" pe="3" bg="studio.subtle" borderRadius="12px">
           <Flex align="center" gap="3" minW="0">
             <Flex boxSize="32px" flexShrink={0} align="center" justify="center" borderRadius="full" bg="studio.accentSubtle" color="studio.accentFg">
               <Music size={15} />
             </Flex>
-            <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>
-              {music.title ?? "Music applied"}
-            </Text>
+            <Stack gap="0" minW="0">
+              <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>
+                {selectedBlock.title ?? "Music applied"}
+              </Text>
+              <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">
+                {formatDuration(selectedBlock.startSec)} to{" "}
+                {selectedBlock.endSec === null ? "end" : formatDuration(selectedBlock.endSec)}
+                {music.blocks.length > 1 ? ` · ${music.blocks.length} blocks` : ""}
+              </Text>
+            </Stack>
           </Flex>
-          <Flex as="button" aria-label="Remove music" minW="24px" minH="24px" align="center" justify="center" color="studio.fgMuted" cursor="pointer" _hover={{ color: "studio.fg" }} onClick={clearMusic}>
+          <Flex
+            as="button"
+            aria-label="Remove music block"
+            minW="24px"
+            minH="24px"
+            align="center"
+            justify="center"
+            color="studio.fgMuted"
+            cursor="pointer"
+            _hover={{ color: "studio.fg" }}
+            onClick={() => removeBlock(selectedBlock.id)}
+          >
             <X size={14} />
           </Flex>
         </Flex>
+      ) : music.blocks.length > 1 ? (
+        <Text fontSize="12px" color="studio.fgSubtle" px="1">
+          Select a block on the timeline to edit its volume and fades.
+        </Text>
       ) : null}
 
       <Disclosure icon={<Link2 size={14} />} label="Paste a link instead" open={showLinkInput} onToggle={() => setShowLinkInput((value) => !value)}>
@@ -599,41 +678,42 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         </Stack>
       </Disclosure>
 
-      <Disclosure icon={<SlidersHorizontal size={14} />} label="Mix & timing" open={showMix} onToggle={() => setShowMix((value) => !value)}>
+      <Disclosure icon={<SlidersHorizontal size={14} />} label="Mix" open={showMix} onToggle={() => setShowMix((value) => !value)}>
         <Stack gap="4" px="1">
-          {([
-            ["Volume", music.volume, 0, 100, 1, "%", "Music volume", "music-volume"],
-            ["Start", Math.min(music.startOffsetSec, startOffsetMaxSec), 0, startOffsetMaxSec, 0.5, "s", "Music start offset", "music-start-offset"],
-            ["Fade in", music.fadeInSec, 0, 5, 0.1, "s", "Music fade in", "music-fade-in"],
-            ["Fade out", music.fadeOutSec, 0, 5, 0.1, "s", "Music fade out", "music-fade-out"],
-          ] as const).map(([label, value, min, max, step, suffix, aria, coalesceKey]) => (
-            <Flex key={label} align="center" gap="3">
-              <Text fontSize="13px" color="studio.fgMuted" w="56px" flexShrink={0}>{label}</Text>
-              <Slider.Root
-                aria-label={[aria]}
-                value={[value]}
-                min={min}
-                max={max}
-                step={step}
-                onValueChange={(event) => {
-                  const next = event.value[0] ?? value;
-                  if (label === "Volume") updateMusic({ volume: next }, coalesceKey);
-                  else if (label === "Start") updateMusic({ startOffsetSec: next }, coalesceKey);
-                  else if (label === "Fade in") updateMusic({ fadeInSec: next }, coalesceKey);
-                  else updateMusic({ fadeOutSec: next }, coalesceKey);
-                }}
-                onValueChangeEnd={endCoalesce}
-                size="sm"
-                css={studioSliderCss}
-                flex="1"
-              >
-                <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
-              </Slider.Root>
-              <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="44px" textAlign="right">
-                {suffix === "%" ? Math.round(value) : value.toFixed(1)}{suffix}
+          {selectedBlock
+            ? ([
+                ["Volume", selectedBlock.volume, 0, 100, 1, "%", "Music volume", "volume", (value: number) => ({ volume: value })],
+                ["Fade in", selectedBlock.fadeInSec, 0, 5, 0.1, "s", "Music fade in", "fade-in", (value: number) => ({ fadeInSec: value })],
+                ["Fade out", selectedBlock.fadeOutSec, 0, 5, 0.1, "s", "Music fade out", "fade-out", (value: number) => ({ fadeOutSec: value })],
+              ] as const).map(([label, value, min, max, step, suffix, aria, field, toPatch]) => (
+                <Flex key={label} align="center" gap="3">
+                  <Text fontSize="13px" color="studio.fgMuted" w="56px" flexShrink={0}>{label}</Text>
+                  <Slider.Root
+                    aria-label={[aria]}
+                    value={[value]}
+                    min={min}
+                    max={max}
+                    step={step}
+                    onValueChange={(event) => updateBlock(toPatch(event.value[0] ?? value), field)}
+                    onValueChangeEnd={endCoalesce}
+                    size="sm"
+                    css={studioSliderCss}
+                    flex="1"
+                  >
+                    <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
+                  </Slider.Root>
+                  <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="44px" textAlign="right">
+                    {suffix === "%" ? Math.round(value) : value.toFixed(1)}{suffix}
+                  </Text>
+                </Flex>
+              ))
+            : (
+              <Text fontSize="12px" color="studio.fgSubtle">
+                {music.blocks.length === 0
+                  ? "Add a track to set its volume and fades."
+                  : "Select a block on the timeline to set its volume and fades."}
               </Text>
-            </Flex>
-          ))}
+            )}
           <Flex align="center" justify="space-between" gap="3" pt="1">
             <Stack gap="0">
               <Text fontSize="13px" color="studio.fg" fontWeight="500">Duck under speech</Text>
@@ -655,7 +735,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               fontWeight="500"
               cursor="pointer"
               transition="background 120ms ease, color 120ms ease"
-              onClick={() => updateMusic({ ducking: !music.ducking })}
+              onClick={() => updateMusic({ ducking: !music.ducking }, undefined)}
             >
               {music.ducking ? "On" : "Off"}
             </Flex>

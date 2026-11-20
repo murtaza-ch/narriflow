@@ -460,7 +460,7 @@ export class ProjectService {
 	 *
 	 * Deliberately not deleted: BrandTemplate.logoStorageKey and any logo key
 	 * inside Project.brandSnapshot (other Projects may share them), Clip.brollUrl
-	 * and studioEdits.music.url (external URLs, not objects this Project owns).
+	 * and studioEdits.music.blocks[].url (external URLs, not objects this Project owns).
 	 */
 	async deleteProject(scope: ActorScope, projectId: string): Promise<void> {
 		await this.requireActor(scope, "content.edit");

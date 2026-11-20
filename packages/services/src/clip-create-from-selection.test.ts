@@ -331,12 +331,25 @@ describe("planStudioEditsForClipFromSelection", () => {
       ],
       transition: { type: "fade", durationSec: 0.6 },
       music: {
-        url: "https://example.com/song.mp3",
-        title: "Song",
-        volume: 40,
-        startOffsetSec: 1,
-        fadeInSec: 0.5,
-        fadeOutSec: 0.5,
+        blocks: [
+          {
+            id: "first",
+            url: "https://example.com/song.mp3",
+            title: "Song",
+            startSec: 2,
+            endSec: 6,
+            sourceStartSec: 1,
+            volume: 40,
+            fadeInSec: 0.5,
+            fadeOutSec: 0.5,
+          },
+          {
+            id: "second",
+            url: "https://example.com/other.mp3",
+            startSec: 6,
+          },
+        ],
+        ducking: true,
       },
       sourceAudio: { volume: 80, muted: false },
       logo: { enabled: true, position: null, opacity: null, scalePct: null },
@@ -349,13 +362,26 @@ describe("planStudioEditsForClipFromSelection", () => {
     expect(result!.sfx).toEqual([]);
     expect(result!.sceneLayouts).toEqual([]);
     expect(result!.transition).toEqual(sourceStudioEdits.transition);
-    // Schema defaults fill in assetId/ducking when the source fixture omits
-    // them, as they do for any partial studioEdits.
+    // Music Blocks are timed against the source window too: the first
+    // block's track survives as one full-length bed with a fresh id.
     expect(result!.music).toEqual({
-      ...sourceStudioEdits.music,
-      assetId: null,
-      ducking: false,
+      ducking: true,
+      blocks: [
+        {
+          id: expect.any(String),
+          assetId: null,
+          url: "https://example.com/song.mp3",
+          title: "Song",
+          startSec: 0,
+          endSec: null,
+          sourceStartSec: 0,
+          volume: 40,
+          fadeInSec: 0.5,
+          fadeOutSec: 0.5,
+        },
+      ],
     });
+    expect(result!.music.blocks[0]!.id).not.toBe("first");
     expect(result!.sourceAudio).toEqual(sourceStudioEdits.sourceAudio);
     expect(result!.logo).toEqual(sourceStudioEdits.logo);
   });

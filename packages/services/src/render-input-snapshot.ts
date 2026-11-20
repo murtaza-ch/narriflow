@@ -51,7 +51,7 @@ export function createRenderInputSnapshot(database: PrismaClient, dependencies: 
       const owner = workspace.personalOwnerUserId ? { userId: workspace.personalOwnerUserId, workspaceId: null } : { workspaceId: workspace.id };
       const visualIds = [...new Set([...doc.sceneBlocks.flatMap(block => block.content.kind === "image" || block.content.kind === "video" ? [block.content.asset.id] : []), ...doc.studioEdits.visualBroll.map(item => item.asset.id)])];
       const fontIds = [...new Set([...documentFontReferences(doc).map(font => font.id), ...doc.sceneBlocks.flatMap(block => block.content.kind === "text" && block.content.fontAsset ? [block.content.fontAsset.id] : [])])];
-      const audioIds = [...new Set([doc.studioEdits.music.assetId, ...doc.studioEdits.sfx.map(item => item.assetId)].filter((id): id is string => id !== null))];
+      const audioIds = [...new Set([...doc.studioEdits.music.blocks.map(block => block.assetId), ...doc.studioEdits.sfx.map(item => item.assetId)].filter((id): id is string => id !== null))];
       const [visuals, fonts, audio] = await Promise.all([
         visualIds.length ? tx.visualAsset.findMany({ where: { id: { in: visualIds }, ...owner, deletedAt: null } }) : [],
         fontIds.length ? tx.brandFont.findMany({ where: { id: { in: fontIds }, ...owner, deletedAt: null } }) : [],

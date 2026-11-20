@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { BRAND_DEFAULT_CAPTION_PRESET_ID, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, brandProfileSnapshotSchema, captionPresetSchema, captionedVideoFramingEdits,
-  clipEmphasisWords, clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema,
+  clipEmphasisWords, clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema, studioMusicBlockSchema,
   type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges, type FillerTaggingOutcome, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 
@@ -62,13 +62,26 @@ export function seedBrandMusic(
   studioEdits: StudioEdits,
   brandProfileSnapshot: unknown,
 ): StudioEdits {
-  if (studioEdits.music.assetId || studioEdits.music.url) return studioEdits;
+  if (studioEdits.music.blocks.length > 0) return studioEdits;
   const snapshot = brandProfileSnapshotSchema.safeParse(brandProfileSnapshot);
   const track = snapshot.success ? snapshot.data.audio.music[0] : undefined;
   if (!track) return studioEdits;
   return {
     ...studioEdits,
-    music: { ...studioEdits.music, assetId: track.assetId, title: track.title, url: null },
+    // One full-length bed from the clip start, Studio defaults for the rest.
+    music: {
+      ...studioEdits.music,
+      blocks: [
+        studioMusicBlockSchema.parse({
+          id: crypto.randomUUID(),
+          assetId: track.assetId,
+          title: track.title,
+          startSec: 0,
+          endSec: null,
+          sourceStartSec: 0,
+        }),
+      ],
+    },
   };
 }
 

@@ -74,7 +74,7 @@ async function plan(source: string, mix: Mix) {
       version: 1, clipStartSec: 0, clipEndSec: 3, captionPreset: captionPresetSchema.parse({ visible: false }), transcriptSlice: [],
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
-        ...(mix.musicGain === null ? {} : { music: { url: "https://example.com/music.wav", volume: 20, ducking: false, fadeInSec: 0, fadeOutSec: 0 } }),
+        ...(mix.musicGain === null ? {} : { music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 20 }] } }),
       }),
       brollUrl: null,
       sceneBlocks: mix.scene
@@ -89,7 +89,7 @@ async function plan(source: string, mix: Mix) {
     evidence: { automaticLayout: { state: "missing" } },
     assets: {
       backgroundImage: { state: "missing" },
-      ...(mix.musicGain === null ? {} : { music: { state: "available", ref: "music:bed", durationSec: 4 } } as const),
+      ...(mix.musicGain === null ? {} : { music: { bed: { state: "available", ref: "music:bed", durationSec: 4 } } } as const),
     },
     capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
     targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
@@ -101,11 +101,11 @@ async function plan(source: string, mix: Mix) {
 async function renderMix(directory: string, name: string, files: Awaited<ReturnType<typeof fixture>>, mix: Mix) {
   const { inspection, plan: composition } = await plan(files.source, mix);
   const schedule = compileCompositionPlanAudioSchedule(composition);
-  const base = bindCompositionPlanAudioInputs(schedule, mix.musicGain === null ? {} : { music: { sourceRef: "music:bed", path: files.music } });
+  const base = bindCompositionPlanAudioInputs(schedule, mix.musicGain === null ? {} : { music: [{ id: "bed", sourceRef: "music:bed", path: files.music }] });
   const audio: BoundCompositionAudioRenderRequest = {
     ...base,
     source: { ...base.source, gain: 1 },
-    music: base.music ? { ...base.music, gain: mix.musicGain ?? 0 } : null,
+    music: base.music.map((block) => ({ ...block, gain: mix.musicGain ?? 0 })),
     soundEffects: (mix.sfx ?? []).map((placement, index) => ({
       id: `sfx-${index}`, sourceRef: `sfx:${index}`, activeRange: { startSec: placement.startSec, endSec: 3 }, gain: placement.gain, path: files.sfx[index]!,
     })),

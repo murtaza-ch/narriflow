@@ -64,7 +64,7 @@ describe("Clip Composition Plan", () => {
       ...centerDocument(), clipStartSec: 0, clipEndSec: 4, deletedRanges: [],
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
-        music: { url: "https://example.com/music.mp3", ducking: true },
+        music: { blocks: [{ id: "bed", url: "https://example.com/music.mp3", startSec: 0 }], ducking: true },
       }),
       transcriptSlice: [{
         index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: wordStart, endSec: wordEnd,
@@ -81,12 +81,12 @@ describe("Clip Composition Plan", () => {
       document,
       source: { identity: "source:inserted-audio", kind: "video", width: 320, height: 180 },
       evidence: { automaticLayout: { state: "missing" } },
-      assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed" } },
+      assets: { backgroundImage: { state: "missing" }, music: { bed: { state: "available", ref: "music:bed" } } },
       capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
     });
     if (result.status === "invalid") throw new Error(result.error.code);
-    const windows = result.plan.audioSchedule.music!.ducking.windows;
+    const windows = result.plan.audioSchedule.music[0]!.ducking.windows;
     expect(windows).toHaveLength(expected.length);
     expected.forEach((range, index) => {
       expect(windows[index]!.startSec).toBeCloseTo(range.startSec, 8);
@@ -102,7 +102,7 @@ describe("Clip Composition Plan", () => {
       deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
-        music: { url: "https://example.com/music.mp3", ducking: true },
+        music: { blocks: [{ id: "bed", url: "https://example.com/music.mp3", startSec: 0 }], ducking: true },
       }),
       censorSegments: [{
         schemaVersion: 1, id: "10000000-0000-4000-8000-000000000001",
@@ -123,7 +123,7 @@ describe("Clip Composition Plan", () => {
       document,
       source: { identity: "source:sliver", kind: "video", width: 320, height: 180 },
       evidence: { automaticLayout: { state: "missing" } },
-      assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed" } },
+      assets: { backgroundImage: { state: "missing" }, music: { bed: { state: "available", ref: "music:bed" } } },
       capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
     });
@@ -136,9 +136,9 @@ describe("Clip Composition Plan", () => {
     expect(formatSubtitles(deriveCaptionCues(document), "srt")).toBe("1\n00:00:00,100 --> 00:00:00,300\nKEPT\n\n");
     expect(formatSubtitles(deriveCaptionCues(document), "vtt")).toBe("WEBVTT\n\n00:00:00.100 --> 00:00:00.300\nKEPT\n\n");
     expect(result.plan.audioSchedule.censors).toEqual([expect.objectContaining({ startSec: 0.1, endSec: 0.3, treatment: "mute" })]);
-    expect(result.plan.audioSchedule.music!.ducking.windows).toHaveLength(1);
-    expect(result.plan.audioSchedule.music!.ducking.windows[0]!.startSec).toBe(0);
-    expect(result.plan.audioSchedule.music!.ducking.windows[0]!.endSec).toBeCloseTo(0.42, 8);
+    expect(result.plan.audioSchedule.music[0]!.ducking.windows).toHaveLength(1);
+    expect(result.plan.audioSchedule.music[0]!.ducking.windows[0]!.startSec).toBe(0);
+    expect(result.plan.audioSchedule.music[0]!.ducking.windows[0]!.endSec).toBeCloseTo(0.42, 8);
     const captions = result.plan.targets[0]!.visualLayers.filter((layer) => layer.kind === "caption");
     expect(captions.flatMap((layer) => layer.words.map((word) => word.text))).toEqual(["KEPT"]);
     expect(captions[0]!.words[0]!.startSec).toBe(0.1);
@@ -469,11 +469,17 @@ describe("Clip Composition Plan", () => {
         framing: { mode: "center" },
         sourceAudio: { volume: 65, muted: false },
         music: {
-          url: "https://example.com/music.mp3",
-          volume: 40,
-          startOffsetSec: 3,
-          fadeInSec: 5,
-          fadeOutSec: 5,
+          blocks: [
+            {
+              id: "bed",
+              url: "https://example.com/music.mp3",
+              startSec: 0,
+              volume: 40,
+              sourceStartSec: 3,
+              fadeInSec: 5,
+              fadeOutSec: 5,
+            },
+          ],
           ducking: true,
         },
         sfx: [
@@ -500,7 +506,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" } },
       assets: {
         backgroundImage: { state: "missing" },
-        music: { state: "available", ref: "music:bed" },
+        music: { bed: { state: "available", ref: "music:bed" } },
         soundEffects: {
           sting: { state: "available", ref: "sfx:sting", durationSec: 0.75 },
         },
@@ -530,28 +536,31 @@ describe("Clip Composition Plan", () => {
         gain: 0.65,
         muted: false,
       },
-      music: {
-        sourceRef: "music:bed",
-        activeRange: { startSec: 0, endSec: 8 },
-        gain: 0.4,
-        startOffsetSec: 3,
-        sourceDurationSec: null,
-        loop: true,
-        fades: {
-          fadeIn: { startSec: 0, endSec: 4 },
-          fadeOut: { startSec: 4, endSec: 8 },
+      music: [
+        {
+          id: "bed",
+          sourceRef: "music:bed",
+          activeRange: { startSec: 0, endSec: 8 },
+          gain: 0.4,
+          sourceStartSec: 3,
+          sourceDurationSec: null,
+          loop: true,
+          fades: {
+            fadeIn: { startSec: 0, endSec: 4 },
+            fadeOut: { startSec: 4, endSec: 8 },
+          },
+          ducking: {
+            enabled: true,
+            windows: [
+              { startSec: 0.38, endSec: 1.12 },
+              { startSec: 2.88, endSec: 4.12 },
+            ],
+            duckedGainFraction: 0.3,
+            attackSec: 0.25,
+            releaseSec: 0.4,
+          },
         },
-        ducking: {
-          enabled: true,
-          windows: [
-            { startSec: 0.38, endSec: 1.12 },
-            { startSec: 2.88, endSec: 4.12 },
-          ],
-          duckedGainFraction: 0.3,
-          attackSec: 0.25,
-          releaseSec: 0.4,
-        },
-      },
+      ],
       soundEffects: [
         {
           id: "sting",
@@ -561,6 +570,198 @@ describe("Clip Composition Plan", () => {
         },
       ],
       censors: [],
+    });
+  });
+
+  describe("music blocks", () => {
+    const planMusic = (
+      blocks: unknown[],
+      assets: Record<string, unknown>,
+      options: { clipEndSec?: number; ducking?: boolean; sceneBlocks?: unknown[] } = {},
+    ) => {
+      const result = planClipComposition({
+        document: editorDocumentSchema.parse({
+          version: 1,
+          clipStartSec: 0,
+          clipEndSec: options.clipEndSec ?? 20,
+          captionPreset: captionPresetSchema.parse({}),
+          transcriptSlice: [],
+          studioEdits: studioEditsSchema.parse({
+            framing: { mode: "center" },
+            music: { blocks, ducking: options.ducking ?? false },
+          }),
+          brollUrl: null,
+          deletedRanges: [],
+          ...(options.sceneBlocks ? { sceneBlocks: options.sceneBlocks } : {}),
+        }),
+        source: {
+          identity: "source:music-blocks",
+          kind: "video",
+          width: 1920,
+          height: 1080,
+          hasAudio: true,
+        },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" }, music: assets as never },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      return result.plan;
+    };
+    const track = (id: string, extra: Record<string, unknown>) => ({
+      id,
+      url: `https://example.com/${id}.mp3`,
+      ...extra,
+    });
+
+    test("maps blocks onto the composite clock and plays through an inserted scene", () => {
+      const scene = (id: string, anchorSec: number) => ({
+        schemaVersion: 1,
+        id,
+        anchorSec,
+        durationSec: 2,
+        content: { kind: "color", color: "#112233" },
+        motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+        templateSnapshot: null,
+      });
+      // Composite anchors: a 2s scene before the clip, one at base 6 (composite 8).
+      const plan = planMusic(
+        [track("bed", { startSec: 4, endSec: 10 })],
+        { bed: { state: "available", ref: "music:bed" } },
+        {
+          sceneBlocks: [
+            scene("10000000-0000-4000-8000-0000000000a1", 0),
+            scene("10000000-0000-4000-8000-0000000000a2", 8),
+          ],
+        },
+      );
+      expect(plan.audioSchedule.music[0]).toMatchObject({
+        activeRange: { startSec: 6, endSec: 14 },
+      });
+    });
+
+    test("plans one entry per available block with block-relative fades in plan time", () => {
+      const plan = planMusic(
+        [
+          track("intro", { startSec: 2, endSec: 8, sourceStartSec: 5, volume: 60, fadeInSec: 1, fadeOutSec: 2 }),
+          track("bed", { startSec: 8, volume: 20 }),
+        ],
+        {
+          intro: { state: "available", ref: "music:intro", durationSec: 30 },
+          bed: { state: "available", ref: "music:bed" },
+        },
+      );
+      expect(plan.audioSchedule.music).toHaveLength(2);
+      const [intro, bed] = plan.audioSchedule.music;
+      expect(intro).toMatchObject({
+        id: "intro",
+        sourceRef: "music:intro",
+        activeRange: { startSec: 2, endSec: 8 },
+        gain: 0.6,
+        sourceStartSec: 5,
+        sourceDurationSec: 30,
+        loop: true,
+        fades: {
+          fadeIn: { startSec: 2, endSec: 3 },
+          fadeOut: { startSec: 6, endSec: 8 },
+        },
+      });
+      expect(bed).toMatchObject({
+        id: "bed",
+        activeRange: { startSec: 8, endSec: 20 },
+        gain: 0.2,
+        sourceStartSec: 0,
+        sourceDurationSec: null,
+        fades: {
+          fadeIn: { startSec: 8, endSec: 8 },
+          fadeOut: { startSec: 20, endSec: 20 },
+        },
+      });
+    });
+
+    test("clamps a block to the clip end and skips one that starts at or past it", () => {
+      const plan = planMusic(
+        [track("a", { startSec: 15, endSec: 30 }), track("b", { startSec: 30 })],
+        {
+          a: { state: "available", ref: "music:a" },
+          b: { state: "failed" },
+        },
+      );
+      expect(plan.audioSchedule.music.map((entry) => entry.activeRange)).toEqual([
+        { startSec: 15, endSec: 20 },
+      ]);
+      // The block past the end raises no notice either.
+      expect(plan.notices).toEqual([]);
+    });
+
+    test("scales overlong fades to the block length, not the clip length", () => {
+      const plan = planMusic(
+        [track("a", { startSec: 4, endSec: 6, fadeInSec: 5, fadeOutSec: 5 })],
+        { a: { state: "available", ref: "music:a" } },
+      );
+      expect(plan.audioSchedule.music[0]!.fades).toEqual({
+        fadeIn: { startSec: 4, endSec: 5 },
+        fadeOut: { startSec: 5, endSec: 6 },
+      });
+    });
+
+    test("raises one notice per unavailable block and still plays the others", () => {
+      const plan = planMusic(
+        [track("a", { startSec: 0, endSec: 5 }), track("b", { startSec: 5, endSec: 9 }), track("c", { startSec: 9 })],
+        {
+          a: { state: "available", ref: "music:a" },
+          b: { state: "pending" },
+        },
+      );
+      expect(plan.audioSchedule.music.map((entry) => entry.id)).toEqual(["a"]);
+      expect(plan.notices.map((notice) => [notice.code, notice.assetId])).toEqual([
+        ["music_asset_pending", "b"],
+        ["music_asset_unavailable", "c"],
+      ]);
+      expect(plan.fidelity).toBe("pending");
+    });
+
+    test("an empty lane plans no music and raises no notice", () => {
+      const plan = planMusic([], {});
+      expect(plan.audioSchedule.music).toEqual([]);
+      expect(plan.notices).toEqual([]);
+    });
+
+    test("the audio fingerprint follows every block field", () => {
+      const assets = { a: { state: "available", ref: "music:a" } };
+      const base = { startSec: 1, endSec: 9, sourceStartSec: 0, volume: 35, fadeInSec: 0, fadeOutSec: 0 };
+      const fingerprint = (extra: Record<string, unknown>) =>
+        planMusic([track("a", { ...base, ...extra })], assets).audioSchedule.fingerprint;
+      const reference = fingerprint({});
+      expect(fingerprint({})).toBe(reference);
+      for (const change of [
+        { startSec: 2 },
+        { endSec: 10 },
+        { sourceStartSec: 3 },
+        { volume: 50 },
+        { fadeInSec: 1 },
+        { fadeOutSec: 1 },
+      ]) {
+        expect(fingerprint(change)).not.toBe(reference);
+      }
+    });
+
+    test("every block shares the clip-wide ducking windows", () => {
+      const plan = planMusic(
+        [track("a", { startSec: 0, endSec: 8 }), track("b", { startSec: 8 })],
+        {
+          a: { state: "available", ref: "music:a" },
+          b: { state: "available", ref: "music:b" },
+        },
+        { ducking: true },
+      );
+      const [a, b] = plan.audioSchedule.music;
+      expect(a!.ducking.enabled).toBe(true);
+      expect(b!.ducking).toEqual(a!.ducking);
     });
   });
 
@@ -606,11 +807,17 @@ describe("Clip Composition Plan", () => {
     const audioEdits = {
       sourceAudio: { volume: 75, muted: false },
       music: {
-        url: "https://example.com/bed.mp3",
-        volume: 30,
-        startOffsetSec: 2,
-        fadeInSec: 1,
-        fadeOutSec: 1,
+        blocks: [
+          {
+            id: "bed",
+            url: "https://example.com/bed.mp3",
+            startSec: 0,
+            volume: 30,
+            sourceStartSec: 2,
+            fadeInSec: 1,
+            fadeOutSec: 1,
+          },
+        ],
       },
     };
     const makeDocument = (withVisualEdit: boolean) =>
@@ -655,7 +862,7 @@ describe("Clip Composition Plan", () => {
         evidence: { automaticLayout: { state: "missing" } },
         assets: {
           backgroundImage: { state: "missing" },
-          music: { state: "available", ref: "music:stable" },
+          music: { bed: { state: "available", ref: "music:stable" } },
           ...(withVisualEdit
             ? {
                 broll: {
@@ -700,8 +907,14 @@ describe("Clip Composition Plan", () => {
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
         music: {
-          assetId: "11111111-1111-4111-8111-111111111111",
-          volume: 35,
+          blocks: [
+            {
+              id: "bed",
+              assetId: "11111111-1111-4111-8111-111111111111",
+              startSec: 0,
+              volume: 35,
+            },
+          ],
         },
         sfx: [
           {
@@ -727,7 +940,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" } },
       assets: {
         backgroundImage: { state: "missing" },
-        music: { state: "failed" },
+        music: { bed: { state: "failed" } },
         soundEffects: { impact: { state: "pending" } },
       },
       capabilities: {
@@ -744,7 +957,7 @@ describe("Clip Composition Plan", () => {
     if (result.status === "invalid") throw new Error(result.error.code);
     expect(result.plan.audioSchedule).toMatchObject({
       source: { available: false, muted: false },
-      music: null,
+      music: [],
       soundEffects: [],
     });
     expect(result.plan.notices).toEqual([
@@ -755,6 +968,7 @@ describe("Clip Composition Plan", () => {
         sceneId: null,
         effectiveFallback: "center" as const,
         userActionPossible: true,
+        assetId: "bed",
       })),
       ...["vertical", "square"].map((targetId) => ({
         code: "sound_effect_asset_pending",
@@ -859,10 +1073,16 @@ describe("Clip Composition Plan", () => {
       ],
       studioEdits: studioEditsSchema.parse({
         music: {
-          url: "https://example.com/music.mp3",
-          volume: 100,
-          fadeInSec: 5,
-          fadeOutSec: 5,
+          blocks: [
+            {
+              id: "bed",
+              url: "https://example.com/music.mp3",
+              startSec: 0,
+              volume: 100,
+              fadeInSec: 5,
+              fadeOutSec: 5,
+            },
+          ],
           ducking: true,
         },
         sfx: Array.from({ length: 20 }, (_, index) => ({
@@ -877,7 +1097,7 @@ describe("Clip Composition Plan", () => {
     });
     const assets = {
       backgroundImage: { state: "missing" as const },
-      music: { state: "available" as const, ref: "music:bounded" },
+      music: { bed: { state: "available" as const, ref: "music:bounded" } },
       soundEffects: Object.fromEntries(
         document.studioEdits.sfx.map((placement) => [
           placement.id,
@@ -916,15 +1136,15 @@ describe("Clip Composition Plan", () => {
     const schedule = first.plan.audioSchedule;
     expect(schedule).toEqual(second.plan.audioSchedule);
     expect(schedule.soundEffects).toHaveLength(20);
-    expect(schedule.music!.ducking.windows.length).toBeLessThanOrEqual(
-      MAX_DUCKING_WINDOWS,
-    );
+    expect(schedule.music).toHaveLength(1);
+    const bed = schedule.music[0]!;
+    expect(bed.ducking.windows.length).toBeLessThanOrEqual(MAX_DUCKING_WINDOWS);
     const ranges = [
       schedule.source.activeRange,
-      schedule.music!.activeRange,
-      schedule.music!.fades.fadeIn,
-      schedule.music!.fades.fadeOut,
-      ...schedule.music!.ducking.windows,
+      bed.activeRange,
+      bed.fades.fadeIn,
+      bed.fades.fadeOut,
+      ...bed.ducking.windows,
       ...schedule.soundEffects.map((effect) => effect.activeRange),
     ];
     for (const range of ranges) {

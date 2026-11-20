@@ -502,7 +502,7 @@ interface Planned {
     broll: Record<string, string>;
     scenes: Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>;
     hdr: Record<string, HdrColor>;
-    musicPath: { sourceRef: string; path: string } | null;
+    musicPaths: { id: string; sourceRef: string; path: string }[];
     soundEffects: Array<{ id: string; sourceRef: string; path: string }>;
     assetHashes: Record<string, string>;
   };
@@ -576,16 +576,19 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
     if (scenes[ref]) broll[ref] = scenes[ref]!.path;
   });
 
-  let music: Dict | undefined;
-  let musicPath: Planned["assets"]["musicPath"] = null;
-  if (studio.music.assetId || studio.music.url) {
+  // Every Music Block plays the one fixture the case declares.
+  const music: Dict = {};
+  const musicPaths: Planned["assets"]["musicPaths"] = [];
+  if (studio.music.blocks.length > 0) {
     const def = assetDefs.music;
     if (!def) throw new Error(`case ${id} requests music without an asset`);
     const path = fixturePath(def.fixture);
     const duration = (await productionWorkerProcessModule.inspectMedia({ sourcePath: path, signal, deadlineMs: 120_000 })).durationSec;
-    const ref = compositionAssetRef("music", studio.music.assetId ?? studio.music.url!);
-    music = { state: "available", ref, durationSec: duration };
-    musicPath = { sourceRef: ref, path };
+    for (const block of studio.music.blocks) {
+      const ref = compositionAssetRef("music", block.assetId ?? block.url!);
+      music[block.id] = { state: "available", ref, durationSec: duration };
+      musicPaths.push({ id: block.id, sourceRef: ref, path });
+    }
   }
   const soundEffects: Dict = {};
   const sfxPaths: Planned["assets"]["soundEffects"] = [];
@@ -619,7 +622,7 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
       backgroundImage: backgroundImage as any, brollPlan: null, userBrollUrl: document.brollUrl,
       brandLogo: plannedLogo ? { ...logo, ref: plannedLogo.ref } as any : null,
       brandLogoWasRequested: Boolean(plannedLogo), plannedLogoSettings: plannedLogo?.settings ?? null,
-      musicPlan: musicPath ? { path: musicPath.path, ref: musicPath.sourceRef, durationSec: music?.durationSec } : null,
+      musicPlans: musicPaths.map((entry) => ({ id: entry.id, path: entry.path, ref: entry.sourceRef, durationSec: music[entry.id].durationSec })),
       sfxPlans: sfxPaths.map((effect) => ({ id: effect.id, path: effect.path, ref: effect.sourceRef, durationSec: soundEffects[effect.id].durationSec })),
     }),
     capabilities: {
@@ -640,7 +643,7 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
     (error as any).code = result.error.code;
     throw error;
   }
-  return { plan: result.plan, document, inspection, sourcePath, assets: { logo, background, broll, scenes, hdr, musicPath, soundEffects: sfxPaths, assetHashes }, cutPlan };
+  return { plan: result.plan, document, inspection, sourcePath, assets: { logo, background, broll, scenes, hdr, musicPaths, soundEffects: sfxPaths, assetHashes }, cutPlan };
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,7 +1044,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
 
     const expectedQuadrants = definition.expected?.quadrantsFrom ? await expectedQuadrantSignature(context.fixtures.files[definition.expected.quadrantsFrom]!.path) : null;
     const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(planned.plan), {
-      music: planned.assets.musicPath,
+      music: planned.assets.musicPaths,
       soundEffects: planned.assets.soundEffects,
     });
     const fonts = await prepareCaptionFontsDirectory(join(caseDir, "work"), new Map(), null);

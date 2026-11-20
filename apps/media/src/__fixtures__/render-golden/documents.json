@@ -1368,13 +1368,20 @@
             "mode": "center"
           },
           "music": {
-            "url": null,
-            "title": "Bed",
-            "volume": 40,
-            "startOffsetSec": 0,
-            "fadeInSec": 0.5,
-            "fadeOutSec": 0.5,
-            "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+            "blocks": [
+              {
+                "id": "bed",
+                "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+                "url": null,
+                "title": "Bed",
+                "startSec": 0,
+                "endSec": null,
+                "sourceStartSec": 0,
+                "volume": 40,
+                "fadeInSec": 0.5,
+                "fadeOutSec": 0.5
+              }
+            ],
             "ducking": true
           },
           "sfx": [
@@ -4014,13 +4021,20 @@
             "mode": "center"
           },
           "music": {
-            "url": null,
-            "title": "Bed",
-            "volume": 30,
-            "startOffsetSec": 0,
-            "fadeInSec": 0,
-            "fadeOutSec": 0,
-            "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+            "blocks": [
+              {
+                "id": "bed",
+                "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+                "url": null,
+                "title": "Bed",
+                "startSec": 0,
+                "endSec": null,
+                "sourceStartSec": 0,
+                "volume": 30,
+                "fadeInSec": 0,
+                "fadeOutSec": 0
+              }
+            ],
             "ducking": false
           }
         },
@@ -4467,13 +4481,20 @@
             "mode": "center"
           },
           "music": {
-            "url": null,
-            "title": "Hot",
-            "volume": 100,
-            "startOffsetSec": 0,
-            "fadeInSec": 0,
-            "fadeOutSec": 0,
-            "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+            "blocks": [
+              {
+                "id": "bed",
+                "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+                "url": null,
+                "title": "Hot",
+                "startSec": 0,
+                "endSec": null,
+                "sourceStartSec": 0,
+                "volume": 100,
+                "fadeInSec": 0,
+                "fadeOutSec": 0
+              }
+            ],
             "ducking": false
           },
           "sfx": [

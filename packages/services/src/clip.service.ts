@@ -468,8 +468,10 @@ function deriveTitleAndHookFromSlice(
  * `studioEdits.visualBroll` carry edited-timeline seconds relative to the
  * source clip's window. Those
  * ranges have no meaning after this action creates a clip with a different
- * window, so the new clip starts without them. Window-independent styling is
- * copied unchanged.
+ * window, so the new clip starts without them. Music Blocks are timed the
+ * same way, so the new clip keeps only the first block's track as one
+ * full-length bed (its volume and fades, in-point 0). Window-independent
+ * styling is copied unchanged.
  *
  * Pulled out as its own pure step (mirrors `deriveTitleAndHookFromSlice`
  * above) so it's unit-testable without a database — `createClipFromSelection`
@@ -481,12 +483,28 @@ export function planStudioEditsForClipFromSelection(
   if (sourceStudioEdits === null || sourceStudioEdits === undefined) {
     return null;
   }
+  const parsed = studioEditsSchema.parse(sourceStudioEdits);
+  const firstBlock = parsed.music.blocks[0];
   return {
-    ...studioEditsSchema.parse(sourceStudioEdits),
+    ...parsed,
     textLayers: [],
     sceneLayouts: [],
     sfx: [],
     visualBroll: [],
+    music: {
+      ...parsed.music,
+      blocks: firstBlock
+        ? [
+            {
+              ...firstBlock,
+              id: randomUUID(),
+              startSec: 0,
+              endSec: null,
+              sourceStartSec: 0,
+            },
+          ]
+        : [],
+    },
   };
 }
 

@@ -20,6 +20,7 @@ import {
   type CompositionTransitionVisualLayer,
   type CompositionInsertedSceneLayer,
   type SampledCompositionMotion,
+  type CompositionAssetAvailability,
 } from "@narriflow/composition-plan";
 import {
   Smartphone,
@@ -56,6 +57,7 @@ import {
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
+import { MusicPreviewTrack } from "./music-preview-track";
 import { SfxPreviewTrack } from "./sfx-preview-track";
 import { CensorBeepPreviewTrack } from "./censor-beep-preview-track";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
@@ -501,24 +503,62 @@ export function VideoPreview() {
     },
     [mediaRef],
   );
-  const musicAudioRef = useRef<HTMLAudioElement>(null);
-  // Music/SFX library (vizard-parity.md): `studioEdits.music.url` for an
-  // asset picked in a past session may be an expired R2 presign — the
-  // presign TTL is much shorter than a document's lifetime. When
-  // `music.assetId` is set, this holds a freshly-fetched playback URL that
-  // wins over the (possibly stale) `music.url`; never written back into
-  // studioEdits, so resolving it can't dirty the document. The explicit
-  // pending/failed states keep the plan honest while access is refreshed.
-  const [musicAssetResolution, setMusicAssetResolution] = useState<
-    | { assetId: string; state: "pending" | "failed" }
-    | {
-        assetId: string;
-        state: "available";
-        url: string;
-        durationSec: number;
-      }
-    | null
-  >(null);
+  // Music Blocks (vizard-parity.md "Music/SFX library"): a block's `url` for
+  // an asset picked in a past session may be an expired R2 presign — the
+  // presign TTL is much shorter than a document's lifetime. For blocks with
+  // an `assetId` this map holds freshly-fetched playback URLs, keyed by
+  // assetId (blocks that share a track share one request), that win over the
+  // possibly stale `url`; never written back into studioEdits, so resolving
+  // them can't dirty the document. The explicit pending/failed states keep
+  // the plan honest while access is refreshed.
+  const [musicAssetResolutions, setMusicAssetResolutions] =
+    useState<PreviewAudioAssetResolutionMap>({});
+  const musicAssetResolutionsRef = useRef(musicAssetResolutions);
+  useEffect(() => {
+    musicAssetResolutionsRef.current = musicAssetResolutions;
+  }, [musicAssetResolutions]);
+  const musicBlocks = studioEdits.music.blocks;
+  const musicAssetIdsKey = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          musicBlocks.flatMap((block) => (block.assetId ? [block.assetId] : [])),
+        ),
+      )
+        .sort()
+        .join("\n"),
+    [musicBlocks],
+  );
+  // Pasted-link blocks learn their track length from media metadata; a link
+  // that errors is marked failed until the block's url changes.
+  const [musicUrlDurations, setMusicUrlDurations] = useState<
+    Record<string, number>
+  >({});
+  const [failedMusicUrls, setFailedMusicUrls] = useState<
+    Record<string, true>
+  >({});
+  const musicUrlsKey = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          musicBlocks.flatMap((block) =>
+            !block.assetId && block.url ? [block.url] : [],
+          ),
+        ),
+      )
+        .sort()
+        .join("\n"),
+    [musicBlocks],
+  );
+  useEffect(() => {
+    const urls = new Set(musicUrlsKey ? musicUrlsKey.split("\n") : []);
+    setFailedMusicUrls((current) => {
+      const kept = Object.keys(current).filter((url) => urls.has(url));
+      return kept.length === Object.keys(current).length
+        ? current
+        : Object.fromEntries(kept.map((url) => [url, true as const]));
+    });
+  }, [musicUrlsKey]);
   // Same id -> playback-url resolution for SFX placements, batched per
   // unique assetId. These URLs are preview-only and never dirty the editor
   // document.
@@ -535,26 +575,6 @@ export function VideoPreview() {
         .join("\n"),
     [studioEdits.sfx],
   );
-  const availableMusicAsset =
-    musicAssetResolution?.assetId === studioEdits.music.assetId &&
-    musicAssetResolution.state === "available"
-      ? musicAssetResolution
-      : null;
-  const musicSrc = studioEdits.music.assetId
-    ? availableMusicAsset?.url ?? null
-    : studioEdits.music.url;
-  const [musicMetadata, setMusicMetadata] = useState<{
-    src: string;
-    durationSec: number;
-  } | null>(null);
-  const [failedMusicSrc, setFailedMusicSrc] = useState<string | null>(null);
-  const musicDurationSec =
-    availableMusicAsset?.durationSec ??
-    (musicMetadata?.src === musicSrc ? musicMetadata.durationSec : undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the selected music identity explicitly resets terminal media failure state.
-  useEffect(() => {
-    setFailedMusicSrc(null);
-  }, [studioEdits.music.assetId, studioEdits.music.url]);
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
   const activeBrollAsset =
     brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
@@ -687,6 +707,63 @@ export function VideoPreview() {
     exactScreenLayoutAnalysis,
     sourceDims,
   ]);
+  const musicBlockPlayback = useMemo(
+    (): Record<
+      string,
+      { src: string | null; availability: CompositionAssetAvailability }
+    > =>
+      Object.fromEntries(
+        musicBlocks.map((block) => {
+          if (block.assetId) {
+            const resolution = musicAssetResolutions[block.assetId];
+            return [
+              block.id,
+              resolution?.state === "available"
+                ? {
+                    src: resolution.url,
+                    availability: {
+                      state: "available" as const,
+                      ref: compositionAssetRef("music", block.assetId),
+                      durationSec: resolution.durationSec,
+                    },
+                  }
+                : {
+                    src: null,
+                    availability:
+                      resolution?.state === "failed"
+                        ? { state: "failed" as const }
+                        : { state: "pending" as const },
+                  },
+            ];
+          }
+          const src = block.url;
+          return [
+            block.id,
+            src && !failedMusicUrls[src]
+              ? {
+                  src,
+                  availability: {
+                    state: "available" as const,
+                    ref: compositionAssetRef("music", src),
+                    durationSec: musicUrlDurations[src],
+                  },
+                }
+              : { src: null, availability: { state: "failed" as const } },
+          ];
+        }),
+      ),
+    [failedMusicUrls, musicAssetResolutions, musicBlocks, musicUrlDurations],
+  );
+  const musicAvailability = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(musicBlockPlayback).map(([id, playback]) => [
+          id,
+          playback.availability,
+        ]),
+      ),
+    [musicBlockPlayback],
+  );
   const soundEffectAvailability = useMemo(
     () =>
       Object.fromEntries(
@@ -867,34 +944,7 @@ export function VideoPreview() {
       },
       assets: {
         backgroundImage: backgroundImageAvailability,
-        ...(studioEdits.music.assetId || studioEdits.music.url
-          ? {
-              music: studioEdits.music.assetId
-                ? availableMusicAsset
-                  ? {
-                        state: "available" as const,
-                        ref: compositionAssetRef(
-                          "music",
-                          studioEdits.music.assetId,
-                        ),
-                        durationSec: availableMusicAsset.durationSec,
-                      }
-                  : musicAssetResolution?.assetId === studioEdits.music.assetId &&
-                      musicAssetResolution.state === "failed"
-                    ? { state: "failed" as const }
-                    : { state: "pending" as const }
-                : musicSrc && failedMusicSrc !== musicSrc
-                  ? {
-                    state: "available" as const,
-                    ref: compositionAssetRef(
-                      "music",
-                      musicSrc,
-                    ),
-                    durationSec: musicDurationSec,
-                  }
-                  : { state: "failed" as const },
-            }
-          : {}),
+        music: musicAvailability,
         soundEffects: soundEffectAvailability,
 			sceneVisuals: sceneVisualAvailability,
 			sceneFonts: sceneFontAvailability,
@@ -963,16 +1013,10 @@ export function VideoPreview() {
     clipInfo.captionLanguage,
     clipInfo.exportHasWatermark,
     clipInfo.sourceKind,
-    musicSrc,
-    availableMusicAsset,
-    musicAssetResolution,
-    failedMusicSrc,
-    musicDurationSec,
+    musicAvailability,
     soundEffectAvailability,
 		sceneVisualAvailability,
 		sceneFontAvailability,
-    studioEdits.music.assetId,
-    studioEdits.music.url,
     eligibleSplitLayoutAnalysis,
     autoLayoutAnalysisStatus,
     exactScreenLayoutAnalysis,
@@ -1429,39 +1473,41 @@ export function VideoPreview() {
   }, [activeVideoUrl, videoLoaded, loadError, retryNonce]);
 
   // Music/SFX library — stale presigned URL resolution (vizard-parity.md).
-  // Runs on mount and whenever `music.assetId` changes; deliberately does
-  // NOT write the result into `studioEdits`; this is purely a preview-side
-  // lookup whose pending/failed state feeds the shared plan.
+  // Batched per unique assetId, so blocks sharing one track cost one request.
+  // Deliberately does NOT write the result into `studioEdits`; this is purely
+  // a preview-side lookup whose pending/failed state feeds the shared plan.
   useEffect(() => {
-    const assetId = studioEdits.music.assetId;
-    if (!assetId) {
-      setMusicAssetResolution(null);
-      return;
-    }
-    let canceled = false;
-    setMusicAssetResolution({ assetId, state: "pending" });
-    fetchAudioPlayback(audioApi, assetId)
-      .then((data) => {
-        if (!canceled && data?.url && data.durationSec && data.durationSec > 0) {
-          setMusicAssetResolution({
-            assetId,
-            state: "available",
-            url: data.url,
-            durationSec: data.durationSec,
-          });
-        } else if (!canceled) {
-          setMusicAssetResolution({ assetId, state: "failed" });
+    const assetIds = musicAssetIdsKey ? musicAssetIdsKey.split("\n") : [];
+    const currentResolutions = musicAssetResolutionsRef.current;
+    const missingIds = assetIds.filter((id) => !(id in currentResolutions));
+    setMusicAssetResolutions((current) =>
+      reconcileSelectedAudioAssets(current, assetIds),
+    );
+    if (missingIds.length === 0) return;
+    void Promise.all(
+      missingIds.map(async (id) => {
+        try {
+          const data = await fetchAudioPlayback(audioApi, id);
+          return data?.url && data.durationSec && data.durationSec > 0
+            ? ([
+                id,
+                {
+                  state: "available" as const,
+                  url: data.url,
+                  durationSec: data.durationSec,
+                },
+              ] as const)
+            : ([id, { state: "failed" as const }] as const);
+        } catch {
+          return [id, { state: "failed" as const }] as const;
         }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setMusicAssetResolution({ assetId, state: "failed" });
-        }
-      });
-    return () => {
-      canceled = true;
-    };
-  }, [studioEdits.music.assetId, audioApi]);
+      }),
+    ).then((entries) => {
+      setMusicAssetResolutions((current) =>
+        adoptResolvedAudioAssets(current, entries),
+      );
+    });
+  }, [musicAssetIdsKey, audioApi]);
 
   // Same stale-presign resolution for SFX placements, batched by unique
   // assetId so N placements sharing one asset cost one request each, not N.
@@ -1501,36 +1547,6 @@ export function VideoPreview() {
   useEffect(() => playbackClock.subscribe(() => {
     setCurrentTime(playbackClock.getSnapshot());
   }), [playbackClock]);
-
-  useEffect(() => {
-    const audio = musicAudioRef.current;
-    if (!audio || !musicSrc || !plannedAudioState?.music) return;
-    if (isPlaying) {
-      audio.play().catch(() => {
-        // Autoplay can be rejected outside a user gesture (e.g. a stray
-        // effect re-run) — the next togglePlay() retries it; nothing to
-        // surface to the user for a background music bed.
-      });
-    } else {
-      audio.pause();
-    }
-  }, [isPlaying, musicSrc, plannedAudioState?.music]);
-
-  useEffect(() => {
-    const audio = musicAudioRef.current;
-    const plannedMusic = plannedAudioState?.music;
-    if (!audio || !musicSrc || !plannedMusic) return;
-
-    const targetTime = plannedMusic.timelineTimeSec;
-    // Only correct drift beyond a small threshold — natural playback already
-    // advances audio.currentTime on its own; forcing it every tick would
-    // stutter the track.
-    if (Number.isFinite(targetTime) && Math.abs(audio.currentTime - targetTime) > 0.25) {
-      audio.currentTime = Math.max(0, targetTime);
-    }
-
-    audio.volume = plannedMusic.volume;
-  }, [musicSrc, plannedAudioState?.music]);
 
   useEffect(() => {
     const el = videoContainerRef.current;
@@ -2156,36 +2172,55 @@ export function VideoPreview() {
             </Flex>
           ) : null}
 
-          {/* Hidden background-music preview track — decorative render-parity
-              bed, no user-facing controls; play/pause, looped offset
-              seeking, and volume/fade ramps are all driven by the effects
-              above off the shared playback clock. */}
-          {musicSrc && plannedAudioState?.music ? (
-            // biome-ignore lint/a11y/useMediaCaption: decorative background music preview with no dialogue/captions of its own — the clip's own captions already cover spoken content via the interactive caption overlay.
-            <audio
-              ref={musicAudioRef}
-              src={musicSrc}
-              loop
-              preload="auto"
-              onLoadedMetadata={(event) => {
-                const durationSec = event.currentTarget.duration;
-                if (Number.isFinite(durationSec) && durationSec > 0) {
-                  setMusicMetadata({ src: musicSrc, durationSec });
-                }
-              }}
-              onError={() => {
-                if (studioEdits.music.assetId) {
-                  setMusicAssetResolution({
-                    assetId: studioEdits.music.assetId,
-                    state: "failed",
-                  });
-                } else if (musicSrc) {
-                  setFailedMusicSrc(musicSrc);
-                }
-              }}
-              style={{ display: "none" }}
-            />
-          ) : null}
+          {/* Hidden background-music preview tracks, one per planned Music
+              Block: decorative render-parity beds with no user-facing
+              controls. Play/pause, in-point seeking and volume/fade/duck
+              ramps are driven by the per-block planned state off the shared
+              playback clock. */}
+          {compositionPlanResult && compositionPlanResult.status !== "invalid"
+            ? compositionPlanResult.plan.audioSchedule.music.map((planned) => {
+                const playback = musicBlockPlayback[planned.id];
+                const block = musicBlocks.find(
+                  (candidate) => candidate.id === planned.id,
+                );
+                if (!playback?.src || !block) return null;
+                const src = playback.src;
+                return (
+                  <MusicPreviewTrack
+                    key={planned.id}
+                    src={src}
+                    planned={
+                      plannedAudioState?.music.find(
+                        (candidate) => candidate.id === planned.id,
+                      ) ?? null
+                    }
+                    isPlaying={isPlaying}
+                    onDuration={(durationSec) => {
+                      if (!block.assetId) {
+                        setMusicUrlDurations((current) =>
+                          current[src] === durationSec
+                            ? current
+                            : { ...current, [src]: durationSec },
+                        );
+                      }
+                    }}
+                    onPlaybackFailure={() => {
+                      if (block.assetId) {
+                        setMusicAssetResolutions((current) => ({
+                          ...current,
+                          [block.assetId as string]: { state: "failed" },
+                        }));
+                      } else {
+                        setFailedMusicUrls((current) => ({
+                          ...current,
+                          [src]: true,
+                        }));
+                      }
+                    }}
+                  />
+                );
+              })
+            : null}
 
           {/* One-shot SFX placements (vizard-parity.md "Music/SFX library") —
               best-effort preview, see sfx-preview-track.tsx. Keyed on the

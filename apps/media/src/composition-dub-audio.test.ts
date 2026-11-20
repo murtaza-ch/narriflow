@@ -123,7 +123,7 @@ describe("output validation expects what the dub's filter produces", () => {
 	const expectation = (scenario: Parameters<typeof planScenario>[0], dub: boolean, source: WorkerMediaInspection) => {
 		const plan = planScenario(scenario);
 		const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(plan), {
-			...(scenario.music ? { music: { sourceRef: "music:bed", path: "/tmp/music.wav" } } : {}),
+			...(scenario.music ? { music: [{ id: "bed", sourceRef: "music:bed", path: "/tmp/music.wav" }] } : {}),
 			...(dub ? { dub: { path: DUB_PATH } } : {}),
 		});
 		return compositionOutputExpectation({ plan, targetId: "variant-1", source, audio }).audio;
@@ -184,7 +184,7 @@ describe("a dub renders through real ffmpeg", () => {
 					studioEdits: studioEditsSchema.parse({
 						framing: { mode: "center" },
 						sourceAudio: { muted: "sourceMuted" in scenario && scenario.sourceMuted, volume: "sourceVolume" in scenario ? scenario.sourceVolume : 100 },
-						...(music ? { music: { url: "https://example.com/music.wav", volume: 20, ducking: false, fadeInSec: 0, fadeOutSec: 0 } } : {}),
+						...(music ? { music: { blocks: [{ id: "bed", url: "https://example.com/music.wav", startSec: 0, volume: 20 }] } } : {}),
 					}),
 					brollUrl: null,
 					sceneBlocks: scenes ? [{
@@ -196,7 +196,7 @@ describe("a dub renders through real ffmpeg", () => {
 				evidence: { automaticLayout: { state: "missing" } },
 				assets: {
 					backgroundImage: { state: "missing" },
-					...(music ? { music: { state: "available", ref: "music:bed", durationSec: 5 } } as const : {}),
+					...(music ? { music: { bed: { state: "available", ref: "music:bed", durationSec: 5 } } } as const : {}),
 					...(broll ? { broll: { state: "available", placements: [{ id: "cutaway", ref: "broll:clip", startSec: 0.2, endSec: 0.8 }] } } as const : {}),
 				},
 				capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
@@ -205,7 +205,7 @@ describe("a dub renders through real ffmpeg", () => {
 			});
 			if (result.status === "invalid") throw new Error(result.error.code);
 			const bound = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), {
-				...(music ? { music: { sourceRef: "music:bed", path: musicPath } } : {}),
+				...(music ? { music: [{ id: "bed", sourceRef: "music:bed", path: musicPath }] } : {}),
 				dub: { path: dubPath },
 			});
 			await execute(compileClipCompositionCommand({

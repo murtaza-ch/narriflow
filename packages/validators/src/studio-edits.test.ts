@@ -9,10 +9,14 @@ import {
   duckingGainMultiplierAt,
   extractSpeechWordIntervals,
   MAX_DUCKING_WINDOWS,
+  MUSIC_BLOCK_MIN_DURATION_SEC,
+  STUDIO_EDIT_LIMITS,
   resolveEffectiveFramingMode,
   resolveMusicFadeWindows,
   studioEditsEqual,
   studioEditsSchema,
+  studioMusicBlockSchema,
+  studioMusicSchema,
   studioTransitionSchema,
   studioSfxPlacementSchema,
   type DuckingWindow,
@@ -69,11 +73,10 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     ).toThrow();
   });
 
-  test("parse({}) defaults sourceAudio to unmuted 100 and music fades to 0", () => {
+  test("parse({}) defaults sourceAudio to unmuted 100 and an empty music lane", () => {
     const parsed = studioEditsSchema.parse({});
     expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });
-    expect(parsed.music.fadeInSec).toBe(0);
-    expect(parsed.music.fadeOutSec).toBe(0);
+    expect(parsed.music).toEqual({ blocks: [], ducking: false });
     expect(parsed.logo).toEqual({
       enabled: true,
       position: null,
@@ -85,8 +88,7 @@ describe("studioEditsSchema (source audio + music fades)", () => {
   test("parse(undefined) applies the same defaults as parse({})", () => {
     const parsed = studioEditsSchema.parse(undefined);
     expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });
-    expect(parsed.music.fadeInSec).toBe(0);
-    expect(parsed.music.fadeOutSec).toBe(0);
+    expect(parsed.music).toEqual({ blocks: [], ducking: false });
     expect(parsed.logo).toEqual({
       enabled: true,
       position: null,
@@ -201,31 +203,51 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     ).toThrow();
   });
 
-  test("accepts explicit sourceAudio and music fade values within range", () => {
+  test("accepts explicit sourceAudio and music block fade values within range", () => {
     const parsed = studioEditsSchema.parse({
       sourceAudio: { volume: 60, muted: true },
       music: {
-        url: "https://cdn.example/track.mp3",
-        title: null,
-        volume: 50,
-        startOffsetSec: 0,
-        fadeInSec: 2,
-        fadeOutSec: 3,
+        blocks: [
+          {
+            id: "m1",
+            url: "https://cdn.example/track.mp3",
+            startSec: 0,
+            volume: 50,
+            fadeInSec: 2,
+            fadeOutSec: 3,
+          },
+        ],
       },
     });
 
     expect(parsed.sourceAudio).toEqual({ volume: 60, muted: true });
-    expect(parsed.music.fadeInSec).toBe(2);
-    expect(parsed.music.fadeOutSec).toBe(3);
+    expect(parsed.music.blocks[0]).toMatchObject({
+      volume: 50,
+      fadeInSec: 2,
+      fadeOutSec: 3,
+      endSec: null,
+      sourceStartSec: 0,
+    });
   });
 
   test("rejects non-http(s) music URL schemes", () => {
     expect(() =>
-      studioEditsSchema.parse({ music: { url: "file:///tmp/track.mp3" } }),
+      studioEditsSchema.parse({
+        music: { blocks: [{ id: "m1", url: "file:///tmp/track.mp3", startSec: 0 }] },
+      }),
     ).toThrow();
     expect(() =>
-      studioEditsSchema.parse({ music: { url: "ftp://example.com/track.mp3" } }),
+      studioEditsSchema.parse({
+        music: { blocks: [{ id: "m1", url: "ftp://example.com/track.mp3", startSec: 0 }] },
+      }),
     ).toThrow();
+  });
+
+  test("an old single-bed music object parses to an empty lane (no legacy reader)", () => {
+    const parsed = studioEditsSchema.parse({
+      music: { url: "https://cdn.example/track.mp3", volume: 40, ducking: true },
+    });
+    expect(parsed.music).toEqual({ blocks: [], ducking: true });
   });
 
   test("rejects out-of-range sourceAudio volume and music fade values", () => {
@@ -235,11 +257,7 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(() =>
       studioEditsSchema.parse({
         music: {
-          url: null,
-          title: null,
-          volume: 35,
-          startOffsetSec: 0,
-          fadeInSec: 6,
+          blocks: [{ id: "m1", url: "https://cdn.example/a.mp3", startSec: 0, fadeInSec: 6 }],
         },
       }),
     ).toThrow();
@@ -446,42 +464,181 @@ describe("applyStudioEditsPatchSchema (vizard-parity Phase C — apply-to-all)",
   test("rejects an unknown field (strict)", () => {
     expect(() =>
       applyStudioEditsPatchSchema.parse({
-        music: { url: null, title: null, volume: 35, startOffsetSec: 0, fadeInSec: 0, fadeOutSec: 0 },
+        music: { blocks: [], ducking: false },
       }),
     ).toThrow();
   });
 });
 
-describe("studioMusicSchema assetId/ducking + studioSfxPlacementSchema (Music/SFX library)", () => {
-  test("parse({}) defaults music.assetId to null, ducking to false, and sfx to []", () => {
+const MUSIC_ASSET_ID = "3f3e3d3c-3b3a-4939-8837-363534333231";
+
+function block(
+  id: string,
+  startSec: number,
+  endSec: number | null,
+  extra: Record<string, unknown> = {},
+) {
+  return { id, url: "https://cdn.example/track.mp3", startSec, endSec, ...extra };
+}
+
+describe("studioMusicSchema (Music Blocks) + studioSfxPlacementSchema (Music/SFX library)", () => {
+  test("parse({}) defaults music to no blocks and ducking off, and sfx to []", () => {
     const parsed = studioEditsSchema.parse({});
-    expect(parsed.music.assetId).toBeNull();
+    expect(parsed.music.blocks).toEqual([]);
     expect(parsed.music.ducking).toBe(false);
     expect(parsed.sfx).toEqual([]);
   });
 
+  test("a block defaults its title, in-point, volume and fades", () => {
+    const parsed = studioMusicBlockSchema.parse({
+      id: "m1",
+      assetId: MUSIC_ASSET_ID,
+      startSec: 1,
+    });
+    expect(parsed).toEqual({
+      id: "m1",
+      assetId: MUSIC_ASSET_ID,
+      url: null,
+      title: null,
+      startSec: 1,
+      endSec: null,
+      sourceStartSec: 0,
+      volume: 35,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+    });
+  });
 
-  test("accepts an explicit assetId + ducking on music", () => {
+  test("accepts blocks in order plus clip-wide ducking", () => {
     const parsed = studioEditsSchema.parse({
       music: {
-        url: null,
-        title: null,
-        volume: 35,
-        startOffsetSec: 0,
-        fadeInSec: 0,
-        fadeOutSec: 0,
-        assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+        blocks: [block("a", 0, 5, { assetId: MUSIC_ASSET_ID }), block("b", 5, null)],
         ducking: true,
       },
     });
-    expect(parsed.music.assetId).toBe("3f3e3d3c-3b3a-4939-8837-363534333231");
+    expect(parsed.music.blocks).toHaveLength(2);
+    expect(parsed.music.blocks[0]!.assetId).toBe(MUSIC_ASSET_ID);
     expect(parsed.music.ducking).toBe(true);
   });
 
-  test("rejects a malformed music.assetId", () => {
+  test("rejects a malformed block assetId", () => {
     expect(() =>
-      studioEditsSchema.parse({ music: { assetId: "not-a-uuid" } }),
+      studioEditsSchema.parse({
+        music: { blocks: [{ id: "a", assetId: "not-a-uuid", startSec: 0 }] },
+      }),
     ).toThrow();
+  });
+
+  test("a block needs an assetId or a url", () => {
+    expect(() => studioMusicBlockSchema.parse({ id: "a", startSec: 0 })).toThrow();
+    expect(
+      studioMusicBlockSchema.safeParse({ id: "a", url: null, assetId: null, startSec: 0 })
+        .success,
+    ).toBe(false);
+  });
+
+  test("endSec must be greater than startSec", () => {
+    expect(() => studioMusicBlockSchema.parse(block("a", 5, 5))).toThrow();
+    expect(() => studioMusicBlockSchema.parse(block("a", 5, 4))).toThrow();
+    expect(studioMusicBlockSchema.parse(block("a", 5, 5.5)).endSec).toBe(5.5);
+  });
+
+  test("rejects negative or non-finite times and out-of-range volume", () => {
+    expect(() => studioMusicBlockSchema.parse(block("a", -1, null))).toThrow();
+    expect(() =>
+      studioMusicBlockSchema.parse(block("a", 0, null, { sourceStartSec: -1 })),
+    ).toThrow();
+    expect(() =>
+      studioMusicBlockSchema.parse(block("a", Number.POSITIVE_INFINITY, null)),
+    ).toThrow();
+    expect(() =>
+      studioMusicBlockSchema.parse(block("a", 0, null, { volume: 101 })),
+    ).toThrow();
+  });
+
+  test("blocks must be in timeline order and cannot overlap", () => {
+    expect(() =>
+      studioMusicSchema.parse({ blocks: [block("a", 5, 8), block("b", 0, 3)] }),
+    ).toThrow();
+    expect(() =>
+      studioMusicSchema.parse({ blocks: [block("a", 0, 6), block("b", 5, 8)] }),
+    ).toThrow();
+    // Touching blocks are fine.
+    expect(
+      studioMusicSchema.parse({ blocks: [block("a", 0, 5), block("b", 5, 8)] }).blocks,
+    ).toHaveLength(2);
+  });
+
+  test("only the last block may have a null endSec", () => {
+    expect(() =>
+      studioMusicSchema.parse({ blocks: [block("a", 0, null), block("b", 5, 8)] }),
+    ).toThrow();
+    expect(
+      studioMusicSchema.parse({ blocks: [block("a", 0, 5), block("b", 5, null)] }).blocks,
+    ).toHaveLength(2);
+  });
+
+  test("block ids must be unique", () => {
+    expect(() =>
+      studioMusicSchema.parse({ blocks: [block("a", 0, 2), block("a", 3, 5)] }),
+    ).toThrow();
+  });
+
+  test("caps the lane at STUDIO_EDIT_LIMITS.musicBlocks", () => {
+    const many = (count: number) =>
+      Array.from({ length: count }, (_, index) =>
+        block(`m${index}`, index * 2, index * 2 + 1),
+      );
+    expect(
+      studioMusicSchema.parse({ blocks: many(STUDIO_EDIT_LIMITS.musicBlocks) }).blocks,
+    ).toHaveLength(STUDIO_EDIT_LIMITS.musicBlocks);
+    expect(() =>
+      studioMusicSchema.parse({ blocks: many(STUDIO_EDIT_LIMITS.musicBlocks + 1) }),
+    ).toThrow();
+  });
+
+  test("exposes a positive minimum block length", () => {
+    expect(MUSIC_BLOCK_MIN_DURATION_SEC).toBeGreaterThan(0);
+  });
+
+  describe("studioEditsEqual over music blocks", () => {
+    const withBlocks = (blocks: unknown[], ducking = false) =>
+      studioEditsSchema.parse({ music: { blocks, ducking } });
+
+    test("equal for separately allocated identical lanes", () => {
+      const left = withBlocks([block("a", 0, 5), block("b", 5, null)]);
+      const right = withBlocks([block("a", 0, 5), block("b", 5, null)]);
+      expect(studioEditsEqual(left, right)).toBe(true);
+    });
+
+    test("detects a change in every block field and in ducking", () => {
+      const base = withBlocks([block("a", 0, 5, { assetId: MUSIC_ASSET_ID })]);
+      const variants: Record<string, unknown>[] = [
+        { id: "z" },
+        { assetId: null },
+        { url: "https://cdn.example/other.mp3" },
+        { title: "Other" },
+        { startSec: 1 },
+        { endSec: 6 },
+        { endSec: null },
+        { sourceStartSec: 2 },
+        { volume: 50 },
+        { fadeInSec: 1 },
+        { fadeOutSec: 1 },
+      ];
+      for (const variant of variants) {
+        const other = withBlocks([block("a", 0, 5, { assetId: MUSIC_ASSET_ID, ...variant })]);
+        expect(studioEditsEqual(base, other)).toBe(false);
+      }
+      expect(studioEditsEqual(base, withBlocks(base.music.blocks, true))).toBe(false);
+    });
+
+    test("detects an added or removed block", () => {
+      const one = withBlocks([block("a", 0, 5)]);
+      const two = withBlocks([block("a", 0, 5), block("b", 5, null)]);
+      expect(studioEditsEqual(one, two)).toBe(false);
+      expect(studioEditsEqual(two, withBlocks([]))).toBe(false);
+    });
   });
 
   test("accepts a well-formed sfx placement with default volume/title", () => {

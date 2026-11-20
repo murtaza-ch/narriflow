@@ -101,6 +101,7 @@ import {
   useStudioSessionSelector,
 } from "./studio-editing-session-react";
 import { checkpointBeforeLeaving } from "./studio-leave";
+import { splitBlock as splitMusicBlock } from "./music-blocks";
 import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioMotionPreview, type StudioSessionSnapshot } from "./studio-editing-session";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import {
@@ -445,6 +446,9 @@ interface StudioState {
    *  `captionSelected` — selecting one deselects the other, matching the
    *  "single selected canvas object" rule. */
   selectedTextLayerId: string | null;
+  /** The Music Block selected on the timeline, or null. Joins the same
+   *  single-selection rule as the caption, text layers and segments. */
+  selectedMusicBlockId: string | null;
   transcriptOnly: boolean;
   segments: readonly TimelineSegment[];
   studioEdits: StudioEdits;
@@ -654,6 +658,15 @@ interface StudioFields extends StudioState {
    *  `selectCaption`. */
   selectTextLayer: (id: string) => void;
   deselectTextLayer: () => void;
+  /** Selects one Music Block and opens the Music tool on it; clears every
+   *  other selection (single-selection rule). */
+  selectMusicBlock: (id: string) => void;
+  deselectMusicBlock: () => void;
+  /** Splits the selected Music Block at the playhead. Returns false when no
+   *  block is selected or the playhead is not far enough inside it, so the
+   *  caller can fall through to the segment split. */
+  splitSelectedMusicBlock: () => boolean;
+  deleteSelectedMusicBlock: () => void;
   setTranscriptOnly: (v: boolean) => void;
   setSegments: (s: TimelineSegment[]) => void;
   setStudioEdits: (
@@ -1360,6 +1373,13 @@ export function StudioShell({
   const [captionSelected, setCaptionSelected] = useState(false);
   const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null,
   );
+  const [selectedMusicBlockId, setSelectedMusicBlockId] = useState<string | null>(null);
+  // Choosing a segment is part of the single-selection rule too: a stale Music
+  // Block selection would otherwise take the next Delete or split.
+  const chooseSegment = useCallback((id: string | null) => {
+    setSelectedSegmentId(id);
+    if (id) setSelectedMusicBlockId(null);
+  }, []);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
   const [exportState, setExportState] = useState<StudioExportState>("idle");
   const [compositionPlanStatus, setCompositionPlanStatus] =
@@ -2220,6 +2240,7 @@ export function StudioShell({
   const selectCaption = useCallback(() => {
     setCaptionSelected(true);
     setSelectedTextLayerId(null);
+    setSelectedMusicBlockId(null);
     // `selectedSegmentId` sits outside the caption<->text-layer
     // single-selection invariant these two setters otherwise enforce — left
     // set here, a stale segment selection survives selecting the caption
@@ -2236,6 +2257,7 @@ export function StudioShell({
 
   const selectTextLayer = useCallback((id: string) => {
     setSelectedTextLayerId(id);
+    setSelectedMusicBlockId(null);
     setCaptionSelected(false);
     // See selectCaption's comment above — same gap, same fix.
     setSelectedSegmentId(null);
@@ -2260,6 +2282,69 @@ export function StudioShell({
     }));
     deselectTextLayer();
   }, [selectedTextLayerId, setStudioEdits, deselectTextLayer]);
+
+  const selectMusicBlock = useCallback((id: string) => {
+    setSelectedMusicBlockId(id);
+    setSelectedTextLayerId(null);
+    setCaptionSelected(false);
+    setSelectedSegmentId(null);
+    setActiveTool("music");
+  }, []);
+
+  const deselectMusicBlock = useCallback(() => {
+    setSelectedMusicBlockId(null);
+    setActiveTool((prev) => (prev === "music" ? null : prev));
+  }, []);
+
+  // Undo, a cut that rebases a block away, or the panel's remove can delete
+  // the selected block; a stale id would swallow the next Delete.
+  const musicBlocks = studioEdits.music.blocks;
+  useEffect(() => {
+    if (selectedMusicBlockId && !musicBlocks.some((block) => block.id === selectedMusicBlockId)) {
+      deselectMusicBlock();
+    }
+  }, [musicBlocks, selectedMusicBlockId, deselectMusicBlock]);
+
+  const deleteSelectedMusicBlock = useCallback(() => {
+    if (!selectedMusicBlockId) return;
+    const id = selectedMusicBlockId;
+    setStudioEdits((prev) => ({
+      ...prev,
+      music: { ...prev.music, blocks: prev.music.blocks.filter((block) => block.id !== id) },
+    }));
+    deselectMusicBlock();
+  }, [selectedMusicBlockId, setStudioEdits, deselectMusicBlock]);
+
+  // D / S / Ctrl+B with a Music Block selected cut the block when the playhead
+  // sits inside it; anywhere else the shortcut keeps splitting the segment.
+  const splitSelectedMusicBlock = useCallback((): boolean => {
+    if (!selectedMusicBlockId) return false;
+    const document = getStudioDocument();
+    const blocks = document.studioEdits.music.blocks;
+    if (!blocks.some((block) => block.id === selectedMusicBlockId)) return false;
+    const clipDurationSec = editedTimeMap.editedDurationSec;
+    const playheadSec = compositeToBaseEdited(document, playbackClock.getSnapshot());
+    const result = splitMusicBlock(
+      blocks,
+      selectedMusicBlockId,
+      playheadSec,
+      clipDurationSec,
+      crypto.randomUUID(),
+    );
+    if (!result.ok) {
+      if (result.reason === "limit") {
+        toaster.create({
+          type: "error",
+          title: "The music lane is full",
+          description: "Delete a block before splitting another.",
+        });
+        return true;
+      }
+      return false;
+    }
+    setStudioEdits((prev) => ({ ...prev, music: { ...prev.music, blocks: result.blocks } }));
+    return true;
+  }, [selectedMusicBlockId, getStudioDocument, editedTimeMap, playbackClock, setStudioEdits]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -2288,13 +2373,22 @@ export function StudioShell({
           break;
         case "d":
         case "D":
-          if (canMutate && !e.ctrlKey && !e.metaKey) splitAtPlayhead();
+        case "s":
+        case "S":
+          // A selected Music Block owns the cut, and never falls through to
+          // cutting the video (a held key after a split sits on the block's
+          // edge); with no block selected the shortcut splits the segment.
+          if (canMutate && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            if (selectedMusicBlockId) splitSelectedMusicBlock();
+            else splitAtPlayhead();
+          }
           break;
         case "b":
         case "B":
           if (canMutate && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
-            splitAtPlayhead();
+            if (selectedMusicBlockId) splitSelectedMusicBlock();
+            else splitAtPlayhead();
           }
           break;
         case "Backspace":
@@ -2308,6 +2402,8 @@ export function StudioShell({
           if (!canMutate) break;
           if (selectedTextLayerId) {
             deleteSelectedTextLayer();
+          } else if (selectedMusicBlockId) {
+            deleteSelectedMusicBlock();
           } else {
             deleteSelectedSegment();
           }
@@ -2352,13 +2448,14 @@ export function StudioShell({
         case "Escape":
           if (captionSelected) { deselectCaption(); break; }
           if (selectedTextLayerId) { deselectTextLayer(); break; }
+          if (selectedMusicBlockId) { deselectMusicBlock(); break; }
           setShowShortcuts(false);
           break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, sessionDraftConflict,
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, splitSelectedMusicBlock, deleteSelectedMusicBlock, selectedMusicBlockId, deselectMusicBlock, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, sessionDraftConflict,
   ]);
 
   // The timeline's thumbnail cache and hidden scrub <video> elements
@@ -2405,7 +2502,7 @@ export function StudioShell({
   const fields: StudioFields = {
     isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
     layoutScene, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
-    captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
+    captionPreset, captionSelected, selectedTextLayerId, selectedMusicBlockId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
     sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, brandAudio, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy, upgradePrompts,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus, captionLayers,
@@ -2433,8 +2530,8 @@ export function StudioShell({
     updateWord, deleteSourceRange, applyRemoveSilence,
     setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
     reportLayoutScene, setShowShortcuts, setTimelineZoom,
-    setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
-    selectTextLayer, deselectTextLayer,
+    setSelectedSegmentId: chooseSegment, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
+    selectTextLayer, deselectTextLayer, selectMusicBlock, deselectMusicBlock, splitSelectedMusicBlock, deleteSelectedMusicBlock,
     setTranscriptOnly, setSegments, setStudioEdits, setCaptionEmphasis, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, leaveStudio, leavingStudio, handleExport,

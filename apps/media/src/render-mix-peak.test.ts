@@ -29,8 +29,8 @@ const HOT = metadata([
 	{ min: -2.2, max: 2.1, truePeak: 2.208 },
 ]);
 
-const music = { music: {} as never, soundEffects: [] };
-const none = { music: null, soundEffects: [] };
+const music = { music: [{} as never], soundEffects: [] };
+const none = { music: [], soundEffects: [] };
 
 describe("mix peak metadata", () => {
 	test("takes the largest absolute sample and true peak over every frame", () => {
@@ -93,7 +93,7 @@ describe("mix peak metadata", () => {
 	test("only music or sound effects can sum past full scale", () => {
 		expect(mixCanClip(none)).toBe(false);
 		expect(mixCanClip(music)).toBe(true);
-		expect(mixCanClip({ music: null, soundEffects: [{} as never] })).toBe(true);
+		expect(mixCanClip({ music: [], soundEffects: [{} as never] })).toBe(true);
 	});
 });
 

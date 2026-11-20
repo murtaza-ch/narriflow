@@ -13,6 +13,11 @@ const studio = {
   setStudioEdits: mock((_update: unknown) => {}),
   endCoalesce() {},
   playbackClock: { getSnapshot: () => 0, subscribe: () => () => {} },
+  selectedMusicBlockId: null as string | null,
+  selectMusicBlock: mock((_id: string) => {}),
+  deselectMusicBlock: mock(() => {}),
+  compositeToBaseEdited: (timeSec: number) => timeSec,
+  editedTimeMap: { editedDurationSec: 60 },
 };
 mock.module("../studio-shell", () => ({ useStudio: () => studio }));
 
@@ -338,7 +343,7 @@ test("applying a later track cannot be undone by an earlier playback URL respons
   const applied: (string | null)[] = [];
   studio.setStudioEdits.mockImplementation((update) => {
     const next = (update as (edits: typeof studio.studioEdits) => typeof studio.studioEdits)(studio.studioEdits);
-    applied.push(next.music.assetId);
+    applied.push(next.music.blocks[0]?.assetId ?? null);
   });
   let finishFirst: (response: Response) => void = () => { throw new Error("No apply pending"); };
   globalThis.fetch = mock(async (url) => {
@@ -357,7 +362,7 @@ test.each(["music", "sfx"] as const)("%s lists the Project's brand tracks first 
   const brandId = "b2f1b0c4-7a33-4c25-9d54-1ef3a8c1a001";
   const track = { assetId: brandId, title: "Brand theme", durationSec: 30 };
   studio.brandAudio = kind === "music" ? { music: [track], sfx: [] } : { music: [], sfx: [track] };
-  if (kind === "music") studio.studioEdits = studioEditsSchema.parse({ music: { assetId: brandId, title: "Brand theme" } });
+  if (kind === "music") studio.studioEdits = studioEditsSchema.parse({ music: { blocks: [{ id: "bed", assetId: brandId, title: "Brand theme", startSec: 0 }] } });
   globalThis.fetch = mock(async (url) => {
     if (String(url).includes("playback-url")) return Response.json({ url: "https://audio.test/brand.mp3", durationSec: 30 });
     const asks = new URL(String(url), "http://localhost").searchParams.get("kind");
@@ -381,7 +386,7 @@ test.each(["music", "sfx"] as const)("%s lists the Project's brand tracks first 
   if (kind === "music") {
     // The seeded track shows as the clip's music even though it has no stored URL.
     expect(container.querySelector('[aria-label="Brand theme is in use"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Remove music"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Remove music block"]')).not.toBeNull();
   } else {
     expect(container.querySelector('[aria-label="Add Brand theme at playhead"]')).not.toBeNull();
   }

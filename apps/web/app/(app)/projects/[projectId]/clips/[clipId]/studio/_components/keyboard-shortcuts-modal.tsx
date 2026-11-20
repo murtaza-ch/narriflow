@@ -40,7 +40,7 @@ const COLUMNS: readonly (readonly Group[])[] = [
     {
       title: "Editing",
       shortcuts: [
-        { command: "Split at playhead", win: [["D"], ["Ctrl", "B"]], mac: [["D"], ["⌘", "B"]] },
+        { command: "Split at playhead", win: [["D"], ["S"], ["Ctrl", "B"]], mac: [["D"], ["S"], ["⌘", "B"]] },
         { command: "Delete selected", win: [["Backspace"], ["Delete"]], mac: [["⌫"]] },
         { command: "Clip from selection", win: [["Ctrl", "Shift", "C"]], mac: [["⇧", "⌘", "C"]] },
         { command: "Undo", win: [["Ctrl", "Z"]], mac: [["⌘", "Z"]] },

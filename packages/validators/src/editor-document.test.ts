@@ -20,6 +20,7 @@ import {
 import {
   STUDIO_EDIT_LIMITS,
   studioEditsSchema,
+  studioMusicBlockSchema,
   studioSfxPlacementSchema,
   studioTextLayerSchema,
 } from "./studio-edits";
@@ -127,6 +128,34 @@ function makeDocumentWithSfx(startSec: number): EditorDocument {
           startSec,
         }),
       ],
+    },
+  };
+}
+
+function musicBlock(
+  id: string,
+  startSec: number,
+  endSec: number | null,
+  sourceStartSec = 0,
+) {
+  return studioMusicBlockSchema.parse({
+    id,
+    url: "https://example.com/track.mp3",
+    startSec,
+    endSec,
+    sourceStartSec,
+  });
+}
+
+function makeDocumentWithMusic(
+  blocks: ReturnType<typeof musicBlock>[],
+): EditorDocument {
+  const doc = makeDocument();
+  return {
+    ...doc,
+    studioEdits: {
+      ...doc.studioEdits,
+      music: { ...doc.studioEdits.music, blocks },
     },
   };
 }
@@ -1059,5 +1088,127 @@ describe("clipDetectionLlmResponseSchema emphasis_words", () => {
     expect(parse({ emphasis_words: ["growth", "not"] })).toEqual(["growth", "not"]);
     expect(parse({})).toEqual([]);
     expect(parse({ emphasis_words: [1, "growth"] })).toEqual([]);
+  });
+});
+
+// Music Blocks store EDITED-timeline seconds like text layers and SFX, so
+// they ripple through the same edited -> source -> edited rebase.
+describe("music block ripple", () => {
+  test("deleteRange shifts blocks after the cut and leaves sourceStartSec alone", () => {
+    // window [10,40): edited 20 === source 30. Deleting source [12,17) shifts
+    // everything after it left by 5s.
+    const doc = makeDocumentWithMusic([
+      musicBlock("a", 20, 25, 7),
+      musicBlock("b", 25, null, 3),
+    ]);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(next.studioEdits.music.blocks).toEqual([
+      expect.objectContaining({ id: "a", startSec: 15, endSec: 20, sourceStartSec: 7 }),
+      expect.objectContaining({ id: "b", startSec: 20, endSec: null, sourceStartSec: 3 }),
+    ]);
+  });
+
+  test("revertRange restores the original block positions", () => {
+    const doc = makeDocumentWithMusic([musicBlock("a", 20, 25)]);
+    const deleted = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const reverted = applyEditorAction(deleted, {
+      type: "revertRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(reverted.studioEdits.music.blocks[0]).toMatchObject({
+      startSec: 20,
+      endSec: 25,
+    });
+  });
+
+  test("a block whose whole range falls inside a new cut is dropped, not stretched", () => {
+    // [5,8) === source [15,18), inside the deleted source range [14,20).
+    const doc = makeDocumentWithMusic([
+      musicBlock("gone", 5, 8),
+      musicBlock("kept", 10, 14),
+    ]);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 14, endSec: 20 },
+    });
+    expect(next.studioEdits.music.blocks.map((block) => block.id)).toEqual(["kept"]);
+    expect(next.studioEdits.music.blocks[0]).toMatchObject({ startSec: 4, endSec: 8 });
+  });
+
+  test("a bed running to the clip end stays null-ended and is dropped when too little remains", () => {
+    const bed = makeDocumentWithMusic([musicBlock("bed", 10, null)]);
+    const shifted = applyEditorAction(bed, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(shifted.studioEdits.music.blocks[0]).toMatchObject({
+      startSec: 5,
+      endSec: null,
+    });
+
+    // Trimming the clip end to source 20.2 leaves 0.2s of bed.
+    const nearEnd = makeDocumentWithMusic([musicBlock("bed", 10, null)]);
+    const trimmed = applyEditorAction(nearEnd, {
+      type: "setClipBoundaries",
+      startSec: 10,
+      endSec: 20.2,
+    });
+    expect(trimmed.studioEdits.music.blocks).toEqual([]);
+  });
+
+  test("a block that would overlap the previous one is clamped to its end, or dropped if too little is left", () => {
+    // Overlapping input can only come from a document that skipped the
+    // schema; rebasing still has to leave a valid lane.
+    const doc = makeDocumentWithMusic([
+      musicBlock("a", 2, 10),
+      musicBlock("b", 8, 20),
+      musicBlock("c", 9.9, 10.2),
+    ]);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 38, endSec: 39 },
+    });
+    expect(next.studioEdits.music.blocks).toEqual([
+      expect.objectContaining({ id: "a", startSec: 2, endSec: 10 }),
+      expect.objectContaining({ id: "b", startSec: 10, endSec: 20 }),
+    ]);
+  });
+
+  test("setClipBoundaries rebases blocks against the new window", () => {
+    const doc = makeDocumentWithMusic([musicBlock("a", 5, 9)]);
+    const next = applyEditorAction(doc, {
+      type: "setClipBoundaries",
+      startSec: 12,
+      endSec: 40,
+    });
+    expect(next.studioEdits.music.blocks[0]).toMatchObject({ startSec: 3, endSec: 7 });
+  });
+
+  test("a delete that changes nothing leaves the music lane referentially identical", () => {
+    const doc = applyEditorAction(
+      makeDocumentWithMusic([musicBlock("a", 20, 25)]),
+      { type: "deleteRange", range: { startSec: 12, endSec: 17 } },
+    );
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(next).toBe(doc);
+    expect(next.studioEdits.music).toBe(doc.studioEdits.music);
+  });
+
+  test("a boundary change that only moves a sibling field keeps the same blocks reference", () => {
+    const doc = makeDocumentWithMusic([musicBlock("a", 1, 3)]);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 38, endSec: 39 },
+    });
+    expect(next.studioEdits.music.blocks).toBe(doc.studioEdits.music.blocks);
   });
 });
