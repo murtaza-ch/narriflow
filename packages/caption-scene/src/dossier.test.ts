@@ -27,6 +27,16 @@ const cueOf = (piece: { id: string }) => cues[Number(piece.id.split(":")[1])]!;
 const wordOf = (piece: { id: string }) => cueOf(piece).words[Number(piece.id.split(":")[2]!.slice(1))]!;
 const textFor = (cue: number, word: number, suffix = "") => texts.find((piece) => piece.id === `dossier:${cue}:t${word}${suffix}`)!;
 const barFor = (cue: number, word: number) => bars.find((piece) => piece.id === `dossier:${cue}:b${word}`)!;
+/** A strip's rest left edge and width, canvas px. */
+const stripBox = (strip: ShapePiece) => {
+  const left = evaluatePiece(strip, strip.fromMs + 400).x - strip.origin!.dx;
+  return { left, right: left + Math.max(...strip.path.flatMap((command) => (command[0] === "Z" ? [] : [command[1] as number]))) };
+};
+/** The block of a cue's strips: the sample left-aligns it at x 92, Narriflow centres it on x 540. */
+const blockOf = (list: readonly ShapePiece[], cue: number) => {
+  const boxes = list.filter((piece) => piece.id.startsWith(`dossier:${cue}:r`)).map(stripBox);
+  return { left: Math.min(...boxes.map((box) => box.left)), right: Math.max(...boxes.map((box) => box.right)) };
+};
 
 describe("Dossier", () => {
   test("a strip per row, a bar per word, a stamp and a second ink only for the hero", () => {
@@ -43,18 +53,24 @@ describe("Dossier", () => {
       const piece = textFor(cue, word);
       return { x: at(cue, word).x - piece.origin!.dx, y: at(cue, word).y - piece.origin!.dy };
     };
-    // Row 1 of cue 0: x 109, 241.42, 373.84 and baseline 1262; row 2: x 131, 397.25, 529.67 and baseline 1368.
+    // Row 1 of cue 0: x 109, 241.42, 373.84 and baseline 1262; row 2: x 131, 397.25, 529.67 and baseline 1368 (the sample's
+    // block starts at x 92; ours is centred on x 540, so x is read from the block's left).
+    const block = blockOf(papers, 0);
+    expect((block.left + block.right) / 2).toBeCloseTo(540, 6);
+    const shift = block.left - 92;
     for (const [word, x] of [[0, 109], [1, 241.42], [2, 373.84]] as const) {
-      expect(Math.abs(rest(0, word).x - x)).toBeLessThan(0.6);
+      expect(Math.abs(rest(0, word).x - (x + shift))).toBeLessThan(0.6);
       expect(Math.abs(rest(0, word).y - 1262)).toBeLessThan(0.6);
     }
     for (const [word, x] of [[3, 131], [4, 397.25], [5, 529.67]] as const) {
-      expect(Math.abs(rest(0, word).x - x)).toBeLessThan(0.6);
+      expect(Math.abs(rest(0, word).x - (x + shift))).toBeLessThan(0.6);
       expect(Math.abs(rest(0, word).y - 1368)).toBeLessThan(0.6);
     }
     // A one-row cue is centred on the anchor line: baseline 1315 for "shuts the door".
     expect(Math.abs(rest(1, 0).y - 1315)).toBeLessThan(0.6);
-    expect(Math.abs(rest(1, 0).x - 109)).toBeLessThan(0.6);
+    const one = blockOf(papers, 1);
+    expect((one.left + one.right) / 2).toBeCloseTo(540, 6);
+    expect(Math.abs(rest(1, 0).x - (one.left + 17))).toBeLessThan(0.6);
   });
 
   test("the words are typed in upper case Courier Prime Bold 72 px with 0.02 em tracking", () => {
@@ -81,7 +97,7 @@ describe("Dossier", () => {
 
   test("the strips roll in over 200 ms and out over 160 ms behind one shared vertical edge, as the sample's inset() does", () => {
     const cue = cues[0]!;
-    const blockLeft = 92;
+    const blockLeft = blockOf(papers, 0).left;
     const first = papers[0]!;
     // Row 1 of cue 0 is 475.85 px wide at the block's left; the clip's right edge is the entering edge clamped to this strip and
     // its 70 px margin, its left edge the leaving edge, both from the block's left.
@@ -255,12 +271,18 @@ describe("Dossier", () => {
     }
   });
 
-  test("a right-to-left cue is right-aligned and its bars tear from the right", () => {
+  test("a right-to-left cue is centred, its strips share their right edge, and its bars tear from the right", () => {
     const urdu = demoCues({ lines: ["یہ:b ایک:b سادہ:b جملہ:h"], options: DOSSIER_DEMO.options, language: "ur" }).cues;
     const pieces = build(urdu);
     const strip = pieces.find((piece): piece is ShapePiece => piece.kind === "shape" && /:r0$/.test(piece.id))!;
-    const right = evaluatePiece(strip, 1000).x - strip.origin!.dx + Math.max(...strip.path.flatMap((c) => (c[0] === "Z" ? [] : [c[1] as number])));
-    expect(right).toBeCloseTo(988, 0);
+    const box = stripBox(strip);
+    expect((box.left + box.right) / 2).toBeCloseTo(540, 4);
+    // A long cue: the second strip steps 22 px in from the shared right edge.
+    const two = build(demoCues({ lines: ["یہ:b ایک:b سادہ:b جملہ:b بہت:b اچھا:b لمبا:b ہے:b آج:b کل:b"], options: DOSSIER_DEMO.options, language: "ur" }).cues).filter(
+      (piece): piece is ShapePiece => piece.kind === "shape" && /^dossier:0:r\d$/.test(piece.id),
+    );
+    expect(two.length).toBeGreaterThanOrEqual(2);
+    expect(stripBox(two[0]!).right - stripBox(two[1]!).right).toBeCloseTo(22, 4);
     const bar = pieces.find((piece) => piece.kind === "shape" && /:b0$/.test(piece.id))!;
     const word = urdu[0]!.words[0]!;
     const early = evaluatePiece(bar, word.startMs - 70).clip!;

@@ -15,7 +15,7 @@ import { sampleFrames } from "../frames";
  * Geometry is the sample's, read from its layout in Chrome (`.scratch/motion-captions/tools/probe-sample.ts`):
  * a strip is the row's words in Courier Prime Bold 72 px (uppercase, 0.02 em tracking, a 0.62 em gap, each
  * word's box 0.02 em narrower than its advance) padded 17 x 11 px; a second strip sits 12 px lower and 22 px
- * to the right; the block is left-aligned at x 92 and centred on the anchor line (y 1300). A bar covers its
+ * to the right; the sample left-aligns the block at x 92, Narriflow centres it on the anchor (x 540, the line y 1300). A bar covers its
  * word 3 px wider each side, from 0.04 em to 0.82 em below the top of the line box; the stamp is a 7 px and a
  * 2 px ring 0.24 em outside the word's cap height. The text baseline sits 51/72 em below the top of the
  * line box (Chrome rounds the face's ascent).
@@ -43,8 +43,6 @@ const FACE = "Courier Prime" as const;
 const LETTER_SPACING = 0.02;
 const GAP_EM = 0.62;
 const OVERLAP_EM = 0.02;
-const LEFT = 92;
-const RIGHT = 1080 - LEFT;
 const MAX_W = 880;
 const PAD_X = 17;
 const PAD_Y = 11;
@@ -174,14 +172,17 @@ function buildCue(cue: SceneCue, input: SceneInput, number: number): Piece[] {
 
   // The sample splits a cue that does not fit into two rows of the least widest; more rows only when two cannot hold it.
   const groups = balancedRows(widths, gap, maxRow - 2 * pad.x);
-  const edge = rtl ? space.x(RIGHT) : space.x(LEFT);
+  // The block (the strips and the later strips' indent) is centred on the anchor; its leading edge is the strips' shared edge.
+  const rowWidth = (group: readonly number[]) => group.reduce((sum, at) => sum + widths[at]!, 0) + gap * (group.length - 1) + 2 * pad.x;
+  const blockWidth = Math.max(...groups.map((group, ri) => (ri > 0 ? ROW_INDENT * f : 0) + rowWidth(group)));
+  const edge = space.x(540) - (direction * blockWidth) / 2;
   const blockHeight = groups.length * height + (groups.length - 1) * ROW_GAP * f;
   const blockTop = space.y(ANCHOR_LINE) - blockHeight / 2;
   const heroAt = cue.words.findIndex((word) => word.role === "hero");
 
   const rows: Row[] = groups.map((group, ri) => {
     const order = rowVisualOrder(group.map((at) => cue.words[at]!.text), rtl ? "rtl" : "ltr").map((at) => group[at]!);
-    const width = order.reduce((sum, at) => sum + widths[at]!, 0) + gap * (order.length - 1) + 2 * pad.x;
+    const width = rowWidth(order);
     const indent = ri > 0 ? ROW_INDENT * f : 0;
     const left = rtl ? edge - indent - width : edge + indent;
     let x = left + pad.x;
