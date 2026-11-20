@@ -587,6 +587,7 @@
       "BebasNeue-Regular.ttf": "08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73",
       "BricolageGrotesque-ExtraBold.ttf": "c5a5b72d9437b915211ee5fb61249f67a15b4eadf70d0062cca1716cd953daed",
       "Caprasimo-Regular.ttf": "786ab84ee787d40df55be78cb4361e485a1c6687195cbcccf3538cb5e46ced90",
+      "CaveatBrush-Regular.ttf": "e565bd7bffd895ca64f8d1cb77c816b9b38d9c010246386a07c9648592f6f282",
       "ChakraPetch-Bold.ttf": "65fbf76d95651697275e19db4d717c0e95a789ddd3476478b05292104db278a0",
       "CourierPrime-Bold.ttf": "ff1f38786c849d1c41fa8e447960abdb2bd75fdfb0cfcdeb524fad65a5af3638",
       "DMSerifDisplay-Regular.ttf": "8cc3643535edf039aa5d95440a8542735e9197e4f4b8d9303e980fefbf5ab616",
@@ -595,16 +596,24 @@
       "Inter-ExtraBold.ttf": "e62dfdf4623aab390e68ce58b19bc8646efbd54ec0542214eabfd7ed45071b4a",
       "Inter-Regular.ttf": "3081ede8389f3516e8616d2b2fe60cac639b341640dff0250d253d3aac5e613f",
       "Inter-SemiBold.ttf": "07583ce62b4dbc3ca014d232132291ee9f10e4b8964435980bb80004ea408d2b",
+      "InterTight-Bold.ttf": "c0681fb4a793eed29543308abee2e0b9bda3a9b316a375ea2522e6dda1804e4c",
+      "InterTight-ExtraBold.ttf": "494048cc4103b7436d56203e52cea9509098f10486b5c6c5f105e0518375566f",
+      "InterTight-SemiBold.ttf": "65e73f1d5934904bfeee498583ad77c50b7ac559915ee1fe5ee21a166e66b57e",
+      "JetBrainsMono-Bold.ttf": "05e18cde2da083c7c10d2266f0dcbf9977e234dca2e816257cfc9fabd83388ae",
+      "JetBrainsMono-Medium.ttf": "34f1568e526102b3b08d7a95062e125fb14a7c149b562a5ecf34ba865c545136",
       "LilitaOne-Regular.ttf": "f5b641c45c69d772ee4eda687bc9fda411d5cad6b0b45371491da4580cbc8d59",
       "LuckiestGuy-Regular.ttf": "cfbdd68a039f92df51cf3721506af6242e64594c6325fe0bedbeff3fe385d980",
       "Montserrat-Black.ttf": "7198a926f947a933490eb1e390b39fe94f3cc84544aff0c912615a25c0b4073a",
       "OpenSans-Bold.ttf": "2a27358ba981b8140a05a3352a110efcc5b759dc49650f2fabb3c1a798cfd9ff",
       "Oswald-Bold.ttf": "b0f87ed114db3a8b6324eebe2196e37e4b8653af9463613a258d40e021403ab9",
+      "PermanentMarker-Regular.ttf": "28f82c8a7943cb8e9d599f8554da1d4fc75dbcf69b9885ad6c0611d20c6946c5",
       "Poppins-ExtraBold.ttf": "f2ab17c1a63a0ecc12c2461848fc8a469395e3cd2d641803e889c643d9f958e1",
       "Righteous-Regular.ttf": "2ffb3fe5c27d7e6571210b800448c4e234e651b46c6b4426c1bb567e5341348a",
       "Roboto-Bold.ttf": "6f7791b5ca2088fc1692b629d68b70230465a90c5427edad5920130bd6197188",
       "TitanOne-Regular.ttf": "563ff6de179bbd44bcd7d2a6c448d6dc3bf935834237cf1250e506e65cd86ff1",
-      "Unbounded-ExtraBold.ttf": "0a10aee8e257df15a500f2db43008f6c0cdfb669d11f15c3fefd61384f79c653"
+      "Unbounded-Black.ttf": "155712cf648499a341cdd01fa0cda076efa5eefb28bff73bcd3152c3d1cb3295",
+      "Unbounded-ExtraBold.ttf": "0a10aee8e257df15a500f2db43008f6c0cdfb669d11f15c3fefd61384f79c653",
+      "Unbounded-Medium.ttf": "ccd44d4b86d9c917a15679c12a16d915ff0950d82304e556f9243dac11d5fca2"
     }
   },
   "fallbackFonts": {

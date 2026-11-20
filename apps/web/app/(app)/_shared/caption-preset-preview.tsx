@@ -14,6 +14,8 @@ import {
   loopTimeSource,
   staticTimeSource,
 } from "../projects/[projectId]/clips/[clipId]/studio/_components/caption-block-painter";
+import { captionSceneDemo, captionSceneStillMs } from "@narriflow/caption-scene";
+import { CaptionSceneFrame } from "../projects/[projectId]/clips/[clipId]/studio/_components/caption-scene-painter";
 import { captionPresetBackdropSrc } from "./caption-preset-backdrops";
 import { CAPTION_SAMPLE_LOOP_SEC, CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "./caption-sample-cue";
 
@@ -97,6 +99,43 @@ function BlockSample({
 }
 
 /**
+ * A Scene Style's sample: its own script played by the scene painter on the shared looping clock,
+ * laid out on a virtual canvas like `BlockSample`. Still, it is the moment its sample reads best.
+ */
+export function SceneSample({
+  preset,
+  width,
+  height,
+  captionTopPct,
+  boost,
+  animate,
+}: {
+  preset: CaptionPreset;
+  width: number;
+  height: number;
+  captionTopPct: number;
+  boost: number;
+  animate: boolean;
+}) {
+  const demo = useMemo(() => captionSceneDemo(preset.scene!), [preset.scene]);
+  const canvasWidth = 1080 / boost;
+  const canvas = useMemo(() => ({ width: canvasWidth, height: (canvasWidth * height) / width }), [canvasWidth, width, height]);
+  const input = useMemo(
+    () => ({ preset, cues: demo.cues, canvas, anchor: { xPct: preset.positionX ?? 50, yPct: captionTopPct }, language: "en" }),
+    [preset, demo, canvas, captionTopPct],
+  );
+  const timeSource = useMemo(
+    () => (animate ? loopTimeSource(demo.duration / 1000) : staticTimeSource(captionSceneStillMs(preset.scene!) / 1000)),
+    [animate, demo, preset.scene],
+  );
+  return (
+    <Box position="absolute" inset="0" pointerEvents="none">
+      <CaptionSceneFrame input={input} scale={width / canvasWidth} timeSource={timeSource} />
+    </Box>
+  );
+}
+
+/**
  * A caption preset playing over a talking-head frame — the real caption
  * engine, so the thumbnail shows exactly what the preset renders. Captions
  * are drawn `boost` times larger than true frame scale so they stay legible
@@ -147,7 +186,8 @@ export function CaptionSamplePreview({
   // Galleries hold dozens of previews; only the ones on screen keep their timers running.
   const [onScreen, setOnScreen] = useState(true);
   const dynamic = preset.dynamic !== undefined;
-  const { words, cueIndex } = useSampleCue(preset.wordsPerCue, !dynamic && !reducedMotion && onScreen);
+  const scene = preset.scene !== undefined;
+  const { words, cueIndex } = useSampleCue(preset.wordsPerCue, !dynamic && !scene && !reducedMotion && onScreen);
 
   useEffect(() => {
     const el = frameRef.current;
@@ -186,7 +226,10 @@ export function CaptionSamplePreview({
           reducedMotion={reducedMotion}
         />
       )}
-      {!dynamic && width > 0 && (
+      {scene && width > 0 && height > 0 && (
+        <SceneSample preset={preset} width={width} height={height} captionTopPct={captionTopPct} boost={boost} animate={!reducedMotion && onScreen} />
+      )}
+      {!dynamic && !scene && width > 0 && (
         <Box
           position="absolute"
           left="0"

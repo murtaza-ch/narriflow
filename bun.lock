@@ -66,6 +66,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@narriflow/caption-fonts": "workspace:*",
+        "@narriflow/caption-scene": "workspace:*",
         "@narriflow/composition-plan": "workspace:*",
         "@narriflow/services": "workspace:*",
         "@narriflow/validators": "workspace:*",
@@ -91,6 +92,7 @@
         "@clerk/nextjs": "^6.39.5",
         "@emotion/react": "11.14.0",
         "@narriflow/api-client": "workspace:*",
+        "@narriflow/caption-scene": "workspace:*",
         "@narriflow/composition-plan": "workspace:*",
         "@narriflow/ui": "workspace:*",
         "@narriflow/validators": "workspace:*",
@@ -165,6 +167,14 @@
       "devDependencies": {
         "@types/fontkit": "2.0.8",
         "@types/node": "26.2.0",
+      },
+    },
+    "packages/caption-scene": {
+      "name": "@narriflow/caption-scene",
+      "version": "0.0.0",
+      "dependencies": {
+        "@narriflow/caption-fonts": "workspace:*",
+        "@narriflow/validators": "workspace:*",
       },
     },
     "packages/composition-plan": {
@@ -683,6 +693,8 @@
     "@narriflow/auth": ["@narriflow/auth@workspace:packages/auth"],
 
     "@narriflow/caption-fonts": ["@narriflow/caption-fonts@workspace:packages/caption-fonts"],
+
+    "@narriflow/caption-scene": ["@narriflow/caption-scene@workspace:packages/caption-scene"],
 
     "@narriflow/composition-plan": ["@narriflow/composition-plan@workspace:packages/composition-plan"],
 

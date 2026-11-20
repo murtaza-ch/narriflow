@@ -17,6 +17,7 @@
     "@clerk/nextjs": "^6.39.5",
     "@emotion/react": "11.14.0",
     "@narriflow/api-client": "workspace:*",
+    "@narriflow/caption-scene": "workspace:*",
     "@narriflow/composition-plan": "workspace:*",
     "@narriflow/ui": "workspace:*",
     "@narriflow/validators": "workspace:*",

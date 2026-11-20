@@ -67,6 +67,18 @@ _Avoid_: Keywords, highlights, LLM emphasis
 A cue laid out as one to three rows of role-typed words (`block` on a caption layer): a lead row, the hero alone, and a tail row, or one row when the cue has no hero. Subtitles and the clip timeline read the cue's plain words, never the block.
 _Avoid_: Caption line, multi-line caption, stack
 
+**Scene Style**:
+A caption look drawn by a program (`@narriflow/caption-scene`) that a caption preset selects with `scene`, listed in the "Motion" picker group. Unlike a Dynamic Style it is code: one program per template builds a Caption Scene for all the cues of a caption target at once, so it can move shapes between words, split letters, show the previous and next cue, and read the words (pauses, lists, numbers, speech rate, speakers). The template owns fonts, shadows, strokes and motion; the preset sets size, position and the colours the template maps.
+_Avoid_: Motion template, animated caption, Dynamic Style
+
+**Caption Scene**:
+The output of a Scene Style program: pieces with keyframe tracks, in canvas px and clip ms. Both renderers only measure text and paint pieces, and `evaluatePiece` is the one function that says where a piece is at a time, so playback, scrubbing and export agree.
+_Avoid_: Caption layer, caption animation
+
+**Piece**:
+One text run (a word, a letter, a label) or one vector shape of a Caption Scene, with a pivot, tracks for position, scale, turn, shear, opacity, blur and colour, an optional canvas-space clip, and paint layers (shadows, fill, outline).
+_Avoid_: Element, sprite, glyph
+
 **Word Key**:
 A word's source start time in whole milliseconds, as a string. It names a word for emphasis overrides and seeds its cue's look, and it survives cuts, trims and text corrections. A trim that clamps an edge word's start changes that one word's key.
 _Avoid_: Word ID, word index

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CAPTION_DYNAMIC_NAMES, CAPTION_DYNAMIC_STYLES } from "./caption-dynamic";
 import { CAPTION_FONT_NAMES } from "./caption-font";
+import { CAPTION_SCENE_NAMES, CAPTION_SCENES, type CaptionSceneName } from "./caption-scene";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
 import { stripCaptionEdgePunctuation, toCaptionLowerCase, toCaptionUpperCase } from "./text-script";
 import { brandFontReferenceSchema } from "./timed-edits";
@@ -109,7 +110,7 @@ export function applyCaptionTextTransform(
     case "lowercase":
       return toCaptionLowerCase(text, language);
     case "capitalize":
-      return text.replace(/(^|[\s\-])(\p{L})/gu, (_match, lead: string, letter: string) => lead + toCaptionUpperCase(letter, language));
+      return text.replace(/(^|[\s-])(\p{L})/gu, (_match, lead: string, letter: string) => lead + toCaptionUpperCase(letter, language));
     default:
       return text;
   }
@@ -190,6 +191,17 @@ export const captionPresetSchema = z.object({
    * into clusters keeps straight rows (`captionBlockCurve`).
    */
   curve: z.number().min(-1).max(1).optional(),
+  /**
+   * Scene Style (caption-scene.ts). Absent = classic or Dynamic. When set, a program of that
+   * name draws every cue of the target as a Caption Scene. `fontSize` is the sample's body size
+   * times the user's size scale, `primaryColor`, `highlightColor`, `accentColor` and
+   * `shadowColor` are the colours the template maps; the template owns fonts, shadows, strokes
+   * and motion, so the other fields do nothing. Never together with `dynamic`.
+   */
+  scene: z.enum(CAPTION_SCENE_NAMES).optional(),
+}).refine((preset) => !(preset.scene && preset.dynamic), {
+  message: "A caption preset is either a Dynamic Style or a Scene Style, not both",
+  path: ["scene"],
 });
 
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;
@@ -220,10 +232,10 @@ export function captionPresetsEqual(
  */
 export const DEFAULT_CAPTION_PRESET: CaptionPreset = captionPresetSchema.parse({});
 
-export type CaptionPresetGroup = "Dynamic" | "Bold" | "Clean" | "Expressive" | "Effects";
+export type CaptionPresetGroup = "Dynamic" | "Motion" | "Bold" | "Clean" | "Expressive" | "Effects";
 
-/** Gallery order: Dynamic Styles first. */
-export const CAPTION_PRESET_GROUPS = ["Dynamic", "Bold", "Clean", "Expressive", "Effects"] as const satisfies readonly CaptionPresetGroup[];
+/** Gallery order: Dynamic Styles first, then the Motion (Scene) Styles. */
+export const CAPTION_PRESET_GROUPS = ["Dynamic", "Motion", "Bold", "Clean", "Expressive", "Effects"] as const satisfies readonly CaptionPresetGroup[];
 
 export interface NamedCaptionPreset {
   id: string;
@@ -239,6 +251,25 @@ function namedPreset<const Id extends string>(
   preset: CaptionPresetInput,
 ) {
   return { id, name, group, preset: captionPresetSchema.parse(preset) };
+}
+
+/** A Scene Style preset: the id is the scene's name, its colours, size and cue length are the sample's. */
+function scenePreset<const Scene extends CaptionSceneName>(scene: Scene) {
+  const meta = CAPTION_SCENES[scene];
+  return namedPreset(scene, meta.name, "Motion", {
+    scene,
+    fontName: meta.fontName,
+    fontSize: meta.bodyPx,
+    textTransform: "none",
+    letterSpacing: 0,
+    primaryColor: meta.colours.primary,
+    highlightColor: meta.colours.highlight,
+    accentColor: meta.colours.accent,
+    outlineWidth: 0,
+    shadow: "none",
+    animation: "fade",
+    wordsPerCue: meta.wordsPerCue,
+  });
 }
 
 export const CAPTION_PRESETS = [
@@ -272,6 +303,23 @@ export const CAPTION_PRESETS = [
     primaryColor: "#F3E9C6", highlightColor: "#F3E9C6", outlineWidth: 0, shadow: "soft", animation: "slide", wordsPerCue: 4,
     curve: 0.55,
   }),
+  // Motion (Scene Styles): one preset per sample template, its colours and size from the sample.
+  scenePreset("lyrics"),
+  scenePreset("dialogue"),
+  scenePreset("dossier"),
+  scenePreset("hollow"),
+  scenePreset("signal"),
+  scenePreset("track"),
+  scenePreset("bulletin"),
+  scenePreset("ticker"),
+  scenePreset("flap"),
+  scenePreset("index"),
+  scenePreset("punchline"),
+  scenePreset("doodle"),
+  scenePreset("velocity"),
+  scenePreset("wordform"),
+  scenePreset("chrome"),
+  scenePreset("reveal"),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

@@ -40,3 +40,6 @@ apps/media/.venv/
 apps/media/models/
 **/__pycache__/
 **/*.pyc
+
+# Motion captions tooling output
+.scratch/motion-captions/out/

@@ -1,8 +1,11 @@
 import {
   CAPTION_EMPHASIS_OVERRIDE_LIMIT,
   CAPTION_MOTIONS,
+  CAPTION_PRESETS,
   captionBlockAnimation,
   captionDynamicStyle,
+  captionSceneDefaultPositionY,
+  captionSceneMeta,
   captionStyleDrawsHero,
   captionStyleUsesAccent,
   isDynamicOnlyMotion,
@@ -10,6 +13,7 @@ import {
   type CaptionDynamicStyle,
   type CaptionEmphasisOverride,
   type CaptionPreset,
+  type CaptionSceneMeta,
 } from "@narriflow/validators";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import type { CaptionEmphasisChange } from "../studio-shell";
@@ -17,6 +21,11 @@ import type { CaptionEmphasisChange } from "../studio-shell";
 // Pure decisions behind the Captions panel's Customize tab (spec section 7):
 // which motions a preset may pick, and the Emphasis row for the cue under the
 // playhead.
+
+/** The Scene Style of `preset` (its sample's facts), or null when it is not one. */
+export function captionPanelScene(preset: Pick<CaptionPreset, "scene">): CaptionSceneMeta | null {
+  return preset.scene ? captionSceneMeta(preset.scene) : null;
+}
 
 /** The Dynamic Style of `preset`, or null for a classic preset. */
 export function captionPanelStyle(preset: Pick<CaptionPreset, "dynamic">): CaptionDynamicStyle | null {
@@ -70,7 +79,14 @@ export interface CaptionEmphasisRow {
   readonly joined: boolean;
 }
 
-type EmphasisLayer = Pick<CompositionCaptionVisualLayer, "block" | "words">;
+type EmphasisLayer = Pick<CompositionCaptionVisualLayer, "block" | "words" | "scene">;
+
+/** The roles, texts and Word Keys of a cue: a Dynamic Style's block, or a Scene Style's scene facts. */
+function cueRoles(layer: EmphasisLayer): { readonly roles: readonly string[]; readonly texts: readonly string[]; readonly keys: readonly (string | null)[] } | null {
+  if (layer.block) return layer.block;
+  if (layer.scene) return { roles: layer.scene.roles, texts: layer.words.map((word) => word.text), keys: layer.scene.keys };
+  return null;
+}
 
 function heroSpan(roles: readonly string[]): readonly [number, number] | null {
   const first = roles.indexOf("hero");
@@ -82,7 +98,7 @@ export function captionEmphasisRow(
   layer: EmphasisLayer,
   overrides: Readonly<Record<string, CaptionEmphasisOverride>> | undefined,
 ): CaptionEmphasisRow | null {
-  const block = layer.block;
+  const block = cueRoles(layer);
   if (!block || block.texts.length === 0) return null;
   const span = heroSpan(block.roles);
   const chips: CaptionEmphasisChip[] = [];
@@ -114,7 +130,7 @@ export function captionEmphasisRow(
 
 /** The cue's distinct Word Keys (none for dub captions). */
 function cueKeys(layer: EmphasisLayer): string[] {
-  const keys = layer.block?.keys ?? [];
+  const keys = cueRoles(layer)?.keys ?? [];
   return [...new Set(keys.filter((key): key is string => key !== null))];
 }
 
@@ -131,7 +147,7 @@ export type CaptionEmphasisIntent =
  * scorer keeps the higher-scoring one, not the latest tap.
  */
 export function captionEmphasisChanges(layer: EmphasisLayer, intent: CaptionEmphasisIntent): CaptionEmphasisChange[] {
-  const block = layer.block;
+  const block = cueRoles(layer);
   const keys = cueKeys(layer);
   if (!block || keys.length === 0 || keys.length !== block.keys.length) return [];
   const clear: CaptionEmphasisChange = { keys, value: null };
@@ -167,4 +183,19 @@ export function captionEmphasisFits(
     }
   }
   return next.size <= CAPTION_EMPHASIS_OVERRIDE_LIMIT;
+}
+
+/**
+ * What "Reset" puts back when the caption has been moved, or null when it is where its look puts it. A classic or Dynamic
+ * caption is moved when a drag stored a position. A Scene Style is moved when its stored position differs from its template's
+ * own anchor line: a drag stores both coordinates, but Top, Center and Bottom store only a Y, so "a stored X" is not the test.
+ * Reset clears the stored position (the template's default comes back) and the position chip the scene preset was made with.
+ */
+export function captionPositionReset(preset: Pick<CaptionPreset, "scene" | "position" | "positionX" | "positionY">): Partial<CaptionPreset> | null {
+  if (!preset.scene) return preset.positionX === undefined ? null : { positionX: undefined, positionY: undefined };
+  const moved =
+    (preset.positionX !== undefined && Math.abs(preset.positionX - 50) >= 0.05) ||
+    (preset.positionY !== undefined && Math.abs(preset.positionY - captionSceneDefaultPositionY(preset.scene)) >= 0.05);
+  if (!moved) return null;
+  return { positionX: undefined, positionY: undefined, position: CAPTION_PRESETS.find((named) => named.id === preset.scene)?.preset.position ?? preset.position };
 }

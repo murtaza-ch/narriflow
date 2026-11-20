@@ -16,7 +16,7 @@ import { PhoneFrame } from "@narriflow/ui/components/phone-frame";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
-  CAPTION_FONT_NAMES,
+  CAPTION_PICKER_FONT_NAMES,
   CAPTION_MOTIONS,
   CAPTION_POSITION_Y_DEFAULTS,
   CAPTION_PRESETS,
@@ -342,7 +342,8 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
 
           <Panel title="Text">
             <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5">
-              <FontField preset={preset} onChange={(next) => update("captionPreset", next)} />
+              {/* A Scene Style's template draws its own faces, which the list below does not carry. */}
+              {preset.scene ? null : <FontField preset={preset} onChange={(next) => update("captionPreset", next)} />}
               <Select
                 label="Animation"
                 items={ANIMATION_OPTIONS}
@@ -693,7 +694,7 @@ function FontField({ preset, onChange }: { preset: CaptionPreset; onChange: (nex
   const current = preset.fontAsset ? fonts.find((font) => font.id === preset.fontAsset?.id && font.fingerprint === preset.fontAsset.fingerprint) : undefined;
   const retained = preset.fontAsset && !choices.some((font) => font.id === preset.fontAsset?.id);
   const items = [
-    ...CAPTION_FONT_NAMES.map((name) => ({ label: name, value: `${BUILT_IN}${name}` })),
+    ...CAPTION_PICKER_FONT_NAMES.map((name) => ({ label: name, value: `${BUILT_IN}${name}` })),
     ...(retained && preset.fontAsset ? [{ label: `${current?.family ?? "Retained font"} · saved in this style`, value: `${BRAND}${preset.fontAsset.id}`, icon: <Palette size={13} /> }] : []),
     ...choices.map((font) => ({ label: `${font.family} · ${font.style}`, value: `${BRAND}${font.id}`, icon: <Palette size={13} /> })),
   ];

@@ -74,7 +74,7 @@ export interface CaptionBlockGeometry {
 /** Text libass would draw: braces and backslashes would open override blocks (caption-ass.ts strips them the same way). */
 const assDrawnText = (text: string) => text.replace(/[{}\\]/g, "");
 
-function wordParts(clusters: readonly PlannedCluster[]): CaptionBlockWord["parts"] {
+export function wordParts(clusters: readonly PlannedCluster[]): CaptionBlockWord["parts"] {
   const parts: { text: string; face: CaptionFace; spaced: boolean }[] = [];
   for (const part of clusters.flatMap((cluster) => cluster.parts)) {
     const text = assDrawnText(part.text);

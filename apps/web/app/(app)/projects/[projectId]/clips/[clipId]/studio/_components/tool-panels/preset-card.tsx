@@ -45,9 +45,12 @@ export function PresetCard({
           <Text fontSize="13px" fontWeight="500" color={isSelected ? "studio.accentFg" : "studio.fg"} truncate>
             {namedPreset.name}
           </Text>
-          <Text fontSize="11.5px" color={isSelected ? "studio.accentFg" : "studio.fgSubtle"} opacity={isSelected ? 0.75 : 1} mt="1px">
-            {CAPTION_MOTIONS[namedPreset.preset.animation].label}
-          </Text>
+          {/* A Scene Style owns its motion (the template), so it has no animation to name. */}
+          {namedPreset.preset.scene ? null : (
+            <Text fontSize="11.5px" color={isSelected ? "studio.accentFg" : "studio.fgSubtle"} opacity={isSelected ? 0.75 : 1} mt="1px">
+              {CAPTION_MOTIONS[namedPreset.preset.animation].label}
+            </Text>
+          )}
         </Box>
         {NEW_PRESET_IDS.has(namedPreset.id) && (
           <Text as="span" fontSize="9px" fontWeight="600" letterSpacing="0.04em" color="studio.accentFg" textTransform="uppercase" flexShrink={0}>

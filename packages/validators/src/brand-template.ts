@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { captionDynamicStyle, captionStyleDrawsHero, captionStyleUsesAccent } from "./caption-dynamic";
+import { applyBrandColorsToScene, brandColorsFromScene } from "./caption-scene";
 import type { CaptionPreset } from "./caption-preset";
 import { captionPresetSchema } from "./clip";
 import { logoPositionSchema, type LogoPosition } from "./logo-position";
@@ -16,13 +17,17 @@ export { logoPositionSchema, type LogoPosition };
  * the primary as text and the secondary as the highlight. Dynamic Styles keep
  * their support colour (white or cream): the primary becomes the hero (the
  * text colour for a style without a hero, Cutout's tile ink) and the
- * secondary the accent, for styles that draw one.
+ * secondary the accent, for styles that draw one. A Scene Style says for itself
+ * which slots the brand colours colour (`CaptionSceneMeta.brand`): its ink on a
+ * fixed plate is never one, and a plate under fixed ink takes a brand colour
+ * only when the ink reads on it.
  */
 export function applyBrandColorsToCaption(
   preset: CaptionPreset,
   primaryColor: string,
   secondaryColor: string,
 ): CaptionPreset {
+  if (preset.scene) return { ...preset, ...applyBrandColorsToScene(preset.scene, preset, { primaryColor, secondaryColor }) };
   if (!preset.dynamic) return { ...preset, primaryColor, highlightColor: secondaryColor };
   // The accent is written only where the style draws one and it changes, so a
   // catalog look whose colours are the brand's still matches its catalog entry.
@@ -40,6 +45,7 @@ function effectiveAccent(preset: CaptionPreset): string {
 
 /** The brand colours a caption look implies, the inverse of `applyBrandColorsToCaption`. */
 export function brandColorsFromCaption(preset: CaptionPreset): { primaryColor: string; secondaryColor: string } {
+  if (preset.scene) return brandColorsFromScene(preset.scene, preset);
   if (!preset.dynamic) return { primaryColor: preset.primaryColor, secondaryColor: preset.highlightColor };
   const primaryColor = captionStyleDrawsHero(captionDynamicStyle(preset.dynamic)) ? preset.highlightColor : preset.primaryColor;
   return { primaryColor, secondaryColor: effectiveAccent(preset) };

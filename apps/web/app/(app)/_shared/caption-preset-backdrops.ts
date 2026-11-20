@@ -1,4 +1,4 @@
-import { matchCaptionPreset, type CaptionPreset, type CaptionPresetId } from "@narriflow/validators";
+import { CAPTION_SCENE_NAMES, CAPTION_SCENES, matchCaptionPreset, type CaptionPreset, type CaptionPresetId, type CaptionSceneName } from "@narriflow/validators";
 
 type CatalogPresetId = Exclude<CaptionPresetId, "brand_default">;
 
@@ -19,12 +19,17 @@ export const CAPTION_BACKDROPS = [
 ] as const;
 export type CaptionBackdrop = (typeof CAPTION_BACKDROPS)[number];
 
+/** The sample stills (`dark`, `bright`, `busy`) are these Studio backdrops at lower resolution. */
+const SCENE_SAMPLE_BACKDROPS = { dark: "dark-studio", bright: "bright-room", busy: "brick-street" } as const satisfies Record<"dark" | "bright" | "busy", CaptionBackdrop>;
+
 /**
  * Talking-head frame each caption preset previews over, so a style is judged
  * on footage instead of a flat panel. Two or three presets share each frame; the
  * pairing follows the mood of the style.
  */
 const BACKDROP_BY_PRESET: Record<CatalogPresetId, CaptionBackdrop> = {
+  // Scene Styles preview over the Studio's copy of the still their sample was judged on.
+  ...(Object.fromEntries(CAPTION_SCENE_NAMES.map((name) => [name, SCENE_SAMPLE_BACKDROPS[CAPTION_SCENES[name].backdrop]])) as Record<CaptionSceneName, CaptionBackdrop>),
   // The ticket 02 look proof was judged over this frame.
   headline: "green-studio",
   editorial: "lamp-study",

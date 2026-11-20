@@ -15,6 +15,15 @@ export function captionLayerAt(
   return layers.find((layer) => timeSec >= layer.activeRange.startSec && timeSec < layer.activeRange.endSec) ?? null;
 }
 
+/**
+ * The classic caption line among the layers live at one time: a caption layer without scene facts. For a Dynamic or classic
+ * preset that is its one cue; for a Scene Style it is an untimed utterance, which the worker burns as the classic line
+ * while the scene draws the timed cues (`isSceneLayer`), so the Studio draws it too.
+ */
+export function classicCaptionLayerOf(layers: readonly { readonly kind: string }[]): CompositionCaptionVisualLayer | undefined {
+  return layers.find((layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption" && (layer as CompositionCaptionVisualLayer).scene === undefined);
+}
+
 /** Index of the word active at `timeSec`, or -1: the classic engine's active-word state. */
 export function captionActiveWordIndex(layer: Pick<CompositionCaptionVisualLayer, "words">, timeSec: number): number {
   return layer.words.findIndex(

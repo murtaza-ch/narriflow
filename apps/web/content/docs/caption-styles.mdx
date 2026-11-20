@@ -1,12 +1,13 @@
 ---
 title: Caption styles
 sidebarTitle: Caption styles
-description: Dynamic styles stack each caption into a few rows around one large word. Classic styles keep one line.
+description: Dynamic styles stack each caption into a few rows around one large word. Motion styles are drawn by a program that reads pauses, lists, numbers, speech rate and speakers. Classic styles keep one line.
 ---
 
-Every clip has one caption style. Choose it in Studio under **Captions**, on a Brand Profile's caption style, or by ID with `captionPreset` in the API and your assistants. Styles come in two kinds.
+Every clip has one caption style. Choose it in Studio under **Captions**, on a Brand Profile's caption style, or by ID with `captionPreset` in the API and your assistants. Styles come in three kinds.
 
 - **Dynamic styles** set each caption as a small block of rows. Narriflow picks one word per caption to show large, the hero, and sets the words around it smaller.
+- **Motion styles** are drawn by a small program for each style. Shapes travel between words, the caption before and after the one you are on can stay on screen, and the style reads the transcript for pauses, lists, numbers, speech rate and who is speaking.
 - **Classic styles** show each caption on one line in one font and size. Only the word being spoken changes, by colour, a highlight or a short animation.
 
 ## Dynamic styles
@@ -85,6 +86,172 @@ Urdu, Arabic, Hindi, Thai, Hebrew, Chinese and Japanese captions stay straight i
 
 </Frame>
 
+## Motion styles
+
+Motion styles come after Dynamic styles in the gallery, in the **Motion** group. A Motion style owns its typefaces, motion, shadows and outlines, so it has no animation picker. Everything on screen comes from the words spoken, plus counters and timestamps worked out from the speech. The studio preview, the exported video and the preset thumbnails are drawn from the same program, so the preview and the export match closely. Right-to-left captions such as Urdu run from the right, and scripts that join their letters are never split into letters. Captions keep clear of the frame edges.
+
+Motion styles pick one word as the hero the way [Dynamic styles do](#how-the-hero-is-chosen); a caption with no clear hero shows without one.
+
+### Lyrics
+
+`lyrics`. The lyric view of a music app: the caption before and the one after stay on screen, soft and blurred, while the current one fills with colour word by word as it is spoken, and the hero takes the hero colour with a glow. A pause longer than 0.7 seconds shows three breathing dots where the next caption will appear.
+
+<Frame caption="Lyrics">
+
+![Lyrics: "with literally zero savings" with the hero "zero" in green, the caption before it dim above and the next one dim below](/docs/caption-styles/lyrics.jpg)
+
+</Frame>
+
+### Dialogue
+
+`dialogue`. A conversation as a chat thread. The first speaker's captions appear on the left in grey bubbles and every other speaker's on the right in the accent colour; the words light up as they are spoken, the previous bubble steps back, and a pause of more than half a second before a caption shows a typing indicator first. It reads speakers and pauses.
+
+<Frame caption="Dialogue">
+
+![Dialogue: a grey bubble "So I quit my job today." on the left and a blue bubble "Wait, for real?" on the right](/docs/caption-styles/dialogue.jpg)
+
+</Frame>
+
+### Dossier
+
+`dossier`. The rest of the sentence waits as black redaction bars on typed paper strips, and each bar wipes away the moment its word is spoken. The hero gets a red rubber stamp, and a pause before a word makes its bar blink like a cursor.
+
+<Frame caption="Dossier">
+
+![Dossier: "AND GOES" and "YOU'RE FIRED" on paper strips in typewriter capitals, with a red "FIRED" stamp](/docs/caption-styles/dossier.jpg)
+
+</Frame>
+
+### Hollow
+
+`hollow`. Tall condensed capitals wait as outlines and fill solid as each word is spoken. The hero fills in the hero colour and throws three outline echoes upward, which fold back into it as the caption leaves.
+
+<Frame caption="Hollow">
+
+![Hollow: "YOU NEED" in white capitals above a large lime "DISCIPLINE" with an outline echo above it](/docs/caption-styles/hollow.jpg)
+
+</Frame>
+
+### Signal
+
+`signal`. A terminal that glitches when it matters: the support words type onto one monospaced line behind a block cursor, then the hero lands with an RGB split, brackets lock onto it and a scan line reads it once. When the caption ends, everything collapses to a line.
+
+<Frame caption="Signal">
+
+![Signal: "the real skill is" typed in monospace with a block cursor above "TASTE" inside four green corner brackets](/docs/caption-styles/signal.jpg)
+
+</Frame>
+
+### Track
+
+`track`. Four corner brackets lock onto each word as it is spoken, like an object detector, and a small readout above the box shows the word's timestamp in the clip. The hero is larger and gets a KEY tag and a scan line. It reads the timing of each word.
+
+<Frame caption="Track">
+
+![Track: "it just predicts" with brackets around "predicts" and a "00:04.96 KEY" readout above](/docs/caption-styles/track.jpg)
+
+</Frame>
+
+### Bulletin
+
+`bulletin`. A broadcast lower third: a coloured bar grows down the left side, square plates wipe in beside it, and each word rises inside its plate when it is spoken. It reads numbers: a number hero such as "312%" counts up from zero while a white rule draws under it.
+
+<Frame caption="Bulletin">
+
+![Bulletin: "Revenue grew" on a white plate above a vermilion plate reading "312%" and a dark plate reading "in one"](/docs/caption-styles/bulletin.jpg)
+
+</Frame>
+
+### Ticker
+
+`ticker`. A signal-yellow tape slams across the frame at the hero's spoken start and carries the hero as a scrolling marquee between four-point stars, with the support words riding above and below it. A caption with no hero gets a slim black tape with white words.
+
+<Frame caption="Ticker">
+
+![Ticker: a yellow tape across the frame carrying "DEAD" between stars, with "RESALE IS" above it](/docs/caption-styles/ticker.jpg)
+
+</Frame>
+
+### Flap
+
+`flap`. A split-flap departure board: the cards for a caption stand blank and each flaps over to its word on the beat it is spoken. The hero is an amber card that clatters twice, and at the end the cards flip back to blank one after another.
+
+<Frame caption="Flap">
+
+![Flap: "SET A PRICE" on dark cards above an amber card reading "ALERT" with blank cards below](/docs/caption-styles/flap.jpg)
+
+</Frame>
+
+### Index
+
+`index`. When the speaker counts points ("three mistakes ... first ... second ... so"), a numbered dial docks beside the caption card and its ring fills one segment per point as the list advances. It reads lists: the announced total, ordinals and next-words such as "first" or "then" that start a phrase, and the closing "so" or "that's" after a sentence ends. When the list closes the dial leaves and a plain bar takes its place.
+
+<Frame caption="Index">
+
+![Index: a dial reading 3 of 3 beside a dark caption card with the word "finally,"](/docs/caption-styles/index.jpg)
+
+</Frame>
+
+### Punchline
+
+`punchline`. Ordinary lines pop in like stickers with a thick outline and a hard shadow. It reads pauses and sentence ends: a short line that ends a sentence after a real pause is a punchline, so three dots drumroll through the silence and the line slams onto a yellow starburst with a shock ring.
+
+<Frame caption="Punchline">
+
+![Punchline: the word "Gone" on a large yellow starburst](/docs/caption-styles/punchline.jpg)
+
+</Frame>
+
+### Doodle
+
+`doodle`. The caption is handwritten with a paint marker as it is spoken, each word wiped in left to right over its spoken time. The hero is tipped and gets a pen loop, three ticks and, when there is a lead-in, a hooked arrow pointing at it; a caption with no hero gets an underline.
+
+<Frame caption="Doodle">
+
+![Doodle: "motivation is a" in handwriting with an arrow pointing at a circled yellow "MYTH"](/docs/caption-styles/doodle.jpg)
+
+</Frame>
+
+### Velocity
+
+`velocity`. Condensed capitals skid in on a forward lean, and the hero rides a slanted slab that slices in from the left. It reads speech rate: a calm caption barely tilts and has no speed lines, a fast one leans hard and streaks.
+
+<Frame caption="Velocity">
+
+![Velocity: "SO GET UP AND" in slanted white capitals above "GO" on an orange slab](/docs/caption-styles/velocity.jpg)
+
+</Frame>
+
+### Wordform
+
+`wordform`. A strip of up to 44 bars runs under the caption on its own time axis: a bar where a word is spoken, taller for a weightier word and in the hero colour for the hero, and a flat dot where the speaker pauses. A playhead lights them as the caption plays, and the words fade in out of a small blur.
+
+<Frame caption="Wordform">
+
+![Wordform: "we're just overstimulated" above a strip of vertical bars with a playhead](/docs/caption-styles/wordform.jpg)
+
+</Frame>
+
+### Chrome
+
+`chrome`. Y2K liquid chrome: the hero is a sheared chrome badge with a navy rim and a blue glow that slams in from large and blurred, catches a travelling glint and throws one sparkle off its corner. Support words are small, wide and quiet.
+
+<Frame caption="Chrome">
+
+![Chrome: "it's giving" in small type above a large chrome "ICONIC" with a blue glow](/docs/caption-styles/chrome.jpg)
+
+</Frame>
+
+### Reveal
+
+`reveal`. Every word rises out of an invisible slit, a hairline draws under the first row, and the caption leaves the same way it came. The hero is a large italic serif.
+
+<Frame caption="Reveal">
+
+![Reveal: "it's all about" above a hairline and a large cream italic "talent"](/docs/caption-styles/reveal.jpg)
+
+</Frame>
+
 ## How the hero is chosen
 
 Narriflow scores the words of each caption from the transcript: numbers with their units (such as "20 dollars"), negations, stressed or drawn-out words, words before a pause and words at the end of a sentence score higher. Small words like "the", "of" and "is" never become the hero. Picking a hero uses no AI model and adds nothing to your credits.
@@ -99,7 +266,9 @@ To change it, pause on the caption in Studio and choose another word in the **Ca
 
 The size slider and resizing on the video scale the whole block. Text colour sets the small words, and hero colour sets the hero. Styles that use a third colour, such as Cutout's pink tiles, Marker's second hero colour and Stack's stars, also show an accent colour. Fonts, animation, words per caption and the hero's size are under **Advanced**. So is **Curve**, for every dynamic style except Cutout: move it right to arch the rows, left to bow them, or to the middle for straight rows. Arc starts at 0.55. A curved hero is one flat colour, Marker's squiggle is left out, and animations that grow or turn words only fade and slide them. A caption with many long words, or in a script that cannot bend, stays straight. The underline and the stars need a moment to draw: a caption with less than 0.3 seconds left when its hero is spoken shows without them. Cutout has no hero, so it shows no hero colour, emphasis or hero settings; its text colour sets the letters on the dark tiles.
 
-Subtitle files (SRT and WebVTT) and editor timelines keep the transcript's words as they are. Dynamic styles change only how the burned-in captions look.
+A Motion style offers fewer controls, because the style owns its motion: **Size**, **Position**, and the colours the style uses (Text, Hero and Accent), plus the emphasis row. The size slider and resizing on the video scale the whole style, and dragging moves it; the style keeps its own spacing as it moves. The preview in the panel plays the style's own sample.
+
+Subtitle files (SRT and WebVTT) and editor timelines keep the transcript's words as they are. Dynamic and Motion styles change only how the burned-in captions look.
 
 ## Classic styles
 

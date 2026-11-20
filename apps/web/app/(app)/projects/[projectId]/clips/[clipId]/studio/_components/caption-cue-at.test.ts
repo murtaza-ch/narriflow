@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { planClipComposition, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import { captionPresetSchema, editorDocumentSchema, getCaptionPresetById, studioEditsSchema } from "@narriflow/validators";
-import { captionActiveWordIndex, captionBlockDragPoint, captionBlockDroppedPosition, captionCueWordsAt, captionLayerAt } from "./caption-cue-at";
+import { captionActiveWordIndex, captionBlockDragPoint, captionBlockDroppedPosition, captionCueWordsAt, captionLayerAt, classicCaptionLayerOf } from "./caption-cue-at";
 
 function planLayers(presetId: string, deletedRanges: { startSec: number; endSec: number }[] = []): CompositionCaptionVisualLayer[] {
   const words = [
@@ -101,5 +101,55 @@ describe("dragging a Caption Block", () => {
 
   test("dropped positions stay inside the frame", () => {
     expect(captionBlockDroppedPosition({ xPct: -4, yPct: 130 }, false)).toEqual({ positionX: 0, positionY: 100 });
+  });
+});
+
+describe("the classic line of a Scene Style target (fix 7)", () => {
+  /** A timed utterance, then one without word times: the scene draws the first, the worker burns the second as the classic line. */
+  function sceneWithUntimed() {
+    const document = editorDocumentSchema.parse({
+      version: 1,
+      clipStartSec: 0,
+      clipEndSec: 12,
+      captionPreset: captionPresetSchema.parse(getCaptionPresetById("reveal")!.preset),
+      transcriptSlice: [
+        { index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 1, endSec: 3, confidence: 1, text: "Nobody feels ready", words: [["Nobody", 1, 1.6], ["feels", 1.7, 2.2], ["ready", 2.3, 3]].map(([word, startSec, endSec]) => ({ word, startSec, endSec, confidence: 1 })) },
+        { index: 1, speaker: 0, speakerLabel: "Speaker 1", startSec: 6, endSec: 8, confidence: 1, text: "Start anyway today", words: [] },
+      ],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document,
+      captionLanguage: "en",
+      source: { identity: "source:untimed", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" }, music: {} },
+      capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    return result.plan.targets[0]!.visualLayers.filter((layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption");
+  }
+
+  test("the untimed utterance is the classic line; the timed cues are scene cues", () => {
+    const layers = sceneWithUntimed();
+    const timed = layers.filter((layer) => layer.scene !== undefined);
+    const untimed = layers.filter((layer) => layer.scene === undefined);
+    expect(timed.length).toBeGreaterThan(0);
+    expect(untimed).toHaveLength(1);
+    // At a time inside the untimed utterance, the layers live then hold it, and the Studio finds it.
+    const live = layers.filter((layer) => 7 >= layer.activeRange.startSec && 7 < layer.activeRange.endSec);
+    expect(classicCaptionLayerOf(live)).toBe(untimed[0]);
+    // At a time inside a timed cue there is no classic line to draw.
+    const inCue = layers.filter((layer) => 2 >= layer.activeRange.startSec && 2 < layer.activeRange.endSec);
+    expect(inCue.length).toBeGreaterThan(0);
+    expect(classicCaptionLayerOf(inCue)).toBeUndefined();
+  });
+
+  test("a classic preset's own cue is its classic line", () => {
+    const layers = planLayers("bold-pop");
+    expect(classicCaptionLayerOf([layers[0]!])).toBe(layers[0]);
   });
 });

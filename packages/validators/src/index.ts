@@ -13,6 +13,7 @@ export * from "./caption-decoration";
 export * from "./caption-dynamic";
 export * from "./caption-emphasis";
 export * from "./caption-preset";
+export * from "./caption-scene";
 export * from "./caption-style";
 export * from "./captioned-video";
 export * from "./campaign-operation";

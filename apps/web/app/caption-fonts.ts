@@ -357,6 +357,141 @@ const captionUnbounded = localFont({
   ],
 });
 
+const captionCaveatBrush = localFont({
+  src: "../../../packages/caption-fonts/fonts/CaveatBrush-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-caveat-brush",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "96%" },
+    { prop: "descent-override", value: "30%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightSemiBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-SemiBold.ttf",
+  weight: "600",
+  style: "normal",
+  variable: "--font-caption-inter-tight-semibold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-inter-tight-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-inter-tight-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionJetBrainsMonoMedium = localFont({
+  src: "../../../packages/caption-fonts/fonts/JetBrainsMono-Medium.ttf",
+  weight: "500",
+  style: "normal",
+  variable: "--font-caption-jetbrains-mono-medium",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "102%" },
+    { prop: "descent-override", value: "30%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionJetBrainsMonoBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/JetBrainsMono-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-jetbrains-mono-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "102%" },
+    { prop: "descent-override", value: "30%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPermanentMarker = localFont({
+  src: "../../../packages/caption-fonts/fonts/PermanentMarker-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-permanent-marker",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.94%" },
+    { prop: "descent-override", value: "31.74%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionUnboundedMedium = localFont({
+  src: "../../../packages/caption-fonts/fonts/Unbounded-Medium.ttf",
+  weight: "500",
+  style: "normal",
+  variable: "--font-caption-unbounded-medium",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "126.2%" },
+    { prop: "descent-override", value: "28.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionUnboundedBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/Unbounded-Black.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-unbounded-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "126.2%" },
+    { prop: "descent-override", value: "28.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 /** CSS variable classes for <html>; each variable holds one caption face's family. */
 export const captionFontVariables = [
   captionAnton.variable,
@@ -382,4 +517,13 @@ export const captionFontVariables = [
   captionRoboto.variable,
   captionTitanOne.variable,
   captionUnbounded.variable,
+  captionCaveatBrush.variable,
+  captionInterTightSemiBold.variable,
+  captionInterTightBold.variable,
+  captionInterTightExtraBold.variable,
+  captionJetBrainsMonoMedium.variable,
+  captionJetBrainsMonoBold.variable,
+  captionPermanentMarker.variable,
+  captionUnboundedMedium.variable,
+  captionUnboundedBlack.variable,
 ].join(" ");

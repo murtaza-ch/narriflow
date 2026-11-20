@@ -7,10 +7,12 @@ import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote, Che
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
-  CAPTION_FONT_NAMES,
+  CAPTION_PICKER_FONT_NAMES,
   CAPTION_MOTIONS,
   CAPTION_POSITION_Y_DEFAULTS,
   CAPTION_PRESET_GROUPS,
+  captionSceneDefaultPositionY,
+  type CaptionSceneMeta,
   CAPTION_PRESETS,
   applyCaptionPresetLook,
   captionBlockAnimation,
@@ -32,13 +34,16 @@ import { captionActiveWordIndex, captionCueWordsAt, captionLayerAt } from "../ca
 import type { PlaybackClock } from "../playback-clock";
 import { CAPTION_SAMPLE_LOOP_SEC, CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "../../../../../../../_shared/caption-sample-cue";
 import { PresetCard } from "./preset-card";
+import { SceneSample } from "../../../../../../../_shared/caption-preset-preview";
 import {
   captionEmphasisChanges,
   captionEmphasisFits,
   captionEmphasisRow,
   captionPanelAnimations,
   captionPanelColors,
+  captionPanelScene,
   captionPanelStyle,
+  captionPositionReset,
   type CaptionEmphasisChip,
   type CaptionEmphasisIntent,
 } from "./captions-panel-model";
@@ -399,7 +404,10 @@ function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
   );
 
   let cue: ReactNode = null;
-  if (stage.width > 0) {
+  if (stage.width > 0 && captionPreset.scene) {
+    // A Scene Style's stage plays its own sample: the template's motion is the point.
+    cue = <SceneSample preset={captionPreset} width={stage.width} height={stage.height} captionTopPct={55} boost={2} animate={!reducedMotion} />;
+  } else if (stage.width > 0) {
     const blockCue = layer?.block ? (layer as CaptionBlockCueInput) : sampleBlock;
     if (blockCue) {
       const timeSource: CaptionTimeSource = layer ? (settledAt ?? playbackClock) : SETTLED_SAMPLE;
@@ -532,11 +540,11 @@ function FontChips({
   onChange,
 }: {
   value: string | null;
-  onChange: (font: (typeof CAPTION_FONT_NAMES)[number]) => void;
+  onChange: (font: (typeof CAPTION_PICKER_FONT_NAMES)[number]) => void;
 }) {
   return (
     <Flex gap="6px" wrap="wrap">
-      {CAPTION_FONT_NAMES.map((f) => (
+      {CAPTION_PICKER_FONT_NAMES.map((f) => (
         <Chip key={f} active={value === f} onClick={() => onChange(f)}>
           <Text as="span" fontSize="13px" style={captionFontStyle(f)}>
             {f}
@@ -647,8 +655,9 @@ function PositionSection({ style }: { style: CaptionDynamicStyle | null }) {
   const update = useCaptionUpdate();
   // A left-aligned style stores its block's left edge; its default is the style's guide.
   const defaultX = style?.align === "left" ? (style.leftGuidePct ?? 50) : 50;
-  const positionY = captionPreset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[captionPreset.position];
+  const positionY = captionPreset.positionY ?? (captionPreset.scene ? captionSceneDefaultPositionY(captionPreset.scene) : CAPTION_POSITION_Y_DEFAULTS[captionPreset.position]);
   const positionX = captionPreset.positionX ?? defaultX;
+  const reset = captionPositionReset(captionPreset);
   const activePosition =
     POSITIONS.find(
       (pos) => Math.abs(positionX - defaultX) < 5 && Math.abs(positionY - CAPTION_POSITION_Y_DEFAULTS[pos.id]) < 5,
@@ -660,7 +669,8 @@ function PositionSection({ style }: { style: CaptionDynamicStyle | null }) {
         ariaLabel="Caption position"
         value={activePosition}
         onChange={(pos) => {
-          if (pos !== "custom") update({ position: pos, positionX: undefined, positionY: undefined });
+          // A Scene Style's own anchor line is its default; a chosen position is stored.
+          if (pos !== "custom") update({ position: pos, positionX: undefined, positionY: captionPreset.scene ? CAPTION_POSITION_Y_DEFAULTS[pos] : undefined });
         }}
         items={POSITIONS.map((pos) => ({
           value: pos.id,
@@ -672,22 +682,15 @@ function PositionSection({ style }: { style: CaptionDynamicStyle | null }) {
           ),
         }))}
       />
-      {captionPreset.positionX !== undefined && (
+      {reset && (
         <Flex gap="12px" mt="8px" align="center">
           <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
-            X: {captionPreset.positionX.toFixed(1)}%
+            X: {positionX.toFixed(1)}%
           </Text>
           <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
-            Y: {captionPreset.positionY?.toFixed(1)}%
+            Y: {positionY.toFixed(1)}%
           </Text>
-          <Box
-            as="button"
-            ml="auto"
-            fontSize="12px"
-            color="studio.accentFg"
-            cursor="pointer"
-            onClick={() => update({ positionX: undefined, positionY: undefined })}
-          >
+          <Box as="button" ml="auto" fontSize="12px" color="studio.accentFg" cursor="pointer" onClick={() => update(reset)}>
             Reset
           </Box>
         </Flex>
@@ -1045,8 +1048,36 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
   );
 }
 
+/**
+ * A Scene Style's Customize tab: the template owns fonts, motion, shadows and strokes, so the panel
+ * offers what the template maps: size, position, the three colours and the emphasis row.
+ */
+function SceneCustomizeControls({ meta }: { meta: CaptionSceneMeta }) {
+  const { captionPreset } = useStudio("captionPreset");
+  const update = useCaptionUpdate();
+  const hero = meta.emphasis === "auto";
+  return (
+    <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
+      <SizeSection label="Size" />
+      <PositionSection style={null} />
+      <Box>
+        <SectionLabel>Colors</SectionLabel>
+        <Grid templateColumns={`repeat(${hero ? 3 : 2}, minmax(0, 1fr))`} gap="10px">
+          <ColorField label="Text" value={captionPreset.primaryColor} onChange={(v) => update({ primaryColor: v })} />
+          {hero ? <ColorField label="Hero" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} /> : <ColorField label="Accent" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} />}
+          <ColorField label={hero ? "Accent" : "Second"} value={captionPreset.accentColor ?? meta.colours.accent} onChange={(v) => update({ accentColor: v })} />
+        </Grid>
+      </Box>
+      {hero ? <EmphasisSection /> : null}
+      <DisplaySection dynamic />
+    </Stack>
+  );
+}
+
 function CustomizeControls() {
   const { captionPreset } = useStudio("captionPreset");
+  const scene = captionPanelScene(captionPreset);
+  if (scene) return <SceneCustomizeControls meta={scene} />;
   const style = captionPanelStyle(captionPreset);
   return style ? <DynamicCustomizeControls style={style} /> : <ClassicCustomizeControls />;
 }

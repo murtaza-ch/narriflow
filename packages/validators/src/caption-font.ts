@@ -24,6 +24,12 @@ export interface CaptionFontFace {
   readonly ascent: number;
   readonly descent: number;
   readonly capHeight: number;
+  /**
+   * Drawn only by a Scene Style's template (ADR 0021), never offered as a classic caption font:
+   * the Studio's font chips and the brand kit's font list leave it out. A preset that names it
+   * still parses and renders (the Scene Style presets' own `fontName`s are such faces).
+   */
+  readonly templateOnly?: true;
 }
 
 export const CAPTION_FONT_FACES = [
@@ -34,27 +40,42 @@ export const CAPTION_FONT_FACES = [
   { name: "Chakra Petch", file: "ChakraPetch-Bold.ttf", assName: "Chakra Petch Bold", weight: 700, style: "normal", ascent: 1.248, descent: 0.566, capHeight: 0.7 },
   { name: "Courier Prime", file: "CourierPrime-Bold.ttf", assName: "Courier Prime Bold", weight: 700, style: "normal", ascent: 0.9277, descent: 0.3906, capHeight: 0.5796 },
   { name: "Caprasimo", file: "Caprasimo-Regular.ttf", assName: "Caprasimo Regular", weight: 400, style: "normal", ascent: 0.918, descent: 0.229, capHeight: 0.6758 },
+  { name: "Caveat Brush", file: "CaveatBrush-Regular.ttf", assName: "Caveat Brush", weight: 400, style: "normal", ascent: 0.96, descent: 0.3, capHeight: 0.6605, templateOnly: true },
   { name: "Dela Gothic One", file: "DelaGothicOne-Regular.ttf", assName: "Dela Gothic One Regular", weight: 400, style: "normal", ascent: 1.16, descent: 0.288, capHeight: 0.726 },
   { name: "DM Serif Display", file: "DMSerifDisplay-Regular.ttf", assName: "DM Serif Display Regular", weight: 400, style: "normal", ascent: 1.036, descent: 0.335, capHeight: 0.66 },
   { name: "Instrument Serif", file: "InstrumentSerif-Italic.ttf", assName: "Instrument Serif Italic", weight: 400, style: "italic", ascent: 0.99, descent: 0.31, capHeight: 0.72 },
   { name: "Inter", file: "Inter-ExtraBold.ttf", assName: "Inter 28pt ExtraBold", weight: 800, style: "normal", ascent: 1.1079, descent: 0.3223, capHeight: 0.7275 },
   { name: "Inter Regular", file: "Inter-Regular.ttf", assName: "Inter 28pt Regular", weight: 400, style: "normal", ascent: 1.1079, descent: 0.3223, capHeight: 0.7275 },
   { name: "Inter SemiBold", file: "Inter-SemiBold.ttf", assName: "Inter 28pt SemiBold", weight: 600, style: "normal", ascent: 1.1079, descent: 0.3223, capHeight: 0.7275 },
+  { name: "Inter Tight SemiBold", file: "InterTight-SemiBold.ttf", assName: "Inter Tight SemiBold", weight: 600, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Inter Tight Bold", file: "InterTight-Bold.ttf", assName: "Inter Tight Bold", weight: 700, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Inter Tight ExtraBold", file: "InterTight-ExtraBold.ttf", assName: "Inter Tight ExtraBold", weight: 800, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "JetBrains Mono Medium", file: "JetBrainsMono-Medium.ttf", assName: "JetBrains Mono Medium", weight: 500, style: "normal", ascent: 1.02, descent: 0.3, capHeight: 0.73, templateOnly: true },
+  { name: "JetBrains Mono Bold", file: "JetBrainsMono-Bold.ttf", assName: "JetBrains Mono Bold", weight: 700, style: "normal", ascent: 1.02, descent: 0.3, capHeight: 0.73, templateOnly: true },
   { name: "Lilita One", file: "LilitaOne-Regular.ttf", assName: "Lilita One", weight: 400, style: "normal", ascent: 0.923, descent: 0.22, capHeight: 0.701 },
   { name: "Luckiest Guy", file: "LuckiestGuy-Regular.ttf", assName: "Luckiest Guy Regular", weight: 400, style: "normal", ascent: 0.9795, descent: 0.2461, capHeight: 0.7021 },
   { name: "Montserrat", file: "Montserrat-Black.ttf", assName: "Montserrat Black", weight: 900, style: "normal", ascent: 1.109, descent: 0.453, capHeight: 0.7 },
   { name: "Open Sans", file: "OpenSans-Bold.ttf", assName: "Open Sans Bold", weight: 700, style: "normal", ascent: 1.124, descent: 0.3179, capHeight: 0.7139 },
+  { name: "Permanent Marker", file: "PermanentMarker-Regular.ttf", assName: "Permanent Marker Regular", weight: 400, style: "normal", ascent: 1.1094, descent: 0.3174, capHeight: 0.7402, templateOnly: true },
   { name: "Oswald", file: "Oswald-Bold.ttf", assName: "Oswald Bold", weight: 700, style: "normal", ascent: 1.325, descent: 0.377, capHeight: 0.81 },
   { name: "Poppins", file: "Poppins-ExtraBold.ttf", assName: "Poppins ExtraBold", weight: 800, style: "normal", ascent: 1.135, descent: 0.627, capHeight: 0.705 },
   { name: "Righteous", file: "Righteous-Regular.ttf", assName: "Righteous", weight: 400, style: "normal", ascent: 0.9849, descent: 0.2568, capHeight: 0.7002 },
   { name: "Roboto", file: "Roboto-Bold.ttf", assName: "Roboto Bold", weight: 700, style: "normal", ascent: 0.9502, descent: 0.25, capHeight: 0.7109 },
   { name: "Titan One", file: "TitanOne-Regular.ttf", assName: "Titan One", weight: 400, style: "normal", ascent: 0.97, descent: 0.175, capHeight: 0.71 },
   { name: "Unbounded", file: "Unbounded-ExtraBold.ttf", assName: "Unbounded ExtraBold", weight: 800, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75 },
+  { name: "Unbounded Medium", file: "Unbounded-Medium.ttf", assName: "Unbounded Medium", weight: 500, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75, templateOnly: true },
+  { name: "Unbounded Black", file: "Unbounded-Black.ttf", assName: "Unbounded Black", weight: 900, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];
 
 export const CAPTION_FONT_NAMES = CAPTION_FONT_FACES.map((face) => face.name) as [
+  CaptionFontName,
+  ...CaptionFontName[],
+];
+
+/** The faces offered as classic caption fonts: every face but the template-only ones. */
+export const CAPTION_PICKER_FONT_NAMES = CAPTION_FONT_FACES.filter((face) => !("templateOnly" in face)).map((face) => face.name) as [
   CaptionFontName,
   ...CaptionFontName[],
 ];

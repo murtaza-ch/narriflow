@@ -26,3 +26,4 @@ Add an ADR when a decision is costly to reverse, would surprise a reader without
 - [0018: ElevenLabs Scribe transcribes every Project (v3; Urdu on v2); the language is pinned from the user's choice or a probe](0018-elevenlabs-scribe-transcription.md)
 - [0019: Postgres owns execution; Workflows schedules it](0019-serverless-execution.md)
 - [0020: Caption Blocks keep both renderers; shared geometry places every word](0020-caption-block-geometry.md)
+- [0021: Scene Styles are programs; both renderers only measure and paint a shared Caption Scene](0021-caption-scenes.md)

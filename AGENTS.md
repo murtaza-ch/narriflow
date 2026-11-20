@@ -23,6 +23,7 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
   - `services` — shared service layer; the real business logic lives here.
   - `validators` — zod schemas + shared caption/emoji constants.
   - `composition-plan` — shared Studio preview and export composition policy.
+  - `caption-scene` — Scene Style programs (one file per template) that build a Caption Scene shared by the Studio painter and the worker's ASS writer (ADR 0021).
   - `api-client` — the browser's typed client for the API: transport (Clerk Bearer, Workspace hint), cache scope, per-domain `queries`/`mutations`, the progress stream, and the generated public OpenAPI document. Import a domain from `@narriflow/api-client/<domain>`.
   - `mcp-core` — shared MCP tools, authentication, and transport support.
   - `auth` — Clerk helpers.

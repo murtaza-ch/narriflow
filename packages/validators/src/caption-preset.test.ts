@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   CAPTION_DYNAMIC_STYLES,
   CAPTION_PRESET_GROUPS,
+  CAPTION_SCENES,
+  CAPTION_SCENE_NAMES,
+  captionSceneDefaultPositionY,
   CAPTION_PRESETS,
   DEFAULT_CAPTION_PRESET,
   applyCaptionPresetLook,
@@ -39,15 +42,47 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 31 presets with unique ids and names, the Dynamic group first", () => {
-    expect(CAPTION_PRESETS).toHaveLength(31);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(31);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(31);
-    expect(CAPTION_PRESET_GROUPS[0]).toBe("Dynamic");
+  test("has 47 presets with unique ids and names, the Dynamic group first and the Motion group after it", () => {
+    expect(CAPTION_PRESETS).toHaveLength(47);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(47);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(47);
+    expect(CAPTION_PRESET_GROUPS.slice(0, 2)).toEqual(["Dynamic", "Motion"]);
     expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
-    for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic")) {
+    expect(CAPTION_PRESETS.filter((named) => named.group === "Motion")).toHaveLength(16);
+    for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic" && name !== "Motion")) {
       expect(CAPTION_PRESETS.filter((named) => named.group === group)).toHaveLength(6);
     }
+  });
+
+  test("Motion group presets, and only they, set a Scene Style named by their id", () => {
+    const motion = CAPTION_PRESETS.filter((named) => named.group === "Motion");
+    expect(motion.map((named) => named.id)).toEqual([...CAPTION_SCENE_NAMES]);
+    for (const named of CAPTION_PRESETS) expect(named.preset.scene !== undefined).toBe(named.group === "Motion");
+    for (const named of motion) {
+      const meta = CAPTION_SCENES[named.preset.scene!];
+      expect(named.preset.scene).toBe(named.id);
+      expect(named.preset.dynamic).toBeUndefined();
+      expect(named.name).toBe(meta.name);
+      expect(named.preset.fontSize).toBe(meta.bodyPx);
+      expect(named.preset.primaryColor).toBe(meta.colours.primary);
+      expect(named.preset.highlightColor).toBe(meta.colours.highlight);
+      expect(named.preset.wordsPerCue).toBe(meta.wordsPerCue);
+      expect(captionSceneDefaultPositionY(named.preset.scene!)).toBeCloseTo((meta.anchorLineY / 1920) * 100, 2);
+    }
+  });
+
+  test("a preset is a Dynamic Style or a Scene Style, never both", () => {
+    expect(captionPresetSchema.safeParse({ scene: "reveal", dynamic: "headline" }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ scene: "reveal" }).success).toBe(true);
+    expect(captionPresetSchema.safeParse({ scene: "nope" }).success).toBe(false);
+  });
+
+  test("applying a Scene Style keeps the user's placement and matching finds it again", () => {
+    const reveal = getCaptionPresetById("reveal")!;
+    const placed = applyCaptionPresetLook({ ...DEFAULT_CAPTION_PRESET, positionX: 30, positionY: 40, visible: false }, reveal);
+    expect(placed).toMatchObject({ scene: "reveal", positionX: 30, positionY: 40, visible: false });
+    expect(matchCaptionPreset(placed)?.id).toBe("reveal");
+    expect(matchCaptionPreset({ ...placed, primaryColor: "#123456" })).toBeUndefined();
   });
 
   test("Dynamic group presets, and only they, set a Dynamic Style", () => {

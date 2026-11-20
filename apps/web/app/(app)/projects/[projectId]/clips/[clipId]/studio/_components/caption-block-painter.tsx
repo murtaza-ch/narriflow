@@ -117,7 +117,7 @@ const measureCache = new Map<string, MeasuredWord>();
 let measureContext: CanvasRenderingContext2D | null = null;
 
 /** The face one word is drawn in, resolved for the DOM and for Canvas. */
-interface WordFace {
+export interface WordFace {
   /** The face's resolved CSS family (the next/font family, or the brand font's). */
   readonly requestedFamily: string;
   /** DOM font declarations, with the script fallbacks for the cue's language. */
@@ -130,7 +130,7 @@ interface WordFace {
   readonly ownScripts: readonly CaptionOwnScript[];
 }
 
-function wordFace(
+export function wordFace(
   slot: "text" | "hero",
   fontName: CaptionFontName,
   customFont: BrandFontChoice | null,
@@ -184,14 +184,14 @@ function canvasFonts(face: WordFace, language: string | null) {
  * Whether the faces that draw `text` have loaded: the requested face, and the
  * fallback chain when part of the text is in a script the face lacks.
  */
-function facesLoaded(text: string, face: WordFace, language: string | null): boolean {
+export function facesLoaded(text: string, face: WordFace, language: string | null): boolean {
   const fonts = canvasFonts(face, language);
   if (!document.fonts.check(fonts.requested, text)) return false;
   const needsFallback = captionGraphemes(text).some((cluster) => !captionFaceDraws(cluster, face.ownScripts));
   return !needsFallback || document.fonts.check(fonts.stack, text);
 }
 
-function loadFaces(text: string, face: WordFace, language: string | null): Promise<unknown> {
+export function loadFaces(text: string, face: WordFace, language: string | null): Promise<unknown> {
   const fonts = canvasFonts(face, language);
   return Promise.all([document.fonts.load(fonts.requested, text), document.fonts.load(fonts.stack, text)]);
 }
@@ -203,7 +203,7 @@ function loadFaces(text: string, face: WordFace, language: string | null): Promi
  * spacing and excludes the trailing spacing, as the shared geometry expects;
  * scripts that take no letter spacing are measured without it, as they draw.
  */
-function measureWord(text: string, face: WordFace, letterSpacingEm: number, direction: "ltr" | "rtl", language: string | null, cache: boolean): MeasuredWord {
+export function measureWord(text: string, face: WordFace, letterSpacingEm: number, direction: "ltr" | "rtl", language: string | null, cache: boolean): MeasuredWord {
   const font = canvasFonts(face, language).measure;
   const key = `${font}\0${letterSpacingEm}\0${direction}\0${text}`;
   const cached = measureCache.get(key);
@@ -442,7 +442,7 @@ export function useCaptionBlockPaint(
 // ─── Painting ────────────────────────────────────────────────────────────────
 
 /** Probed baseline offsets: per face and quarter-pixel size bucket, the exact size probed and its offset. */
-const baselineCache = new Map<string, { readonly fontPx: number; readonly offset: number }>();
+export const baselineCache = new Map<string, { readonly fontPx: number; readonly offset: number }>();
 
 /** Sizes share a probe per quarter pixel, so a resizing preview probes a few sizes, not every frame's. */
 const baselineKey = (face: WordFace, fontPx: number) =>
@@ -457,7 +457,7 @@ const baselineKey = (face: WordFace, fontPx: number) =>
  * is probed exactly; another size in the same bucket (a preview mid-resize)
  * follows the ascent from it. A pure cache read: render never forces layout.
  */
-function baselineOffsetPx(face: WordFace, fontPx: number): number | null {
+export function baselineOffsetPx(face: WordFace, fontPx: number): number | null {
   const probed = baselineCache.get(baselineKey(face, fontPx));
   return probed === undefined ? null : probed.offset + (fontPx - probed.fontPx) * face.ascent;
 }
@@ -467,7 +467,7 @@ function baselineOffsetPx(face: WordFace, fontPx: number): number | null {
  * box per face and size bucket, read together, then removed. Runs in a layout
  * effect, once a paint exists (its faces have loaded). True when it probed.
  */
-function probeBaselineOffsets(requests: readonly { readonly face: WordFace; readonly fontPx: number }[]): boolean {
+export function probeBaselineOffsets(requests: readonly { readonly face: WordFace; readonly fontPx: number }[]): boolean {
   const pending = new Map<string, { face: WordFace; fontPx: number }>();
   for (const request of requests) {
     const key = baselineKey(request.face, request.fontPx);

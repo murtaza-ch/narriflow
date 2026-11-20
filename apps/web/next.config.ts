@@ -38,6 +38,7 @@ const nextConfig: NextConfig = {
   transpilePackages: [
     "@narriflow/api-client",
     "@narriflow/caption-fonts",
+    "@narriflow/caption-scene",
     "@narriflow/ui",
     "@narriflow/validators",
   ],

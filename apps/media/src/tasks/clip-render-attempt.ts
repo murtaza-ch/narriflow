@@ -86,6 +86,7 @@ import {
 	bindCompositionPlanAudioInputs,
 	compileCompositionPlanAudioSchedule,
 	hdrColorOf,
+	renderOutputFrameRate,
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
 } from "../composition-ffmpeg-adapter";
@@ -1134,9 +1135,15 @@ function compileCaptionTrack(
 	fonts: Parameters<typeof compileCompositionPlanCaptions>[2],
 	context: Record<string, unknown>,
 	omitCodePoints?: ReadonlySet<number>,
+	fps?: number,
 ): CaptionTrack {
-	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints);
+	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints, fps);
 	for (const notice of track.notices) {
+		if (notice.code === "caption_scene_failed") {
+			// The cues burned as the classic line: the clip still renders.
+			log("error", notice.code, { ...context, phase: "caption_scene", disposition: "degraded", scene: notice.scene, cues: notice.cues, error: notice.message });
+			continue;
+		}
 		log("info", notice.code, {
 			...context,
 			phase: "caption_glyphs",
@@ -3739,6 +3746,9 @@ async function renderClipGroup(input: {
 		}
 	}
 
+	// Scene Style captions are written for the frame times of the rate the render is delivered at.
+	const outputRate = renderOutputFrameRate(probe);
+	const captionFps = outputRate.numerator / outputRate.denominator;
 	const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
 	let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
 	let compositionPlan: ClipCompositionPlan | null = null;
@@ -3756,6 +3766,7 @@ async function renderClipGroup(input: {
 				customFonts,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
 				omit,
+				captionFps,
 			);
 			recordCaptionWarnings(output, track);
 			await currentRenderAdapters().workspace.writeFile(output.subtitlePath, track.ass, "utf-8");
@@ -3942,6 +3953,8 @@ async function renderClipGroup(input: {
 				output.clipRenderId,
 				customFonts,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
+				undefined,
+				captionFps,
 			);
 			recordCaptionWarnings(output, captions);
 			if (captions.ass.length > 0) {

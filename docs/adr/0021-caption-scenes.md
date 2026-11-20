@@ -1,0 +1,20 @@
+# Scene Styles are programs; both renderers only measure and paint a shared Caption Scene
+
+**Status:** accepted by the owner, 2026-11-20, with the motion captions specification (`.scratch/motion-captions/spec.md`).
+
+Dynamic Styles are data (`CAPTION_DYNAMIC_STYLES`): a Caption Block lays out one cue, and two painters read the same table. The sixteen templates of the second caption wave are not data. They are shapes that travel between words, per-letter pieces, cue exits, the previous and next cue on screen, speaker sides, and detectors over the words (pauses, lists, numbers, speech rate). Writing each effect twice, once as ASS and once as DOM, would never stay in sync (ADR 0020 named this cost and kept effects few).
+
+## Decision
+
+One shared program per template computes a **Caption Scene** for all cues of a caption target at once: pieces with keyframe tracks in canvas px and clip ms (`packages/caption-scene`, browser-safe, depending on `@narriflow/validators` and `@narriflow/caption-fonts` only). Both renderers measure text and paint pieces; no layout or motion number lives in a renderer. The scene is a pure function of the cues, so playback, scrubbing, pause and export agree.
+
+- `evaluatePiece(piece, ms)` is the one evaluator. The Studio paints from it every tick (`caption-scene-painter.tsx`: a transformed container at each piece's pivot, one element per paint layer, no React state per frame).
+- The worker samples the same evaluator at the integer milliseconds libass is rendered at and writes ASS events whose tags imply those values at every frame (`apps/media/src/caption-scene-ass.ts`): linear `\move` and `\t` spans cut where the curve leaves a tolerance, `\org` at the pivot, shapes as `\p1` drawings, strokes of open paths as zero-area retraces with a border.
+- libass is the reference: where it does something CSS does not (a fixed 326 px camera, drawings aligned by box size, a hollow outline outside the glyph only, shear about the top of the aligned box) the Studio is made to agree, and the numbers live in the spec (section 7) and in tests against real libass.
+- Static facts a preset, the plan and the panel need (names, body size, anchor line, cue length, hero policy, colours, which slots take a brand template's colours) are data in `packages/validators/src/caption-scene.ts`; the programs sit in `@narriflow/caption-scene`. The plan carries `roles`, Word Keys and the utterance's speaker on the caption layer; a scene is built where it is painted, because geometry needs measurement (ADR 0020).
+
+## Consequences
+
+A new template is one file of code plus tests, judged by a triptych of the sample, the export and the Studio. The engine's tolerance is calibrated on a primitives sheet drawn by both renderers; a template passes at a measured export-versus-Studio difference. Subtitle files are unaffected. A Scene Style cannot use an uploaded brand font for its text (the template owns its faces).
+
+Operating rules from the review (2026-11-20): the Studio rebuilds a scene only when its content key changes (`sceneBuildKey`: cues, canvas, anchor, colours, size, language), never because the editor derived equal layers in new objects; it mounts only the pieces near the playhead and a tick evaluates only the pieces live at that time (`piece-index.ts`); a build measures each distinct text once (`memoMeasure`); a cue whose next cue starts earlier leaves at that start; a template that throws burns its cues as the classic line with a `caption_scene_failed` notice, the render goes on; a brand template's colours reach a style through its own `brand` map and never its ink on a fixed plate; the nine faces added for the templates are template-only (not offered as classic fonts).

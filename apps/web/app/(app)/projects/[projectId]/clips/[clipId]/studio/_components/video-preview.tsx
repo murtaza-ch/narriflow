@@ -55,6 +55,8 @@ import {
   systemSceneFontPreviewFamily,
 } from "./scene-fonts";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
+import { InteractiveSceneOverlay } from "./interactive-scene-overlay";
+import { classicCaptionLayerOf } from "./caption-cue-at";
 import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { MusicPreviewTrack } from "./music-preview-track";
@@ -1045,6 +1047,8 @@ export function VideoPreview() {
   useEffect(() => {
     reportCaptionLayers(plannedCaptionLayers);
   }, [plannedCaptionLayers, reportCaptionLayers]);
+  // A Scene Style draws every cue of the target at once, not the one under the playhead.
+  const sceneCaptionLayers = useMemo(() => plannedCaptionLayers.filter((layer) => layer.scene !== undefined), [plannedCaptionLayers]);
   const compositionPreview = useMemo(() => {
     if (compositionPlanResult?.status === "invalid") return null;
     return adoptCompositionPreviewResult(
@@ -1208,9 +1212,8 @@ export function VideoPreview() {
   const plannedTextLayers = compositionPreview?.layers.filter(
     (layer): layer is CompositionTextVisualLayer => layer.kind === "text",
   ) ?? [];
-  const plannedCaptionLayer = compositionPreview?.layers.find(
-    (layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption",
-  );
+  // The classic line: the one cue of a classic or Dynamic preset, or a Scene Style's untimed utterance (the scene draws the rest).
+  const plannedCaptionLayer = compositionPreview ? classicCaptionLayerOf(compositionPreview.layers) : undefined;
   const plannedLogoLayer = compositionPreview?.layers.find(
     (layer): layer is CompositionLogoVisualLayer => layer.kind === "logo",
   );
@@ -2277,6 +2280,9 @@ export function VideoPreview() {
             );
           })}
 
+          {sceneCaptionLayers.length > 0 ? (
+            <InteractiveSceneOverlay videoContainerRef={videoContainerRef} layers={sceneCaptionLayers} />
+          ) : null}
           {plannedCaptionLayer ? (
             <InteractiveCaptionOverlay
               videoContainerRef={videoContainerRef}

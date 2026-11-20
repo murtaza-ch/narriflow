@@ -5,6 +5,9 @@ import {
   captionBlockSeed,
   captionBlockWordsPerCue,
   captionDynamicStyle,
+  captionSceneDefaultPositionY,
+  captionSceneMeta,
+  type CaptionWordRole,
   captionRoleLook,
   captionSoftBreaks,
   captionWordIsMinor,
@@ -503,6 +506,17 @@ export interface CompositionCaptionVisualLayer {
   /** Present only for a Dynamic Style preset and a timed cue. Subtitles and the
    * clip timeline read `words[].text`, never `block.texts`. */
   readonly block?: CompositionCaptionBlock;
+  /** Present only for a Scene Style preset and a timed cue: what the scene program reads of this cue. */
+  readonly scene?: CompositionCaptionScene;
+}
+
+/** A cue of a Scene Style: roles parallel to `words`, Word Keys, and the utterance's diarized speaker. */
+export interface CompositionCaptionScene {
+  readonly roles: readonly CaptionWordRole[];
+  /** Word Keys parallel to `words`; null for dub captions. */
+  readonly keys: readonly (string | null)[];
+  /** The utterance's speaker; null for dubs and when diarization is off. */
+  readonly speaker: number | null;
 }
 
 export interface CompositionLogoVisualLayer {
@@ -2580,6 +2594,8 @@ interface PendingCaptionCue {
   readonly layerIndex: number | null;
   readonly emphasis: readonly CaptionEmphasisWord[];
   readonly blockWords: readonly CaptionCueBlockWord[];
+  /** The utterance's diarized speaker (Scene Styles); null for dub captions. */
+  readonly speaker: number | null;
 }
 
 function captionLayersForTarget(input: {
@@ -2594,6 +2610,7 @@ function captionLayersForTarget(input: {
   const preset = document.captionPreset;
   if (preset.visible === false) return [];
   const dynamicStyle = preset.dynamic ? captionDynamicStyle(preset.dynamic) : null;
+  // A Scene Style groups by its own cue length; only a Dynamic Style bounds it for its rows.
   const wordsPerCue = dynamicStyle ? captionBlockWordsPerCue(preset.wordsPerCue) : preset.wordsPerCue;
   const emojiFor = (word: string) => (preset.emojis && !dynamicStyle ? emojiForWord(word) : null);
   const destination = { x: 0, y: 0, width: target.width, height: target.height };
@@ -2601,7 +2618,7 @@ function captionLayersForTarget(input: {
     xPct: preset.positionX ?? (dynamicStyle?.align === "left" ? dynamicStyle.leftGuidePct ?? 50 : 50),
     yPct:
       preset.positionY ??
-      CAPTION_POSITION_Y_DEFAULTS[preset.position ?? "bottom"],
+      (preset.scene ? captionSceneDefaultPositionY(preset.scene) : CAPTION_POSITION_Y_DEFAULTS[preset.position ?? "bottom"]),
   };
   const punctuation = preset.punctuation !== false;
   const layers: CompositionCaptionVisualLayer[] = [];
@@ -2650,6 +2667,7 @@ function captionLayersForTarget(input: {
           layerIndex: layers.length,
           emphasis: emphasis.slice(range.start, range.end),
           blockWords: group.map((entry) => ({ text: entry.text, key: null })),
+          speaker: null,
         });
         layers.push({
           id: `layer:caption:dub:${segmentIndex}:${groupIndex}:${target.id}`,
@@ -2744,6 +2762,7 @@ function captionLayersForTarget(input: {
           layerIndex: cueIndex,
           emphasis: emphasis.slice(range.start, range.end),
           blockWords: group.map((entry) => ({ text: entry.text, key: captionWordKey(entry.word.startSec) })),
+          speaker: utterance.speaker,
         });
         layers.push({
           id: `layer:caption:${utterance.index}:${groupIndex}:${target.id}`,
@@ -2796,6 +2815,7 @@ function captionLayersForTarget(input: {
         untimed: true,
       }],
       blockWords: [],
+      speaker: utterance.speaker,
     });
     layers.push({
       id: `layer:caption:${utterance.index}:0:${target.id}`,
@@ -2832,18 +2852,23 @@ function withCaptionBlocks(
   emphasisWords: readonly string[] | undefined,
 ): CompositionCaptionVisualLayer[] {
   const preset = document.captionPreset;
-  if (!preset.dynamic || pending.length === 0) return layers;
+  if ((!preset.dynamic && !preset.scene) || pending.length === 0) return layers;
   const roles = assignCaptionRoles({
     cues: pending.map((cue) => cue.emphasis),
     language,
     overrides: document.studioEdits.captionEmphasis ?? {},
-    // A style without a hero (tile styles) never picks one, whatever the overrides say.
-    policy: captionDynamicStyle(preset.dynamic).emphasis ?? "auto",
+    // A style without a hero (a Dynamic tile style like Cutout) never picks one, whatever the overrides say. Every Scene Style
+    // draws a hero (`emphasis` is "auto" for all sixteen, Dialogue included: its hero word gets a marker), so none passes "never".
+    policy: (preset.scene ? captionSceneMeta(preset.scene).emphasis : captionDynamicStyle(preset.dynamic!).emphasis) ?? "auto",
     ...(emphasisWords ? { emphasisWords } : {}),
   });
   pending.forEach((cue, index) => {
     if (cue.layerIndex === null) return;
     const layer = layers[cue.layerIndex]!;
+    if (preset.scene) {
+      layers[cue.layerIndex] = { ...layer, scene: { roles: [...roles[index]!.roles], keys: cue.blockWords.map((word) => word.key), speaker: cue.speaker } };
+      return;
+    }
     const block = captionCueBlock(cue.blockWords, preset, language, layer.cueIndex, roles[index]!);
     if (block) layers[cue.layerIndex] = { ...layer, block };
   });

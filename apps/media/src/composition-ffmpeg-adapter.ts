@@ -2318,6 +2318,8 @@ export function compileCompositionPlanCaptions(
 	targetId: string,
  fonts?: RenderBrandFonts,
 	omitCodePoints?: ReadonlySet<number>,
+	/** The render's frame rate: Scene Style captions are written for its frame times (default 30). */
+	fps?: number,
 ): CaptionTrack {
 	const target = plan.targets.find((candidate) => candidate.id === targetId);
 	if (!target) throw new Error("clip_composition_target_missing");
@@ -2329,6 +2331,7 @@ export function compileCompositionPlanCaptions(
 				layer.kind === "caption",
 		),
 		canvas: target.canvas,
+		...(fps && fps > 0 ? { fps } : {}),
 	});
 }
 /** #RRGGBB -> 0xRRGGBB for the ffmpeg `color` / `showwaves` filters. */

@@ -192,11 +192,18 @@ export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionO
   Inter: ["Cyrillic", "Greek"],
   "Inter Regular": ["Cyrillic", "Greek"],
   "Inter SemiBold": ["Cyrillic", "Greek"],
+  "Inter Tight SemiBold": ["Cyrillic", "Greek"],
+  "Inter Tight Bold": ["Cyrillic", "Greek"],
+  "Inter Tight ExtraBold": ["Cyrillic", "Greek"],
+  "JetBrains Mono Medium": ["Cyrillic", "Greek"],
+  "JetBrains Mono Bold": ["Cyrillic", "Greek"],
   "Open Sans": ["Cyrillic", "Greek"],
   Roboto: ["Cyrillic", "Greek"],
   Montserrat: ["Cyrillic"],
   Oswald: ["Cyrillic"],
   Unbounded: ["Cyrillic"],
+  "Unbounded Medium": ["Cyrillic"],
+  "Unbounded Black": ["Cyrillic"],
 };
 
 const LATIN_RE = /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]*$/u;

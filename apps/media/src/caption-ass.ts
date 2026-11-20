@@ -25,6 +25,8 @@ import {
 } from "./caption-glyphs";
 import { captionWordSegmentEnd, type CompositionCaptionBlock, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import { captionUnturnedTravel, type PlacedDecoration, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
+import { ASS_BLUR_PER_SIGMA, type AssEvent, alphaByte, assAlpha, assColor, assFontSize, assText, assTime, escapeAssText, num } from "./ass-format";
+import { isSceneLayer, renderCaptionScene } from "./caption-scene-ass";
 import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock } from "./caption-block-geometry";
 import {
 	CAPTION_CUE_TILTS_DEG,
@@ -143,17 +145,6 @@ const LAYER = {
 /** Room left below fallback-face ink that hangs under the baseline. */
 const CAPTION_INK_MARGIN_EM = 0.06;
 
-/** libass `\blur` strength per unit of Gaussian standard deviation. */
-const ASS_BLUR_PER_SIGMA = 1 / 0.849;
-
-interface AssEvent {
-	readonly layer: number;
-	readonly startSec: number;
-	readonly endSec: number;
-	readonly style: "Caption" | "Shape";
-	readonly text: string;
-}
-
 interface Span {
 	readonly text: string;
 	/** 0 hidden, 1 fully visible. */
@@ -212,10 +203,23 @@ export interface CaptionEmojiOverlay {
 	readonly rotationDeg: number;
 }
 
+/** A Scene Style program or its writer threw: its cues burn as the classic line instead, and the render goes on. */
+export interface CaptionSceneFailedNotice {
+	readonly code: "caption_scene_failed";
+	/** The Scene Style that failed. */
+	readonly scene: string;
+	/** Scene cues of the target that fell back to the classic line. */
+	readonly cues: number;
+	readonly message: string;
+}
+
+/** What a caption burn-in reports besides what it left out: a glyph drawn by a fallback face, a Scene Style that fell back. */
+export type CaptionTrackNotice = CaptionGlyphNotice | CaptionSceneFailedNotice;
+
 export interface CaptionTrack {
 	readonly ass: string;
 	readonly emoji: readonly CaptionEmojiOverlay[];
-	readonly notices: readonly CaptionGlyphNotice[];
+	readonly notices: readonly CaptionTrackNotice[];
 	/** Code points no pinned face draws, left out of the text (`captionGlyphsOmitted`). */
 	readonly omitted: readonly OmittedGlyph[];
 	/** Plan emoji with no atlas cell and no monochrome glyph, whose overlay is skipped (`captionEmojiSkipped`). */
@@ -230,6 +234,7 @@ interface TrackCollector {
 	readonly omitted: Map<string, OmittedGlyph>;
 	readonly emojiSkipped: SkippedEmoji[];
 	readonly geometryUnavailable: CaptionGeometryUnavailable[];
+	readonly sceneFailures: CaptionSceneFailedNotice[];
 	readonly forcedOmissions: ReadonlySet<number>;
 }
 
@@ -244,17 +249,64 @@ export function renderCaptionTrack(input: {
 	canvas: { width: number; height: number };
  fonts?: RenderBrandFonts;
 	omitCodePoints?: ReadonlySet<number>;
+	/** Sampling rate of Scene Style tracks (default 30; libass interpolates between samples at the real rate). */
+	fps?: number;
 }): CaptionTrack {
 	const first = input.layers[0];
 	if (!first) return { ass: "", emoji: [], notices: [], omitted: [], emojiSkipped: [], geometryUnavailable: [] };
 	const face = (first.preset.fontAsset ? input.fonts?.get(brandFontKey(first.preset.fontAsset))?.face : null) ?? captionFontFace(first.preset.fontName);
-	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], forcedOmissions: input.omitCodePoints ?? new Set() };
-	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector));
-	const ass = [
+	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], sceneFailures: [], forcedOmissions: input.omitCodePoints ?? new Set() };
+	const classic = (cue: CompositionCaptionVisualLayer) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector);
+	// A Scene Style target is drawn by its program across all its cues; a layer without scene facts
+	// (an untimed utterance) keeps the classic line, which every preset can draw.
+	const sceneLayers = input.layers.filter(isSceneLayer);
+	const events = [...input.layers.filter((cue) => !isSceneLayer(cue)).flatMap(classic), ...sceneEvents(sceneLayers, input, collector, classic)];
+	const ass = assScript(events, input.canvas, first.preset, face);
+	return {
+		ass,
+		emoji: collector.emoji,
+		notices: [...collector.notices.values(), ...collector.sceneFailures],
+		omitted: [...collector.omitted.values()],
+		emojiSkipped: collector.emojiSkipped,
+		geometryUnavailable: collector.geometryUnavailable,
+	};
+}
+
+/**
+ * The events of a target's Scene Style layers. A program or the writer that throws must not fail the whole render
+ * (a clip is not lost to a caption look): the failure is logged and noticed on the track, and those layers burn as the
+ * classic line, the same degradation a block style takes when its geometry cannot be measured.
+ */
+function sceneEvents(
+	layers: readonly CompositionCaptionVisualLayer[],
+	input: { readonly canvas: { width: number; height: number }; readonly fps?: number | undefined },
+	collector: TrackCollector,
+	classic: (cue: CompositionCaptionVisualLayer) => AssEvent[],
+): AssEvent[] {
+	if (layers.length === 0) return [];
+	try {
+		return renderCaptionScene({ layers, canvas: input.canvas, report: collector, forcedOmissions: collector.forcedOmissions, ...(input.fps ? { fps: input.fps } : {}) }).events;
+	} catch (error) {
+		const scene = layers[0]!.preset.scene ?? "unknown";
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(JSON.stringify({ level: "warn", message: "caption_scene_failed", scene, cues: layers.length, error: message, fallback: "classic_line" }));
+		collector.sceneFailures.push({ code: "caption_scene_failed", scene, cues: layers.length, message });
+		return layers.flatMap(classic);
+	}
+}
+
+/** The ASS script of events: header, the `Caption` and `Shape` styles, one Dialogue per event. */
+export function assScript(
+	events: readonly AssEvent[],
+	canvas: { width: number; height: number },
+	preset: CaptionPreset,
+	face: CaptionFontFace = captionFontFace(preset.fontName),
+): string {
+	return [
 		"[Script Info]",
 		"ScriptType: v4.00+",
-		`PlayResX: ${input.canvas.width}`,
-		`PlayResY: ${input.canvas.height}`,
+		`PlayResX: ${canvas.width}`,
+		`PlayResY: ${canvas.height}`,
 		"WrapStyle: 2",
 		"ScaledBorderAndShadow: yes",
 		// libass does not kern unless asked; HarfBuzz measurement and the Studio do.
@@ -262,7 +314,7 @@ export function renderCaptionTrack(input: {
 		"",
 		"[V4+ Styles]",
 		"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-		`Style: Caption,${face.assName},${assFontSize(face, first.preset.fontSize)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,-1`,
+		`Style: Caption,${face.assName},${assFontSize(face, preset.fontSize)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,-1`,
 		"Style: Shape,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
 		"",
 		"[Events]",
@@ -273,7 +325,6 @@ export function renderCaptionTrack(input: {
 		),
 		"",
 	].join("\n");
-	return { ass, emoji: collector.emoji, notices: [...collector.notices.values()], omitted: [...collector.omitted.values()], emojiSkipped: collector.emojiSkipped, geometryUnavailable: collector.geometryUnavailable };
 }
 
 function cueEvents(
@@ -333,7 +384,7 @@ export function captionBlockGeometry(input: {
 }): CaptionBlockGeometry {
 	const { cue } = input;
 	const customFont = cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined;
-	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], forcedOmissions: new Set() };
+	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], sceneFailures: [], forcedOmissions: new Set() };
 	return measureCaptionBlock({ cue, canvas: input.canvas, slots: captionBlockSlots(cue, customFont, collector) });
 }
 
@@ -1086,43 +1137,6 @@ function spanText(
 	return `{${colors}}${assText(clusters, glyphs.requested, px, letterSpacingEm)}`;
 }
 
-/**
- * The ASS text of planned clusters. A cluster drawn by a fallback face is
- * wrapped in `\fn`/`\fs` overrides sized to the same em as the requested
- * face; text the requested face covers has no overrides at all.
- */
-function assText(
-	clusters: readonly PlannedCluster[],
-	requested: CaptionFace,
-	px: number,
-	letterSpacingEm: number,
-	/** Override block placed before each cluster (typewriter letters). */
-	beforeCluster?: (index: number) => string,
-): string {
-	let current = requested;
-	let spaced = true;
-	let text = "";
-	// libass stops joining and reordering cursive/complex scripts under non-zero `\\fsp`.
-	const switchTo = (face: CaptionFace, faceSpaced: boolean): string => {
-		const font = face !== current ? `\\fn${face.assName}\\fs${num(px * face.lineHeightEm)}` : "";
-		const spacing = faceSpaced !== spaced ? `\\fsp${faceSpaced ? num(letterSpacingEm * px) : 0}` : "";
-		return `{${font}${spacing}}`;
-	};
-	for (const [index, cluster] of clusters.entries()) {
-		text += beforeCluster?.(index) ?? "";
-		for (const part of cluster.parts) {
-			if (part.face !== current || part.spaced !== spaced) {
-				text += switchTo(part.face, part.spaced);
-				current = part.face;
-				spaced = part.spaced;
-			}
-			text += escapeAssText(part.text);
-		}
-	}
-	if (current !== requested || !spaced) text += switchTo(requested, true);
-	return text;
-}
-
 /** A Caption Block word's pose for its motion tags (spec 5.6, 5.7). */
 interface MotionPose {
 	/** Multiplies `offsetXEm`: the row's stagger sign. */
@@ -1404,40 +1418,4 @@ export function roundedRectPath(width: number, height: number, radius: number): 
 		`l 0 ${num(r)}`,
 		`b 0 ${num(r - k)} ${num(r - k)} 0 ${num(r)} 0`,
 	].join(" ");
-}
-
-/** libass sizes a font so ascent + descent (win metrics) equals the ASS font size. */
-function assFontSize(face: CaptionFontFace, emPx: number): number {
-	return emPx * (face.ascent + face.descent);
-}
-
-function assTime(seconds: number): string {
-	const totalCs = Math.max(0, Math.round(seconds * 100));
-	const h = Math.floor(totalCs / 360_000);
-	const m = Math.floor((totalCs % 360_000) / 6000);
-	const s = Math.floor((totalCs % 6000) / 100);
-	const cs = totalCs % 100;
-	return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
-}
-
-function assColor(hex: string): string {
-	return `&H${hex.slice(5, 7)}${hex.slice(3, 5)}${hex.slice(1, 3)}&`.toUpperCase();
-}
-
-/** ASS alpha is inverse opacity: 00 opaque, FF transparent. */
-function assAlpha(opacity: number): string {
-	return `&H${alphaByte(opacity).toString(16).toUpperCase().padStart(2, "0")}&`;
-}
-
-function alphaByte(opacity: number): number {
-	return Math.round((1 - Math.max(0, Math.min(1, opacity))) * 255);
-}
-
-function num(value: number): string {
-	return String(Math.round(value * 100) / 100);
-}
-
-/** Braces and backslashes would open override blocks or escapes in ASS text. */
-function escapeAssText(text: string): string {
-	return text.replace(/[{}\\]/g, "");
 }
