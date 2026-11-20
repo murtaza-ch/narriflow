@@ -1849,6 +1849,16 @@ const TextLayerChip = memo(function TextLayerChip({
   );
 });
 
+/**
+ * React bubbles events from portalled popovers (the music block menu) through
+ * the component tree. Timeline handlers act only on events that started in
+ * their own DOM; the menu's events must still reach `document` untouched, or
+ * its sliders stop dragging.
+ */
+function isOwnDomEvent(event: { currentTarget: EventTarget; target: EventTarget }) {
+  return (event.currentTarget as Node).contains(event.target as Node);
+}
+
 export function Timeline() {
   const {
     isPlaying,
@@ -2221,6 +2231,7 @@ export function Timeline() {
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
+      if (!isOwnDomEvent(e)) return;
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.15 : 0.15;
       setTimelineZoom((prev: number) =>
@@ -2494,7 +2505,7 @@ export function Timeline() {
               h="100%"
               onPointerMove={(event) => {
                 const line = hoverLineRef.current;
-                if (!line || event.pointerType === "touch") return;
+                if (!line || event.pointerType === "touch" || !isOwnDomEvent(event)) return;
                 const x = Math.min(LEFT_GUTTER + totalWidth, Math.max(LEFT_GUTTER, event.clientX - event.currentTarget.getBoundingClientRect().left));
                 line.style.opacity = "1";
                 line.style.transform = `translate3d(${x}px, 0, 0)`;

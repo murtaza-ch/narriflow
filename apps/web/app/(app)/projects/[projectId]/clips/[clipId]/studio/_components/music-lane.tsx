@@ -62,11 +62,6 @@ interface GesturePreview {
   tipEdge: "start" | "end";
 }
 
-/** Keeps an event inside the block menu from reaching timeline handlers. */
-function stopTimelineEvent(event: { stopPropagation: () => void }) {
-  event.stopPropagation();
-}
-
 export interface MusicLaneProps {
   left: number;
   top: number;
@@ -812,18 +807,7 @@ function MusicBlockMenu({
       unmountOnExit
     >
       <Portal>
-        {/* React bubbles portal events through the component tree, so without
-            this the timeline under the menu would track the hover line, zoom
-            on wheel and take clicks meant for the menu. */}
-        <Popover.Positioner
-          onPointerDown={stopTimelineEvent}
-          onPointerMove={stopTimelineEvent}
-          onPointerUp={stopTimelineEvent}
-          onClick={stopTimelineEvent}
-          onDoubleClick={stopTimelineEvent}
-          onContextMenu={stopTimelineEvent}
-          onWheel={stopTimelineEvent}
-        >
+        <Popover.Positioner>
           <Popover.Content
             w="260px"
             p="4"
