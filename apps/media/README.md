@@ -35,6 +35,8 @@ uv run --project apps/media --extra deploy modal run apps/media/modal_app.py::ve
 uv run --project apps/media --extra deploy modal run apps/media/modal_app.py::verify_lean_runtime
 ```
 
+After every image rebuild, set the API Worker secrets to the returned ids before sending work: render `id` → `MEDIA_RENDER_TOOLCHAIN_FINGERPRINT`, lean `id` → `MEDIA_FETCH_TOOLCHAIN_FINGERPRINT` (`wrangler secret put` in `apps/api`, and `apps/api/.dev.vars`). Every prepare, render, fetch and dub checks its image against these values before starting. A stale value fails all of that work with `*_runtime_invalid`.
+
 These commands require authenticated Modal access. Image verification and Linux golden/crash gates must pass before the cutover; local macOS parity does not establish Linux parity.
 
 The reference-only Modal bridge is split into `narriflow_media.bridge` and the SDK adapters in `bridge_runtime`. Raw-body HMAC verification precedes any durable lookup. Immutable transport intent rejects changed content for a delivery ID before spawn. A durable receipt replays the recorded call ID; a bounded 30-second transport slot permits recovery when a bridge crashes or loses the spawn acknowledgement. Duplicate heavy calls still have to acquire one executor owner through the API before starting native work. Status reads platform call metadata, and cancellation only targets a call bound to the recorded invocation. These facts never settle a domain operation.

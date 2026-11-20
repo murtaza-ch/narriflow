@@ -48,6 +48,16 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 export const clipPreparationIdentity = (epoch:number,clipId:string,bindingHash:string)=>uuidV5(namespace,JSON.stringify([epoch,clipId,bindingHash]));
 export const clipPreparationExecutionInputHash = (id:string,bindingHash:string)=>digest(["clip-preparation-v1",id,bindingHash]);
 const deadlineMs = 45 * 60_000;
+/** Failures before process start (runtime check, start confirmation) never
+ * charge, so they need their own budget or a deterministic pre-start failure
+ * re-invokes Modal until the 45-minute deadline. Mirrors render groups. */
+export const CLIP_PREPARATION_MAX_UNCHARGED_ATTEMPTS = 5;
+/** Every attempt ends in finishFailure, which advances generation exactly once
+ * per retry, so generation counts finished attempts including the current one. */
+export const clipPreparationUnchargedAttempts = (job: Pick<ClipPreparation, "generation" | "chargedAttempts">) =>
+  Math.max(0, job.generation - job.chargedAttempts);
+export const clipPreparationRetryDelayMs = (job: Pick<ClipPreparation, "generation" | "chargedAttempts">) =>
+  5000 * 2 ** Math.max(job.chargedAttempts, clipPreparationUnchargedAttempts(job) - 1);
 export class ClipPreparationError extends Error {
   constructor(readonly code: "clip_preparation_unavailable" | "clip_preparation_input_invalid", readonly preparationId?: string) { super(code); this.name = "ClipPreparationError"; }
 }
@@ -481,11 +491,12 @@ export class ClipPreparationService {
   }
 
   private async finishFailure(tx: Tx, job: ClipPreparation, clock: Date, code: string, retryable: boolean): Promise<{ dispatchIds: string[] }> {
-    const retry = retryable && job.chargedAttempts < 3 && clock < job.operationDeadlineAt;
+    const uncharged = clipPreparationUnchargedAttempts(job);
+    const retry = retryable && job.chargedAttempts < 3 && uncharged < CLIP_PREPARATION_MAX_UNCHARGED_ATTEMPTS && clock < job.operationDeadlineAt;
     await this.revoke(tx, job, clock, code);
     const ended = await tx.clipPreparation.update({ where: { id: job.id }, data: { status: retry ? "queued" : "failed", generation: retry ? { increment: 1 } : undefined,
       attemptToken: retry ? null : job.attemptToken, executorOwner: null, leaseExpiresAt: null, result: Prisma.DbNull, errorCode: code,
-      retryAt: retry ? new Date(Math.min(job.operationDeadlineAt.getTime(), clock.getTime() + 5000 * 2 ** job.chargedAttempts)) : null, completedAt: retry ? null : clock } });
+      retryAt: retry ? new Date(Math.min(job.operationDeadlineAt.getTime(), clock.getTime() + clipPreparationRetryDelayMs(job))) : null, completedAt: retry ? null : clock } });
     if (!retry) return { dispatchIds: await this.wakeGroups(tx, ended) };
     const registration = await appendExecutionDispatch(tx, { deploymentEpoch: ended.deploymentEpoch, kind: "operation_driver", subject: { kind: "clip_preparation", id: ended.id }, generation: ended.generation,
       inputHash: ended.inputHash, dueAt: ended.retryAt! });
