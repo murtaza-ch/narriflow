@@ -16,6 +16,11 @@ import { sampleFrames } from "../frames";
  * (rounded to px) and 1.62 cap heights tall, radius 10, centred caps on a 2 px black split line, in
  * centred rows with a 10 px gap, the block centred on y 1290. The bottom flap is a copy of the
  * bottom half and of the word clipped to it, turning about the split line (`flapPose`).
+ *
+ * Real speech leaves no gap between cues (the sample has 330 ms), so a board never leaves before its last
+ * word has landed and been readable for `READ` ms: the next board waits, a card with no room to flip back
+ * holds its word until the board cuts, and a word whose board is late starts its flap as the board appears
+ * (a hero's blank clatter only when it still fits).
  */
 
 export const FLAP_DEMO: DemoScript = {
@@ -45,6 +50,8 @@ const BLANK_FLAP = 130;
 const EARLY = 70;
 const EXIT_FLAP = 80;
 const EXIT_WINDOW = 180;
+/** A card shows its landed word at least this long before it flips back to blank. */
+const READ = 150;
 const BOARD_IN = 110;
 const BOARD_FROM = 0.96;
 const SHADOW = { alpha: 0.6, sigma: 5 } as const;
@@ -180,6 +187,9 @@ function buildCue(cue: SceneCue, cueNumber: number, boardIn: number, visEnd: num
 
   const pieces: Piece[] = [];
   const stagger = Math.min(25, (EXIT_WINDOW - EXIT_FLAP - 20) / Math.max(1, cue.words.length - 1));
+  // The board stays up until its last word has landed and been read (`build`). Its cards flip back to blank after that,
+  // or, when the next board leaves no room for the last card's flip, all hold their words until the board cuts.
+  const flipsBack = Math.max(...cue.words.map((word) => flapClock(word, boardIn))) + FLAP + READ <= visEnd - EXIT_FLAP;
 
   for (const row of rows) {
     for (const card of row.cards) {
@@ -194,18 +204,16 @@ function buildCue(cue: SceneCue, cueNumber: number, boardIn: number, visEnd: num
       const radius = RADIUS * u;
       const id = (part: string) => `flap:${cueNumber}:c${card.index}:${part}`;
 
-      // The sample's clock for this card.
-      const s = word.startMs - EARLY;
-      // The sample's exit slot, but never before the word's own flap has landed (fast speech puts a cue's last word
-      // inside the window): the flip back still ends with the board.
-      const exitAt = Math.min(Math.max(visEnd - EXIT_WINDOW + card.index * stagger, s + FLAP), visEnd - EXIT_FLAP);
+      // The sample's clock for this card, or the board's entry when the board is late (`flapClock`).
+      const s = flapClock(word, boardIn);
+      // The sample's exit slot, once the word has been read.
+      const exitAt = flipsBack ? Math.min(Math.max(visEnd - EXIT_WINDOW + card.index * stagger, s + FLAP + READ), visEnd - EXIT_FLAP) : visEnd;
       const swings: Swing[] = [];
-      if (card.hero) swings.push({ from: s - BLANK_FLAP - 20, dur: BLANK_FLAP, until: s - 20, kind: "blank" });
-      if (s < exitAt) swings.push({ from: s, dur: FLAP, until: Math.min(s + FLAP, exitAt), kind: "word" });
-      swings.push({ from: Math.max(s, exitAt), dur: EXIT_FLAP, until: exitAt + EXIT_FLAP, kind: "exit" });
-      const topWindow = s < exitAt ? { from: s, to: exitAt } : null;
-      const bottomFrom = Math.max(Math.min(s + FLAP, exitAt), s);
-      const bottomWindow = bottomFrom < exitAt + EXIT_FLAP ? { from: bottomFrom, to: exitAt + EXIT_FLAP } : null;
+      if (card.hero && s - BLANK_FLAP - 20 >= boardIn) swings.push({ from: s - BLANK_FLAP - 20, dur: BLANK_FLAP, until: s - 20, kind: "blank" });
+      swings.push({ from: s, dur: FLAP, until: s + FLAP, kind: "word" });
+      if (flipsBack) swings.push({ from: exitAt, dur: EXIT_FLAP, until: exitAt + EXIT_FLAP, kind: "exit" });
+      const topWindow = { from: s, to: exitAt };
+      const bottomWindow = { from: s + FLAP, to: flipsBack ? exitAt + EXIT_FLAP : visEnd };
 
       const textLeft = card.left + (card.width - card.boxWidth) / 2;
       const baselineY = splitY + card.cap / 2;
@@ -281,8 +289,7 @@ function buildCue(cue: SceneCue, cueNumber: number, boardIn: number, visEnd: num
         ),
       );
 
-      if (topWindow) pieces.push(textPiece("top", topWindow, clipTop));
-      if (bottomWindow) pieces.push(textPiece("bottom", bottomWindow, clipBottom));
+      pieces.push(textPiece("top", topWindow, clipTop), textPiece("bottom", bottomWindow, clipBottom));
 
       // The flaps: the bottom half (and the word's lower half on it) swinging down about the split line.
       for (const swing of swings) {
@@ -324,19 +331,28 @@ function buildCue(cue: SceneCue, cueNumber: number, boardIn: number, visEnd: num
   return clampToSafeArea(pieces, space.safe, input.measure);
 }
 
+/** When a word's flap starts: `EARLY` before it is spoken, or as its board appears if the board is later than that. */
+const flapClock = (word: SceneCue["words"][number], boardIn: number) => Math.max(word.startMs - EARLY, boardIn);
+
 export const flapProgram: SceneProgram = {
   build(input) {
     // Each board enters just before its first flap and leaves as the next one enters, or at its cue's end (the last word
-    // plus the scene cue tail) when the next cue is a long pause away: a board is not held through silence.
-    const boardIns = input.cues.map((cue) => {
-      const first = cue.words[0]!;
-      return first.startMs - EARLY - (first.role === "hero" ? BLANK_FLAP + 20 : 0) - BOARD_IN;
+    // plus the scene cue tail) when the next cue is a long pause away: a board is not held through silence. It never
+    // leaves before its last word has landed and been read; the next board enters after it.
+    const planned = input.cues.map((cue) => {
+      const first = cue.words[0];
+      return first ? first.startMs - EARLY - (first.role === "hero" ? BLANK_FLAP + 20 : 0) - BOARD_IN : Number.POSITIVE_INFINITY;
     });
-    return {
-      pieces: input.cues.flatMap((cue, number) => {
-        const visEnd = Math.min(boardIns[number + 1] ?? Number.POSITIVE_INFINITY, cue.endMs);
-        return cue.words.length === 0 || visEnd <= boardIns[number]! ? [] : buildCue(cue, number, boardIns[number]!, visEnd, input);
-      }),
-    };
+    const pieces: Piece[] = [];
+    let previousEnd = Number.NEGATIVE_INFINITY;
+    input.cues.forEach((cue, number) => {
+      if (cue.words.length === 0) return;
+      const boardIn = Math.max(planned[number]!, previousEnd);
+      const landed = Math.max(...cue.words.map((word) => flapClock(word, boardIn))) + FLAP;
+      const visEnd = Math.max(Math.min(planned[number + 1] ?? Number.POSITIVE_INFINITY, cue.endMs), landed + READ);
+      pieces.push(...buildCue(cue, number, boardIn, visEnd, input));
+      previousEnd = visEnd;
+    });
+    return { pieces };
   },
 };

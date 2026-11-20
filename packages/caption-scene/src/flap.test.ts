@@ -220,25 +220,50 @@ describe("Flap motion", () => {
     expect(second.toMs - first.toMs).toBe(25);
   });
 
-  test("fast speech: a cue's last word keeps its card until its flap has landed, and the flip back still ends with the board", () => {
-    // The next cue starts right after: its board enters 180 ms before it, inside the last word's speech.
+  test("fast speech: every word lands and is read before its board leaves; the next board waits", () => {
+    // Real speech leaves no gap between cues: the next board would enter 180 ms before its first word, inside the last word's flap.
     const tight = demoCues({ lines: ["a:b b:b@200", "c:b d:b"], options: { cueGap: 0, lead: 400 } }).cues;
     const list = build(tight);
     const last = tight[0]!.words[1]!;
+    const landed = last.startMs - 70 + 220;
     const boardEnd = find(list, 0, 1, "card")!.toMs;
-    expect(boardEnd).toBe(tight[1]!.words[0]!.startMs - 70 - 110);
+    expect(tight[1]!.words[0]!.startMs - 70 - 110).toBeLessThan(landed);
+    // The board stays until the last word has landed and been read for 150 ms; the next board enters as it leaves.
+    expect(boardEnd).toBe(landed + 150);
+    expect(find(list, 1, 0, "card")!.fromMs).toBe(boardEnd);
+    // The word's flap runs whole and its halves hold until the board cuts: there is no room to flip back.
+    expect(need<ShapePiece>(find(list, 0, 1, "flap-word")).toMs).toBe(landed);
+    expect(need<TextPiece>(find(list, 0, 1, "top")).toMs).toBe(boardEnd);
+    expect(need<TextPiece>(find(list, 0, 1, "bottom"))).toMatchObject({ fromMs: landed, toMs: boardEnd });
+    expect(find(list, 0, 1, "flap-exit")).toBeUndefined();
+    // No card flips back when the last one cannot: the first card holds its word too.
+    expect(find(list, 0, 0, "flap-exit")).toBeUndefined();
+    expect(need<TextPiece>(find(list, 0, 0, "top")).toMs).toBe(boardEnd);
+    // The next board's first word, already due, flaps as its board appears.
+    expect(need<ShapePiece>(find(list, 1, 0, "flap-word")).fromMs).toBe(boardEnd);
+  });
+
+  test("fast speech: a late hero first on its board drops its blank clatter rather than its word's timing", () => {
+    const tight = demoCues({ lines: ["a:b b:b@200", "c:h d:b"], options: { cueGap: 0, lead: 400 } }).cues;
+    const list = build(tight);
+    const boardIn = find(list, 1, 0, "card")!.fromMs;
+    expect(boardIn).toBeGreaterThan(tight[1]!.words[0]!.startMs - 70 - 150 - 110);
+    expect(find(list, 1, 0, "flap-blank")).toBeUndefined();
+    expect(need<ShapePiece>(find(list, 1, 0, "flap-word")).fromMs).toBe(Math.max(tight[1]!.words[0]!.startMs - 70, boardIn));
+  });
+
+  test("a card flips back only once its word has been read for 150 ms", () => {
+    // Room for the flip but not for the sample's slot: the last card flips back as late as the board allows.
+    const list = build([
+      { index: 0, startMs: 0, endMs: 900, speaker: 0, language: "en", words: [{ text: "a", startMs: 300, endMs: 400, role: "body", key: null }, { text: "b", startMs: 400, endMs: 600, role: "body", key: null }] },
+      { index: 1, startMs: 900, endMs: 2000, speaker: 0, language: "en", words: [{ text: "c", startMs: 1000, endMs: 1300, role: "body", key: null }] },
+    ]);
+    const boardEnd = find(list, 0, 1, "card")!.toMs;
+    expect(boardEnd).toBe(1000 - 70 - 110);
     const exit = need<ShapePiece>(find(list, 0, 1, "flap-exit"));
-    // The sample's slot (boardEnd - 180 + 25) would cut the word at once; instead it flips as late as the board allows.
-    expect(boardEnd - 180 + 25).toBeLessThan(last.startMs - 70 + 220);
-    expect(exit.fromMs).toBe(Math.min(last.startMs - 70 + 220, boardEnd - 80));
-    expect(exit.toMs).toBe(boardEnd);
-    expect(need<TextPiece>(find(list, 0, 1, "top")).toMs).toBe(exit.fromMs);
-    // A word that starts only after the flip's slot has begun shows on the bottom half under the blank flap.
-    const late = demoCues({ lines: ["a:b b:b@60", "c:b d:b"], options: { cueGap: 0, lead: 400 } }).cues;
-    const lateList = build(late);
-    const lateEnd = find(lateList, 0, 1, "card")!.toMs;
-    expect(late[0]!.words[1]!.startMs - 70).toBeGreaterThanOrEqual(lateEnd - 80);
-    expect(find(lateList, 0, 1, "top")).toBeUndefined();
+    expect(exit.fromMs).toBe(Math.min(Math.max(boardEnd - 180 + 25, 400 - 70 + 220 + 150), boardEnd - 80));
+    expect(exit.fromMs).toBeGreaterThanOrEqual(400 - 70 + 220 + 150);
+    expect(exit.toMs).toBe(exit.fromMs + 80);
   });
 });
 
