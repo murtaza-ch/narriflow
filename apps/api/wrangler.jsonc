@@ -37,5 +37,5 @@
   ],
   // PostgreSQL admission is reopened only after migrations and runtime wiring.
   // RENDER_MAX_ADMITTED_GROUPS plus publication and lean containers must fit the Modal plan's limit.
-  "vars": { "ADMISSION_STATE": "open", "APP_ENV": "development", "TRUSTED_CLIENT_IP_HEADER": "cf-connecting-ip", "RENDER_MAX_ADMITTED_GROUPS": "60" }
+  "vars": { "ADMISSION_STATE": "open", "APP_ENV": "development", "TRUSTED_CLIENT_IP_HEADER": "cf-connecting-ip", "RENDER_MAX_ADMITTED_GROUPS": "60", "AUDIO_LIBRARY_PUBLIC_ORIGIN": "https://pub-2d1f824c186146b8ade40a818acfee53.r2.dev" }
 }

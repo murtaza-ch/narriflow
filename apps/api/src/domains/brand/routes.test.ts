@@ -19,6 +19,7 @@ import { type BrandRouteDeps, createBrandRoutes } from "./routes";
 
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 const PROFILE_ID = "22222222-2222-4222-8222-222222222222";
+const AUDIO_ID = "33333333-3333-4333-8333-333333333333";
 const TEMPLATE_ID = "33333333-3333-4333-8333-333333333333";
 const JOB_ID = "44444444-4444-4444-8444-444444444444";
 const WORKSPACE_ID = "workspace-a";
@@ -361,6 +362,31 @@ describe("literal paths and input", () => {
     const response = await request(`/brand-profiles/${PROFILE_ID}`);
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: "brand_profile_not_found" });
+  });
+
+  test("the audio list and playback routes pass the service's curated row through unchanged", async () => {
+    const { services, request } = harness();
+    const row = {
+      id: AUDIO_ID,
+      kind: "music",
+      scope: "curated",
+      title: "Sneaky Snitch",
+      moodTags: ["Popular"],
+      durationSec: 120,
+      favorited: false,
+      previewUrl: "https://library.test/audio-library/music/abc.mp3",
+      artist: "Kevin MacLeod",
+      license: "cc_by_4",
+      attribution: '"Sneaky Snitch" Kevin MacLeod (incompetech.com)',
+    };
+    services.audioAssets!.listAssets!.mockImplementation(async () => ({ assets: [row], moodTags: ["Popular"], nextOffset: null }));
+    services.audioAssets!.getPlaybackSource!.mockImplementation(async () => ({ url: row.previewUrl, durationSec: 120, attribution: row.attribution }));
+    const list = await request("/audio-assets?kind=music");
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({ assets: [row], moodTags: ["Popular"], nextOffset: null });
+    const playback = await request(`/audio-assets/${AUDIO_ID}/playback-url`);
+    expect(playback.status).toBe(200);
+    expect(await playback.json()).toEqual({ url: row.previewUrl, durationSec: 120, attribution: row.attribution });
   });
 
   test("a malformed audio id keeps its legacy refusal", async () => {

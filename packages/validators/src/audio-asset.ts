@@ -31,6 +31,10 @@ export type PresignAudioUploadInput = z.infer<typeof presignAudioUploadSchema>;
 export const audioAssetKindSchema = z.enum(["music", "sfx"]);
 export type AudioAssetKindInput = z.infer<typeof audioAssetKindSchema>;
 
+/** Licence of a curated library row (user uploads have none). */
+export const audioAssetLicenseSchema = z.enum(["cc0", "cc_by_4"]);
+export type AudioAssetLicenseInput = z.infer<typeof audioAssetLicenseSchema>;
+
 export const finalizeAudioUploadSchema = z.object({
   key: z.string().min(1).max(512),
   kind: audioAssetKindSchema,

@@ -1,0 +1,22 @@
+{
+  "_README": "FreePD (CC0) mirror selection rules. fetch lists each folder (`<folder>/?ls`), picks `take` tracks per folder closest to targetSec (skipping anything outside minSec..maxSec and titles already taken), and writes the result to freepd-selection.json. Folders not listed (country, rock, misc, unsorted) are skipped on purpose.",
+  "baseUrl": "https://a.ocv.me/pub/stuff/music/freepd/",
+  "minSec": 30,
+  "maxSec": 900,
+  "targetSec": 150,
+  "fallbackArtist": "FreePD",
+  "folders": {
+    "upbeat": { "moods": ["Upbeat", "Happy"], "take": 14 },
+    "comedy": { "moods": ["Funny"], "take": 16 },
+    "chill": { "moods": ["Chill"], "take": 12 },
+    "epic": { "moods": ["Epic", "Cinematic"], "take": 14 },
+    "scoring": { "moods": ["Cinematic"], "take": 8 },
+    "classical": { "moods": ["Cinematic"], "take": 5 },
+    "fantasy": { "moods": ["Cinematic"], "take": 5 },
+    "romantic": { "moods": ["Romantic"], "take": 9 },
+    "horror": { "moods": ["Dark", "Suspense"], "take": 9 },
+    "world": { "moods": ["World"], "take": 9 },
+    "electronic": { "moods": ["Electronic"], "take": 6 },
+    "jazz": { "moods": ["Jazz"], "take": 6 }
+  }
+}

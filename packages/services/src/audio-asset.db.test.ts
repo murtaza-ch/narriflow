@@ -205,7 +205,7 @@ dbDescribe("Audio library PostgreSQL contracts", () => {
     expect(first.assets[0]).not.toHaveProperty("playbackUrl");
     expect(first.assets[0]).not.toHaveProperty("storageKey");
     expect(storage.presignDownloadUrl).not.toHaveBeenCalled();
-    expect(await service.getPlaybackSource(userId, a.id, scope())).toEqual({ url: `https://audio.example.test/${a.storageKey}`, durationSec: 10 });
+    expect(await service.getPlaybackSource(userId, a.id, scope())).toEqual({ url: `https://audio.example.test/${a.storageKey}`, durationSec: 10, attribution: null });
     expect(storage.presignDownloadUrl).toHaveBeenCalledTimes(1);
   })));
 

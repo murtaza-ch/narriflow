@@ -1,0 +1,1 @@
+{"rules":[{"allowed":{"origins":["http://localhost:3000","http://127.0.0.1:3000","https://narriflow-dev.vercel.app"],"methods":["GET","HEAD"],"headers":["Range"]},"exposeHeaders":["Content-Length","Content-Range","Accept-Ranges","ETag"],"maxAgeSeconds":86400}]}

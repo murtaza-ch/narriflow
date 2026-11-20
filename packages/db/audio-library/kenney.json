@@ -1,0 +1,497 @@
+{
+  "_README": "Kenney CC0 sound-effect selection. Each rule matches file names (without extension) inside a pack and takes the first `take` in natural order. {n} is the first capture as a number, {n1} is that plus one. Footsteps, mining and engine sounds are skipped on purpose: game-only. The jingles were not auditioned; they ship as short stingers under Success.",
+  "packs": [
+    "interface-sounds",
+    "impact-sounds",
+    "ui-audio",
+    "digital-audio",
+    "casino-audio",
+    "sci-fi-sounds",
+    "music-jingles"
+  ],
+  "rules": [
+    {
+      "pack": "interface-sounds",
+      "pattern": "^click_(\\d+)$",
+      "category": "Click",
+      "title": "Click {n}",
+      "take": 4
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^select_(\\d+)$",
+      "category": "Click",
+      "title": "Select {n}",
+      "take": 3
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^tick_(\\d+)$",
+      "category": "Click",
+      "title": "Tick {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^toggle_(\\d+)$",
+      "category": "Click",
+      "title": "Toggle {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^switch_(\\d+)$",
+      "category": "Click",
+      "title": "Switch {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^confirmation_(\\d+)$",
+      "category": "Success",
+      "title": "Confirmation {n}",
+      "take": 4
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^maximize_(\\d+)$",
+      "category": "Whoosh",
+      "title": "Maximize {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^minimize_(\\d+)$",
+      "category": "Whoosh",
+      "title": "Minimize {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^error_(\\d+)$",
+      "category": "Fail",
+      "title": "Error {n}",
+      "take": 5
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^question_(\\d+)$",
+      "category": "Notification",
+      "title": "Question {n}",
+      "take": 3
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^bong_(\\d+)$",
+      "category": "Notification",
+      "title": "Bong",
+      "take": 1
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^glass_(\\d+)$",
+      "category": "Pop",
+      "title": "Glass tap {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^drop_(\\d+)$",
+      "category": "Pop",
+      "title": "Drop {n}",
+      "take": 3
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^pluck_(\\d+)$",
+      "category": "Pop",
+      "title": "Pluck {n}",
+      "take": 2
+    },
+    {
+      "pack": "interface-sounds",
+      "pattern": "^glitch_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Glitch {n}",
+      "take": 3
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactPunch_heavy_(\\d+)$",
+      "category": "Impact",
+      "title": "Punch heavy {n1}",
+      "take": 3
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactPunch_medium_(\\d+)$",
+      "category": "Impact",
+      "title": "Punch medium {n1}",
+      "take": 3
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactSoft_heavy_(\\d+)$",
+      "category": "Impact",
+      "title": "Thud heavy {n1}",
+      "take": 3
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactSoft_medium_(\\d+)$",
+      "category": "Impact",
+      "title": "Soft thud {n1}",
+      "take": 2
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactMetal_heavy_(\\d+)$",
+      "category": "Impact",
+      "title": "Metal hit heavy {n1}",
+      "take": 3
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactMetal_light_(\\d+)$",
+      "category": "Impact",
+      "title": "Metal hit light {n1}",
+      "take": 2
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactGlass_heavy_(\\d+)$",
+      "category": "Impact",
+      "title": "Glass hit heavy {n1}",
+      "take": 2
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactWood_heavy_(\\d+)$",
+      "category": "Impact",
+      "title": "Wood hit heavy {n1}",
+      "take": 2
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactWood_light_(\\d+)$",
+      "category": "Impact",
+      "title": "Wood hit light {n1}",
+      "take": 2
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactBell_heavy_(\\d+)$",
+      "category": "Impact",
+      "title": "Bell hit {n1}",
+      "take": 3
+    },
+    {
+      "pack": "impact-sounds",
+      "pattern": "^impactGeneric_light_(\\d+)$",
+      "category": "Impact",
+      "title": "Light hit {n1}",
+      "take": 3
+    },
+    {
+      "pack": "ui-audio",
+      "pattern": "^click(\\d+)$",
+      "category": "Click",
+      "title": "Soft click {n}",
+      "take": 4
+    },
+    {
+      "pack": "ui-audio",
+      "pattern": "^mouseclick(\\d+)$",
+      "category": "Click",
+      "title": "Mouse click",
+      "take": 1
+    },
+    {
+      "pack": "ui-audio",
+      "pattern": "^mouserelease(\\d+)$",
+      "category": "Click",
+      "title": "Mouse release",
+      "take": 1
+    },
+    {
+      "pack": "ui-audio",
+      "pattern": "^rollover(\\d+)$",
+      "category": "Click",
+      "title": "Rollover {n}",
+      "take": 3
+    },
+    {
+      "pack": "ui-audio",
+      "pattern": "^switch(\\d+)$",
+      "category": "Click",
+      "title": "Button switch {n}",
+      "take": 4
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^laser(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Digital laser {n}",
+      "take": 3
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^pepSound(\\d+)$",
+      "category": "Cartoon",
+      "title": "Pep {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^powerUp(\\d+)$",
+      "category": "Magic",
+      "title": "Power up {n}",
+      "take": 5
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^phaseJump(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Phase jump {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^phaserUp(\\d+)$",
+      "category": "Whoosh",
+      "title": "Phaser up {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^phaserDown(\\d+)$",
+      "category": "Whoosh",
+      "title": "Phaser down {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^threeTone(\\d+)$",
+      "category": "Notification",
+      "title": "Three tone {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^twoTone(\\d+)$",
+      "category": "Notification",
+      "title": "Two tone {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^zap(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Zap {n}",
+      "take": 2
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^(zapTwoTone)$",
+      "category": "Sci-fi",
+      "title": "Zap two tone",
+      "take": 1
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^(tone)1$",
+      "category": "Notification",
+      "title": "Tone",
+      "take": 1
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^(highUp)$",
+      "category": "Success",
+      "title": "Rising blip",
+      "take": 1
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^(highDown)$",
+      "category": "Fail",
+      "title": "Falling blip",
+      "take": 1
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^(lowDown)$",
+      "category": "Fail",
+      "title": "Low down",
+      "take": 1
+    },
+    {
+      "pack": "digital-audio",
+      "pattern": "^(lowThreeTone)$",
+      "category": "Fail",
+      "title": "Low three tone",
+      "take": 1
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^chips-handle-(\\d+)$",
+      "category": "Cash",
+      "title": "Chips handle {n}",
+      "take": 3
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^chips-stack-(\\d+)$",
+      "category": "Cash",
+      "title": "Chips stack {n}",
+      "take": 3
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^chip-lay-(\\d+)$",
+      "category": "Cash",
+      "title": "Chip drop {n}",
+      "take": 2
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^chips-collide-(\\d+)$",
+      "category": "Cash",
+      "title": "Chips clink {n}",
+      "take": 2
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^dice-throw-(\\d+)$",
+      "category": "Foley",
+      "title": "Dice throw {n}",
+      "take": 1
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^(card-shuffle)$",
+      "category": "Foley",
+      "title": "Card shuffle",
+      "take": 1
+    },
+    {
+      "pack": "casino-audio",
+      "pattern": "^card-slide-(\\d+)$",
+      "category": "Foley",
+      "title": "Card slide {n}",
+      "take": 1
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^laserSmall_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Laser small {n1}",
+      "take": 3
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^laserLarge_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Laser large {n1}",
+      "take": 1
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^laserRetro_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Laser retro {n1}",
+      "take": 1
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^forceField_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Force field {n1}",
+      "take": 2
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^computerNoise_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Computer noise {n1}",
+      "take": 1
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^doorOpen_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Sci-fi door open {n1}",
+      "take": 1
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^doorClose_(\\d+)$",
+      "category": "Sci-fi",
+      "title": "Sci-fi door close {n1}",
+      "take": 1
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^explosionCrunch_(\\d+)$",
+      "category": "Impact",
+      "title": "Explosion crunch {n1}",
+      "take": 2
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^lowFrequency_explosion_(\\d+)$",
+      "category": "Impact",
+      "title": "Low boom {n1}",
+      "take": 2
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^slime_(\\d+)$",
+      "category": "Cartoon",
+      "title": "Slime {n1}",
+      "take": 2
+    },
+    {
+      "pack": "sci-fi-sounds",
+      "pattern": "^thrusterFire_(\\d+)$",
+      "category": "Whoosh",
+      "title": "Thruster {n1}",
+      "take": 2
+    },
+    {
+      "pack": "music-jingles",
+      "pattern": "^jingles_NES(\\d+)$",
+      "category": "Success",
+      "title": "8-bit jingle {n1}",
+      "take": 2
+    },
+    {
+      "pack": "music-jingles",
+      "pattern": "^jingles_HIT(\\d+)$",
+      "category": "Success",
+      "title": "Hit jingle {n1}",
+      "take": 2
+    },
+    {
+      "pack": "music-jingles",
+      "pattern": "^jingles_PIZZI(\\d+)$",
+      "category": "Success",
+      "title": "Pizzicato jingle {n1}",
+      "take": 2
+    },
+    {
+      "pack": "music-jingles",
+      "pattern": "^jingles_SAX(\\d+)$",
+      "category": "Success",
+      "title": "Sax jingle {n1}",
+      "take": 2
+    },
+    {
+      "pack": "music-jingles",
+      "pattern": "^jingles_STEEL(\\d+)$",
+      "category": "Success",
+      "title": "Steel jingle {n1}",
+      "take": 2
+    }
+  ]
+}

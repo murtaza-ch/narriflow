@@ -9,14 +9,10 @@ import { toaster } from "@narriflow/ui/components/toaster";
 import type { AudioAssetKindInput } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { brandMutations } from "@narriflow/api-client/brand";
-import { useAudioApi, useAudioAssetList, type AudioAssetListRow } from "./audio-library";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { invalidateAudioLibrary, useAudioApi, useAudioLibrary, type AudioAssetListRow } from "./audio-library";
 import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB, uploadAudioFile } from "@/lib/audio-upload";
-import { AudioListError, AudioPager } from "./music-tab";
-
-interface UploadsTabProps {
-  reloadKey: number;
-  onLibraryChange: () => void;
-}
+import { AudioListError, AudioScrollList } from "./audio-list";
 
 function UploadRow({
   asset,
@@ -63,14 +59,19 @@ function UploadRow({
   );
 }
 
-export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
+export function UploadsTab() {
   const [uploadKind, setUploadKind] = useState<AudioAssetKindInput>("music");
   const [uploading, setUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const audioApi = useAudioApi();
+  const { queryClient } = useApiRuntime();
+  // An upload or a delete changes every cached library list the Studio holds.
+  const onLibraryChange = () => {
+    if (audioApi) void invalidateAudioLibrary(queryClient, audioApi.scope);
+  };
 
-  const musicList = useAudioAssetList("music", null, reloadKey, { scope: "user" });
-  const sfxList = useAudioAssetList("sfx", null, reloadKey, { scope: "user" });
+  const musicList = useAudioLibrary({ kind: "music", scope: "user" });
+  const sfxList = useAudioLibrary({ kind: "sfx", scope: "user" });
 
   const myUploads = useMemo(
     () =>
@@ -80,9 +81,9 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
     [musicList.assets, sfxList.assets],
   );
 
-  // A failed next page retries only the lists that failed; otherwise every list with more.
-  const retryingPage = Boolean(musicList.loadMoreError || sfxList.loadMoreError);
-  const pagedLists = [musicList, sfxList].filter((list) => (retryingPage ? list.loadMoreError : list.hasMore));
+  const loadMoreUploads = () => {
+    for (const list of [musicList, sfxList]) if (list.canLoadMore || list.loadMoreError) list.loadMore();
+  };
 
   async function handleUpload(file: File) {
     setUploading(true);
@@ -169,43 +170,41 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
 
       <Box>
         <SectionLabel>My uploads</SectionLabel>
-        <Stack gap="2">
-          {musicList.loading || sfxList.loading ? (
-            <Flex align="center" justify="center" gap="2" py="5" color="studio.fgMuted">
-              <Spinner size="xs" />
-              <Text fontSize="13px">Loading…</Text>
-            </Flex>
-          ) : musicList.error || sfxList.error ? (
-            <AudioListError
-              message="Couldn't load your uploads."
-              onRetry={() => {
-                if (musicList.error) musicList.retry();
-                if (sfxList.error) sfxList.retry();
-              }}
-            />
-          ) : myUploads.length === 0 ? (
-            <Flex align="center" h="40px" px="3" bg="studio.subtle" borderRadius="12px" color="studio.fgSubtle" fontSize="13px">
-              Nothing uploaded yet.
-            </Flex>
-          ) : (
-            myUploads.map((asset) => (
+        {musicList.loading || sfxList.loading ? (
+          <Flex align="center" justify="center" gap="2" py="5" color="studio.fgMuted">
+            <Spinner size="xs" />
+            <Text fontSize="13px">Loading…</Text>
+          </Flex>
+        ) : musicList.error || sfxList.error ? (
+          <AudioListError
+            message="Couldn't load your uploads."
+            onRetry={() => {
+              if (musicList.error) musicList.retry();
+              if (sfxList.error) sfxList.retry();
+            }}
+          />
+        ) : myUploads.length === 0 ? (
+          <Flex align="center" h="40px" px="3" bg="studio.subtle" borderRadius="12px" color="studio.fgSubtle" fontSize="13px">
+            Nothing uploaded yet.
+          </Flex>
+        ) : (
+          <AudioScrollList
+            compact
+            canLoadMore={musicList.canLoadMore || sfxList.canLoadMore}
+            loadingMore={musicList.loadingMore || sfxList.loadingMore}
+            loadMoreError={musicList.loadMoreError ?? sfxList.loadMoreError ? "Couldn't load more uploads." : null}
+            onLoadMore={loadMoreUploads}
+          >
+            {myUploads.map((asset) => (
               <UploadRow
                 key={asset.id}
                 asset={asset}
                 deleting={deletingId === asset.id}
                 onDelete={() => handleDelete(asset)}
               />
-            ))
-          )}
-          <AudioPager
-            error={retryingPage ? "Couldn't load more uploads." : null}
-            hasMore={musicList.hasMore || sfxList.hasMore}
-            loading={musicList.loadingMore || sfxList.loadingMore}
-            onLoadMore={() => {
-              for (const list of pagedLists) list.loadMore();
-            }}
-          />
-        </Stack>
+            ))}
+          </AudioScrollList>
+        )}
       </Box>
     </Stack>
   );

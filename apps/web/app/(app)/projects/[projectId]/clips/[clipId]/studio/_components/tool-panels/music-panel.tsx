@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Flex, Slider, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Slider, Text } from "@chakra-ui/react";
 import { ArrowLeft, Upload, Volume2, VolumeX } from "lucide-react";
 import { useStudio } from "../studio-shell";
 import { usePreviewPlayer } from "./audio-library";
@@ -21,7 +21,6 @@ export function MusicPanel() {
   const { studioEdits, setStudioEdits, endCoalesce } = useStudio("studioEdits", "setStudioEdits", "endCoalesce");
   const [activeTab, setActiveTab] = useState<MusicPanelTab>("music");
   const [showUploads, setShowUploads] = useState(false);
-  const [libraryVersion, setLibraryVersion] = useState(0);
   const player = usePreviewPlayer();
   const sourceAudio = studioEdits.sourceAudio;
 
@@ -37,7 +36,7 @@ export function MusicPanel() {
   };
 
   return (
-    <Stack gap="0">
+    <Flex direction="column" minH="100%">
       {/* biome-ignore lint/a11y/useMediaCaption: private library previews contain no dialogue. */}
       <audio ref={player.audioRef} preload="metadata" style={{ display: "none" }} />
 
@@ -71,20 +70,15 @@ export function MusicPanel() {
               <Text fontSize="13px" fontWeight="500">Uploads</Text>
             </Flex>
           </Flex>
-          <UploadsTab
-            reloadKey={libraryVersion}
-            onLibraryChange={() => setLibraryVersion((version) => version + 1)}
-          />
+          <UploadsTab />
         </Box>
       ) : activeTab === "music" ? (
         <MusicTab
-          reloadKey={libraryVersion}
           player={player}
           onOpenUploads={() => setShowUploads(true)}
         />
       ) : (
         <SfxTab
-          reloadKey={libraryVersion}
           player={player}
           onOpenUploads={() => setShowUploads(true)}
         />
@@ -157,6 +151,6 @@ export function MusicPanel() {
           </Text>
         </Flex>
       </Box>
-    </Stack>
+    </Flex>
   );
 }

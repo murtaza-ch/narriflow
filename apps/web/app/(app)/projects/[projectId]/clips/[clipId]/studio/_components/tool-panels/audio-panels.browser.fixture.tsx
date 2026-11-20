@@ -28,6 +28,8 @@ const apiRuntime = createApiRuntime({
   getToken: async () => "token",
   fetch: ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init)) as typeof fetch,
 });
+// A failed read reports at once instead of backing off, and no test sees another's cache.
+apiRuntime.queryClient.setDefaultOptions({ queries: { retry: false } });
 apiRuntime.setIdentity("user_1");
 apiRuntime.selectWorkspace("ws_1");
 const workspaceScope = { userId: "user_1", workspaceId: "ws_1" };
@@ -36,8 +38,41 @@ mock.module("../../../../../../../../_components/api-provider", () => ({
   useWorkspaceScope: () => workspaceScope,
 }));
 
+// The list asks for the next page when its end sentinel comes into view.
+const observers = new Set<{ callback: IntersectionObserverCallback; target: Element | null }>();
+class FakeIntersectionObserver {
+  readonly entry = { callback: undefined as unknown as IntersectionObserverCallback, target: null as Element | null };
+  constructor(callback: IntersectionObserverCallback) {
+    this.entry.callback = callback;
+  }
+  observe(target: Element) {
+    this.entry.target = target;
+    observers.add(this.entry);
+  }
+  disconnect() {
+    observers.delete(this.entry);
+  }
+  unobserve() {}
+  takeRecords() { return []; }
+}
+/** Brings every observed list end into view, as scrolling to the bottom does. */
+async function scrollToEnd() {
+  await act(async () => {
+    for (const { callback, target } of [...observers]) {
+      callback([{ isIntersecting: true, target } as IntersectionObserverEntry], {} as IntersectionObserver);
+    }
+    await Bun.sleep(20);
+  });
+}
+const settle = () => act(async () => { await Bun.sleep(20); });
+const listRow = (overrides: Record<string, unknown>) => ({
+  scope: "curated", moodTags: [], durationSec: 2, favorited: false,
+  previewUrl: null, artist: null, license: null, attribution: null, ...overrides,
+});
+
 let UploadsTab: typeof import("./uploads-tab").UploadsTab;
 let MusicPanel: typeof import("./music-panel").MusicPanel;
+let usePrefetchAudioLibrary: typeof import("./audio-library").usePrefetchAudioLibrary;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let createRoot: typeof import("react-dom/client").createRoot;
@@ -55,6 +90,7 @@ beforeAll(async () => {
     requestAnimationFrame: (callback: FrameRequestCallback) => browser.setTimeout(() => callback(0), 0),
     cancelAnimationFrame: (handle: number) => browser.clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,
+    IntersectionObserver: FakeIntersectionObserver,
     Audio: class extends browser.EventTarget {
       duration = 2;
       constructor() {
@@ -68,6 +104,7 @@ beforeAll(async () => {
   ({ system } = await import("@narriflow/ui/theme"));
   ({ UploadsTab } = await import("./uploads-tab"));
   ({ MusicPanel } = await import("./music-panel"));
+  ({ usePrefetchAudioLibrary } = await import("./audio-library"));
 });
 
 afterEach(async () => {
@@ -75,6 +112,8 @@ afterEach(async () => {
   root = null;
   browser.document.body.replaceChildren();
   globalThis.fetch = realFetch;
+  observers.clear();
+  apiRuntime.queryClient.clear();
   studio.brandAudio = noBrandAudio;
   studio.studioEdits = studioEditsSchema.parse({});
   studio.setStudioEdits.mockReset();
@@ -86,6 +125,7 @@ async function mount(node: React.ReactNode) {
   browser.document.body.append(container);
   root = createRoot(container as unknown as HTMLElement);
   await act(async () => { root?.render(<ChakraProvider value={system}>{node}</ChakraProvider>); });
+  await settle();
   return container;
 }
 
@@ -99,7 +139,7 @@ test.each([
   let presignBody: unknown;
   let uploadedContentType: string | null = null;
   let finalizeBody: unknown;
-  let changed = false;
+  let listRequests = 0;
   globalThis.fetch = mock(async (url, init) => {
     if (String(url).endsWith("presign-upload")) {
       presignBody = JSON.parse(String(init?.body));
@@ -110,9 +150,11 @@ test.each([
       return new Response(null, { status: 200 });
     }
     if (init?.method === "POST") finalizeBody = JSON.parse(String(init.body));
+    else listRequests++;
     return Response.json({ assets: [], moodTags: [], nextOffset: null });
   }) as typeof fetch;
-  const container = await mount(<UploadsTab reloadKey={0} onLibraryChange={() => { changed = true; }} />);
+  const container = await mount(<UploadsTab />);
+  const listedBefore = listRequests;
   const input = container.querySelector('input[type="file"]')!;
   const file = new File(["audio"], filename, { type: reported });
   Object.defineProperty(input, "files", { value: [file], configurable: true });
@@ -120,7 +162,9 @@ test.each([
   expect(presignBody).toEqual({ contentType: expected, sizeBytes: 5 });
   expect(uploadedContentType).toBe(expected);
   expect(finalizeBody).toEqual({ key: "audio/track", kind: "music", title: "Track", durationSec: 2, sizeBytes: 5 });
-  expect(changed).toBe(true);
+  // The finished upload makes the cached lists stale, so they are read again.
+  await settle();
+  expect(listRequests).toBeGreaterThan(listedBefore);
 });
 
 test("an unsupported MIME and extension never request an upload grant", async () => {
@@ -129,7 +173,7 @@ test("an unsupported MIME and extension never request an upload grant", async ()
     requests.push(init?.method ?? "GET");
     return Response.json({ assets: [], moodTags: [], nextOffset: null });
   }) as typeof fetch;
-  const container = await mount(<UploadsTab reloadKey={0} onLibraryChange={() => {}} />);
+  const container = await mount(<UploadsTab />);
   const input = container.querySelector('input[type="file"]')!;
   Object.defineProperty(input, "files", { value: [new File(["text"], "notes.txt", { type: "text/plain" })], configurable: true });
   await act(async () => { input.dispatchEvent(new browser.Event("change", { bubbles: true })); });
@@ -149,16 +193,18 @@ test.each(["music", "sfx", "uploads"] as const)("%s lists recover from a transie
     }], moodTags: [], nextOffset: null });
   }) as typeof fetch;
   const container = await mount(view === "uploads"
-    ? <UploadsTab reloadKey={0} onLibraryChange={() => {}} />
+    ? <UploadsTab />
     : <MusicPanel />);
   if (view === "sfx") {
     const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
     await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+    await settle();
   }
   expect(container.textContent).toContain("Couldn't load");
   const retry = [...container.querySelectorAll("button")].find((node) => node.textContent === "Retry");
   expect(retry).toBeDefined();
   await act(async () => { retry!.click(); });
+  await settle();
   expect(container.textContent).not.toContain("Couldn't load");
   expect(container.textContent).toContain(`Recovered ${view === "sfx" ? "sfx" : "music"}`);
   if (view === "uploads") expect(container.textContent).toContain("Recovered sfx");
@@ -171,6 +217,7 @@ test.each(["music", "sfx"] as const)("%s search clear, upload, and source mute c
   if (kind === "sfx") {
     const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
     await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+    await settle();
   }
   const expectTarget = (button: Element | undefined | null) => {
     expect(button).toBeTruthy();
@@ -192,7 +239,7 @@ test.each(["music", "sfx"] as const)("%s search clear, upload, and source mute c
 });
 
 
-test.each(["music", "sfx", "uploads"] as const)("%s appends metadata pages and retries a failed next page", async (view) => {
+test.each(["music", "sfx", "uploads"] as const)("%s loads the next page when the end scrolls into view and retries a failed page", async (view) => {
   const requests: URL[] = [];
   let failNext = true;
   globalThis.fetch = mock(async (url) => {
@@ -204,31 +251,32 @@ test.each(["music", "sfx", "uploads"] as const)("%s appends metadata pages and r
       failNext = false;
       return new Response(null, { status: 503 });
     }
-    return Response.json({ assets: [{
+    return Response.json({ assets: [listRow({
       id: `${kind}-${offset}`, kind, scope: "user", title: `${offset ? "Second" : "First"} ${kind}`,
-      moodTags: [], durationSec: 2, favorited: false,
-    }], moodTags: [], nextOffset: offset === 0 ? 1 : null });
+    })], moodTags: [], nextOffset: offset === 0 ? 1 : null });
   }) as typeof fetch;
-  const container = await mount(view === "uploads"
-    ? <UploadsTab reloadKey={0} onLibraryChange={() => {}} /> : <MusicPanel />);
+  const container = await mount(view === "uploads" ? <UploadsTab /> : <MusicPanel />);
   if (view === "sfx") {
     const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
     await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+    await settle();
   }
-  const clickText = async (label: string) => {
-    const button = [...container.querySelectorAll("button")].find((node) => node.textContent === label);
-    expect(button).toBeDefined();
-    await act(async () => { button!.click(); });
-  };
-  expect(container.textContent).toContain(`First ${view === "sfx" ? "sfx" : "music"}`);
-  await clickText("Load more");
-  expect(container.textContent).toContain(`First ${view === "sfx" ? "sfx" : "music"}`);
-  expect(container.textContent).toContain("Couldn't load");
-  await clickText("Retry");
-  expect(container.textContent).toContain(`Second ${view === "sfx" ? "sfx" : "music"}`);
-  expect(container.textContent).not.toContain("Couldn't load");
+  const kind = view === "sfx" ? "sfx" : "music";
+  expect(container.textContent).toContain(`First ${kind}`);
+  // There is no Load more button: reaching the end asks for the next page.
   expect([...container.querySelectorAll("button")].some((node) => node.textContent === "Load more")).toBe(false);
+  await scrollToEnd();
+  expect(container.textContent).toContain(`First ${kind}`);
+  expect(container.textContent).toContain("Couldn't load");
+  const retry = [...container.querySelectorAll("button")].find((node) => node.textContent === "Retry");
+  expect(retry).toBeDefined();
+  await act(async () => { retry!.click(); await Bun.sleep(20); });
+  expect(container.textContent).toContain(`Second ${kind}`);
+  expect(container.textContent).not.toContain("Couldn't load");
+  // Nothing more to load: the end is no longer watched.
+  expect(observers.size).toBe(0);
   if (view === "uploads") expect(requests.every((url) => url.searchParams.get("scope") === "user")).toBe(true);
+  expect(requests.every((url) => url.searchParams.get("limit") === "40")).toBe(true);
   expect(requests.some((url) => url.pathname.includes("playback-url"))).toBe(false);
 });
 
@@ -248,41 +296,50 @@ test("music resolves playback only when previewing or applying a track", async (
   expect(requests.filter((url) => url.includes("playback-url"))).toHaveLength(2);
 });
 
-test.each(["music", "sfx"] as const)("%s searches the server from page one and ignores an older pending page", async (kind) => {
+test.each(["music", "sfx"] as const)("%s searches the server after a pause, from page one, without a spinner or an older page", async (kind) => {
   const requests: URL[] = [];
-  let finishPage: (response: Response) => void = () => { throw new Error("No page pending"); };
-  const page = (title: string, nextOffset: number | null) => Response.json({ assets: [{
-    id: title, kind, scope: "curated", title, moodTags: ["Calm"], durationSec: 2, favorited: true,
-  }], moodTags: ["Calm"], nextOffset });
+  let finishSearch: (response: Response) => void = () => { throw new Error("No search pending"); };
+  const page = (title: string, nextOffset: number | null) => Response.json({ assets: [listRow({
+    id: title, kind, title, moodTags: ["Calm"], favorited: true,
+  })], moodTags: ["Calm"], nextOffset });
   globalThis.fetch = mock(async (url) => {
     const request = new URL(String(url), "http://localhost");
     requests.push(request);
-    if (Number(request.searchParams.get("offset")) > 0) return new Promise<Response>((resolve) => { finishPage = resolve; });
-    return page(request.searchParams.get("search") ? "Needle match" : "Earlier track", request.searchParams.get("search") ? null : 1);
+    if (request.searchParams.get("search")) return new Promise<Response>((resolve) => { finishSearch = resolve; });
+    return page("Earlier track", null);
   }) as typeof fetch;
   const container = await mount(<MusicPanel />);
   if (kind === "sfx") {
     const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
     await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+    await settle();
   }
-  const more = [...container.querySelectorAll("button")].find((node) => node.textContent === "Load more")!;
-  await act(async () => { more.click(); });
   const input = container.querySelector("input")!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, "value")!.set!.call(input, "Needle");
+  const type = (value: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new browser.Event("input", { bubbles: true }));
   });
+  await type("Nee");
+  await type("Needle");
+  const before = requests.length;
+  // Debounced: nothing is asked while typing.
+  await settle();
+  expect(requests.length).toBe(before);
+  await act(async () => { await Bun.sleep(260); });
+  expect(requests.length).toBe(before + 1);
   expect(requests.at(-1)!.searchParams.get("offset")).toBe("0");
   expect(requests.at(-1)!.searchParams.get("search")).toBe("Needle");
+  // While the server answers, the previous rows stay (narrowed locally) and no skeleton shows.
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  await act(async () => { finishSearch(page("Needle match", null)); await Bun.sleep(20); });
   expect(container.textContent).toContain("Needle match");
   expect(container.textContent).not.toContain("Earlier track");
-  await act(async () => { finishPage(page("Stale track", 2)); });
-  expect(container.textContent).not.toContain("Stale track");
   const saved = [...container.querySelectorAll("button")].find((node) => node.textContent === "Saved")!;
-  await act(async () => { saved.click(); });
+  await act(async () => { saved.click(); await Bun.sleep(260); });
   expect(requests.at(-1)!.searchParams.get("favorited")).toBe("true");
+  expect(requests.at(-1)!.searchParams.get("search")).toBe("Needle");
   const calm = [...container.querySelectorAll("button")].find((node) => node.textContent === "Calm")!;
-  await act(async () => { calm.click(); });
+  await act(async () => { calm.click(); await Bun.sleep(20); });
   expect(requests.at(-1)!.searchParams.get("mood")).toBe("Calm");
 });
 
@@ -313,6 +370,7 @@ test.each(["music", "sfx"] as const)("%s playback URL failures can be retried fr
   if (kind === "sfx") {
     const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
     await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+    await settle();
   }
   const preview = () => container.querySelector('[aria-label="Preview Retry preview"]') as unknown as HTMLButtonElement;
   await act(async () => { preview().click(); });
@@ -375,6 +433,7 @@ test.each(["music", "sfx"] as const)("%s lists the Project's brand tracks first 
   if (kind === "sfx") {
     const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
     await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+    await settle();
   }
   const text = container.textContent ?? "";
   expect(text.indexOf("Brand")).toBeGreaterThanOrEqual(0);
@@ -400,4 +459,181 @@ test("brand tracks are hidden in category views and follow the search", async ()
   const calm = [...container.querySelectorAll("button")].find((node) => node.textContent === "Calm")!;
   await act(async () => { calm.click(); });
   expect(container.textContent).not.toContain("Brand theme");
+});
+
+const CREDIT = '"Sneaky Snitch" Kevin MacLeod (incompetech.com)\nLicensed under Creative Commons: By Attribution 4.0\nhttps://creativecommons.org/licenses/by/4.0/';
+const CLASSIC_ID = "5b0f1e5e-3b7c-4c55-8f1e-0a1b2c3d4e51";
+const FREE_ID = "5b0f1e5e-3b7c-4c55-8f1e-0a1b2c3d4e52";
+const PUBLIC_URL = "https://library.test/audio-library/music/abc.mp3";
+
+test("a curated row previews and applies from its public URL with no API call", async () => {
+  const requests: string[] = [];
+  const applied: unknown[] = [];
+  studio.setStudioEdits.mockImplementation((update) => {
+    applied.push((update as (edits: typeof studio.studioEdits) => typeof studio.studioEdits)(studio.studioEdits).music.blocks[0]);
+  });
+  globalThis.fetch = mock(async (url) => {
+    requests.push(String(url));
+    return Response.json({ assets: [listRow({
+      id: "classic", kind: "music", title: "Sneaky Snitch", artist: "Kevin MacLeod", license: "cc_by_4",
+      attribution: CREDIT, previewUrl: PUBLIC_URL, durationSec: 135,
+    })], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  // Artwork is a gradient from the id, the duration reads mm:ss, a CC BY row names its artist and hints at the credit.
+  const text = container.textContent ?? "";
+  expect(text).toContain("2:15");
+  expect(text).toContain("Kevin MacLeod");
+  expect(text).toContain("Credit");
+  expect(container.innerHTML).toContain("linear-gradient(");
+  expect(container.querySelector("img")).toBeNull();
+  await act(async () => { (container.querySelector('[aria-label="Preview Sneaky Snitch"]') as unknown as HTMLButtonElement).click(); });
+  expect(container.querySelector("audio")!.getAttribute("src")).toBe(PUBLIC_URL);
+  await act(async () => { (container.querySelector('[aria-label="Use Sneaky Snitch"]') as unknown as HTMLButtonElement).click(); await settle(); });
+  expect(applied).toEqual([expect.objectContaining({ assetId: "classic", url: PUBLIC_URL })]);
+  expect(requests.some((url) => url.includes("playback-url"))).toBe(false);
+});
+
+test("chips follow the curated order with Saved after All", async () => {
+  globalThis.fetch = mock(async () => Response.json({ assets: [], moodTags: ["Zesty", "Epic", "Popular", "Chill"], nextOffset: null })) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  const chips = [...container.querySelectorAll("button[aria-pressed]")].map((node) => node.textContent);
+  expect(chips.slice(0, 6)).toEqual(["All", "Saved", "Popular", "Chill", "Epic", "Zesty"]);
+});
+
+test("only the first load shows a skeleton and tab switches reuse the cache", async () => {
+  const requests: string[] = [];
+  let finish: (response: Response) => void = () => {};
+  globalThis.fetch = mock(async (url) => {
+    const kind = new URL(String(url), "http://localhost").searchParams.get("kind");
+    requests.push(kind!);
+    if (requests.length === 1) return new Promise<Response>((resolve) => { finish = resolve; });
+    return Response.json({ assets: [listRow({ id: `${kind}-1`, kind, title: `Cached ${kind}` })], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  expect(container.querySelector('[role="status"]')).not.toBeNull();
+  await act(async () => { finish(Response.json({ assets: [listRow({ id: "music-1", kind: "music", title: "Cached music" })], moodTags: [], nextOffset: null })); await Bun.sleep(20); });
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  const tab = (name: string) => [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === name) as unknown as HTMLButtonElement;
+  await act(async () => { tab("Sound effects").click(); await Bun.sleep(20); });
+  expect(container.textContent).toContain("Cached sfx");
+  await act(async () => { tab("Music").click(); });
+  // Back on Music: rows paint at once from the cache, with no further request.
+  expect(container.textContent).toContain("Cached music");
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  await settle();
+  expect(requests).toEqual(["music", "sfx"]);
+});
+
+test("opening the Studio warms the first page of music and effects", async () => {
+  const requests: URL[] = [];
+  globalThis.fetch = mock(async (url) => {
+    const request = new URL(String(url), "http://localhost");
+    requests.push(request);
+    const kind = request.searchParams.get("kind");
+    return Response.json({ assets: [listRow({ id: `${kind}-1`, kind, title: `Warm ${kind}` })], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  function Prefetch() { usePrefetchAudioLibrary(); return null; }
+  await mount(<Prefetch />);
+  expect(requests.map((url) => url.searchParams.get("kind")).sort()).toEqual(["music", "sfx"]);
+  expect(requests.every((url) => url.searchParams.get("limit") === "40" && url.searchParams.get("offset") === "0" && !url.searchParams.has("search") && !url.searchParams.has("mood"))).toBe(true);
+  await act(async () => { root?.unmount(); });
+  root = null;
+  browser.document.body.replaceChildren();
+  const container = await mount(<MusicPanel />);
+  expect(container.textContent).toContain("Warm music");
+  expect(requests).toHaveLength(2);
+});
+
+test("a background refetch that ends re-arms the end of the list", async () => {
+  let releaseRefetch: (response: Response) => void = () => {};
+  let calls = 0;
+  const page = (offset: number) => Response.json({
+    assets: [listRow({ id: `music-${offset}`, kind: "music", scope: "user", title: `Page ${offset}` })],
+    moodTags: [], nextOffset: offset < 2 ? offset + 1 : null,
+  });
+  globalThis.fetch = mock(async (url) => {
+    const offset = Number(new URL(String(url), "http://localhost").searchParams.get("offset") ?? 0);
+    calls++;
+    // The second request is a refetch of page one, held open while the end comes into view.
+    if (calls === 2) return new Promise<Response>((resolve) => { releaseRefetch = resolve; });
+    return page(offset);
+  }) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  expect(container.textContent).toContain("Page 0");
+  await act(async () => { void apiRuntime.queryClient.invalidateQueries({ queryKey: ["nf", "user_1", "ws_1", "brand"] }); await Bun.sleep(5); });
+  // While it is in flight the observer is disarmed, so reaching the end asks for nothing.
+  expect(observers.size).toBe(0);
+  await act(async () => { releaseRefetch(page(0)); await Bun.sleep(20); });
+  // Once it ends the end is watched again and the next page loads.
+  expect(observers.size).toBe(1);
+  await scrollToEnd();
+  expect(container.textContent).toContain("Page 1");
+});
+
+test("warming the library leaves an already loaded multi-page list alone", async () => {
+  const requests: string[] = [];
+  globalThis.fetch = mock(async (url) => {
+    requests.push(String(url));
+    return Response.json({ assets: [], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  const { audioListQuery } = await import("./audio-library");
+  const options = audioListQuery({ transport: apiRuntime.transport, scope: workspaceScope }, { kind: "music" });
+  const pages = [0, 1, 2].map((n) => ({ assets: [listRow({ id: `m${n}`, kind: "music", title: `M${n}` })], moodTags: [], nextOffset: n < 2 ? n + 1 : null }));
+  apiRuntime.queryClient.setQueryData(options.queryKey, { pages, pageParams: [0, 1, 2] });
+  function Prefetch() { usePrefetchAudioLibrary(); return null; }
+  await mount(<Prefetch />);
+  expect((apiRuntime.queryClient.getQueryData(options.queryKey) as { pages: unknown[] }).pages).toHaveLength(3);
+  // Only the kind with nothing cached is fetched.
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toContain("kind=sfx");
+});
+
+test("saving a track updates the list at once and rolls back when the request fails", async () => {
+  let failFavorite = false;
+  globalThis.fetch = mock(async (url) => {
+    if (String(url).includes("/favorite")) {
+      return failFavorite ? new Response(null, { status: 500 }) : Response.json({ ok: true });
+    }
+    return Response.json({ assets: [listRow({ id: "song", kind: "music", title: "Song" })], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  const star = () => container.querySelector('[aria-label="Save Song"], [aria-label="Remove Song from Saved"]') as unknown as HTMLButtonElement;
+  await act(async () => { star().click(); await Bun.sleep(20); });
+  expect(star().getAttribute("aria-label")).toBe("Remove Song from Saved");
+  failFavorite = true;
+  await act(async () => { star().click(); });
+  // Optimistic: unsaved before the server answers, restored when it refuses.
+  await act(async () => { await Bun.sleep(20); });
+  expect(star().getAttribute("aria-label")).toBe("Remove Song from Saved");
+});
+
+const playbackBody = (attribution: string | null) => ({ url: PUBLIC_URL, durationSec: 135, attribution });
+
+test("a block that needs a credit shows Credit required and copies the credit line, even when its row is on no loaded page", async () => {
+  const copied: string[] = [];
+  Object.defineProperty(browser.navigator, "clipboard", { value: { writeText: async (text: string) => { copied.push(text); } }, configurable: true });
+  studio.studioEdits = studioEditsSchema.parse({ music: { blocks: [{ id: "bed", assetId: CLASSIC_ID, title: "Sneaky Snitch", url: PUBLIC_URL, startSec: 0 }] } });
+  const requests: string[] = [];
+  globalThis.fetch = mock(async (url) => {
+    requests.push(String(url));
+    // The list never contains the track: its credit has to come from the per-asset lookup.
+    if (String(url).includes("playback-url")) return Response.json(playbackBody(CREDIT));
+    return Response.json({ assets: [], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  expect(container.textContent).toContain("Credit required");
+  expect(container.textContent).toContain("Paste this into your video description.");
+  await act(async () => { (container.querySelector('[aria-label="Copy credit"]') as unknown as HTMLButtonElement).click(); });
+  expect(copied).toEqual([CREDIT]);
+  expect(requests.filter((url) => url.includes(`${CLASSIC_ID}/playback-url`))).toHaveLength(1);
+});
+
+test("a block from a CC0 track owes no credit", async () => {
+  studio.studioEdits = studioEditsSchema.parse({ music: { blocks: [{ id: "bed", assetId: FREE_ID, title: "Free", url: PUBLIC_URL, startSec: 0 }] } });
+  globalThis.fetch = mock(async (url) => String(url).includes("playback-url")
+    ? Response.json(playbackBody(null))
+    : Response.json({ assets: [listRow({ id: FREE_ID, kind: "music", title: "Free", license: "cc0" })], moodTags: [], nextOffset: null })) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  expect(container.textContent).not.toContain("Credit required");
 });

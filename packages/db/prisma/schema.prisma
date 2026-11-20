@@ -346,6 +346,12 @@ enum AudioAssetKind {
   sfx
 }
 
+/// Licence of a curated library row. User uploads leave it null.
+enum AudioAssetLicense {
+  cc0
+  cc_by_4
+}
+
 enum VisualAssetKind {
   image
   video
@@ -2771,8 +2777,9 @@ model BrandProfileAudio {
 
 /// Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
 /// `userId` null = a curated row managed by content operations using
-/// `packages/db/audio-manifest.json` as the catalog (never soft-deleted through
-/// the app — curation removals are a manual ops step); non-null = a user's own upload,
+/// `packages/db/audio-library/manifest.json` as the catalog, synced by
+/// `scripts/audio-library` (never soft-deleted through the app — curation
+/// removals are a manual ops step); non-null = a user's own upload,
 /// soft-deletable via `deletedAt`. `moodTags` doubles as mood labels for
 /// music and category tags for SFX — same column, interpretation depends on
 /// `kind`. `storageKey` is unique because it is also the R2 object identity;
@@ -2787,6 +2794,14 @@ model AudioAsset {
   title           String
   moodTags        String[]       @default([])
   durationSec     Float          @default(0)
+  /// Curated-library provenance. Null on user uploads.
+  license         AudioAssetLicense?
+  artist          String?
+  /// Exact credit text. Null means no credit is required.
+  attribution     String?
+  sourceUrl       String?
+  /// Curated ordering: lower comes first.
+  sortOrder       Int            @default(1000)
   createdAt       DateTime       @default(now())
   deletedAt       DateTime?
 
@@ -2796,6 +2811,7 @@ model AudioAsset {
   brandProfiles BrandProfileAudio[]
 
   @@index([kind, userId])
+  @@index([kind, sortOrder])
   @@index([userId, deletedAt, createdAt])
   @@index([workspaceId, deletedAt, createdAt])
 }

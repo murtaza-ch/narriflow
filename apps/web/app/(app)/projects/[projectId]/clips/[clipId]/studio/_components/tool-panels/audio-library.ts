@@ -2,11 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { type BrandApi, type BrandClient, brandClientFor, brandMutations } from "@narriflow/api-client/brand";
-import type { InferResponseType } from "hono/client";
+import { scopedKey, type WorkspaceScope } from "@narriflow/api-client";
+import { type BrandApi, type BrandClient, brandClientFor, brandMutations, brandQueries } from "@narriflow/api-client/brand";
+import {
+  type InfiniteData,
+  infiniteQueryOptions,
+  keepPreviousData,
+  type QueryClient,
+  useInfiniteQuery,
+  useQueries,
+} from "@tanstack/react-query";
+import { type InferResponseType, parseResponse } from "hono/client";
 import type { AudioAssetKindInput, BrandAudioReference } from "@narriflow/validators";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { orderMoodTags } from "./audio-library-filter";
 
 /** One row of the Music/SFX library, as the API lists it. */
 export type AudioAssetListRow = InferResponseType<BrandClient["audio-assets"]["$get"], 200>["assets"][number];
@@ -18,120 +28,227 @@ export function useAudioApi(): BrandApi | null {
   return useMemo(() => (scope ? { transport: runtime.transport, scope } : null), [runtime, scope]);
 }
 
-interface AudioAssetPage {
-  assets: AudioAssetListRow[];
-  moodTags: string[];
-  nextOffset: number | null;
+/** One page of the list, as the API returns it. */
+export type AudioAssetPage = InferResponseType<BrandClient["audio-assets"]["$get"], 200>;
+
+export const AUDIO_PAGE_SIZE = 40;
+/** A page is cheap to keep: favourites are patched in place and uploads invalidate, so a stale refetch of every loaded page is never needed on a tab switch. */
+const AUDIO_LIST_STALE_MS = 5 * 60_000;
+const AUDIO_LIST_GC_MS = 30 * 60_000;
+const LIST_RESOURCE = "audio-assets-pages";
+
+export interface AudioListFilters {
+  kind: AudioAssetKindInput;
+  mood?: string | null;
+  search?: string;
+  scope?: "all" | "user";
+  favorited?: boolean;
 }
 
-interface UseAudioAssetListResult {
+/** Only what narrows the list: an unfiltered list has the same key wherever it is asked for. */
+function listFilters(filters: AudioListFilters): Record<string, string | boolean> {
+  const query: Record<string, string | boolean> = { kind: filters.kind };
+  if (filters.mood) query.mood = filters.mood;
+  const search = filters.search?.trim();
+  if (search) query.search = search;
+  if (filters.scope) query.scope = filters.scope;
+  if (filters.favorited !== undefined) query.favorited = filters.favorited;
+  return query;
+}
+
+function listKeyPrefix(scope: WorkspaceScope): unknown[] {
+  return scopedKey(scope, "brand", LIST_RESOURCE) as unknown[];
+}
+
+/**
+ * The library list as an infinite query: one entry per filter, `nextOffset`
+ * continues it. Keyed under the Brand domain, so the Brand Kit's own
+ * invalidation reaches it too.
+ */
+export function audioListQuery(api: BrandApi | null, filters: AudioListFilters) {
+  const query = listFilters(filters);
+  return infiniteQueryOptions({
+    queryKey: (api ? scopedKey(api.scope, "brand", LIST_RESOURCE, query) : ["nf-audio-unscoped", query]) as unknown[],
+    queryFn: ({ pageParam, signal }) => {
+      if (!api) throw new Error("Couldn't load the audio library.");
+      const params: Record<string, string> = { limit: String(AUDIO_PAGE_SIZE), offset: String(pageParam) };
+      for (const [name, value] of Object.entries(query)) params[name] = String(value);
+      return parseResponse(
+        brandClientFor(api)["audio-assets"].$get({ query: params as { kind: AudioAssetKindInput } }, { init: { signal } }),
+      );
+    },
+    initialPageParam: 0,
+    getNextPageParam: (last: AudioAssetPage) => last.nextOffset ?? undefined,
+    staleTime: AUDIO_LIST_STALE_MS,
+    gcTime: AUDIO_LIST_GC_MS,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Warms the first page of curated music and sound effects, so opening the
+ * panel paints rows from the cache. Called once when the Studio mounts.
+ */
+export function usePrefetchAudioLibrary(): void {
+  const runtime = useApiRuntime();
+  const api = useAudioApi();
+  useEffect(() => {
+    if (!api) return;
+    for (const kind of ["music", "sfx"] as const) {
+      const options = audioListQuery(api, { kind });
+      // A list already loaded (maybe several pages deep) stays as it is: a one-page prefetch would trim it.
+      if (runtime.queryClient.getQueryData(options.queryKey) !== undefined) continue;
+      void runtime.queryClient.prefetchInfiniteQuery({ ...options, pages: 1 });
+    }
+  }, [api, runtime]);
+}
+
+/** Marks every cached library list stale: after an upload or a delete. */
+export function invalidateAudioLibrary(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: listKeyPrefix(scope) });
+}
+
+type AudioListCache = InfiniteData<AudioAssetPage, number>;
+
+function patchFavorite(queryClient: QueryClient, scope: WorkspaceScope, assetId: string, favorited: boolean) {
+  queryClient.setQueriesData<AudioListCache>({ queryKey: listKeyPrefix(scope) }, (data) =>
+    data && {
+      ...data,
+      pages: data.pages.map((page) => ({
+        ...page,
+        assets: page.assets.map((asset) => (asset.id === assetId ? { ...asset, favorited } : asset)),
+      })),
+    },
+  );
+}
+
+/** The favourite flag the cache currently shows for an asset, if any cached list has it. */
+function cachedFavorite(queryClient: QueryClient, scope: WorkspaceScope, assetId: string): boolean | undefined {
+  for (const [, data] of queryClient.getQueriesData<AudioListCache>({ queryKey: listKeyPrefix(scope) })) {
+    for (const page of data?.pages ?? []) {
+      const asset = page.assets.find((row) => row.id === assetId);
+      if (asset) return asset.favorited;
+    }
+  }
+  return undefined;
+}
+
+export interface AudioLibraryList {
   assets: AudioAssetListRow[];
+  /** Every tag the library offers for this kind, in the curated chip order. */
   moodTags: string[];
+  /** A cold first load: nothing to show yet, not even a previous filter's rows. */
   loading: boolean;
   error: string | null;
   retry: () => void;
-  hasMore: boolean;
+  /** False while the rows still belong to the previous filter. */
+  settled: boolean;
+  /** More pages exist and nothing is in flight, so asking for the next one now is safe. */
+  canLoadMore: boolean;
   loadingMore: boolean;
   loadMoreError: string | null;
   loadMore: () => void;
   setFavorite: (assetId: string, favorited: boolean) => Promise<void>;
 }
 
-/** Pages reset when filters or the caller's library version change. */
-export function useAudioAssetList(
-  kind: AudioAssetKindInput,
-  mood: string | null,
-  reloadKey: number,
-  options: { search?: string; scope?: "all" | "user"; favorited?: boolean } = {},
-): UseAudioAssetListResult {
-  const { search, scope, favorited } = options;
+/**
+ * A filter change keeps the previous rows on screen until the new ones land
+ * (`settled` is false meanwhile), so only the very first load shows a skeleton.
+ */
+export function useAudioLibrary(filters: AudioListFilters): AudioLibraryList {
+  const runtime = useApiRuntime();
   const api = useAudioApi();
-  const [assets, setAssets] = useState<AudioAssetListRow[]>([]);
-  const [moodTags, setMoodTags] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [nextOffset, setNextOffset] = useState<number | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
-  const generation = useRef(0);
-  const pendingPage = useRef<number | null>(null);
-  const [retryVersion, setRetryVersion] = useState(0);
-  const retry = useCallback(() => setRetryVersion((version) => version + 1), []);
+  const { queryClient } = runtime;
+  const query = useInfiniteQuery(
+    { ...audioListQuery(api, filters), enabled: api !== null, placeholderData: keepPreviousData },
+    queryClient,
+  );
+  const { data, isFetching, isFetchingNextPage, hasNextPage, fetchNextPage, refetch } = query;
 
-  const fetchPage = useCallback(async (offset: number): Promise<AudioAssetPage> => {
-    if (!api) throw new Error("Couldn't load the audio library.");
-    const query: { kind: AudioAssetKindInput } & Record<string, string> = { kind, limit: "30", offset: String(offset) };
-    if (mood) query.mood = mood;
-    if (search?.trim()) query.search = search.trim();
-    if (scope) query.scope = scope;
-    if (favorited !== undefined) query.favorited = String(favorited);
-    try {
-      const response = await brandClientFor(api)["audio-assets"].$get({ query });
-      return await response.json();
-    } catch {
-      throw new Error("Couldn't load the audio library.");
-    }
-  }, [api, kind, mood, search, scope, favorited]);
+  const assets = useMemo(() => {
+    const rows = new Map<string, AudioAssetListRow>();
+    for (const page of data?.pages ?? []) for (const asset of page.assets) if (!rows.has(asset.id)) rows.set(asset.id, asset);
+    return [...rows.values()];
+  }, [data]);
+  const moodTags = useMemo(() => orderMoodTags(filters.kind, data?.pages[0]?.moodTags ?? []), [data, filters.kind]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is an explicit caller-controlled refetch trigger.
-  useEffect(() => {
-    const current = ++generation.current;
-    pendingPage.current = null;
-    setLoading(true);
-    setLoadingMore(false);
-    setAssets([]);
-    setNextOffset(null);
-    setError(null);
-    setLoadMoreError(null);
-    void fetchPage(0).then((page) => {
-      if (current !== generation.current) return;
-      setAssets(page.assets);
-      setMoodTags(page.moodTags);
-      setNextOffset(page.nextOffset);
-    }).catch(() => {
-      if (current === generation.current) setError("Couldn't load the audio library.");
-    }).finally(() => {
-      if (current === generation.current) setLoading(false);
-    });
-    return () => { generation.current++; };
-  }, [fetchPage, reloadKey, retryVersion]);
-
+  const settled = !query.isPlaceholderData;
   const loadMore = useCallback(() => {
-    if (nextOffset === null || loading || pendingPage.current !== null) return;
-    const current = generation.current;
-    pendingPage.current = current;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    void fetchPage(nextOffset).then((page) => {
-      if (current !== generation.current) return;
-      setAssets((previous) => {
-        const ids = new Set(previous.map((asset) => asset.id));
-        return [...previous, ...page.assets.filter((asset) => !ids.has(asset.id))];
-      });
-      setNextOffset(page.nextOffset);
-    }).catch(() => {
-      if (current === generation.current) setLoadMoreError("Couldn't load more audio.");
-    }).finally(() => {
-      if (current !== generation.current) return;
-      pendingPage.current = null;
-      setLoadingMore(false);
-    });
-  }, [fetchPage, nextOffset, loading]);
+    // fetchNextPage restarts a request already in flight, so only ask when idle.
+    if (hasNextPage && settled && !isFetching) void fetchNextPage();
+  }, [hasNextPage, settled, isFetching, fetchNextPage]);
 
   const setFavorite = useCallback(async (assetId: string, favorited: boolean) => {
-    const previous = assets.find((asset) => asset.id === assetId)?.favorited ?? false;
-    setAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, favorited } : asset));
+    if (!api) throw new Error("Couldn't update Saved tracks.");
+    // Roll back to what the cache showed before this write, not to the inverse of the request.
+    const previous = cachedFavorite(queryClient, api.scope, assetId) ?? !favorited;
+    patchFavorite(queryClient, api.scope, assetId, favorited);
     try {
-      if (!api) throw new Error("Couldn't update Saved tracks.");
       const mutations = brandMutations(api);
       await (favorited ? mutations.favoriteAudio(assetId) : mutations.unfavoriteAudio(assetId));
     } catch (error) {
-      setAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, favorited: previous } : asset));
+      patchFavorite(queryClient, api.scope, assetId, previous);
       throw error;
     }
-  }, [api, assets]);
+    // Saved lists gain or lose the row; mark them stale, refetching when next shown.
+    void queryClient.invalidateQueries({
+      queryKey: listKeyPrefix(api.scope),
+      predicate: (entry) => (entry.queryKey.at(-1) as { favorited?: boolean } | undefined)?.favorited === true,
+      refetchType: "none",
+    });
+  }, [api, queryClient]);
 
-  return { assets, moodTags, loading, error, retry, hasMore: nextOffset !== null, loadingMore, loadMoreError, loadMore, setFavorite };
+  return {
+    assets,
+    moodTags,
+    loading: api === null || (query.isPending && !data),
+    error: query.isError && !data ? "Couldn't load the audio library." : null,
+    retry: () => void refetch(),
+    settled,
+    canLoadMore: Boolean(hasNextPage) && settled && !isFetching && !query.isFetchNextPageError,
+    loadingMore: isFetchingNextPage,
+    loadMoreError: query.isFetchNextPageError ? "Couldn't load more audio." : null,
+    loadMore,
+    setFavorite,
+  };
+}
+
+/** A credit never changes for a track, so one lookup serves the whole session. */
+const ATTRIBUTION_STALE_MS = 30 * 60_000;
+
+function attributionMap(results: ReadonlyArray<{ data?: { attribution?: string | null } }>, ids: readonly string[]) {
+  const attributions = new Map<string, string | null>();
+  results.forEach((result, index) => {
+    const id = ids[index];
+    if (id !== undefined && result.data) attributions.set(id, result.data.attribution ?? null);
+  });
+  return attributions;
+}
+
+/**
+ * The credit of each given asset, by id, from the playback-url endpoint: one
+ * deduped, cached lookup per asset, independent of which library pages were
+ * ever loaded. An asset still loading, or that failed, owes nothing yet.
+ */
+export function useAudioAttributions(assetIds: readonly string[]): ReadonlyMap<string, string | null> {
+  const runtime = useApiRuntime();
+  const api = useAudioApi();
+  // Keyed by content, so an unrelated edit that rebuilds the caller's array rebuilds nothing here.
+  const idsKey = [...new Set(assetIds)].sort().join(",");
+  const ids = useMemo(() => (idsKey ? idsKey.split(",") : []), [idsKey]);
+  const queries = useMemo(
+    () =>
+      api
+        ? ids.map((id) => ({
+            ...brandQueries(api).audioPlaybackUrl(id),
+            staleTime: ATTRIBUTION_STALE_MS,
+            refetchOnWindowFocus: false,
+          }))
+        : [],
+    [api, ids],
+  );
+  const combine = useCallback((results: Parameters<typeof attributionMap>[0]) => attributionMap(results, ids), [ids]);
+  return useQueries({ queries, combine }, runtime.queryClient);
 }
 
 /** Each user action refreshes the short-lived URL through the existing endpoint. */
@@ -257,7 +374,8 @@ export function usePreviewPlayer(): PreviewPlayer {
     setDuration(0);
     setLoadingId(id);
     try {
-      const url = await resolveAudioPlaybackUrl(id, api);
+      // A curated row carries its public URL: play it in this same click, with no API call.
+      const url = asset.previewUrl ?? await resolveAudioPlaybackUrl(id, api);
       if (request !== playbackRequest.current) return;
       audio.src = url;
       audio.load();
@@ -296,5 +414,9 @@ export function brandAudioRows(
     moodTags: [],
     durationSec: track.durationSec,
     favorited: false,
+    previewUrl: null,
+    artist: null,
+    license: null,
+    attribution: null,
   }));
 }

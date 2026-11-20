@@ -1,26 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Flex, Image, Input, Slider, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Input, Slider, Stack, Text } from "@chakra-ui/react";
 import type { ReactNode } from "react";
-import { chipProps, PanelEmpty, softFieldProps, softFocusWithin, studioSliderCss } from "./panel-ui";
-import {
-  AlertTriangle,
-  Check,
-  ChevronDown,
-  Link2,
-  LoaderCircle,
-  Music,
-  Pause,
-  Play,
-  Plus,
-  RotateCw,
-  Search,
-  SlidersHorizontal,
-  Star,
-  Upload,
-  X,
-} from "lucide-react";
+import { softFieldProps, studioSliderCss } from "./panel-ui";
+import { ChevronDown, Link2, Music, SlidersHorizontal, X } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
@@ -28,124 +12,33 @@ import type { StudioMusicBlock } from "@narriflow/validators";
 import { addMusicTrack, patchMusicBlock, selectedOrOnlyBlock, type MusicTrack } from "../music-blocks";
 import {
   brandAudioRows,
-  useAudioApi,
-  useAudioAssetList,
   resolveAudioPlaybackUrl,
+  useAudioApi,
+  useAudioAttributions,
   type AudioAssetListRow,
   type PreviewPlayer,
 } from "./audio-library";
-import { brandAudioFirst, filterAudioAssets } from "./audio-library-filter";
+import { AudioBrowser, type AudioBrowserLabels } from "./audio-list";
+import { AUDIO_CREDIT_HINT, audioCreditAssetIds } from "./audio-credits";
+import { CopyCreditButton } from "./credit-copy";
 
 interface MusicTabProps {
-  reloadKey: number;
   player: PreviewPlayer;
   onOpenUploads: () => void;
 }
 
-function CategoryChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Flex
-      as="button"
-      aria-pressed={active}
-      align="center"
-      flexShrink={0}
-      textTransform="capitalize"
-      cursor="pointer"
-      {...chipProps(active)}
-      onClick={onClick}
-    >
-      {label}
-    </Flex>
-  );
-}
-
-const softActionProps = {
-  as: "button",
-  minH: "28px",
-  minW: "24px",
-  px: "3",
-  align: "center",
-  gap: "1.5",
-  borderRadius: "8px",
-  bg: "studio.raised",
-  color: "studio.fg",
-  fontSize: "13px",
-  fontWeight: "500",
-  cursor: "pointer",
-  _hover: { bg: "studio.borderStrong" },
-} as const;
-
-/** A library list that failed to load: one message and a retry, in the panels' empty-state style. */
-export function AudioListError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <Box role="alert">
-      <PanelEmpty
-        icon={<AlertTriangle size={18} />}
-        title={message}
-        actions={
-          <Flex {...softActionProps} onClick={onRetry}>
-            <RotateCw size={13} />
-            Retry
-          </Flex>
-        }
-      />
-    </Box>
-  );
-}
-
-/** The foot of a paged list: a failed next page with its retry, or the Load more button. */
-export function AudioPager({
-  error,
-  hasMore,
-  loading,
-  onLoadMore,
-}: {
-  error: string | null;
-  hasMore: boolean;
-  loading: boolean;
-  onLoadMore: () => void;
-}) {
-  if (error) {
-    return (
-      <Flex role="alert" align="center" justify="space-between" gap="3" px="3" py="2" bg="studio.subtle" borderRadius="12px">
-        <Flex align="center" gap="2" color="studio.danger" minW="0">
-          <Box flexShrink={0}><AlertTriangle size={13} /></Box>
-          <Text fontSize="12px">{error}</Text>
-        </Flex>
-        <Flex {...softActionProps} onClick={onLoadMore}>Retry</Flex>
-      </Flex>
-    );
-  }
-  if (!hasMore) return null;
-  return (
-    <Flex
-      as="button"
-      minH="36px"
-      minW="24px"
-      align="center"
-      justify="center"
-      borderRadius="10px"
-      bg="studio.subtle"
-      color="studio.fgMuted"
-      fontSize="13px"
-      fontWeight="500"
-      cursor="pointer"
-      _hover={{ bg: "studio.surface", color: "studio.fg" }}
-      aria-disabled={loading}
-      onClick={loading ? undefined : onLoadMore}
-    >
-      {loading ? "Loading…" : "Load more"}
-    </Flex>
-  );
-}
+const MUSIC_LABELS: AudioBrowserLabels = {
+  searchLabel: "music",
+  searchPlaceholder: "Search music…",
+  clearSearchLabel: "Clear music search",
+  loadingLabel: "Loading music",
+  emptyTitle: "No music yet",
+  emptyHint: "Free-to-use tracks will show up here.",
+  savedTitle: "No saved tracks",
+  savedHint: "Star a track and it collects here.",
+  uploadLabel: "Upload a track",
+  emptyIcon: <Music size={18} />,
+};
 
 /** One collapsible group: a soft header row, its content flowing below when open. */
 function Disclosure({
@@ -193,147 +86,7 @@ function Disclosure({
   );
 }
 
-function TrackRow({
-  asset,
-  player,
-  selected,
-  onUse,
-  onFavorite,
-}: {
-  asset: AudioAssetListRow;
-  player: PreviewPlayer;
-  selected: boolean;
-  onUse: () => void;
-  /** Omitted for brand tracks, which can't be starred. */
-  onFavorite?: () => void;
-}) {
-  const active = player.activeId === asset.id;
-  const playing = active && player.isPlaying;
-  const loading = player.loadingId === asset.id;
-  const duration = active && player.duration > 0 ? player.duration : asset.durationSec;
-
-  return (
-    <Stack
-      gap="0"
-      p="2"
-      bg={selected ? "studio.accentSubtle" : active ? "studio.subtle" : "transparent"}
-      borderRadius="12px"
-      transition="background 120ms ease"
-      _hover={{ bg: selected ? "studio.accentSubtle" : "studio.subtle" }}
-    >
-      <Flex align="center" gap="8px">
-        <Box position="relative" w="44px" h="44px" flexShrink={0} overflow="hidden" borderRadius="8px">
-          <Image
-            src="/images/audio/music-cover.png"
-            alt=""
-            w="full"
-            h="full"
-            objectFit="cover"
-          />
-          <Flex
-            as="button"
-            aria-label={playing ? `Pause ${asset.title}` : `Preview ${asset.title}`}
-            position="absolute"
-            inset="0"
-            align="center"
-            justify="center"
-            color="white"
-            bg="blackAlpha.400"
-            cursor="pointer"
-            _hover={{ bg: "blackAlpha.600" }}
-            onClick={() => player.toggle(asset)}
-          >
-            {loading ? (
-              <Box animation="spin">
-                <LoaderCircle size={15} />
-              </Box>
-            ) : playing ? (
-              <Pause size={15} fill="currentColor" />
-            ) : (
-              <Play size={15} fill="currentColor" />
-            )}
-          </Flex>
-        </Box>
-
-        <Stack gap="1px" minW="0" flex="1">
-          <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>
-            {asset.title}
-          </Text>
-          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
-            {formatDuration(asset.durationSec)}
-            {asset.scope === "user" ? " · upload" : ""}
-          </Text>
-        </Stack>
-
-        <Flex align="center" gap="3px" flexShrink={0}>
-          {onFavorite ? (
-            <Flex
-              as="button"
-              aria-label={asset.favorited ? `Remove ${asset.title} from Saved` : `Save ${asset.title}`}
-              aria-pressed={asset.favorited}
-              w="25px"
-              h="25px"
-              align="center"
-              justify="center"
-              borderRadius="full"
-              color={asset.favorited ? "warning.fg" : "studio.fgMuted"}
-              cursor="pointer"
-              _hover={{ bg: "studio.subtle", color: asset.favorited ? "warning.fg" : "studio.fg" }}
-              onClick={onFavorite}
-            >
-              <Star size={13} fill={asset.favorited ? "currentColor" : "none"} />
-            </Flex>
-          ) : null}
-          <Flex
-            as="button"
-            aria-label={selected ? `${asset.title} is in use` : `Use ${asset.title}`}
-            aria-pressed={selected}
-            w="32px"
-            h="32px"
-            align="center"
-            justify="center"
-            borderRadius="full"
-            bg={selected ? "studio.accent" : "studio.raised"}
-            color={selected ? "white" : "studio.fg"}
-            cursor="pointer"
-            _hover={selected ? undefined : { bg: "studio.borderStrong" }}
-            onClick={onUse}
-          >
-            {selected ? <Check size={13} /> : <Plus size={13} />}
-          </Flex>
-        </Flex>
-      </Flex>
-
-      {active ? (
-        <Flex align="center" gap="7px" mt="7px" pl="48px">
-          <Slider.Root
-            aria-label={[`${asset.title} preview position`]}
-            value={[Math.min(player.currentTime, Math.max(duration, 0))]}
-            min={0}
-            max={Math.max(duration, 0.01)}
-            step={0.05}
-            onValueChange={(event) => player.seek(event.value[0] ?? 0)}
-            size="sm"
-            css={studioSliderCss}
-            flex="1"
-          >
-            <Slider.Control>
-              <Slider.Track>
-                <Slider.Range />
-              </Slider.Track>
-              <Slider.Thumbs />
-            </Slider.Control>
-          </Slider.Root>
-          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" whiteSpace="nowrap">
-            {formatDuration(player.currentTime)} / {formatDuration(duration)}
-          </Text>
-        </Flex>
-      ) : null}
-    </Stack>
-  );
-}
-
-export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
+export function MusicTab({ player, onOpenUploads }: MusicTabProps) {
   const audioApi = useAudioApi();
   const {
     studioEdits,
@@ -363,14 +116,8 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   // The latest document, for work that finishes after an await.
   const studioEditsRef = useRef(studioEdits);
   studioEditsRef.current = studioEdits;
-  const [category, setCategory] = useState("all");
-  const [search, setSearch] = useState("");
-  const { assets, moodTags, loading, error, retry, setFavorite, hasMore, loadingMore, loadMoreError, loadMore } = useAudioAssetList(
-    "music",
-    category === "all" || category === "saved" ? null : category,
-    reloadKey,
-    { search, favorited: category === "saved" ? true : undefined },
-  );
+  const creditAssetIds = useMemo(() => audioCreditAssetIds(studioEdits), [studioEdits]);
+  const attributions = useAudioAttributions(creditAssetIds);
   const [showMix, setShowMix] = useState(music.blocks.length > 0);
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
@@ -379,18 +126,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
 
   useEffect(() => () => { applyRequest.current++; }, []);
 
-  const visibleAssets = useMemo(() => {
-    const active = player.activeAsset;
-    const rows = active?.kind === "music" && !assets.some((asset) => asset.id === active.id) ? [...assets, active] : assets;
-    return filterAudioAssets(rows, { category, search, activeId: player.activeId });
-  }, [assets, category, player.activeId, player.activeAsset, search]);
-
   const brandRows = useMemo(() => brandAudioRows(brandAudio.music, "music"), [brandAudio.music]);
-  const groups = useMemo(
-    () => brandAudioFirst(brandRows, visibleAssets, { category, search }),
-    [brandRows, visibleAssets, category, search],
-  );
-
   const updateMusic = (patch: Partial<typeof music>, coalesceKey?: string) =>
     setStudioEdits((prev) => ({ ...prev, music: { ...prev.music, ...patch } }), coalesceKey);
 
@@ -442,7 +178,8 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   const applyTrack = async (asset: AudioAssetListRow) => {
     const request = ++applyRequest.current;
     try {
-      const url = await resolveAudioPlaybackUrl(asset.id, audioApi);
+      // A curated track is a stable public URL; only uploads need a fresh signed link.
+      const url = asset.previewUrl ?? await resolveAudioPlaybackUrl(asset.id, audioApi);
       if (request !== applyRequest.current) return;
       placeTrack({ assetId: asset.id, title: asset.title, url });
     } catch {
@@ -464,142 +201,29 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
     }
   };
 
-  const toggleFavorite = async (asset: AudioAssetListRow) => {
-    try {
-      await setFavorite(asset.id, !asset.favorited);
-    } catch {
-      toaster.create({ type: "error", title: "Couldn't update Saved tracks" });
-    }
-  };
+  const blockCredit = (selectedBlock?.assetId && attributions.get(selectedBlock.assetId)) || null;
+
+  const rowAction = (asset: AudioAssetListRow) => ({
+    ariaLabel: selectedBlock?.assetId === asset.id ? `${asset.title} is in use` : `Use ${asset.title}`,
+    selected: selectedBlock?.assetId === asset.id,
+    onClick: () => void applyTrack(asset),
+  });
 
   return (
-    <Stack gap="4" px="5" pt="4" pb="4">
-      <Flex align="center" gap="2">
-        <Flex
-          align="center"
-          gap="2.5"
-          h="40px"
-          px="3"
-          flex="1"
-          bg="studio.subtle"
-          borderRadius="10px"
-          color="studio.fgSubtle"
-          _focusWithin={softFocusWithin}
-        >
-          <Search size={14} />
-          <Input
-            aria-label="Search music"
-            placeholder="Search music…"
-            maxLength={120}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            p="0"
-            border="0"
-            outline="0"
-            bg="transparent"
-            fontSize="14px"
-            color="studio.fg"
-            _focusVisible={{ boxShadow: "none" }}
-            _placeholder={{ color: "studio.fgSubtle" }}
-          />
-          {search ? (
-            <Flex as="button" aria-label="Clear music search" minW="24px" minH="24px" align="center" justify="center" onClick={() => setSearch("")}>
-              <X size={12} />
-            </Flex>
-          ) : null}
-        </Flex>
-        <Flex
-          as="button"
-          aria-label="Open audio uploads"
-          title="Upload audio"
-          boxSize="40px"
-          flexShrink={0}
-          align="center"
-          justify="center"
-          borderRadius="10px"
-          bg="studio.subtle"
-          color="studio.fgMuted"
-          cursor="pointer"
-          transition="background 120ms ease, color 120ms ease"
-          _hover={{ bg: "studio.raised", color: "studio.fg" }}
-          onClick={onOpenUploads}
-        >
-          <Upload size={14} />
-        </Flex>
-      </Flex>
-
-      <Flex gap="2" overflowX="auto" css={{ scrollbarWidth: "none" }}>
-        <CategoryChip label="All" active={category === "all"} onClick={() => setCategory("all")} />
-        <CategoryChip label="Saved" active={category === "saved"} onClick={() => setCategory("saved")} />
-        {moodTags.map((tag) => (
-          <CategoryChip key={tag} label={tag} active={category === tag} onClick={() => setCategory(tag)} />
-        ))}
-      </Flex>
-
-      <Box maxH="330px" overflowY="auto" mx="-1" px="1">
-        <Stack gap="1">
-          {groups.brand.length > 0 ? (
-            <>
-              <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" px="2" pb="1">Brand</Text>
-              {groups.brand.map((asset) => (
-                <TrackRow
-                  key={asset.id}
-                  asset={asset}
-                  player={player}
-                  selected={selectedBlock?.assetId === asset.id}
-                  onUse={() => void applyTrack(asset)}
-                />
-              ))}
-              {groups.library.length > 0 ? (
-                <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" px="2" pt="3" pb="1">Library</Text>
-              ) : null}
-            </>
-          ) : null}
-          {loading ? (
-            <Flex align="center" gap="2" py="6" justify="center" color="studio.fgMuted">
-              <Box animation="spin">
-                <LoaderCircle size={14} />
-              </Box>
-              <Text fontSize="13px">Loading music…</Text>
-            </Flex>
-          ) : error ? (
-            <AudioListError message={error} onRetry={retry} />
-          ) : groups.library.length === 0 && groups.brand.length === 0 ? (
-            <PanelEmpty
-              icon={<Music size={18} />}
-              title={category === "saved" ? "No saved tracks" : search ? "No matches" : "No music yet"}
-              actions={
-                !search && category !== "saved" ? (
-                  <Flex {...softActionProps} onClick={onOpenUploads}>
-                    <Upload size={13} /> Upload a track
-                  </Flex>
-                ) : null
-              }
-            >
-              {category === "saved"
-                ? "Star a track and it collects here."
-                : search
-                  ? "Try a different search."
-                  : "Royalty-free tracks will show up here."}
-            </PanelEmpty>
-          ) : (
-            groups.library.map((asset) => (
-              <TrackRow
-                key={asset.id}
-                asset={asset}
-                player={player}
-                selected={selectedBlock?.assetId === asset.id}
-                onUse={() => void applyTrack(asset)}
-                onFavorite={() => void toggleFavorite(asset)}
-              />
-            ))
-          )}
-          <AudioPager error={loadMoreError} hasMore={hasMore} loading={loadingMore} onLoadMore={loadMore} />
-        </Stack>
-      </Box>
+    <Flex direction="column" flex="1" gap="4" px="5" pt="4" pb="4">
+      <AudioBrowser
+        kind="music"
+        labels={MUSIC_LABELS}
+        player={player}
+        brandRows={brandRows}
+        onOpenUploads={onOpenUploads}
+        rowAction={rowAction}
+        onFavoriteFailed={() => toaster.create({ type: "error", title: "Couldn't update Saved tracks" })}
+      />
 
       {selectedBlock ? (
-        <Flex align="center" justify="space-between" gap="2" p="2" pe="3" bg="studio.subtle" borderRadius="12px">
+        <Stack gap="2" p="2" pe="3" bg="studio.subtle" borderRadius="12px">
+        <Flex align="center" justify="space-between" gap="2">
           <Flex align="center" gap="3" minW="0">
             <Flex boxSize="32px" flexShrink={0} align="center" justify="center" borderRadius="full" bg="studio.accentSubtle" color="studio.accentFg">
               <Music size={15} />
@@ -630,6 +254,16 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
             <X size={14} />
           </Flex>
         </Flex>
+        {blockCredit ? (
+          <Flex align="center" justify="space-between" gap="3" pl="44px">
+            <Stack gap="0" minW="0">
+              <Text fontSize="12px" color="studio.fg" fontWeight="500">Credit required</Text>
+              <Text fontSize="12px" color="studio.fgSubtle">{AUDIO_CREDIT_HINT}</Text>
+            </Stack>
+            <CopyCreditButton text={blockCredit} label="Copy credit" />
+          </Flex>
+        ) : null}
+        </Stack>
       ) : music.blocks.length > 1 ? (
         <Text fontSize="12px" color="studio.fgSubtle" px="1">
           Select a block on the timeline to edit its volume and fades.
@@ -742,6 +376,6 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
           </Flex>
         </Stack>
       </Disclosure>
-    </Stack>
+    </Flex>
   );
 }

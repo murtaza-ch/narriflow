@@ -1,0 +1,257 @@
+{
+  "_README": "BigSoundBank sounds (CC0, marked 'Free and royalty-free' on their licence page https://bigsoundbank.com/licence.html). fetch re-checks that marker on each sound's own detail page and skips anything that does not carry it. Audio is the site's public MP3 preview file (/UPLOAD/mp3/<id>.mp3), identical in size to its MP3 download.",
+  "sounds": [
+    {
+      "id": "2363",
+      "path": "/applause-1-s2363.html",
+      "title": "Applause, small group",
+      "category": "Crowd"
+    },
+    {
+      "id": "0812",
+      "path": "/applause-about-25-50-people-1-s0812.html",
+      "title": "Applause, outdoor show",
+      "category": "Crowd"
+    },
+    {
+      "id": "0019",
+      "path": "/applause-150-people-s0019.html",
+      "title": "Applause, 150 people",
+      "category": "Crowd"
+    },
+    {
+      "id": "0021",
+      "path": "/applause-600-people-s0021.html",
+      "title": "Applause, 600 people",
+      "category": "Crowd"
+    },
+    {
+      "id": "0237",
+      "path": "/shouts-and-applauses-of-teens-2-s0237.html",
+      "title": "Cheers and applause, teens",
+      "category": "Crowd"
+    },
+    {
+      "id": "1660",
+      "path": "/laughter-of-children-s1660.html",
+      "title": "Children laughing",
+      "category": "Crowd"
+    },
+    {
+      "id": "0490",
+      "path": "/laughter-s0490.html",
+      "title": "Villain laugh",
+      "category": "Cartoon"
+    },
+    {
+      "id": "1399",
+      "path": "/idea-2-s1399.html",
+      "title": "Idea ding",
+      "category": "Cartoon"
+    },
+    {
+      "id": "2394",
+      "path": "/trigger-of-camera-1-s2394.html",
+      "title": "Camera shutter",
+      "category": "Foley"
+    },
+    {
+      "id": "2392",
+      "path": "/slr-camera-in-burst-mode-3-s2392.html",
+      "title": "Camera burst",
+      "category": "Foley"
+    },
+    {
+      "id": "2390",
+      "path": "/paparazzi-2-s2390.html",
+      "title": "Paparazzi cameras",
+      "category": "Foley"
+    },
+    {
+      "id": "1734",
+      "path": "/quick-keyboard-s1734.html",
+      "title": "Keyboard typing, fast",
+      "category": "Foley"
+    },
+    {
+      "id": "1733",
+      "path": "/slow-keyboard-s1733.html",
+      "title": "Keyboard typing, slow",
+      "category": "Foley"
+    },
+    {
+      "id": "1065",
+      "path": "/typewriter-s1065.html",
+      "title": "Typewriter",
+      "category": "Foley"
+    },
+    {
+      "id": "3211",
+      "path": "/creaking-door-8-s3211.html",
+      "title": "Creaking door",
+      "category": "Foley"
+    },
+    {
+      "id": "1501",
+      "path": "/door-slamming-4-s1501.html",
+      "title": "Door slam",
+      "category": "Foley"
+    },
+    {
+      "id": "0320",
+      "path": "/knock-on-the-glass-door-2-s0320.html",
+      "title": "Glass door knock",
+      "category": "Foley"
+    },
+    {
+      "id": "0243",
+      "path": "/heartbeat-1-s0243.html",
+      "title": "Heartbeat",
+      "category": "Foley"
+    },
+    {
+      "id": "0218",
+      "path": "/heart-beat-s0218.html",
+      "title": "Heartbeat loop",
+      "category": "Foley"
+    },
+    {
+      "id": "0007",
+      "path": "/clock-s0007.html",
+      "title": "Clock ticking",
+      "category": "Foley"
+    },
+    {
+      "id": "0339",
+      "path": "/coin-in-cup-1-s0339.html",
+      "title": "Coin in cup",
+      "category": "Cash"
+    },
+    {
+      "id": "0193",
+      "path": "/coins-1-s0193.html",
+      "title": "Coins falling",
+      "category": "Cash"
+    },
+    {
+      "id": "1417",
+      "path": "/beep-of-a-cash-register-s1417.html",
+      "title": "Checkout beep",
+      "category": "Cash"
+    },
+    {
+      "id": "2531",
+      "path": "/counter-bell-3-s2531.html",
+      "title": "Counter bell",
+      "category": "Notification"
+    },
+    {
+      "id": "0292",
+      "path": "/small-bell-1-s0292.html",
+      "title": "Small bell",
+      "category": "Notification"
+    },
+    {
+      "id": "2115",
+      "path": "/bell-3-s2115.html",
+      "title": "Bell ring",
+      "category": "Notification"
+    },
+    {
+      "id": "1631",
+      "path": "/microwave-bell-s1631.html",
+      "title": "Microwave ding",
+      "category": "Notification"
+    },
+    {
+      "id": "2365",
+      "path": "/doorbell-6-s2365.html",
+      "title": "Doorbell",
+      "category": "Notification"
+    },
+    {
+      "id": "2063",
+      "path": "/notification-lasolisa-1-s2063.html",
+      "title": "Notification ping",
+      "category": "Notification"
+    },
+    {
+      "id": "1796",
+      "path": "/whoosh-4-s1796.html",
+      "title": "Rope whoosh",
+      "category": "Whoosh"
+    },
+    {
+      "id": "1801",
+      "path": "/whoosh-8-s1801.html",
+      "title": "Metal whoosh",
+      "category": "Whoosh"
+    },
+    {
+      "id": "1798",
+      "path": "/whoosh-10-s1798.html",
+      "title": "Bamboo whoosh",
+      "category": "Whoosh"
+    },
+    {
+      "id": "1799",
+      "path": "/whoosh-6-s1799.html",
+      "title": "Wooden whoosh",
+      "category": "Whoosh"
+    },
+    {
+      "id": "0128",
+      "path": "/sword-through-the-air-s0128.html",
+      "title": "Sword swish",
+      "category": "Whoosh"
+    },
+    {
+      "id": "1289",
+      "path": "/rain-on-concrete-s1289.html",
+      "title": "Rain on concrete",
+      "category": "Ambience"
+    },
+    {
+      "id": "2679",
+      "path": "/rain-under-an-umbrella-s2679.html",
+      "title": "Rain under an umbrella",
+      "category": "Ambience"
+    },
+    {
+      "id": "0097",
+      "path": "/countryside-s0097.html",
+      "title": "Countryside birds",
+      "category": "Ambience"
+    },
+    {
+      "id": "3575",
+      "path": "/birds-in-the-city-1-s3575.html",
+      "title": "City birds",
+      "category": "Ambience"
+    },
+    {
+      "id": "0680",
+      "path": "/paris-by-night-s0680.html",
+      "title": "Paris at night",
+      "category": "Ambience"
+    },
+    {
+      "id": "1713",
+      "path": "/little-parisian-street-s1713.html",
+      "title": "Quiet city street",
+      "category": "Ambience"
+    },
+    {
+      "id": "0526",
+      "path": "/pedestrian-place-s0526.html",
+      "title": "Pedestrian square",
+      "category": "Ambience"
+    },
+    {
+      "id": "0100",
+      "path": "/forest-s0100.html",
+      "title": "Forest ambience",
+      "category": "Ambience"
+    }
+  ]
+}

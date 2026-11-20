@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { brandAudioFirst, filterAudioAssets } from "./audio-library-filter";
+import { brandAudioFirst, filterAudioAssets, orderMoodTags, pinActiveAudio } from "./audio-library-filter";
 
 const ASSETS = [
   { id: "1", title: "Cinematic ambient", moodTags: ["ambient", "cinematic"], favorited: false },
@@ -58,5 +58,39 @@ describe("brandAudioFirst", () => {
       expect(groups.brand).toEqual([]);
       expect(groups.library).toBe(library);
     }
+  });
+});
+
+describe("orderMoodTags", () => {
+  test("music follows the curated order with unknown tags last, alphabetically", () => {
+    expect(
+      orderMoodTags("music", ["Ambient", "Zesty", "Epic", "Popular", "Bossa", "Chill", "Upbeat"]),
+    ).toEqual(["Popular", "Upbeat", "Chill", "Epic", "Ambient", "Bossa", "Zesty"]);
+  });
+
+  test("sound effects follow their own order", () => {
+    expect(orderMoodTags("sfx", ["Foley", "Impact", "Whoosh", "Sci-fi", "Mystery"])).toEqual([
+      "Whoosh", "Impact", "Sci-fi", "Foley", "Mystery",
+    ]);
+    // A music tag is unknown to sfx.
+    expect(orderMoodTags("sfx", ["Popular", "Pop"])).toEqual(["Pop", "Popular"]);
+  });
+
+  test("matches regardless of case, keeps the API's spelling and drops duplicates", () => {
+    expect(orderMoodTags("music", ["epic", "popular", "Epic"])).toEqual(["popular", "epic"]);
+  });
+
+  test("the full music list comes back exactly in order", () => {
+    const order = ["Popular", "Upbeat", "Happy", "Chill", "Funny", "Cinematic", "Epic", "Suspense", "Dark", "Romantic", "Jazz", "Electronic", "World", "Ambient"];
+    expect(orderMoodTags("music", [...order].reverse())).toEqual(order);
+  });
+});
+
+describe("pinActiveAudio", () => {
+  test("appends the active row only when the list lacks it", () => {
+    const rows = [{ id: "1" }, { id: "2" }];
+    expect(pinActiveAudio(rows, { id: "9" })).toEqual([{ id: "1" }, { id: "2" }, { id: "9" }]);
+    expect(pinActiveAudio(rows, { id: "2" })).toBe(rows);
+    expect(pinActiveAudio(rows, null)).toBe(rows);
   });
 });

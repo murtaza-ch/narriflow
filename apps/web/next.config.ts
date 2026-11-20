@@ -17,6 +17,15 @@ const API_ORIGIN = apiOrigin();
 const API_SOCKET_ORIGIN = API_ORIGIN.replace(/^http/, "ws");
 const CSP_REPORT_URL = `${API_ORIGIN}/api/csp-report`;
 
+// The public bucket of the curated Music/SFX library: previews play from it
+// (media-src), the waveform is fetched from it (connect-src) and its covers
+// are images (img-src). Unset leaves the directives untouched.
+function audioLibraryOrigin(): string {
+  const value = process.env.NEXT_PUBLIC_AUDIO_LIBRARY_ORIGIN?.trim();
+  return value ? ` ${new URL(value).origin}` : "";
+}
+const AUDIO_LIBRARY = audioLibraryOrigin();
+
 // A production Clerk publishable key encodes its frontend API host
 // (`pk_live_` + base64("<host>$")); a satellite or custom domain is not covered
 // by the *.clerk.com entries. Test keys and unset values add nothing.
@@ -124,13 +133,13 @@ const nextConfig: NextConfig = {
               "base-uri 'self'",
               "object-src 'none'",
               "frame-ancestors 'none'",
-              "img-src 'self' data: blob: https://i.ytimg.com https://img.youtube.com https://*.r2.cloudflarestorage.com",
-              "media-src 'self' blob: https://*.r2.cloudflarestorage.com",
+              `img-src 'self' data: blob: https://i.ytimg.com https://img.youtube.com https://*.r2.cloudflarestorage.com${AUDIO_LIBRARY}`,
+              `media-src 'self' blob: https://*.r2.cloudflarestorage.com${AUDIO_LIBRARY}`,
               "font-src 'self' data:",
               "style-src 'self' 'unsafe-inline'",
               // Google Identity Services and Picker, and the Dropbox Chooser, for the upload page's cloud pickers.
               `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://apis.google.com https://www.dropbox.com https://www.youtube.com`,
-              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://*.r2.cloudflarestorage.com https://accounts.google.com`,
+              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://*.r2.cloudflarestorage.com${AUDIO_LIBRARY} https://accounts.google.com`,
               `frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com${clerkHost} https://accounts.google.com https://docs.google.com https://content.googleapis.com https://www.dropbox.com https://www.youtube.com https://www.youtube-nocookie.com`,
               "worker-src 'self' blob:",
               `report-uri ${CSP_REPORT_URL}`,

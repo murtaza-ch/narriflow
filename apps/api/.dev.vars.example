@@ -157,3 +157,7 @@ LOCAL_FETCH_WORKSPACE_IDS_JSON=[]
 # Optional. Each stays off until set. See docs/runbooks/alerting.md.
 # POSTHOG_PROJECT_TOKEN=
 # HEARTBEAT_URL=
+
+# Origin of the public curated music/SFX library bucket. Not a secret. r2.dev is for
+# development only; production attaches a custom domain to the bucket.
+AUDIO_LIBRARY_PUBLIC_ORIGIN=https://pub-2d1f824c186146b8ade40a818acfee53.r2.dev

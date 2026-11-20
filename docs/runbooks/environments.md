@@ -82,6 +82,8 @@ YouTube imports run on Modal through the Apify download service (since 2026-11-1
 
 R2 CORS admits the local and deployed web origins, direct PUT and readable ETags. Keep a verified enabled seven-day incomplete-MPU rule. Application cleanup uses exact admitted keys, reference/hold rechecks and current authority. Never list a bucket and infer unreferenced media from an old execution alone.
 
+The curated music and sound-effect library has its own public bucket, `narriflow-library-dev`, served from `https://pub-2d1f824c186146b8ade40a818acfee53.r2.dev` for development only (r2.dev is rate-limited). Keys match the private copy in `narriflow-dev` (`audio-library/<kind>/<sha256-16>.mp3`); previews play from the public origin and renders still read the private copy. The API reads the origin from `AUDIO_LIBRARY_PUBLIC_ORIGIN` (a plain URL in Wrangler `vars` and `.dev.vars`); without it curated rows fall back to presigned URLs. Production must attach a custom domain to the library bucket and set `AUDIO_LIBRARY_PUBLIC_ORIGIN` to it.
+
 ## Restore
 
 Use [the execution restore procedure](execution-restore.md). Only the proved quiesced snapshot can authorize restore. A pre-retirement fixture backup is not that proof. Metadata recovery admits no external deliveries until the explicit redispatch stage. The epoch bump must fence every prior execution before reopening admission.

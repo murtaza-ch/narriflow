@@ -113,3 +113,124 @@ describe("audio upload plan gate", () => {
     expect(rows).toHaveLength(10);
   });
 });
+
+/** The curated library's public preview and ordering, against stand-in queries. */
+describe("curated library rows", () => {
+  const ORIGIN = "https://library.test";
+  const base = {
+    kind: "music",
+    userId: null,
+    workspaceId: null,
+    createdByUserId: null,
+    moodTags: ["Popular"],
+    durationSec: 120,
+    license: null,
+    artist: null,
+    attribution: null,
+    sourceUrl: null,
+    sortOrder: 1000,
+    createdAt: new Date(0),
+    deletedAt: null,
+    favorited: false,
+  };
+  const curated = {
+    ...base,
+    id: "11111111-1111-4111-8111-111111111111",
+    storageKey: "audio-library/music/0123456789abcdef.mp3",
+    title: "Sneaky Snitch",
+    artist: "Kevin MacLeod",
+    license: "cc_by_4" as const,
+    attribution: '"Sneaky Snitch" Kevin MacLeod (incompetech.com)',
+    sortOrder: 1,
+  };
+  const uploaded = {
+    ...base,
+    id: "22222222-2222-4222-8222-222222222222",
+    userId: "user",
+    workspaceId: "ws",
+    storageKey: "workspaces/ws/audio-assets/a.mp3",
+    title: "Mine",
+  };
+
+  function setup(origin: string | undefined, rows: Array<Record<string, unknown>>) {
+    const queries: Array<{ sql: string }> = [];
+    const presigned: string[] = [];
+    const client = {
+      $queryRaw: async (query: { sql: string }) => {
+        queries.push(query);
+        return queries.length === 1 ? rows : [];
+      },
+      audioAsset: { findFirst: async ({ where }: { where: { id: string } }) => rows.find((row) => row.id === where.id) ?? null },
+    };
+    const storage = {
+      presignDownloadUrl: async ({ key }: { key: string }) => {
+        presigned.push(key);
+        return `https://signed.test/${key}`;
+      },
+    };
+    const service = new AudioAssetService(storage as never, () => origin);
+    (service as unknown as { requirePrisma: () => unknown }).requirePrisma = () => client;
+    return { service, queries, presigned };
+  }
+
+  test("list rows carry the public preview URL, credit fields and null user fields", async () => {
+    const { service } = setup(ORIGIN, [curated, uploaded]);
+    const { assets } = await service.listAssets("user", { kind: "music" }, { workspaceId: "ws", actorUserId: "user" });
+    expect(assets[0]).toEqual({
+      id: curated.id,
+      kind: "music",
+      scope: "curated",
+      title: "Sneaky Snitch",
+      moodTags: ["Popular"],
+      durationSec: 120,
+      favorited: false,
+      previewUrl: `${ORIGIN}/audio-library/music/0123456789abcdef.mp3`,
+      artist: "Kevin MacLeod",
+      license: "cc_by_4",
+      attribution: '"Sneaky Snitch" Kevin MacLeod (incompetech.com)',
+    });
+    expect(assets[1]).toMatchObject({ scope: "user", previewUrl: null, artist: null, license: null, attribution: null });
+  });
+
+  test("without a library origin curated rows have no preview URL", async () => {
+    const { service } = setup(undefined, [curated]);
+    const { assets } = await service.listAssets("user", { kind: "music" });
+    expect(assets[0]).toMatchObject({ scope: "curated", previewUrl: null });
+  });
+
+  test("curated rows order by sortOrder then title; user rows by newest first; artist is searchable", async () => {
+    const { service, queries } = setup(ORIGIN, []);
+    await service.listAssets("user", { kind: "music", search: "macleod" });
+    const sql = queries[0]!.sql.replace(/\s+/g, " ");
+    expect(sql).toContain(
+      `CASE WHEN asset."userId" IS NULL THEN asset."sortOrder" END ASC, CASE WHEN asset."userId" IS NULL THEN asset.title END ASC, CASE WHEN asset."userId" IS NOT NULL THEN asset."createdAt" END DESC`,
+    );
+    expect(sql).toContain("concat_ws(' ', asset.title, asset.artist,");
+  });
+
+  test("a curated playback URL is public and never presigned", async () => {
+    const { service, presigned } = setup(ORIGIN, [curated]);
+    expect(await service.getPlaybackSource("user", curated.id)).toEqual({
+      url: `${ORIGIN}/audio-library/music/0123456789abcdef.mp3`,
+      durationSec: 120,
+      attribution: curated.attribution,
+    });
+    expect(presigned).toEqual([]);
+  });
+
+  test("user rows, and curated rows without an origin, keep the presigned playback URL", async () => {
+    const withOrigin = setup(ORIGIN, [uploaded]);
+    expect((await withOrigin.service.getPlaybackSource("user", uploaded.id))?.url).toBe(`https://signed.test/${uploaded.storageKey}`);
+    const withoutOrigin = setup(undefined, [curated]);
+    expect((await withoutOrigin.service.getPlaybackSource("user", curated.id))?.url).toBe(`https://signed.test/${curated.storageKey}`);
+    expect(withoutOrigin.presigned).toEqual([curated.storageKey]);
+  });
+
+  test("playback carries the credit of a curated row, and never one for a user upload", async () => {
+    const withOrigin = setup(ORIGIN, [curated, uploaded]);
+    expect((await withOrigin.service.getPlaybackSource("user", curated.id))?.attribution).toBe(curated.attribution);
+    const withoutOrigin = setup(undefined, [curated]);
+    expect((await withoutOrigin.service.getPlaybackSource("user", curated.id))?.attribution).toBe(curated.attribution);
+    expect((await withOrigin.service.getPlaybackSource("user", uploaded.id))?.attribution).toBeNull();
+  });
+});

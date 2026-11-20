@@ -129,6 +129,7 @@ import {
 } from "@/lib/authenticated-request-browser";
 import { apiFailureBody, apiFailureStatus, createStudioExport, requireStudioApi, type StudioExportInput, studioReads, type StudioReads } from "./studio-api";
 import { useStudioApi } from "./use-studio-api";
+import { usePrefetchAudioLibrary } from "./tool-panels/audio-library";
 import { invalidateProjectClips } from "@narriflow/api-client/clips";
 import { createTokenSnapshot, createStudioCloudHttp } from "./studio-cloud-http";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
@@ -923,6 +924,8 @@ export function StudioShell({
   onResetComplete,
 }: StudioShellProps) {
   const studioApi = useStudioApi();
+  // Warm the Music and Sound effects lists so opening that panel paints at once.
+  usePrefetchAudioLibrary();
   // One Export intent per shell: a retry after a lost response reuses its key until the API accepts.
   const exportRuntime = studioApi?.runtime;
   const exportIntent = useMemo(() => exportRuntime?.createIntent<StudioExportInput>() ?? null, [exportRuntime]);

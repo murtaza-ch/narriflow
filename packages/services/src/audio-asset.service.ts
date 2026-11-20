@@ -2,7 +2,7 @@
  * Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
  *
  * `AudioAsset` rows are either curated (userId null, managed by content
- * operations using packages/db/audio-manifest.json as the catalog) or
+ * operations using packages/db/audio-library/manifest.json as the catalog) or
  * user-owned uploads (userId set, soft-deletable). Mirrors the shape of
  * `brand-template.service.ts`'s logo upload flow: presign against R2, verify
  * the finalized key is owned by the caller, and serve playback through a
@@ -10,6 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { Prisma, type AudioAsset } from "@prisma/client";
+import { parseOrigin } from "@narriflow/validators/api/origins";
 import {
   AUDIO_UPLOAD_MAX_BYTES,
   audioUploadContentTypeSchema,
@@ -17,6 +18,7 @@ import {
   listAudioAssetsQuerySchema,
   presignAudioUploadSchema,
   type AudioAssetKindInput,
+  type AudioAssetLicenseInput,
   type FinalizeAudioUploadInput,
   type ListAudioAssetsQuery,
   type PresignAudioUploadInput,
@@ -40,6 +42,7 @@ import {
   type BrandActorScope,
 } from "./brand-ownership";
 import { requireWithinPlanLimit } from "./plan-features";
+import { readServiceEnvironment } from "./runtime-environment";
 
 function log(
   level: "info" | "error",
@@ -108,6 +111,35 @@ export interface AudioAssetListRow {
   moodTags: string[];
   durationSec: number;
   favorited: boolean;
+  /** Public, immutable preview URL for curated rows; null for user uploads. */
+  previewUrl: string | null;
+  artist: string | null;
+  license: AudioAssetLicenseInput | null;
+  /** Exact credit text. Null means no credit is required. */
+  attribution: string | null;
+}
+
+/**
+ * Origin of the public library bucket (`AUDIO_LIBRARY_PUBLIC_ORIGIN`). Missing
+ * or invalid settings, or no service environment scope, yield undefined so
+ * curated rows fall back to presigned access instead of failing.
+ */
+function libraryPublicOriginFromEnvironment(): string | undefined {
+  try {
+    const raw = readServiceEnvironment().AUDIO_LIBRARY_PUBLIC_ORIGIN?.trim().replace(/\/+$/, "");
+    return (raw && parseOrigin(raw)) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Curated rows belong to no user and no Workspace; only they are ever public. */
+function isCuratedRow(row: Pick<AudioAsset, "userId" | "workspaceId">): boolean {
+  return row.userId === null && row.workspaceId === null;
+}
+
+function publicLibraryUrl(origin: string, storageKey: string): string {
+  return `${origin}/${storageKey.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function workspaceAudioAssetUploadPrefix(workspaceId: string): string {
@@ -128,7 +160,7 @@ export function extensionForAudioContentType(contentType: string): string {
   return CONTENT_TYPE_EXT[contentType] ?? "bin";
 }
 
-function toListRow(row: AudioAsset, favorited = false): AudioAssetListRow {
+function toListRow(row: AudioAsset, favorited = false, libraryOrigin?: string): AudioAssetListRow {
   return {
     id: row.id,
     kind: row.kind as AudioAssetKindInput,
@@ -137,13 +169,20 @@ function toListRow(row: AudioAsset, favorited = false): AudioAssetListRow {
     moodTags: row.moodTags,
     durationSec: row.durationSec,
     favorited,
+    previewUrl: libraryOrigin && isCuratedRow(row) ? publicLibraryUrl(libraryOrigin, row.storageKey) : null,
+    artist: row.artist,
+    license: row.license,
+    attribution: row.attribution,
   };
 }
 
 export class AudioAssetService {
   private requirePrisma = requirePrisma;
 
-  constructor(private readonly storage = { headObject, presignDownloadUrl, presignSingleUploadUrl, isR2Configured, deleteObject }) {}
+  constructor(
+    private readonly storage = { headObject, presignDownloadUrl, presignSingleUploadUrl, isR2Configured, deleteObject },
+    private readonly libraryOrigin: () => string | undefined = libraryPublicOriginFromEnvironment,
+  ) {}
 
   /** Bounded metadata pages. Only playback/render resolution signs access URLs. */
   async listAssets(
@@ -173,7 +212,7 @@ export class AudioAssetService {
         ))`
       : Prisma.empty;
     const search = parsed.search
-      ? Prisma.sql`AND strpos(lower(concat_ws(' ', asset.title, array_to_string(asset."moodTags", ' '))), lower(${parsed.search})) > 0`
+      ? Prisma.sql`AND strpos(lower(concat_ws(' ', asset.title, asset.artist, array_to_string(asset."moodTags", ' '))), lower(${parsed.search})) > 0`
       : Prisma.empty;
     const [rows, tags] = await Promise.all([
       prisma.$queryRaw<(AudioAsset & { favorited: boolean })[]>(Prisma.sql`
@@ -185,6 +224,7 @@ export class AudioAssetService {
           ${mood} ${search}
           ${parsed.favorited === undefined ? Prisma.empty : Prisma.sql`AND ${favorite} = ${parsed.favorited}`}
         ORDER BY (asset."userId" IS NOT NULL) ASC,
+          CASE WHEN asset."userId" IS NULL THEN asset."sortOrder" END ASC,
           CASE WHEN asset."userId" IS NULL THEN asset.title END ASC,
           CASE WHEN asset."userId" IS NOT NULL THEN asset."createdAt" END DESC,
           asset.id ASC
@@ -197,7 +237,8 @@ export class AudioAssetService {
         ORDER BY tag
       `),
     ]);
-    const assets = rows.slice(0, parsed.limit).map((row) => toListRow(row, row.favorited));
+    const origin = this.libraryOrigin();
+    const assets = rows.slice(0, parsed.limit).map((row) => toListRow(row, row.favorited, origin));
     return {
       assets,
       moodTags: tags.map(({ tag }) => tag),
@@ -350,7 +391,7 @@ export class AudioAssetService {
     userId: string,
     assetId: string,
     context?: AudioWorkspaceContext,
-  ): Promise<{ url: string; durationSec: number } | null> {
+  ): Promise<{ url: string; durationSec: number; attribution: string | null } | null> {
     const prisma = this.requirePrisma();
     const row = await prisma.audioAsset.findFirst({
       where: {
@@ -360,9 +401,17 @@ export class AudioAssetService {
       },
     });
     if (!row) return null;
+    // The credit travels with the playback source, so a clip's credits never depend on list pages.
+    const attribution = isCuratedRow(row) ? row.attribution : null;
+    // Curated objects are public and immutable (content-addressed key): no presign.
+    const origin = this.libraryOrigin();
+    if (origin && isCuratedRow(row)) {
+      return { url: publicLibraryUrl(origin, row.storageKey), durationSec: row.durationSec, attribution };
+    }
     return {
       url: await this.storage.presignDownloadUrl({ key: row.storageKey }),
       durationSec: row.durationSec,
+      attribution,
     };
   }
 

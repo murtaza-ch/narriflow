@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Box,
   Flex,
@@ -23,6 +23,9 @@ import {
   studioExportMotionLocked,
 } from "./studio-export-policy";
 import { SectionLabel, chipProps, tileProps } from "./tool-panels/panel-ui";
+import { useAudioAttributions } from "./tool-panels/audio-library";
+import { AUDIO_CREDIT_HINT, audioCreditAssetIds, audioCreditLines, joinAudioCredits } from "./tool-panels/audio-credits";
+import { CopyCreditButton } from "./tool-panels/credit-copy";
 
 function defaultSelection(aspectRatio: AspectRatio): Record<AspectRatio, boolean> {
   return {
@@ -130,7 +133,11 @@ export function StudioExportMenu() {
     upgradePrompts,
     editorDocument,
     setActiveTool,
-  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport", "upgradePrompts", "editorDocument", "setActiveTool");
+    studioEdits,
+  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport", "upgradePrompts", "editorDocument", "setActiveTool", "studioEdits");
+  const creditAssetIds = useMemo(() => audioCreditAssetIds(studioEdits), [studioEdits]);
+  const attributions = useAudioAttributions(creditAssetIds);
+  const creditLines = useMemo(() => audioCreditLines(studioEdits, attributions), [studioEdits, attributions]);
   const { openUpgrade } = useUpgrade();
   const motionLocked = studioExportMotionLocked(editorDocument, clipInfo.canPersistMotion);
   const motionPrompt = upgradePrompts.motion;
@@ -313,6 +320,21 @@ export function StudioExportMenu() {
                 ) : null}
               </Text>
             </Box>
+
+            {creditLines.length > 0 ? (
+              <Flex align="center" justify="space-between" gap="3" mt="5" p="3" bg="studio.subtle" borderRadius="12px">
+                <Stack gap="0.5" minW="0">
+                  <Text fontSize="13px" fontWeight="500" color="studio.fg">
+                    Music credits
+                  </Text>
+                  <Text fontSize="12px" color="studio.fgSubtle" lineHeight="1.45">
+                    {creditLines.length === 1 ? "1 track needs a credit. " : `${creditLines.length} tracks need a credit. `}
+                    {AUDIO_CREDIT_HINT}
+                  </Text>
+                </Stack>
+                <CopyCreditButton text={joinAudioCredits(creditLines)} label="Copy" />
+              </Flex>
+            ) : null}
 
             <Flex
               as="button"
