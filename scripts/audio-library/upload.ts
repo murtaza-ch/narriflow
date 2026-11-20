@@ -7,7 +7,27 @@ import { fileSize, log } from "./util";
 
 /** The few S3 pieces used here. The real classes come from packages/services, which owns the dependency. */
 interface S3Like {
-  send(command: unknown): Promise<unknown>;
+  send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown>;
+}
+
+/** A stalled request must fail, not hang the run: every call gets a deadline and is retried. */
+const REQUEST_TIMEOUT_MS = 120_000;
+const ATTEMPTS = 3;
+const CONCURRENCY = 4;
+
+async function withRetry<T>(run: (signal: AbortSignal) => Promise<T>, label: string): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      return await run(AbortSignal.timeout(REQUEST_TIMEOUT_MS));
+    } catch (error) {
+      if (isMissingObject(error)) throw error;
+      lastError = error;
+      log("upload_retry", { label, attempt, error: (error as { name?: string }).name ?? "Error" });
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+    }
+  }
+  throw lastError;
 }
 interface S3Commands {
   HeadObjectCommand: new (input: { Bucket: string; Key: string }) => unknown;
@@ -68,28 +88,39 @@ export async function runUpload(dryRun: boolean): Promise<void> {
 
   const counts = { uploaded: 0, skipped: 0 };
   for (const bucket of buckets) {
-    for (const object of objects) {
+    const queue = [...objects];
+    const uploadOne = async (object: (typeof objects)[number]) => {
       try {
-        await client.send(new HeadObjectCommand({ Bucket: bucket, Key: object.key }));
+        await withRetry((abortSignal) => client.send(new HeadObjectCommand({ Bucket: bucket, Key: object.key }), { abortSignal }), object.key);
         counts.skipped++;
-        continue;
+        return;
       } catch (error) {
         if (!isMissingObject(error)) throw error;
       }
       const body = await readFile(object.path);
-      await client.send(
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: object.key,
-          Body: body,
-          ContentLength: body.byteLength,
-          ContentType: "audio/mpeg",
-          CacheControl: OBJECT_CACHE_CONTROL,
-        }),
+      await withRetry(
+        (abortSignal) =>
+          client.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: object.key,
+              Body: body,
+              ContentLength: body.byteLength,
+              ContentType: "audio/mpeg",
+              CacheControl: OBJECT_CACHE_CONTROL,
+            }),
+            { abortSignal },
+          ),
+        object.key,
       );
       counts.uploaded++;
-      if (counts.uploaded % 25 === 0) log("uploading", { bucket, ...counts });
-    }
+      if (counts.uploaded % 10 === 0) log("uploading", { bucket, ...counts });
+    };
+    await Promise.all(
+      Array.from({ length: CONCURRENCY }, async () => {
+        for (let object = queue.shift(); object; object = queue.shift()) await uploadOne(object);
+      }),
+    );
     log("bucket_done", { bucket, ...counts });
   }
   log("upload_done", { buckets, objects: objects.length, ...counts });
