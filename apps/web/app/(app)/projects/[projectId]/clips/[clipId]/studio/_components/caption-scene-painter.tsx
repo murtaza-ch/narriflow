@@ -302,7 +302,9 @@ function HollowTextLayer({ piece, layer, face, advance, scale, language, directi
       data-scene-layer={layerIndex}
       width={1}
       height={1}
-      style={{ position: "absolute", left: px(baselineX), top: px(baselineY), overflow: "visible", pointerEvents: "none" }}
+      // Chrome paints nothing for an SVG mask under an ancestor's `clip-path` (the wrapper's clip) unless the
+      // masked layer is composited on its own: Hollow's clipped echoes vanished without this.
+      style={{ position: "absolute", left: px(baselineX), top: px(baselineY), overflow: "visible", pointerEvents: "none", ...(piece.clip ? { willChange: "transform" } : {}) }}
     >
       <defs>
         <mask id={id} maskUnits="userSpaceOnUse" {...box}>

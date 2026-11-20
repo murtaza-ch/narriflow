@@ -69,6 +69,9 @@ describe("Hollow", () => {
       const piece = of(1, 2, `echo${echo}`);
       expect(piece.fillAlpha).toBe(0);
       expect(piece.stroke?.colour).toBe("#D7FF3E");
+      // The sample's 4 px ring (2 in, 2 out) drawn all outside, as the waiting outline is: half of it read as
+      // a hairline and vanished in the Studio's small preview.
+      expect(piece.stroke?.widthPx).toBeCloseTo(of(1, 2, "outline").stroke!.widthPx, 6);
     }
     expect(of(1, 1, "outline").fillAlpha).toBe(0);
     expect(of(1, 1, "outline").stroke?.colour).toBe("#FFFFFF");

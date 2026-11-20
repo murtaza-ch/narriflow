@@ -18,8 +18,8 @@ import { sampleFrames } from "../frames";
  *
  * What the model cannot draw, and how it is stood in for (spec 7, Hollow):
  *  - `-webkit-text-stroke: 4px` on a transparent word is a ring 2 px inside and 2 px outside the contour. A
- *    hollow piece's stroke is an outside band only, so the waiting outline is a band of `RING` (4) px outside
- *    the contour; it goes the moment the fill is solid, and the fill (the sample's fill plus its own 4 px
+ *    hollow piece's stroke is an outside band only, so the waiting outline and the echoes are a band of `RING`
+ *    (4) px outside the contour; the outline goes the moment the fill is solid, and the fill (the sample's fill plus its own 4 px
  *    stroke) is the contour grown by 2 px, as in the sample.
  *  - the dark halo under the outline (a blurred 14 px stroke) and the soft drop shadow under the fill
  *    (`0 10px 26px`) are one blurred dark copy of the word: libass pays per layer and per glyph area, and these
@@ -51,9 +51,12 @@ const HERO_MAX = 340;
 const HERO_MIN = 200;
 const HERO_FIT = 0.84 * 1080;
 const STROKE = 4;
-/** Outside band of an outline, a fill and an echo: half the sample's centred stroke, so the edge is the sample's outer edge. */
+/** Outside band of a fill: half the sample's centred stroke, so the edge is the sample's outer edge. */
 const OUTLINE = STROKE / 2;
-/** The ring a waiting word is drawn with: the sample's 4 px, all of it outside the contour (see the header). */
+/**
+ * The ring a waiting word and an echo are drawn with: the sample's 4 px, all of it outside the contour (see the
+ * header). Half of it (the fill's band) reads as a hairline on an empty word and vanishes in the Studio's preview.
+ */
 const RING = 4;
 /**
  * The one dark blurred copy under every word: the sample's halo under the outline (a blurred 14 px stroke) and
@@ -280,7 +283,7 @@ function buildCue(cue: SceneCue, input: SceneInput, cueNumber: number): Piece[] 
             fromMs: pieceFrom,
             fill: heroColour,
             fillAlpha: 0,
-            stroke: { widthPx: OUTLINE * k * u, colour: heroColour },
+            stroke: { widthPx: RING * k * u, colour: heroColour },
             track: {
               x: still,
               y: sampled((t) => PY - s(t) * lift(echo, t) * u, edges, 0.25),
