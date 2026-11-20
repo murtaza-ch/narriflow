@@ -91,6 +91,8 @@ describe("Scene Styles take brand colours through their own colour meaning", () 
     bulletin: (p) => [[p.accentColor!, p.primaryColor], [WHITE, p.highlightColor], [WHITE, p.accentColor!]],
     ticker: (p) => [[p.accentColor!, p.highlightColor]],
     flap: (p) => [[p.primaryColor, p.accentColor!]],
+    // Spine: ink on the white plates.
+    spine: (p) => [[p.primaryColor, p.accentColor!]],
     index: (p) => [[p.primaryColor, p.accentColor!], [p.accentColor!, p.highlightColor], [p.highlightColor, p.accentColor!]],
     velocity: (p) => [[p.accentColor!, p.highlightColor]],
   };

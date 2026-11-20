@@ -31,7 +31,7 @@ const FLAT = 0x70;
 export const SAMPLE_FILES: Readonly<Record<CaptionSceneName, string>> = {
   lyrics: "20-lyrics", dialogue: "31-dialogue", dossier: "51-dossier", hollow: "21-hollow", signal: "40-signal", track: "50-track",
   bulletin: "33-bulletin", ticker: "30-ticker", flap: "32-flap", index: "53-index", punchline: "52-punchline", doodle: "42-doodle",
-  velocity: "54-velocity", wordform: "55-wordform", chrome: "23-chrome", reveal: "10-reveal",
+  velocity: "54-velocity", wordform: "55-wordform", chrome: "23-chrome", reveal: "10-reveal", spine: "43-spine", boom: "41-boom",
 };
 
 export function studioShot(input: { readonly url: string; readonly output: string; readonly width?: number; readonly height?: number }): void {

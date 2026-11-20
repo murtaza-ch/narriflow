@@ -24,6 +24,8 @@ export const MOMENTS: Record<string, number[]> = {
   wordform: [567, 2200, 4600],
   chrome: [2367, 2700, 3400],
   reveal: [467, 1500, 3200],
+  spine: [400, 2100, 5400],
+  boom: [1900, 3100, 3700],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;

@@ -24,6 +24,8 @@ export const CAPTION_SCENE_NAMES = [
   "wordform",
   "chrome",
   "reveal",
+  "spine",
+  "boom",
 ] as const;
 
 export type CaptionSceneName = (typeof CAPTION_SCENE_NAMES)[number];
@@ -87,6 +89,8 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
   velocity: { name: "Velocity", bodyPx: 96, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FF4D1A", accent: "#0B0B0B" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Anton", backdrop: "busy" },
   wordform: { name: "Wordform", bodyPx: 64, anchorLineY: 1330, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFC9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Bricolage Grotesque", backdrop: "dark" },
   chrome: { name: "Chrome", bodyPx: 52, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#B4CEF2", accent: "#2F6BFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "accentColor" } }, fontName: "Unbounded Black", backdrop: "dark" },
+  spine: { name: "Spine", bodyPx: 58, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#0E0E0E", highlight: "#FF3B1F", accent: "#FFFFFF" }, brand: { primary: null, secondary: { slot: "highlightColor", readsOn: ["#141414"] } }, fontName: "Archivo Black", backdrop: "bright" },
+  boom: { name: "Boom", bodyPx: 86, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FF3D7F" }, brand: { primary: { slot: "primaryColor", readsOn: ["#000000"] }, secondary: { slot: "highlightColor", readsOn: ["#000000"] } }, fontName: "Luckiest Guy", backdrop: "busy" },
   reveal: { name: "Reveal", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
 };
 

@@ -320,6 +320,8 @@ export const CAPTION_PRESETS = [
   scenePreset("wordform"),
   scenePreset("chrome"),
   scenePreset("reveal"),
+  scenePreset("spine"),
+  scenePreset("boom"),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

@@ -3,6 +3,7 @@ import { type DemoScript, demoCues } from "./demo";
 import { memoMeasure } from "./measure-memo";
 import type { CaptionScene, Measure } from "./scene";
 import type { SceneCue, SceneInput, SceneProgram } from "./input";
+import { BOOM_DEMO, boomProgram } from "./templates/boom";
 import { BULLETIN_DEMO, bulletinProgram } from "./templates/bulletin";
 import { CHROME_DEMO, chromeProgram } from "./templates/chrome";
 import { DIALOGUE_DEMO, dialogueProgram } from "./templates/dialogue";
@@ -15,6 +16,7 @@ import { LYRICS_DEMO, lyricsProgram } from "./templates/lyrics";
 import { PUNCHLINE_DEMO, punchlineProgram } from "./templates/punchline";
 import { REVEAL_DEMO, revealProgram } from "./templates/reveal";
 import { SIGNAL_DEMO, signalProgram } from "./templates/signal";
+import { SPINE_DEMO, spineProgram } from "./templates/spine";
 import { TICKER_DEMO, tickerProgram } from "./templates/ticker";
 import { TRACK_DEMO, trackProgram } from "./templates/track";
 import { VELOCITY_DEMO, velocityProgram } from "./templates/velocity";
@@ -43,6 +45,8 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   wordform: { program: wordformProgram, demo: WORDFORM_DEMO },
   chrome: { program: chromeProgram, demo: CHROME_DEMO },
   reveal: { program: revealProgram, demo: REVEAL_DEMO },
+  spine: { program: spineProgram, demo: SPINE_DEMO },
+  boom: { program: boomProgram, demo: BOOM_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */
