@@ -21,6 +21,12 @@ import { sampleFrames } from "../frames";
  *
  * Shape outlines join round (the sample mitres its burst's 8 px stroke); bursts and speed lines bleed past the
  * safe area as the sample's do (`bleed`), the words do not.
+ *
+ * Budget exception (decided 2026-11-21): Boom costs about 2.0x Headline on the full export, over the 1.5x rule, and
+ * ships that way. The cost is the bitmap area libass blends every frame: the two bursts with their dots (about 40 %)
+ * and the extrusion (about 35 %). The sample's 35 extrusion layers are already 7 with no visible change (the rim copies
+ * outline only); reaching 1.5x would mean dropping the back burst, the dots and half the extrusion, which is no longer
+ * this look. Do not trim it to meet the rule without asking the owner.
  */
 
 export const BOOM_DEMO: DemoScript = {
