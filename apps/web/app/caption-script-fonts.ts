@@ -204,6 +204,8 @@ export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionO
   Unbounded: ["Cyrillic"],
   "Unbounded Medium": ["Cyrillic"],
   "Unbounded Black": ["Cyrillic"],
+  "Inter Tight Medium": ["Cyrillic", "Greek"],
+  "Rubik Black": ["Cyrillic"],
 };
 
 const LATIN_RE = /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]*$/u;

@@ -21,6 +21,20 @@ import { TICKER_DEMO, tickerProgram } from "./templates/ticker";
 import { TRACK_DEMO, trackProgram } from "./templates/track";
 import { VELOCITY_DEMO, velocityProgram } from "./templates/velocity";
 import { WORDFORM_DEMO, wordformProgram } from "./templates/wordform";
+import { POPUP_DEMO, popupProgram } from "./templates/popup";
+import { HEFT_DEMO, heftProgram } from "./templates/heft";
+import { ARTHOUSE_DEMO, arthouseProgram } from "./templates/arthouse";
+import { SLICE_DEMO, sliceProgram } from "./templates/slice";
+import { WALLPAPER_DEMO, wallpaperProgram } from "./templates/wallpaper";
+import { HYPE_DEMO, hypeProgram } from "./templates/hype";
+import { STRETCH_DEMO, stretchProgram } from "./templates/stretch";
+import { BEAT_DEMO, beatProgram } from "./templates/beat";
+import { TAPE_DEMO, tapeProgram } from "./templates/tape";
+import { PREMIERE_DEMO, premiereProgram } from "./templates/premiere";
+import { CURSOR_DEMO, cursorProgram } from "./templates/cursor";
+import { VERIFIED_DEMO, verifiedProgram } from "./templates/verified";
+import { WONKY_DEMO, wonkyProgram } from "./templates/wonky";
+import { AURA_DEMO, auraProgram } from "./templates/aura";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -47,6 +61,20 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   reveal: { program: revealProgram, demo: REVEAL_DEMO },
   spine: { program: spineProgram, demo: SPINE_DEMO },
   boom: { program: boomProgram, demo: BOOM_DEMO },
+  aura: { program: auraProgram, demo: AURA_DEMO },
+  wonky: { program: wonkyProgram, demo: WONKY_DEMO },
+  verified: { program: verifiedProgram, demo: VERIFIED_DEMO },
+  cursor: { program: cursorProgram, demo: CURSOR_DEMO },
+  premiere: { program: premiereProgram, demo: PREMIERE_DEMO },
+  tape: { program: tapeProgram, demo: TAPE_DEMO },
+  beat: { program: beatProgram, demo: BEAT_DEMO },
+  stretch: { program: stretchProgram, demo: STRETCH_DEMO },
+  hype: { program: hypeProgram, demo: HYPE_DEMO },
+  wallpaper: { program: wallpaperProgram, demo: WALLPAPER_DEMO },
+  slice: { program: sliceProgram, demo: SLICE_DEMO },
+  arthouse: { program: arthouseProgram, demo: ARTHOUSE_DEMO },
+  heft: { program: heftProgram, demo: HEFT_DEMO },
+  popup: { program: popupProgram, demo: POPUP_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

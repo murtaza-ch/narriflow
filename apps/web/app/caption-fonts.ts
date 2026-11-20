@@ -492,6 +492,216 @@ const captionUnboundedBlack = localFont({
   ],
 });
 
+const captionInterTightMedium = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-Medium.ttf",
+  weight: "500",
+  style: "normal",
+  variable: "--font-caption-inter-tight-medium",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInstrumentSerifRegular = localFont({
+  src: "../../../packages/caption-fonts/fonts/InstrumentSerif-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-instrument-serif-regular",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "99%" },
+    { prop: "descent-override", value: "31%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionArchivoExpandedExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Archivo-ExpandedExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-archivo-expanded-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110%" },
+    { prop: "descent-override", value: "41%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionArchivoExpandedExtraBoldItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/Archivo-ExpandedExtraBoldItalic.ttf",
+  weight: "800",
+  style: "italic",
+  variable: "--font-caption-archivo-expanded-extrabold-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110%" },
+    { prop: "descent-override", value: "41%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionArchivoExpandedBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/Archivo-ExpandedBlack.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-archivo-expanded-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110%" },
+    { prop: "descent-override", value: "41%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionArchivoExpandedBlackItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/Archivo-ExpandedBlackItalic.ttf",
+  weight: "900",
+  style: "italic",
+  variable: "--font-caption-archivo-expanded-black-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110%" },
+    { prop: "descent-override", value: "41%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionArchivoExtraBoldItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/Archivo-ExtraBoldItalic.ttf",
+  weight: "800",
+  style: "italic",
+  variable: "--font-caption-archivo-extrabold-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110%" },
+    { prop: "descent-override", value: "41%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionRubikBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/Rubik-Black.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-rubik-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "106.6%" },
+    { prop: "descent-override", value: "46.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionYesteryear = localFont({
+  src: "../../../packages/caption-fonts/fonts/Yesteryear-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-yesteryear",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "97.71%" },
+    { prop: "descent-override", value: "49.02%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionBigShouldersDisplayBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/BigShouldersDisplay-Black.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-big-shoulders-display-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "130.7%" },
+    { prop: "descent-override", value: "36.5%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionShrikhand = localFont({
+  src: "../../../packages/caption-fonts/fonts/Shrikhand-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-shrikhand",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "102.6%" },
+    { prop: "descent-override", value: "43.2%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionBarlowCondensedBlackItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/BarlowCondensed-BlackItalic.ttf",
+  weight: "900",
+  style: "italic",
+  variable: "--font-caption-barlow-condensed-black-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "107.5%" },
+    { prop: "descent-override", value: "27.4%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionLexendExaLight = localFont({
+  src: "../../../packages/caption-fonts/fonts/LexendExa-Light.ttf",
+  weight: "300",
+  style: "normal",
+  variable: "--font-caption-lexend-exa-light",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "120%" },
+    { prop: "descent-override", value: "39%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionChango = localFont({
+  src: "../../../packages/caption-fonts/fonts/Chango-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-chango",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "99.5%" },
+    { prop: "descent-override", value: "21.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 /** CSS variable classes for <html>; each variable holds one caption face's family. */
 export const captionFontVariables = [
   captionAnton.variable,
@@ -526,4 +736,18 @@ export const captionFontVariables = [
   captionPermanentMarker.variable,
   captionUnboundedMedium.variable,
   captionUnboundedBlack.variable,
+  captionInterTightMedium.variable,
+  captionInstrumentSerifRegular.variable,
+  captionArchivoExpandedExtraBold.variable,
+  captionArchivoExpandedExtraBoldItalic.variable,
+  captionArchivoExpandedBlack.variable,
+  captionArchivoExpandedBlackItalic.variable,
+  captionArchivoExtraBoldItalic.variable,
+  captionRubikBlack.variable,
+  captionYesteryear.variable,
+  captionBigShouldersDisplayBlack.variable,
+  captionShrikhand.variable,
+  captionBarlowCondensedBlackItalic.variable,
+  captionLexendExaLight.variable,
+  captionChango.variable,
 ].join(" ");

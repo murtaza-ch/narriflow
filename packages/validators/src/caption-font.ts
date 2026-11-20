@@ -65,6 +65,20 @@ export const CAPTION_FONT_FACES = [
   { name: "Unbounded", file: "Unbounded-ExtraBold.ttf", assName: "Unbounded ExtraBold", weight: 800, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75 },
   { name: "Unbounded Medium", file: "Unbounded-Medium.ttf", assName: "Unbounded Medium", weight: 500, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75, templateOnly: true },
   { name: "Unbounded Black", file: "Unbounded-Black.ttf", assName: "Unbounded Black", weight: 900, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75, templateOnly: true },
+  { name: "Inter Tight Medium", file: "InterTight-Medium.ttf", assName: "Inter Tight Medium", weight: 500, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Instrument Serif Regular", file: "InstrumentSerif-Regular.ttf", assName: "Instrument Serif Regular", weight: 400, style: "normal", ascent: 0.99, descent: 0.31, capHeight: 0.72, templateOnly: true },
+  { name: "Archivo Expanded ExtraBold", file: "Archivo-ExpandedExtraBold.ttf", assName: "Archivo Expanded ExtraBold", weight: 800, style: "normal", ascent: 1.1, descent: 0.41, capHeight: 0.688, templateOnly: true },
+  { name: "Archivo Expanded ExtraBold Italic", file: "Archivo-ExpandedExtraBoldItalic.ttf", assName: "Archivo Expanded ExtraBold Italic", weight: 800, style: "italic", ascent: 1.1, descent: 0.41, capHeight: 0.688, templateOnly: true },
+  { name: "Archivo Expanded Black", file: "Archivo-ExpandedBlack.ttf", assName: "Archivo Expanded Black", weight: 900, style: "normal", ascent: 1.1, descent: 0.41, capHeight: 0.688, templateOnly: true },
+  { name: "Archivo Expanded Black Italic", file: "Archivo-ExpandedBlackItalic.ttf", assName: "Archivo Expanded Black Italic", weight: 900, style: "italic", ascent: 1.1, descent: 0.41, capHeight: 0.688, templateOnly: true },
+  { name: "Archivo ExtraBold Italic", file: "Archivo-ExtraBoldItalic.ttf", assName: "Archivo ExtraBold Italic", weight: 800, style: "italic", ascent: 1.1, descent: 0.41, capHeight: 0.687, templateOnly: true },
+  { name: "Rubik Black", file: "Rubik-Black.ttf", assName: "Rubik Black", weight: 900, style: "normal", ascent: 1.066, descent: 0.466, capHeight: 0.7, templateOnly: true },
+  { name: "Yesteryear", file: "Yesteryear-Regular.ttf", assName: "Yesteryear", weight: 400, style: "normal", ascent: 0.9771, descent: 0.4902, capHeight: 0.772, templateOnly: true },
+  { name: "Big Shoulders Display Black", file: "BigShouldersDisplay-Black.ttf", assName: "Big Shoulders Display Black", weight: 900, style: "normal", ascent: 1.307, descent: 0.365, capHeight: 0.8, templateOnly: true },
+  { name: "Shrikhand", file: "Shrikhand-Regular.ttf", assName: "Shrikhand Regular", weight: 400, style: "normal", ascent: 1.026, descent: 0.432, capHeight: 0.666, templateOnly: true },
+  { name: "Barlow Condensed Black Italic", file: "BarlowCondensed-BlackItalic.ttf", assName: "Barlow Condensed Black Italic", weight: 900, style: "italic", ascent: 1.075, descent: 0.274, capHeight: 0.7, templateOnly: true },
+  { name: "Lexend Exa Light", file: "LexendExa-Light.ttf", assName: "Lexend Exa Light", weight: 300, style: "normal", ascent: 1.2, descent: 0.39, capHeight: 0.7, templateOnly: true },
+  { name: "Chango", file: "Chango-Regular.ttf", assName: "Chango Regular", weight: 400, style: "normal", ascent: 0.995, descent: 0.216, capHeight: 0.701, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];
