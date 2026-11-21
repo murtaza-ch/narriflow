@@ -26,6 +26,7 @@ export const MOMENTS: Record<string, number[]> = {
   reveal: [467, 1500, 3200],
   spine: [400, 2100, 5400],
   boom: [1900, 3100, 3700],
+  aura: [800, 3633, 4367],
   slice: [400, 2133, 3000, 3700],
   heft: [500, 2267, 2700, 3733, 6100],
   stretch: [1300, 1967, 2433],
