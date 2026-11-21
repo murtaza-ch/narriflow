@@ -31,6 +31,7 @@ export const MOMENTS: Record<string, number[]> = {
   slice: [400, 2133, 3000, 3700],
   heft: [500, 2267, 2700, 3733, 6100],
   stretch: [1300, 1967, 2433],
+  hype: [467, 1500, 2267, 3300],
   premiere: [767, 2800, 6600],
   wonky: [733, 1700, 4400],
   tape: [1000, 2700, 3000, 4900],
