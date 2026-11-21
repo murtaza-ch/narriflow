@@ -3,7 +3,7 @@ import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, rowWidth, sceneSpace } from "../layout";
-import type { Clip, PathCmd, Piece, ShapePiece, TextPiece, Track } from "../scene";
+import { type Box, type Clip, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, pieceBounds, sceneBoundsAt } from "../scene";
 import { ellipsePath, roundedRectPath } from "../shapes";
 
 /**
@@ -78,12 +78,16 @@ const LETTER_STAGGER = 30;
 const LETTER_STAGGER_TOTAL = 240;
 const MAX_LETTERS = 12;
 const EXIT_MS = 170;
-const EXIT_MIN_MS = 70;
-const EXIT_END_MS = 60;
-const HOLD_MS = 300;
-const OVERLAP_MS = 60;
 const LIFT_PX = 60;
 const BUDGET = 140;
+/** A word is read for this long after its last letter has landed, when the speech leaves room for it. */
+const HOLD_READ_MS = 150;
+const EXIT_FLOOR_MS = 40;
+/** The most the entrance is sped up (time-compressed) to make that room; past it the hold shrinks instead. */
+const SPEED_MAX = 4;
+/** No piece lives shorter than two export frames. */
+const MIN_LIFE_MS = 66;
+const GRID_MS = 16;
 
 /** FNV-1a, 32 bit: the seed of a cue's jitter (never `Math.random`). */
 export function trailHash(text: string): number {
@@ -144,6 +148,15 @@ export function trailRise(hero: boolean, tau: number, time = 0, letter = 0): num
   const settle = prog(t, 450, 400);
   return (1 - EASES.outExpo(prog(t, 0, 420))) * DROP_HERO + settle * WAVE_PX * Math.sin((time / WAVE_MS) * Math.PI * 2 - letter * 0.7);
 }
+
+/** Ms after its start that a face has landed: scale within 4 % of 1 and under 2 px from rest, for good. */
+function landedMs(hero: boolean): number {
+  let last = 0;
+  for (let tau = 0; tau <= 900; tau++) if (Math.abs(trailScale(hero, tau) - 1) > 0.04 || trailRise(hero, tau) > 2) last = tau;
+  return last + 1;
+}
+const LAND_BODY = landedMs(false);
+const LAND_HERO = landedMs(true);
 
 interface Item {
   readonly index: number;
@@ -227,11 +240,35 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     const pad = plan.hero
       ? 0.2 * Math.max(edge(plan.items[0]!), edge(plan.items[plan.items.length - 1]!)) + 0.06 * base
       : 0.056 * Math.max(edge(plan.items[0]!), edge(plan.items[plan.items.length - 1]!)) + 0.048 * base;
-    return Math.min(1, (2 * halfLimit) / (width + 2 * pad));
+    // The row that carries the pop ticks keeps some room beside it.
+    const room = plan.hero || plan === plans[plans.length - 1] ? 0.14 * base : 0;
+    return Math.min(1, (2 * halfLimit) / (width + 2 * (pad + room)));
   });
 
+  // --- timing: a word is read for 150 ms after its last letter has landed; tight speech speeds the entrance up (never past 4x),
+  // and the exit always ends before the next cue's entrance starts ---
   const wordBegin = (item: Item) => cue.words[item.index]!.startMs - ENTER_LEAD;
-  const stagger = (letters: number) => Math.min(LETTER_STAGGER, LETTER_STAGGER_TOTAL / Math.max(1, letters));
+  const stagger0 = (letters: number) => Math.min(LETTER_STAGGER, LETTER_STAGGER_TOTAL / Math.max(1, letters));
+  const firstBegin = Math.min(...items.map(wordBegin));
+  const hardEnd = Math.max(cue.endMs - ENTER_LEAD, firstBegin + MIN_LIFE_MS);
+  const landedAt = (v: number) =>
+    Math.max(...items.flatMap((item) => Array.from({ length: item.letters?.length ?? 1 }, (_, at) => wordBegin(item) + (at * stagger0(item.letters?.length ?? 1) + (item.hero ? LAND_HERO : LAND_BODY)) / v)));
+  let speed = 1;
+  while (speed < SPEED_MAX && landedAt(speed) + HOLD_READ_MS + EXIT_FLOOR_MS > hardEnd) speed += 0.1;
+  let exitStart: number;
+  let exitMs: number;
+  if (landedAt(speed) + HOLD_READ_MS + EXIT_FLOOR_MS <= hardEnd) {
+    exitStart = Math.max(hardEnd - EXIT_MS, landedAt(speed) + HOLD_READ_MS);
+    exitMs = hardEnd - exitStart;
+  } else {
+    // Faster than the speech allows for: the entrance takes at most 40 % of the window and the exit a quarter, the rest is the hold.
+    speed = 1;
+    while (speed < 40 && landedAt(speed) - firstBegin > 0.4 * (hardEnd - firstBegin)) speed += 0.5;
+    exitMs = clamp(0.25 * (hardEnd - firstBegin), 33, EXIT_MS);
+    exitStart = hardEnd - exitMs;
+  }
+  const exitEnd = Math.round(exitStart + exitMs);
+  const stagger = (letters: number) => stagger0(letters) / speed;
 
   // --- geometry, sample px, the block centred on (540, 1270) ---
   const geometry = (k: number): { rows: RowGeo[]; height: number } => {
@@ -292,182 +329,222 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     }
     k = lo;
   }
-  const { rows } = geometry(k);
-  const units = rows.flatMap((row) => row.units);
-
-  // --- the cue's exit: the whole block lifts and shrinks about its centre; late words get time to land first ---
-  const lastBegin = Math.max(...units.map((unit) => unit.begin));
-  const exitStart = Math.min(Math.max(cue.endMs - EXIT_END_MS - EXIT_MS, lastBegin + HOLD_MS), cue.endMs + OVERLAP_MS - EXIT_MIN_MS);
-  const exitMs = clamp(cue.endMs - EXIT_END_MS - exitStart, EXIT_MIN_MS, EXIT_MS);
-  const exitEnd = Math.round(exitStart + exitMs);
+  // --- the cue's exit: the whole block lifts and shrinks about its centre, between the last word's landing and the next cue ---
   const out = (t: number) => EASES.in(prog(t, exitStart, exitMs));
   const shrink = (t: number) => Math.max(0.02, 1 - out(t));
   const ccx = space.x(540);
   const ccy = space.y(CY);
   const mapX = (t: number, x: number) => ccx + shrink(t) * (x - ccx);
   const mapY = (t: number, y: number) => ccy - LIFT_PX * u * out(t) + shrink(t) * (y - ccy);
-
-  const pieces: Piece[] = [];
-  let used = 0;
   const frames = (fn: (t: number) => number, edges: readonly number[], from: number, to: number, tolerance: number): Frames =>
     sampleFrames(fn, [from, ...edges, exitStart, exitEnd, to], tolerance, { range: [from, to], wholeMs: true, simplify: true });
-
-  // --- the words: three colour copies and the face, every unit ---
-  rows.forEach((row, ri) => {
-    const hero = row.plan.hero;
-    const m = row.size / (hero ? HERO : BODY);
-    const lag = hero ? HERO_LAG : LAG;
-    const rest = row.size * (hero ? REST_HERO : REST_BODY);
-    const stack = hero ? heroStack : bodyStack;
-    const pivotY = row.top + 0.5 * row.size;
-    for (const unit of row.units) {
-      const cx = unit.left + unit.width / 2;
-      const from = Math.round(unit.begin) + (hero ? 2 : 0);
-      const to = Math.max(exitEnd, from + 2);
-      const scaleAt = (t: number) => trailScale(hero, t - unit.begin);
-      for (let layer = 3; layer >= 0; layer--) {
-        const lagged = layer * lag;
-        const yAt = (t: number) => pivotY + trailRise(hero, t - lagged - unit.begin, t - lagged, unit.letter) * m + layer * rest * scaleAt(t);
-        const edges = [unit.begin + 300, unit.begin + 380, unit.begin + lagged + 380, unit.begin + lagged + 420, unit.begin + lagged + 450, unit.begin + 540, unit.begin + lagged + 850, unit.begin + 150, unit.begin + 290, unit.begin + 430];
-        const scale = frames((t) => scaleAt(t) * shrink(t), edges, from, to, 0.003);
-        const track: Track = {
-          x: frames((t) => mapX(t, space.x(cx)), [], from, to, 0.3),
-          y: frames((t) => mapY(t, space.y(yAt(t))), edges, from, to, 0.3),
-          sx: scale,
-          sy: scale,
-        };
-        pieces.push({
-          id: `trail:${cueNumber}:w${unit.item.index}l${unit.letter}c${layer}`,
-          kind: "text",
-          z: band + 4 + ri * 4 + (3 - layer),
-          fromMs: from,
-          toMs: to,
-          track,
-          origin: { dx: (unit.width / 2) * u, dy: (0.5 - BASELINE_EM) * unit.size * u },
-          text: unit.text,
-          face: FACE,
-          sizePx: unit.size * u,
-          letterSpacingEm: LS,
-          fill: layer === 0 ? primary : stack[layer - 1]!,
-          stroke: { widthPx: STROKE_EM * unit.size * u, colour: TRAIL_KEYLINE },
-          anchor: "baseline-left",
-          language: cue.language,
-        } satisfies TextPiece);
-        used++;
-      }
-    }
-  });
-
-  // --- the decoration: stripes above, a bar below, ticks off the key word; each recurs on every cue and cycles by `counter` ---
-  const first = rows[0]!;
-  const last = rows[rows.length - 1]!;
   const lead = rtl ? -1 : 1;
-  const palette = hasHero ? [highlight, accent, PURPLE] : [highlight, MINT, BLUE];
-  const rotated = (at: number) => palette[(at + counter) % palette.length]!;
-  const beatStart = Math.min(...units.map((unit) => unit.begin));
-  const wipe = (from: number, ms: number) => (t: number) => EASES.outExpo(prog(t, from, ms));
 
-  const wipePiece = (id: string, z: number, from: number, to: number, path: PathCmd[], fill: string, strokePx: number, bounds: { x1: number; y1: number; x2: number; y2: number }, kind: number, ms: number, delay = 0, strokeColour = TRAIL_KEYLINE): void => {
-    // `bounds` is the shape's rest box in canvas px; kind 0 wipes from the leading edge, 1 from the trailing edge, 2 from the middle.
-    const w = bounds.x2 - bounds.x1;
-    const h = bounds.y2 - bounds.y1;
-    const pad = strokePx + 2;
-    const start = from + delay;
-    const progress = wipe(start, ms);
-    const edgeLeft = (t: number) => (kind === 0 ? (lead > 0 ? bounds.x1 : bounds.x2 - w * progress(t)) : kind === 1 ? (lead > 0 ? bounds.x2 - w * progress(t) : bounds.x1) : bounds.x1 + (w / 2) * (1 - progress(t)));
-    const edgeRight = (t: number) => (kind === 0 ? (lead > 0 ? bounds.x1 + w * progress(t) : bounds.x2) : kind === 1 ? (lead > 0 ? bounds.x2 : bounds.x1 + w * progress(t)) : bounds.x2 - (w / 2) * (1 - progress(t)));
-    const edges = [start, start + ms];
-    const cx = bounds.x1 + w / 2;
-    const cy = bounds.y1 + h / 2;
-    const clip: Clip = {
-      x1: frames((t) => mapX(t, edgeLeft(t) - pad), edges, from, to, 0.3),
-      x2: frames((t) => mapX(t, edgeRight(t) + pad), edges, from, to, 0.3),
-      y1: frames((t) => mapY(t, bounds.y1 - pad), [], from, to, 0.3),
-      y2: frames((t) => mapY(t, bounds.y2 + pad), [], from, to, 0.3),
+  /** Every piece of the cue at the shrink `k`, before the safe-area shift. */
+  const compose = (k: number): Piece[] => {
+    const { rows } = geometry(k);
+    const pieces: Piece[] = [];
+    let used = 0;
+
+    // --- the words: three colour copies and the face, every unit ---
+    rows.forEach((row, ri) => {
+      const hero = row.plan.hero;
+      const m = row.size / (hero ? HERO : BODY);
+      const lag = (hero ? HERO_LAG : LAG) / speed;
+      const rest = row.size * (hero ? REST_HERO : REST_BODY);
+      const stack = hero ? heroStack : bodyStack;
+      const pivotY = row.top + 0.5 * row.size;
+      for (const unit of row.units) {
+        const cx = unit.left + unit.width / 2;
+        const from = Math.round(unit.begin) + (hero ? 2 : 0);
+        const to = Math.max(exitEnd, from + 2);
+        const scaleAt = (t: number) => trailScale(hero, (t - unit.begin) * speed);
+        for (let layer = 3; layer >= 0; layer--) {
+          const lagged = layer * lag;
+          const yAt = (t: number) => pivotY + trailRise(hero, (t - lagged - unit.begin) * speed, t - lagged, unit.letter) * m + layer * rest * scaleAt(t);
+          const edges = [0, 150, 290, 300, 380, 420, 430, 450, 540, 850].flatMap((ms) => [unit.begin + ms / speed, unit.begin + lagged + ms / speed]);
+          const scale = frames((t) => scaleAt(t) * shrink(t), edges, from, to, 0.003);
+          const track: Track = {
+            x: frames((t) => mapX(t, space.x(cx)), [], from, to, 0.3),
+            y: frames((t) => mapY(t, space.y(yAt(t))), edges, from, to, 0.3),
+            sx: scale,
+            sy: scale,
+          };
+          pieces.push({
+            id: `trail:${cueNumber}:w${unit.item.index}l${unit.letter}c${layer}`,
+            kind: "text",
+            z: band + 4 + ri * 4 + (3 - layer),
+            fromMs: from,
+            toMs: to,
+            track,
+            origin: { dx: (unit.width / 2) * u, dy: (0.5 - BASELINE_EM) * unit.size * u },
+            text: unit.text,
+            face: FACE,
+            sizePx: unit.size * u,
+            letterSpacingEm: LS,
+            fill: layer === 0 ? primary : stack[layer - 1]!,
+            stroke: { widthPx: STROKE_EM * unit.size * u, colour: TRAIL_KEYLINE },
+            anchor: "baseline-left",
+            language: cue.language,
+          } satisfies TextPiece);
+          used++;
+        }
+      }
+    });
+
+    // --- the animated ink: every word and copy box on a 16 ms grid (a letter that has not entered yet counts at its first pose, so
+    // the result does not depend on the order the letters arrive in), so decoration can keep clear of it ---
+    const wordPieces = pieces.filter((piece): piece is TextPiece => piece.kind === "text");
+    const gridFrom = Math.min(...wordPieces.map((piece) => piece.fromMs));
+    const ink: Box[][] = [];
+    for (let t = gridFrom; t < exitEnd; t += GRID_MS) ink.push(
+        wordPieces.flatMap((piece) => {
+          const box = pieceBounds(piece, Math.max(t, piece.fromMs), input.measure);
+          if (!box || t >= piece.toMs) return [];
+          // The block is centred, so each box counts with its mirror image: left and right decoration clear the same ink and a
+          // right-to-left cue is exactly the mirror of a left-to-right one.
+          return [box, { x1: 2 * ccx - box.x2, y1: box.y1, x2: 2 * ccx - box.x1, y2: box.y2 }];
+        }),
+      );
+    const inkAt = (t: number) => ink[clamp(Math.floor((t - gridFrom) / GRID_MS), 0, ink.length - 1)] ?? [];
+    // While the block collapses at its exit every piece converges on the centre; that is not a collision.
+    const touches = (box: Box, t: number, pad: number) => shrink(t) > 0.5 && inkAt(t).some((word) => box.x1 - pad < word.x2 && word.x1 < box.x2 + pad && box.y1 - pad < word.y2 && word.y1 < box.y2 + pad);
+    /** True when the piece (its clip ignored) meets word or copy ink while it lives. */
+    const meets = (piece: Piece, pad = 2): boolean => {
+      const probe: Piece = { ...piece, clip: undefined };
+      for (let t = piece.fromMs; t < piece.toMs; t += GRID_MS) {
+        const box = pieceBounds(probe, t, input.measure);
+        if (box && touches(box, t, pad)) return true;
+      }
+      return false;
     };
-    const scale = frames((t) => shrink(t), [], from, to, 0.003);
-    pieces.push({
-      id,
-      kind: "shape",
-      z,
-      fromMs: from,
-      toMs: to,
-      track: { x: frames((t) => mapX(t, cx), [], from, to, 0.3), y: frames((t) => mapY(t, cy), [], from, to, 0.3), sx: scale, sy: scale },
-      clip,
-      origin: { dx: w / 2, dy: h / 2 },
-      path,
-      fill: { colour: fill },
-      stroke: { widthPx: strokePx, colour: strokeColour },
-    } satisfies ShapePiece);
-    used += 2;
-  };
 
-  // (1) Rainbow stripes above the first row.
-  {
-    const size = first.size;
-    const heroFirst = first.plan.hero;
-    const thickness = Math.max(7, 0.105 * size) * u;
-    const stroke = 0.3 * thickness;
-    const pitch = 1.38 * thickness;
-    const reach = (heroFirst ? 1.4 : 1.08) * 0.3495 * size * u + STROKE_EM * size * u;
-    const pivotTop = space.y(first.top + 0.5 * size) - reach;
-    const bottom = pivotTop - 0.12 * size * u;
-    const kind = counter % 3;
-    const lengths = [1, 0.7, 0.46];
-    const longest = [0, 1, 2][(counter + (Math.floor(rng() * 3))) % 3]!;
-    const rowLeft = space.x(first.left);
-    const rowRight = space.x(first.left + first.width);
-    const fullLength = (0.62 + 0.3 * rng()) * (rowRight - rowLeft);
-    const from = Math.round(beatStart);
-    const to = exitEnd;
-    if (used + 6 <= BUDGET && to > from + 60) {
+    // --- the decoration: stripes above, a bar below, ticks off the key word; each recurs on every cue and cycles by `counter` ---
+    const first = rows[0]!;
+    const last = rows[rows.length - 1]!;
+    const palette = hasHero ? [highlight, accent, PURPLE] : [highlight, MINT, BLUE];
+    const rotated = (at: number) => palette[(at + counter) % palette.length]!;
+    const beatStart = firstBegin;
+    type Rect = { x1: number; y1: number; x2: number; y2: number };
+
+    /** A pill that wipes in from its leading edge, trailing edge or middle (`kind`), cut by a canvas clip that follows the block's exit. */
+    const makeWipe = (id: string, z: number, from: number, to: number, path: PathCmd[], fill: string, strokePx: number, bounds: Rect, kind: number, ms: number, delay = 0, strokeColour = TRAIL_KEYLINE): ShapePiece => {
+      const w = bounds.x2 - bounds.x1;
+      const h = bounds.y2 - bounds.y1;
+      const pad = strokePx + 2;
+      const start = from + delay;
+      const progress = (t: number) => EASES.outExpo(prog(t, start, ms));
+      const edgeLeft = (t: number) => (kind === 0 ? (lead > 0 ? bounds.x1 : bounds.x2 - w * progress(t)) : kind === 1 ? (lead > 0 ? bounds.x2 - w * progress(t) : bounds.x1) : bounds.x1 + (w / 2) * (1 - progress(t)));
+      const edgeRight = (t: number) => (kind === 0 ? (lead > 0 ? bounds.x1 + w * progress(t) : bounds.x2) : kind === 1 ? (lead > 0 ? bounds.x2 : bounds.x1 + w * progress(t)) : bounds.x2 - (w / 2) * (1 - progress(t)));
+      const edges = [start, start + ms];
+      const cx = bounds.x1 + w / 2;
+      const cy = bounds.y1 + h / 2;
+      const clip: Clip = {
+        x1: frames((t) => mapX(t, edgeLeft(t) - pad), edges, from, to, 0.3),
+        x2: frames((t) => mapX(t, edgeRight(t) + pad), edges, from, to, 0.3),
+        y1: frames((t) => mapY(t, bounds.y1 - pad), [], from, to, 0.3),
+        y2: frames((t) => mapY(t, bounds.y2 + pad), [], from, to, 0.3),
+      };
+      const scale = frames((t) => shrink(t), [], from, to, 0.003);
+      return {
+        id,
+        kind: "shape",
+        z,
+        fromMs: from,
+        toMs: to,
+        track: { x: frames((t) => mapX(t, cx), [], from, to, 0.3), y: frames((t) => mapY(t, cy), [], from, to, 0.3), sx: scale, sy: scale },
+        clip,
+        origin: { dx: w / 2, dy: h / 2 },
+        path,
+        fill: { colour: fill },
+        stroke: { widthPx: strokePx, colour: strokeColour },
+      };
+    };
+
+    // (1) Rainbow stripes above the first row, lifted until they clear the key word's punch.
+    {
+      const size = first.size;
+      const heroFirst = first.plan.hero;
+      const thickness = Math.max(7, 0.105 * size) * u;
+      const stroke = 0.3 * thickness;
+      const pitch = 1.38 * thickness;
+      const reach = (heroFirst ? 1.4 : 1.08) * 0.3495 * size * u + STROKE_EM * size * u;
+      const bottom = space.y(first.top + 0.5 * size) - reach - 0.12 * size * u;
+      const kind = counter % 3;
+      const lengths = [1, 0.7, 0.46];
+      const longest = [0, 1, 2][(counter + Math.floor(rng() * 3)) % 3]!;
+      const rowLeft = space.x(first.left);
+      const rowRight = space.x(first.left + first.width);
+      const fullLength = (0.62 + 0.3 * rng()) * (rowRight - rowLeft);
+      const from = Math.round(Math.min(beatStart, exitEnd - MIN_LIFE_MS));
+      const to = exitEnd;
+      const life = to - from;
+      const wipeMs = clamp(life * 0.5, 40, 320);
+      const delay = Math.min(45, life * 0.08);
       for (let at = 0; at < 3; at++) {
         const length = Math.max(8 * u, fullLength * lengths[(at + longest) % 3]!);
-        const y2 = bottom - at * pitch;
-        const y1 = y2 - thickness;
         const x1 = kind === 2 ? (rowLeft + rowRight) / 2 - length / 2 : (kind === 0) === (lead > 0) ? rowLeft : rowRight - length;
-        wipePiece(`trail:${cueNumber}:s${at}`, band + at, from, to, pillPath(length, thickness), rotated(at), stroke, { x1, y1, x2: x1 + length, y2 }, kind, 320, at * 45);
+        let piece: ShapePiece | null = null;
+        for (let lift = 0; lift <= 12; lift++) {
+          const y2 = bottom - at * pitch - lift * 4 * u;
+          piece = makeWipe(`trail:${cueNumber}:s${at}`, band + at, from, to, pillPath(length, thickness), rotated(at), stroke, { x1, y1: y2 - thickness, x2: x1 + length, y2 }, kind, wipeMs, at * delay);
+          if (!meets(piece, 3)) break;
+        }
+        pieces.push(piece!);
+        used += 2;
       }
     }
-  }
 
-  // (2) A landing bar under the last row, once its last word has landed.
-  {
-    const size = last.size;
-    const thickness = Math.max(9, 0.125 * size) * u;
-    const stroke = 0.28 * thickness;
-    const rest = size * (last.plan.hero ? REST_HERO : REST_BODY);
-    const top = space.y(last.baseline + 3 * rest + STROKE_EM * size + 0.1 * size);
-    const lastBegin = Math.max(...last.units.map((unit) => unit.begin));
-    const from = Math.round(lastBegin + 50);
-    const to = exitEnd;
-    const kind = (counter + 1) % 3;
-    const variant = counter % 3;
-    const rowLeft = space.x(last.left);
-    const rowRight = space.x(last.left + last.width);
-    const length = (0.64 + 0.3 * rng()) * (rowRight - rowLeft);
-    const cx = (rowLeft + rowRight) / 2 + (rng() - 0.5) * 0.12 * (rowRight - rowLeft);
-    if (to > from + 100 && used + 8 <= BUDGET) {
+    // (2) A landing bar under the last row, drawn once the copies have cleared it.
+    {
+      const size = last.size;
+      const thickness = Math.max(9, 0.125 * size) * u;
+      const stroke = 0.28 * thickness;
+      const rest = size * (last.plan.hero ? REST_HERO : REST_BODY);
+      const below = Math.max(...last.units.map((unit) => input.measure(unit.text, FACE, unit.size * u, LS).inkBottom)) / u;
+      const top = space.y(last.baseline + 3 * rest + below + STROKE_EM * size + 0.07 * size);
+      const lastBeginRow = Math.max(...last.units.map((unit) => unit.begin));
+      const kind = (counter + 1) % 3;
+      const variant = counter % 3;
+      const rowLeft = space.x(last.left);
+      const rowRight = space.x(last.left + last.width);
+      const length = (0.64 + 0.3 * rng()) * (rowRight - rowLeft);
+      const cx = (rowLeft + rowRight) / 2 + lead * (rng() - 0.5) * 0.12 * (rowRight - rowLeft);
+      const radius = 0.55 * thickness;
+      const bounds: Rect = variant === 2 ? { x1: cx - 4.1 * radius, y1: top, x2: cx + 4.1 * radius, y2: top + 2 * radius } : { x1: cx - length / 2, y1: top, x2: cx + length / 2, y2: top + thickness };
+      // The first moment from which the whole bar (transformed with the block) never meets ink again.
+      const s0 = Math.round(Math.min(lastBeginRow + 50, exitEnd - MIN_LIFE_MS));
+      let clearAt = s0;
+      for (let t = exitEnd - GRID_MS; t >= s0; t -= GRID_MS) {
+        const box = { x1: mapX(t, bounds.x1 - stroke), x2: mapX(t, bounds.x2 + stroke), y1: mapY(t, bounds.y1 - stroke), y2: mapY(t, bounds.y2 + stroke) };
+        if (touches(box, t, 2)) {
+          clearAt = t + GRID_MS;
+          break;
+        }
+      }
+      const from = Math.round(Math.max(Math.min(clearAt, exitEnd - MIN_LIFE_MS), firstBegin));
+      const to = exitEnd;
+      const ms = clamp((to - from) * 0.6, 40, 300);
       if (variant === 2) {
         // Three dots pop in from the middle outwards.
-        const radius = 0.55 * thickness;
         for (let at = 0; at < 3; at++) {
-          const dx = (at - 1) * 3.1 * radius;
-          const start = from + (at === 1 ? 0 : 55);
-          const x = cx + dx;
+          const start = from + (at === 1 ? 0 : Math.min(55, (to - from) * 0.12));
+          const x = cx + (at - 1) * 3.1 * radius;
           const y = top + radius;
-          const pop = (t: number) => lerp(0.15, 1, outBack(prog(t, start, 260), 2.2));
+          const popMs = clamp((to - start) * 0.6, 40, 260);
+          const pop = (t: number) => lerp(0.15, 1, outBack(prog(t, start, popMs), 2.2));
+          const edges = [start + popMs / 2, start + popMs];
           pieces.push({
             id: `trail:${cueNumber}:b${at}`,
             kind: "shape",
             z: band + 1,
-            fromMs: start,
+            fromMs: Math.round(start),
             toMs: to,
             track: {
               x: frames((t) => mapX(t, x), [], start, to, 0.3),
               y: frames((t) => mapY(t, y), [], start, to, 0.3),
-              sx: frames((t) => pop(t) * shrink(t), [start + 130, start + 260], start, to, 0.003),
-              sy: frames((t) => pop(t) * shrink(t), [start + 130, start + 260], start, to, 0.003),
+              sx: frames((t) => pop(t) * shrink(t), edges, start, to, 0.003),
+              sy: frames((t) => pop(t) * shrink(t), edges, start, to, 0.003),
             },
             origin: { dx: 0, dy: 0 },
             path: ellipsePath(0, 0, radius),
@@ -476,92 +553,143 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
           } satisfies ShapePiece);
           used += 2;
         }
+      } else if (variant === 0) {
+        pieces.push(makeWipe(`trail:${cueNumber}:b0`, band + 1, from, to, pillPath(length, thickness), TRAIL_KEYLINE, 0.22 * thickness, bounds, kind, ms, 0, WHITE));
+        // A thin yellow edge along the bar's top.
+        const edge = 0.26 * thickness;
+        const inner = { x1: bounds.x1 + 0.4 * thickness, y1: top + 0.2 * thickness, x2: bounds.x2 - 0.4 * thickness, y2: top + 0.2 * thickness + edge };
+        pieces.push(makeWipe(`trail:${cueNumber}:b1`, band + 2, from, to, pillPath(inner.x2 - inner.x1, edge), highlight, 0.01, inner, kind, ms, Math.min(40, ms * 0.15)));
+        used += 4;
       } else {
-        const bounds = { x1: cx - length / 2, y1: top, x2: cx + length / 2, y2: top + thickness };
-        if (variant === 0) {
-          wipePiece(`trail:${cueNumber}:b0`, band + 1, from, to, pillPath(length, thickness), TRAIL_KEYLINE, 0.22 * thickness, bounds, kind, 300, 0, WHITE);
-          // A thin yellow edge along the bar's top.
-          const edge = 0.26 * thickness;
-          const inner = { x1: bounds.x1 + 0.4 * thickness, y1: top + 0.2 * thickness, x2: bounds.x2 - 0.4 * thickness, y2: top + 0.2 * thickness + edge };
-          wipePiece(`trail:${cueNumber}:b1`, band + 2, from, to, pillPath(inner.x2 - inner.x1, edge), highlight, 0.01, inner, kind, 300, 40);
-        } else {
-          wipePiece(`trail:${cueNumber}:b0`, band + 1, from, to, pillPath(length, thickness), rotated(0), stroke, bounds, kind, 300);
+        pieces.push(makeWipe(`trail:${cueNumber}:b0`, band + 1, from, to, pillPath(length, thickness), rotated(0), stroke, bounds, kind, ms));
+        used += 2;
+      }
+    }
+
+    // (3) Pop ticks flung off both ends of the key word's row (the last row of a cue without one) as it lands. They keep clear of
+    // the animated ink, shrink to fit the room beside the row, and mirror for a right-to-left cue.
+    {
+      let target: RowGeo | undefined;
+      if (hasHero) target = rows.find((row) => row.plan.hero);
+      else {
+        let best = -1;
+        for (const row of rows) for (const item of row.plan.items) if (item.index > best) [best, target] = [item.index, row];
+      }
+      if (target) {
+        const row = target;
+        const size = row.size;
+        const startUnit = row.units.reduce((a, b) => (a.begin <= b.begin ? a : b));
+        const sideCount = hasHero ? 3 : 2;
+        const latest = exitEnd - MIN_LIFE_MS;
+        const peak = Math.max(firstBegin, Math.min(Math.round(startUnit.begin + (hasHero ? 160 : 120)), latest));
+        const gap = Math.min(22, Math.max(0, (latest - peak) / (2 * sideCount)));
+        const cx = space.x(540);
+        const boxCy = space.y(row.baseline - (CAP_EM / 2) * size);
+        const rx = (row.width / 2 + 0.1 * size) * u;
+        const ry = (0.5 * CAP_EM * size + 0.08 * size) * u;
+        const len0 = 0.26 * size * u;
+        const width0 = 0.085 * size * u;
+        const travel0 = 0.2 * size * u;
+        const variants = [[-24, 0, 24], [-36, -8, 20], [-14, 12, 36]] as const;
+        const offsets = variants[counter % 3]!;
+        const shift = counter % 2 === 0 ? 0 : 8;
+        const colours = hasHero ? [highlight, WHITE, accent, PURPLE] : [highlight, WHITE, MINT, BLUE];
+        let made = 0;
+        for (let side = 0; side < 2; side++) {
+          for (let j = 0; j < sideCount && used + 2 <= BUDGET; j++) {
+            const off = offsets[j]! + (side === 1 ? shift : 0) + (rng() - 0.5) * 10;
+            const grow = 0.32 + 0.1 * rng();
+            const start = Math.round(peak + (side * sideCount + j) * gap);
+            const end = Math.max(start + MIN_LIFE_MS, Math.min(start + 540, exitEnd));
+            const motionMs = clamp((end - start) * 0.55, 30, 300);
+            const growMs = clamp((end - start) * 0.45, 30, 240);
+            const at = made;
+            let found: { x0: number; y0: number; x1: number; y1: number; theta: number; len: number; width: number } | null = null;
+            // Left-to-right geometry first; a right-to-left cue is its mirror image (positions, angles and firing order). A tick
+            // that meets ink is pushed out, tilted away, then shrunk; one with no room at all is dropped.
+            for (const fit of [1, 0.75, 0.55]) {
+              for (const tilt of [0, 16, -16, 32, -32]) {
+                const thetaLtr = (((side === 0 ? off : 180 - off) + (side === 0 ? tilt : -tilt)) * Math.PI) / 180;
+                const dirX = Math.cos(thetaLtr) * lead;
+                const dirY = Math.sin(thetaLtr);
+                const len = len0 * fit;
+                const width = width0 * fit;
+                const half = len / 2 + 0.67 * width;
+                for (let push = 0; push <= 30 && !found; push++) {
+                  const x0 = cx + dirX * (rx + push * 5 * u);
+                  const y0 = boxCy + dirY * (ry + push * 5 * u);
+                  const x1 = x0 + dirX * travel0 * fit;
+                  const y1 = y0 + dirY * travel0 * fit;
+                  const inSafe = (x: number, y: number) => x >= space.safe.x1 + half && x <= space.safe.x2 - half && y >= space.safe.y1 + half && y <= space.safe.y2 - half;
+                  if (!inSafe(x0, y0) || !inSafe(x1, y1)) break;
+                  let clear = true;
+                  for (let t = start; t < end && clear; t += GRID_MS) {
+                    const r = half * lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t);
+                    const px = mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, motionMs))));
+                    const py = mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, motionMs))));
+                    if (touches({ x1: px - r, y1: py - r, x2: px + r, y2: py + r }, t, 3)) clear = false;
+                  }
+                  if (clear) found = { x0, y0, x1, y1, theta: Math.atan2(dirY, dirX), len, width };
+                }
+                if (found) break;
+              }
+              if (found) break;
+            }
+            if (!found) continue;
+            const { x0, y0, x1, y1, theta, len, width } = found;
+            pieces.push({
+              id: `trail:${cueNumber}:t${at}`,
+              kind: "shape",
+              z: band + 44,
+              fromMs: start,
+              toMs: end,
+              track: {
+                x: frames((t) => mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, motionMs)))), [start + motionMs], start, end, 0.3),
+                y: frames((t) => mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, motionMs)))), [start + motionMs], start, end, 0.3),
+                rz: [[start, (theta * 180) / Math.PI]],
+                sx: frames((t) => lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t), [start + growMs], start, end, 0.003),
+                sy: frames((t) => lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t), [start + growMs], start, end, 0.003),
+                o: [[start, 1], [Math.min(start + motionMs, end - 1), 1], [end, 0, "in"]],
+              },
+              origin: { dx: len / 2, dy: width / 2 },
+              path: pillPath(len, width),
+              fill: { colour: colours[(at + counter) % colours.length]! },
+              stroke: { widthPx: 0.34 * width, colour: TRAIL_KEYLINE },
+            } satisfies ShapePiece);
+            made++;
+            used += 2;
+          }
         }
       }
     }
-  }
+    return pieces;
+  };
 
-  // (3) Pop ticks flung off both ends of the key word's row (the last row of a cue without one) as it lands. They sit beside the
-  // row, never over a neighbouring row's ink, and a tick with no room inside the safe area is left out.
-  {
-    let target: RowGeo | undefined;
-    if (hasHero) target = rows.find((row) => row.plan.hero);
-    else {
-      let best = -1;
-      for (const row of rows) for (const item of row.plan.items) if (item.index > best) [best, target] = [item.index, row];
+  // --- fit: build, measure the whole animated extent (copies and decoration included), shrink until it fits, then shift ---
+  // A 2 px margin inside the safe area covers what falls between the 16 ms samples of the extent and of the shift.
+  const tight = { x1: space.safe.x1 + 2, y1: space.safe.y1 + 2, x2: space.safe.x2 - 2, y2: space.safe.y2 - 2 };
+  const safeW = tight.x2 - tight.x1;
+  const safeH = tight.y2 - tight.y1;
+  const extentOf = (list: readonly Piece[]) => {
+    let union: Box | null = null;
+    const from = Math.min(...list.map((piece) => piece.fromMs));
+    const to = Math.max(...list.map((piece) => piece.toMs));
+    for (let ms = from; ms < to; ms += GRID_MS) {
+      const box = sceneBoundsAt(list, ms, input.measure);
+      if (box) union = union ? { x1: Math.min(union.x1, box.x1), y1: Math.min(union.y1, box.y1), x2: Math.max(union.x2, box.x2), y2: Math.max(union.y2, box.y2) } : box;
     }
-    if (target) {
-      const row = target;
-      const size = row.size;
-      const startUnit = row.units.reduce((a, b) => (a.begin <= b.begin ? a : b));
-      const sideCount = hasHero ? 3 : 2;
-      const peak = Math.round(startUnit.begin + (hasHero ? 160 : 120));
-      const cx = space.x(540);
-      const boxCy = space.y(row.baseline - (CAP_EM / 2) * size);
-      const rx = (row.width / 2 + 0.1 * size) * u;
-      const ry = (0.5 * CAP_EM * size + 0.08 * size) * u;
-      const len = 0.26 * size * u;
-      const width = 0.085 * size * u;
-      const travel = 0.2 * size * u;
-      const variants = [[-24, 0, 24], [-36, -8, 20], [-14, 12, 36]] as const;
-      const offsets = variants[counter % 3]!;
-      const shift = counter % 2 === 0 ? 0 : 8;
-      const colours = hasHero ? [highlight, WHITE, accent, PURPLE] : [highlight, WHITE, MINT, BLUE];
-      const reachLimit = len + width;
-      let made = 0;
-      for (let side = 0; side < 2; side++) {
-        for (let j = 0; j < sideCount && used + 2 <= BUDGET; j++) {
-          const off = offsets[j]! + (side === 1 ? shift : 0) + (rng() - 0.5) * 10;
-          const theta = ((side === 0 ? off : 180 - off) * Math.PI) / 180;
-          const dirX = Math.cos(theta);
-          const dirY = Math.sin(theta);
-          const start = peak + (side * sideCount + j) * 22;
-          const end = Math.min(start + 540, exitEnd);
-          if (end < start + 120) continue;
-          const x0 = cx + dirX * rx;
-          const y0 = boxCy + dirY * ry;
-          const x1 = x0 + dirX * travel;
-          const y1 = y0 + dirY * travel;
-          const inSafe = (x: number, y: number) => x >= space.safe.x1 + reachLimit && x <= space.safe.x2 - reachLimit && y >= space.safe.y1 + reachLimit && y <= space.safe.y2 - reachLimit;
-          if (!inSafe(x1, y1) || !inSafe(x0, y0)) continue;
-          const grow = 0.32 + 0.1 * rng();
-          const at = made++;
-          pieces.push({
-            id: `trail:${cueNumber}:t${at}`,
-            kind: "shape",
-            z: band + 44,
-            fromMs: start,
-            toMs: end,
-            track: {
-              x: frames((t) => mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, 300)))), [start + 300], start, end, 0.3),
-              y: frames((t) => mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, 300)))), [start + 300], start, end, 0.3),
-              rz: [[start, (theta * 180) / Math.PI]],
-              sx: frames((t) => lerp(grow, 1, outBack(prog(t, start, 240), 2.2)) * shrink(t), [start + 240], start, end, 0.003),
-              sy: frames((t) => lerp(grow, 1, outBack(prog(t, start, 240), 2.2)) * shrink(t), [start + 240], start, end, 0.003),
-              o: [[start, 1], [start + 300, 1], [end, 0, "in"]],
-            },
-            origin: { dx: len / 2, dy: width / 2 },
-            path: pillPath(len, width),
-            fill: { colour: colours[(at + counter) % colours.length]! },
-            stroke: { widthPx: 0.34 * width, colour: TRAIL_KEYLINE },
-          } satisfies ShapePiece);
-          used += 2;
-        }
-      }
-    }
+    return union;
+  };
+  let pieces = compose(k);
+  for (let pass = 0; pass < 8; pass++) {
+    const box = extentOf(pieces);
+    if (!box) break;
+    const fit = Math.min(safeW / (box.x2 - box.x1), safeH / (box.y2 - box.y1));
+    if (fit >= 1) break;
+    k *= Math.max(0.4, fit * 0.995);
+    pieces = compose(k);
   }
-
-  return clampToSafeArea(pieces, space.safe, input.measure);
+  return clampToSafeArea(pieces, tight, input.measure);
 }
 
 export const trailProgram: SceneProgram = {

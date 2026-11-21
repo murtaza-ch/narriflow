@@ -101,7 +101,11 @@ describe("Trail rows and the colour stack", () => {
   test("the key word's letters punch to 140 % one after another, 30 ms apart", () => {
     const letters = texts(ofCue(scene, 1)).filter((p) => p.id.startsWith("trail:1:w3") && layerOf(p) === 0);
     expect(letters).toHaveLength(6);
-    for (const [at, piece] of letters.entries()) expect(piece.fromMs).toBeGreaterThanOrEqual(cues[1]!.words[3]!.startMs - 60 + at * 30);
+    // 30 ms apart; the exit's 150 ms read-time asks the last cue's entrance for a touch of speed (up to 4x), here 1.1x.
+    for (const [at, piece] of letters.entries()) {
+      expect(piece.fromMs).toBeGreaterThanOrEqual(cues[1]!.words[3]!.startMs - 60 + at * 26);
+      expect(piece.fromMs).toBeLessThanOrEqual(cues[1]!.words[3]!.startMs - 60 + at * 30 + 3);
+    }
     const w = letters[0]!;
     expect(evaluatePiece(w, cues[1]!.words[3]!.startMs - 60 + 150).sx).toBeCloseTo(1.4, 1);
   });
@@ -233,5 +237,165 @@ describe("Trail in other scripts and frames", () => {
         }
       }
     }
+  });
+});
+
+// --- Review fixes (2026-11-22) ---------------------------------------------------------------------------------------------
+
+const FRAME = (n: number) => Math.round((n * 1000) / 30);
+const hitsFrame = (piece: Piece) => {
+  for (let n = Math.ceil((piece.fromMs * 30) / 1000) - 1; FRAME(n) < piece.toMs; n++) if (FRAME(n) >= piece.fromMs) return true;
+  return false;
+};
+const rectsMeet = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
+const unclipped = (piece: Piece): Piece => ({ ...piece, clip: undefined });
+const isFace = (piece: Piece) => piece.kind === "text" && layerOf(piece) === 0;
+/** When a cue's last face settled (scale within 4 % for good) and when the exit starts to shrink it, ms. */
+function holdOf(pieces: readonly Piece[]): { settled: number; exit: number } {
+  let settled = 0;
+  let exit = Number.POSITIVE_INFINITY;
+  for (const piece of pieces.filter(isFace)) {
+    let at = piece.fromMs;
+    for (let t = piece.fromMs; t < piece.toMs; t++) if (Math.abs(evaluatePiece(piece, t).sx - 1) > 0.04) at = t + 1;
+    // `at` is the last out-of-tolerance ms: the entrance ended there, or the exit began there; take the entrance.
+    let entranceEnd = piece.fromMs;
+    for (let t = piece.fromMs; t < piece.toMs; t++) {
+      if (Math.abs(evaluatePiece(piece, t).sx - 1) <= 0.04) break;
+      entranceEnd = t + 1;
+    }
+    settled = Math.max(settled, entranceEnd);
+    let exitAt = piece.toMs;
+    for (let t = piece.toMs - 1; t > entranceEnd; t--) {
+      if (Math.abs(evaluatePiece(piece, t).sx - 1) <= 0.04) {
+        exitAt = t + 1;
+        break;
+      }
+    }
+    exit = Math.min(exit, exitAt);
+    void at;
+  }
+  return { settled, exit };
+}
+
+describe("Trail review fix 1: fast cues", () => {
+  test.each([60, 0])("a 100 ms key word followed by another cue (gap %d): every piece reaches an export frame and the word holds two frames", (cueGap) => {
+    const pieces = buildFor({ lines: ["magnificent:h@100", "next:b@200"], options: { cueGap, rate: 100 } });
+    for (const piece of ofCue(pieces, 0)) expect(hitsFrame(piece)).toBe(true);
+    const hold = holdOf(ofCue(pieces, 0));
+    // A 100 ms word with no gap lives 100 ms (three frames): all the speech allows is a frame of rest.
+    expect(hold.exit - hold.settled).toBeGreaterThanOrEqual(cueGap === 0 ? 30 : 60);
+  });
+
+  test("a 300 ms key word and a 60 ms gap: the two cues never share a frame (the exit ends before the next entrance starts)", () => {
+    const pieces = buildFor({ lines: ["nice:h@300", "next:b@300"], options: { cueGap: 60, rate: 100 } });
+    const first = Math.max(...ofCue(pieces, 0).map((p) => p.toMs));
+    const next = Math.min(...ofCue(pieces, 1).map((p) => p.fromMs));
+    expect(first).toBeLessThanOrEqual(next);
+    for (let n = 0; n < 400; n++) {
+      const a = sceneBoundsAt(ofCue(pieces, 0), FRAME(n), fakeMeasure);
+      const b = sceneBoundsAt(ofCue(pieces, 1), FRAME(n), fakeMeasure);
+      if (a && b) throw new Error(`both cues drawn at ${FRAME(n)}`);
+    }
+  });
+
+  test("with a 60 ms gap every cue holds its whole word 150 ms after the last letter settled (or all that speech allows)", () => {
+    const script: DemoScript = { ...TRAIL_DEMO, options: { ...TRAIL_DEMO.options, cueGap: 60 } };
+    const pieces = buildFor(script);
+    demoCues(script).cues.forEach((_cue, at) => {
+      const hold = holdOf(ofCue(pieces, at));
+      expect(hold.exit - hold.settled).toBeGreaterThanOrEqual(150);
+    });
+  });
+
+  test("a hero word of 13 letters with a 60 ms gap still gets a readable hold", () => {
+    const pieces = buildFor({ lines: ["magnificent:h@450", "next:b@300"], options: { cueGap: 60, rate: 100 } });
+    const hold = holdOf(ofCue(pieces, 0));
+    expect(hold.exit - hold.settled).toBeGreaterThanOrEqual(150);
+  });
+});
+
+describe("Trail review fix 2: the safe area at a large caption size", () => {
+  test.each([
+    ["english", TRAIL_DEMO],
+    ["urdu", sceneEdgeDemo("urdu")],
+  ] as const)("%s demo at size 200 on 16:9 stays inside the safe band", (_name, source) => {
+    const cuesOf = "cues" in source ? source.cues : demoCues(source).cues;
+    const canvas = { width: 1920, height: 1080 };
+    const pieces = trailProgram.build(sceneInput(cuesOf, { canvas, anchor: ANCHOR, colours: COLOURS, scale: 200 / 116 })).pieces;
+    for (let t = 0; t < 9000; t += 16) {
+      const box = sceneBoundsAt(pieces, t, fakeMeasure);
+      if (!box) continue;
+      expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 1);
+      expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
+      expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 1);
+      expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 1);
+    }
+  });
+});
+
+describe("Trail review fix 3: decoration never lands on ink", () => {
+  const sources: [string, DemoScript | ReturnType<typeof sceneEdgeDemo>][] = [["demo", TRAIL_DEMO], ["nine-words", sceneEdgeDemo("nine-words")], ["no-hero", sceneEdgeDemo("no-hero")], ["two-speakers", sceneEdgeDemo("two-speakers")], ["one-word", sceneEdgeDemo("one-word")]];
+  test.each(sources)("%s: stripes, bar and ticks keep clear of every word and copy box at every frame", (_name, source) => {
+    const cuesOf = "cues" in source ? source.cues : demoCues(source).cues;
+    const pieces = trailProgram.build(sceneInput(cuesOf, { anchor: ANCHOR, colours: COLOURS })).pieces;
+    cuesOf.forEach((_cue, at) => {
+      const own = ofCue(pieces, at);
+      const words = texts(own);
+      const deco = shapes(own);
+      const { exit } = holdOf(own);
+      const collapse = exit + 0.7 * (Math.max(...own.map((p) => p.toMs)) - exit);
+      for (let t = Math.min(...own.map((p) => p.fromMs)); t < collapse; t += 8) {
+        const ink = words.map((p) => sceneBoundsAt([p], t, fakeMeasure)).filter((box) => box !== null);
+        for (const piece of deco) {
+          const box = sceneBoundsAt([unclipped(piece)], t, fakeMeasure);
+          if (!box) continue;
+          for (const word of ink) if (rectsMeet(box, word!)) throw new Error(`${piece.id} meets word ink at ${t}`);
+        }
+      }
+    });
+  });
+});
+
+describe("Trail review fix 4: short cues keep all three beats", () => {
+  test.each([60, 0])("a 100 ms key word (gap %d) still gets stripes, a bar and ticks, each on an export frame", (cueGap) => {
+    const own = ofCue(buildFor({ lines: ["magnificent:h@100", "next:b@200"], options: { cueGap, rate: 100 } }), 0);
+    const kinds = (kind: string) => shapes(own).filter((p) => kindOf(p) === kind);
+    expect(kinds("s")).toHaveLength(3);
+    expect(kinds("b").length).toBeGreaterThanOrEqual(1);
+    expect(kinds("t").length).toBeGreaterThanOrEqual(2);
+    for (const piece of shapes(own)) expect(hitsFrame(piece)).toBe(true);
+  });
+});
+
+describe("Trail review fix 5: right-to-left mirrors the bar and the ticks", () => {
+  const build = (language: string) => ofCue(trailProgram.build(sceneInput(demoCues({ lines: ["123:h@600"], language }).cues, { anchor: ANCHOR, colours: COLOURS })).pieces, 0);
+  const en = build("en");
+  const ar = build("ar");
+  const at = (piece: Piece) => evaluatePiece(piece, piece.fromMs + Math.min(200, (piece.toMs - piece.fromMs) / 2));
+  const ids = (list: Piece[], kind: string) => shapes(list).filter((p) => kindOf(p) === kind);
+
+  test("ticks: same count, mirrored positions and angles, fired from the mirrored side first", () => {
+    const a = ids(en, "t");
+    const b = ids(ar, "t");
+    expect(a.length).toBeGreaterThanOrEqual(2);
+    expect(b).toHaveLength(a.length);
+    a.forEach((tick, i) => {
+      const pa = at(tick);
+      const pb = at(b[i]!);
+      expect(Math.abs(pa.x + pb.x - 1080)).toBeLessThan(1.5);
+      expect(Math.abs(pa.y - pb.y)).toBeLessThan(1.5);
+      expect(Math.cos((pa.rz * Math.PI) / 180)).toBeCloseTo(-Math.cos((pb.rz * Math.PI) / 180), 3);
+      expect(Math.sin((pa.rz * Math.PI) / 180)).toBeCloseTo(Math.sin((pb.rz * Math.PI) / 180), 3);
+      expect(tick.fromMs).toBe(b[i]!.fromMs);
+    });
+    expect(Math.sign(at(a[0]!).x - 540)).toBe(-Math.sign(at(b[0]!).x - 540));
+  });
+
+  test("the bar's horizontal offset mirrors too", () => {
+    const a = ids(en, "b");
+    const b = ids(ar, "b");
+    expect(a.length).toBeGreaterThanOrEqual(1);
+    expect(b).toHaveLength(a.length);
+    for (const [i, bar] of a.entries()) expect(at(bar).x + at(b[i]!).x).toBeCloseTo(1080, 0);
   });
 });
