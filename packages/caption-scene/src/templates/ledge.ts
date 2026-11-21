@@ -1,9 +1,10 @@
+import { captionColourContrast } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, clamp, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
-import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
-import type { Clip, Frames, PathCmd, Piece, ShapePiece, TextPiece, Track } from "../scene";
+import { balancedRows, cueDirection, rowVisualOrder, sceneSpace, shiftPiece } from "../layout";
+import { type Box, type Clip, type Frames, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, sceneBoundsAt } from "../scene";
 import { pathBounds, polygonPath, rectPath, roundedRectPath } from "../shapes";
 
 /**
@@ -38,6 +39,13 @@ import { pathBounds, polygonPath, rectPath, roundedRectPath } from "../shapes";
  *   the cube's pop is compressed to land before it. The cube never starts before its key word is spoken.
  * - The sample's `drop-shadow(0 14px 22px)` under the whole lockup (re-rasterised every frame, a 22 px blur) is a smaller soft shadow (10 px
  *   down, a 4 px sigma, 0.28) on each bar's lowest layer (its depth face), which lands where the sample's shows below the bar (see `SHADOW`).
+ * - Review fixes (2026-11-21): a cue that follows closely is held back (at most 500 ms) until the cue before is gone, so a
+ *   short last word is never covered before it has been readable for 150 ms (the exit no longer starts earlier than that, and the
+ *   cue is no longer cut at the next cue's start); a bar and baseline are as tall as the measured ink needs when a script is taller
+ *   than Anton (Anton's size is the minimum); a bar's timing follows the order the words are spoken in, its placement the bidi order;
+ *   the exit drop scales with the fitted lockup and is reserved in the fit, and the shift into the safe area is searched every 4 ms;
+ *   a very short cue keeps its cube, ticks, dashes (a lone short bar gets one narrower dash) and popcorn; dashes turn to ink or
+ *   white when the brand's depth colour is within 3:1 of red.
  * - New recurring beats, in the sample's own shapes and colours, on every cue: SPEED DASHES (two or three red slashes slanted like the
  *   depth faces pop out along the first bar's depth face as its edge passes them), POP TICKS (three short keylined ticks burst off the
  *   cube when it lands, a no-key-word cue gets a smaller cube on its last bar so it has them too) and POPCORN (two small flat cubes
@@ -81,13 +89,17 @@ const EXIT_MIN = 70;
 const EXIT_DROP = 46;
 const CLEAR = 90;
 const HOLD = 150;
-/** How far a cue's exit may run into the next cue. */
-const OVERLAP = 40;
+const STICKER_HOLD = 90;
 const STICKER_SIZE = 70;
 const STICKER_LEAD = 160;
 const STICKER_MS = 420;
 const MINI_SCALE = 0.62;
 /** The lockup's own shadow: the sample's `0 14px 22px` is a 14 px offset and an 11 px sigma; this is 10 px and 4 (cost, see the header). */
+/** The most a cue's entrance may be held back for the cue before it to stay readable (ms), and the stagger of words held together. */
+const MAX_LAG = 500;
+const ENTRY_STAGGER = 70;
+/** Room kept between a word's ink and the keylines above and below it. */
+const INK_GAP = 4;
 const SHADOW = { dy: 10, blur: 4, alpha: 0.28 } as const;
 
 const ICONS = {
@@ -191,6 +203,8 @@ function cubePaths(cx: number, cy: number, half: number, dx: number, dy: number)
 }
 
 interface Counters {
+  /** When the cue before this one is gone: nothing of this cue appears before then. */
+  floor: number;
   cues: number;
   heroes: number;
   plain: number;
@@ -223,6 +237,8 @@ interface Bar {
   readonly out: number;
   readonly items: readonly Item[];
   readonly full: number;
+  /** Baseline of the words, px below the bar's top. */
+  readonly baseline: number;
   x: number;
   y: number;
 }
@@ -291,7 +307,21 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     });
     const full = boxes[boxes.length - 1]!.right + pad;
     const items: Item[] = boxes.map((item, at) => ({ ...item, reach: at === boxes.length - 1 ? full : item.right + gap / 2 }));
-    return { plan, spec, f, size, h: spec.h * f, dx: spec.dx * f, dy: spec.dy * f, pad, out: OUT * f, items, full, x: 0, y: 0 };
+    // The bar is Anton's height at least; a script whose ink is taller (Arabic, Devanagari) gets the bar and baseline its measured ink needs.
+    const inks = plan.words.map((index) => input.measure(texts[index]!, FACE, size, LS));
+    const above = Math.max(...inks.map((ink) => -ink.inkTop));
+    const below = Math.max(...inks.map((ink) => ink.inkBottom));
+    const out = OUT * f;
+    const room = INK_GAP * f;
+    const nominal = ((spec.h - 1.04 * spec.size) / 2 + 0.04 * spec.size + ledgeBaseline(spec.size)) * f;
+    const lowest = out + room + above;
+    let h = spec.h * f;
+    let baseline = nominal;
+    if (lowest > h - out - room - below) {
+      h = lowest + below + room + out;
+      baseline = lowest;
+    } else baseline = clamp(nominal, lowest, h - out - room - below);
+    return { plan, spec, f, size, h, dx: spec.dx * f, dy: spec.dy * f, pad, out, items, full, baseline, x: 0, y: 0 };
   };
   // A bar whose words are still too wide for 720 px shrinks on its own (down to a floor).
   const shrink = plans.map((plan) => {
@@ -333,7 +363,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       minX = Math.min(minX, bar.x + bar.dx - bar.out);
       maxX = Math.max(maxX, bar.x + bar.full + bar.out);
       minY = Math.min(minY, bar.y - bar.out);
-      maxY = Math.max(maxY, bar.y + bar.h + bar.dy);
+      // The caps' keylines reach half a stroke past their corners; the engine's bounds count them whole.
+      maxY = Math.max(maxY, bar.y + bar.h + bar.dy + bar.out / 2);
     }
     const reach = size / 2 + 26 * host.f;
     minX = Math.min(minX, sticker.cx - reach);
@@ -353,7 +384,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   let geo = layout(g);
   for (let pass = 0; pass < 6; pass++) {
     const size = turned(geo);
-    const ratio = Math.min((FIT * (safe.x2 - safe.x1)) / size.w, (FIT * (safe.y2 - safe.y1)) / size.h);
+    // The exit drop is part of the lockup's height: it must stay inside the safe area too.
+    const ratio = Math.min((FIT * (safe.x2 - safe.x1)) / size.w, (FIT * (safe.y2 - safe.y1)) / (size.h + EXIT_DROP * u * g));
     if (ratio >= 1) break;
     g *= Math.max(0.3, ratio * 0.998);
     geo = layout(g);
@@ -371,8 +403,16 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   };
 
   // --- timing: the sample's reveals, an exit that waits for the last word to be readable ---
-  const startOf = (index: number) => cue.words[index]!.startMs;
-  const firstOf = (bar: Bar) => startOf(bar.items[0]!.index);
+  // A word's reveal starts when it is spoken, or later when the cue before is still inside its hold and exit: nothing of this cue
+  // may appear before that cue is gone, so its last word is never covered before it has been readable (at most MAX_LAG late).
+  const spokenOrder = cue.words.map((_, index) => index).sort((a, b) => cue.words[a]!.startMs - cue.words[b]!.startMs || a - b);
+  const effective = new Map<number, number>();
+  spokenOrder.forEach((index, rank) => {
+    const spoken = cue.words[index]!.startMs;
+    effective.set(index, Math.min(spoken + MAX_LAG, Math.max(spoken, counters.floor + REVEAL_LEAD + rank * ENTRY_STAGGER)));
+  });
+  const startOf = (index: number) => effective.get(index)!;
+  const firstOf = (bar: Bar) => Math.min(...bar.items.map((item) => startOf(item.index)));
   const lastOf = (bar: Bar) => Math.max(...bar.items.map((item) => startOf(item.index)));
   const barLand = (bar: Bar) => (bar.plan.hero ? Math.max(lastOf(bar) - REVEAL_LEAD + REVEAL_MS, firstOf(bar) - REVEAL_LEAD + 300) : lastOf(bar) - REVEAL_LEAD + REVEAL_MS);
   const nominalExit = cue.endMs - CLEAR - EXIT;
@@ -380,11 +420,15 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const stickerAt = sticker.bar.plan.hero ? hostFirst + STICKER_LEAD : lastOf(sticker.bar) + 120;
   const stickerMs = clamp((nominalExit - 100 - stickerAt) / 0.55, 210, STICKER_MS);
   const stickerLand = stickerAt + 0.55 * stickerMs;
-  const lastLand = Math.max(...bars.map(barLand), stickerLand);
-  const exitFrom = Math.min(Math.max(nominalExit, lastLand + HOLD), cue.endMs + OVERLAP - EXIT_MIN);
-  const exitDur = clamp(cue.endMs + OVERLAP - exitFrom, EXIT_MIN, EXIT);
+  // The words hold 150 ms once the bars have landed; the cube, which only decorates, holds a shorter moment.
+  const exitFrom = Math.max(nominalExit, Math.max(...bars.map(barLand)) + HOLD, stickerLand + STICKER_HOLD);
+  const exitDur = clamp(cue.endMs - exitFrom, EXIT_MIN, EXIT);
+  const dropPx = EXIT_DROP * u * g;
+  /** What is left of the safe height above the lockup once its exit drop is counted: the popcorn's flight may use no more. */
+  const spanRoom = safe.y2 - safe.y1 - (turned(geo).h + dropPx);
   const exitTo = exitFrom + exitDur;
-  const exitY = (t: number) => EXIT_DROP * u * EASES.in(prog(t, exitFrom, exitDur));
+  counters.floor = exitTo;
+  const exitY = (t: number) => dropPx * EASES.in(prog(t, exitFrom, exitDur));
   const fadeOut = (t: number) => 1 - EASES.in(prog(t, exitFrom, exitDur));
   const fade = (from: number): Frames => (from < exitFrom ? [[from, 1], [exitFrom, 1], [exitTo, 0, "in"]] : [[from, 1], [exitTo, 0, "in"]]);
   const sampled = (fn: (t: number) => number, from: number, to: number, edges: readonly number[], tolerance: number): Frames =>
@@ -448,7 +492,14 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const from = Math.round(first - REVEAL_LEAD);
     if (toMs <= from + 2) return;
     const z = band + barAt * 14;
-    const starts = bar.items.map((item) => ({ startMs: startOf(item.index), reach: item.reach }));
+    // Timing is chronological, placement is by position: a word that sits further along the bar than a word spoken later still pulls the edge out to it.
+    let reached = 0;
+    const starts = [...bar.items]
+      .sort((a, b) => startOf(a.index) - startOf(b.index))
+      .map((item) => {
+        reached = Math.max(reached, item.reach);
+        return { startMs: startOf(item.index), reach: reached };
+      });
     const width = (t: number) => ledgeBarWidth(t, starts);
     const dropOf = bar.plan.hero ? (t: number) => (1 - EASES.spring(prog(t, first - REVEAL_LEAD, HERO_DROP_MS))) * -HERO_DROP * bar.f : () => 0;
     const edges = [...bar.items.flatMap((item) => [startOf(item.index) - REVEAL_LEAD, startOf(item.index) - REVEAL_LEAD + REVEAL_MS]), first - REVEAL_LEAD + HERO_DROP_MS];
@@ -494,7 +545,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const edgeAt = (t: number) => P(bar.x + width(t) - 4 * bar.f, centreY + dropOf(t)).x;
     const edgeFrames = sampled(edgeAt, from, toMs, edges, 0.25);
     const clip = rtl ? openClip(edgeFrames, [[0, input.canvas.width]]) : openClip(wideOpen, edgeFrames);
-    const baselineY = bar.y + ((h / bar.f - 1.04 * bar.spec.size) / 2 + 0.04 * bar.spec.size + ledgeBaseline(bar.spec.size)) * bar.f;
+    const baselineY = bar.y + bar.baseline;
     for (const item of bar.items) {
       const start = startOf(item.index);
       const wordFrom = Math.round(start - REVEAL_LEAD);
@@ -584,12 +635,16 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const dh = 0.75 * strip;
     const slant = dh * (-bar.dx / bar.dy);
     const range = bar.full + bar.dx;
+    // Red on the depth face it sits on; where the brand colours make that face too close to red, ink.
+    const depthColour = bar.plan.hero ? input.colours.primary : input.colours.highlight;
+    const dashColour = [STICKER_RED, INK, "#FFFFFF"].find((colour) => captionColourContrast(colour, depthColour) >= 3) ?? [STICKER_RED, INK, "#FFFFFF"].sort((a, b) => captionColourContrast(b, depthColour) - captionColourContrast(a, depthColour))[0]!;
     const order = ledgeShuffle(count, rng);
     order.forEach((slot, j) => {
-      const dw = (24 + 12 * rng()) * bar.f;
-      const margin = 18 * bar.f;
+      // A very short bar (one letter) gets one narrower dash rather than none.
+      const dw = Math.min((24 + 12 * rng()) * bar.f, 0.4 * range);
+      const margin = Math.min(18 * bar.f, 0.12 * range);
       const usable = range - 2 * margin - dw;
-      if (usable < dw) return;
+      if (usable < 0 || (j > 0 && usable < dw * 1.2 * j)) return;
       const cxLocal = margin + dw / 2 + clamp(fractions[slot]! + (rng() - 0.5) * 0.1, 0, 1) * usable;
       let appear = Number.NaN;
       for (let t = from; t < exitFrom; t += 5) {
@@ -617,7 +672,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
           sx: popped,
           rz: [[t0, tiltDeg]],
           o: fade(t0),
-        }, band + 3, { fill: { colour: STICKER_RED } }),
+        }, band + 3, { fill: { colour: dashColour } }),
       );
     });
 
@@ -631,8 +686,11 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       if (to <= at + 30) continue;
       const start = { x: bar.x + (0.45 + 0.4 * rng()) * bar.full * (j === 0 ? 0.85 : 1.1) + 0, y: bar.y - 4 * bar.f };
       start.x = clamp(start.x, bar.x + 0.2 * bar.full, bar.x + 0.92 * bar.full);
-      const rise = (70 + 40 * rng()) * bar.f;
+      const rise0 = (70 + 40 * rng()) * bar.f;
+      let rise = rise0;
       let drift = (sideBase * (j === 0 ? 1 : -1)) * (18 + 26 * rng()) * bar.f;
+      // Keep the flight inside the safe area: a lockup high in the frame gets a shorter rise.
+      while (rise > 20 * bar.f && (P(start.x, start.y - rise).y < safe.y1 + 16 * bar.f || rise > spanRoom - 6 * bar.f)) rise *= 0.85;
       const endPoint = P(start.x + drift, start.y - rise);
       if (endPoint.x < safe.x1 + 30 * bar.f || endPoint.x > safe.x2 - 30 * bar.f) drift = -drift;
       const spin = (j === 0 ? 1 : -1) * (30 + 35 * rng());
@@ -657,12 +715,27 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     }
   }
 
-  return clampToSafeArea(pieces, safe, input.measure);
+  // The shift into the safe area, looked for every 4 ms: the exit's drop is a fast ease-in whose last frames `clampToSafeArea`'s 16 ms grid can miss.
+  let union: Box | null = null;
+  const from = Math.min(...pieces.map((piece) => piece.fromMs));
+  const end = Math.max(...pieces.map((piece) => piece.toMs));
+  for (let ms = from; ms <= end; ms += 4) {
+    const box = sceneBoundsAt(pieces, ms, input.measure);
+    if (box) union = union ? { x1: Math.min(union.x1, box.x1), y1: Math.min(union.y1, box.y1), x2: Math.max(union.x2, box.x2), y2: Math.max(union.y2, box.y2) } : box;
+  }
+  if (!union) return pieces;
+  const axis = (low: number, high: number, safeLow: number, safeHigh: number) => {
+    if (high - low >= safeHigh - safeLow) return (safeLow + safeHigh) / 2 - (low + high) / 2;
+    return low < safeLow ? safeLow - low : high > safeHigh ? safeHigh - high : 0;
+  };
+  const dx = axis(union.x1, union.x2, safe.x1, safe.x2);
+  const dy = axis(union.y1, union.y2, safe.y1, safe.y2);
+  return dx === 0 && dy === 0 ? pieces : pieces.map((piece) => shiftPiece(piece, dx, dy));
 }
 
 export const ledgeProgram: SceneProgram = {
   build(input) {
-    const counters: Counters = { cues: 0, heroes: 0, plain: 0 };
+    const counters: Counters = { floor: Number.NEGATIVE_INFINITY, cues: 0, heroes: 0, plain: 0 };
     return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, input, counters))) };
   },
 };

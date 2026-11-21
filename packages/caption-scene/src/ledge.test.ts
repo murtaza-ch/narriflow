@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
-import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, sceneBoundsAt } from "./scene";
+import { captionColourContrast } from "@narriflow/validators";
+import { type Measure, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
 import { pathBounds } from "./shapes";
 import { LEDGE_DEMO, ledgeBarWidth, ledgeBaseline, ledgeCase, ledgeHash, ledgeProgram, ledgeRng, ledgeShuffle } from "./templates/ledge";
 import { fakeMeasure, sceneInput } from "./test-support";
@@ -165,7 +166,9 @@ describe("Ledge real speech and long clips", () => {
       cue.words.forEach((word, index) => {
         const piece = need<TextPiece>(find(list, `${number}:w${index}`));
         const hero = word.role === "hero";
-        const landed = word.startMs - 85 + 230 + (hero ? 70 : 0);
+        // A cue that follows too closely is held back (never by more than 500 ms), so the word lands from its own piece's start.
+        expect(piece.fromMs).toBeLessThanOrEqual(word.startMs - 85 + 500);
+        const landed = piece.fromMs + 230 + (hero ? 70 : 0);
         const advance = fakeMeasure(piece.text, "Anton", piece.sizePx, 0.012).advance;
         for (let t = landed; t <= landed + 150; t += 10) {
           const pose = evaluatePiece(piece, t);
@@ -274,5 +277,113 @@ describe("Ledge scripts and edges", () => {
     const piece = need<TextPiece>(find(build([cue]), "0:w0"));
     expect(piece.sizePx).toBeLessThan(80);
     expect(piece.sizePx).toBeGreaterThanOrEqual(0.45 * 80 - 1);
+  });
+});
+
+const word = (text: string, startMs: number, endMs: number, role: "hero" | "body" | "minor" = "body") => ({ text, startMs, endMs, role, key: null });
+const cueOf = (index: number, startMs: number, endMs: number, words: ReturnType<typeof word>[], language: string | null = "en"): SceneCue => ({ index, startMs, endMs, speaker: null, language, words });
+
+describe("Ledge review fixes", () => {
+  test("1: a cue that follows closely never covers the last word of the one before until it has been readable for 150 ms", () => {
+    // GO is spoken 1000-1120 and the next cue starts at 1180: the old build let the next bar grow over GO at 1123.
+    const list = build([cueOf(0, 1000, 1180, [word("go", 1000, 1120)]), cueOf(1, 1180, 2400, [word("no", 1180, 1400)])]);
+    const go = need<TextPiece>(find(list, "0:w0"));
+    const advance = fakeMeasure(go.text, "Anton", go.sizePx, 0.012).advance;
+    let ready = go.fromMs;
+    while (evaluatePiece(go, ready).clip!.x2 < evaluatePiece(go, ready).x + advance && ready < 3000) ready++;
+    const next = ofCue(list, 1).filter((piece) => piece.kind === "shape");
+    expect(next.length).toBeGreaterThan(0);
+    for (let t = ready; t <= ready + 150; t += 4) {
+      const pose = evaluatePiece(go, t);
+      for (const along of [0.25, 0.5]) {
+        const reach = advance * along;
+        const point = { x: pose.x + reach * Math.cos((pose.rz * Math.PI) / 180), y: pose.y + reach * Math.sin((pose.rz * Math.PI) / 180) - 0.3 * go.sizePx };
+        for (const piece of next) {
+          const box = pieceBounds(piece, t, fakeMeasure);
+          const covers = box !== null && box.x1 <= point.x && point.x <= box.x2 && box.y1 <= point.y && point.y <= box.y2;
+          expect(covers).toBe(false);
+        }
+      }
+    }
+    // The delayed cue still arrives, within the lag the template allows.
+    const now = need<TextPiece>(find(list, "1:w0"));
+    expect(now.fromMs).toBeLessThanOrEqual(1180 - 85 + 500);
+  });
+
+  test("2: a script taller than Anton gets a bar and baseline that hold its measured ink inside the keylines", () => {
+    const tall: Measure = (text, face, size, ls) => {
+      const base = fakeMeasure(text, face, size, ls);
+      return /[\u0600-\u06ff]/.test(text) ? { ...base, inkTop: -1.05 * size, inkBottom: 0.6 * size } : base;
+    };
+    const cue = cueOf(0, 1000, 2400, [word("پاکستان", 1000, 1500)], "ur");
+    const list = build([cue], { measure: tall });
+    const face = need<ShapePiece>(find(list, "0:b0fi"));
+    const text = need<TextPiece>(find(list, "0:w0"));
+    const at = 1800;
+    const a = evaluatePiece(face, at);
+    const b = evaluatePiece(text, at);
+    const turn = (-a.rz * Math.PI) / 180;
+    const vy = (b.y - a.y) * Math.cos(turn) + (b.x - a.x) * Math.sin(turn);
+    const h = pathBounds(face.path).y2;
+    expect(h).toBeGreaterThan(112);
+    expect(vy - 1.05 * 80).toBeGreaterThanOrEqual(5 - 1e-6);
+    expect(vy + 0.6 * 80).toBeLessThanOrEqual(h - 5 + 1e-6);
+    // Latin keeps the sample's 112 px bar.
+    expect(pathBounds(need<ShapePiece>(find(scene, "0:b0fi")).path).y2).toBeCloseTo(112, 3);
+  });
+
+  test("3: a mixed-direction bar appears for the word spoken first, not the word that sits first on the bar", () => {
+    const cue = cueOf(0, 1000, 2300, [word("یہ", 1000, 1250, "hero"), word("NEW", 1300, 1500), word("YORK", 1600, 1800)], "ur");
+    const list = build([cue]);
+    const body = need<ShapePiece>(find(list, "0:b1ff"));
+    expect(body.fromMs).toBeLessThanOrEqual(1300 - 85 + 1);
+    const neu = need<TextPiece>(find(list, "0:w1"));
+    const advance = fakeMeasure("NEW", "Anton", neu.sizePx, 0.012).advance;
+    const pose = evaluatePiece(neu, 1300 + 160);
+    expect(pose.visible).toBe(true);
+    // Uncovered: the reveal edge (the clip's left side in a right-to-left cue) has passed the word's far end.
+    expect(pose.clip!.x1).toBeLessThanOrEqual(pose.x + 4);
+    expect(evaluatePiece(body, 1300 + 160).sx).toBeGreaterThan(0.3);
+    void advance;
+  });
+
+  test("4: the exit drop stays inside the safe area on 16:9 at a large size, across the whole exit", () => {
+    const roles = ["body", "hero", "body", "hero", "body"] as const;
+    const words = roles.map((role, at) => word(["alpha", "BRAVO", "charlie", "DELTA", "echo"][at]!, 1000 + at * 300, 1250 + at * 300, role));
+    const canvas = { width: 1920, height: 1080 };
+    const list = build([cueOf(0, 1000, 3000, words)], { canvas, scale: 2.5, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } });
+    const end = Math.max(...list.map((piece) => piece.toMs));
+    for (let t = 0; t < end; t += 8) {
+      const box = sceneBoundsAt(list, t, fakeMeasure);
+      if (!box) continue;
+      expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
+      expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 1);
+      expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 1);
+      expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 1);
+    }
+  });
+
+  test("5: a very short cue keeps its cube, ticks, dashes and popcorn, with a gap of 60 ms or none", () => {
+    for (const gap of [60, 0]) {
+      const list = build([cueOf(0, 1000, 1120 + gap, [word("i", 1000, 1120)]), cueOf(1, 1120 + gap, 2600, [word("quit", 1120 + gap, 1500), word("now", 1550, 1900)])]);
+      const kinds = ofCue(list, 0).map(kindOf);
+      expect(kinds.filter((id) => /^stk[012]$/.test(id))).toHaveLength(3);
+      expect(kinds.filter((id) => /^tk\d$/.test(id))).toHaveLength(3);
+      expect(kinds.filter((id) => /^ds\d$/.test(id)).length).toBeGreaterThanOrEqual(1);
+      expect(kinds.filter((id) => /^pc\d[df]$/.test(id))).toHaveLength(4);
+      // And the cube has its window: it is on screen for at least 200 ms before the cue leaves.
+      const cube = need<ShapePiece>(find(list, "0:stk1"));
+      expect(cube.toMs - cube.fromMs).toBeGreaterThanOrEqual(200);
+    }
+  });
+
+  test("6: the dashes change colour when the brand's depth colour is as red as they are", () => {
+    const red = "#F0323C";
+    const branded = build(cues, { colours: { ...COLOURS, highlight: red } });
+    const dash = need<ShapePiece>(find(branded, "0:ds0"));
+    expect(dash.fill?.colour).not.toBe(red);
+    expect(captionColourContrast(dash.fill!.colour, red)).toBeGreaterThanOrEqual(3);
+    // On the default yellow they stay red.
+    expect(need<ShapePiece>(find(scene, "0:ds0")).fill?.colour).toBe(red);
   });
 });
