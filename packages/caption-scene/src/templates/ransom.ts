@@ -2,8 +2,8 @@ import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
-import { balancedRows, clampToSafeArea, cueDirection, greedyRows, rowVisualOrder, sceneSpace } from "../layout";
-import type { CaptionScene, Clip, PathCmd, Piece, ShapePiece, TextPiece, Track } from "../scene";
+import { balancedRows, clampToSafeArea, cueDirection, greedyRows, rowVisualOrder, sceneSpace, shiftPiece } from "../layout";
+import { type CaptionScene, type Clip, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, evaluatePiece, pieceBounds } from "../scene";
 import { polygonPath, polylinePath, roundedRectPath } from "../shapes";
 import type { CaptionFontName } from "@narriflow/validators";
 
@@ -68,8 +68,13 @@ const BAND = 26;
 const EXIT = 200;
 const HOLD = 150;
 const CLEAR = 50;
-/** The shortest roll: a cue that ends too soon for the full sweep gets a quicker one, never a shorter hold. */
-const EXIT_MIN = 40;
+/** The shortest roll that shows at least two 30 fps frames; a cue with less room than this is cut instead. */
+const ROLL_MIN = 67;
+/** Entrances never run faster than this share of the sample's pace (the strip's tear then still spans two frames). */
+const SPEED_MIN = 0.35;
+/** How early a word's first piece may show: the sample's strip leads by 70 ms, the hero's tiles by 100 ms (the rule's limit). */
+const LEAD_STRIP = 70;
+const LEAD_HERO = 100;
 
 const BIG_FACE = "Alfa Slab One" as const;
 const SMALL_FACE = "Anton" as const;
@@ -246,7 +251,40 @@ type Row = StripRow | HeroRow;
 
 const TILE_PAD = (face: CaptionFontName) => (face === "Anton" ? { x: 0.14, t: 0.08, b: 0.06 } : { x: 0.12, t: 0.1, b: 0.08 });
 
-function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: Counters): Piece[] {
+/** Per word: how many letter tiles its hero is split into (0 = not split: a strip word, or one tile for any other script). */
+function heroSplits(cue: SceneCue): number[] {
+  let total = 0;
+  return cue.words.map((word) => {
+    const text = ransomCase(word.text);
+    const parts = graphemes(text);
+    const split = word.role === "hero" && SIMPLE.test(text) && !PICTO.test(text) && parts.length > 1 && parts.length <= MAX_LETTERS && total + parts.length <= MAX_CUE_LETTERS;
+    if (split) total += parts.length;
+    return split ? parts.length : 0;
+  });
+}
+
+/** A word's lead before its spoken start: the sample's, shrunk toward 0 (never past its start) when the cue may not show before `notBefore`. */
+const leadOf = (word: { role: string; startMs: number }, notBefore: number) => Math.min(word.role === "hero" ? LEAD_HERO : LEAD_STRIP, Math.max(0, word.startMs - notBefore));
+
+/** The first frame a cue draws (cue handoff rule): its earliest word's lead before its start, no earlier than `notBefore`. */
+export function ransomEntryMs(cue: SceneCue, notBefore = Number.NEGATIVE_INFINITY): number {
+  return Math.min(...cue.words.map((word) => Math.round(word.startMs - leadOf(word, notBefore)))) + 2;
+}
+
+/** When the cue's last word could be readable for HOLD ms at the fastest entrance, with no roll: what it asks of the next cue's entry. */
+export function ransomNeedMs(cue: SceneCue, notBefore = Number.NEGATIVE_INFINITY): number {
+  const splits = heroSplits(cue);
+  const letterTotal = splits.reduce((a, b) => a + b, 0);
+  const stagger0 = Math.min(26, 150 / Math.max(1, letterTotal));
+  let land = cue.startMs;
+  cue.words.forEach((word, at) => {
+    const rise = word.startMs - leadOf(word, notBefore);
+    land = Math.max(land, word.role === "hero" ? rise + (Math.max(1, splits[at]!) - 1) * stagger0 * SPEED_MIN + 300 * SPEED_MIN : rise + 200 * SPEED_MIN);
+  });
+  return land + HOLD;
+}
+
+function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: Counters, handoff: number, notBefore: number): Piece[] {
   const space = sceneSpace(input, CY);
   const { u, safe } = space;
   const rtl = cueDirection(cue) === "rtl";
@@ -263,15 +301,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const TILES: readonly (readonly [string, string])[] = [[MAGENTA, CREAM], [YELLOW, NAVY], [CREAM, MAGENTA], [TEAL, YELLOW], [NAVY, CREAM], [hl, NAVY], [CREAM, TEAL]];
 
   // --- words ---
-  let heroLetters = 0;
+  const splits = heroSplits(cue);
   const words: Word[] = cue.words.map((word, index) => {
     const text = ransomCase(word.text);
-    const hero = word.role === "hero";
-    const parts = graphemes(text);
-    const split = hero && SIMPLE.test(text) && !PICTO.test(text) && parts.length > 1 && parts.length <= MAX_LETTERS && heroLetters + parts.length <= MAX_CUE_LETTERS;
-    if (split) heroLetters += parts.length;
-    return { index, text, minor: word.role === "minor", hero, letters: split ? parts : null };
+    return { index, text, minor: word.role === "minor", hero: word.role === "hero", letters: splits[index]! > 0 ? graphemes(text) : null };
   });
+  const riseAt = (index: number) => cue.words[index]!.startMs - leadOf(cue.words[index]!, notBefore);
   const adv = (text: string, face: CaptionFontName, size: number, ls: number) => input.measure(text, face, size, ls).advance + ls * size;
   const baselineOf = (face: CaptionFontName, size: number) => {
     const m = input.measure("H", face, size, 0);
@@ -454,36 +489,43 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const blockBottom = BY + layout.height / 2;
 
   // --- timing ---
-  // Entrances (the strip's tear, the tiles' flight) run at `speed` of the sample's pace; a cue that ends too soon for the whole
-  // word to be readable for HOLD ms after it lands has them compressed, then the roll shortened, never the hold.
+  // Entrances (the strip's tear, the tiles' flight) run at `speed` of the sample's pace. The cue ends no later than `cap`: the
+  // incoming cue's first visible frame, so nothing is ever drawn over an outgoing word (cue handoff rule). A cue that cannot
+  // give every word HOLD ms after it lands plus a roll has its entrances compressed; if that is not enough it is cut at `cap`
+  // with no roll (a roll needs two frames), and the words have been readable from landing until then.
   const letterTotal = words.reduce((total, w) => total + (w.letters ? w.letters.length : 0), 0);
   const stagger0 = Math.min(26, 150 / Math.max(1, letterTotal));
-  const latestExit = cue.endMs + CLEAR - EXIT_MIN;
-  let speed = 1;
-  for (const row of rows) {
-    if (row.kind === "strip") {
-      for (const at of row.idx) speed = Math.min(speed, (latestExit - HOLD - cue.words[at]!.startMs + 70) / 200);
-    } else {
-      for (const hw of row.words) speed = Math.min(speed, (latestExit - HOLD - cue.words[hw.word.index]!.startMs + 170) / ((hw.specs.length - 1) * stagger0 + 300));
+  const cap = Math.max(cue.startMs + ROLL_MIN, Number.isFinite(handoff) ? Math.min(cue.endMs + CLEAR, handoff) : cue.endMs);
+  const speedFor = (room: number) => {
+    let sp = 1;
+    for (const row of rows) {
+      if (row.kind === "strip") {
+        for (const at of row.idx) sp = Math.min(sp, (room - riseAt(at)) / 200);
+      } else {
+        for (const hw of row.words) sp = Math.min(sp, (room - riseAt(hw.word.index)) / ((hw.specs.length - 1) * stagger0 + 300));
+      }
     }
-  }
-  speed = clamp(speed, 0.25, 1);
+    return sp;
+  };
+  const withRoll = speedFor(cap - ROLL_MIN - HOLD);
+  const cut = withRoll < SPEED_MIN;
+  const speed = clamp(cut ? speedFor(cap - HOLD) : withRoll, SPEED_MIN, 1);
   const GROW = 200 * speed;
   const TILE = 300 * speed;
   const stagger = stagger0 * speed;
-  const tileStart = (word: Word, li: number) => cue.words[word.index]!.startMs - 170 + li * stagger;
+  const tileStart = (word: Word, li: number) => riseAt(word.index) + li * stagger;
   let lastLand = cue.startMs;
   for (const row of rows) {
-    if (row.kind === "strip") for (const at of row.idx) lastLand = Math.max(lastLand, cue.words[at]!.startMs - 70 + GROW);
+    if (row.kind === "strip") for (const at of row.idx) lastLand = Math.max(lastLand, riseAt(at) + GROW);
     else {
       for (const hw of row.words) {
         for (let li = 0; li < hw.specs.length; li++) lastLand = Math.max(lastLand, tileStart(hw.word, li) + TILE);
       }
     }
   }
-  // The exit never starts before the last word has landed and been readable, and ends at most 50 ms into the next cue.
-  const exitFrom = Math.round(Math.min(Math.max(cue.endMs - EXIT, lastLand + HOLD), latestExit));
-  const exitTo = exitFrom + Math.round(clamp(cue.endMs + CLEAR - exitFrom, EXIT_MIN, EXIT));
+  // The roll starts once the last word has landed and been readable, and ends by `cap`.
+  const exitFrom = cut ? Math.round(cap) : Math.round(Math.min(Math.max(cue.endMs - EXIT, lastLand + HOLD), cap - ROLL_MIN));
+  const exitTo = cut ? exitFrom : exitFrom + Math.round(Math.min(EXIT, cap - exitFrom));
 
   // --- the block's extent (the roll sweeps it) and the clip every piece shares ---
   // Tilt direction alternates on a running row counter across the whole clip; the hero row moves 0.4x as much.
@@ -513,7 +555,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     return sampleFrames((t) => pick(kf(t, grow), kf(t, edge)), times, 0.2, { range: [Math.min(...times), Math.max(...times)], wholeMs: true, simplify: true });
   };
   const clipOf = (from: number, grow: Frames | null): Clip => {
-    const edge: Frames = rtl ? [[from, R], [exitFrom, R], [exitTo, L, "inOut"]] : [[from, L], [exitFrom, L], [exitTo, R, "inOut"]];
+    const edge: Frames = cut ? still(rtl ? R : L) : rtl ? [[from, R], [exitFrom, R], [exitTo, L, "inOut"]] : [[from, L], [exitFrom, L], [exitTo, R, "inOut"]];
     const open: Frames = still(rtl ? L - FAR : R + FAR);
     // A clip whose edges meet is zero wide: the roll's edge may pass a strip's tear edge before the tear has finished.
     const far = grow ? meet(grow, edge) : open;
@@ -540,6 +582,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     ...extra,
   });
 
+  const deferred: ((dx: number, dy: number) => Piece)[] = [];
   let focus: { cx: number; top: number; bottom: number; halfW: number; tilt: number; start: number; row: Row } | null = null;
 
   for (const row of rows) {
@@ -548,7 +591,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const P = { x: BX + shift * u, y: rowCy };
     if (row.kind === "strip") {
       const first = Math.min(...row.idx.map((at) => cue.words[at]!.startMs));
-      const start = first - 70;
+      const start = Math.min(...row.idx.map(riseAt));
       const from = Math.round(start) + 2;
       const [fill, ink] = STRIPS[counters.strips++ % STRIPS.length]!;
       const poseAt = (t: number) => {
@@ -567,25 +610,27 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o };
       // The strip tears longer as each later word is spoken (distance from the leading edge).
       const order = [...row.idx.keys()].sort((a, b) => cue.words[row.idx[a]!]!.startMs - cue.words[row.idx[b]!]!.startMs);
-      const rawD = order.map((pos) => (rtl ? row.w - row.lefts[pos]! + row.padX : row.lefts[pos]! + row.advs[pos]! + row.padX));
+      // A word's own box plus a tail that stops short of the next word (a longer tail would show its first pixels early).
+      const tail = Math.min(row.padX, 0.6 * 0.26 * row.size);
+      const rawD = order.map((pos) => (rtl ? row.w - row.lefts[pos]! + tail : row.lefts[pos]! + row.advs[pos]! + tail));
       // The edge only ever grows, so a row whose spoken order is not its visual order (an English phrase in Urdu) never takes paper back.
       const edgeD = rawD.map((_d, i) => Math.max(...rawD.slice(0, i + 1)));
       edgeD[edgeD.length - 1] = row.w;
-      const startsOf = order.map((pos) => cue.words[row.idx[pos]!]!.startMs);
+      const startsOf = order.map((pos) => riseAt(row.idx[pos]!));
       const growth = (t: number) => {
         let e = edgeD[0]!;
-        for (let i = 1; i < order.length; i++) e = lerp(e, edgeD[i]!, EASES.outExpo(prog(t, startsOf[i]! - 70, GROW)));
+        for (let i = 1; i < order.length; i++) e = lerp(e, edgeD[i]!, EASES.outExpo(prog(t, startsOf[i]!, GROW)));
         return e;
       };
       // A word the edge has already passed (it is spoken after a word that sits further along the row) shows at its own start.
       const gated = new Map<number, number>();
       order.forEach((pos, i) => {
-        if (i > 0 && rawD[i]! < Math.max(...rawD.slice(0, i))) gated.set(pos, Math.round(startsOf[i]! - 70));
+        if (i > 0 && rawD[i]! < Math.max(...rawD.slice(0, i))) gated.set(pos, Math.round(startsOf[i]!));
       });
       const cosT = Math.cos((tilt * Math.PI) / 180);
       const xEdge = (t: number) => P.x + sgn * (growth(t) - row.w / 2) * cosT + sgn * 3 * u;
-      const growEnd = Math.round(Math.max(...startsOf) - 70 + GROW);
-      const growEdges = [...startsOf.flatMap((s) => [s - 70, s - 70 + GROW]), from];
+      const growEnd = Math.round(Math.max(...startsOf) + GROW);
+      const growEdges = [...startsOf.flatMap((s) => [s, s + GROW]), from];
       const gFrames = sampleFrames(xEdge, growEdges, 0.3, { range: [from, growEnd], wholeMs: true, simplify: true });
       const grow: Frames = [...gFrames.map((f) => [f[0], f[1]] as [number, number]), [growEnd + 1, rtl ? L - FAR : R + FAR]];
       const clip = clipOf(from, grow);
@@ -706,27 +751,46 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const pts: Pt[] = [[dr() * 6 * u, dr() * 5 * u], [sw - dr() * 6 * u, dr() * 5 * u], [sw, sh / 2 + (dr() - 0.5) * 8 * u], [sw - dr() * 6 * u, sh - dr() * 5 * u], [dr() * 6 * u, sh - dr() * 5 * u], [0, sh / 2 + (dr() - 0.5) * 8 * u]];
       const scrap = anchored(pts);
       const fill = [MAGENTA, TEAL, YELLOW, hl, NAVY][(counter * 2 + 1 + (seed % 3)) % 5]!;
-      const reach = Math.hypot(sw, sh) / 2;
-      let cx = f.cx + side * (f.halfW + sw * 0.28);
-      cx = clamp(cx, safe.x1 + reach, safe.x2 - reach);
-      const cy = isHero ? f.top + 0.2 * (f.bottom - f.top) : f.bottom - 0.1 * (f.bottom - f.top);
-      const at = Math.round(clamp(f.start - 40, cue.startMs - 60, exitFrom - 300));
+      // The scrap is built after the cue's safe-area shift (its rotated entrance must be inside the final frame): see `deferred`.
+      const reach = (Math.hypot(sw, sh) / 2) * 1.06;
+      const cx0 = f.cx + side * (f.halfW + sw * 0.28);
+      const cy0 = isHero ? f.top + 0.2 * (f.bottom - f.top) : f.bottom - 0.1 * (f.bottom - f.top);
+      const entry = ransomEntryMs(cue, notBefore);
+      const at = Math.round(Math.max(entry, cue.startMs - 60, Math.min(f.start - 40, exitFrom - 300)));
       const dur = Math.round(clamp(exitFrom - 50 - at, 120, 260));
       const from = at + 2;
       const rest = side * (8 + dr() * 10);
       const fall = (t: number) => outBack18(prog(t, at, dur));
-      const yTrack = sampleFrames((t) => cy - 70 * u * (1 - fall(t)), [at, at + dur], 0.3, { range: [from, at + dur], wholeMs: true, simplify: true });
-      const sTrack = sampleFrames((t) => lerp(0.5, 1, fall(t)), [at, at + dur], 0.004, { range: [from, at + dur], wholeMs: true, simplify: true });
-      pieces.push(
-        shape(`ransom:${cueNumber}:x`, band + 1, from, exitTo, scrap.path, { dx: sw / 2 - scrap.minX, dy: sh / 2 - scrap.minY }, {
-          x: [[from, cx]],
-          y: yTrack,
-          rz: [[from, rest + side * 70], [at + dur, rest, "out"]],
-          sx: sTrack,
-          sy: sTrack,
-          o: [[from, 0], [at + 50, 1]],
-        }, { fill: { colour: fill }, clip: clipOf(from, null) }),
-      );
+      deferred.push((dx, dy) => {
+        const cx = clamp(cx0 + dx, safe.x1 + reach, safe.x2 - reach) - dx;
+        const cy = clamp(cy0 + dy, safe.y1 + reach, safe.y2 - reach) - dy;
+        let best: ShapePiece | null = null;
+        for (const [drop, spin] of [[70 * u, 70], [45 * u, 40], [25 * u, 20], [0, 0]] as const) {
+          const yTrack = sampleFrames((t) => cy - drop * (1 - fall(t)), [at, at + dur], 0.3, { range: [from, at + dur], wholeMs: true, simplify: true });
+          const sTrack = sampleFrames((t) => lerp(0.5, 1, fall(t)), [at, at + dur], 0.004, { range: [from, at + dur], wholeMs: true, simplify: true });
+          const piece = shiftPiece(
+            shape(`ransom:${cueNumber}:x`, band + 1, from, exitTo, scrap.path, { dx: sw / 2 - scrap.minX, dy: sh / 2 - scrap.minY }, {
+              x: [[from, cx]],
+              y: yTrack,
+              rz: [[from, rest + side * spin], [at + dur, rest, "out"]],
+              sx: sTrack,
+              sy: sTrack,
+              o: [[from, 0], [at + 50, 1]],
+            }, { fill: { colour: fill }, clip: clipOf(from, null) }),
+            dx,
+            dy,
+          );
+          best = piece;
+          // Every millisecond of the entrance (and the rest pose) is inside the safe area.
+          let inside = true;
+          for (let t = from; t <= Math.min(exitTo - 1, at + dur + 20) && inside; t++) {
+            const box = pieceBounds(piece, t, input.measure);
+            if (box && (box.x1 < safe.x1 || box.x2 > safe.x2 || box.y1 < safe.y1 || box.y2 > safe.y2)) inside = false;
+          }
+          if (inside) break;
+        }
+        return best!;
+      });
     }
     // The hand-scribbled underline, drawn left to right under the focus row.
     {
@@ -762,8 +826,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     }
   }
 
-  // --- the paper roll that clears the cue ---
-  {
+  // --- the paper roll that clears the cue (a cue cut at the handoff has none) ---
+  if (!cut) {
     const H = layout.height + 60 * u;
     const Wb = 58 * u;
     const Rb = Wb / 2;
@@ -789,12 +853,33 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       shape(`ransom:${cueNumber}:rollc`, band + 9, exitFrom, exitTo, curl.path, { dx: Wb / 2 - curl.minX, dy: H / 2 - curl.minY }, track, { fill: { colour: CURL } }),
     );
   }
-  return clampToSafeArea(pieces, safe, input.measure);
+  // Decorations that would show on a single 30 fps frame (or none) are left out: a flash is not a motion.
+  const kept = pieces.filter((piece) => piece.toMs - piece.fromMs >= ROLL_MIN);
+  const shifted = clampToSafeArea(kept, safe, input.measure);
+  const probe = kept[0];
+  const moved = probe ? { dx: evaluatePiece(shifted[0]!, probe.fromMs).x - evaluatePiece(probe, probe.fromMs).x, dy: evaluatePiece(shifted[0]!, probe.fromMs).y - evaluatePiece(probe, probe.fromMs).y } : { dx: 0, dy: 0 };
+  const late = deferred.map((build) => build(moved.dx, moved.dy)).filter((piece) => piece.toMs - piece.fromMs >= ROLL_MIN);
+  return [...shifted, ...late];
 }
 
 export const ransomProgram: SceneProgram = {
   build(input): CaptionScene {
     const counters: Counters = { rows: 0, strips: 0, heroes: 0, plains: 0 };
-    return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, input, counters))) };
+    // The incoming cue's lead shrinks toward 0 only as far as the outgoing cue needs to hold its last word (handoff rule 3).
+    const live = input.cues.map((cue, number) => ({ cue, number })).filter(({ cue }) => cue.words.length > 0);
+    const notBefore: number[] = [];
+    const entry: number[] = [];
+    live.forEach(({ cue }, at) => {
+      const previous = live[at - 1];
+      const first = Math.min(...cue.words.map((word) => word.startMs));
+      notBefore[at] = previous ? Math.min(ransomNeedMs(previous.cue, notBefore[at - 1]!), first) : Number.NEGATIVE_INFINITY;
+      entry[at] = ransomEntryMs(cue, notBefore[at]!);
+    });
+    const pieces: Piece[] = [];
+    live.forEach(({ cue, number }, at) => {
+      const next = entry[at + 1];
+      pieces.push(...buildCue(cue, number, input, counters, next === undefined ? Number.POSITIVE_INFINITY : next, notBefore[at]!));
+    });
+    return { pieces };
   },
 };
