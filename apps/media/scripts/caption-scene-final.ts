@@ -37,6 +37,7 @@ export const MOMENTS: Record<string, number[]> = {
   beat: [400, 1700, 2967, 4300, 6300],
   popup: [1500, 3233, 3700],
   cursor: [2400, 3100, 3600],
+  wallpaper: [2700, 3300, 6100],
   arthouse: [467, 800, 1700, 3433, 3700, 4033],
 };
 
