@@ -101,13 +101,15 @@ describe("Trail rows and the colour stack", () => {
   test("the key word's letters punch to 140 % one after another, 30 ms apart", () => {
     const letters = texts(ofCue(scene, 1)).filter((p) => p.id.startsWith("trail:1:w3") && layerOf(p) === 0);
     expect(letters).toHaveLength(6);
-    // 30 ms apart; the exit's 150 ms read-time asks the last cue's entrance for a touch of speed (up to 4x), here 1.1x.
+    // 30 ms apart; the exit's 150 ms read-time asks the last cue's entrance for a touch of speed for that word alone, here about 1.4x.
     for (const [at, piece] of letters.entries()) {
-      expect(piece.fromMs).toBeGreaterThanOrEqual(cues[1]!.words[3]!.startMs - 60 + at * 26);
+      expect(piece.fromMs).toBeGreaterThanOrEqual(cues[1]!.words[3]!.startMs - 60 + at * 18);
       expect(piece.fromMs).toBeLessThanOrEqual(cues[1]!.words[3]!.startMs - 60 + at * 30 + 3);
     }
     const w = letters[0]!;
-    expect(evaluatePiece(w, cues[1]!.words[3]!.startMs - 60 + 150).sx).toBeCloseTo(1.4, 1);
+    const peak = Math.max(...[...Array(300).keys()].map((at) => evaluatePiece(w, w.fromMs + at).sx));
+    expect(peak).toBeGreaterThan(1.38);
+    expect(peak).toBeLessThan(1.42);
   });
 
   test("the key word keeps a slow wave through the hold and the copies chase it", () => {
@@ -250,29 +252,33 @@ const hitsFrame = (piece: Piece) => {
 const rectsMeet = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
 const unclipped = (piece: Piece): Piece => ({ ...piece, clip: undefined });
 const isFace = (piece: Piece) => piece.kind === "text" && layerOf(piece) === 0;
-/** When a cue's last face settled (scale within 4 % for good) and when the exit starts to shrink it, ms. */
+/**
+ * When a cue's last face has settled (scale within 5 % of 1 for at least 30 ms running) and when the first of them starts to
+ * leave (scale past 5 % again) or the cue's last piece ends, ms: the readable hold is between the two.
+ */
 function holdOf(pieces: readonly Piece[]): { settled: number; exit: number } {
   let settled = 0;
   let exit = Number.POSITIVE_INFINITY;
   for (const piece of pieces.filter(isFace)) {
     let at = piece.fromMs;
-    for (let t = piece.fromMs; t < piece.toMs; t++) if (Math.abs(evaluatePiece(piece, t).sx - 1) > 0.04) at = t + 1;
-    // `at` is the last out-of-tolerance ms: the entrance ended there, or the exit began there; take the entrance.
-    let entranceEnd = piece.fromMs;
     for (let t = piece.fromMs; t < piece.toMs; t++) {
-      if (Math.abs(evaluatePiece(piece, t).sx - 1) <= 0.04) break;
-      entranceEnd = t + 1;
+      let steady = true;
+      for (let k = 0; k <= 30 && steady; k += 5) steady = Math.abs(evaluatePiece(piece, Math.min(t + k, piece.toMs - 1)).sx - 1) <= 0.05;
+      if (steady) {
+        at = t;
+        break;
+      }
+      at = t + 1;
     }
-    settled = Math.max(settled, entranceEnd);
-    let exitAt = piece.toMs;
-    for (let t = piece.toMs - 1; t > entranceEnd; t--) {
-      if (Math.abs(evaluatePiece(piece, t).sx - 1) <= 0.04) {
-        exitAt = t + 1;
+    settled = Math.max(settled, at);
+    let leaves = piece.toMs;
+    for (let t = at; t < piece.toMs; t++) {
+      if (Math.abs(evaluatePiece(piece, t).sx - 1) > 0.05) {
+        leaves = t;
         break;
       }
     }
-    exit = Math.min(exit, exitAt);
-    void at;
+    exit = Math.min(exit, leaves);
   }
   return { settled, exit };
 }
@@ -397,5 +403,156 @@ describe("Trail review fix 5: right-to-left mirrors the bar and the ticks", () =
     expect(a.length).toBeGreaterThanOrEqual(1);
     expect(b).toHaveLength(a.length);
     for (const [i, bar] of a.entries()) expect(at(bar).x + at(b[i]!).x).toBeCloseTo(1080, 0);
+  });
+});
+
+// --- Re-check fixes (2026-11-22): the cue handoff rule ---------------------------------------------------------------------
+
+const wordPiecesOf = (list: readonly Piece[], cue: number, word: number) => list.filter((p) => p.id.startsWith(`trail:${cue}:w${word}l`));
+const frameCount = (piece: Piece) => {
+  let count = 0;
+  for (let n = Math.ceil((piece.fromMs * 30) / 1000) - 1; FRAME(n) < piece.toMs; n++) if (FRAME(n) >= piece.fromMs) count++;
+  return count;
+};
+const shiftCues = (cuesIn: ReturnType<typeof demoCues>["cues"], by: number) =>
+  cuesIn.map((cue) => ({ ...cue, startMs: cue.startMs + by, endMs: cue.endMs + by, words: cue.words.map((w) => ({ ...w, startMs: w.startMs + by, endMs: w.endMs + by })) }));
+
+describe("Trail handoff rule: long runs of fast speech", () => {
+  const body = (n: number): DemoScript => ({ lines: Array.from({ length: n }, () => "so:b@150 this:b@150 is:b@150 fast:b@150"), options: { rate: 150 } });
+  const heroes = (n: number): DemoScript => ({ lines: Array.from({ length: n }, (_, i) => (i % 2 === 0 ? "wow:h@100" : "no:m@100 way:h@100")), options: {} });
+  const cases: [string, (g: number) => DemoScript][] = [
+    ["150 ms words", (g) => ({ ...body(12), options: { rate: 150, cueGap: g, gap: 0, tail: 400 } })],
+    ["100 ms heroes", (g) => ({ ...heroes(12), options: { cueGap: g, gap: 0, tail: 400 } })],
+  ];
+  test.each(cases.flatMap(([name, make]) => [60, 0].map((gap) => [name, gap, make] as const)))("%s, gap %d: locked to speech, readable until the next cue, never covered, no flash", (_name, gap, make) => {
+    const script = make(gap);
+    const { cues: run } = demoCues(script);
+    expect(run.length).toBeGreaterThanOrEqual(10);
+    const pieces = trailProgram.build(sceneInput(run, { anchor: ANCHOR, colours: COLOURS })).pieces;
+    run.forEach((cue, at) => {
+      // (1) every word's first visible frame is at most 100 ms before it is spoken and never after it.
+      cue.words.forEach((word, wi) => {
+        const first = Math.min(...wordPiecesOf(pieces, at, wi).map((p) => p.fromMs));
+        expect(first).toBeLessThanOrEqual(word.startMs);
+        expect(first).toBeGreaterThanOrEqual(word.startMs - 100);
+      });
+      const own = ofCue(pieces, at);
+      const end = Math.max(...own.map((p) => p.toMs));
+      expect(end).toBeLessThanOrEqual(cue.endMs);
+      // (2) readable from the last letter's landing until the next cue's first visible frame, up to 150 ms; never covered.
+      const next = run[at + 1] ? Math.min(...ofCue(pieces, at + 1).map((p) => p.fromMs)) : Number.POSITIVE_INFINITY;
+      expect(end).toBeLessThanOrEqual(next);
+      const hold = holdOf(own);
+      const room = Math.min(150, next - hold.settled);
+      expect(hold.exit - hold.settled).toBeGreaterThanOrEqual(room - 34);
+      // (5) no empty frame the speech does not have: the next cue's first frame is this cue's last + 1.
+      if (run[at + 1]) expect(next - end).toBeLessThanOrEqual(1);
+    });
+    // (3) no animated piece lives on exactly one 30 fps frame.
+    for (const piece of pieces) expect(frameCount(piece)).toBeGreaterThanOrEqual(2);
+    // And no frame draws two cues.
+    for (let n = 0; n < Math.ceil((Math.max(...pieces.map((p) => p.toMs)) * 30) / 1000); n++) {
+      const t = FRAME(n);
+      const live = new Set(pieces.filter((p) => t >= p.fromMs && t < p.toMs).map((p) => p.id.split(":")[1]));
+      expect(live.size).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test("a frame-aligned run never blinks: every export frame between the first and the last has text", () => {
+    const script: DemoScript = { lines: Array.from({ length: 12 }, () => "go:h@267"), options: { cueGap: 0, gap: 0, tail: 400, lead: 300 } };
+    const { cues: run } = demoCues(script);
+    const pieces = trailProgram.build(sceneInput(run, { anchor: ANCHOR, colours: COLOURS })).pieces;
+    const from = Math.min(...pieces.map((p) => p.fromMs));
+    const to = Math.max(...pieces.filter((p) => p.id.startsWith("trail:11:")).map((p) => p.toMs));
+    for (let n = Math.ceil((from * 30) / 1000); FRAME(n) < to; n++) {
+      const t = FRAME(n);
+      expect(pieces.some((p) => p.kind === "text" && t >= p.fromMs && t < p.toMs)).toBe(true);
+    }
+  });
+});
+
+describe("Trail re-check 2: compression is per word", () => {
+  test("four 150 ms words: the first word keeps its full entrance and its trail; only the last is sped up", () => {
+    const pieces = buildFor({ lines: ["so:b@150 this:b@150 is:b@150 fast:b@150", "and:b@150 so:b@150 is:b@150 this:b@150"], options: { cueGap: 0, gap: 0, rate: 150 } });
+    const faceOf = (word: number) => pieces.find((p) => p.id === `trail:0:w${word}l0c0`) as TextPiece;
+    const deep = (word: number) => pieces.find((p) => p.id === `trail:0:w${word}l0c3`) as TextPiece;
+    const first = faceOf(0);
+    // Frames on which the first word is still entering (scale off by more than 4 %), and on which its trail is stretched.
+    let entering = 0;
+    let trailing = 0;
+    for (let n = 0; FRAME(n) < first.toMs; n++) {
+      const t = FRAME(n);
+      if (t < first.fromMs) continue;
+      if (Math.abs(evaluatePiece(first, t).sx - 1) > 0.04) entering++;
+      if (evaluatePiece(deep(0), t).y - evaluatePiece(first, t).y > 3 * 0.068 * 116 + 6) trailing++;
+    }
+    expect(entering).toBeGreaterThanOrEqual(5);
+    expect(trailing).toBeGreaterThanOrEqual(2);
+    // The first word's pace is the sample's (speed 1): its copies lag by 38 ms.
+    const mid = first.fromMs + 100;
+    expect(evaluatePiece(deep(0), mid).y - evaluatePiece(first, mid).y).toBeGreaterThan(20);
+    // The last word of the cue, with no time, is faster than the first.
+    const last = faceOf(3);
+    const settleOf = (piece: TextPiece) => holdOf([piece]).settled - piece.fromMs;
+    expect(settleOf(last)).toBeLessThan(settleOf(first));
+  });
+});
+
+describe("Trail re-check 3: the fit looks at every peak", () => {
+  test.each([0, 7, 13, 23, 31])("urdu demo %d ms later at size 200 on 16:9 never leaves the safe band on a 30 fps frame", (by) => {
+    const canvas = { width: 1920, height: 1080 };
+    const pieces = trailProgram.build(sceneInput(shiftCues(sceneEdgeDemo("urdu").cues, by), { canvas, anchor: ANCHOR, colours: COLOURS, scale: 200 / 116 })).pieces;
+    for (let n = 0; FRAME(n) < 9000; n++) {
+      const box = sceneBoundsAt(pieces, FRAME(n), fakeMeasure);
+      if (!box) continue;
+      expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 0.5);
+      expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 0.5);
+    }
+  });
+});
+
+describe("Trail re-check 4: ticks survive a wide hero row", () => {
+  test("good morning everyone:h today at 300 ms a word still has ticks, in the frame and clear of the words", () => {
+    const script: DemoScript = { lines: ["good:b@300 morning:b@300 everyone:h@300 today:b@300", "next:b@300"], options: { cueGap: 60, gap: 0 } };
+    // Lilita One's real advance is wider than the fake 0.55 em: use 0.66 so the hero row fills the frame.
+    const wide = (text: string, face: never, size: number, ls: number) => ({ ...fakeMeasure(text, face, size, ls), advance: [...text].length * (0.66 + ls) * size - ls * size });
+    const own = ofCue(buildFor(script, { measure: wide }), 0);
+    const ticks = shapes(own).filter((p) => kindOf(p) === "t");
+    expect(ticks.length).toBeGreaterThanOrEqual(2);
+    for (const tick of ticks) {
+      for (let t = tick.fromMs; t < tick.toMs; t += 16) {
+        const box = sceneBoundsAt([tick], t, fakeMeasure)!;
+        if (!box) continue;
+        expect(box.x1).toBeGreaterThanOrEqual(0.05 * 1080 - 1);
+        expect(box.x2).toBeLessThanOrEqual(0.95 * 1080 + 1);
+        expect(box.y1).toBeGreaterThanOrEqual(0.05 * 1920 - 1);
+        expect(box.y2).toBeLessThanOrEqual(0.95 * 1920 + 1);
+      }
+    }
+  });
+
+  test("a 7-letter hero 'everything' in a 5-word cue keeps ticks in 9:16 and 1:1", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      const cues2 = demoCues({ lines: ["it:b was:b everything:h to:b me:b"], options: { rate: 250 } }).cues;
+      const own = ofCue(trailProgram.build(sceneInput(cues2, { canvas, anchor: ANCHOR, colours: COLOURS })).pieces, 0);
+      expect(shapes(own).filter((p) => kindOf(p) === "t").length).toBeGreaterThanOrEqual(2);
+    }
+  });
+});
+
+describe("Trail re-check 5: a word shorter than the minimum life does not outlive the handoff", () => {
+  test.each([0, 60])("magnificent:h@40 followed by next (gap %d): no frame draws both cues, the key word lands whole", (cueGap) => {
+    const pieces = buildFor({ lines: ["magnificent:h@40", "next:b@300"], options: { cueGap, gap: 0 } });
+    const a = ofCue(pieces, 0);
+    const b = ofCue(pieces, 1);
+    expect(Math.max(...a.map((p) => p.toMs))).toBeLessThanOrEqual(Math.min(...b.map((p) => p.fromMs)));
+    for (let n = 0; n < 90; n++) {
+      const t = FRAME(n);
+      const drawn = (list: Piece[]) => texts(list).some((p) => t >= p.fromMs && t < p.toMs);
+      expect(drawn(a) && drawn(b)).toBe(false);
+    }
+    // Every word frame of the cue is drawn: it is one whole word (not eleven staggered letters) when there is no time for the stagger.
+    expect(texts(a).filter((p) => layerOf(p) === 0)).toHaveLength(cueGap === 0 ? 1 : texts(a).filter((p) => layerOf(p) === 0).length);
+    for (const piece of a) expect(frameCount(piece)).toBeGreaterThanOrEqual(2);
   });
 });

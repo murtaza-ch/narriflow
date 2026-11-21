@@ -2,7 +2,7 @@ import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
-import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, rowWidth, sceneSpace } from "../layout";
+import { balancedRows, cueDirection, rowVisualOrder, rowWidth, sceneSpace, shiftPiece } from "../layout";
 import { type Box, type Clip, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, pieceBounds, sceneBoundsAt } from "../scene";
 import { ellipsePath, roundedRectPath } from "../shapes";
 
@@ -77,16 +77,15 @@ const ENTER_LEAD = 60;
 const LETTER_STAGGER = 30;
 const LETTER_STAGGER_TOTAL = 240;
 const MAX_LETTERS = 12;
-const EXIT_MS = 170;
 const LIFT_PX = 60;
+const EXIT_END_MS = 60;
 const BUDGET = 140;
 /** A word is read for this long after its last letter has landed, when the speech leaves room for it. */
 const HOLD_READ_MS = 150;
-const EXIT_FLOOR_MS = 40;
-/** The most the entrance is sped up (time-compressed) to make that room; past it the hold shrinks instead. */
-const SPEED_MAX = 4;
-/** No piece lives shorter than two export frames. */
-const MIN_LIFE_MS = 66;
+/** No piece lives (and no motion runs) shorter than two export frames. */
+const MIN_LIFE_MS = 67;
+/** The exit wipes it may take, longest first; 0 is a cut. */
+const EXIT_OPTIONS = [170, 120, 80, 67, 0] as const;
 const GRID_MS = 16;
 
 /** FNV-1a, 32 bit: the seed of a cue's jitter (never `Math.random`). */
@@ -178,6 +177,8 @@ interface Unit {
   readonly width: number;
   readonly begin: number;
   readonly size: number;
+  /** The entrance's time compression for this word (1 = the sample's pace), 0 for a word that appears at rest. */
+  readonly speed: number;
 }
 
 interface RowGeo {
@@ -194,7 +195,14 @@ interface RowGeo {
 
 const pillPath = (length: number, thickness: number): PathCmd[] => roundedRectPath(0, 0, length, thickness, thickness / 2);
 
-function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; plain: number }, input: SceneInput): Piece[] {
+/** What the neighbouring cues ask of this one: its own entrance lead and when the next cue starts speaking. */
+interface CueLink {
+  /** How long before its first word's speech this cue's first piece appears (60 ms, less when the previous cue needed the room). */
+  readonly lead: number;
+  readonly nextStart: number | null;
+}
+
+function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; plain: number }, input: SceneInput, link: CueLink): { pieces: Piece[]; nextLead: number } {
   const space = sceneSpace(input, CY);
   const { u } = space;
   const rtl = cueDirection(cue) === "rtl";
@@ -206,11 +214,66 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
   const bodyStack = [highlight, MINT, BLUE];
   const heroStack = [highlight, accent, PURPLE];
 
-  const items: Item[] = cue.words.map((word, index) => {
-    const hero = word.role === "hero";
-    const text = trailDisplay(word.text);
-    return { index, hero, text, letters: hero ? trailLetters(text) : null };
-  });
+  // --- timing: the cue handoff rule (gallery3-brief.md) ---
+  // Entrances are locked to speech (a word appears 60 ms before it is spoken, its first word less when the previous cue needed the
+  // room). The outgoing cue gives way: the incoming cue's first frame is the outgoing cue's end, so no frame is empty and none is
+  // shared. Each word that needs it is sped up on its own (never to under two frames), then the exit is shortened or dropped, then
+  // the incoming lead shrinks toward 0; only then does the cue end where the next one starts, readable for what is left.
+  const makeItems = (whole: ReadonlySet<number>): Item[] =>
+    cue.words.map((word, index) => {
+      const hero = word.role === "hero";
+      const text = trailDisplay(word.text);
+      return { index, hero, text, letters: hero && !whole.has(index) ? trailLetters(text) : null };
+    });
+  const beginOf = (item: Item) => cue.words[item.index]!.startMs - (item.index === 0 ? link.lead : ENTER_LEAD);
+  const stagger0 = (letters: number) => Math.min(LETTER_STAGGER, LETTER_STAGGER_TOTAL / Math.max(1, letters));
+  const landOf = (item: Item) => (item.hero ? LAND_HERO : LAND_BODY);
+  const staggerSpan = (item: Item) => ((item.letters?.length ?? 1) - 1) * stagger0(item.letters?.length ?? 1);
+  /** The fastest an entrance may run and still be two frames long. */
+  const speedMaxOf = (item: Item) => landOf(item) / MIN_LIFE_MS;
+  const contiguous = link.nextStart !== null && link.nextStart <= cue.endMs;
+  const handoffs = contiguous ? [60, 50, 40, 30, 20, 10, 0].map((lead) => link.nextStart! - lead) : [cue.endMs - EXIT_END_MS];
+  const plan = (its: readonly Item[]): { speeds: number[]; exitMs: number; end: number; fallback: boolean } => {
+    const first = Math.min(...its.map(beginOf));
+    const speedFor = (item: Item, deadline: number): number | null => {
+      for (let v = 1; v <= speedMaxOf(item) + 1e-9; v += 0.1) if (beginOf(item) + (staggerSpan(item) + landOf(item)) / v <= deadline) return v;
+      return null;
+    };
+    for (const end of handoffs) {
+      if (end < first + MIN_LIFE_MS) continue;
+      for (const exitMs of EXIT_OPTIONS) {
+        const speeds = its.map((item) => speedFor(item, end - exitMs - HOLD_READ_MS));
+        if (speeds.every((v) => v !== null)) return { speeds: speeds as number[], exitMs, end, fallback: false };
+      }
+    }
+    // Not even the full lead gives the hold: a hard cut at the next cue's first frame, each word as fast as two frames allow
+    // (still, when it cannot animate at all), readable from landing until then.
+    const end = handoffs[handoffs.length - 1]!;
+    const speeds = its.map((item) => {
+      // A word with the time for its 150 ms keeps the slowest entrance that gives it; the others take the fastest two-frame one.
+      const easy = speedFor(item, end - HOLD_READ_MS);
+      if (easy !== null) return easy;
+      return beginOf(item) + (staggerSpan(item) + landOf(item)) / speedMaxOf(item) + 33 <= end ? speedMaxOf(item) : 0;
+    });
+    return { speeds, exitMs: 0, end, fallback: true };
+  };
+  let whole = new Set<number>();
+  let items = makeItems(whole);
+  let timing = plan(items);
+  while (timing.fallback) {
+    // A key word that cannot even stagger its letters in the time there is lands as one word instead.
+    const stuck = items.filter((item, at) => timing.speeds[at] === 0 && item.hero && item.letters);
+    if (stuck.length === 0) break;
+    whole = new Set([...whole, ...stuck.map((item) => item.index)]);
+    items = makeItems(whole);
+    timing = plan(items);
+  }
+  const speedOf = new Map(items.map((item, at) => [item.index, timing.speeds[at]!]));
+  const exitEnd = timing.end;
+  const exitMs = timing.exitMs;
+  const exitStart = exitEnd - exitMs;
+  const nextLead = contiguous ? link.nextStart! - exitEnd : ENTER_LEAD;
+  const firstBegin = Math.min(...items.map(beginOf));
   const advance = (text: string, size: number) => input.measure(text, FACE, size * u, LS).advance / u + LS * size;
   const itemWidth = (item: Item, size: number) => (item.letters ? item.letters.reduce((sum, letter) => sum + advance(letter, size), 0) : advance(item.text, size));
   const indices = (n: number, from = 0) => Array.from({ length: n }, (_, at) => from + at);
@@ -245,31 +308,6 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     return Math.min(1, (2 * halfLimit) / (width + 2 * (pad + room)));
   });
 
-  // --- timing: a word is read for 150 ms after its last letter has landed; tight speech speeds the entrance up (never past 4x),
-  // and the exit always ends before the next cue's entrance starts ---
-  const wordBegin = (item: Item) => cue.words[item.index]!.startMs - ENTER_LEAD;
-  const stagger0 = (letters: number) => Math.min(LETTER_STAGGER, LETTER_STAGGER_TOTAL / Math.max(1, letters));
-  const firstBegin = Math.min(...items.map(wordBegin));
-  const hardEnd = Math.max(cue.endMs - ENTER_LEAD, firstBegin + MIN_LIFE_MS);
-  const landedAt = (v: number) =>
-    Math.max(...items.flatMap((item) => Array.from({ length: item.letters?.length ?? 1 }, (_, at) => wordBegin(item) + (at * stagger0(item.letters?.length ?? 1) + (item.hero ? LAND_HERO : LAND_BODY)) / v)));
-  let speed = 1;
-  while (speed < SPEED_MAX && landedAt(speed) + HOLD_READ_MS + EXIT_FLOOR_MS > hardEnd) speed += 0.1;
-  let exitStart: number;
-  let exitMs: number;
-  if (landedAt(speed) + HOLD_READ_MS + EXIT_FLOOR_MS <= hardEnd) {
-    exitStart = Math.max(hardEnd - EXIT_MS, landedAt(speed) + HOLD_READ_MS);
-    exitMs = hardEnd - exitStart;
-  } else {
-    // Faster than the speech allows for: the entrance takes at most 40 % of the window and the exit a quarter, the rest is the hold.
-    speed = 1;
-    while (speed < 40 && landedAt(speed) - firstBegin > 0.4 * (hardEnd - firstBegin)) speed += 0.5;
-    exitMs = clamp(0.25 * (hardEnd - firstBegin), 33, EXIT_MS);
-    exitStart = hardEnd - exitMs;
-  }
-  const exitEnd = Math.round(exitStart + exitMs);
-  const stagger = (letters: number) => stagger0(letters) / speed;
-
   // --- geometry, sample px, the block centred on (540, 1270) ---
   const geometry = (k: number): { rows: RowGeo[]; height: number } => {
     const sized = plans.map((plan, ri) => {
@@ -297,10 +335,11 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
           const n = item.letters.length;
           item.letters.forEach((text, letter) => {
             const w = advance(text, row.size);
-            units.push({ item, letter, text, left: x, width: w, begin: wordBegin(item) + letter * stagger(n), size: row.size });
+            const speed = speedOf.get(item.index)!;
+            units.push({ item, letter, text, left: x, width: w, begin: beginOf(item) + (speed === 0 ? 0 : (letter * stagger0(n)) / speed), size: row.size, speed });
             x += w;
           });
-        } else units.push({ item, letter: 0, text: item.text, left, width: row.widths[at]!, begin: wordBegin(item), size: row.size });
+        } else units.push({ item, letter: 0, text: item.text, left, width: row.widths[at]!, begin: beginOf(item), size: row.size, speed: speedOf.get(item.index)! });
         left += row.widths[at]!;
         spans[row.plan.items.indexOf(item)] = { left: itemLeft, right: left };
         left += row.gap;
@@ -350,19 +389,22 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     rows.forEach((row, ri) => {
       const hero = row.plan.hero;
       const m = row.size / (hero ? HERO : BODY);
-      const lag = (hero ? HERO_LAG : LAG) / speed;
       const rest = row.size * (hero ? REST_HERO : REST_BODY);
       const stack = hero ? heroStack : bodyStack;
       const pivotY = row.top + 0.5 * row.size;
       for (const unit of row.units) {
         const cx = unit.left + unit.width / 2;
-        const from = Math.round(unit.begin) + (hero ? 2 : 0);
+        const from = Math.round(unit.begin);
         const to = Math.max(exitEnd, from + 2);
-        const scaleAt = (t: number) => trailScale(hero, (t - unit.begin) * speed);
+        const speed = unit.speed;
+        const still = speed === 0;
+        const lag = still ? 0 : (hero ? HERO_LAG : LAG) / speed;
+        // A key word's first pose is scale 0: it opens at 5 % so the piece is drawn from its very first frame.
+        const scaleAt = (t: number) => (still ? 1 : Math.max(0.05, trailScale(hero, (t - unit.begin) * speed)));
         for (let layer = 3; layer >= 0; layer--) {
           const lagged = layer * lag;
-          const yAt = (t: number) => pivotY + trailRise(hero, (t - lagged - unit.begin) * speed, t - lagged, unit.letter) * m + layer * rest * scaleAt(t);
-          const edges = [0, 150, 290, 300, 380, 420, 430, 450, 540, 850].flatMap((ms) => [unit.begin + ms / speed, unit.begin + lagged + ms / speed]);
+          const yAt = (t: number) => pivotY + (still ? 0 : trailRise(hero, (t - lagged - unit.begin) * speed, t - lagged, unit.letter) * m) + layer * rest * scaleAt(t);
+          const edges = still ? [] : [0, 150, 290, 300, 380, 420, 430, 450, 540, 850].flatMap((ms) => [unit.begin + ms / speed, unit.begin + lagged + ms / speed]);
           const scale = frames((t) => scaleAt(t) * shrink(t), edges, from, to, 0.003);
           const track: Track = {
             x: frames((t) => mapX(t, space.x(cx)), [], from, to, 0.3),
@@ -426,6 +468,19 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     const rotated = (at: number) => palette[(at + counter) % palette.length]!;
     const beatStart = firstBegin;
     type Rect = { x1: number; y1: number; x2: number; y2: number };
+    // A cue that lives under two frames has no room for decoration (a one-frame flash is worse than none).
+    if (exitEnd - firstBegin < MIN_LIFE_MS) return pieces;
+    /** Where the stripes and the bar rest, canvas px: the ticks keep clear of them too. */
+    const decoRects: Rect[] = [];
+    const touchesDeco = (box: Box, t: number, pad: number) =>
+      shrink(t) > 0.5 &&
+      decoRects.some((r) => {
+        const x1 = mapX(t, r.x1);
+        const x2 = mapX(t, r.x2);
+        const y1 = mapY(t, r.y1);
+        const y2 = mapY(t, r.y2);
+        return box.x1 - pad < x2 && x1 < box.x2 + pad && box.y1 - pad < y2 && y1 < box.y2 + pad;
+      });
 
     /** A pill that wipes in from its leading edge, trailing edge or middle (`kind`), cut by a canvas clip that follows the block's exit. */
     const makeWipe = (id: string, z: number, from: number, to: number, path: PathCmd[], fill: string, strokePx: number, bounds: Rect, kind: number, ms: number, delay = 0, strokeColour = TRAIL_KEYLINE): ShapePiece => {
@@ -485,12 +540,15 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
         const length = Math.max(8 * u, fullLength * lengths[(at + longest) % 3]!);
         const x1 = kind === 2 ? (rowLeft + rowRight) / 2 - length / 2 : (kind === 0) === (lead > 0) ? rowLeft : rowRight - length;
         let piece: ShapePiece | null = null;
+        let top2 = 0;
         for (let lift = 0; lift <= 12; lift++) {
           const y2 = bottom - at * pitch - lift * 4 * u;
+          top2 = y2;
           piece = makeWipe(`trail:${cueNumber}:s${at}`, band + at, from, to, pillPath(length, thickness), rotated(at), stroke, { x1, y1: y2 - thickness, x2: x1 + length, y2 }, kind, wipeMs, at * delay);
           if (!meets(piece, 3)) break;
         }
         pieces.push(piece!);
+        decoRects.push({ x1: x1 - stroke, x2: x1 + length + stroke, y1: top2 - thickness - stroke, y2: top2 + stroke });
         used += 2;
       }
     }
@@ -502,7 +560,7 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
       const stroke = 0.28 * thickness;
       const rest = size * (last.plan.hero ? REST_HERO : REST_BODY);
       const below = Math.max(...last.units.map((unit) => input.measure(unit.text, FACE, unit.size * u, LS).inkBottom)) / u;
-      const top = space.y(last.baseline + 3 * rest + below + STROKE_EM * size + 0.07 * size);
+      const top = space.y(last.baseline + 3 * rest + below + STROKE_EM * size + 0.07 * size + (last.plan.hero ? WAVE_PX * (size / HERO) : 0));
       const lastBeginRow = Math.max(...last.units.map((unit) => unit.begin));
       const kind = (counter + 1) % 3;
       const variant = counter % 3;
@@ -512,6 +570,7 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
       const cx = (rowLeft + rowRight) / 2 + lead * (rng() - 0.5) * 0.12 * (rowRight - rowLeft);
       const radius = 0.55 * thickness;
       const bounds: Rect = variant === 2 ? { x1: cx - 4.1 * radius, y1: top, x2: cx + 4.1 * radius, y2: top + 2 * radius } : { x1: cx - length / 2, y1: top, x2: cx + length / 2, y2: top + thickness };
+      decoRects.push({ x1: bounds.x1 - stroke, y1: bounds.y1 - stroke, x2: bounds.x2 + stroke, y2: bounds.y2 + stroke });
       // The first moment from which the whole bar (transformed with the block) never meets ink again.
       const s0 = Math.round(Math.min(lastBeginRow + 50, exitEnd - MIN_LIFE_MS));
       let clearAt = s0;
@@ -595,69 +654,97 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
         const shift = counter % 2 === 0 ? 0 : 8;
         const colours = hasHero ? [highlight, WHITE, accent, PURPLE] : [highlight, WHITE, MINT, BLUE];
         let made = 0;
+        const clear = (x: number, y: number, r: number, t: number) => {
+          const box = { x1: x - r, y1: y - r, x2: x + r, y2: y + r };
+          return !touches(box, t, 3) && !touchesDeco(box, t, 3);
+        };
+        /** Looks for a tick position: along `dirX, dirY` from `(ox, oy)`, pushed outward, then shrunk, until it is in the frame and clear. */
+        const place = (start: number, end: number, grow: number, motionMs: number, growMs: number, spots: readonly { ox: number; oy: number; dirX: number; dirY: number }[]) => {
+          for (const fit of [1, 0.75, 0.55]) {
+            for (const spot of spots) {
+              const len = len0 * fit;
+              const width = width0 * fit;
+              const half = len / 2 + 0.67 * width;
+              for (let push = 0; push <= 30; push++) {
+                const x0 = spot.ox + spot.dirX * push * 5 * u;
+                const y0 = spot.oy + spot.dirY * push * 5 * u;
+                const x1 = x0 + spot.dirX * travel0 * fit;
+                const y1 = y0 + spot.dirY * travel0 * fit;
+                const inSafe = (x: number, y: number) => x >= space.safe.x1 + half && x <= space.safe.x2 - half && y >= space.safe.y1 + half && y <= space.safe.y2 - half;
+                if (!inSafe(x0, y0) || !inSafe(x1, y1)) break;
+                let ok = true;
+                for (let t = start; t < end && ok; t += GRID_MS) {
+                  const r = half * lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t);
+                  ok = clear(mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, motionMs)))), mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, motionMs)))), r, t);
+                }
+                if (ok) return { x0, y0, x1, y1, theta: Math.atan2(spot.dirY, spot.dirX), len, width };
+              }
+            }
+          }
+          return null;
+        };
+        const emit = (start: number, end: number, grow: number, motionMs: number, growMs: number, found: NonNullable<ReturnType<typeof place>>) => {
+          const { x0, y0, x1, y1, theta, len, width } = found;
+          pieces.push({
+            id: `trail:${cueNumber}:t${made}`,
+            kind: "shape",
+            z: band + 44,
+            fromMs: start,
+            toMs: end,
+            track: {
+              x: frames((t) => mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, motionMs)))), [start + motionMs], start, end, 0.3),
+              y: frames((t) => mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, motionMs)))), [start + motionMs], start, end, 0.3),
+              rz: [[start, (theta * 180) / Math.PI]],
+              sx: frames((t) => lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t), [start + growMs], start, end, 0.003),
+              sy: frames((t) => lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t), [start + growMs], start, end, 0.003),
+              o: [[start, 1], [Math.min(start + motionMs, end - 1), 1], [end, 0, "in"]],
+            },
+            origin: { dx: len / 2, dy: width / 2 },
+            path: pillPath(len, width),
+            fill: { colour: colours[(made + counter) % colours.length]! },
+            stroke: { widthPx: 0.34 * width, colour: TRAIL_KEYLINE },
+          } satisfies ShapePiece);
+          made++;
+          used += 2;
+        };
+        const timing = (index: number) => {
+          const start = Math.round(peak + index * gap);
+          const end = Math.max(start + MIN_LIFE_MS, Math.min(start + 540, exitEnd));
+          return { start, end, motionMs: clamp((end - start) * 0.55, 30, 300), growMs: clamp((end - start) * 0.45, 30, 240) };
+        };
+        // Both ends of the row; left-to-right geometry first, a right-to-left cue is its mirror image (positions, angles, firing
+        // order). A tick that meets ink is pushed out, tilted away, then shrunk; one with no room at all is dropped.
         for (let side = 0; side < 2; side++) {
           for (let j = 0; j < sideCount && used + 2 <= BUDGET; j++) {
             const off = offsets[j]! + (side === 1 ? shift : 0) + (rng() - 0.5) * 10;
             const grow = 0.32 + 0.1 * rng();
-            const start = Math.round(peak + (side * sideCount + j) * gap);
-            const end = Math.max(start + MIN_LIFE_MS, Math.min(start + 540, exitEnd));
-            const motionMs = clamp((end - start) * 0.55, 30, 300);
-            const growMs = clamp((end - start) * 0.45, 30, 240);
-            const at = made;
-            let found: { x0: number; y0: number; x1: number; y1: number; theta: number; len: number; width: number } | null = null;
-            // Left-to-right geometry first; a right-to-left cue is its mirror image (positions, angles and firing order). A tick
-            // that meets ink is pushed out, tilted away, then shrunk; one with no room at all is dropped.
-            for (const fit of [1, 0.75, 0.55]) {
-              for (const tilt of [0, 16, -16, 32, -32]) {
-                const thetaLtr = (((side === 0 ? off : 180 - off) + (side === 0 ? tilt : -tilt)) * Math.PI) / 180;
-                const dirX = Math.cos(thetaLtr) * lead;
-                const dirY = Math.sin(thetaLtr);
-                const len = len0 * fit;
-                const width = width0 * fit;
-                const half = len / 2 + 0.67 * width;
-                for (let push = 0; push <= 30 && !found; push++) {
-                  const x0 = cx + dirX * (rx + push * 5 * u);
-                  const y0 = boxCy + dirY * (ry + push * 5 * u);
-                  const x1 = x0 + dirX * travel0 * fit;
-                  const y1 = y0 + dirY * travel0 * fit;
-                  const inSafe = (x: number, y: number) => x >= space.safe.x1 + half && x <= space.safe.x2 - half && y >= space.safe.y1 + half && y <= space.safe.y2 - half;
-                  if (!inSafe(x0, y0) || !inSafe(x1, y1)) break;
-                  let clear = true;
-                  for (let t = start; t < end && clear; t += GRID_MS) {
-                    const r = half * lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t);
-                    const px = mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, motionMs))));
-                    const py = mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, motionMs))));
-                    if (touches({ x1: px - r, y1: py - r, x2: px + r, y2: py + r }, t, 3)) clear = false;
-                  }
-                  if (clear) found = { x0, y0, x1, y1, theta: Math.atan2(dirY, dirX), len, width };
-                }
-                if (found) break;
-              }
-              if (found) break;
-            }
-            if (!found) continue;
-            const { x0, y0, x1, y1, theta, len, width } = found;
-            pieces.push({
-              id: `trail:${cueNumber}:t${at}`,
-              kind: "shape",
-              z: band + 44,
-              fromMs: start,
-              toMs: end,
-              track: {
-                x: frames((t) => mapX(t, lerp(x0, x1, EASES.outExpo(prog(t, start, motionMs)))), [start + motionMs], start, end, 0.3),
-                y: frames((t) => mapY(t, lerp(y0, y1, EASES.outExpo(prog(t, start, motionMs)))), [start + motionMs], start, end, 0.3),
-                rz: [[start, (theta * 180) / Math.PI]],
-                sx: frames((t) => lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t), [start + growMs], start, end, 0.003),
-                sy: frames((t) => lerp(grow, 1, outBack(prog(t, start, growMs), 2.2)) * shrink(t), [start + growMs], start, end, 0.003),
-                o: [[start, 1], [Math.min(start + motionMs, end - 1), 1], [end, 0, "in"]],
-              },
-              origin: { dx: len / 2, dy: width / 2 },
-              path: pillPath(len, width),
-              fill: { colour: colours[(at + counter) % colours.length]! },
-              stroke: { widthPx: 0.34 * width, colour: TRAIL_KEYLINE },
-            } satisfies ShapePiece);
-            made++;
-            used += 2;
+            const { start, end, motionMs, growMs } = timing(side * sideCount + j);
+            const spots = [0, 16, -16, 32, -32].map((tilt) => {
+              const thetaLtr = (((side === 0 ? off : 180 - off) + (side === 0 ? tilt : -tilt)) * Math.PI) / 180;
+              const dirX = Math.cos(thetaLtr) * lead;
+              const dirY = Math.sin(thetaLtr);
+              return { ox: cx + dirX * rx, oy: boxCy + dirY * ry, dirX, dirY };
+            });
+            const found = place(start, end, grow, motionMs, growMs, spots);
+            if (found) emit(start, end, grow, motionMs, growMs, found);
+          }
+        }
+        // A wide row leaves no room beside it: the ticks then fly off the corners of the whole block, above and below it.
+        if (made < 2) {
+          const top = space.y(rows[0]!.top);
+          const bottom = space.y(rows[rows.length - 1]!.top + rows[rows.length - 1]!.size);
+          const minX = space.x(Math.min(...rows.map((r) => r.left)));
+          const maxX = space.x(Math.max(...rows.map((r) => r.left + r.width)));
+          const corner = (x: number, y: number, sx: number, sy: number) => ({ ox: cx + lead * (x - cx), oy: y, dirX: (lead * sx) / Math.SQRT2, dirY: sy / Math.SQRT2 });
+          // Right-hand corners first for a left-to-right cue (the left for right-to-left), as the side ticks fire.
+          const corners = [corner(maxX, top, 1, -1), corner(maxX, bottom, 1, 1), corner(minX, top, -1, -1), corner(minX, bottom, -1, 1)];
+          const wanted = Math.max(2, sideCount);
+          for (let n = 0; n < wanted && used + 2 <= BUDGET; n++) {
+            const grow = 0.32 + 0.1 * rng();
+            const { start, end, motionMs, growMs } = timing(n);
+            const first = corners[n % corners.length]!;
+            const found = place(start, end, grow, motionMs, growMs, [first, ...corners.filter((c) => c !== first)]);
+            if (found) emit(start, end, grow, motionMs, growMs, found);
           }
         }
       }
@@ -665,16 +752,31 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     return pieces;
   };
 
-  // --- fit: build, measure the whole animated extent (copies and decoration included), shrink until it fits, then shift ---
-  // A 2 px margin inside the safe area covers what falls between the 16 ms samples of the extent and of the shift.
-  const tight = { x1: space.safe.x1 + 2, y1: space.safe.y1 + 2, x2: space.safe.x2 - 2, y2: space.safe.y2 - 2 };
+  // --- fit: build, measure the whole animated extent (copies and decoration included) at every moment that can be a peak, shrink
+  // until it fits, then shift by the same measure ---
+  // A 1 px margin inside the safe area covers rounding.
+  const tight = { x1: space.safe.x1 + 1, y1: space.safe.y1 + 1, x2: space.safe.x2 - 1, y2: space.safe.y2 - 1 };
   const safeW = tight.x2 - tight.x1;
   const safeH = tight.y2 - tight.y1;
-  const extentOf = (list: readonly Piece[]) => {
-    let union: Box | null = null;
+  /** A 16 ms grid, every 30 fps export frame and every keyframe of every track: tracks are straight lines or eased curves between keyframes, so a peak is on one of them. */
+  const momentsOf = (list: readonly Piece[]): number[] => {
+    const moments = new Set<number>();
     const from = Math.min(...list.map((piece) => piece.fromMs));
     const to = Math.max(...list.map((piece) => piece.toMs));
-    for (let ms = from; ms < to; ms += GRID_MS) {
+    for (let ms = from; ms < to; ms += GRID_MS) moments.add(ms);
+    for (let n = Math.ceil((from * 30) / 1000); Math.round((n * 1000) / 30) < to; n++) moments.add(Math.round((n * 1000) / 30));
+    for (const piece of list) {
+      const tracks: (readonly (readonly [number, number | string, ...unknown[]])[] | undefined)[] = [piece.track.x, piece.track.y, piece.track.sx, piece.track.sy, piece.track.rz, piece.track.o];
+      if (piece.clip) tracks.push(piece.clip.x1, piece.clip.x2, piece.clip.y1, piece.clip.y2);
+      for (const frames of tracks) for (const frame of frames ?? []) if (frame[0] >= piece.fromMs && frame[0] < piece.toMs) moments.add(frame[0]);
+      moments.add(piece.fromMs);
+      moments.add(piece.toMs - 1);
+    }
+    return [...moments].sort((a, b) => a - b);
+  };
+  const extentOf = (list: readonly Piece[]) => {
+    let union: Box | null = null;
+    for (const ms of momentsOf(list)) {
       const box = sceneBoundsAt(list, ms, input.measure);
       if (box) union = union ? { x1: Math.min(union.x1, box.x1), y1: Math.min(union.y1, box.y1), x2: Math.max(union.x2, box.x2), y2: Math.max(union.y2, box.y2) } : box;
     }
@@ -689,12 +791,29 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     k *= Math.max(0.4, fit * 0.995);
     pieces = compose(k);
   }
-  return clampToSafeArea(pieces, tight, input.measure);
+  const box = extentOf(pieces);
+  if (box) {
+    const axis = (low: number, high: number, safeLow: number, safeHigh: number) => (high - low >= safeHigh - safeLow ? (safeLow + safeHigh) / 2 - (low + high) / 2 : low < safeLow ? safeLow - low : high > safeHigh ? safeHigh - high : 0);
+    const dx = axis(box.x1, box.x2, tight.x1, tight.x2);
+    const dy = axis(box.y1, box.y2, tight.y1, tight.y2);
+    if (dx !== 0 || dy !== 0) pieces = pieces.map((piece) => shiftPiece(piece, dx, dy));
+  }
+  return { pieces, nextLead };
 }
 
 export const trailProgram: SceneProgram = {
   build(input) {
     const counters = { hero: 0, plain: 0 };
-    return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, counters, input))) };
+    const pieces: Piece[] = [];
+    // Each cue tells the next how early it may appear: 60 ms before its first word, less when this one needed the room to be read.
+    let lead = ENTER_LEAD;
+    input.cues.forEach((cue, number) => {
+      if (cue.words.length === 0) return;
+      const next = input.cues.slice(number + 1).find((other) => other.words.length > 0);
+      const built = buildCue(cue, number, counters, input, { lead, nextStart: next ? next.words[0]!.startMs : null });
+      pieces.push(...built.pieces);
+      lead = built.nextLead;
+    });
+    return { pieces };
   },
 };
