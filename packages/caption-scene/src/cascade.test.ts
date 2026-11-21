@@ -3,7 +3,7 @@ import { applyBrandColorsToScene } from "@narriflow/validators";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
-import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, sceneBoundsAt } from "./scene";
+import { type Box, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
 import { CASCADE_DEMO, CASCADE_PATTERNS, cascadeBaseline, cascadeBeats, cascadeCase, cascadeHash, cascadeProgram, cascadeRand, cascadeShears } from "./templates/cascade";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -90,7 +90,7 @@ describe("Cascade geometry", () => {
 });
 
 describe("Cascade motion", () => {
-  test("a word cuts in 50 ms before it is spoken: white fades in over 50 ms, the red / cyan copies close from 14 px over 150 ms", () => {
+  test("a word cuts in 50 ms before it is spoken: white is opaque at once (an entrance under two frames is a cut), the red / cyan copies close from 14 px over 150 ms", () => {
     const cue = cues[0]!;
     const spoken = cue.words[2]!;
     const start = spoken.startMs - 50;
@@ -98,8 +98,7 @@ describe("Cascade motion", () => {
     const a = need<TextPiece>(scene.find((piece) => piece.id === "cascade:0:w2a"));
     const b = need<TextPiece>(scene.find((piece) => piece.id === "cascade:0:w2b"));
     expect(main.fromMs).toBe(start);
-    expect(evaluatePiece(main, start + 25).o).toBeCloseTo(0.5, 2);
-    expect(evaluatePiece(main, start + 60).o).toBe(1);
+    expect(evaluatePiece(main, start + 1).o).toBe(1);
     const gap = (t: number) => evaluatePiece(b, t).x - evaluatePiece(a, t).x;
     // 14 px each side at the start, along the tilted row (cos 6 degrees), closing with the sample's ease out.
     for (const t of [start, start + 40, start + 100, start + 150]) {
@@ -390,6 +389,117 @@ describe("Cascade review fixes", () => {
       const index = idOf(scan).slice(4);
       const face = list.find((piece) => piece.id === `cascade:${cue}:w${index}`)!;
       expect(scan.z).toBeLessThan(face.z);
+    }
+  });
+});
+
+describe("Cascade re-check fixes (handoff rule)", () => {
+  const framesOn = (piece: Piece) => Math.max(0, Math.ceil((piece.toMs * 30) / 1000) - Math.ceil((piece.fromMs * 30) / 1000));
+  const faceOf = (list: readonly Piece[], cue: number, index: number, hero: boolean) => list.find((piece) => piece.id === `cascade:${cue}:${hero ? "h" : "w"}${index}`) as TextPiece | undefined;
+  const hit = (a: Box, b: Box) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
+  /** 12 cues: 150 ms words, 100 ms heroes, lockups, hero cues with rows before and after, one-word cues. */
+  const run = (gap: number) =>
+    demoCues({
+      lines: [
+        "so:m it:m was:b fine:b", "WOW:h@100", "I:b@150", "YES:h@100", "go:b@150 now:b@150", "a:m big:b@150 DEAL:h@100 today:b@150", "no:b@150", "STOP:h@100",
+        "and:m then:b@150 it:m broke:b@150", "I:h@100", "see:b@150 you:b@150", "NEVER:h@100",
+      ],
+      options: { gap: 0, cueGap: gap },
+    }).cues;
+
+  for (const gap of [0, 60]) {
+    test(`long run, cue gap ${gap}: entrances locked to speech, every word readable as long as the next cue allows, nothing covered, no one-frame flash`, () => {
+      const cuesRun = run(gap);
+      const list = build(cuesRun);
+      /** Fully readable: visible, opaque and not cut by its clip (the word's drift is not a cut). */
+      const readableUntil = (piece: TextPiece, settle: number) => {
+        const bare = { ...piece, clip: undefined };
+        let t = settle;
+        for (; t < piece.toMs; t++) {
+          const whole = pieceBounds(bare, t, fakeMeasure);
+          const cut = pieceBounds(piece, t, fakeMeasure);
+          if (!whole || !cut || evaluatePiece(piece, t).o < 0.9 || cut.x1 > whole.x1 + 0.5 || cut.x2 < whole.x2 - 0.5) break;
+        }
+        return t;
+      };
+      cuesRun.forEach((cue, number) => {
+        const mine = ofCue(list, number);
+        const nextFirst = Math.min(Number.POSITIVE_INFINITY, ...list.filter((piece) => Number(piece.id.split(":")[1]) > number).map((piece) => piece.fromMs));
+        cue.words.forEach((spoken, index) => {
+          const hero = spoken.role === "hero";
+          const face = faceOf(list, number, index, hero);
+          expect(face).toBeDefined();
+          // (1) first visible frame within 100 ms of the spoken start, never late.
+          expect(face!.fromMs).toBeLessThanOrEqual(spoken.startMs);
+          expect(face!.fromMs).toBeGreaterThanOrEqual(spoken.startMs - 100);
+          // (2) readable from settling (the split copies' end, the punch's last frame) for as long as the next cue's first frame leaves.
+          const copy = mine.find((piece) => piece.id === `cascade:${number}:w${index}a`);
+          const punch = face!.track.sx ? face!.track.sx[face!.track.sx.length - 1]![0] : face!.fromMs;
+          const settle = Math.max(face!.fromMs, hero ? punch : (copy?.toMs ?? face!.fromMs));
+          if (settle >= face!.toMs) return;
+          const readable = readableUntil(face!, settle) - settle;
+          expect(readable).toBeGreaterThanOrEqual(Math.min(150, nextFirst - settle) - 1);
+          // ... and no later cue's piece is ever drawn over it.
+          for (let t = face!.fromMs; t < face!.toMs; t += 8) {
+            const box = pieceBounds(face!, t, fakeMeasure);
+            if (!box) continue;
+            for (const other of list) {
+              if (Number(other.id.split(":")[1]) <= number) continue;
+              const over = pieceBounds(other, t, fakeMeasure);
+              if (over && hit(box, over)) throw new Error(`${other.id} covers ${face!.id} at ${t}`);
+            }
+          }
+        });
+      });
+      // (3) no decoration lives on exactly one 30 fps frame.
+      for (const piece of list) if (!/^cascade:\d+:(w|h)\d+$/.test(piece.id)) expect(framesOn(piece)).not.toBe(1);
+    });
+  }
+
+  test("a colliding cue ends at the first colliding frame, one that does not collide overlaps and keeps its full hold", () => {
+    // Same spot: I is cut when YES arrives (spoken start 480), after at least 150 ms on screen counted from its settle.
+    const same = build(demoCues({ lines: ["I:b@70", "YES:b@300"], options: { cueGap: 60 } }).cues);
+    const i = faceOf(same, 0, 0, false)!;
+    const yes = faceOf(same, 1, 0, false)!;
+    expect(i.toMs).toBeLessThanOrEqual(yes.fromMs);
+    expect(i.toMs - i.fromMs).toBeGreaterThanOrEqual(150);
+    // The incoming cue is pulled to its spoken start, never past it.
+    expect(yes.fromMs).toBeLessThanOrEqual(480);
+    expect(yes.fromMs).toBeGreaterThanOrEqual(430);
+  });
+
+  test("overlapping speakers 10 ms apart never draw two words in the same spot", () => {
+    const old = demoCues({ lines: ["A> OLD:b@300 talk:b@300"], options: {} }).cues[0]!;
+    const fresh = demoCues({ lines: ["B> NEW:b@300"], options: {} }).cues[0]!;
+    const cuesTwo: SceneCue[] = [
+      { ...old, index: 0, endMs: 1033 },
+      { ...fresh, index: 1, startMs: 360, endMs: 1400, words: fresh.words.map((word) => ({ ...word, startMs: 360, endMs: 660 })) },
+    ];
+    const list = build(cuesTwo);
+    const faces = list.filter((piece) => /^cascade:\d:(w|h)\d$/.test(piece.id));
+    expect(faces.some((piece) => piece.id.startsWith("cascade:0:"))).toBe(true);
+    for (let t = 250; t < 1500; t++) {
+      const boxes = faces.map((piece) => ({ piece, box: pieceBounds(piece, t, fakeMeasure) })).filter((entry) => entry.box && evaluatePiece(entry.piece, t).o > 0);
+      for (const a of boxes) for (const b of boxes) {
+        if (a.piece.id.split(":")[1] < b.piece.id.split(":")[1] && hit(a.box!, b.box!)) throw new Error(`${a.piece.id} and ${b.piece.id} overlap at ${t}`);
+      }
+    }
+  });
+
+  test("echoes fit the safe area with their stroke at size 200 on 1:1 and 16:9, with a long support word before the hero", () => {
+    for (const canvas of [{ width: 1080, height: 1080 }, { width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
+      for (const lines of [["WAIT:h@600"], ["pneumonoultramicroscopicsilicovolcanoconiosis:b@900 I:h@300"], ["so:m WAIT:h@600 now:b@300"]]) {
+        const list = build(demoCues({ lines, options: {} }).cues, { canvas, scale: 200 / 84, anchor });
+        const end = Math.max(...list.map((piece) => piece.toMs));
+        for (let t = 0; t < end; t += 20) {
+          const box = sceneBoundsAt(list, t, fakeMeasure);
+          if (!box) continue;
+          expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 1);
+          expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
+          expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 1);
+          expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 1);
+        }
+      }
     }
   });
 });
