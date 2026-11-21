@@ -1,9 +1,43 @@
 import type { DemoScript } from "../demo";
-import type { SceneProgram } from "../input";
-import { placeholderProgram } from "./placeholder";
+import { EASES, type Frames, clamp, lerp, prog } from "../ease";
+import { sampleFrames } from "../frames";
+import type { SceneCue, SceneInput, SceneProgram } from "../input";
+import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, rowsFromRoles, sceneSpace } from "../layout";
+import type { Clip, Piece, ShapePiece, TextPiece, Track } from "../scene";
+import { polygonPath, rectPath } from "../shapes";
 
 /**
- * Cascade (`samples/templates/m20-mechanica.js`): not ported yet; it draws the placeholder line.
+ * Cascade (`samples/templates/m20-mechanica.js`, the sample's "Mechanica"): a machine-precise caption system in heavy wide caps.
+ * Ordinary words are italic lockups (Archivo Black 84 px, sheared -12 degrees, the whole block tipped -6 degrees, each row stepped
+ * in 46 px) riding a thin white rule; every word cuts in with a red / cyan split that snaps to white in 150 ms. The hero word
+ * punches in upright, fitted to 600 px, blur to sharp, and fires an echo cascade: outline copies above and below it flash on a
+ * 150 ms beat (stack, gone, stack, staircase), two chevrons hop around it, and a level rule draws in under it. The block leaves
+ * with a left-to-right wipe.
+ *
+ * What changed from the sample, and why (gallery-3 brief, 2026-11-21):
+ * - `LEFT 170` is gone: the block (chevrons, rule and the slow drift included) is centred on the anchor; a right-to-left cue is the
+ *   mirror image (tilt, shear, indent, drift and wipe all flip, rows are flush right).
+ * - The rule ran x 20 -> 980 (outside the safe margin) and the 46 px indent pushed a third row to the edge: the rule now spans the
+ *   block (plus the chevrons' room), the row limit shrinks with the number of rows, and a block that still does not fit shrinks as
+ *   a whole. Lockup words had no fit: a word wider than a row shrinks the block (no floor, a word must fit).
+ * - The sample's hero cue drew only the hero and silently dropped every other word of the cue. Now the words before and after the
+ *   hero are lockup rows (italic, straight, centred) above and below it, and a cue's hero run of several words is one hero row.
+ *   Echo copies only go where no row is: a row above means no copies above; with rows on both sides the cascade becomes a
+ *   horizontal trail.
+ * - `PATTERN` was the same on every hero cue: four beat patterns now cycle by a counter of hero cues. The cascade needs ~1.3 s;
+ *   it is compressed to the time the hero has (beat 100 to 150 ms, leading silent beats dropped, the rule drawn in what is left).
+ * - Recurring extras in the template's own language (counted per cue by the tests): on every lockup cue a chevron pair that points
+ *   into the first word and nudges forward as each word lands (three variants), a scan bar that sweeps each word as it splits
+ *   (three variants), and a rule that is drawn in red / cyan before it settles white; on every hero cue register brackets that close
+ *   in on the hero (three variants), the same red / cyan rule, and a rule that draws left, right or from the middle.
+ * - Real speech: the sample's 160 ms wipe covered the last 180 ms of speech. The exit never starts before the last word has been
+ *   fully visible for 150 ms, shortens (down to 90 ms) when the next cue is close and runs at most 60 ms into it. The slow drift is
+ *   the sample's 0.018 px/ms, stopped after 1.7 s so it never leaves the safe area on a long hold.
+ * - The hero punch blur (14 px for 170 ms) is kept (two frames of it at 30 fps are visible); the rule's `0 2px 8px` shadow is
+ *   dropped (invisible on the dark footage the template is judged on); the words' shadow is one soft layer.
+ * - The tilted wipe edge is the sample's local vertical, a canvas clip per word at that word's row (it leans 6 degrees in the sample).
+ * - Words in scripts that need shaping and CJK are never split into letters (this template never splits letters); capitals only for
+ *   Latin, Greek and Cyrillic. Splits use the brand colours' highlight and accent slots (red and cyan by default).
  */
 
 export const CASCADE_DEMO: DemoScript = {
@@ -17,4 +51,776 @@ export const CASCADE_DEMO: DemoScript = {
   options: { rate: 265, cueGap: 200, tail: 900 },
 };
 
-export const cascadeProgram: SceneProgram = placeholderProgram;
+const FACE = "Archivo Black" as const;
+const LS = 0.005;
+const BODY = 84;
+const HERO_MAX = 128;
+const HERO_FIT = 600;
+const TILT = -6;
+const SHEAR = -12;
+const WRAP = 700;
+const INDENT = 46;
+const CENTER_Y = 1290;
+const LINE_EM = 1.02;
+const SPLIT_PX = 14;
+const SPLIT_MS = 150;
+const WORD_LEAD = 50;
+const FADE_MS = 50;
+const HERO_LEAD = 40;
+const HERO_PUNCH = 170;
+const STROKE = 3.2;
+const ECHO_PITCH = 0.78;
+const DRIFT_PX = 30;
+const DRIFT_MS = 1700;
+const LEFT_REACH = 128;
+const RULE_OVER = 60;
+const RULE_THICK = 4;
+const RULE_SEG = 170;
+const EXIT = 160;
+const EXIT_MIN = 90;
+const CLEAR = 20;
+const HOLD = 150;
+const OVERLAP = 60;
+const CHEVRON_GAP = 26;
+
+/** Archivo Black's line box: ascent 0.878 and descent 0.21 em, each rounded to whole px by Chrome. */
+export function cascadeBaseline(sizePx: number): number {
+  const ascent = Math.round(0.878 * sizePx);
+  const descent = Math.round(0.21 * sizePx);
+  return (sizePx - (ascent + descent)) / 2 + ascent;
+}
+
+/** FNV-1a: the seed that makes a cue's jitter a pure function of its index and words. */
+export function cascadeHash(text: string): number {
+  let h = 0x811c9dc5;
+  for (let at = 0; at < text.length; at++) {
+    h ^= text.charCodeAt(at);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** The sample's seeded spot generator for the chevrons. */
+export function cascadeRand(n: number): number {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+const SIMPLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Common}\p{Script=Inherited}]+$/u;
+const PICTO = /\p{Extended_Pictographic}/u;
+
+/** `text-transform: uppercase` for cased scripts only. */
+export function cascadeCase(text: string): string {
+  return SIMPLE.test(text) && !PICTO.test(text) ? text.toUpperCase() : text;
+}
+
+export type CascadeMode = "none" | "stack" | "stair" | "stair2";
+
+/** The echo beat patterns, cycled by hero cue. The first is the sample's. */
+export const CASCADE_PATTERNS: readonly (readonly CascadeMode[])[] = [
+  ["none", "stack", "none", "stack", "stair", "stair2"],
+  ["none", "stair", "none", "stair2", "stack", "stack"],
+  ["stack", "none", "stair2", "none", "stair", "stack"],
+  ["none", "stack", "stair2", "stair", "none", "stack"],
+];
+
+/** How a hero cue spends the time `avail` ms it has between its first word and its exit: the beat, the modes used and the rule's window. */
+export function cascadeBeats(avail: number): { beat: number; steps: number; ruleDur: number } {
+  const ruleDur = clamp(avail * 0.3, 120, 420);
+  const modeTime = Math.max(0, avail - ruleDur);
+  const steps = clamp(Math.floor(modeTime / 100), 1, 6);
+  const beat = clamp(modeTime / steps, 66, 150);
+  return { beat, steps, ruleDur };
+}
+
+const frame = (at: number, value: number) => [[at, value]] as Frames;
+
+interface Frame {
+  readonly ex: number;
+  readonly ey: number;
+  readonly theta: number;
+  readonly cos: number;
+  readonly sin: number;
+}
+
+interface Row {
+  readonly items: { readonly index: number; readonly lx: number; readonly w: number }[];
+  readonly width: number;
+  /** Row box top, canvas px relative to the frame's y. */
+  readonly ly: number;
+}
+
+interface Plan {
+  readonly sizeC: number;
+  readonly rows: Row[];
+  readonly blockW: number;
+  readonly blockH: number;
+  readonly lineH: number;
+}
+
+function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: { heroes: number; lockups: number }): Piece[] {
+  const space = sceneSpace(input, CENTER_Y);
+  const { u, safe } = space;
+  const rtl = cueDirection(cue) === "rtl";
+  const sgn = rtl ? -1 : 1;
+  const Py = space.y(CENTER_Y);
+  const Cx = space.x(540);
+  const band = cueNumber * 16;
+  const seed = cascadeHash(`${cue.index}|${cue.words.map((word) => word.text).join(" ")}`);
+  const colours = input.colours;
+  const WHITE = colours.primary;
+  const SPLIT_A = colours.highlight;
+  const SPLIT_B = colours.accent;
+  const roles = rowsFromRoles(cue.words.map((word) => word.role));
+  const hasHero = roles.hero.length > 0;
+  const heroNumber = hasHero ? counters.heroes++ : 0;
+  const lockupNumber = hasHero ? 0 : counters.lockups++;
+  const texts = cue.words.map((word) => cascadeCase(word.text));
+  const adv = (text: string, sizeC: number) => input.measure(text, FACE, sizeC, LS).advance + LS * sizeC;
+  const gapOf = (sizeC: number) => input.measure("A B", FACE, sizeC, LS).advance - input.measure("AB", FACE, sizeC, LS).advance;
+  const baseOf = (sizeC: number) => cascadeBaseline(sizeC / u) * u;
+  const safeW = safe.x2 - safe.x1;
+  const safeH = safe.y2 - safe.y1;
+  const startOf = (index: number) => cue.words[index]!.startMs;
+
+  // --- timing: the exit waits until the last word has been seen ---
+  const lockupEnter = (index: number) => startOf(index) - WORD_LEAD;
+  const heroEnter = (index: number) => startOf(index) - HERO_LEAD;
+  const lastLand = Math.max(
+    ...cue.words.map((_, index) => (roles.hero.includes(index) ? heroEnter(index) + 120 : lockupEnter(index) + SPLIT_MS)),
+  );
+  const exitFrom = Math.round(Math.min(Math.max(cue.endMs - CLEAR - EXIT, lastLand + HOLD), cue.endMs + OVERLAP - EXIT_MIN));
+  const exitDur = Math.round(clamp(cue.endMs - CLEAR - exitFrom, EXIT_MIN, EXIT));
+  const exitTo = exitFrom + exitDur;
+  const wipeP = (t: number) => EASES.inOut(prog(t, exitFrom, exitDur));
+
+  const chan = (fn: (t: number) => number, from: number, to: number, edges: readonly number[], tolerance: number): Frames =>
+    sampleFrames(fn, [from, ...edges, to], tolerance, { range: [from, to], wholeMs: true, simplify: true });
+
+  // --- planning a block of lockup rows ---
+  const plan = (indices: readonly number[], sizeS: number, limit: number, indentC: number): Plan => {
+    const sizeC = sizeS * u;
+    const gap = gapOf(sizeC);
+    const widths = indices.map((index) => adv(texts[index]!, sizeC));
+    let rows = balancedRows(widths, gap, limit);
+    for (let pass = 0; pass < 4; pass++) {
+      const next = balancedRows(widths, gap, Math.max(0.3 * limit, limit - Math.max(0, rows.length - 1) * indentC));
+      if (next.length === rows.length) {
+        rows = next;
+        break;
+      }
+      rows = next;
+    }
+    const lineH = LINE_EM * sizeC;
+    const laid: Row[] = rows.map((row, r) => {
+      const order = rtl ? rowVisualOrder(row.map((at) => texts[indices[at]!]!), "rtl").map((at) => row[at]!) : row;
+      const ws = order.map((at) => widths[at]!);
+      const width = ws.reduce((a, b) => a + b, 0) + gap * (order.length - 1);
+      return { items: order.map((at, position) => ({ index: indices[at]!, lx: 0, w: ws[position]! })), width, ly: r * lineH };
+    });
+    const blockW = Math.max(...laid.map((row, r) => row.width + r * indentC));
+    return { sizeC, rows: laid, blockW, blockH: rows.length * lineH, lineH };
+  };
+  /** Places a plan's rows: flush to the leading edge with a stair indent, or centred. */
+  const place = (p: Plan, indentC: number, centred: boolean, top: number): Plan => {
+    const gap = gapOf(p.sizeC);
+    const rows = p.rows.map((row, r): Row => {
+      const start = centred ? -row.width / 2 : rtl ? -(r * indentC) - row.width : r * indentC;
+      let lx = start;
+      const items = row.items.map((item) => {
+        const placed = { ...item, lx };
+        lx += item.w + gap;
+        return placed;
+      });
+      return { items, width: row.width, ly: top + r * p.lineH };
+    });
+    return { ...p, rows };
+  };
+
+  const pieces: Piece[] = [];
+
+  // --- shared pieces of the template's language ---
+  const drift = (frameDrift: boolean) => (t: number) => (frameDrift ? sgn * DRIFT_PX * u * clamp((t - cue.startMs) / DRIFT_MS) : 0);
+  const word = (
+    id: string,
+    index: number,
+    sizeC: number,
+    fr: Frame,
+    lx: number,
+    w: number,
+    ly: number,
+    from: number,
+    dr: (t: number) => number,
+    fill: string,
+    extra: { shadows?: TextPiece["shadows"]; o: Frames; xOff?: (t: number) => number; clip?: boolean; ends?: number; z: number },
+  ): TextPiece => {
+    const cxl = lx + w / 2;
+    const cyl = ly + sizeC / 2;
+    const base = { x: fr.ex + cxl * fr.cos - cyl * fr.sin, y: fr.ey + cxl * fr.sin + cyl * fr.cos };
+    const off = extra.xOff ?? (() => 0);
+    const to = extra.ends ?? exitTo;
+    const track: Track = {
+      x: chan((t) => base.x + dr(t) + off(t) * fr.cos, from, to, [cue.startMs + DRIFT_MS], 0.15),
+      y: chan((t) => base.y + off(t) * fr.sin, from, to, [], 0.15),
+      rz: frame(from, fr.theta),
+      skx: frame(from, SHEAR * sgn),
+      o: extra.o,
+    };
+    const hb = 0.8 * sizeC + 0.5 * w * Math.abs(fr.sin) + 10 * u;
+    const clip: Clip | undefined = extra.clip
+      ? wipeClip(fr, base.y, hb, cyl, dr, from, to)
+      : undefined;
+    return {
+      id: `cascade:${cueNumber}:${id}`,
+      kind: "text",
+      z: band + extra.z,
+      fromMs: from,
+      toMs: to,
+      track,
+      ...(clip ? { clip } : {}),
+      origin: { dx: w / 2, dy: sizeC / 2 - baseOf(sizeC) },
+      text: texts[index]!,
+      face: FACE,
+      sizePx: sizeC,
+      letterSpacingEm: LS,
+      fill,
+      ...(extra.shadows ? { shadows: extra.shadows } : {}),
+      anchor: "baseline-left",
+      language: cue.language,
+    };
+  };
+  // The wipe edge, in the frame's local x, starts left of everything (right for a right-to-left cue) and sweeps across.
+  let edgeFrom = 0;
+  let edgeTo = 0;
+  const edgeLx = (t: number) => lerp(edgeFrom, edgeTo, wipeP(t));
+  const cutX = (fr: Frame, t: number, lyc: number, dr: (t: number) => number) => fr.ex + edgeLx(t) * fr.cos - lyc * fr.sin + dr(exitFrom);
+  function wipeClip(fr: Frame, cy: number, hb: number, lyc: number, dr: (t: number) => number, from: number, to: number): Clip {
+    const cut = chan((t) => cutX(fr, t, lyc, dr), from, to, [exitFrom, exitTo], 0.3);
+    const far = frame(from, space.canvas.width + 80);
+    const near = frame(from, -80);
+    return { x1: rtl ? near : cut, x2: rtl ? cut : far, y1: frame(from, cy - hb), y2: frame(from, cy + hb) };
+  }
+
+  /** Local coordinates -> canvas for a frame. */
+  const at = (fr: Frame, lx: number, ly: number) => ({ x: fr.ex + lx * fr.cos - ly * fr.sin, y: fr.ey + lx * fr.sin + ly * fr.cos });
+
+  const mkFrame = (ex: number, ey: number, theta: number): Frame => ({ ex, ey, theta, cos: Math.cos((theta * Math.PI) / 180), sin: Math.sin((theta * Math.PI) / 180) });
+
+  /** A rule of `thick` px from local lx `a` to `b` at row y `ly`: drawn in (dir 1 = from a, -1 = from b, 0 = from the middle), red / cyan lead, wiped at the exit. */
+  const rule = (idBase: string, fr: Frame, a: number, b: number, ly: number, drawFrom: number, drawDur: number, dir: 1 | -1 | 0, dr: (t: number) => number, z: number) => {
+    const thick = RULE_THICK * u;
+    const n = Math.max(1, Math.ceil((b - a) / (RULE_SEG * u)));
+    const len = (b - a) / n;
+    const p = (t: number) => EASES.outExpo(prog(t, drawFrom, drawDur));
+    const visible = (t: number): [number, number] => {
+      const q = p(t);
+      if (dir === 1) return [a, a + (b - a) * q];
+      if (dir === -1) return [b - (b - a) * q, b];
+      const mid = (a + b) / 2;
+      return [mid - ((b - a) / 2) * q, mid + ((b - a) / 2) * q];
+    };
+    for (let i = 0; i < n; i++) {
+      const sa = a + i * len;
+      const sb = sa + len;
+      let first = -1;
+      for (let t = drawFrom; t <= drawFrom + drawDur; t += 4) {
+        const [va, vb] = visible(t);
+        if (Math.min(sb, vb) - Math.max(sa, va) > 0.5) {
+          first = t;
+          break;
+        }
+      }
+      if (first < 0) continue;
+      const from = Math.round(first);
+      if (from >= exitFrom) continue;
+      const mid = at(fr, (sa + sb) / 2, ly + thick / 2);
+      const xl = (l: number, t: number) => at(fr, l, ly + thick / 2).x + dr(t);
+      const wipeLimit = (t: number) => cutX(fr, t, ly + thick / 2, dr);
+      const tiltY = Math.abs(fr.sin) * len + thick + 4 * u;
+      const x1 = chan((t) => {
+        const [va] = visible(t);
+        const v = xl(clamp(va, sa, sb), t);
+        return rtl ? v : Math.max(v, wipeLimit(t));
+      }, from, exitTo, [drawFrom + drawDur, exitFrom, exitTo, cue.startMs + DRIFT_MS], 0.3);
+      const x2 = chan((t) => {
+        const [, vb] = visible(t);
+        const v = xl(clamp(vb, sa, sb), t);
+        return rtl ? Math.min(v, wipeLimit(t)) : v;
+      }, from, exitTo, [drawFrom + drawDur, exitFrom, exitTo, cue.startMs + DRIFT_MS], 0.3);
+      const clip: Clip = { x1, x2, y1: frame(from, mid.y - tiltY), y2: frame(from, mid.y + tiltY) };
+      const segLen = sb - sa + 2;
+      const mk = (id: string, colour: string, fromT: number, toT: number, shift: ((t: number) => number) | null, o: Frames, zz: number, withClip: boolean): ShapePiece => ({
+        id: `cascade:${cueNumber}:${idBase}${i}${id}`,
+        kind: "shape",
+        z: band + zz,
+        fromMs: fromT,
+        toMs: toT,
+        path: rectPath(0, 0, segLen, thick),
+        origin: { dx: segLen / 2, dy: thick / 2 },
+        fill: { colour },
+        track: {
+          x: chan((t) => mid.x + dr(t) - (shift ? shift(t) * fr.sin : 0), fromT, toT, [cue.startMs + DRIFT_MS, ...(shift ? [fromT + 160] : [])], 0.15),
+          y: chan((t) => mid.y + (shift ? shift(t) * fr.cos : 0), fromT, toT, shift ? [fromT + 160] : [], 0.15),
+          rz: frame(fromT, fr.theta),
+          o,
+        },
+        ...(withClip ? { clip } : {}),
+      });
+      pieces.push(mk("", WHITE, from, exitTo, null, frame(from, 1), z, true));
+      // The lead: red above, cyan below, closing onto the white line over 160 ms from where this segment starts drawing.
+      const leadOff = (sign: number) => (t: number) => sign * 6 * u * (1 - EASES.out(prog(t, from, 160)));
+      const leadTo = Math.min(from + 160, exitFrom);
+      const lead = (sign: number) => (heroNumber + lockupNumber + (seed & 1)) % 2 === 0 ? sign : -sign;
+      pieces.push(mk("r", SPLIT_A, from, leadTo, leadOff(lead(-1)), [[from, 1], [leadTo, 0]], z - 1, true));
+      pieces.push(mk("c", SPLIT_B, from, leadTo, leadOff(lead(1)), [[from, 1], [leadTo, 0]], z - 1, true));
+    }
+  };
+
+  /** A chevron polygon (the sample's 7 px polyline, square caps) in a 44 x 56 box, scaled by `k`, pointing right (`dir` 1) or left (-1). */
+  const chevronPath = (k: number, dir: 1 | -1) => {
+    const pts: [number, number][] = [[3.07, 6.41], [7.59, 1.07], [39.43, 28], [7.59, 54.93], [3.07, 49.59], [28.57, 28]];
+    return polygonPath(pts.map(([x, y]) => [(dir === 1 ? x : 44 - x) * k, y * k] as [number, number]));
+  };
+  const chevronBox = (k: number) => ({ w: 44 * k, h: 56 * k });
+
+  const lead = roles.lead;
+  const heroIdx = roles.hero;
+  const tail = roles.tail;
+
+  if (!hasHero) {
+    // ===== a lockup cue: tilted italic rows on a drawn rule =====
+    const all = cue.words.map((_, index) => index);
+    const frameDrift = true;
+    const dr = drift(frameDrift);
+    const indentC = INDENT * u;
+    const overhang = (RULE_OVER + DRIFT_PX) * u;
+    const leftReach = LEFT_REACH * u;
+    const availBlock = safeW - leftReach - overhang;
+    let k = 1;
+    let planned = plan(all, BODY * k, Math.min(WRAP * u, availBlock), indentC);
+    for (let pass = 0; pass < 8; pass++) {
+      const tooWide = planned.blockW > availBlock;
+      const tooTall = planned.blockH + 0.11 * (planned.blockW + leftReach + overhang) > 0.8 * safeH;
+      if (!tooWide && !tooTall) break;
+      k *= Math.min(tooWide ? availBlock / planned.blockW : 1, tooTall ? (0.8 * safeH) / (planned.blockH + 0.11 * (planned.blockW + leftReach + overhang)) : 1) * 0.985;
+      planned = plan(all, BODY * k, Math.min(WRAP * u, availBlock), indentC);
+    }
+    const top = -planned.blockH / 2 - 10 * u;
+    const laid = place(planned, indentC, false, top);
+    const gMin = rtl ? -(laid.blockW + overhang) : -leftReach;
+    const gMax = rtl ? leftReach : laid.blockW + overhang;
+    const fr = mkFrame(Cx - (gMin + gMax) / 2, Py, TILT * sgn);
+    edgeFrom = rtl ? gMax + 10 * u : gMin - 10 * u;
+    edgeTo = rtl ? gMin - 10 * u : gMax + 10 * u;
+    const sizeC = laid.sizeC;
+    const k0 = sizeC / (BODY * u);
+
+    // words, split copies, scan bars
+    const shadows = [{ dx: 0, dy: 4 * u * k0, blur: 5 * u * k0, colour: colours.shadow, alpha: 0.6 }];
+    const wordList: { index: number; row: Row; item: Row["items"][number] }[] = [];
+    for (const row of laid.rows) for (const item of row.items) wordList.push({ index: item.index, row, item });
+    const byTime = [...wordList].sort((a, b) => startOf(a.index) - startOf(b.index));
+    const swap = (lockupNumber + (seed & 1)) % 2 === 1;
+    for (const { index, row, item } of wordList) {
+      const s = Math.round(lockupEnter(index));
+      const mainO: Frames = [[s, 0], [s + FADE_MS, 1]];
+      pieces.push(word(`w${index}`, index, sizeC, fr, item.lx, item.w, row.ly, s, dr, WHITE, { shadows, o: mainO, clip: true, z: 4 }));
+      const off = (t: number) => (1 - EASES.out(prog(t, s, SPLIT_MS))) * SPLIT_PX * u * k0;
+      const ends = Math.min(s + SPLIT_MS, exitFrom);
+      const oFade: Frames = [[s, 1], [s + SPLIT_MS, 0]];
+      pieces.push(word(`w${index}a`, index, sizeC, fr, item.lx, item.w, row.ly, s, dr, swap ? SPLIT_B : SPLIT_A, { o: oFade, xOff: (t) => -off(t), ends, z: 3 }));
+      pieces.push(word(`w${index}b`, index, sizeC, fr, item.lx, item.w, row.ly, s, dr, swap ? SPLIT_A : SPLIT_B, { o: oFade, xOff: off, ends, z: 3 }));
+
+      // scan bar: vertical L->R, horizontal top->bottom, vertical R->L, cycled by lockup counter and word
+      const variant = (lockupNumber + index + ((seed >>> 3) % 3)) % 3;
+      const capH = 0.7 * sizeC;
+      const bw = variant === 1 ? item.w : 4 * u * k0;
+      const bh = variant === 1 ? 4 * u * k0 : capH;
+      const tanA = Math.tan((SHEAR * sgn * Math.PI) / 180);
+      const baseline = baseOf(sizeC);
+      const cxl = item.lx + item.w / 2;
+      const cyl = row.ly + sizeC / 2;
+      const ox = (t: number) => {
+        const q = prog(t, s, SPLIT_MS);
+        if (variant === 0) return lerp(-item.w / 2, item.w / 2, q);
+        if (variant === 2) return lerp(item.w / 2, -item.w / 2, q);
+        return 0;
+      };
+      const oy = (t: number) => (variant === 1 ? lerp(baseline - capH - sizeC / 2, baseline - sizeC / 2, prog(t, s, SPLIT_MS)) : baseline - capH / 2 - sizeC / 2);
+      const barTo = Math.min(s + SPLIT_MS + 40, exitFrom);
+      const pos = (t: number) => {
+        const lx = cxl + ox(t) + tanA * oy(t);
+        const ly = cyl + oy(t);
+        return at(fr, lx, ly);
+      };
+      pieces.push({
+        id: `cascade:${cueNumber}:scan${index}`,
+        kind: "shape",
+        z: band + 5,
+        fromMs: s,
+        toMs: barTo,
+        path: rectPath(0, 0, bw, bh),
+        origin: { dx: bw / 2, dy: bh / 2 },
+        fill: { colour: index % 2 === 0 ? SPLIT_B : SPLIT_A },
+        track: {
+          x: chan((t) => pos(t).x + dr(t), s, barTo, [s + SPLIT_MS, cue.startMs + DRIFT_MS], 0.15),
+          y: chan((t) => pos(t).y, s, barTo, [s + SPLIT_MS], 0.15),
+          rz: frame(s, fr.theta),
+          skx: frame(s, SHEAR * sgn),
+          o: [[s, 1], [s + SPLIT_MS - 30, 1], [barTo, 0]],
+        },
+      });
+    }
+
+    // the rule under the block
+    const ruleY = top + laid.blockH + 14 * u * k0;
+    const ruleA = rtl ? -(laid.blockW + RULE_OVER * u) : -leftReach;
+    const ruleB = rtl ? leftReach : laid.blockW + RULE_OVER * u;
+    const drawFrom = Math.round(cue.startMs - 80);
+    const drawDur = Math.round(clamp(exitFrom - drawFrom - 40, 150, 420));
+    rule("rule", fr, ruleA, ruleB, ruleY, drawFrom, drawDur, rtl ? -1 : 1, dr, 1);
+
+    // chevron pair: points into the first word, nudges ahead as each word lands
+    const first = byTime[0]!;
+    const variant = lockupNumber % 3;
+    const kc = 0.8 * k0;
+    const box = chevronBox(kc);
+    const count = variant === 1 ? 3 : variant === 0 ? 2 : 1;
+    const alphas = variant === 1 ? [0.35, 0.65, 1] : [1, 1];
+    const cyl = first.row.ly + sizeC / 2;
+    const startLx = first.item.lx;
+    const lead0 = first.row.items[0]!.lx;
+    const wordsStarts = byTime.map((entry) => startOf(entry.index));
+    const nudge = (t: number) => {
+      let sum = 0;
+      for (const start of wordsStarts.slice(1)) if (t >= start) sum += 10 * u * Math.exp(-(t - start) / 120);
+      return Math.min(sum, 14 * u) * sgn;
+    };
+    const chevAt = Math.round(lockupEnter(first.index) - 130);
+    const items: { w: number; h: number; path: ReturnType<typeof chevronPath>; lx: number }[] = [];
+    // slots counted from the word outwards
+    let outward = CHEVRON_GAP * u * k0;
+    for (let c = 0; c < count; c++) items.push({ w: box.w, h: box.h, path: chevronPath(kc, sgn as 1 | -1), lx: 0 });
+    let slot = 0;
+    for (const item of items) {
+      const lxEdge = rtl ? lead0 + first.row.width + outward : startLx - outward;
+      const lxCentre = rtl ? lxEdge + item.w / 2 : lxEdge - item.w / 2;
+      const o: Frames = [[chevAt + slot * 40, 0], [chevAt + slot * 40 + 90, alphas[slot] ?? 1]];
+      const from = chevAt + slot * 40;
+      const slide = (t: number) => (1 - EASES.outExpo(prog(t, from, 200))) * -44 * u * sgn;
+      const pivot = (t: number) => at(fr, lxCentre + slide(t) + nudge(t), cyl);
+      const clipFr = fr;
+      const clip = wipeClip(clipFr, at(fr, lxCentre, cyl).y, item.h + 12 * u + Math.abs(fr.sin) * 60 * u, cyl, dr, from, exitTo);
+      pieces.push({
+        id: `cascade:${cueNumber}:chev${slot}`,
+        kind: "shape",
+        z: band + 5,
+        fromMs: from,
+        toMs: exitTo,
+        path: item.path,
+        origin: { dx: item.w / 2, dy: item.h / 2 },
+        fill: { colour: WHITE },
+        track: {
+          x: chan((t) => pivot(t).x + dr(t), from, exitTo, [from + 200, cue.startMs + DRIFT_MS, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
+          y: chan((t) => pivot(t).y, from, exitTo, [from + 200, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
+          rz: frame(from, fr.theta),
+          o,
+        },
+        clip,
+      });
+      outward += item.w + 8 * u * k0;
+      slot++;
+    }
+    if (variant === 2) {
+      // a short bar in front of the single chevron: a dash that points the way
+      const barW = 34 * u * k0;
+      const barH = 6 * u * k0;
+      const lxEdge = rtl ? lead0 + first.row.width + outward : startLx - outward;
+      const lxCentre = rtl ? lxEdge + barW / 2 : lxEdge - barW / 2;
+      const from = chevAt + 40;
+      const slide = (t: number) => (1 - EASES.outExpo(prog(t, from, 200))) * -44 * u * sgn;
+      const pivot = (t: number) => at(fr, lxCentre + slide(t) + nudge(t), cyl);
+      pieces.push({
+        id: "cascade:" + cueNumber + ":chevbar",
+        kind: "shape",
+        z: band + 5,
+        fromMs: from,
+        toMs: exitTo,
+        path: rectPath(0, 0, barW, barH),
+        origin: { dx: barW / 2, dy: barH / 2 },
+        fill: { colour: WHITE },
+        track: {
+          x: chan((t) => pivot(t).x + dr(t), from, exitTo, [from + 200, cue.startMs + DRIFT_MS, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
+          y: chan((t) => pivot(t).y, from, exitTo, [from + 200, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
+          rz: frame(from, fr.theta),
+          o: [[from, 0], [from + 90, 1]],
+        },
+        clip: wipeClip(fr, at(fr, lxCentre, cyl).y, 40 * u + Math.abs(fr.sin) * 60 * u, cyl, dr, from, exitTo),
+      });
+    }
+    return clampToSafeArea(pieces, safe, input.measure);
+  }
+
+  // ===== a hero cue: upright hero with echoes, lockup rows around it =====
+  const heroBaseS = HERO_MAX;
+  const gapOfS = (s: number) => gapOf(s * u);
+  const heroNat = (s: number) => heroIdx.reduce((sum, index) => sum + adv(texts[index]!, s * u), 0) + gapOfS(s) * (heroIdx.length - 1);
+  let heroS = Math.min(heroBaseS, (HERO_FIT * u) / (heroNat(100) / 100) / u);
+  heroS = Math.min(heroS, (safeW / u) * 0.9 * (100 / (heroNat(100) / u)) );
+  const heroSizeC0 = heroS * u;
+  const lockS0 = Math.min(BODY, heroS * 0.8);
+  const lockLimit = Math.min(WRAP * u, safeW * 0.96);
+  const frHero = mkFrame(Cx, Py, 0);
+  let kk = 1;
+  let heroSizeC = heroSizeC0;
+  let leadPlan: Plan | null = null;
+  let tailPlan: Plan | null = null;
+  let totalH = 0;
+  const gapL = (sizeC: number) => 0.0 * sizeC;
+  for (let pass = 0; pass < 6; pass++) {
+    heroSizeC = heroSizeC0 * kk;
+    const ls = lockS0 * kk;
+    leadPlan = lead.length > 0 ? plan(lead, ls, lockLimit, 0) : null;
+    tailPlan = tail.length > 0 ? plan(tail, ls, lockLimit, 0) : null;
+    totalH = (leadPlan?.blockH ?? 0) + heroSizeC + (tailPlan?.blockH ?? 0) + gapL(heroSizeC) * 2;
+    const echoSpan = 2 * (3 * ECHO_PITCH * heroSizeC + 0.5 * heroSizeC) * (leadPlan || tailPlan ? 0.6 : 1);
+    const need = Math.max(totalH + 30 * u, echoSpan);
+    if (need <= 0.97 * safeH) break;
+    kk *= (0.97 * safeH) / need * 0.98;
+  }
+  const lp = leadPlan;
+  const tp = tailPlan;
+  const top0 = -totalH / 2;
+  const leadPlaced = lp ? place(lp, 0, true, top0) : null;
+  const heroTop = top0 + (lp?.blockH ?? 0) + gapL(heroSizeC);
+  const tailPlaced = tp ? place(tp, 0, true, heroTop + heroSizeC + gapL(heroSizeC)) : null;
+  const heroGap = gapOf(heroSizeC);
+  const heroWidths = heroIdx.map((index) => adv(texts[index]!, heroSizeC));
+  const heroW = heroWidths.reduce((a, b) => a + b, 0) + heroGap * (heroIdx.length - 1);
+  const heroOrder = rtl ? rowVisualOrder(heroIdx.map((index) => texts[index]!), "rtl").map((at2) => heroIdx[at2]!) : [...heroIdx];
+  const heroPlace: { index: number; lx: number; w: number }[] = [];
+  {
+    let lx = -heroW / 2;
+    for (const index of heroOrder) {
+      const w = adv(texts[index]!, heroSizeC);
+      heroPlace.push({ index, lx, w });
+      lx += w + heroGap;
+    }
+  }
+  const widest = Math.max(heroW, lp?.blockW ?? 0, tp?.blockW ?? 0);
+  const halfExtent = Math.min(widest / 2 + 150 * u, safeW / 2);
+  edgeFrom = rtl ? halfExtent : -halfExtent;
+  edgeTo = rtl ? -halfExtent : halfExtent;
+  const dr0 = drift(false);
+
+  // timing of the cascade
+  const heroFirst = Math.min(...heroIdx.map(startOf));
+  const avail = exitFrom - heroFirst;
+  const { beat, steps, ruleDur: ruleDur0 } = cascadeBeats(avail);
+  const pattern = CASCADE_PATTERNS[heroNumber % CASCADE_PATTERNS.length]!.slice(-steps);
+  const ruleStart = Math.round(Math.min(heroFirst + steps * beat, exitFrom - 90));
+  const ruleDur = Math.max(60, Math.min(ruleDur0, exitFrom - ruleStart));
+
+  // lockup rows above and below
+  const swap = (heroNumber + (seed & 1)) % 2 === 1;
+  const lockShadows = (sizeC: number) => [{ dx: 0, dy: 4 * u * (sizeC / (BODY * u)), blur: 5 * u * (sizeC / (BODY * u)), colour: colours.shadow, alpha: 0.6 }];
+  for (const placed of [leadPlaced, tailPlaced]) {
+    if (!placed) continue;
+    for (const row of placed.rows) {
+      for (const item of row.items) {
+        const s = Math.round(lockupEnter(item.index));
+        const kS = placed.sizeC / (BODY * u);
+        const mainO: Frames = [[s, 0], [s + FADE_MS, 1]];
+        pieces.push(word(`w${item.index}`, item.index, placed.sizeC, frHero, item.lx, item.w, row.ly, s, dr0, WHITE, { shadows: lockShadows(placed.sizeC), o: mainO, clip: true, z: 4 }));
+        const off = (t: number) => (1 - EASES.out(prog(t, s, SPLIT_MS))) * SPLIT_PX * u * kS;
+        const ends = Math.min(s + SPLIT_MS, exitFrom);
+        const oFade: Frames = [[s, 1], [s + SPLIT_MS, 0]];
+        pieces.push(word(`w${item.index}a`, item.index, placed.sizeC, frHero, item.lx, item.w, row.ly, s, dr0, swap ? SPLIT_B : SPLIT_A, { o: oFade, xOff: (t) => -off(t), ends, z: 3 }));
+        pieces.push(word(`w${item.index}b`, item.index, placed.sizeC, frHero, item.lx, item.w, row.ly, s, dr0, swap ? SPLIT_A : SPLIT_B, { o: oFade, xOff: off, ends, z: 3 }));
+      }
+    }
+  }
+
+  // the hero: upright (no shear), punch from blur and 1.14x
+  const heroCy = heroTop + heroSizeC / 2;
+  const heroBase = baseOf(heroSizeC);
+  const heroShadows = [{ dx: 0, dy: 4 * u * (heroSizeC / (BODY * u)) * 0.5, blur: 6 * u, colour: colours.shadow, alpha: 0.6 }];
+  const heroCentre = at(frHero, 0, heroCy);
+  const pitch = ECHO_PITCH * heroSizeC;
+  const stepX = Math.min(110 * u, Math.max(18 * u, (safeW / 2 - heroW / 2 - 12 * u) / 3));
+  const freeUp = lp === null;
+  const freeDown = tp === null;
+  const horizontal = !freeUp && !freeDown;
+  const stepH = Math.min(0.2 * heroSizeC, Math.max(14 * u, (safeW / 2 - heroW / 2 - 8 * u) / 3));
+  const echoKs = [-3, -2, -1, 1, 2, 3].filter((k) => horizontal || (k < 0 ? freeUp : freeDown));
+  const pieceAt = (lx: number, w: number) => ({ x: frHero.ex + lx + w / 2, y: heroCentre.y });
+  for (const hp of heroPlace) {
+    const s = Math.round(heroEnter(hp.index));
+    const p0 = pieceAt(hp.lx, hp.w);
+    const clip = wipeClip(frHero, 0, 0, 0, dr0, s, exitTo);
+    const fullClip: Clip = { x1: clip.x1, x2: clip.x2, y1: frame(s, 0), y2: frame(s, space.canvas.height) };
+    pieces.push({
+      id: `cascade:${cueNumber}:h${hp.index}`,
+      kind: "text",
+      z: band + 4,
+      fromMs: s,
+      toMs: exitTo,
+      track: {
+        x: frame(s, p0.x),
+        y: frame(s, p0.y),
+        sx: [[s, 1.14], [s + HERO_PUNCH, 1, "outExpo"]],
+        sy: [[s, 1.14], [s + HERO_PUNCH, 1, "outExpo"]],
+        blur: [[s, 14 * u], [s + HERO_PUNCH, 0, "outExpo"]],
+      },
+      clip: fullClip,
+      origin: { dx: hp.w / 2, dy: heroSizeC / 2 - heroBase },
+      text: texts[hp.index]!,
+      face: FACE,
+      sizePx: heroSizeC,
+      letterSpacingEm: LS,
+      fill: WHITE,
+      shadows: heroShadows,
+      anchor: "baseline-left",
+      language: cue.language,
+    });
+    // echoes: one static piece per beat and copy
+    pattern.forEach((mode, step) => {
+      if (mode === "none") return;
+      const from = Math.round(Math.max(heroFirst + step * beat, s));
+      const to = Math.round(Math.min(heroFirst + (step + 1) * beat, exitFrom));
+      if (to <= from) return;
+      for (const k of echoKs) {
+        const dx = horizontal ? (mode === "stair" ? -k * stepH : mode === "stair2" ? k * stepH : k * stepH) : mode === "stair" ? -k * stepX : mode === "stair2" ? k * stepX : 0;
+        const dy = horizontal ? 0 : k * pitch;
+        pieces.push({
+          id: `cascade:${cueNumber}:e${hp.index}s${step}k${k}`,
+          kind: "text",
+          z: band + 2,
+          fromMs: from,
+          toMs: to,
+          track: { x: frame(from, p0.x + dx), y: frame(from, p0.y + dy), o: frame(from, [1, 0.72, 0.45][Math.abs(k) - 1]!) },
+          origin: { dx: hp.w / 2, dy: heroSizeC / 2 - heroBase },
+          text: texts[hp.index]!,
+          face: FACE,
+          sizePx: heroSizeC,
+          letterSpacingEm: LS,
+          fill: WHITE,
+          fillAlpha: 0,
+          stroke: { widthPx: STROKE * u, colour: WHITE },
+          anchor: "baseline-left",
+          language: cue.language,
+        });
+      }
+    });
+  }
+
+  // chevrons hop around the block on every beat after the first
+  const heroBlockHalf = Math.max(widest, heroW) / 2;
+  const kc = 1 * (heroSizeC / (HERO_MAX * u)) ** 0.5;
+  const cbox = chevronBox(kc * u);
+  for (let step = 1; step < pattern.length; step++) {
+    const from = Math.round(heroFirst + step * beat);
+    const to = Math.round(Math.min(heroFirst + (step + 1) * beat, exitFrom));
+    if (to <= from) continue;
+    for (let i = 0; i < 2; i++) {
+      const sd = step * 7 + i * 3 + cue.index * 31 + (seed % 97);
+      const side = (i + step) % 2 === 0 ? -1 : 1;
+      const x = frHero.ex + side * (heroBlockHalf + 70 * u + cascadeRand(sd) * 90 * u);
+      const y = heroCentre.y - 260 * u + cascadeRand(sd + 1) * 520 * u;
+      const cx = clamp(x, safe.x1 + cbox.w / 2, safe.x2 - cbox.w / 2);
+      const cy = clamp(y, safe.y1 + cbox.h / 2, safe.y2 - cbox.h / 2);
+      pieces.push({
+        id: `cascade:${cueNumber}:chev${step}${i}`,
+        kind: "shape",
+        z: band + 5,
+        fromMs: from,
+        toMs: to,
+        path: chevronPath(kc * u, side < 0 ? -1 : 1),
+        origin: { dx: cbox.w / 2, dy: cbox.h / 2 },
+        fill: { colour: WHITE },
+        track: { x: frame(from, cx), y: frame(from, cy) },
+      });
+    }
+  }
+
+  // register brackets close in on the hero
+  {
+    const capTop = frHero.ey + heroTop + heroBase + input.measure("H", FACE, heroSizeC, LS).inkTop;
+    const capBot = frHero.ey + heroTop + heroBase;
+    const pad = 0.12 * heroSizeC;
+    const hw = heroW / 2 + pad;
+    const hh = (capBot - capTop) / 2 + pad;
+    const cyB = (capTop + capBot) / 2;
+    const arm = clamp(0.2 * heroSizeC, 12 * u, 36 * u);
+    const th = Math.max(4 * u, 0.04 * heroSizeC);
+    const variant = heroNumber % 3;
+    const diag = (heroNumber + (seed & 1)) % 2 === 0;
+    const from = Math.round(heroFirst - HERO_LEAD);
+    const dur = 170;
+    const s0max = variant === 1 ? 1.6 : 1.35;
+    const s0 = Math.max(1, Math.min(s0max, (safeW / 2 - arm) / hw, (safeH / 2 - arm) / Math.max(hh, 1)));
+    const corner = (sx: -1 | 1, sy: -1 | 1): [number, number][] => {
+      // an L whose corner is at (0,0) and arms run toward the centre
+      const ax = -sx;
+      const ay = -sy;
+      return [[0, 0], [ax * arm, 0], [ax * arm, ay * th], [ax * th, ay * th], [ax * th, ay * arm], [0, ay * arm]];
+    };
+    const bracket = (sx: -1 | 1): [number, number][] => {
+      const ax = -sx;
+      const H = hh * 2;
+      return [[0, -hh], [ax * arm, -hh], [ax * arm, -hh + th], [ax * th, -hh + th], [ax * th, hh - th], [ax * arm, hh - th], [ax * arm, hh], [0, hh]].map(([x, y]) => [x!, y! + hh - H / 2 + 0] as [number, number]);
+    };
+    const specs: { id: string; pts: [number, number][]; sx: -1 | 1; sy: -1 | 1 | 0 }[] = [];
+    if (variant === 0) for (const sx of [-1, 1] as const) for (const sy of [-1, 1] as const) specs.push({ id: `${sx}${sy}`, pts: corner(sx, sy), sx, sy });
+    else if (variant === 1) for (const [sx, sy] of (diag ? [[-1, -1], [1, 1]] : [[1, -1], [-1, 1]]) as [-1 | 1, -1 | 1][]) specs.push({ id: `${sx}${sy}`, pts: corner(sx, sy), sx, sy });
+    else for (const sx of [-1, 1] as const) specs.push({ id: `${sx}`, pts: bracket(sx), sx, sy: 0 });
+    for (const spec of specs) {
+      const xs = spec.pts.map((p) => p[0]);
+      const ys = spec.pts.map((p) => p[1]);
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const path = polygonPath(spec.pts.map(([x, y]) => [x - minX, y - minY] as [number, number]));
+      const origin = { dx: -minX, dy: -minY };
+      const px = (t: number) => frHero.ex + spec.sx * hw * lerp(s0, 1, EASES.outExpo(prog(t, from, dur)));
+      const py = (t: number) => cyB + spec.sy * hh * lerp(s0, 1, EASES.outExpo(prog(t, from, dur)));
+      const x1 = chan((t) => cutX(frHero, t, 0, dr0), from, exitTo, [exitFrom, exitTo], 0.3);
+      const far = frame(from, space.canvas.width + 80);
+      const near = frame(from, -80);
+      pieces.push({
+        id: `cascade:${cueNumber}:br${spec.id}`,
+        kind: "shape",
+        z: band + 5,
+        fromMs: from,
+        toMs: exitTo,
+        path,
+        origin,
+        fill: { colour: WHITE },
+        track: {
+          x: chan(px, from, exitTo, [from + dur], 0.2),
+          y: chan(py, from, exitTo, [from + dur], 0.2),
+          o: [[from, 0], [from + 50, 1]],
+        },
+        clip: { x1: rtl ? near : x1, x2: rtl ? x1 : far, y1: frame(from, 0), y2: frame(from, space.canvas.height) },
+      });
+    }
+  }
+
+  // the level rule under the whole block, drawn when the cascade clears: left, right or from the middle
+  {
+    const ruleW = Math.min(widest + 120 * u, safeW);
+    const bottom = (tailPlaced ? tailPlaced.rows[tailPlaced.rows.length - 1]!.ly + tailPlaced.lineH : heroTop + heroSizeC) + 0.08 * heroSizeC - (tailPlaced ? 0.12 * tailPlaced.sizeC : 0);
+    const dirCycle: (1 | -1 | 0)[] = [1, -1, 0];
+    const raw = dirCycle[heroNumber % 3]!;
+    const dir = raw === 0 ? 0 : ((raw * sgn) as 1 | -1);
+    rule("rule", frHero, -ruleW / 2, ruleW / 2, bottom, ruleStart, ruleDur, dir, dr0, 1);
+  }
+
+  return clampToSafeArea(pieces, safe, input.measure);
+}
+
+export const cascadeProgram: SceneProgram = {
+  build(input) {
+    const counters = { heroes: 0, lockups: 0 };
+    return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, input, counters))) };
+  },
+};
