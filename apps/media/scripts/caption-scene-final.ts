@@ -34,6 +34,7 @@ export const MOMENTS: Record<string, number[]> = {
   premiere: [767, 2800, 6600],
   wonky: [733, 1700, 4400],
   tape: [1000, 2700, 3000, 4900],
+  beat: [400, 1700, 2967, 4300, 6300],
   popup: [1500, 3233, 3700],
   cursor: [2400, 3100, 3600],
   arthouse: [467, 800, 1700, 3433, 3700, 4033],
