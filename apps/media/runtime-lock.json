@@ -119,7 +119,7 @@
           "libflac14": "1.5.0+ds-2",
           "libflite1": "2.2-7",
           "libfontconfig1": "2.15.0-2.3",
-          "libfreetype6": "2.13.3+dfsg-1+deb13u1",
+          "libfreetype6": "2.13.3+dfsg-1+deb13u2",
           "libfribidi0": "1.0.16-1",
           "libgbm1": "25.0.7-2+deb13u1",
           "libgdk-pixbuf-2.0-0": "2.42.12+dfsg-4+deb13u1",
@@ -160,7 +160,7 @@
           "libmpg123-0t64": "1.32.10-1+deb13u1",
           "libmysofa1": "1.3.3+dfsg-1",
           "libncursesw6": "6.5+20250216-2",
-          "libnghttp2-14": "1.64.0-1.1+deb13u1",
+          "libnghttp2-14": "1.64.0-1.1+deb13u2",
           "libnghttp3-9": "1.8.0-1",
           "libnorm1t64": "1.5.9+dfsg-3.1+b2",
           "libnuma1": "2.0.19-1",
@@ -342,7 +342,7 @@
         "libraries": {
           "libass9": "1:0.17.3-1+deb13u1",
           "libfontconfig1": "2.15.0-2.3",
-          "libfreetype6": "2.13.3+dfsg-1+deb13u1",
+          "libfreetype6": "2.13.3+dfsg-1+deb13u2",
           "libharfbuzz0b": "10.2.0-1+deb13u1",
           "libzimg2": "3.0.5+ds1-1+b2",
           "libx264-164": "2:0.164.3108+git31e19f9-2+b1"
