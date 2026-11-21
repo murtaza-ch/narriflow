@@ -5,7 +5,7 @@ import type { SceneCue } from "./input";
 import { captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import { type Measure, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
 import { pathBounds } from "./shapes";
-import { LEDGE_DEMO, ledgeBarWidth, ledgeBaseline, ledgeCase, ledgeHash, ledgeProgram, ledgeRng, ledgeShuffle } from "./templates/ledge";
+import { LEDGE_DEMO, ledgeBarWidth, ledgeFrameAtOrAfter, ledgePaintedFrames, ledgeBaseline, ledgeCase, ledgeHash, ledgeProgram, ledgeRng, ledgeShuffle } from "./templates/ledge";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 const { cues } = demoCues(LEDGE_DEMO);
@@ -279,17 +279,24 @@ describe("Ledge scripts and edges", () => {
 });
 
 const word = (text: string, startMs: number, endMs: number, role: "hero" | "body" | "minor" = "body") => ({ text, startMs, endMs, role, key: null });
-/** The first ms a word's clip has uncovered all of it, and when its piece starts to leave (the track's opacity frames). */
-const readyOf = (piece: TextPiece): number => {
+/** Whether a word's clip has uncovered all of it at `t`. */
+const openAt = (piece: TextPiece, t: number): boolean => {
   const advance = fakeMeasure(piece.text, "Anton", piece.sizePx, 0.012).advance;
-  for (let t = piece.fromMs; t < piece.toMs; t++) {
-    const pose = evaluatePiece(piece, t);
-    const lean = 0.45 * piece.sizePx * Math.abs(Math.sin((pose.rz * Math.PI) / 180));
-    const far = pose.x + advance * Math.cos((pose.rz * Math.PI) / 180) * (pose.rz > 0 ? -1 : 1);
-    const open = pose.rz > 0 ? pose.clip!.x1 <= far + lean : pose.clip!.x2 >= far - lean;
-    if (open) return t;
-  }
+  const pose = evaluatePiece(piece, t);
+  const lean = 0.45 * piece.sizePx * Math.abs(Math.sin((pose.rz * Math.PI) / 180));
+  const far = pose.x + advance * Math.cos((pose.rz * Math.PI) / 180) * (pose.rz > 0 ? -1 : 1);
+  return pose.rz > 0 ? pose.clip!.x1 <= far + lean : pose.clip!.x2 >= far - lean;
+};
+/** The first ms a word's clip has uncovered all of it. */
+const readyOf = (piece: TextPiece): number => {
+  for (let t = piece.fromMs; t < piece.toMs; t++) if (openAt(piece, t)) return t;
   return piece.toMs;
+};
+/** The 30 fps frame times (ms) inside a window. */
+const framesIn = (from: number, to: number): number[] => {
+  const out: number[] = [];
+  for (let n = Math.ceil((from * 30) / 1000); Math.round((n * 1000) / 30) < to; n++) if (Math.round((n * 1000) / 30) >= from) out.push(Math.round((n * 1000) / 30));
+  return out;
 };
 const exitOf = (piece: Piece): { from: number; to: number } => {
   const frames = piece.track.o!;
@@ -437,29 +444,42 @@ describe("Ledge re-check fixes", () => {
     }
   });
 
-  test("2: the handoff rule: in runs of 120 ms cues and of 150 ms words, every word is readable for min(150, the time to the next cue's first frame), never covered, with no one-frame motion and no blink", () => {
-    const runs = [run(10, 0, 120, 1), run(10, 60, 120, 1), run(12, 0, 150, 4), run(12, 60, 150, 4), run(10, 0, 100, 3), run(10, 60, 100, 3)];
-    for (const cues of runs) {
-      const list = build(cues);
-      for (const piece of list) {
-        // No animated piece shows on a single 30 fps frame: every window is at least two frames.
-        expect(piece.toMs - piece.fromMs).toBeGreaterThanOrEqual(67);
-      }
-      cues.forEach((cue, number) => {
-        if (number + 1 >= cues.length) return;
-        const mine = ofCue(list, number);
-        const nextFrom = Math.min(...ofCue(list, number + 1).map((other) => other.fromMs));
-        // Nothing of this cue is on screen from the next cue's first frame: no covering. With nothing missing between them when it is continuous.
-        expect(Math.max(...mine.map((piece) => piece.toMs))).toBeLessThanOrEqual(nextFrom);
-        if (cues[number + 1]!.startMs - cue.endMs <= 100) expect(Math.max(...mine.map((piece) => piece.toMs))).toBe(nextFrom);
-        cue.words.forEach((_, index) => {
-          const piece = need<TextPiece>(find(list, `${number}:w${index}`));
-          const ready = readyOf(piece);
-          const out = exitOf(piece);
-          expect(out.from).toBeGreaterThanOrEqual(Math.min(ready + 150, nextFrom) - 1);
-          for (let t = ready; t < out.from; t += 4) expect(evaluatePiece(piece, t).o).toBeGreaterThan(0.9);
+  test("2: the handoff rule in painted frames: runs shifted by 0, 2, 7, 13, 23, 31 ms keep every word readable until the next cue's first painted frame, with no blank frame and no late first paint", () => {
+    for (const shift of [0, 2, 7, 13, 23, 31]) {
+      const runs = [run(10, 0, 120, 1), run(10, 60, 120, 1), run(12, 0, 150, 4), run(12, 60, 150, 4), run(10, 0, 100, 3), run(10, 60, 100, 3)].map((cues) =>
+        cues.map((cue) => ({ ...cue, startMs: cue.startMs + shift, endMs: cue.endMs + shift, words: cue.words.map((w) => ({ ...w, startMs: w.startMs + shift, endMs: w.endMs + shift })) })),
+      );
+      for (const cues of runs) {
+        const list = build(cues);
+        for (const piece of list) {
+          // No animated piece is painted on a single frame: a window is two painted frames at least.
+          expect(ledgePaintedFrames(piece.fromMs, piece.toMs)).toBeGreaterThanOrEqual(2);
+        }
+        // No blank frame from the first cue's first painted frame to the end of the last cue, and a frame is never empty.
+        const begin = ledgeFrameAtOrAfter(Math.min(...list.map((piece) => piece.fromMs)));
+        const finish = Math.max(...list.map((piece) => piece.toMs));
+        for (let f = begin; f < finish; f = ledgeFrameAtOrAfter(f + 1)) expect(list.some((piece) => piece.fromMs <= f && f < piece.toMs)).toBe(true);
+        cues.forEach((cue, number) => {
+          cue.words.forEach((spoken, index) => {
+            const piece = need<TextPiece>(find(list, `${number}:w${index}`));
+            // The first painted frame is at most one frame after the word's onset, whatever the offset.
+            expect(ledgeFrameAtOrAfter(piece.fromMs)).toBeLessThanOrEqual(ledgeFrameAtOrAfter(spoken.startMs));
+          });
+          if (number + 1 >= cues.length) return;
+          const mine = ofCue(list, number);
+          const nextPaint = ledgeFrameAtOrAfter(Math.min(...ofCue(list, number + 1).map((other) => other.fromMs)));
+          // Nothing of this cue is painted from the next cue's first painted frame (no covering), and with nothing missing between them.
+          expect(Math.max(...mine.map((piece) => piece.toMs))).toBeLessThanOrEqual(nextPaint);
+          if (cues[number + 1]!.startMs - cue.endMs <= 100) expect(Math.max(...mine.map((piece) => piece.toMs))).toBe(nextPaint);
+          cue.words.forEach((_, index) => {
+            const piece = need<TextPiece>(find(list, `${number}:w${index}`));
+            const ready = ledgeFrameAtOrAfter(readyOf(piece));
+            const out = exitOf(piece);
+            expect(out.from).toBeGreaterThanOrEqual(Math.min(ready + 150, nextPaint) - 1);
+            for (let f = ready; f < out.from; f = ledgeFrameAtOrAfter(f + 1)) expect(evaluatePiece(piece, f).o).toBeGreaterThan(0.9);
+          });
         });
-      });
+      }
     }
   });
 
@@ -487,5 +507,114 @@ describe("Ledge re-check fixes", () => {
         expect(tick.toMs - tick.fromMs).toBeGreaterThanOrEqual(67);
       }
     }
+  });
+});
+
+describe("Ledge re-check 2 fixes", () => {
+  const goes = (gap: number, count = 10) => {
+    const list: SceneCue[] = [];
+    let at = 1000;
+    for (let k = 0; k < count; k++) {
+      list.push(cueOf(k, at, k === count - 1 ? at + 120 + 650 : at + 120 + gap, [word(["go", "no"][k % 2]!, at, at + 120)]));
+      at += 120 + gap;
+    }
+    return list;
+  };
+
+  test("1: a word's ink is open and opaque at the first export frame at or after its onset, in runs of 120 ms cues", () => {
+    for (const gap of [0, 60]) {
+      const cues10 = goes(gap);
+      const list = build(cues10);
+      cues10.forEach((cue, number) => {
+        const piece = need<TextPiece>(find(list, `${number}:w0`));
+        const onset = cue.words[0]!.startMs;
+        const frame = framesIn(onset, onset + 100)[0]!;
+        const pose = evaluatePiece(piece, frame);
+        expect(pose.visible).toBe(true);
+        expect(pose.o).toBeGreaterThan(0.9);
+        expect(openAt(piece, frame)).toBe(true);
+      });
+    }
+  });
+
+  test("2: a short word followed by a taller lockup keeps its 150 ms until the next cue really reaches its ink", () => {
+    for (const [wordMs, gap] of [[120, 60], [120, 0], [80, 0]] as const) {
+      const one = cueOf(0, 1000, 1000 + wordMs + gap, [word("go", 1000, 1000 + wordMs)]);
+      const three = cueOf(1, 1000 + wordMs + gap, 3000, [word("we", 1000 + wordMs + gap, 1300), word("can", 1300, 1420, "hero"), word("go", 1420, 1600)]);
+      const list = build([one, three]);
+      const go = need<TextPiece>(find(list, "0:w0"));
+      const ready = readyOf(go);
+      const out = exitOf(go);
+      // The first painted frame in which a piece of the next cue lies over the word's ink box.
+      let meet = Number.POSITIVE_INFINITY;
+      for (let t = ledgeFrameAtOrAfter(go.fromMs); t < 3000 && meet === Number.POSITIVE_INFINITY; t = ledgeFrameAtOrAfter(t + 1)) {
+        const ink = pieceBounds(go, t, fakeMeasure);
+        if (!ink) continue;
+        for (const other of ofCue(list, 1)) {
+          const box = pieceBounds(other, t, fakeMeasure);
+          if (box && box.x1 < ink.x2 && box.x2 > ink.x1 && box.y1 < ink.y2 && box.y2 > ink.y1) meet = t;
+        }
+      }
+      // The next cue's lockup is taller and reaches the word's ink only later than its 150 ms: the word keeps all of them.
+      expect(meet).toBeGreaterThan(ready + 150);
+      expect(out.from).toBeGreaterThanOrEqual(ready + 148);
+      // And no painted frame has anything of the next cue over the word while it is there.
+      for (let f = ledgeFrameAtOrAfter(ready); f < out.to; f = ledgeFrameAtOrAfter(f + 1)) {
+        const ink = pieceBounds(go, f, fakeMeasure);
+        if (!ink) continue;
+        for (const other of ofCue(list, 1)) {
+          const box = pieceBounds(other, f, fakeMeasure);
+          expect(box !== null && box.x1 < ink.x2 && box.x2 > ink.x1 && box.y1 < ink.y2 && box.y2 > ink.y1).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("3: a key word whose drop cannot settle before the cue leaves is drawn settled, and every piece has two painted frames", () => {
+    for (const heroMs of [100, 60]) {
+      for (const gap of [60, 0]) {
+        const pre = cueOf(0, 1000, 1100 + gap, [word("no", 1000, 1100)]);
+        const hero = cueOf(1, 1100 + gap, 1100 + gap + heroMs + gap, [word("go", 1100 + gap, 1100 + gap + heroMs, "hero")]);
+        const post = cueOf(2, 1100 + gap + heroMs + gap, 3000, [word("now", 1100 + gap + heroMs + gap, 1500), word("please", 1500, 2000)]);
+        const list = build([pre, hero, post]);
+        const face = need<ShapePiece>(find(list, "1:b0ff"));
+        const out = exitOf(face);
+        // No motion that never settles: it is still where it ended up before the exit starts, or it never moved.
+        const before = evaluatePiece(face, out.from - 1);
+        const earlier = evaluatePiece(face, Math.max(face.fromMs + 1, out.from - 40));
+        expect(Math.hypot(before.x - earlier.x, before.y - earlier.y)).toBeLessThan(0.6);
+        for (const piece of ofCue(list, 1)) expect(ledgePaintedFrames(piece.fromMs, piece.toMs)).toBeGreaterThanOrEqual(2);
+      }
+    }
+  });
+
+  test("4: every word of a cue still appears when the next speaker starts first, and the last cue ends by its own end", () => {
+    const early = cueOf(0, 1000, 1500, [word("early", 1000, 1100), word("late", 1320, 1500, "hero")]);
+    const other = cueOf(1, 1200, 3000, [word("hello", 1200, 1500), word("there", 1500, 1900)]);
+    const list = build([early, other]);
+    const late = need<TextPiece>(find(list, "0:w1"));
+    expect(late.toMs - late.fromMs).toBeGreaterThanOrEqual(67);
+    expect(framesIn(late.fromMs, late.toMs).length).toBeGreaterThanOrEqual(2);
+    // Drawn above the next cue's bars, so it is never the thing covered.
+    expect(Math.min(late.z, ...ofCue(list, 0).filter((piece) => piece.kind === "text").map((piece) => piece.z))).toBeGreaterThan(Math.max(...ofCue(list, 1).filter((piece) => piece.kind === "shape").map((piece) => piece.z)));
+    const closing = cueOf(0, 7000, 7540, [word("so", 7000, 7150), word("much", 7250, 7400, "hero")]);
+    const tail = build([closing]);
+    expect(Math.max(...tail.map((piece) => piece.toMs))).toBeLessThanOrEqual(7540);
+  });
+
+  test("5: at the top anchor the entrance stays inside the safe edge, and the brand guard names the sticker's red", () => {
+    const cue = cueOf(0, 1000, 2600, [word("یہ", 1000, 1250, "hero"), word("NEW", 1300, 1500), word("YORK", 1600, 1800)], "ur");
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      const list = build([cue], { canvas, anchor: { xPct: 50, yPct: 5 } });
+      const end = Math.max(...list.map((piece) => piece.toMs));
+      for (let t = 0; t < end; t++) {
+        const box = sceneBoundsAt(list, t, fakeMeasure);
+        if (box) expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 1);
+      }
+    }
+    const row = captionSceneMeta("ledge");
+    expect(row.brand.primary?.readsOn).toContain("#E82D37");
+    expect(row.brand.primary?.readsOn).not.toContain("#F0323C");
+    expect(captionColourContrast("#FFD83A", "#E82D37")).toBeGreaterThanOrEqual(3);
   });
 });
