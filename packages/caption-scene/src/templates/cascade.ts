@@ -1,3 +1,4 @@
+import { toCaptionUpperCase } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
@@ -81,6 +82,7 @@ const EXIT_MIN = 90;
 const CLEAR = 20;
 const HOLD = 150;
 const OVERLAP = 60;
+const ONE_FRAME = 34;
 const CHEVRON_GAP = 26;
 
 /** Archivo Black's line box: ascent 0.878 and descent 0.21 em, each rounded to whole px by Chrome. */
@@ -109,9 +111,14 @@ export function cascadeRand(n: number): number {
 const SIMPLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Common}\p{Script=Inherited}]+$/u;
 const PICTO = /\p{Extended_Pictographic}/u;
 
-/** `text-transform: uppercase` for cased scripts only. */
-export function cascadeCase(text: string): string {
-  return SIMPLE.test(text) && !PICTO.test(text) ? text.toUpperCase() : text;
+/** `text-transform: uppercase` through the shared caption casing (Turkish dotted İ, Greek, caseless scripts left alone). */
+export function cascadeCase(text: string, language?: string | null): string {
+  return toCaptionUpperCase(text, language);
+}
+
+/** The faux italic (a shear) belongs to cased Latin, Greek and Cyrillic: a shaped script (Arabic, Indic, Thai) or CJK is never sheared. */
+export function cascadeShears(text: string): boolean {
+  return SIMPLE.test(text) && !PICTO.test(text);
 }
 
 export type CascadeMode = "none" | "stack" | "stair" | "stair2";
@@ -126,7 +133,7 @@ export const CASCADE_PATTERNS: readonly (readonly CascadeMode[])[] = [
 
 /** How a hero cue spends the time `avail` ms it has between its first word and its exit: the beat, the modes used and the rule's window. */
 export function cascadeBeats(avail: number): { beat: number; steps: number; ruleDur: number } {
-  const ruleDur = clamp(avail * 0.3, 120, 420);
+  const ruleDur = clamp(avail * 0.3, 60, 420);
   const modeTime = Math.max(0, avail - ruleDur);
   const steps = clamp(Math.floor(modeTime / 100), 1, 6);
   const beat = clamp(modeTime / steps, 66, 150);
@@ -158,10 +165,11 @@ interface Plan {
   readonly lineH: number;
 }
 
-function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: { heroes: number; lockups: number }): Piece[] {
+function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: { heroes: number; lockups: number }, next: SceneCue | undefined): Piece[] {
   const space = sceneSpace(input, CENTER_Y);
   const { u, safe } = space;
-  const rtl = cueDirection(cue) === "rtl";
+  const direction = cueDirection(cue);
+  const rtl = direction === "rtl";
   const sgn = rtl ? -1 : 1;
   const Py = space.y(CENTER_Y);
   const Cx = space.x(540);
@@ -175,7 +183,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const hasHero = roles.hero.length > 0;
   const heroNumber = hasHero ? counters.heroes++ : 0;
   const lockupNumber = hasHero ? 0 : counters.lockups++;
-  const texts = cue.words.map((word) => cascadeCase(word.text));
+  const texts = cue.words.map((word) => cascadeCase(word.text, cue.language));
+  const sheared = (index: number) => cascadeShears(cue.words[index]!.text);
   const adv = (text: string, sizeC: number) => input.measure(text, FACE, sizeC, LS).advance + LS * sizeC;
   const gapOf = (sizeC: number) => input.measure("A B", FACE, sizeC, LS).advance - input.measure("AB", FACE, sizeC, LS).advance;
   const baseOf = (sizeC: number) => cascadeBaseline(sizeC / u) * u;
@@ -189,9 +198,16 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const lastLand = Math.max(
     ...cue.words.map((_, index) => (roles.hero.includes(index) ? heroEnter(index) + 120 : lockupEnter(index) + SPLIT_MS)),
   );
-  const exitFrom = Math.round(Math.min(Math.max(cue.endMs - CLEAR - EXIT, lastLand + HOLD), cue.endMs + OVERLAP - EXIT_MIN));
-  const exitDur = Math.round(clamp(cue.endMs - CLEAR - exitFrom, EXIT_MIN, EXIT));
-  const exitTo = exitFrom + exitDur;
+  // The outgoing cue is gone before the incoming one is opaque (its first word is spoken, a hero is opaque from its lead): the
+  // reading hold gives way to that, and the wipe shrinks to a hard cut when there is no room for it.
+  const nextWord = next?.words[0];
+  const limit = nextWord ? (nextWord.role === "hero" ? nextWord.startMs - HERO_LEAD : nextWord.startMs) : cue.endMs + OVERLAP;
+  const exitTo0 = Math.max(cue.endMs - CLEAR, lastLand + HOLD + EXIT_MIN);
+  // Never cut before every face has been on screen for a frame (a hero: once its punch has cleared).
+  const faceLanded = Math.max(...cue.words.map((_, index) => (roles.hero.includes(index) ? heroEnter(index) + 80 : lockupEnter(index) + FADE_MS + ONE_FRAME)));
+  const exitTo = Math.round(Math.max(Math.min(exitTo0, limit), faceLanded));
+  const exitDur = Math.round(clamp(exitTo - (lastLand + HOLD), 0, EXIT));
+  const exitFrom = exitTo - exitDur;
   const wipeP = (t: number) => EASES.inOut(prog(t, exitFrom, exitDur));
 
   const chan = (fn: (t: number) => number, from: number, to: number, edges: readonly number[], tolerance: number): Frames =>
@@ -213,7 +229,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     }
     const lineH = LINE_EM * sizeC;
     const laid: Row[] = rows.map((row, r) => {
-      const order = rtl ? rowVisualOrder(row.map((at) => texts[indices[at]!]!), "rtl").map((at) => row[at]!) : row;
+      const order = rowVisualOrder(row.map((at) => texts[indices[at]!]!), direction).map((at) => row[at]!);
       const ws = order.map((at) => widths[at]!);
       const width = ws.reduce((a, b) => a + b, 0) + gap * (order.length - 1);
       return { items: order.map((at, position) => ({ index: indices[at]!, lx: 0, w: ws[position]! })), width, ly: r * lineH };
@@ -263,13 +279,10 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       x: chan((t) => base.x + dr(t) + off(t) * fr.cos, from, to, [cue.startMs + DRIFT_MS], 0.15),
       y: chan((t) => base.y + off(t) * fr.sin, from, to, [], 0.15),
       rz: frame(from, fr.theta),
-      skx: frame(from, SHEAR * sgn),
+      skx: frame(from, sheared(index) ? SHEAR * sgn : 0),
       o: extra.o,
     };
-    const hb = 0.8 * sizeC + 0.5 * w * Math.abs(fr.sin) + 10 * u;
-    const clip: Clip | undefined = extra.clip
-      ? wipeClip(fr, base.y, hb, cyl, dr, from, to)
-      : undefined;
+    const clip: Clip | undefined = extra.clip ? wipeClip(fr, cyl, dr, from, to) : undefined;
     return {
       id: `cascade:${cueNumber}:${id}`,
       kind: "text",
@@ -294,11 +307,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   let edgeTo = 0;
   const edgeLx = (t: number) => lerp(edgeFrom, edgeTo, wipeP(t));
   const cutX = (fr: Frame, t: number, lyc: number, dr: (t: number) => number) => fr.ex + edgeLx(t) * fr.cos - lyc * fr.sin + dr(exitFrom);
-  function wipeClip(fr: Frame, cy: number, hb: number, lyc: number, dr: (t: number) => number, from: number, to: number): Clip {
+  function wipeClip(fr: Frame, lyc: number, dr: (t: number) => number, from: number, to: number): Clip {
     const cut = chan((t) => cutX(fr, t, lyc, dr), from, to, [exitFrom, exitTo], 0.3);
     const far = frame(from, space.canvas.width + 80);
     const near = frame(from, -80);
-    return { x1: rtl ? near : cut, x2: rtl ? cut : far, y1: frame(from, cy - hb), y2: frame(from, cy + hb) };
+    // Full height: the wipe is a vertical edge, so a tall script (Arabic, Devanagari) is never cut above or below.
+    return { x1: rtl ? near : cut, x2: rtl ? cut : far, y1: frame(from, -80), y2: frame(from, space.canvas.height + 80) };
   }
 
   /** Local coordinates -> canvas for a frame. */
@@ -337,16 +351,13 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const xl = (l: number, t: number) => at(fr, l, ly + thick / 2).x + dr(t);
       const wipeLimit = (t: number) => cutX(fr, t, ly + thick / 2, dr);
       const tiltY = Math.abs(fr.sin) * len + thick + 4 * u;
-      const x1 = chan((t) => {
-        const [va] = visible(t);
-        const v = xl(clamp(va, sa, sb), t);
-        return rtl ? v : Math.max(v, wipeLimit(t));
-      }, from, exitTo, [drawFrom + drawDur, exitFrom, exitTo, cue.startMs + DRIFT_MS], 0.3);
-      const x2 = chan((t) => {
-        const [, vb] = visible(t);
-        const v = xl(clamp(vb, sa, sb), t);
-        return rtl ? Math.min(v, wipeLimit(t)) : v;
-      }, from, exitTo, [drawFrom + drawDur, exitFrom, exitTo, cue.startMs + DRIFT_MS], 0.3);
+      const loRaw = (t: number) => xl(clamp(visible(t)[0], sa, sb), t);
+      const hiRaw = (t: number) => xl(clamp(visible(t)[1], sa, sb), t);
+      // Never an inverted rectangle: the wipe edge may pass the drawn edge when the exit is short.
+      const hi = (t: number) => (rtl ? Math.min(hiRaw(t), wipeLimit(t)) : Math.max(hiRaw(t), Math.max(loRaw(t), wipeLimit(t))));
+      const lo = (t: number) => (rtl ? Math.min(loRaw(t), hi(t)) : Math.max(loRaw(t), wipeLimit(t)));
+      const x1 = chan(lo, from, exitTo, [drawFrom + drawDur, exitFrom, exitTo, cue.startMs + DRIFT_MS], 0.3);
+      const x2 = chan(hi, from, exitTo, [drawFrom + drawDur, exitFrom, exitTo, cue.startMs + DRIFT_MS], 0.3);
       const clip: Clip = { x1, x2, y1: frame(from, mid.y - tiltY), y2: frame(from, mid.y + tiltY) };
       const segLen = sb - sa + 2;
       const mk = (id: string, colour: string, fromT: number, toT: number, shift: ((t: number) => number) | null, o: Frames, zz: number, withClip: boolean): ShapePiece => ({
@@ -436,7 +447,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const capH = 0.7 * sizeC;
       const bw = variant === 1 ? item.w : 4 * u * k0;
       const bh = variant === 1 ? 4 * u * k0 : capH;
-      const tanA = Math.tan((SHEAR * sgn * Math.PI) / 180);
+      const barShear = sheared(index) ? SHEAR * sgn : 0;
+      const tanA = Math.tan((barShear * Math.PI) / 180);
       const baseline = baseOf(sizeC);
       const cxl = item.lx + item.w / 2;
       const cyl = row.ly + sizeC / 2;
@@ -456,7 +468,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       pieces.push({
         id: `cascade:${cueNumber}:scan${index}`,
         kind: "shape",
-        z: band + 5,
+        // Behind the white face (z 4): the scan never recolours landed ink.
+        z: band + 3,
         fromMs: s,
         toMs: barTo,
         path: rectPath(0, 0, bw, bh),
@@ -466,7 +479,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
           x: chan((t) => pos(t).x + dr(t), s, barTo, [s + SPLIT_MS, cue.startMs + DRIFT_MS], 0.15),
           y: chan((t) => pos(t).y, s, barTo, [s + SPLIT_MS], 0.15),
           rz: frame(s, fr.theta),
-          skx: frame(s, SHEAR * sgn),
+          skx: frame(s, barShear),
           o: [[s, 1], [s + SPLIT_MS - 30, 1], [barTo, 0]],
         },
       });
@@ -510,7 +523,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const slide = (t: number) => (1 - EASES.outExpo(prog(t, from, 200))) * -44 * u * sgn;
       const pivot = (t: number) => at(fr, lxCentre + slide(t) + nudge(t), cyl);
       const clipFr = fr;
-      const clip = wipeClip(clipFr, at(fr, lxCentre, cyl).y, item.h + 12 * u + Math.abs(fr.sin) * 60 * u, cyl, dr, from, exitTo);
+      const clip = wipeClip(clipFr, cyl, dr, from, exitTo);
       pieces.push({
         id: `cascade:${cueNumber}:chev${slot}`,
         kind: "shape",
@@ -555,7 +568,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
           rz: frame(from, fr.theta),
           o: [[from, 0], [from + 90, 1]],
         },
-        clip: wipeClip(fr, at(fr, lxCentre, cyl).y, 40 * u + Math.abs(fr.sin) * 60 * u, cyl, dr, from, exitTo),
+        clip: wipeClip(fr, cyl, dr, from, exitTo),
       });
     }
     return clampToSafeArea(pieces, safe, input.measure);
@@ -577,9 +590,19 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   let tailPlan: Plan | null = null;
   let totalH = 0;
   const gapL = (sizeC: number) => 0.0 * sizeC;
+  // The support rows fit on their own first: the widest row plus its split offsets inside the safe width (a 45-letter word shrinks).
+  let ks = 1;
+  for (let pass = 0; pass < 8; pass++) {
+    const ls = lockS0 * ks;
+    const rowsOf = [lead.length > 0 ? plan(lead, ls, lockLimit, 0) : null, tail.length > 0 ? plan(tail, ls, lockLimit, 0) : null];
+    const widestRow = Math.max(0, ...rowsOf.map((row) => row?.blockW ?? 0));
+    const reach = widestRow + 2 * SPLIT_PX * u * (ls / BODY);
+    if (reach <= 0.98 * safeW) break;
+    ks *= ((0.98 * safeW) / reach) * 0.99;
+  }
   for (let pass = 0; pass < 6; pass++) {
     heroSizeC = heroSizeC0 * kk;
-    const ls = lockS0 * kk;
+    const ls = lockS0 * ks * kk;
     leadPlan = lead.length > 0 ? plan(lead, ls, lockLimit, 0) : null;
     tailPlan = tail.length > 0 ? plan(tail, ls, lockLimit, 0) : null;
     totalH = (leadPlan?.blockH ?? 0) + heroSizeC + (tailPlan?.blockH ?? 0) + gapL(heroSizeC) * 2;
@@ -597,7 +620,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const heroGap = gapOf(heroSizeC);
   const heroWidths = heroIdx.map((index) => adv(texts[index]!, heroSizeC));
   const heroW = heroWidths.reduce((a, b) => a + b, 0) + heroGap * (heroIdx.length - 1);
-  const heroOrder = rtl ? rowVisualOrder(heroIdx.map((index) => texts[index]!), "rtl").map((at2) => heroIdx[at2]!) : [...heroIdx];
+  const heroOrder = rowVisualOrder(heroIdx.map((index) => texts[index]!), direction).map((at2) => heroIdx[at2]!);
   const heroPlace: { index: number; lx: number; w: number }[] = [];
   {
     let lx = -heroW / 2;
@@ -615,11 +638,13 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
 
   // timing of the cascade
   const heroFirst = Math.min(...heroIdx.map(startOf));
-  const avail = exitFrom - heroFirst;
+  // A very short cue has its exit right after the hero lands: the cascade then runs to the cut.
+  const cEnd = exitFrom - heroFirst >= 100 ? exitFrom : exitTo;
+  const avail = cEnd - heroFirst;
   const { beat, steps, ruleDur: ruleDur0 } = cascadeBeats(avail);
   const pattern = CASCADE_PATTERNS[heroNumber % CASCADE_PATTERNS.length]!.slice(-steps);
-  const ruleStart = Math.round(Math.min(heroFirst + steps * beat, exitFrom - 90));
-  const ruleDur = Math.max(60, Math.min(ruleDur0, exitFrom - ruleStart));
+  const ruleStart = Math.round(Math.max(heroFirst, Math.min(heroFirst + steps * beat, cEnd - 40)));
+  const ruleDur = Math.max(40, Math.min(ruleDur0, cEnd - ruleStart));
 
   // lockup rows above and below
   const swap = (heroNumber + (seed & 1)) % 2 === 1;
@@ -657,8 +682,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   for (const hp of heroPlace) {
     const s = Math.round(heroEnter(hp.index));
     const p0 = pieceAt(hp.lx, hp.w);
-    const clip = wipeClip(frHero, 0, 0, 0, dr0, s, exitTo);
-    const fullClip: Clip = { x1: clip.x1, x2: clip.x2, y1: frame(s, 0), y2: frame(s, space.canvas.height) };
+    const fullClip = wipeClip(frHero, 0, dr0, s, exitTo);
     pieces.push({
       id: `cascade:${cueNumber}:h${hp.index}`,
       kind: "text",
@@ -687,7 +711,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     pattern.forEach((mode, step) => {
       if (mode === "none") return;
       const from = Math.round(Math.max(heroFirst + step * beat, s));
-      const to = Math.round(Math.min(heroFirst + (step + 1) * beat, exitFrom));
+      const to = Math.round(Math.min(heroFirst + (step + 1) * beat, cEnd));
       if (to <= from) return;
       for (const k of echoKs) {
         const dx = horizontal ? (mode === "stair" ? -k * stepH : mode === "stair2" ? k * stepH : k * stepH) : mode === "stair" ? -k * stepX : mode === "stair2" ? k * stepX : 0;
@@ -718,9 +742,9 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const heroBlockHalf = Math.max(widest, heroW) / 2;
   const kc = 1 * (heroSizeC / (HERO_MAX * u)) ** 0.5;
   const cbox = chevronBox(kc * u);
-  for (let step = 1; step < pattern.length; step++) {
+  for (let step = pattern.length > 1 ? 1 : 0; step < pattern.length; step++) {
     const from = Math.round(heroFirst + step * beat);
-    const to = Math.round(Math.min(heroFirst + (step + 1) * beat, exitFrom));
+    const to = Math.round(Math.min(heroFirst + (step + 1) * beat, cEnd));
     if (to <= from) continue;
     for (let i = 0; i < 2; i++) {
       const sd = step * 7 + i * 3 + cue.index * 31 + (seed % 97);
@@ -821,6 +845,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
 export const cascadeProgram: SceneProgram = {
   build(input) {
     const counters = { heroes: 0, lockups: 0 };
-    return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, input, counters))) };
+    return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, input, counters, input.cues.slice(number + 1).find((later) => later.words.length > 0)))) };
   },
 };

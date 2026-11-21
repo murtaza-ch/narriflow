@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { applyBrandColorsToScene } from "@narriflow/validators";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
 import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, sceneBoundsAt } from "./scene";
-import { CASCADE_DEMO, CASCADE_PATTERNS, cascadeBaseline, cascadeBeats, cascadeCase, cascadeHash, cascadeProgram, cascadeRand } from "./templates/cascade";
+import { CASCADE_DEMO, CASCADE_PATTERNS, cascadeBaseline, cascadeBeats, cascadeCase, cascadeHash, cascadeProgram, cascadeRand, cascadeShears } from "./templates/cascade";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 const { cues } = demoCues(CASCADE_DEMO);
@@ -241,7 +242,7 @@ describe("Cascade real speech and long clips", () => {
 });
 
 describe("Cascade scripts and edges", () => {
-  test("capitals only for cased scripts; an Urdu lockup is the mirror image: tipped +6, sheared +12, flush right", () => {
+  test("capitals only for cased scripts; an Urdu lockup is the mirror image: tipped +6, never sheared, flush right", () => {
     expect(cascadeCase("hello")).toBe("HELLO");
     expect(cascadeCase("اچھا")).toBe("اچھا");
     expect(cascadeCase("你好")).toBe("你好");
@@ -249,7 +250,7 @@ describe("Cascade scripts and edges", () => {
     const word = need<TextPiece>(urdu.find((piece) => piece.id === "cascade:1:w0"));
     const pose = evaluatePiece(word, 2600);
     expect(pose.rz).toBe(6);
-    expect(pose.skx).toBe(12);
+    expect(pose.skx).toBe(0);
     const second = need<TextPiece>(urdu.find((piece) => piece.id === "cascade:1:w1"));
     expect(pose.x).toBeGreaterThan(evaluatePiece(second, 2600).x);
     // The clip of a right-to-left cue keeps the left of the wipe edge.
@@ -272,6 +273,123 @@ describe("Cascade scripts and edges", () => {
           expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
         }
       }
+    }
+  });
+});
+
+describe("Cascade review fixes", () => {
+  const cuesOf = (lines: string[], options = {}, language = "en") => demoCues({ lines, options, language }).cues;
+  const safeW = 0.9 * 1080;
+  const wordOf = (list: readonly Piece[], cue: number, id: string) => need<TextPiece>(list.find((piece) => piece.id === `cascade:${cue}:${id}`));
+
+  test("1: a long support word beside a hero shrinks (row plus split offsets) to fit the safe width", () => {
+    const list = build(cuesOf(["I:h@200 pneumonoultramicroscopicsilicovolcanoconiosis:b@900"]));
+    const long = wordOf(list, 0, "w1");
+    const width = fakeMeasure(long.text, long.face, long.sizePx, long.letterSpacingEm).advance;
+    expect(width + 2 * 14 * (long.sizePx / 84)).toBeLessThanOrEqual(safeW + 1);
+    expect(long.sizePx).toBeLessThan(84);
+    // Its split copies sit inside the safe area too.
+    const copy = wordOf(list, 0, "w1a");
+    const box = sceneBoundsAt([copy], copy.fromMs + 1, fakeMeasure)!;
+    expect(box.x1).toBeGreaterThanOrEqual(0.05 * 1080 - 1);
+    expect(box.x2).toBeLessThanOrEqual(0.95 * 1080 + 1);
+  });
+
+  /** The outgoing cue's last ink is gone before the incoming cue's first face is opaque. */
+  const handoff = (list: readonly Piece[], out: number, into: number, hero: boolean) => {
+    const outgoing = ofCue(list, out).filter((piece) => piece.kind === "text");
+    const incoming = ofCue(list, into).filter((piece): piece is TextPiece => piece.kind === "text" && /^(w|h)\d$/.test(idOf(piece)));
+    const first = incoming.reduce((a, b) => (a.fromMs <= b.fromMs ? a : b));
+    const opaque = first.fromMs + (hero ? 0 : 50);
+    expect(Math.max(...outgoing.map((piece) => piece.toMs))).toBeLessThanOrEqual(opaque);
+  };
+
+  test("2: a 70 ms word and a 60 ms gap: the outgoing cue is gone before the next one is opaque, after at least 100 ms of reading", () => {
+    const fast = cuesOf(["I:b@70", "next:b@300"], { cueGap: 60 });
+    const list = build(fast);
+    handoff(list, 0, 1, false);
+    const main = wordOf(list, 0, "w0");
+    expect(main.toMs - (main.fromMs + 50)).toBeGreaterThanOrEqual(100);
+    expect(main.toMs).toBeGreaterThan(main.fromMs + 50);
+  });
+
+  test("2: overlapping speakers OLD / NEW never draw at full opacity in the same spot", () => {
+    const old = cuesOf(["A> OLD:b@300"], {});
+    const next = cuesOf(["B> NEW:b@300"], {});
+    const shifted: SceneCue[] = [
+      { ...old[0]!, index: 0, endMs: 650 },
+      { ...next[0]!, index: 1, startMs: 650, endMs: 1400, words: next[0]!.words.map((word) => ({ ...word, startMs: 650, endMs: 950 })) },
+    ];
+    const list = build(shifted);
+    handoff(list, 0, 1, false);
+    // A hero starting the next cue is opaque from its lead.
+    const hero = build(cuesOf(["I:b@70", "NOW:h@300"], { cueGap: 60 }));
+    handoff(hero, 0, 1, true);
+  });
+
+  test("3: Urdu keeps the mirrored tilt but is never sheared, and a wipe clip is full height", () => {
+    expect(cascadeShears("hello")).toBe(true);
+    expect(cascadeShears("42")).toBe(true);
+    for (const shaped of ["اچھا", "नमस्ते", "สวัสดี", "你好", "אב"]) expect(cascadeShears(shaped)).toBe(false);
+    const urdu = build(sceneEdgeDemo("urdu").cues);
+    const words = urdu.filter((piece): piece is TextPiece => piece.kind === "text" && /^cascade:1:w\d$/.test(piece.id));
+    expect(words.length).toBe(4);
+    for (const piece of words) {
+      const pose = evaluatePiece(piece, 2600);
+      expect(pose.skx).toBe(0);
+      expect(pose.rz).toBe(6);
+      expect(pose.clip!.y1).toBeLessThanOrEqual(0);
+      expect(pose.clip!.y2).toBeGreaterThanOrEqual(1920);
+    }
+    // A Latin word is still sheared.
+    expect(evaluatePiece(wordOf(scene, 0, "w1"), 1200).skx).toBe(-12);
+  });
+
+  test("4: a Hebrew run inside a left-to-right row is placed in visual order and Turkish i capitalises to a dotted İ", () => {
+    const list = build(cuesOf(["go:b אב:b גד:b now:b"], { rate: 200 }));
+    const first = wordOf(list, 0, "w1");
+    const second = wordOf(list, 0, "w2");
+    expect(evaluatePiece(second, 2000).x).toBeLessThan(evaluatePiece(first, 2000).x);
+    expect(cascadeCase("istanbul", "tr")).toBe("İSTANBUL");
+    const turkish = build(cuesOf(["istanbul:b"], {}, "tr"));
+    expect(wordOf(turkish, 0, "w0").text).toBe("İSTANBUL");
+  });
+
+  test("5: a 70 ms hero with no gap still gets a chevron beat and a rule that starts at its onset", () => {
+    const short = cuesOf(["I:h@70", "then:b@300"], { cueGap: 0 });
+    const list = build(short);
+    const mine = ofCue(list, 0);
+    const chevrons = mine.filter((piece) => /^chev\d\d$/.test(idOf(piece)));
+    expect(chevrons.length).toBeGreaterThanOrEqual(1);
+    const rules = mine.filter((piece) => /^rule\d+$/.test(idOf(piece)));
+    expect(rules.length).toBeGreaterThanOrEqual(1);
+    const onset = short[0]!.words[0]!.startMs;
+    for (const piece of [...rules, ...chevrons]) {
+      expect(piece.fromMs).toBeGreaterThanOrEqual(onset);
+      expect(piece.toMs).toBeGreaterThan(piece.fromMs);
+    }
+    // The rule is never drawn as an inverted clip.
+    for (const piece of rules) for (let t = piece.fromMs; t < piece.toMs; t += 4) {
+      const clip = evaluatePiece(piece, t).clip!;
+      expect(clip.x2).toBeGreaterThanOrEqual(clip.x1);
+    }
+  });
+
+  test("6: the brand map refuses colours that vanish on the dark backdrop", () => {
+    const preset = { primaryColor: "#FFFFFF", highlightColor: "#FF2D55", accentColor: "#1FE3FF" };
+    expect(applyBrandColorsToScene("cascade", preset, { primaryColor: "#000000", secondaryColor: "#111111" })).toEqual({});
+    expect(applyBrandColorsToScene("cascade", preset, { primaryColor: "#FFFFFF", secondaryColor: "#FFD400" })).toEqual({ primaryColor: "#FFFFFF", highlightColor: "#FFD400" });
+  });
+
+  test("7: the scan bar is drawn behind the white face, never over landed ink", () => {
+    const list = build(longClip(2));
+    const scans = list.filter((piece) => /^scan\d$/.test(idOf(piece)));
+    expect(scans.length).toBeGreaterThan(10);
+    for (const scan of scans) {
+      const cue = scan.id.split(":")[1]!;
+      const index = idOf(scan).slice(4);
+      const face = list.find((piece) => piece.id === `cascade:${cue}:w${index}`)!;
+      expect(scan.z).toBeLessThan(face.z);
     }
   });
 });
