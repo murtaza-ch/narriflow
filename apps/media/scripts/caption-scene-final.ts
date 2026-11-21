@@ -42,6 +42,7 @@ export const MOMENTS: Record<string, number[]> = {
   wallpaper: [2700, 3300, 6100],
   arthouse: [467, 800, 1700, 3433, 3700, 4033],
   ledge: [433, 1133, 2367, 2700, 2933, 5800],
+  ransom: [467, 1300, 1833, 3300, 6500],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
