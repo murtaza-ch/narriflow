@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, lerp, prog } from "./ease";
 import type { SceneCue } from "./input";
-import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
+import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, pieceLocalBox, sceneBoundsAt } from "./scene";
+import { pathBounds } from "./shapes";
 import { RANSOM_DEMO, ransomBoil, ransomCase, ransomHash, ransomProgram, ransomRng, ransomTorn } from "./templates/ransom";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -109,9 +110,9 @@ describe("Ransom motion", () => {
     expect(evaluatePiece(tile, start + 320).sx).toBeCloseTo(1, 2);
   });
 
-  test("the exit is the roll: a paper bar that sweeps across, inside the safe area, in the cue's last 80 to 200 ms", () => {
+  test("the exit is the roll: a paper bar that sweeps across, inside the safe area, in the cue's last 40 to 200 ms", () => {
     const roll = need<ShapePiece>(scene.find((piece) => piece.id === "ransom:0:roll"));
-    expect(roll.toMs - roll.fromMs).toBeGreaterThanOrEqual(80);
+    expect(roll.toMs - roll.fromMs).toBeGreaterThanOrEqual(40);
     expect(roll.toMs - roll.fromMs).toBeLessThanOrEqual(200);
     expect(roll.toMs).toBeLessThanOrEqual(cues[0]!.endMs + 50);
     const early = evaluatePiece(roll, roll.fromMs + 2).x;
@@ -215,12 +216,12 @@ describe("Ransom real speech", () => {
     }
   });
 
-  test("each exit is 80 to 200 ms and ends at most 50 ms into the next cue", () => {
+  test("each exit is 40 to 200 ms and ends at most 50 ms into the next cue", () => {
     const fast = demoCues({ ...RANSOM_DEMO, options: { ...RANSOM_DEMO.options, cueGap: 60 } }).cues;
     const list = build(fast);
     fast.forEach((cue, number) => {
       const roll = need<ShapePiece>(list.find((piece) => piece.id === `ransom:${number}:roll`));
-      expect(roll.toMs - roll.fromMs).toBeGreaterThanOrEqual(80);
+      expect(roll.toMs - roll.fromMs).toBeGreaterThanOrEqual(40);
       expect(roll.toMs - roll.fromMs).toBeLessThanOrEqual(200);
       expect(roll.toMs).toBeLessThanOrEqual(cue.endMs + 50);
     });
@@ -289,5 +290,133 @@ describe("Ransom scripts, fits and edges", () => {
     expect(ransomTorn(500, 100, 3, ransomRng(9), 1)).toEqual(torn);
     expect(Math.min(...torn.map(([, y]) => y))).toBeGreaterThanOrEqual(-4);
     expect(JSON.stringify(build(cues))).toBe(JSON.stringify(build(cues)));
+  });
+});
+
+/** The piece's whole drawing is inside its clip at `t`. */
+const whole = (piece: Piece, t: number) => {
+  const full = pieceBounds({ ...piece, clip: undefined }, t, fakeMeasure);
+  const cut = pieceBounds(piece, t, fakeMeasure);
+  return full !== null && cut !== null && cut.x2 - cut.x1 >= full.x2 - full.x1 - 1 && cut.y2 - cut.y1 >= full.y2 - full.y1 - 1;
+};
+const mkCue = (index: number, startMs: number, endMs: number, words: { text: string; startMs: number; endMs: number; role?: "hero" | "body" | "minor" }[], language = "en"): SceneCue => ({
+  index,
+  startMs,
+  endMs,
+  speaker: 0,
+  language,
+  words: words.map((word) => ({ ...word, role: word.role ?? "body", key: null })),
+});
+
+describe("Ransom review fixes", () => {
+  test("1. a cue shifted into the safe area by the anchor keeps every word (clips follow the block, not the canvas edge)", () => {
+    const cue = mkCue(0, 300, 3600, [
+      { text: "taste", startMs: 400, endMs: 800 },
+      { text: "skill", startMs: 900, endMs: 1500, role: "hero" },
+      { text: "nobody", startMs: 1600, endMs: 2000 },
+      { text: "makes", startMs: 2100, endMs: 2500 },
+    ]);
+    for (const yPct of [10, 90]) {
+      const list = build([cue], { anchor: { xPct: 50, yPct } });
+      const t = 3000;
+      for (const piece of texts(list)) {
+        expect(evaluatePiece(piece, t).visible).toBe(true);
+        expect(whole(piece, t)).toBe(true);
+      }
+      expect(texts(list).some((piece) => piece.text === "MAKES")).toBe(true);
+    }
+  });
+
+  test("2. a fast hero keeps the whole word readable for 150 ms after its last tile settles", () => {
+    const first = mkCue(0, 1000, 1160, [{ text: "unbelievable", startMs: 1000, endMs: 1100, role: "hero" }]);
+    const second = mkCue(1, 1160, 2600, [{ text: "next", startMs: 1160, endMs: 1500 }]);
+    const list = build([first, second]);
+    const tiles = texts(ofCue(list, 0)).filter((piece) => piece.id.includes(":h0l"));
+    expect(tiles).toHaveLength(12);
+    const ready = (t: number) => tiles.every((piece) => {
+      const pose = evaluatePiece(piece, t);
+      return pose.visible && pose.o > 0.9 && Math.abs(pose.sx - 1) < 0.03 && whole(piece, t);
+    });
+    let run = 0;
+    let best = 0;
+    for (let t = 800; t < 1400; t += 2) {
+      run = ready(t) ? run + 2 : 0;
+      best = Math.max(best, run);
+    }
+    expect(best).toBeGreaterThanOrEqual(150);
+  });
+
+  test("3. a mixed right-to-left and left-to-right row reveals each word at its own start and never takes one back", () => {
+    const starts = [400, 900, 1400, 1900];
+    const cue = mkCue(0, 300, 3200, ["یہ", "ABC", "DEF", "بہت"].map((text, at) => ({ text, startMs: starts[at]!, endMs: starts[at]! + 400 })), "ur");
+    const list = build([cue]);
+    const words = texts(list).filter((piece) => /:r\d+w\d$/.test(piece.id));
+    expect(words).toHaveLength(4);
+    for (const [at, text] of ["یہ", "ABC", "DEF", "بہت"].entries()) {
+      const piece = need<TextPiece>(words.find((word) => word.text === text));
+      let shown = -1;
+      for (let t = piece.fromMs; t < piece.toMs; t += 5) {
+        const visible = evaluatePiece(piece, t).o > 0.5 && whole(piece, t);
+        if (visible && shown < 0) shown = t;
+        if (shown >= 0 && t < 2800) expect(visible).toBe(true);
+      }
+      expect(shown).toBeGreaterThanOrEqual(starts[at]! - 100);
+      expect(shown).toBeLessThanOrEqual(starts[at]! + 100);
+    }
+  });
+
+  test("4. the largest size on landscape stays inside the safe area, entrance and roll included", () => {
+    const cue = mkCue(0, 300, 3600, [
+      { text: "taste", startMs: 400, endMs: 800 },
+      { text: "skill", startMs: 900, endMs: 1500, role: "hero" },
+      { text: "nobody", startMs: 1600, endMs: 2000 },
+      { text: "makes", startMs: 2100, endMs: 2500 },
+    ]);
+    for (const canvas of [{ width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
+      const list = build([cue], { canvas, scale: 200 / 118 });
+      for (let t = 300; t < 3700; t += 16) {
+        const box = sceneBoundsAt(list, t, fakeMeasure);
+        if (!box) continue;
+        expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 1);
+        expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
+        expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 1);
+        expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 1);
+      }
+    }
+  });
+
+  test("5. a strip is sized from its ink: a tall script stays on the paper and the scribble sits below it", () => {
+    const deep = (text: string, face: Parameters<typeof fakeMeasure>[1], size: number, ls: number) => ({ ...fakeMeasure(text, face, size, ls), inkBottom: /[\u0600-\u06FF]/.test(text) ? 0.5 * size : 0.2 * size });
+    const list = build(sceneEdgeDemo("urdu").cues, { measure: deep });
+    for (const cueNumber of [0, 1]) {
+      const mine = ofCue(list, cueNumber);
+      for (const strip of mine.filter((piece): piece is ShapePiece => piece.kind === "shape" && /:r\d+s$/.test(piece.id))) {
+        const row = strip.id.replace(/s$/, "");
+        const bottom = pathBounds(strip.path).y2 - strip.origin!.dy;
+        for (const word of texts(mine).filter((piece) => piece.id.startsWith(`${row}w`))) {
+          const local = pieceLocalBox(word, deep);
+          expect(local.y2 - word.origin!.dy).toBeLessThanOrEqual(bottom + 0.5);
+        }
+      }
+    }
+    const second = ofCue(list, 1);
+    const strips = second.filter((piece): piece is ShapePiece => piece.kind === "shape" && /:r\d+s$/.test(piece.id));
+    const last = strips[strips.length - 1]!;
+    const ink = need<ShapePiece>(second.find((piece) => piece.id.endsWith(":q")));
+    const t = Math.max(ink.fromMs, last.fromMs) + 600;
+    const lastBottom = evaluatePiece(last, t).y + (pathBounds(last.path).y2 - last.origin!.dy);
+    const inkTop = evaluatePiece(ink, t).y + Math.min(...ink.path.flatMap((cmd) => (cmd[0] === "Z" ? [] : [cmd[cmd.length - 1] as number]))) - 3.5;
+    expect(inkTop).toBeGreaterThanOrEqual(lastBottom - 1);
+  });
+
+  test("6. a clip whose edges meet is zero width, never inverted", () => {
+    const { cues: fast } = demoCues({ lines: ["first:b@55 third:b@55", "x:b@55 y:b@55"], options: { gap: 0, cueGap: 0, lead: 0, tail: 0 } });
+    const list = build(fast);
+    for (let t = 0; t < 600; t += 5) {
+      for (const piece of list) {
+        const pose = evaluatePiece(piece, t);
+        if (pose.visible && pose.clip) expect(pose.clip.x1).toBeLessThanOrEqual(pose.clip.x2 + 1e-6);
+      }
+    }
   });
 });

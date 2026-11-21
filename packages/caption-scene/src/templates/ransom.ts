@@ -1,5 +1,5 @@
 import type { DemoScript } from "../demo";
-import { EASES, type Frames, clamp, lerp, prog } from "../ease";
+import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, greedyRows, rowVisualOrder, sceneSpace } from "../layout";
@@ -68,6 +68,8 @@ const BAND = 26;
 const EXIT = 200;
 const HOLD = 150;
 const CLEAR = 50;
+/** The shortest roll: a cue that ends too soon for the full sweep gets a quicker one, never a shorter hold. */
+const EXIT_MIN = 40;
 
 const BIG_FACE = "Alfa Slab One" as const;
 const SMALL_FACE = "Anton" as const;
@@ -316,8 +318,17 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         size *= limit / d.natural;
         d = dims(size);
       }
-      const padT = (isSmall ? 0.12 : 0.08) * size;
-      const padB = (isSmall ? 0.1 : 0.04) * size;
+      // The paper holds the words' real ink (a fallback face's tall or deep script reaches past a Latin line box).
+      const base = baselineOf(face, size);
+      let up = 0;
+      let down = 0;
+      for (const at of idx) {
+        const m = input.measure(words[at]!.text, face, size, ls);
+        up = Math.max(up, -m.inkTop);
+        down = Math.max(down, m.inkBottom);
+      }
+      const padT = Math.max((isSmall ? 0.12 : 0.08) * size, up + 0.03 * size - base);
+      const padB = Math.max((isSmall ? 0.1 : 0.04) * size, down + 0.03 * size - (size - base));
       const order = rowVisualOrder(idx.map((at) => words[at]!.text), rtl ? "rtl" : "ltr");
       const lefts = new Array<number>(idx.length);
       let x = d.padX;
@@ -325,7 +336,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         lefts[at] = x;
         x += d.advs[at]! + d.gap;
       }
-      return { kind: "strip", idx, small: isSmall, size, face, ls, padX: d.padX, padT, padB, w: d.natural, h: padT + size + padB, lefts, advs: d.advs, baseline: padT + baselineOf(face, size), top: 0 };
+      return { kind: "strip", idx, small: isSmall, size, face, ls, padX: d.padX, padT, padB, w: d.natural, h: padT + size + padB, lefts, advs: d.advs, baseline: padT + base, top: 0 };
     };
     const stripRows = (chunk: readonly number[]) => {
       const isSmall = chunk.every((at) => words[at]!.minor);
@@ -349,9 +360,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
           const f = spec.sc * hf;
           const pad = TILE_PAD(spec.face);
           const w = adv(spec.ch, spec.face, f, 0) + 2 * pad.x * f;
-          const h = f * (1 + pad.t + pad.b);
-          const padT = pad.t * f;
-          const entry = { w, h, f, padT, delta: padT + baselineOf(spec.face, f) - h / 2, lx: x + w / 2 };
+          const base = baselineOf(spec.face, f);
+          const m = input.measure(spec.ch, spec.face, f, 0);
+          const padT = Math.max(pad.t * f, -m.inkTop + 0.03 * f - base);
+          const padB = Math.max(pad.b * f, m.inkBottom + 0.03 * f - (f - base));
+          const h = f + padT + padB;
+          const entry = { w, h, f, padT, delta: padT + base - h / 2, lx: x + w / 2 };
           x += w + gap;
           return entry;
         });
@@ -425,10 +439,13 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     });
     return { rows, height, bandOf };
   };
+  // The block fits the canvas's real safe height with room for the entrance (tiles and scrap fly in from above) and the roll.
+  const safeH = safe.y2 - safe.y1;
+  const maxBlock = Math.max(0.4 * safeH, Math.min(MAX_BLOCK * u, safeH - 130 * u));
   let k = 1;
   let layout = lay(k);
-  for (let tries = 0; tries < 6 && layout.height > MAX_BLOCK * u; tries++) {
-    k *= (MAX_BLOCK * u) / layout.height;
+  for (let tries = 0; tries < 10 && layout.height > maxBlock * 1.0005; tries++) {
+    k *= maxBlock / layout.height;
     layout = lay(k);
   }
   const { rows } = layout;
@@ -437,21 +454,36 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const blockBottom = BY + layout.height / 2;
 
   // --- timing ---
-  const letterTotal = words.reduce((s, w) => s + (w.letters ? w.letters.length : 0), 0);
-  const stagger = Math.min(26, 150 / Math.max(1, letterTotal));
+  // Entrances (the strip's tear, the tiles' flight) run at `speed` of the sample's pace; a cue that ends too soon for the whole
+  // word to be readable for HOLD ms after it lands has them compressed, then the roll shortened, never the hold.
+  const letterTotal = words.reduce((total, w) => total + (w.letters ? w.letters.length : 0), 0);
+  const stagger0 = Math.min(26, 150 / Math.max(1, letterTotal));
+  const latestExit = cue.endMs + CLEAR - EXIT_MIN;
+  let speed = 1;
+  for (const row of rows) {
+    if (row.kind === "strip") {
+      for (const at of row.idx) speed = Math.min(speed, (latestExit - HOLD - cue.words[at]!.startMs + 70) / 200);
+    } else {
+      for (const hw of row.words) speed = Math.min(speed, (latestExit - HOLD - cue.words[hw.word.index]!.startMs + 170) / ((hw.specs.length - 1) * stagger0 + 300));
+    }
+  }
+  speed = clamp(speed, 0.25, 1);
+  const GROW = 200 * speed;
+  const TILE = 300 * speed;
+  const stagger = stagger0 * speed;
   const tileStart = (word: Word, li: number) => cue.words[word.index]!.startMs - 170 + li * stagger;
   let lastLand = cue.startMs;
   for (const row of rows) {
-    if (row.kind === "strip") for (const at of row.idx) lastLand = Math.max(lastLand, cue.words[at]!.startMs - 70 + 200);
+    if (row.kind === "strip") for (const at of row.idx) lastLand = Math.max(lastLand, cue.words[at]!.startMs - 70 + GROW);
     else {
       for (const hw of row.words) {
-        for (let li = 0; li < hw.specs.length; li++) lastLand = Math.max(lastLand, tileStart(hw.word, li) + 300);
+        for (let li = 0; li < hw.specs.length; li++) lastLand = Math.max(lastLand, tileStart(hw.word, li) + TILE);
       }
     }
   }
   // The exit never starts before the last word has landed and been readable, and ends at most 50 ms into the next cue.
-  const exitFrom = Math.round(Math.min(Math.max(cue.endMs - EXIT, lastLand + HOLD), cue.endMs + CLEAR - 80));
-  const exitTo = exitFrom + Math.round(clamp(cue.endMs + CLEAR - exitFrom, 80, EXIT));
+  const exitFrom = Math.round(Math.min(Math.max(cue.endMs - EXIT, lastLand + HOLD), latestExit));
+  const exitTo = exitFrom + Math.round(clamp(cue.endMs + CLEAR - exitFrom, EXIT_MIN, EXIT));
 
   // --- the block's extent (the roll sweeps it) and the clip every piece shares ---
   // Tilt direction alternates on a running row counter across the whole clip; the hero row moves 0.4x as much.
@@ -472,12 +504,19 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const L = Math.min(...xs) - 24 * u;
   const R = Math.max(...xs) + 24 * u;
   const FAR = 300 * u;
-  const yBand: [number, number] = [Math.max(0, blockTop - 140 * u), Math.min(input.canvas.height, blockBottom + 140 * u)];
+  // Block-relative, not clamped to the canvas: the safe-area shift moves clips with their pieces.
+  const yBand: [number, number] = [blockTop - 140 * u, blockBottom + 140 * u];
   const still = (v: number): Frames => [[0, v]];
+  const meet = (grow: Frames, edge: Frames): Frames => {
+    const times = [...grow, ...edge].map((frame) => frame[0]);
+    const pick = rtl ? Math.min : Math.max;
+    return sampleFrames((t) => pick(kf(t, grow), kf(t, edge)), times, 0.2, { range: [Math.min(...times), Math.max(...times)], wholeMs: true, simplify: true });
+  };
   const clipOf = (from: number, grow: Frames | null): Clip => {
     const edge: Frames = rtl ? [[from, R], [exitFrom, R], [exitTo, L, "inOut"]] : [[from, L], [exitFrom, L], [exitTo, R, "inOut"]];
     const open: Frames = still(rtl ? L - FAR : R + FAR);
-    const far = grow ?? open;
+    // A clip whose edges meet is zero wide: the roll's edge may pass a strip's tear edge before the tear has finished.
+    const far = grow ? meet(grow, edge) : open;
     return rtl ? { x1: far, x2: edge, y1: still(yBand[0]), y2: still(yBand[1]) } : { x1: edge, x2: far, y1: still(yBand[0]), y2: still(yBand[1]) };
   };
 
@@ -528,18 +567,25 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o };
       // The strip tears longer as each later word is spoken (distance from the leading edge).
       const order = [...row.idx.keys()].sort((a, b) => cue.words[row.idx[a]!]!.startMs - cue.words[row.idx[b]!]!.startMs);
-      const edgeD = order.map((pos) => (rtl ? row.w - row.lefts[pos]! + row.padX : row.lefts[pos]! + row.advs[pos]! + row.padX));
+      const rawD = order.map((pos) => (rtl ? row.w - row.lefts[pos]! + row.padX : row.lefts[pos]! + row.advs[pos]! + row.padX));
+      // The edge only ever grows, so a row whose spoken order is not its visual order (an English phrase in Urdu) never takes paper back.
+      const edgeD = rawD.map((_d, i) => Math.max(...rawD.slice(0, i + 1)));
       edgeD[edgeD.length - 1] = row.w;
       const startsOf = order.map((pos) => cue.words[row.idx[pos]!]!.startMs);
       const growth = (t: number) => {
         let e = edgeD[0]!;
-        for (let i = 1; i < order.length; i++) e = lerp(e, edgeD[i]!, EASES.outExpo(prog(t, startsOf[i]! - 70, 200)));
+        for (let i = 1; i < order.length; i++) e = lerp(e, edgeD[i]!, EASES.outExpo(prog(t, startsOf[i]! - 70, GROW)));
         return e;
       };
+      // A word the edge has already passed (it is spoken after a word that sits further along the row) shows at its own start.
+      const gated = new Map<number, number>();
+      order.forEach((pos, i) => {
+        if (i > 0 && rawD[i]! < Math.max(...rawD.slice(0, i))) gated.set(pos, Math.round(startsOf[i]! - 70));
+      });
       const cosT = Math.cos((tilt * Math.PI) / 180);
       const xEdge = (t: number) => P.x + sgn * (growth(t) - row.w / 2) * cosT + sgn * 3 * u;
-      const growEnd = Math.round(Math.max(...startsOf) - 70 + 200);
-      const growEdges = [...startsOf.flatMap((s) => [s - 70, s + 130]), from];
+      const growEnd = Math.round(Math.max(...startsOf) - 70 + GROW);
+      const growEdges = [...startsOf.flatMap((s) => [s - 70, s - 70 + GROW]), from];
       const gFrames = sampleFrames(xEdge, growEdges, 0.3, { range: [from, growEnd], wholeMs: true, simplify: true });
       const grow: Frames = [...gFrames.map((f) => [f[0], f[1]] as [number, number]), [growEnd + 1, rtl ? L - FAR : R + FAR]];
       const clip = clipOf(from, grow);
@@ -555,7 +601,9 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         shape(`${base}s`, band + 1, from, exitTo, strip.path, { dx: pivot.x - strip.minX, dy: pivot.y - strip.minY }, track, { fill: { colour: fill }, clip }),
       );
       row.idx.forEach((at, pos) => {
-        pieces.push(text(`${base}w${pos}`, band + 3, from, exitTo, words[at]!.text, row.face, row.size, row.ls, ink, { dx: pivot.x - row.lefts[pos]!, dy: pivot.y - row.baseline }, track, { clip }));
+        const gate = gated.get(pos);
+        const wordTrack: Track = gate === undefined ? track : { ...track, o: [[from, 0], [Math.max(from, gate), 0], [Math.max(from, gate) + 43, 1]] };
+        pieces.push(text(`${base}w${pos}`, band + 3, from, exitTo, words[at]!.text, row.face, row.size, row.ls, ink, { dx: pivot.x - row.lefts[pos]!, dy: pivot.y - row.baseline }, wordTrack, { clip }));
       });
       // A translucent tape scrap pins the start of the strip, a little different every row.
       const tr = ransomRng(seed ^ Math.imul(ordinal + 17, 0x165667b1));
@@ -607,9 +655,9 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
           const d = hw.dims[li]!;
           const t0 = tileStart(hw.word, li);
           const from = Math.round(t0) + 2;
-          const settle = Math.round(t0 + 300);
+          const settle = Math.round(t0 + TILE);
           const tilePose = (t: number) => {
-            const p = prog(t, t0, 300);
+            const p = prog(t, t0, TILE);
             const settled = t >= settle ? 1 : 0;
             const b = settled ? ransomBoil(spec.id, Math.floor(t / BOIL), 1.2) : { x: 0, y: 0, r: 0 };
             const tx = lerp(spec.fromX * u, 0, EASES.outExpo(p)) + b.x * u * settled;
@@ -623,12 +671,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
             };
           };
           const cuts = [settle, ...boilCuts(settle, exitTo)];
-          const edges = [t0, t0 + 300];
+          const edges = [t0, t0 + TILE];
           const tx = jumpFrames((t) => tilePose(t).x, from, exitTo, cuts, edges, 0.3);
           const ty = jumpFrames((t) => tilePose(t).y, from, exitTo, cuts, edges, 0.3);
           const trz = jumpFrames((t) => tilePose(t).rz, from, exitTo, cuts, edges, 0.05);
           const ts = sampleFrames((t) => tilePose(t).s, edges, 0.004, { range: [from, Math.max(from + 1, settle)], wholeMs: true, simplify: true });
-          const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o: [[from, 0], [Math.round(t0 + 60), 1]] };
+          const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o: [[from, 0], [Math.max(from + 1, Math.round(t0 + 0.2 * TILE)), 1]] };
           const clip = clipOf(from, null);
           const poly = anchored(spec.poly.map(([fx, fy]) => [fx * d.w, fy * d.h] as Pt));
           const id = `ransom:${cueNumber}:h${hw.word.index}l${li}`;
@@ -667,7 +715,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const from = at + 2;
       const rest = side * (8 + dr() * 10);
       const fall = (t: number) => outBack18(prog(t, at, dur));
-      const yTrack = sampleFrames((t) => cy - 110 * u * (1 - fall(t)), [at, at + dur], 0.3, { range: [from, at + dur], wholeMs: true, simplify: true });
+      const yTrack = sampleFrames((t) => cy - 70 * u * (1 - fall(t)), [at, at + dur], 0.3, { range: [from, at + dur], wholeMs: true, simplify: true });
       const sTrack = sampleFrames((t) => lerp(0.5, 1, fall(t)), [at, at + dur], 0.004, { range: [from, at + dur], wholeMs: true, simplify: true });
       pieces.push(
         shape(`ransom:${cueNumber}:x`, band + 1, from, exitTo, scrap.path, { dx: sw / 2 - scrap.minX, dy: sh / 2 - scrap.minY }, {
@@ -706,8 +754,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         const py = cyl;
         const wipe: Frames = rtl ? [[at, px + W / 2 + 12 * u], [at + dur, px - W / 2 - 12 * u, "outExpo"], [at + dur + 1, L - FAR]] : [[at, px - W / 2 - 12 * u], [at + dur, px + W / 2 + 12 * u, "outExpo"], [at + dur + 1, R + FAR]];
         const mk = (id: string, z: number, width: number, colour: string): ShapePiece => {
-          const base = clipOf(at + 2, null);
-          const clip: Clip = rtl ? { ...base, x1: wipe } : { ...base, x2: wipe };
+          const clip = clipOf(at + 2, wipe);
           return shape(id, z, at + 2, exitTo, path, { dx: 0, dy: 0 }, { x: [[at + 2, px]], y: [[at + 2, py]], rz: [[at + 2, f.tilt]], o: [[at + 2, 0], [at + 22, 1]] }, { stroke: { widthPx: width, colour }, clip });
         };
         pieces.push(mk(`ransom:${cueNumber}:qu`, band + 5, 14 * u, paper), mk(`ransom:${cueNumber}:q`, band + 6, 7 * u, NAVY));
