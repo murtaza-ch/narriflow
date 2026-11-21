@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
-import { captionColourContrast } from "@narriflow/validators";
+import { captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import { type Measure, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
 import { pathBounds } from "./shapes";
 import { LEDGE_DEMO, ledgeBarWidth, ledgeBaseline, ledgeCase, ledgeHash, ledgeProgram, ledgeRng, ledgeShuffle } from "./templates/ledge";
@@ -134,7 +134,7 @@ describe("Ledge motion", () => {
     expect(rested.sx).toBeCloseTo(1, 2);
     const icons = [1, 2, 4].map((cue) => String(need<ShapePiece>(find(scene, `${cue}:stk2`)).path.length));
     expect(new Set(icons).size).toBe(3);
-    expect(need<ShapePiece>(find(scene, "1:stk2")).fill?.colour).toBe("#F0323C");
+    expect(need<ShapePiece>(find(scene, "1:stk2")).fill?.colour).toBe("#E82D37");
   });
 
   test("a cue without a key word gets a smaller cube on its last bar, ticks, dashes and popcorn too", () => {
@@ -159,24 +159,22 @@ describe("Ledge motion", () => {
 });
 
 describe("Ledge real speech and long clips", () => {
-  test("fast speech: with 60 ms between cues every word stays visible, uncovered and opaque for 150 ms after it lands", () => {
+  test("fast speech: with 60 ms between cues every word is there from its speech, opaque and uncovered until the exit, which waits 150 ms or the next entrance", () => {
     const fast = demoCues({ ...LEDGE_DEMO, options: { ...LEDGE_DEMO.options, cueGap: 60 } }).cues;
     const list = build(fast);
     fast.forEach((cue, number) => {
+      const nextFrom = number + 1 < fast.length ? Math.min(...ofCue(list, number + 1).map((piece) => piece.fromMs)) : Number.POSITIVE_INFINITY;
       cue.words.forEach((word, index) => {
         const piece = need<TextPiece>(find(list, `${number}:w${index}`));
-        const hero = word.role === "hero";
-        // A cue that follows too closely is held back (never by more than 500 ms), so the word lands from its own piece's start.
-        expect(piece.fromMs).toBeLessThanOrEqual(word.startMs - 85 + 500);
-        const landed = piece.fromMs + 230 + (hero ? 70 : 0);
-        const advance = fakeMeasure(piece.text, "Anton", piece.sizePx, 0.012).advance;
-        for (let t = landed; t <= landed + 150; t += 10) {
+        // Entrances are locked to speech: a word's piece starts before the word does.
+        expect(piece.fromMs).toBeLessThanOrEqual(word.startMs);
+        const ready = readyOf(piece);
+        const exitFrom = exitOf(piece).from;
+        expect(exitFrom).toBeGreaterThanOrEqual(Math.min(ready + 150, nextFrom - 25));
+        for (let t = ready; t < exitFrom; t += 10) {
           const pose = evaluatePiece(piece, t);
           expect(pose.visible).toBe(true);
           expect(pose.o).toBeGreaterThan(0.9);
-          // The clip's edge is vertical, the bar's end leans with the turn: allow the lean between baseline and centre line.
-          const lean = 0.45 * piece.sizePx * Math.abs(Math.sin((pose.rz * Math.PI) / 180));
-          expect(pose.clip!.x2).toBeGreaterThanOrEqual(pose.x + advance * Math.cos((pose.rz * Math.PI) / 180) - lean);
         }
       });
     });
@@ -281,6 +279,24 @@ describe("Ledge scripts and edges", () => {
 });
 
 const word = (text: string, startMs: number, endMs: number, role: "hero" | "body" | "minor" = "body") => ({ text, startMs, endMs, role, key: null });
+/** The first ms a word's clip has uncovered all of it, and when its piece starts to leave (the track's opacity frames). */
+const readyOf = (piece: TextPiece): number => {
+  const advance = fakeMeasure(piece.text, "Anton", piece.sizePx, 0.012).advance;
+  for (let t = piece.fromMs; t < piece.toMs; t++) {
+    const pose = evaluatePiece(piece, t);
+    const lean = 0.45 * piece.sizePx * Math.abs(Math.sin((pose.rz * Math.PI) / 180));
+    const far = pose.x + advance * Math.cos((pose.rz * Math.PI) / 180) * (pose.rz > 0 ? -1 : 1);
+    const open = pose.rz > 0 ? pose.clip!.x1 <= far + lean : pose.clip!.x2 >= far - lean;
+    if (open) return t;
+  }
+  return piece.toMs;
+};
+const exitOf = (piece: Piece): { from: number; to: number } => {
+  const frames = piece.track.o!;
+  // A cut has no fade: it leaves exactly at the piece's end.
+  if (frames.length < 3) return { from: piece.toMs, to: piece.toMs };
+  return { from: frames[frames.length - 2]![0], to: frames[frames.length - 1]![0] };
+};
 const cueOf = (index: number, startMs: number, endMs: number, words: ReturnType<typeof word>[], language: string | null = "en"): SceneCue => ({ index, startMs, endMs, speaker: null, language, words });
 
 describe("Ledge review fixes", () => {
@@ -305,9 +321,9 @@ describe("Ledge review fixes", () => {
         }
       }
     }
-    // The delayed cue still arrives, within the lag the template allows.
+    // The next cue is not delayed: it starts before its own first word is spoken.
     const now = need<TextPiece>(find(list, "1:w0"));
-    expect(now.fromMs).toBeLessThanOrEqual(1180 - 85 + 500);
+    expect(now.fromMs).toBeLessThanOrEqual(1180);
   });
 
   test("2: a script taller than Anton gets a bar and baseline that hold its measured ink inside the keylines", () => {
@@ -353,7 +369,7 @@ describe("Ledge review fixes", () => {
     const canvas = { width: 1920, height: 1080 };
     const list = build([cueOf(0, 1000, 3000, words)], { canvas, scale: 2.5, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } });
     const end = Math.max(...list.map((piece) => piece.toMs));
-    for (let t = 0; t < end; t += 8) {
+    for (let t = 0; t < end; t++) {
       const box = sceneBoundsAt(list, t, fakeMeasure);
       if (!box) continue;
       expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
@@ -371,19 +387,105 @@ describe("Ledge review fixes", () => {
       expect(kinds.filter((id) => /^tk\d$/.test(id))).toHaveLength(3);
       expect(kinds.filter((id) => /^ds\d$/.test(id)).length).toBeGreaterThanOrEqual(1);
       expect(kinds.filter((id) => /^pc\d[df]$/.test(id))).toHaveLength(4);
-      // And the cube has its window: it is on screen for at least 200 ms before the cue leaves.
+      // And the cube has a window of its own before the cue leaves (a cut when the next cue is that close).
       const cube = need<ShapePiece>(find(list, "0:stk1"));
-      expect(cube.toMs - cube.fromMs).toBeGreaterThanOrEqual(200);
+      expect(cube.toMs - cube.fromMs).toBeGreaterThanOrEqual(67);
     }
   });
 
-  test("6: the dashes change colour when the brand's depth colour is as red as they are", () => {
+  test("6: the dashes change colour when the brand's depth colour is as red as they are, and stay red on the catalogue's yellow", () => {
     const red = "#F0323C";
     const branded = build(cues, { colours: { ...COLOURS, highlight: red } });
     const dash = need<ShapePiece>(find(branded, "0:ds0"));
     expect(dash.fill?.colour).not.toBe(red);
     expect(captionColourContrast(dash.fill!.colour, red)).toBeGreaterThanOrEqual(3);
-    // On the default yellow they stay red.
-    expect(need<ShapePiece>(find(scene, "0:ds0")).fill?.colour).toBe(red);
+    // The shipping row's own colours: the dashes are red, and red reads on its yellow depth face.
+    const row = captionSceneMeta("ledge").colours;
+    const shipped = build(cues, { colours: { ...row, shadow: "#000000" } });
+    const kept = need<ShapePiece>(find(shipped, "0:ds0"));
+    expect(kept.fill?.colour).toBe("#E82D37");
+    expect(captionColourContrast("#E82D37", row.highlight)).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("Ledge re-check fixes", () => {
+  const run = (count: number, gap: number, wordMs: number, wordsPer: number): SceneCue[] => {
+    const list: SceneCue[] = [];
+    let at = 1000;
+    for (let k = 0; k < count; k++) {
+      const words = Array.from({ length: wordsPer }, (_, w) => word(["so", "go", "now", "yes"][w % 4]!, at + w * wordMs, at + (w + 1) * wordMs, w === wordsPer - 1 && wordsPer > 1 ? "hero" : "body"));
+      const end = at + wordsPer * wordMs;
+      list.push(cueOf(k, at, k === count - 1 ? end + 650 : end + gap, words));
+      at = end + gap;
+    }
+    return list;
+  };
+
+  test("1: entrances are locked to speech: ten four-word cues at 150 ms a word never run late, whatever the gap, and the last cue ends inside the clip", () => {
+    for (const gap of [0, 60]) {
+      const cues10 = run(12, gap, 150, 4);
+      const list = build(cues10);
+      cues10.forEach((cue, number) => {
+        cue.words.forEach((spoken, index) => {
+          const piece = need<TextPiece>(find(list, `${number}:w${index}`));
+          expect(piece.fromMs).toBeLessThanOrEqual(spoken.startMs);
+          expect(piece.fromMs).toBeGreaterThanOrEqual(spoken.startMs - 100);
+        });
+      });
+      const last = cues10[cues10.length - 1]!;
+      expect(Math.max(...ofCue(list, cues10.length - 1).map((piece) => piece.toMs))).toBeLessThanOrEqual(last.endMs + 100);
+    }
+  });
+
+  test("2: the handoff rule: in runs of 120 ms cues and of 150 ms words, every word is readable for min(150, the time to the next cue's first frame), never covered, with no one-frame motion and no blink", () => {
+    const runs = [run(10, 0, 120, 1), run(10, 60, 120, 1), run(12, 0, 150, 4), run(12, 60, 150, 4), run(10, 0, 100, 3), run(10, 60, 100, 3)];
+    for (const cues of runs) {
+      const list = build(cues);
+      for (const piece of list) {
+        // No animated piece shows on a single 30 fps frame: every window is at least two frames.
+        expect(piece.toMs - piece.fromMs).toBeGreaterThanOrEqual(67);
+      }
+      cues.forEach((cue, number) => {
+        if (number + 1 >= cues.length) return;
+        const mine = ofCue(list, number);
+        const nextFrom = Math.min(...ofCue(list, number + 1).map((other) => other.fromMs));
+        // Nothing of this cue is on screen from the next cue's first frame: no covering. With nothing missing between them when it is continuous.
+        expect(Math.max(...mine.map((piece) => piece.toMs))).toBeLessThanOrEqual(nextFrom);
+        if (cues[number + 1]!.startMs - cue.endMs <= 100) expect(Math.max(...mine.map((piece) => piece.toMs))).toBe(nextFrom);
+        cue.words.forEach((_, index) => {
+          const piece = need<TextPiece>(find(list, `${number}:w${index}`));
+          const ready = readyOf(piece);
+          const out = exitOf(piece);
+          expect(out.from).toBeGreaterThanOrEqual(Math.min(ready + 150, nextFrom) - 1);
+          for (let t = ready; t < out.from; t += 4) expect(evaluatePiece(piece, t).o).toBeGreaterThan(0.9);
+        });
+      });
+    }
+  });
+
+  test("4: the reveal's overshoot is inside the safe width at size 200 on 9:16 and 1:1", () => {
+    const cue = cueOf(0, 1000, 2300, [word("یہ", 1000, 1250, "hero"), word("NEW", 1300, 1500), word("YORK", 1600, 1800)], "ur");
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      const list = build([cue], { canvas, scale: 2.5, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } });
+      const end = Math.max(...list.map((piece) => piece.toMs));
+      for (let t = 0; t < end; t++) {
+        const box = sceneBoundsAt(list, t, fakeMeasure);
+        if (!box) continue;
+        expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 1);
+        expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 1);
+      }
+    }
+  });
+
+  test("6: on a short cue the ticks start before the exit and keep a lifetime", () => {
+    for (const gap of [60, 0]) {
+      const list = build([cueOf(0, 1000, 1120 + gap, [word("i", 1000, 1120)]), cueOf(1, 1120 + gap, 2600, [word("quit", 1120 + gap, 1500), word("now", 1550, 1900)])]);
+      const exitFrom = exitOf(need(find(list, "0:stk1"))).from;
+      for (const j of [0, 1, 2]) {
+        const tick = need<ShapePiece>(find(list, `0:tk${j}`));
+        expect(tick.fromMs).toBeLessThanOrEqual(exitFrom - 15);
+        expect(tick.toMs - tick.fromMs).toBeGreaterThanOrEqual(67);
+      }
+    }
   });
 });
