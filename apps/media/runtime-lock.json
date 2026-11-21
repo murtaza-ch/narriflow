@@ -582,6 +582,8 @@
   "captionFonts": {
     "directory": "packages/caption-fonts/fonts",
     "sha256": {
+      "AbrilFatface-Regular.ttf": "5971d4a3758a922a9fedc7f6fb825a96341a2e718c45a4b2c9a6b417c8c4dbe9",
+      "AlfaSlabOne-Regular.ttf": "28664afa698a3393bd5a29eec750230a0645c5301d62200e5f2d3a027fb2299d",
       "Anton-Regular.ttf": "a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab",
       "Archivo-ExpandedBlack.ttf": "67603d4fd6690f8c3730341488bcf94a546f37f4bc1b34d24fe5c09232395603",
       "Archivo-ExpandedBlackItalic.ttf": "4ab150adae11b71490a754b8c271c817c1b1f25047d0ec30bde2d19e29f2d62f",

@@ -702,6 +702,36 @@ const captionChango = localFont({
   ],
 });
 
+const captionAlfaSlabOne = localFont({
+  src: "../../../packages/caption-fonts/fonts/AlfaSlabOne-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-alfa-slab-one",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "123.8%" },
+    { prop: "descent-override", value: "32.7%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionAbrilFatface = localFont({
+  src: "../../../packages/caption-fonts/fonts/AbrilFatface-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-abril-fatface",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "105.8%" },
+    { prop: "descent-override", value: "29.1%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 /** CSS variable classes for <html>; each variable holds one caption face's family. */
 export const captionFontVariables = [
   captionAnton.variable,
@@ -750,4 +780,6 @@ export const captionFontVariables = [
   captionBarlowCondensedBlackItalic.variable,
   captionLexendExaLight.variable,
   captionChango.variable,
+  captionAlfaSlabOne.variable,
+  captionAbrilFatface.variable,
 ].join(" ");

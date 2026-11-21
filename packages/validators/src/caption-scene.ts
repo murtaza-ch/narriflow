@@ -40,6 +40,10 @@ export const CAPTION_SCENE_NAMES = [
   "arthouse",
   "heft",
   "popup",
+  "trail",
+  "ransom",
+  "ledge",
+  "cascade",
 ] as const;
 
 export type CaptionSceneName = (typeof CAPTION_SCENE_NAMES)[number];
@@ -119,6 +123,10 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
   arthouse: { name: "Arthouse", bodyPx: 168, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FF2B2B", accent: "#D9FF2E" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Big Shoulders Display Black", backdrop: "dark" },
   heft: { name: "Heft", bodyPx: 74, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFFFFF", accent: "#9BF03A" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "accentColor" } }, fontName: "Unbounded Black", backdrop: "dark" },
   popup: { name: "Popup", bodyPx: 92, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE24B", accent: "#FF8FA3" }, brand: { primary: { slot: "primaryColor", readsOn: ["#2A1A5E"] }, secondary: { slot: "accentColor", readsOn: ["#2A1A5E"] } }, fontName: "Chango", backdrop: "bright" },
+  trail: { name: "Trail", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Lilita One", backdrop: "busy" },
+  ransom: { name: "Ransom", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Alfa Slab One", backdrop: "bright" },
+  ledge: { name: "Ledge", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Anton", backdrop: "busy" },
+  cascade: { name: "Cascade", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Archivo Black", backdrop: "dark" },
   reveal: { name: "Reveal", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
 };
 

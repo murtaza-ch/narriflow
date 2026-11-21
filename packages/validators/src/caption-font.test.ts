@@ -27,6 +27,8 @@ const TEMPLATE_FACES = [
   "Barlow Condensed Black Italic",
   "Lexend Exa Light",
   "Chango",
+  "Alfa Slab One",
+  "Abril Fatface",
 ];
 
 describe("template-only caption faces", () => {

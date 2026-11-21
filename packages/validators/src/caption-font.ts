@@ -79,6 +79,8 @@ export const CAPTION_FONT_FACES = [
   { name: "Barlow Condensed Black Italic", file: "BarlowCondensed-BlackItalic.ttf", assName: "Barlow Condensed Black Italic", weight: 900, style: "italic", ascent: 1.075, descent: 0.274, capHeight: 0.7, templateOnly: true },
   { name: "Lexend Exa Light", file: "LexendExa-Light.ttf", assName: "Lexend Exa Light", weight: 300, style: "normal", ascent: 1.2, descent: 0.39, capHeight: 0.7, templateOnly: true },
   { name: "Chango", file: "Chango-Regular.ttf", assName: "Chango Regular", weight: 400, style: "normal", ascent: 0.995, descent: 0.216, capHeight: 0.701, templateOnly: true },
+  { name: "Alfa Slab One", file: "AlfaSlabOne-Regular.ttf", assName: "Alfa Slab One Regular", weight: 400, style: "normal", ascent: 1.238, descent: 0.327, capHeight: 0.778, templateOnly: true },
+  { name: "Abril Fatface", file: "AbrilFatface-Regular.ttf", assName: "Abril Fatface", weight: 400, style: "normal", ascent: 1.058, descent: 0.291, capHeight: 0.7, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];

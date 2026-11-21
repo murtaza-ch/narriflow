@@ -22,6 +22,10 @@ import { TRACK_DEMO, trackProgram } from "./templates/track";
 import { VELOCITY_DEMO, velocityProgram } from "./templates/velocity";
 import { WORDFORM_DEMO, wordformProgram } from "./templates/wordform";
 import { POPUP_DEMO, popupProgram } from "./templates/popup";
+import { TRAIL_DEMO, trailProgram } from "./templates/trail";
+import { RANSOM_DEMO, ransomProgram } from "./templates/ransom";
+import { LEDGE_DEMO, ledgeProgram } from "./templates/ledge";
+import { CASCADE_DEMO, cascadeProgram } from "./templates/cascade";
 import { HEFT_DEMO, heftProgram } from "./templates/heft";
 import { ARTHOUSE_DEMO, arthouseProgram } from "./templates/arthouse";
 import { SLICE_DEMO, sliceProgram } from "./templates/slice";
@@ -75,6 +79,10 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   arthouse: { program: arthouseProgram, demo: ARTHOUSE_DEMO },
   heft: { program: heftProgram, demo: HEFT_DEMO },
   popup: { program: popupProgram, demo: POPUP_DEMO },
+  trail: { program: trailProgram, demo: TRAIL_DEMO },
+  ransom: { program: ransomProgram, demo: RANSOM_DEMO },
+  ledge: { program: ledgeProgram, demo: LEDGE_DEMO },
+  cascade: { program: cascadeProgram, demo: CASCADE_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */
