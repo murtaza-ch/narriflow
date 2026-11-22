@@ -10,8 +10,8 @@ import { sampleFrames } from "../frames";
 /**
  * Index (`samples/templates/53-index.js`): when the speaker counts points ("three mistakes ... first,
  * ... second, ... so"), a numbered dial docks on the left end of an ink caption card. Its ring has one
- * segment per point and fills as the list advances; when the list closes ("so") the dial leaves and a
- * plain lime bar takes its place. The list state comes from `detectList` over the words.
+ * segment per point and fills as the list advances; when the list closes ("so") the dial leaves.
+ * The list state comes from `detectList` over the words.
  *
  * Everything is the sample's numbers in its 1080 x 1920 frame (this file works in "sample px" and maps
  * to the canvas at the end). Chrome's flow is recomputed from `measure()`: the caption is a flex row
@@ -27,9 +27,9 @@ import { sampleFrames } from "../frames";
  * rounded rect that keeps the sample's unclipped width.
  *
  * Beyond the sample: a card belongs to a run of cues (a pause longer than `RUN_GAP_MS` past a cue's end
- * closes it as the loop's end does in the sample and a new run opens it); the bar after the list has
- * the height of the cue's own block (the sample's was the last cue's); a total outside 2..10 is ignored
- * (the ring would be unreadable); and a clip with no list at all is a plain card with its lime bar.
+ * closes it as the loop's end does in the sample and a new run opens it); a total outside 2..10 is ignored
+ * (the ring would be unreadable); and a clip with no list at all is a plain card. The vertical accent line is omitted
+ * at the owner's request.
  */
 
 export const INDEX_DEMO: DemoScript = {
@@ -58,8 +58,6 @@ const PAD_Y = 30;
 const TEXT_MAX = 1000 - PAD_R - TEXT_X;
 const OPEN_LEFT = DIAL_X;
 const CLOSED_LEFT = TEXT_X - 54;
-const BAR_X = TEXT_X - 28;
-const BAR_W = 6;
 const CARD_RADIUS = 32;
 const COL_GAP = Math.round(S * 0.27);
 const ROW_GAP = 2;
@@ -131,7 +129,6 @@ interface Block {
   readonly cue: SceneCue;
   readonly number: number;
   readonly items: readonly Item[];
-  readonly h: number;
   readonly listOpen: boolean;
   readonly rect: { readonly l: number; readonly r: number; readonly t: number; readonly b: number };
   /** The card's right edge as each word has arrived: the running maximum of the words' right edges. */
@@ -208,7 +205,7 @@ function layoutBlock(cue: SceneCue, number: number, input: SceneInput, u: number
     t: Math.min(Y_C - h / 2 - PAD_Y, listOpen ? Y_C - DISC_R : Number.POSITIVE_INFINITY),
     b: Math.max(Y_C + h / 2 + PAD_Y, listOpen ? Y_C + DISC_R : Number.NEGATIVE_INFINITY),
   };
-  return { cue, number, items, h, listOpen, rect, rights };
+  return { cue, number, items, listOpen, rect, rights };
 }
 
 // ─── The card of a run of cues, as a function of time ───────────────────────
@@ -226,8 +223,6 @@ interface CardState {
   readonly b: number;
   /** Share of the card shown by the wipe (0..1). */
   readonly reveal: number;
-  /** Block height of the cue the card is on, and the morph into it. */
-  readonly barH: number;
 }
 
 const rectLerp = (a: Block["rect"], b: Block["rect"], p: number) => ({ l: lerp(a.l, b.l, p), r: lerp(a.r, b.r, p), t: lerp(a.t, b.t, p), b: lerp(a.b, b.b, p) });
@@ -244,15 +239,13 @@ function cardState(run: Run, t: number): CardState {
     if (grow > 0) reach = lerp(current.rights[index - 1]!, current.rights[index]!, grow);
   }
   let rect = { ...current.rect, r: reach };
-  let barH = current.h - 12;
   if (at > 0) {
     const morph = EASES.outExpo(prog(t, current.cue.startMs - 110, 320));
     rect = rectLerp(blocks[at - 1]!.rect, rect, morph);
-    barH = lerp(blocks[at - 1]!.h - 12, barH, morph);
   }
   const open = EASES.outExpo(prog(t, run.startMs - 300, 380));
   const close = EASES.in(prog(t, run.endMs - 190, 190));
-  return { ...rect, reveal: open * (1 - close), barH };
+  return { ...rect, reveal: open * (1 - close) };
 }
 
 /** Where the sample's windows start and end: the places the card's function is not smooth. */
@@ -369,11 +362,9 @@ function build(input: SceneInput) {
   }
 
   const pieces: Piece[] = [];
-  const endEvent = detection.events.find((event) => event.type === "end");
-  const hasList = detection.total !== null;
   const tolPx = 0.3 * u;
 
-  // ── Cards, shadows and the list bar, one set per run ──
+  // ── Cards and shadows, one set per run ──
   runs.forEach((run) => {
     const first = run.blocks[0]!.number;
     const edges = runEdges(run);
@@ -454,29 +445,6 @@ function build(input: SceneInput) {
       },
       path: roundedRectPath((-widest * u) / 2, (-tallest * u) / 2, widest * u, tallest * u, radius * u),
       fill: { colour: colours.shadow },
-    });
-
-    // The lime bar: grows from its bottom once the list has closed (at once when no list was announced).
-    const barStart = endEvent ? Math.max(fromMs, endEvent.atMs - 20) : fromMs;
-    if (hasList && !endEvent) return;
-    if (barStart >= toMs) return;
-    const barHeights = run.blocks.map((block) => block.h - 12);
-    const nominal = Math.max(...barHeights);
-    const be = within(edges, barStart, toMs);
-    const grow = (t: number) => (endEvent ? EASES.out(prog(t, endEvent.atMs - 20, 240)) : 1);
-    pieces.push({
-      id: `index:${first}:bar`,
-      kind: "shape",
-      z: 3,
-      fromMs: barStart,
-      toMs,
-      track: {
-        x: [[barStart, X(BAR_X + BAR_W / 2)]],
-        y: sampled((t) => Y(Y_C + state(t).barH / 2), be, tolPx),
-        sy: sampled((t) => Math.max(0.0001, (grow(t) * state(t).reveal * state(t).barH) / nominal), be, 0.002),
-      },
-      path: roundedRectPath((-BAR_W / 2) * u, -nominal * u, BAR_W * u, nominal * u, (BAR_W / 2) * u),
-      fill: { colour: colours.highlight },
     });
   });
 

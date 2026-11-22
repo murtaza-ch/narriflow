@@ -212,13 +212,8 @@ describe("Index: pieces and geometry", () => {
     expect(widthAt(8463 - 1)).toBeLessThan(widthAt(8200));
   });
 
-  test("the list bar: absent while the list is open, grows from its bottom once the list closes", () => {
-    const bar = byId("index:0:bar");
-    expect(bar.fromMs).toBe(6703);
-    expect(evaluatePiece(bar, 6703).sy).toBeLessThan(0.01);
-    expect(evaluatePiece(bar, 6703 + 240).sy).toBeGreaterThan(0.95 * (evaluatePiece(bar, 7600).sy));
-    expect(evaluatePiece(bar, 7600).x).toBeCloseTo(540 + (234 + 3 - 540), 3);
-    expect(bar.fill).toEqual({ colour: "#B9F227" });
+  test("the vertical accent line is absent before and after the list closes", () => {
+    expect(scene.pieces.some((piece) => /^index:\d+:bar$/.test(piece.id))).toBe(false);
   });
 
   test("words: Inter SemiBold 64, hero Inter ExtraBold 83, minor words at 66 %, ordinals in the highlight colour", () => {
@@ -300,16 +295,13 @@ describe("Index: a mid-cue point", () => {
   });
 });
 
-describe("Index: a clip with no list at all is a plain card with its bar", () => {
+describe("Index: a clip with no list at all is a plain card without an accent line", () => {
   const plain = build({ lines: ["stop:b scrolling:b and:m listen:h@500", "this:b changes:b everything:h@500"] });
-  test("no dial, a closed card (left at 208) and the bar from the start", () => {
+  test("no dial, a closed card (left at 208) and no accent line", () => {
     expect(plain.scene.pieces.some((piece) => piece.id.startsWith("index:dial"))).toBe(false);
     const tl = plain.scene.pieces.find((piece) => piece.id === "index:0:card:tl")!;
     expect(evaluatePiece(tl, 1800).x - 32).toBeCloseTo(540 + (208 - 540), 1);
-    const bar = plain.scene.pieces.find((piece) => piece.id === "index:0:bar") as ShapePiece;
-    expect(bar).toBeDefined();
-    expect(evaluatePiece(bar, 1800).sy).toBeGreaterThan(0.5);
-    expect(evaluatePiece(bar, 1800).x).toBeCloseTo(540 + (237 - 540), 3);
+    expect(plain.scene.pieces.some((piece) => /^index:\d+:bar$/.test(piece.id))).toBe(false);
   });
 
   test("a list that never closes has no bar", () => {
