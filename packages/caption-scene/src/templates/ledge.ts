@@ -52,6 +52,11 @@ import { pathBounds, polygonPath, rectPath, roundedRectPath } from "../shapes";
  *   the bidi order; the exit drop scales with the fitted lockup and is reserved in the fit with the reveal's overshoot, and the shift into
  *   the safe area is searched every 4 ms, every ms of the exit and of the first 450 ms; the red is `#E82D37` (3.1:1 on the catalogue's
  *   yellow depth, and the brand guard names it), and dashes turn to ink or white when a brand's depth colour is within 3:1 of it.
+ * - Ship fixes: a cue that starts while the cue before is still being spoken (two speakers) is stacked under it, or over it when there is no
+ *   room, so two lockups never share a spot and the first one keeps its natural hold; the 150 ms of a word start where its ink is open
+ *   and settled (not where its reveal's window ends), so a normal 60 ms gap keeps the next cue's sample entrance; the cube's hold is fitted
+ *   into what is left; a cue too short for an accent's motion shows it static from two frames before it leaves; a word whose reveal
+ *   cannot finish a frame before the cue goes is open at once; `ledgeFrameAtOrBefore` returns the real preceding frame.
  * - New recurring beats, in the sample's own shapes and colours, on every cue: SPEED DASHES (two or three red slashes slanted like the
  *   depth faces pop out along the first bar's depth face as its edge passes them), POP TICKS (three short keylined ticks burst off the
  *   cube when it lands, a no-key-word cue gets a smaller cube on its last bar so it has them too) and POPCORN (two small flat cubes
@@ -116,8 +121,9 @@ export function ledgeFrameAtOrAfter(t: number): number {
 
 /** The last export frame time at or before `t`. */
 export function ledgeFrameAtOrBefore(t: number): number {
-  const after = ledgeFrameAtOrAfter(t);
-  return after === t ? after : ledgeFrameAtOrAfter(Math.max(0, t - 34));
+  let n = Math.max(0, Math.floor(t * 0.03) + 2);
+  while (n > 0 && frameTime(n) > t) n--;
+  return frameTime(n);
 }
 
 /** How many export frames a piece that lives over `[from, to)` is painted on. */
@@ -236,6 +242,8 @@ interface Counters {
   cues: number;
   heroes: number;
   plain: number;
+  /** The cue before: where its lockup is and when its last word ends (a cue that starts inside it stacks beside it). */
+  prev: { box: Box; lastEnd: number } | null;
 }
 
 interface Item {
@@ -432,14 +440,38 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const { bars, sticker, box } = geo;
   const cx = (box.minX + box.maxX) / 2;
   const cy = (box.minY + box.maxY) / 2;
-  const C = { x: space.x(540), y: space.y(ANCHOR_LINE) };
   const turnRad = rad(m * tilt);
-  /** Canvas point of a point of the (unmirrored, unturned) lockup. */
-  const P = (x: number, y: number) => {
+  const dropPx = EXIT_DROP * u * g;
+  const home = { x: space.x(540), y: space.y(ANCHOR_LINE) };
+  /** Canvas point of a point of the (unmirrored, unturned) lockup, for a lockup centred on `centre`. */
+  const pointAt = (centre: { x: number; y: number }, x: number, y: number) => {
     const vx = m * (x - cx);
     const vy = y - cy;
-    return { x: C.x + vx * Math.cos(turnRad) - vy * Math.sin(turnRad), y: C.y + vx * Math.sin(turnRad) + vy * Math.cos(turnRad) };
+    return { x: centre.x + vx * Math.cos(turnRad) - vy * Math.sin(turnRad), y: centre.y + vx * Math.sin(turnRad) + vy * Math.cos(turnRad) };
   };
+  /** The turned lockup's box (bars and cube, the exit drop included) for a lockup centred on `centre`. */
+  const lockupBoxAt = (centre: { x: number; y: number }): Box => {
+    const corners = [pointAt(centre, box.minX, box.minY), pointAt(centre, box.maxX, box.minY), pointAt(centre, box.maxX, box.maxY), pointAt(centre, box.minX, box.maxY)];
+    return { x1: Math.min(...corners.map((c) => c.x)), y1: Math.min(...corners.map((c) => c.y)), x2: Math.max(...corners.map((c) => c.x)), y2: Math.max(...corners.map((c) => c.y)) + dropPx };
+  };
+  // A cue that starts while the cue before is still being spoken (two speakers) has its own place: stacked under it, or over it when
+  // there is no room under, so two lockups never share a spot and each word is read where it is spoken.
+  const onsetFirst = Math.min(...cue.words.map((word) => word.startMs));
+  let stackDy = 0;
+  if (counters.prev && onsetFirst < counters.prev.lastEnd) {
+    const own = lockupBoxAt(home);
+    const gap = 14 * u * g;
+    const below = counters.prev.box.y2 + gap - own.y1;
+    const above = counters.prev.box.y1 - gap - own.y2;
+    const roomBelow = safe.y2 - (own.y2 + below);
+    const roomAbove = own.y1 + above - safe.y1;
+    stackDy = roomBelow >= 0 ? below : roomAbove >= 0 ? above : roomBelow >= roomAbove ? below : above;
+  }
+  const C = { x: home.x, y: home.y + stackDy };
+  /** Canvas point of a point of the (unmirrored, unturned) lockup. */
+  const P = (x: number, y: number) => pointAt(C, x, y);
+  const ownBox = lockupBoxAt(C);
+  const lastWordEnd = Math.max(...cue.words.map((word) => word.endMs));
 
   // --- timing: entrances are locked to speech; the handoff to the next cue is settled on this (outgoing) side ---
   // Every word's reveal starts `lead` ms before it is spoken, whatever the cue before did. When the next cue is close, this cue's
@@ -473,7 +505,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     if (!next) return Number.POSITIVE_INFINITY;
     const known = meets.get(nextLead);
     if (known !== undefined) return known;
-    const incoming = buildCue(next, nextAt, input, { ...counters, lead: nextLead }, true);
+    const incoming = buildCue(next, nextAt, input, { ...counters, lead: nextLead, prev: { box: ownBox, lastEnd: lastWordEnd } }, true);
     const from = Math.min(...incoming.map((piece) => piece.fromMs));
     let hit = Number.POSITIVE_INFINITY;
     // Looked at on the export's frames only: the first painted frame in which they meet.
@@ -490,21 +522,49 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     return hit;
   };
   /** Every word of this cue gets a window of its own, whatever the next cue does (speakers overlap). */
-  const wordFloor = ledgeFrameAtOrAfter(lastSpoken - lead) + 34;
+  const nextOverlaps = next !== undefined && nextFirst < lastWordEnd;
+  const wordFloor = nextOverlaps ? ledgeFrameAtOrAfter(lastSpoken) + 68 : ledgeFrameAtOrAfter(lastSpoken - lead) + 34;
   /** Where this cue would end for a next cue entering `nextLead` ms early: its first frame, or this cue's own end when nothing follows soon. */
   const endFor = (nextLead: number) => (next ? (continuous || nextFirst < cue.endMs ? ledgeFrameAtOrAfter(Math.round(nextFirst - nextLead)) : Math.min(ledgeFrameAtOrAfter(Math.round(nextFirst - nextLead)), cue.endMs)) : cue.endMs);
+  /** A bar's reveal as `ledgeBarWidth` reads it: in the order the words are spoken, the edge pulled out to the furthest reach so far. */
+  const chronological = (bar: Bar, revealOf: (index: number) => number) => {
+    let reached = 0;
+    return [...bar.items]
+      .sort((x, y) => startOf(x.index) - startOf(y.index))
+      .map((item) => {
+        reached = Math.max(reached, item.reach);
+        return { startMs: startOf(item.index), reach: reached, ms: revealOf(item.index) };
+      });
+  };
+  /** When every word of a bar is open (the clip's edge is past its ink): from then the word is settled and can be read. */
+  const inkOpen = (bar: Bar, revealOf: (index: number) => number): number => {
+    const starts = chronological(bar, revealOf);
+    let ready = 0;
+    for (const item of bar.items) {
+      let t = startOf(item.index) - lead;
+      const last = t + REVEAL_MS + 40;
+      while (t < last && ledgeBarWidth(t, starts, lead) - 4 * bar.f < item.right) t += 2;
+      ready = Math.max(ready, t);
+    }
+    return ready;
+  };
   /**
    * This cue's schedule when it must be gone by `endAt`. The sample's entrance pace is kept (`quick` false); `quick` quickens only the
-   * words that need it, down to 80 ms, and a lead under 67 ms shows the reveal already open (an entrance that cannot animate is a cut).
+   * words that need it, down to 80 ms. A word whose reveal cannot finish a frame before the cue goes, and every word of a cue entering
+   * with a lead under 67 ms, is open at once (an entrance that cannot animate is a cut).
    */
   const schedule = (nextLead: number, endAt: number, own = false, quick = false) => {
     // On a frame; a cue bounded by its own end leaves on the last frame at or before it (the words' floor aside).
     const deadline = own && endAt >= wordFloor ? Math.max(ledgeFrameAtOrBefore(endAt), wordFloor) : ledgeFrameAtOrAfter(Math.max(endAt, wordFloor));
-    const revealOf = (index: number) => (lead < MIN_ANIMATION ? 0 : quick ? clamp(deadline - HOLD - (startOf(index) - lead), 80, REVEAL_MS) : REVEAL_MS);
+    const revealOf = (index: number) => {
+      const ms = lead < MIN_ANIMATION ? 0 : quick ? clamp(deadline - HOLD - (startOf(index) - lead), 80, REVEAL_MS) : REVEAL_MS;
+      return startOf(index) - lead + ms + 34 > deadline ? 0 : ms;
+    };
     const dropMsOf = (bar: Bar) => (quick && lead >= MIN_ANIMATION ? clamp((deadline - HOLD - (firstOf(bar) - lead)) / 0.79, 160, HERO_DROP_MS) : HERO_DROP_MS);
+    // The words are settled when their ink is open (and a key word's drop is over): that is where the 150 ms start.
     const barLand = (bar: Bar) => {
-      const words = Math.max(...bar.items.map((item) => startOf(item.index) - lead + revealOf(item.index)));
-      return bar.plan.hero && lead >= MIN_ANIMATION ? Math.max(words, firstOf(bar) - lead + 0.79 * dropMsOf(bar)) : words;
+      const open = inkOpen(bar, revealOf);
+      return bar.plan.hero && lead >= MIN_ANIMATION ? Math.max(open, firstOf(bar) - lead + 0.79 * dropMsOf(bar)) : open;
     };
     const barsLand = Math.max(...bars.map(barLand));
     // Continuous speech (the next cue starts as this one ends) must not blink: the exit then ends exactly at the next cue's first frame.
@@ -514,9 +574,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       ? hostFirst + Math.min(STICKER_LEAD, 0.42 * dropMsOf(sticker.bar), Math.max(20, 0.35 * (deadline - hostFirst)))
       : lastOf(sticker.bar) + Math.min(120, 0.5 * Math.max(revealOf(stickerLastWord), 80), Math.max(10, 0.25 * (deadline - lastOf(sticker.bar))));
     const stickerMs0 = clamp((Math.min(nominalExit, deadline - MIN_ANIMATION) - STICKER_HOLD - stickerAt0) / 0.55, 120, STICKER_MS);
-    const stickerLand0 = stickerAt0 + 0.55 * stickerMs0;
-    // The words hold 150 ms once the bars have landed; the cube, which only decorates, holds a shorter moment.
-    const idealFrom = Math.max(nominalExit, barsLand + HOLD, stickerLand0 + STICKER_HOLD);
+    // The words hold 150 ms once they are settled; the cube, which only decorates, is fitted into the time that is left.
+    const idealFrom = Math.max(nominalExit, barsLand + HOLD);
     return { nextLead, deadline, revealOf, dropMsOf, stickerAt0, stickerMs0, idealFrom };
   };
   /** Whether this cue is bounded by its own end rather than by a next cue's first frame. */
@@ -559,7 +618,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const animated = ledgePaintedFrames(idealFrom, deadline) >= 2;
   const exitDur = animated ? Math.min(EXIT, deadline - idealFrom) : 0;
   const exitFrom = animated ? (continuous ? deadline - exitDur : idealFrom) : deadline;
-  const dropPx = EXIT_DROP * u * g;
   /** What is left of the safe height above the lockup once its exit drop is counted: the popcorn's flight may use no more. */
   const spanRoom = safe.y2 - safe.y1 - (turned(geo).h + dropPx);
   const exitTo = exitFrom + exitDur;
@@ -633,13 +691,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     if (toMs <= from) return;
     const z = band + barAt * 14;
     // Timing is chronological, placement is by position: a word that sits further along the bar than a word spoken later still pulls the edge out to it.
-    let reached = 0;
-    const starts = [...bar.items]
-      .sort((a, b) => startOf(a.index) - startOf(b.index))
-      .map((item) => {
-        reached = Math.max(reached, item.reach);
-        return { startMs: startOf(item.index), reach: reached, ms: revealOf(item.index) };
-      });
+    const starts = chronological(bar, revealOf);
     const width = (t: number) => ledgeBarWidth(t, starts, lead);
     // A key word's drop is a spring that needs ~0.8 of its length plus a moment to be read: a cue that cannot fit it (or that enters with a
     // lead under 67 ms) shows the settled pose instead of a motion that never settles.
@@ -720,13 +772,14 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const host = barInfo.find((info) => info.bar === sticker.bar);
   const zTop = band + 150;
   const k = sticker.bar.f * sticker.scale;
-  const stickerFrom = Math.round(stickerAt) + 10;
+  // A cue too short for the pop shows the cube from two frames before it leaves, settled: a static accent rather than none.
+  const stickerFrom = Math.max(host?.from ?? 0, Math.min(Math.round(stickerAt) + 10, toMs - 68));
   const stickerAnchor = { x: sticker.cx, y: sticker.cy };
   // The pop is a spring (it lands in ~0.55 of its length): a cue that leaves before it can land shows the cube settled.
   const stickerLive = exitFrom - stickerAt >= 0.55 * stickerMs + 40;
   const stickerPop = (t: number) => (stickerLive ? EASES.spring(prog(t, stickerAt, stickerMs)) : 1);
   const stickerFall = (t: number) => (stickerLive ? -(1 - EASES.outExpo(prog(t, stickerAt, (stickerMs * 260) / 420))) * 60 * sticker.bar.f : 0);
-  if (host && stickerAt >= firstOf(sticker.bar) - lead + 10 && ledgePaintedFrames(stickerFrom, toMs) >= 2) {
+  if (host && ledgePaintedFrames(stickerFrom, toMs) >= 2) {
     const edges = [stickerAt, stickerAt + stickerMs, stickerAt + (stickerMs * 260) / 420];
     const icon = sticker.bar.plan.hero ? HERO_ICONS[heroNumber % HERO_ICONS.length]! : PLAIN_ICONS[plainNumber % PLAIN_ICONS.length]!;
     const cube = cubePaths(stickerAnchor.x, stickerAnchor.y, (STICKER_SIZE / 2) * k, -12 * k, 13 * k);
@@ -806,7 +859,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         }
       }
       if (Number.isNaN(appear)) return;
-      const t0 = Math.round(appear + j * 25);
+      // Late or short: a dash that cannot fit its pop shows from two frames before the cue leaves (settled), and none if there is no room.
+      const t0 = Math.max(from, Math.min(Math.round(appear + j * 25), toMs - 68));
       const pivot = { x: bar.x + cxLocal, y: bar.y + bar.h + strip / 2 - 0.5 * bar.f };
       const dashEdges = [t0, t0 + 110, t0 + 500];
       const popped = sampled((t) => (toMs - t0 >= 130 ? lerp(0.15, 1, outBack125(prog(t, t0, 110))) : 1), t0, toMs, dashEdges, 0.002);
@@ -832,8 +886,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const swatches = [[input.colours.primary, input.colours.highlight], [input.colours.highlight, input.colours.primary], [STICKER_RED, input.colours.primary]] as const;
     const sideBase = rng() < 0.5 ? 1 : -1;
     for (let j = 0; j < 2; j++) {
-      const latest = Math.max(firstOf(bar), Math.min(exitFrom - 40, toMs - 70));
-      const at = Math.round(clamp(lastOf(bar) + 40 + j * 110, firstOf(bar), latest));
+      const latest = Math.max(from, Math.min(exitFrom - 40, toMs - 70));
+      const at = Math.round(clamp(lastOf(bar) + 40 + j * 110, from, latest));
       const dur = clamp(toMs - at, 240, 600);
       const to = Math.min(toMs, at + dur);
       if (ledgePaintedFrames(at, to) < 2) continue;
@@ -890,12 +944,13 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   };
   const dx = axis(union.x1, union.x2, safe.x1, safe.x2);
   const dy = axis(union.y1, union.y2, safe.y1, safe.y2);
+  counters.prev = { box: { x1: union.x1 + dx, y1: union.y1 + dy, x2: union.x2 + dx, y2: union.y2 + dy }, lastEnd: lastWordEnd };
   return dx === 0 && dy === 0 ? pieces : pieces.map((piece) => shiftPiece(piece, dx, dy));
 }
 
 export const ledgeProgram: SceneProgram = {
   build(input) {
-    const counters: Counters = { lead: REVEAL_LEAD, cues: 0, heroes: 0, plain: 0 };
+    const counters: Counters = { lead: REVEAL_LEAD, cues: 0, heroes: 0, plain: 0, prev: null };
     return { pieces: input.cues.flatMap((cue, number) => (cue.words.length === 0 ? [] : buildCue(cue, number, input, counters))) };
   },
 };

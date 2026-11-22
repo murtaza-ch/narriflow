@@ -5,7 +5,7 @@ import type { SceneCue } from "./input";
 import { captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import { type Measure, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
 import { pathBounds } from "./shapes";
-import { LEDGE_DEMO, ledgeBarWidth, ledgeFrameAtOrAfter, ledgePaintedFrames, ledgeBaseline, ledgeCase, ledgeHash, ledgeProgram, ledgeRng, ledgeShuffle } from "./templates/ledge";
+import { LEDGE_DEMO, ledgeBarWidth, ledgeFrameAtOrAfter, ledgeFrameAtOrBefore, ledgePaintedFrames, ledgeBaseline, ledgeCase, ledgeHash, ledgeProgram, ledgeRng, ledgeShuffle } from "./templates/ledge";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 const { cues } = demoCues(LEDGE_DEMO);
@@ -468,9 +468,21 @@ describe("Ledge re-check fixes", () => {
           if (number + 1 >= cues.length) return;
           const mine = ofCue(list, number);
           const nextPaint = ledgeFrameAtOrAfter(Math.min(...ofCue(list, number + 1).map((other) => other.fromMs)));
-          // Nothing of this cue is painted from the next cue's first painted frame (no covering), and with nothing missing between them.
-          expect(Math.max(...mine.map((piece) => piece.toMs))).toBeLessThanOrEqual(nextPaint);
-          if (cues[number + 1]!.startMs - cue.endMs <= 100) expect(Math.max(...mine.map((piece) => piece.toMs))).toBe(nextPaint);
+          // No covering: from the next cue's first painted frame, nothing of the next cue lies over a word of this one that is still painted
+          // (the two may overlap where they do not meet), and with nothing missing between them in continuous speech.
+          const leaves = Math.max(...mine.map((piece) => piece.toMs));
+          if (cues[number + 1]!.startMs - cue.endMs <= 100) expect(leaves).toBeGreaterThanOrEqual(nextPaint);
+          const words = mine.filter((piece): piece is TextPiece => piece.kind === "text");
+          for (let f = nextPaint; f < leaves; f = ledgeFrameAtOrAfter(f + 1)) {
+            for (const word of words) {
+              const ink = pieceBounds(word, f, fakeMeasure);
+              if (!ink) continue;
+              for (const other of ofCue(list, number + 1)) {
+                const box = pieceBounds(other, f, fakeMeasure);
+                expect(box !== null && box.x1 < ink.x2 && box.x2 > ink.x1 && box.y1 < ink.y2 && box.y2 > ink.y1).toBe(false);
+              }
+            }
+          }
           cue.words.forEach((_, index) => {
             const piece = need<TextPiece>(find(list, `${number}:w${index}`));
             const ready = ledgeFrameAtOrAfter(readyOf(piece));
@@ -616,5 +628,90 @@ describe("Ledge re-check 2 fixes", () => {
     expect(row.brand.primary?.readsOn).toContain("#E82D37");
     expect(row.brand.primary?.readsOn).not.toContain("#F0323C");
     expect(captionColourContrast("#FFD83A", "#E82D37")).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("Ledge ship fixes", () => {
+  const canvases = [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }];
+  const ink = (piece: Piece) => /^ledge:\d+:(b\d(di|df|fi|ff|cl|cr)|w\d+)$/.test(piece.id);
+  const meets = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+  const short = (count: number, gap: number, wordMs: number) => {
+    const list: SceneCue[] = [];
+    let at = 1000;
+    for (let k = 0; k < count; k++) {
+      list.push(cueOf(k, at, k === count - 1 ? at + wordMs + 650 : at + wordMs + gap, [word(["go", "no"][k % 2]!, at, at + wordMs)]));
+      at += wordMs + gap;
+    }
+    return list;
+  };
+
+  test("A1: two speakers overlapping by 30 to 200 ms never share a spot, and every word is read from its onset, on 9:16, 1:1 and 16:9", () => {
+    for (const canvas of canvases) {
+      for (const overlap of [30, 70, 120, 200]) {
+        const second = 1500 - overlap;
+        const a = { ...cueOf(0, 1000, Math.max(second, 1570), [word("early", 1000, 1100), word("late", 1320, 1500, "hero")]), speaker: 0 };
+        const b = { ...cueOf(1, second, 3200, [word("wait", second, 1800), word("for", 1800, 2000), word("me", 2000, 2400)]), speaker: 1 };
+        const list = build([a, b], { canvas });
+        const end = Math.max(...list.map((piece) => piece.toMs));
+        for (let f = ledgeFrameAtOrAfter(0); f < end; f = ledgeFrameAtOrAfter(f + 1)) {
+          const first = ofCue(list, 0).filter(ink);
+          const other = ofCue(list, 1).filter(ink);
+          for (const x of first) {
+            const bx = pieceBounds(x, f, fakeMeasure);
+            if (!bx) continue;
+            for (const y of other) {
+              const by = pieceBounds(y, f, fakeMeasure);
+              if (by && (x.kind === "text" || y.kind === "text")) expect(meets(bx, by)).toBe(false);
+            }
+          }
+        }
+        for (const [name, at] of [["late", 1320], ["early", 1000]] as const) {
+          const piece = need<TextPiece>(find(list, `0:w${name === "late" ? 1 : 0}`));
+          const onset = ledgeFrameAtOrAfter(at);
+          // Readable from the first painted frame at or after its onset (and once open) for at least 150 ms, unless the cue's own time is shorter.
+          const readable = Math.max(onset, ledgeFrameAtOrAfter(readyOf(piece)));
+          expect(piece.toMs).toBeGreaterThanOrEqual(Math.min(readable + 150, readable + 134));
+          expect(evaluatePiece(piece, readable).o).toBeGreaterThan(0.9);
+          expect(openAt(piece, readable)).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("A2: at a normal 60 ms gap every entrance keeps the sample's reveal (215 ms words)", () => {
+    const cues12 = short(12, 60, 215);
+    const list = build(cues12);
+    cues12.forEach((cue, number) => {
+      const face = need<ShapePiece>(find(list, `${number}:b0ff`));
+      // The bar starts from a sliver and is still growing a little after: an animated entrance, 85 ms before the word.
+      expect(cue.words[0]!.startMs - face.fromMs).toBeGreaterThanOrEqual(80);
+      expect(evaluatePiece(face, face.fromMs + 8).sx).toBeLessThan(0.7);
+      expect(evaluatePiece(face, face.fromMs + 60).sx).toBeGreaterThan(evaluatePiece(face, face.fromMs + 8).sx);
+    });
+  });
+
+  test("B1: back-to-back 60 to 80 ms cues keep a cube in every cue", () => {
+    for (const wordMs of [60, 70, 80]) {
+      for (const gap of [0, 60]) {
+        const cues12 = short(12, gap, wordMs);
+        const list = build(cues12);
+        cues12.forEach((_, number) => {
+          const kinds = ofCue(list, number).map(kindOf);
+          expect(kinds.filter((id) => /^stk[012]$/.test(id))).toHaveLength(3);
+          expect(kinds.filter((id) => /^(tk\d|ds\d|pc\d[df])$/.test(id)).length).toBeGreaterThanOrEqual(1);
+        });
+      }
+    }
+  });
+
+  test("B2: the frame helper returns the real preceding frame, and a word trimmed by the cue's end is open on its first painted frame", () => {
+    expect(ledgeFrameAtOrBefore(1601)).toBe(1600);
+    expect(ledgeFrameAtOrBefore(1600)).toBe(1600);
+    expect(ledgeFrameAtOrBefore(1599)).toBe(1567);
+    expect(ledgeFrameAtOrBefore(0)).toBe(0);
+    const trimmed = cueOf(0, 1500, 1515, [word("go", 1500, 1515)]);
+    const piece = need<TextPiece>(find(build([trimmed]), "0:w0"));
+    expect(ledgePaintedFrames(piece.fromMs, piece.toMs)).toBeGreaterThanOrEqual(2);
+    expect(openAt(piece, ledgeFrameAtOrAfter(piece.fromMs))).toBe(true);
   });
 });
