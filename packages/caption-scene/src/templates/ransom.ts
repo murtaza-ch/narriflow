@@ -3,7 +3,7 @@ import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, greedyRows, rowVisualOrder, sceneSpace, shiftPiece } from "../layout";
-import { type CaptionScene, type Clip, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, evaluatePiece, pieceBounds } from "../scene";
+import { type CaptionScene, type Clip, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, evaluatePiece, pieceBounds, pieceLocalBox } from "../scene";
 import { polygonPath, polylinePath, roundedRectPath } from "../shapes";
 import type { CaptionFontName } from "@narriflow/validators";
 
@@ -75,6 +75,11 @@ const SPEED_MIN = 0.35;
 /** How early a word's first piece may show: the sample's strip leads by 70 ms, the hero's tiles by 100 ms (the rule's limit). */
 const LEAD_STRIP = 70;
 const LEAD_HERO = 100;
+/** Where a word's ink has settled: a strip's tear is at its final width by half its run, a tile's flight by 0.8 of its run. */
+const SETTLE_STRIP = 0.5;
+const SETTLE_TILE = 0.8;
+/** A cue that is this many ms short of its HOLD keeps the sample's entrance pace. */
+const HOLD_SLACK = 12;
 
 const BIG_FACE = "Alfa Slab One" as const;
 const SMALL_FACE = "Anton" as const;
@@ -132,6 +137,26 @@ function graphemes(text: string): string[] {
 
 type Pt = [number, number];
 type Fn = (t: number) => number;
+
+/** The first 30 fps export frame time at or after `ms`: a piece that starts here is painted on its first frame. */
+export function ransomFrameCeil(ms: number): number {
+  let k = Math.floor((ms * 30) / 1000);
+  while (Math.round((k * 1000) / 30) < ms) k++;
+  return Math.round((k * 1000) / 30);
+}
+
+/** Export frame times in `[from, to)`. */
+function frameList(from: number, to: number): number[] {
+  const times: number[] = [];
+  for (let k = Math.max(0, Math.floor((from * 30) / 1000) - 1); Math.round((k * 1000) / 30) < to; k++) {
+    const t = Math.round((k * 1000) / 30);
+    if (t >= from) times.push(t);
+  }
+  return times;
+}
+
+/** How far a piece is drawn on its first painted frame: never a blank frame (cue handoff rule: an immediately visible pose). */
+const FIRST_O = 0.55;
 
 /** The sample's `outBack(p, 1.8)`. */
 const outBack18 = (p: number) => 1 + 2.8 * (p - 1) ** 3 + 1.8 * (p - 1) ** 2;
@@ -268,10 +293,10 @@ const leadOf = (word: { role: string; startMs: number }, notBefore: number) => M
 
 /** The first frame a cue draws (cue handoff rule): its earliest word's lead before its start, no earlier than `notBefore`. */
 export function ransomEntryMs(cue: SceneCue, notBefore = Number.NEGATIVE_INFINITY): number {
-  return Math.min(...cue.words.map((word) => Math.round(word.startMs - leadOf(word, notBefore)))) + 2;
+  return ransomFrameCeil(Math.min(...cue.words.map((word) => word.startMs - leadOf(word, notBefore))));
 }
 
-/** When the cue's last word could be readable for HOLD ms at the fastest entrance, with no roll: what it asks of the next cue's entry. */
+/** When the cue's last word could be readable for HOLD ms at the sample's own entrance pace, with no roll: what it asks of the next cue's entry. */
 export function ransomNeedMs(cue: SceneCue, notBefore = Number.NEGATIVE_INFINITY): number {
   const splits = heroSplits(cue);
   const letterTotal = splits.reduce((a, b) => a + b, 0);
@@ -279,18 +304,18 @@ export function ransomNeedMs(cue: SceneCue, notBefore = Number.NEGATIVE_INFINITY
   let land = cue.startMs;
   cue.words.forEach((word, at) => {
     const rise = word.startMs - leadOf(word, notBefore);
-    land = Math.max(land, word.role === "hero" ? rise + (Math.max(1, splits[at]!) - 1) * stagger0 * SPEED_MIN + 300 * SPEED_MIN : rise + 200 * SPEED_MIN);
+    land = Math.max(land, word.role === "hero" ? rise + (Math.max(1, splits[at]!) - 1) * stagger0 + SETTLE_TILE * 300 : rise + SETTLE_STRIP * 200);
   });
   return land + HOLD;
 }
 
-function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: Counters, handoff: number, notBefore: number): Piece[] {
+function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: Counters, handoff: number, notBefore: number, forceSpeed?: number, offsetY = 0): Piece[] {
   const space = sceneSpace(input, CY);
   const { u, safe } = space;
   const rtl = cueDirection(cue) === "rtl";
   const sgn = rtl ? -1 : 1;
   const BX = space.x(CX);
-  const BY = space.y(CY);
+  const BY = space.y(CY) + offsetY;
   const safeW = safe.x2 - safe.x1;
   const limit = Math.max(0.5 * safeW, Math.min(MAX_W * u, safeW - 120 * u));
   const band = cueNumber * 10;
@@ -495,34 +520,40 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   // with no roll (a roll needs two frames), and the words have been readable from landing until then.
   const letterTotal = words.reduce((total, w) => total + (w.letters ? w.letters.length : 0), 0);
   const stagger0 = Math.min(26, 150 / Math.max(1, letterTotal));
-  const cap = Math.max(cue.startMs + ROLL_MIN, Number.isFinite(handoff) ? Math.min(cue.endMs + CLEAR, handoff) : cue.endMs);
-  const speedFor = (room: number) => {
-    let sp = 1;
-    for (const row of rows) {
-      if (row.kind === "strip") {
-        for (const at of row.idx) sp = Math.min(sp, (room - riseAt(at)) / 200);
-      } else {
-        for (const hw of row.words) sp = Math.min(sp, (room - riseAt(hw.word.index)) / ((hw.specs.length - 1) * stagger0 + 300));
-      }
-    }
-    return sp;
+  const firstFrame = ransomEntryMs(cue, notBefore);
+  // `handoff` is the incoming cue's first colliding painted frame; a cue always shows at least one painted frame.
+  const cap = Math.max(firstFrame + 34, Number.isFinite(handoff) ? Math.min(cue.endMs + CLEAR, handoff) : cue.endMs);
+  // Entrance length of a word at the sample's pace: a strip word's tear, or a hero's whole flight of tiles.
+  const paceOf = (index: number) => {
+    const row = rows.find((r) => (r.kind === "strip" ? r.idx.includes(index) : r.words.some((hw) => hw.word.index === index)))!;
+    return row.kind === "strip" ? SETTLE_STRIP * 200 : (row.words.find((hw) => hw.word.index === index)!.specs.length - 1) * stagger0 + SETTLE_TILE * 300;
   };
-  const withRoll = speedFor(cap - ROLL_MIN - HOLD);
-  const cut = withRoll < SPEED_MIN;
-  const speed = clamp(cut ? speedFor(cap - HOLD) : withRoll, SPEED_MIN, 1);
-  const GROW = 200 * speed;
-  const TILE = 300 * speed;
-  const stagger = stagger0 * speed;
-  const tileStart = (word: Word, li: number) => riseAt(word.index) + li * stagger;
-  let lastLand = cue.startMs;
-  for (const row of rows) {
-    if (row.kind === "strip") for (const at of row.idx) lastLand = Math.max(lastLand, riseAt(at) + GROW);
-    else {
-      for (const hw of row.words) {
-        for (let li = 0; li < hw.specs.length; li++) lastLand = Math.max(lastLand, tileStart(hw.word, li) + TILE);
-      }
-    }
+  const landAt = (index: number, sp: number) => riseAt(index) + paceOf(index) * sp;
+  const ones = words.map(() => 1);
+  const lastLandAt = (sp: readonly number[]) => Math.max(cue.startMs, ...words.map((w) => landAt(w.index, sp[w.index]!)));
+  // Handoff rule 3, in order: (a) shorten or drop the roll, (c, done by the caller) the incoming lead, then (d) compress each word's
+  // entrance only as much as it needs. The sample's pace is kept whenever the exit levers are enough.
+  let cut = false;
+  let spd: number[] = ones;
+  // A probe (the planner's reference for collisions) shows the most ink for the longest: the fastest entrance, never wiped away.
+  if (forceSpeed !== undefined) {
+    spd = words.map(() => forceSpeed);
+    cut = true;
+  } else if (lastLandAt(ones) + HOLD <= cap - ROLL_MIN) cut = false;
+  else {
+    cut = true;
+    if (lastLandAt(ones) + HOLD > cap + HOLD_SLACK) spd = words.map((w) => clamp((cap - HOLD - riseAt(w.index)) / paceOf(w.index), SPEED_MIN, 1));
   }
+  // A cue whose last word starts less than two painted frames before the cut cannot animate: it shows its finished pose at once
+  // (every letter and word, no flight, no tear, no roll, no decoration) for the frames it has.
+  let lastStart = cue.startMs;
+  for (const word of words) lastStart = Math.max(lastStart, riseAt(word.index) + (word.hero && word.letters ? (word.letters.length - 1) * stagger0 * spd[word.index]! : 0));
+  const finished = forceSpeed === undefined && cap - ransomFrameCeil(lastStart) < ROLL_MIN;
+  if (finished) cut = true;
+  const growOf = (index: number) => 200 * spd[index]!;
+  const tileOf = (index: number) => 300 * spd[index]!;
+  const tileStart = (word: Word, li: number) => riseAt(word.index) + li * stagger0 * spd[word.index]!;
+  const lastLand = lastLandAt(spd);
   // The roll starts once the last word has landed and been readable, and ends by `cap`.
   const exitFrom = cut ? Math.round(cap) : Math.round(Math.min(Math.max(cue.endMs - EXIT, lastLand + HOLD), cap - ROLL_MIN));
   const exitTo = cut ? exitFrom : exitFrom + Math.round(Math.min(EXIT, cap - exitFrom));
@@ -582,7 +613,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     ...extra,
   });
 
-  const deferred: ((dx: number, dy: number) => Piece)[] = [];
+  const deferred: ((dx: number, dy: number) => Piece | null)[] = [];
   let focus: { cx: number; top: number; bottom: number; halfW: number; tilt: number; start: number; row: Row } | null = null;
 
   for (const row of rows) {
@@ -592,10 +623,10 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     if (row.kind === "strip") {
       const first = Math.min(...row.idx.map((at) => cue.words[at]!.startMs));
       const start = Math.min(...row.idx.map(riseAt));
-      const from = Math.round(start) + 2;
+      const from = finished ? firstFrame : ransomFrameCeil(start);
       const [fill, ink] = STRIPS[counters.strips++ % STRIPS.length]!;
       const poseAt = (t: number) => {
-        const p = prog(t, start, 260);
+        const p = finished ? 1 : prog(t, start, 260);
         const b = ransomBoil(rowId, Math.floor(t / BOIL));
         const twist = (1 - EASES.out(p)) * -tilt * 2.2;
         return { x: P.x + b.x * u, y: P.y + b.y * u, rz: tilt + twist + b.r, s: lerp(0.88, 1, EASES.spring(p)) };
@@ -605,21 +636,23 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const tx = jumpFrames((t) => poseAt(t).x, from, exitTo, cuts, entry, 0.3);
       const ty = jumpFrames((t) => poseAt(t).y, from, exitTo, cuts, entry, 0.3);
       const trz = jumpFrames((t) => poseAt(t).rz, from, exitTo, cuts, entry, 0.05);
-      const ts = sampleFrames((t) => poseAt(t).s, entry, 0.003, { range: [from, Math.round(start + 260)], wholeMs: true, simplify: true });
-      const o: Frames = [[from, 0], [Math.round(start + 260 / 6), 1]];
+      const ts = sampleFrames((t) => poseAt(t).s, entry, 0.003, { range: [from, Math.max(from + 1, Math.round(start + 260))], wholeMs: true, simplify: true });
+      const o: Frames = finished ? [[from, 1]] : [[from, FIRST_O], [Math.max(from + 1, Math.round(start + 260 / 6)), 1]];
       const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o };
       // The strip tears longer as each later word is spoken (distance from the leading edge).
       const order = [...row.idx.keys()].sort((a, b) => cue.words[row.idx[a]!]!.startMs - cue.words[row.idx[b]!]!.startMs);
       // A word's own box plus a tail that stops short of the next word (a longer tail would show its first pixels early).
-      const tail = Math.min(row.padX, 0.6 * 0.26 * row.size);
+      const tail = Math.min(row.padX, 0.45 * 0.26 * row.size);
       const rawD = order.map((pos) => (rtl ? row.w - row.lefts[pos]! + tail : row.lefts[pos]! + row.advs[pos]! + tail));
       // The edge only ever grows, so a row whose spoken order is not its visual order (an English phrase in Urdu) never takes paper back.
       const edgeD = rawD.map((_d, i) => Math.max(...rawD.slice(0, i + 1)));
       edgeD[edgeD.length - 1] = row.w;
       const startsOf = order.map((pos) => riseAt(row.idx[pos]!));
+      const growsOf = order.map((pos) => growOf(row.idx[pos]!));
+      // The tear starts from a quarter of the next word's box, so the word's first painted frame shows it.
       const growth = (t: number) => {
         let e = edgeD[0]!;
-        for (let i = 1; i < order.length; i++) e = lerp(e, edgeD[i]!, EASES.outExpo(prog(t, startsOf[i]!, GROW)));
+        for (let i = 1; i < order.length; i++) e = lerp(e, edgeD[i]!, t < startsOf[i]! ? 0 : 0.25 + 0.75 * EASES.outExpo(prog(t, startsOf[i]!, growsOf[i]!)));
         return e;
       };
       // A word the edge has already passed (it is spoken after a word that sits further along the row) shows at its own start.
@@ -629,11 +662,11 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       });
       const cosT = Math.cos((tilt * Math.PI) / 180);
       const xEdge = (t: number) => P.x + sgn * (growth(t) - row.w / 2) * cosT + sgn * 3 * u;
-      const growEnd = Math.round(Math.max(...startsOf) + GROW);
-      const growEdges = [...startsOf.flatMap((s) => [s, s + GROW]), from];
+      const growEnd = Math.max(from + 1, Math.round(Math.max(...startsOf.map((s, i) => s + growsOf[i]!))));
+      const growEdges = [...startsOf.flatMap((s, i) => [s - 0.5, s, s + growsOf[i]!]), from];
       const gFrames = sampleFrames(xEdge, growEdges, 0.3, { range: [from, growEnd], wholeMs: true, simplify: true });
       const grow: Frames = [...gFrames.map((f) => [f[0], f[1]] as [number, number]), [growEnd + 1, rtl ? L - FAR : R + FAR]];
-      const clip = clipOf(from, grow);
+      const clip = clipOf(from, finished ? null : grow);
       const rowR = ransomRng(seed ^ Math.imul(ordinal + 5, 0x27d4eb2f));
       const underPts = ransomTorn(row.w + 14 * u, row.h + 12 * u, 4, rowR, u).map(([x, y]) => [x - 7 * u, y - 4 * u + rowR() * 4 * u] as Pt);
       const stripPts = ransomTorn(row.w, row.h, 3, rowR, u);
@@ -646,48 +679,87 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         shape(`${base}s`, band + 1, from, exitTo, strip.path, { dx: pivot.x - strip.minX, dy: pivot.y - strip.minY }, track, { fill: { colour: fill }, clip }),
       );
       row.idx.forEach((at, pos) => {
-        const gate = gated.get(pos);
-        const wordTrack: Track = gate === undefined ? track : { ...track, o: [[from, 0], [Math.max(from, gate), 0], [Math.max(from, gate) + 43, 1]] };
+        const gate = finished ? undefined : gated.get(pos);
+        const g = gate === undefined ? 0 : Math.max(from + 2, gate);
+        const wordTrack: Track = gate === undefined ? track : { ...track, o: [[from, 0], [g - 1, 0], [g, FIRST_O], [g + 43, 1]] };
         pieces.push(text(`${base}w${pos}`, band + 3, from, exitTo, words[at]!.text, row.face, row.size, row.ls, ink, { dx: pivot.x - row.lefts[pos]!, dy: pivot.y - row.baseline }, wordTrack, { clip }));
       });
-      // A translucent tape scrap pins the start of the strip, a little different every row.
-      const tr = ransomRng(seed ^ Math.imul(ordinal + 17, 0x165667b1));
-      const tapeLen = clamp(0.58 * row.size, 30 * u, 78 * u);
-      const tapeThick = clamp(0.22 * row.size, 14 * u, 28 * u);
-      const tilted = ordinal % 2 ? 1 : -1;
-      const tapeAng = tilted * sgn * (30 + tr() * 16);
-      const tapePts: Pt[] = [];
-      const teeth = 4;
-      for (let i = 0; i <= teeth; i++) tapePts.push([tapeLen - (i % 2 ? 4 + tr() * 4 : tr() * 2) * u, (tapeThick * i) / teeth]);
-      for (let i = teeth; i >= 0; i--) tapePts.push([(i % 2 ? 4 + tr() * 4 : tr() * 2) * u, (tapeThick * i) / teeth]);
-      const tape = anchored(tapePts);
-      const lx = sgn * (-row.w / 2 + 6 * u);
-      const ly = -row.h / 2 + 3 * u;
-      const tapeAt = Math.round(start + 90);
-      const popOf = (t: number) => lerp(1.6, 1, EASES.spring(prog(t, tapeAt, 240)));
-      const tapePose = (t: number, axis: "x" | "y" | "rz") => {
-        const pose = poseAt(t);
-        const a = (pose.rz * Math.PI) / 180;
-        const sx = lx * pose.s;
-        const sy = ly * pose.s;
-        if (axis === "x") return pose.x + sx * Math.cos(a) - sy * Math.sin(a);
-        if (axis === "y") return pose.y + sx * Math.sin(a) + sy * Math.cos(a);
-        return pose.rz + tapeAng;
-      };
-      const tapeFrom = tapeAt + 2;
-      const tapeEdges = [tapeAt, tapeAt + 240, start, start + 260];
-      const tapeCuts = boilCuts(tapeFrom, exitTo);
-      const tapeScale = sampleFrames((t) => popOf(t) * poseAt(t).s, tapeEdges, 0.004, { range: [tapeFrom, Math.round(tapeAt + 240)], wholeMs: true, simplify: true });
-      pieces.push(
-        shape(`${base}t`, band + 2, tapeFrom, exitTo, tape.path, { dx: tapeLen / 2 - tape.minX, dy: tapeThick / 2 - tape.minY }, {
-          x: jumpFrames((t) => tapePose(t, "x"), tapeFrom, exitTo, tapeCuts, tapeEdges, 0.3),
-          y: jumpFrames((t) => tapePose(t, "y"), tapeFrom, exitTo, tapeCuts, tapeEdges, 0.3),
-          rz: jumpFrames((t) => tapePose(t, "rz"), tapeFrom, exitTo, tapeCuts, tapeEdges, 0.05),
-          sx: tapeScale,
-          sy: tapeScale,
-          o: [[tapeFrom, 0], [Math.round(tapeAt + 40), 1]],
-        }, { fill: { colour: TAPES[ordinal % TAPES.length]!, alpha: 0.72 }, clip: clipOf(tapeFrom, null) }),
-      );
+      // A translucent tape scrap pins the start of the strip, a little different every row. It is built after the cue's
+      // safe-area shift so that its pop (it lands 1.6x) and its boil are checked against the final frame.
+      if (!finished) {
+        const tr = ransomRng(seed ^ Math.imul(ordinal + 17, 0x165667b1));
+        const tapeLen = clamp(0.58 * row.size, 30 * u, 78 * u);
+        const tapeThick = clamp(0.22 * row.size, 14 * u, 28 * u);
+        const tilted = ordinal % 2 ? 1 : -1;
+        const tapeAng = tilted * sgn * (30 + tr() * 16);
+        const tapePts: Pt[] = [];
+        const teeth = 4;
+        for (let i = 0; i <= teeth; i++) tapePts.push([tapeLen - (i % 2 ? 4 + tr() * 4 : tr() * 2) * u, (tapeThick * i) / teeth]);
+        for (let i = teeth; i >= 0; i--) tapePts.push([(i % 2 ? 4 + tr() * 4 : tr() * 2) * u, (tapeThick * i) / teeth]);
+        const tape = anchored(tapePts);
+        const ly = -row.h / 2 + 3 * u;
+        const tapeAt = Math.round(start + 90);
+        const tapeFrom = ransomFrameCeil(tapeAt);
+        const tapeEdges = [tapeAt, tapeAt + 240, start, start + 260];
+        const tapeCuts = boilCuts(tapeFrom, exitTo);
+        const colour = TAPES[ordinal % TAPES.length]!;
+        deferred.push((dx, dy) => {
+          let last: Piece | null = null;
+          for (const [inset, pop] of [[6 * u, 1.6], [6 * u, 1], [0.3 * tapeLen, 1], [0.5 * tapeLen, 1]] as const) {
+            const lx = sgn * (-row.w / 2 + inset);
+            const popOf = (t: number) => lerp(pop, 1, EASES.spring(prog(t, tapeAt, 240)));
+            const tapePose = (t: number, axis: "x" | "y" | "rz") => {
+              const pose = poseAt(t);
+              const a = (pose.rz * Math.PI) / 180;
+              const sx = lx * pose.s;
+              const sy = ly * pose.s;
+              if (axis === "x") return pose.x + sx * Math.cos(a) - sy * Math.sin(a);
+              if (axis === "y") return pose.y + sx * Math.sin(a) + sy * Math.cos(a);
+              return pose.rz + tapeAng;
+            };
+            const tapeScale = sampleFrames((t) => popOf(t) * poseAt(t).s, tapeEdges, 0.004, { range: [tapeFrom, Math.max(tapeFrom + 1, Math.round(tapeAt + 240))], wholeMs: true, simplify: true });
+            const piece = shiftPiece(
+              shape(`${base}t`, band + 2, tapeFrom, exitTo, tape.path, { dx: tapeLen / 2 - tape.minX, dy: tapeThick / 2 - tape.minY }, {
+                x: jumpFrames((t) => tapePose(t, "x"), tapeFrom, exitTo, tapeCuts, tapeEdges, 0.3),
+                y: jumpFrames((t) => tapePose(t, "y"), tapeFrom, exitTo, tapeCuts, tapeEdges, 0.3),
+                rz: jumpFrames((t) => tapePose(t, "rz"), tapeFrom, exitTo, tapeCuts, tapeEdges, 0.05),
+                sx: tapeScale,
+                sy: tapeScale,
+                o: [[tapeFrom, FIRST_O], [Math.max(tapeFrom + 1, Math.round(tapeAt + 40)), 1]],
+              }, { fill: { colour, alpha: 0.72 }, clip: clipOf(tapeFrom, null) }),
+              dx,
+              dy,
+            );
+            last = piece;
+            // Inside the safe area while it lands and on every boil step.
+            const probes = [...frameList(tapeFrom, Math.min(exitTo, tapeAt + 300)).flatMap((t) => [t - 1, t]), ...tapeCuts.flatMap((t) => [t - 1, t, t + 1])];
+            if (probes.every((t) => {
+              const box = pieceBounds(piece, t, input.measure);
+              return !box || (box.x1 >= safe.x1 && box.x2 <= safe.x2 && box.y1 >= safe.y1 && box.y2 <= safe.y2);
+            })) return piece;
+          }
+          // Still poking out (the strip itself is at the frame's edge): move the whole scrap in by what overshoots.
+          if (!last) return null;
+          let nx = 0;
+          let ny = 0;
+          const probes = [...frameList(last.fromMs, Math.min(exitTo, tapeAt + 300)).flatMap((t) => [t - 1, t]), ...tapeCuts.flatMap((t) => [t - 1, t, t + 1])];
+          for (const t of probes) {
+            const box = pieceBounds(last, t, input.measure);
+            if (!box) continue;
+            nx = Math.max(nx, safe.x1 - box.x1);
+            ny = Math.max(ny, safe.y1 - box.y1);
+          }
+          let mx = 0;
+          let my = 0;
+          for (const t of probes) {
+            const box = pieceBounds(last, t, input.measure);
+            if (!box) continue;
+            mx = Math.max(mx, box.x2 - safe.x2);
+            my = Math.max(my, box.y2 - safe.y2);
+          }
+          return shiftPiece(last, nx - mx, ny - my);
+        });
+      }
       if (!hasHero) focus = { cx: P.x, top: row.top, bottom: row.top + row.h, halfW: row.w / 2, tilt, start: first, row };
     } else {
       // The ransom note: one tile per letter, flying in tiny and spinning.
@@ -698,11 +770,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
         const spoken = cue.words[hw.word.index]!;
         hw.specs.forEach((spec, li) => {
           const d = hw.dims[li]!;
-          const t0 = tileStart(hw.word, li);
-          const from = Math.round(t0) + 2;
-          const settle = Math.round(t0 + TILE);
+          const tileDur = tileOf(hw.word.index);
+          const t0 = finished ? firstFrame - tileDur : tileStart(hw.word, li);
+          const from = finished ? firstFrame : ransomFrameCeil(t0);
+          const settle = Math.round(t0 + tileDur);
           const tilePose = (t: number) => {
-            const p = prog(t, t0, TILE);
+            const p = prog(t, t0, tileDur);
             const settled = t >= settle ? 1 : 0;
             const b = settled ? ransomBoil(spec.id, Math.floor(t / BOIL), 1.2) : { x: 0, y: 0, r: 0 };
             const tx = lerp(spec.fromX * u, 0, EASES.outExpo(p)) + b.x * u * settled;
@@ -716,12 +789,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
             };
           };
           const cuts = [settle, ...boilCuts(settle, exitTo)];
-          const edges = [t0, t0 + TILE];
+          const edges = [t0, t0 + tileDur];
           const tx = jumpFrames((t) => tilePose(t).x, from, exitTo, cuts, edges, 0.3);
           const ty = jumpFrames((t) => tilePose(t).y, from, exitTo, cuts, edges, 0.3);
           const trz = jumpFrames((t) => tilePose(t).rz, from, exitTo, cuts, edges, 0.05);
           const ts = sampleFrames((t) => tilePose(t).s, edges, 0.004, { range: [from, Math.max(from + 1, settle)], wholeMs: true, simplify: true });
-          const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o: [[from, 0], [Math.max(from + 1, Math.round(t0 + 0.2 * TILE)), 1]] };
+          const track: Track = { x: tx, y: ty, rz: trz, sx: ts, sy: ts, o: finished ? [[from, 1]] : [[from, FIRST_O], [Math.max(from + 1, Math.round(t0 + 0.2 * tileDur)), 1]] };
           const clip = clipOf(from, null);
           const poly = anchored(spec.poly.map(([fx, fy]) => [fx * d.w, fy * d.h] as Pt));
           const id = `ransom:${cueNumber}:h${hw.word.index}l${li}`;
@@ -738,7 +811,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   }
 
   // --- recurring beats: the loose scrap and the scribble, every cue ---
-  if (focus) {
+  if (focus && !finished) {
     const f = focus;
     const isHero = f.row.kind === "hero";
     const counter = isHero ? counters.heroes++ : counters.plains++;
@@ -758,7 +831,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       const entry = ransomEntryMs(cue, notBefore);
       const at = Math.round(Math.max(entry, cue.startMs - 60, Math.min(f.start - 40, exitFrom - 300)));
       const dur = Math.round(clamp(exitFrom - 50 - at, 120, 260));
-      const from = at + 2;
+      const from = ransomFrameCeil(at);
       const rest = side * (8 + dr() * 10);
       const fall = (t: number) => outBack18(prog(t, at, dur));
       deferred.push((dx, dy) => {
@@ -775,7 +848,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
               rz: [[from, rest + side * spin], [at + dur, rest, "out"]],
               sx: sTrack,
               sy: sTrack,
-              o: [[from, 0], [at + 50, 1]],
+              o: [[from, FIRST_O], [Math.max(from + 1, at + 50), 1]],
             }, { fill: { colour: fill }, clip: clipOf(from, null) }),
             dx,
             dy,
@@ -812,14 +885,15 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       else if (variant === 1) path = polylinePath(zig(0, 6 + Math.floor(dr() * 3), A * 1.1));
       else path = [...polylinePath(line(-5 * u, 3.5, ph, 4.5 * u, Math.round(W / (10 * u)))), ...polylinePath(line(5 * u, 3.5, ph + 2.2, 4.5 * u, Math.round(W / (10 * u))))];
       const at = Math.round(f.start + 150);
+      const from = ransomFrameCeil(at);
       const dur = Math.round(clamp(exitFrom - 40 - at, 0, 280));
       if (dur >= 110) {
         const px = f.cx;
         const py = cyl;
         const wipe: Frames = rtl ? [[at, px + W / 2 + 12 * u], [at + dur, px - W / 2 - 12 * u, "outExpo"], [at + dur + 1, L - FAR]] : [[at, px - W / 2 - 12 * u], [at + dur, px + W / 2 + 12 * u, "outExpo"], [at + dur + 1, R + FAR]];
         const mk = (id: string, z: number, width: number, colour: string): ShapePiece => {
-          const clip = clipOf(at + 2, wipe);
-          return shape(id, z, at + 2, exitTo, path, { dx: 0, dy: 0 }, { x: [[at + 2, px]], y: [[at + 2, py]], rz: [[at + 2, f.tilt]], o: [[at + 2, 0], [at + 22, 1]] }, { stroke: { widthPx: width, colour }, clip });
+          const clip = clipOf(from, wipe);
+          return shape(id, z, from, exitTo, path, { dx: 0, dy: 0 }, { x: [[from, px]], y: [[from, py]], rz: [[from, f.tilt]], o: [[from, FIRST_O], [from + 20, 1]] }, { stroke: { widthPx: width, colour }, clip });
         };
         pieces.push(mk(`ransom:${cueNumber}:qu`, band + 5, 14 * u, paper), mk(`ransom:${cueNumber}:q`, band + 6, 7 * u, NAVY));
       }
@@ -853,32 +927,178 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       shape(`ransom:${cueNumber}:rollc`, band + 9, exitFrom, exitTo, curl.path, { dx: Wb / 2 - curl.minX, dy: H / 2 - curl.minY }, track, { fill: { colour: CURL } }),
     );
   }
-  // Decorations that would show on a single 30 fps frame (or none) are left out: a flash is not a motion.
-  const kept = pieces.filter((piece) => piece.toMs - piece.fromMs >= ROLL_MIN);
+  // Decorations that cannot paint on two export frames are left out (a flash is not a motion); words, strips and tiles never are.
+  const paintedCount = (piece: Piece) =>
+    frameList(piece.fromMs, piece.toMs).filter((t) => {
+      const pose = evaluatePiece(piece, t);
+      return pose.visible && pose.o > 0.05 && pieceBounds(piece, t, input.measure) !== null;
+    }).length;
+  const scribbleOk = (pieces.find((piece) => piece.id.endsWith(":q")) ? paintedCount(pieces.find((piece) => piece.id.endsWith(":q"))!) : 2) >= 2;
+  const kept = pieces.filter((piece) => {
+    if (/:(q|qu)$/.test(piece.id)) return scribbleOk;
+    if (/:(roll|rollc)$/.test(piece.id)) return paintedCount(piece) >= 2;
+    return true;
+  });
   const shifted = clampToSafeArea(kept, safe, input.measure);
   const probe = kept[0];
   const moved = probe ? { dx: evaluatePiece(shifted[0]!, probe.fromMs).x - evaluatePiece(probe, probe.fromMs).x, dy: evaluatePiece(shifted[0]!, probe.fromMs).y - evaluatePiece(probe, probe.fromMs).y } : { dx: 0, dy: 0 };
-  const late = deferred.map((build) => build(moved.dx, moved.dy)).filter((piece) => piece.toMs - piece.fromMs >= ROLL_MIN);
+  const late = deferred.map((build) => build(moved.dx, moved.dy)).filter((piece): piece is Piece => piece !== null && paintedCount(piece) >= 2);
   return [...shifted, ...late];
+}
+
+/**
+ * The ink of a piece at `t` as an oriented box (its rest box scaled and turned about its pivot, cut to its clip when the clip cuts
+ * it), or null when nothing is painted. A tilted strip is a thin slanted box, not the big axis-aligned hull around it.
+ */
+export function ransomInkQuad(piece: Piece, t: number, measure: SceneInput["measure"]): Pt[] | null {
+  const pose = evaluatePiece(piece, t);
+  if (!pose.visible || pose.o <= 0.05) return null;
+  const cut = pieceBounds(piece, t, measure);
+  if (!cut) return null;
+  const local = pieceLocalBox(piece, measure);
+  const origin = piece.origin ?? { dx: 0, dy: 0 };
+  const angle = (pose.rz * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const quad = (
+    [[local.x1, local.y1], [local.x2, local.y1], [local.x2, local.y2], [local.x1, local.y2]] as const
+  ).map(([cx, cy]) => {
+    const ux = (cx - origin.dx) * pose.sx;
+    const uy = (cy - origin.dy) * pose.sy;
+    return [pose.x + ux * cos - uy * sin, pose.y + ux * sin + uy * cos] as Pt;
+  });
+  const xs = quad.map((p) => p[0]);
+  const ys = quad.map((p) => p[1]);
+  const hull = { x1: Math.min(...xs), x2: Math.max(...xs), y1: Math.min(...ys), y2: Math.max(...ys) };
+  if (cut.x2 - cut.x1 < hull.x2 - hull.x1 - 0.5 || cut.y2 - cut.y1 < hull.y2 - hull.y1 - 0.5) {
+    return [[cut.x1, cut.y1], [cut.x2, cut.y1], [cut.x2, cut.y2], [cut.x1, cut.y2]];
+  }
+  return quad;
+}
+
+/** Two oriented boxes overlap by more than 1 px along every separating axis. */
+export function ransomQuadsOverlap(a: readonly Pt[], b: readonly Pt[]): boolean {
+  for (const quad of [a, b]) {
+    for (let at = 0; at < quad.length; at++) {
+      const p = quad[at]!;
+      const q = quad[(at + 1) % quad.length]!;
+      const nx = q[1] - p[1];
+      const ny = p[0] - q[0];
+      const length = Math.hypot(nx, ny) || 1;
+      const project = (poly: readonly Pt[]) => {
+        const values = poly.map(([x, y]) => (x * nx + y * ny) / length);
+        return [Math.min(...values), Math.max(...values)] as const;
+      };
+      const [a0, a1] = project(a);
+      const [b0, b1] = project(b);
+      if (Math.min(a1, b1) - Math.max(a0, b0) <= 1) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The first export frame where an incoming piece's ink meets an outgoing word's. `Infinity` when the two cues never touch.
+ */
+function ransomCollision(outgoing: readonly Piece[], incoming: readonly Piece[], measure: SceneInput["measure"]): number {
+  // The outgoing words and the paper under them are ink; its tape, scrap, scribble and roll are decoration an incoming cue may cover.
+  const out = outgoing.filter((piece) => /:(r\d+(u|s|w\d+)|h\d+l\d+t?)$/.test(piece.id));
+  const inn = incoming.filter((piece) => !/:(roll|rollc)$/.test(piece.id));
+  if (out.length === 0 || inn.length === 0) return Number.POSITIVE_INFINITY;
+  const quads = (list: readonly Piece[], t: number) => list.flatMap((piece) => {
+    const quad = ransomInkQuad(piece, t, measure);
+    return quad ? [quad] : [];
+  });
+  for (const t of frameList(Math.min(...inn.map((piece) => piece.fromMs)), Math.max(...out.map((piece) => piece.toMs)))) {
+    const a = quads(out, t);
+    if (a.length === 0) continue;
+    const b = quads(inn, t);
+    if (a.some((x) => b.some((y) => ransomQuadsOverlap(x, y)))) return t;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+/** The vertical extent of the ink of `pieces` over their lives (sampled every 100 ms), or null. */
+function inkSpan(pieces: readonly Piece[], measure: SceneInput["measure"]): { top: number; bottom: number } | null {
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const piece of pieces) {
+    for (let t = piece.fromMs; t < piece.toMs; t += 100) {
+      const quad = ransomInkQuad(piece, t, measure);
+      if (!quad) continue;
+      for (const [, y] of quad) {
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+      }
+    }
+  }
+  return Number.isFinite(top) ? { top, bottom } : null;
 }
 
 export const ransomProgram: SceneProgram = {
   build(input): CaptionScene {
-    const counters: Counters = { rows: 0, strips: 0, heroes: 0, plains: 0 };
-    // The incoming cue's lead shrinks toward 0 only as far as the outgoing cue needs to hold its last word (handoff rule 3).
     const live = input.cues.map((cue, number) => ({ cue, number })).filter(({ cue }) => cue.words.length > 0);
-    const notBefore: number[] = [];
-    const entry: number[] = [];
-    live.forEach(({ cue }, at) => {
-      const previous = live[at - 1];
-      const first = Math.min(...cue.words.map((word) => word.startMs));
-      notBefore[at] = previous ? Math.min(ransomNeedMs(previous.cue, notBefore[at - 1]!), first) : Number.NEGATIVE_INFINITY;
-      entry[at] = ransomEntryMs(cue, notBefore[at]!);
+    const snapshots: Counters[] = [];
+    const lead: number[] = [];
+    const lift: number[] = [];
+    const cutAt: number[] = live.map(() => Number.POSITIVE_INFINITY);
+    const { u } = sceneSpace(input, CY);
+    let counters: Counters = { rows: 0, strips: 0, heroes: 0, plains: 0 };
+    let previous: Piece[] | null = null;
+    // Handoff rule 3, planned cue by cue on probes (everything at its earliest, so a cut is never later than a real collision):
+    // (b) where the two cues' ink would meet, a cue that begins while the last one is still being spoken (a speaker overlap) is
+    // moved above or below it; (c) otherwise the incoming lead shrinks toward 0 when the outgoing cue needs that to hold its last
+    // word; and the cut is the first painted frame where the ink still meets.
+    live.forEach(({ cue, number }, at) => {
+      snapshots[at] = { ...counters };
+      const probe = (notBefore: number, offsetY = 0) => {
+        const c = { ...snapshots[at]! };
+        return { pieces: buildCue(cue, number, input, c, cue.endMs + CLEAR, notBefore, SPEED_MIN, offsetY), c };
+      };
+      let chosenLead = Number.NEGATIVE_INFINITY;
+      let chosenLift = 0;
+      let chosen = probe(chosenLead);
+      if (previous) {
+        const before = live[at - 1]!.cue;
+        const need = ransomNeedMs(before, lead[at - 1]!);
+        const first = Math.min(...cue.words.map((word) => word.startMs));
+        let collides = ransomCollision(previous, chosen.pieces, input.measure);
+        if (collides < need && Math.max(...before.words.map((word) => word.endMs)) > first) {
+          const outSpan = inkSpan(previous.filter((piece) => /:(r\d+(u|s|w\d+)|h\d+l\d+t?)$/.test(piece.id)), input.measure);
+          const inSpan = inkSpan(chosen.pieces.filter((piece) => !/:(roll|rollc)$/.test(piece.id)), input.measure);
+          if (outSpan && inSpan) {
+            const gap = 16 * u;
+            const candidates = [(outSpan.top - gap) - inSpan.bottom, (outSpan.bottom + gap) - inSpan.top].sort((a, b) => Math.abs(a) - Math.abs(b));
+            for (const dy of candidates) {
+              const moved = probe(chosenLead, dy);
+              if (ransomCollision(previous, moved.pieces, input.measure) === Number.POSITIVE_INFINITY) {
+                chosen = moved;
+                chosenLift = dy;
+                collides = Number.POSITIVE_INFINITY;
+                break;
+              }
+            }
+          }
+        }
+        if (collides < need) {
+          const shrunk = probe(Math.min(need, first), chosenLift);
+          const later = ransomCollision(previous, shrunk.pieces, input.measure);
+          if (later > collides) {
+            chosen = shrunk;
+            chosenLead = Math.min(need, first);
+            collides = later;
+          }
+        }
+        cutAt[at - 1] = collides;
+      }
+      lead[at] = chosenLead;
+      lift[at] = chosenLift;
+      counters = chosen.c;
+      previous = chosen.pieces;
     });
     const pieces: Piece[] = [];
     live.forEach(({ cue, number }, at) => {
-      const next = entry[at + 1];
-      pieces.push(...buildCue(cue, number, input, counters, next === undefined ? Number.POSITIVE_INFINITY : next, notBefore[at]!));
+      pieces.push(...buildCue(cue, number, input, { ...snapshots[at]! }, cutAt[at]!, lead[at]!, undefined, lift[at]!));
     });
     return { pieces };
   },
