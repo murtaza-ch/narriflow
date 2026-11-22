@@ -116,6 +116,8 @@ export function sceneInputFromPreset(
     readonly measure: Measure;
     /** Where the scene is anchored, percent of the frame; the preset's own position by default. */
     readonly anchor?: { readonly xPct: number; readonly yPct: number };
+    /** The render's frame rate, when known. */
+    readonly fps?: number;
   },
 ): SceneInput {
   const name = preset.scene;
@@ -128,6 +130,7 @@ export function sceneInputFromPreset(
     colours: { primary: preset.primaryColor, highlight: preset.highlightColor, accent: preset.accentColor ?? meta.colours.accent, shadow: preset.shadowColor },
     scale: preset.fontSize / meta.bodyPx,
     measure: args.measure,
+    ...(args.fps ? { fps: args.fps } : {}),
   };
 }
 

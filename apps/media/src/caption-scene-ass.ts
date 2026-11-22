@@ -9,6 +9,8 @@ import {
   type TextMeasure,
   buildCaptionScene,
   evaluatePiece,
+  exportFrameAfter,
+  exportFrameTimes,
   pathBounds,
   pathToAss,
   retracePath,
@@ -41,7 +43,7 @@ import {
  * `evaluatePiece` says (the same function the Studio paints from).
  *
  * How a piece becomes events. libass renders at integer milliseconds, so the writer samples the
- * piece at those times (`frameTimes`) and cuts its life into spans: each span is one event per paint
+ * piece at those times (`exportFrameTimes`) and cuts its life into spans: each span is one event per paint
  * layer (shadows, then the fill with its outline), its tags built from the span's samples.
  *  - Position is one `\move` per event, so a span ends where the position stops being linear
  *    (error over 0.5 px at a frame) or where a turn about a moving pivot would drift (`\org` is
@@ -67,9 +69,6 @@ export const SCENE_ASS = {
 
 /** The tolerances of "the tags imply the evaluator's value at every frame" (spec 5.4). */
 export const SCENE_TOLERANCE = { px: 0.5, position: 0.25, scalePercent: 0.5, degrees: 0.05, alphaByte: 1, blur: 0.1, colour: 1, bord: 0.05 } as const;
-
-/** Sampling rate of a piece's tracks; libass interpolates linearly between samples at the real frame rate. */
-const MAX_SAMPLE_FPS = 60;
 
 const SUB = { shadow: 0, fill: 5, stroke: 6 } as const;
 
@@ -175,9 +174,13 @@ export function sceneInputForLayers(
   layers: readonly CompositionCaptionVisualLayer[],
   canvas: { width: number; height: number },
   measure: Measure,
+  fps?: number,
 ): { name: CaptionSceneName; input: SceneInput } {
   const first = layers[0]!;
-  return { name: first.preset.scene!, input: sceneInputFromPreset(first.preset, { cues: sceneCuesFromLayers(layers), canvas, measure, anchor: first.anchor }) };
+  return {
+    name: first.preset.scene!,
+    input: sceneInputFromPreset(first.preset, { cues: sceneCuesFromLayers(layers), canvas, measure, anchor: first.anchor, ...(fps ? { fps } : {}) }),
+  };
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -188,25 +191,6 @@ export interface SceneEventOptions {
   readonly fps?: number;
 }
 
-/** Render times, integer ms, of the frames inside `[fromMs, toMs)` at `fps` (libass is given rounded ms). */
-export function frameTimes(fromMs: number, toMs: number, fps: number): number[] {
-  const rate = Math.min(MAX_SAMPLE_FPS, Math.max(1, fps));
-  const times: number[] = [];
-  for (let frame = Math.max(0, Math.ceil(((fromMs - 0.5) * rate) / 1000)); ; frame++) {
-    const t = Math.round((frame * 1000) / rate);
-    if (t >= toMs) break;
-    if (t >= fromMs) times.push(t);
-  }
-  return times;
-}
-
-/** The first frame time after `t`. */
-function nextFrameTime(t: number, fps: number): number {
-  const rate = Math.min(MAX_SAMPLE_FPS, Math.max(1, fps));
-  let frame = Math.floor((t * rate) / 1000);
-  while (Math.round((frame * 1000) / rate) <= t) frame++;
-  return Math.round((frame * 1000) / rate);
-}
 
 const csFloor = (ms: number) => Math.floor(ms / 10) * 10;
 
@@ -299,7 +283,7 @@ interface Span {
  */
 function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: SceneEventOptions): AssEvent[] {
   const fps = options.fps ?? 30;
-  const times = frameTimes(piece.fromMs, piece.toMs, fps);
+  const times = exportFrameTimes(piece.fromMs, piece.toMs, fps);
   if (times.length === 0) return [];
   const poses = times.map((t) => evaluatePiece(piece, t));
   const drawn = poses.map(frameDrawn);
@@ -320,7 +304,7 @@ function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: Sc
   for (const run of runs) {
     for (const span of cutSpans(run, times, poses, geometry, layers)) {
       const startMs = csFloor(times[span.from]!);
-      const endMs = csFloor(span.to + 1 < times.length && drawn[span.to + 1] ? times[span.to + 1]! : nextFrameTime(times[span.to]!, fps));
+      const endMs = csFloor(span.to + 1 < times.length && drawn[span.to + 1] ? times[span.to + 1]! : exportFrameAfter(times[span.to]!, fps));
       for (const layer of layers) events.push(layerEvent(piece, metrics, geometry, layer, span, times, poses, startMs, endMs));
     }
   }
@@ -563,7 +547,7 @@ export function renderCaptionScene(input: {
 }): { events: AssEvent[]; scene: CaptionScene; measurer: SceneMeasurer } {
   const language = input.layers[0]?.language ?? null;
   const measurer = new SceneMeasurer(input.report, input.forcedOmissions, language);
-  const { name, input: sceneInput } = sceneInputForLayers(input.layers, input.canvas, measurer.measure);
+  const { name, input: sceneInput } = sceneInputForLayers(input.layers, input.canvas, measurer.measure, input.fps);
   const scene = buildCaptionScene(name, sceneInput);
   return { events: sceneEvents(scene, measurer, { canvas: input.canvas, ...(input.fps ? { fps: input.fps } : {}) }), scene, measurer };
 }

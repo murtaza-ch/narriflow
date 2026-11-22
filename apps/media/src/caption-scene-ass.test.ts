@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { SCENE_PERSPECTIVE_PX, SHEET_CANVAS, evaluatePiece, primitivesSheet, type Piece } from "@narriflow/caption-scene";
+import { SCENE_PERSPECTIVE_PX, SHEET_CANVAS, evaluatePiece, exportFrameTimes, primitivesSheet, type Piece } from "@narriflow/caption-scene";
 import { CAPTION_SCENE_NAMES, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import { ASS_HEADER, inkBounds, renderAssRaw } from "../scripts/caption-scene-probe";
 import { sceneDemo } from "../scripts/caption-scene-demo";
 import { assScript } from "./caption-ass";
 import { assStateAt } from "./caption-scene-ass-eval";
-import { SCENE_ASS, SCENE_TOLERANCE, SceneMeasurer, frameTimes, sceneEvents } from "./caption-scene-ass";
+import { SCENE_ASS, SCENE_TOLERANCE, SceneMeasurer, sceneEvents } from "./caption-scene-ass";
 
 /**
  * The Scene Style writer (ADR 0021): at every rendered frame the tags it wrote imply what
@@ -24,10 +24,10 @@ function eventsOf(pieces: readonly Piece[], canvas = SHEET_CANVAS) {
 
 describe("frame times", () => {
   test("libass is handed rounded milliseconds of the 30 fps grid, inside the window only", () => {
-    expect(frameTimes(0, 140, 30)).toEqual([0, 33, 67, 100, 133]);
-    expect(frameTimes(50, 120, 30)).toEqual([67, 100]);
-    expect(frameTimes(10, 20, 30)).toEqual([]);
-    expect(frameTimes(0, 100, 240).length).toBe(frameTimes(0, 100, 60).length);
+    expect(exportFrameTimes(0, 140, 30)).toEqual([0, 33, 67, 100, 133]);
+    expect(exportFrameTimes(50, 120, 30)).toEqual([67, 100]);
+    expect(exportFrameTimes(10, 20, 30)).toEqual([]);
+    expect(exportFrameTimes(0, 100, 240).length).toBe(exportFrameTimes(0, 100, 60).length);
   });
 });
 
@@ -40,7 +40,7 @@ describe("the tags imply the evaluator's values at every frame (spec 5.4)", () =
     for (const piece of sheet.scene.pieces) {
       const events = eventsOf([piece]);
       expect(events.length).toBeGreaterThan(0);
-      for (const t of frameTimes(piece.fromMs, Math.min(piece.toMs, 1100), FPS)) {
+      for (const t of exportFrameTimes(piece.fromMs, Math.min(piece.toMs, 1100), FPS)) {
         const pose = evaluatePiece(piece, t);
         const active = events.filter((event) => event.startMs <= t && t < event.endMs && event.layer % 10 >= 5);
         const drawn = pose.o > 0.002 && Math.abs(pose.sx) > 1e-4 && Math.abs(pose.sy) > 1e-4 && !(pose.clip && !pose.clip.inverse && (pose.clip.x2 <= pose.clip.x1 || pose.clip.y2 <= pose.clip.y1));
@@ -84,20 +84,20 @@ describe("the tags imply the evaluator's values at every frame (spec 5.4)", () =
       const [piece] = plain(id);
       const events = eventsOf([piece!]);
       let offset: number | null = null;
-      for (const t of frameTimes(piece!.fromMs, 1000, FPS)) {
+      for (const t of exportFrameTimes(piece!.fromMs, 1000, FPS)) {
         const event = events.find((candidate) => candidate.startMs <= t && t < candidate.endMs)!;
         const state = assStateAt(event.text, t - event.startMs);
         const pose = evaluatePiece(piece!, t);
         offset ??= state.x - pose.x;
         expect(Math.abs(state.x - pose.x - offset)).toBeLessThanOrEqual(SCENE_TOLERANCE.px);
-        expect(Math.abs(state.y - pose.y - (events[0] ? assStateAt(events[0].text, 0).y - evaluatePiece(piece!, frameTimes(piece!.fromMs, 1000, FPS)[0]!).y : 0))).toBeLessThanOrEqual(SCENE_TOLERANCE.px);
+        expect(Math.abs(state.y - pose.y - (events[0] ? assStateAt(events[0].text, 0).y - evaluatePiece(piece!, exportFrameTimes(piece!.fromMs, 1000, FPS)[0]!).y : 0))).toBeLessThanOrEqual(SCENE_TOLERANCE.px);
       }
     }
   });
 
   test("events of one paint layer never overlap and cover each drawn frame once", () => {
     const events = eventsOf(plain("ease-x-outExpo"));
-    for (const t of frameTimes(0, 1000, FPS)) expect(events.filter((event) => event.startMs <= t && t < event.endMs)).toHaveLength(1);
+    for (const t of exportFrameTimes(0, 1000, FPS)) expect(events.filter((event) => event.startMs <= t && t < event.endMs)).toHaveLength(1);
   });
 
   test("a piece that draws nothing (opacity 0, scale 0, an empty clip) writes no event for those frames", () => {

@@ -2,6 +2,7 @@ export * from "./cues";
 export * from "./demo";
 export * from "./detect";
 export * from "./ease";
+export * from "./frame-grid";
 export * from "./frames";
 export * from "./input";
 export * from "./layout";

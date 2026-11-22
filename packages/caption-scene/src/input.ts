@@ -39,6 +39,9 @@ export interface SceneInput {
   /** The user's size scale: the preset's `fontSize` over the sample's body size. 1 = sample size. */
   readonly scale: number;
   readonly measure: Measure;
+  /** The render's frame rate, for programs that plan by painted frames (`frame-grid.ts`). Unknown in the
+   * Studio preview; programs then plan for `SCENE_DEFAULT_FPS`. */
+  readonly fps?: number;
 }
 
 export interface SceneProgram {
