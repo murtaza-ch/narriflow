@@ -13,14 +13,14 @@ import { polygonPath, rectPath } from "../shapes";
  * Ordinary words are italic lockups (Archivo Black 84 px, sheared -12 degrees, the whole block tipped -6 degrees, each row stepped
  * in 46 px) riding a thin white rule; every word cuts in with a red / cyan split that snaps to white in 150 ms. The hero word
  * punches in upright, fitted to 600 px, blur to sharp, and fires an echo cascade: outline copies above and below it flash on a
- * 150 ms beat (stack, gone, stack, staircase), two chevrons hop around it, and a level rule draws in under it. The block leaves
+ * 150 ms beat (stack, gone, stack, staircase), and a level rule draws in under it. The block leaves
  * with a left-to-right wipe.
  *
  * What changed from the sample, and why (gallery-3 brief, 2026-11-21):
- * - `LEFT 170` is gone: the block (chevrons, rule and the slow drift included) is centred on the anchor; a right-to-left cue is the
+ * - `LEFT 170` is gone: the block (rule and the slow drift included) is centred on the anchor; a right-to-left cue is the
  *   mirror image (tilt, shear, indent, drift and wipe all flip, rows are flush right).
  * - The rule ran x 20 -> 980 (outside the safe margin) and the 46 px indent pushed a third row to the edge: the rule now spans the
- *   block (plus the chevrons' room), the row limit shrinks with the number of rows, and a block that still does not fit shrinks as
+ *   block, the row limit shrinks with the number of rows, and a block that still does not fit shrinks as
  *   a whole. Lockup words had no fit: a word wider than a row shrinks the block (no floor, a word must fit).
  * - The sample's hero cue drew only the hero and silently dropped every other word of the cue. Now the words before and after the
  *   hero are lockup rows (italic, straight, centred) above and below it, and a cue's hero run of several words is one hero row.
@@ -28,8 +28,7 @@ import { polygonPath, rectPath } from "../shapes";
  *   horizontal trail.
  * - `PATTERN` was the same on every hero cue: four beat patterns now cycle by a counter of hero cues. The cascade needs ~1.3 s;
  *   it is compressed to the time the hero has (beat 100 to 150 ms, leading silent beats dropped, the rule drawn in what is left).
- * - Recurring extras in the template's own language (counted per cue by the tests): on every lockup cue a chevron pair that points
- *   into the first word and nudges forward as each word lands (three variants), a scan bar that sweeps each word as it splits
+ * - Recurring extras in the template's own language (counted per cue by the tests): on every lockup cue a scan bar that sweeps each word as it splits
  *   (three variants), and a rule that is drawn in red / cyan before it settles white; on every hero cue register brackets that close
  *   in on the hero (three variants), the same red / cyan rule, and a rule that draws left, right or from the middle.
  * - Real speech: the sample's 160 ms wipe covered the last 180 ms of speech. The exit never starts before the last word has been
@@ -37,6 +36,7 @@ import { polygonPath, rectPath } from "../shapes";
  *   the sample's 0.018 px/ms, stopped after 1.7 s so it never leaves the safe area on a long hold.
  *   Handoffs use the shared export grid at the render's actual frame rate. Overlapping speakers get lanes clear of live echoes;
  *   trimming a decoration leaves the word's lead intact, and the hero includes the preceding frame even at 24 fps.
+ * - Arrow decorations are omitted from both hero and lockup cues at the owner's request.
  * - The hero punch blur (14 px for 170 ms) is kept (two frames of it at 30 fps are visible); the rule's `0 2px 8px` shadow is
  *   dropped (invisible on the dark footage the template is judged on); the words' shadow is one soft layer.
  * - The tilted wipe edge is the sample's local vertical, a canvas clip per word at that word's row (it leans 6 degrees in the sample).
@@ -88,7 +88,6 @@ const RULE_THICK = 4;
 const RULE_SEG = 170;
 const EXIT = 160;
 const HOLD = 150;
-const CHEVRON_GAP = 26;
 
 /** Archivo Black's line box: ascent 0.878 and descent 0.21 em, each rounded to whole px by Chrome. */
 export function cascadeBaseline(sizePx: number): number {
@@ -105,12 +104,6 @@ export function cascadeHash(text: string): number {
     h = Math.imul(h, 0x01000193);
   }
   return h >>> 0;
-}
-
-/** The sample's seeded spot generator for the chevrons. */
-export function cascadeRand(n: number): number {
-  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
-  return x - Math.floor(x);
 }
 
 const SIMPLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Common}\p{Script=Inherited}]+$/u;
@@ -444,13 +437,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
     }
   };
 
-  /** A chevron polygon (the sample's 7 px polyline, square caps) in a 44 x 56 box, scaled by `k`, pointing right (`dir` 1) or left (-1). */
-  const chevronPath = (k: number, dir: 1 | -1) => {
-    const pts: [number, number][] = [[3.07, 6.41], [7.59, 1.07], [39.43, 28], [7.59, 54.93], [3.07, 49.59], [28.57, 28]];
-    return polygonPath(pts.map(([x, y]) => [(dir === 1 ? x : 44 - x) * k, y * k] as [number, number]));
-  };
-  const chevronBox = (k: number) => ({ w: 44 * k, h: 56 * k });
-
   const lead = roles.lead;
   const heroIdx = roles.hero;
   const tail = roles.tail;
@@ -491,7 +477,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
     const shadows = [{ dx: 0, dy: 4 * u * k0, blur: 5 * u * k0, colour: colours.shadow, alpha: 0.6 }];
     const wordList: { index: number; row: Row; item: Row["items"][number] }[] = [];
     for (const row of laid.rows) for (const item of row.items) wordList.push({ index: item.index, row, item });
-    const byTime = [...wordList].sort((a, b) => startOf(a.index) - startOf(b.index));
     const swap = (lockupNumber + (seed & 1)) % 2 === 1;
     for (const { index, row, item } of wordList) {
       const s = Math.round(lockupEnter(index));
@@ -558,84 +543,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
     const drawDur = Math.round(clamp(exitFrom - drawFrom - 20, minAnim, 420));
     rule("rule", fr, ruleA, ruleB, ruleY, drawFrom, drawDur, rtl ? -1 : 1, dr, 1);
 
-    // chevron pair: points into the first word, nudges ahead as each word lands
-    const first = byTime[0]!;
-    const variant = lockupNumber % 3;
-    const kc = 0.8 * k0;
-    const box = chevronBox(kc);
-    const count = variant === 1 ? 3 : variant === 0 ? 2 : 1;
-    const alphas = variant === 1 ? [0.35, 0.65, 1] : [1, 1];
-    const cyl = first.row.ly + sizeC / 2;
-    const startLx = first.item.lx;
-    const lead0 = first.row.items[0]!.lx;
-    const wordsStarts = byTime.map((entry) => startOf(entry.index));
-    const nudge = (t: number) => {
-      let sum = 0;
-      for (const start of wordsStarts.slice(1)) if (t >= start) sum += 10 * u * Math.exp(-(t - start) / 120);
-      return Math.min(sum, 14 * u) * sgn;
-    };
-    const chevAt = Math.round(lockupEnter(first.index));
-    const items: { w: number; h: number; path: ReturnType<typeof chevronPath>; lx: number }[] = [];
-    // slots counted from the word outwards
-    let outward = CHEVRON_GAP * u * k0;
-    for (let c = 0; c < count; c++) items.push({ w: box.w, h: box.h, path: chevronPath(kc, sgn as 1 | -1), lx: 0 });
-    let slot = 0;
-    for (const item of items) {
-      const lxEdge = rtl ? lead0 + first.row.width + outward : startLx - outward;
-      const lxCentre = rtl ? lxEdge + item.w / 2 : lxEdge - item.w / 2;
-      const o: Frames = [[chevAt + slot * 40, 0], [chevAt + slot * 40 + 90, alphas[slot] ?? 1]];
-      const from = chevAt + slot * 40;
-      const slide = (t: number) => (1 - EASES.outExpo(prog(t, from, 200))) * -44 * u * sgn;
-      const pivot = (t: number) => at(fr, lxCentre + slide(t) + nudge(t), cyl);
-      const clipFr = fr;
-      const clip = wipeClip(clipFr, cyl, dr, from, exitTo);
-      pieces.push({
-        id: `cascade:${cueNumber}:chev${slot}`,
-        kind: "shape",
-        z: band + 5,
-        fromMs: from,
-        toMs: exitTo,
-        path: item.path,
-        origin: { dx: item.w / 2, dy: item.h / 2 },
-        fill: { colour: WHITE },
-        track: {
-          x: chan((t) => pivot(t).x + dr(t), from, exitTo, [from + 200, cue.startMs + DRIFT_MS, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
-          y: chan((t) => pivot(t).y, from, exitTo, [from + 200, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
-          rz: frame(from, fr.theta),
-          o,
-        },
-        clip,
-      });
-      outward += item.w + 8 * u * k0;
-      slot++;
-    }
-    if (variant === 2) {
-      // a short bar in front of the single chevron: a dash that points the way
-      const barW = 34 * u * k0;
-      const barH = 6 * u * k0;
-      const lxEdge = rtl ? lead0 + first.row.width + outward : startLx - outward;
-      const lxCentre = rtl ? lxEdge + barW / 2 : lxEdge - barW / 2;
-      const from = chevAt + 40;
-      const slide = (t: number) => (1 - EASES.outExpo(prog(t, from, 200))) * -44 * u * sgn;
-      const pivot = (t: number) => at(fr, lxCentre + slide(t) + nudge(t), cyl);
-      pieces.push({
-        id: "cascade:" + cueNumber + ":chevbar",
-        kind: "shape",
-        z: band + 5,
-        fromMs: from,
-        toMs: exitTo,
-        path: rectPath(0, 0, barW, barH),
-        origin: { dx: barW / 2, dy: barH / 2 },
-        fill: { colour: WHITE },
-        track: {
-          x: chan((t) => pivot(t).x + dr(t), from, exitTo, [from + 200, cue.startMs + DRIFT_MS, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
-          y: chan((t) => pivot(t).y, from, exitTo, [from + 200, ...wordsStarts.flatMap((start) => [start, start + 120, start + 360])], 0.2),
-          rz: frame(from, fr.theta),
-          o: [[from, 0], [from + 90, 1]],
-        },
-        clip: wipeClip(fr, cyl, dr, from, exitTo),
-      });
-    }
     return finish(pieces);
   }
 
@@ -825,35 +732,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
     });
   }
 
-  // chevrons hop around the block on every beat after the first
-  const heroBlockHalf = Math.max(widest, heroW) / 2;
-  const kc = 1 * (heroSizeC / (HERO_MAX * u)) ** 0.5;
-  const cbox = chevronBox(kc * u);
-  for (let step = pattern.length > 1 ? 1 : 0; step < pattern.length; step++) {
-    const from = Math.round(castFrom + step * beat);
-    const to = Math.round(Math.min(castFrom + (step + 1) * beat, cEnd));
-    if (to <= from) continue;
-    for (let i = 0; i < 2; i++) {
-      const sd = step * 7 + i * 3 + cue.index * 31 + (seed % 97);
-      const side = (i + step) % 2 === 0 ? -1 : 1;
-      const x = frHero.ex + side * (heroBlockHalf + 70 * u + cascadeRand(sd) * 90 * u);
-      const y = heroCentre.y - 260 * u + cascadeRand(sd + 1) * 520 * u;
-      const cx = clamp(x, safe.x1 + cbox.w / 2, safe.x2 - cbox.w / 2);
-      const cy = clamp(y, frHero.ey + rangeLo + cbox.h / 2, frHero.ey + rangeHi - cbox.h / 2);
-      pieces.push({
-        id: `cascade:${cueNumber}:chev${step}${i}`,
-        kind: "shape",
-        z: band + 5,
-        fromMs: from,
-        toMs: to,
-        path: chevronPath(kc * u, side < 0 ? -1 : 1),
-        origin: { dx: cbox.w / 2, dy: cbox.h / 2 },
-        fill: { colour: WHITE },
-        track: { x: frame(from, cx), y: frame(from, cy) },
-      });
-    }
-  }
-
   // register brackets close in on the hero
   {
     const capTop = frHero.ey + heroTop + heroBase + input.measure("H", FACE, heroSizeC, LS).inkTop;
@@ -1008,7 +886,7 @@ function coverFrame(q: Piece, dyQ: number, words: readonly { piece: Piece; dy: n
 }
 
 const inkId = (piece: Piece) => /^cascade:\d+:(w|h)\d+[ab]?$/.test(piece.id);
-const decorId = (piece: Piece) => /^cascade:\d+:(e\d|chev|br|scan)/.test(piece.id);
+const decorId = (piece: Piece) => /^cascade:\d+:(e\d|br|scan)/.test(piece.id);
 
 /**
  * The handoff rule between cues (`gallery3-brief.md`), in its order: the earlier cue's exit gives way (a wipe shortens or drops
@@ -1047,7 +925,7 @@ function orchestrate(input: SceneInput, probes: readonly Piece[][], variants: re
   /** How a probe piece of cue j moves when j gives up lead: 0 never, 1 with the rule's lead, 2 with the words'. */
   const kindOf = (piece: Piece, j: number) => {
     const id = piece.id.split(":").slice(2).join(":");
-    if (/^e\d/.test(id) || /^chev\d\d$/.test(id)) return 0;
+    if (/^e\d/.test(id)) return 0;
     if (/^rule\d+[rc]?$/.test(id)) return heroCue[j] ? 0 : 1;
     return 2;
   };
@@ -1155,7 +1033,7 @@ function orchestrate(input: SceneInput, probes: readonly Piece[][], variants: re
     }
     const ctl: Control = { shift: shift[i]!, decor: decor[i]!, limit, dy: dy[i]! };
     let mine = ctl.shift === 0 && ctl.decor === 0 && ctl.dy === 0 && !Number.isFinite(ctl.limit) ? probes[i]! : buildCue(cues[i]!, i, input, variants[i]!, ctl);
-    // Decoration (echoes, chevrons, brackets, scan bars) a later cue's word ink still covers ends before it, ahead of any word.
+    // Decoration (echoes, brackets, scan bars) a later cue's word ink still covers ends before it, ahead of any word.
     const ink = later.flatMap((j) => built[j]!.filter(inkId));
     if (ink.length > 0) {
       mine = mine.flatMap((piece) => {

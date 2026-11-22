@@ -5,7 +5,7 @@ import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
 import { type Box, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
-import { CASCADE_DEMO, CASCADE_PATTERNS, cascadeBaseline, cascadeBeats, cascadeCase, cascadeHash, cascadeProgram, cascadeRand, cascadeShears } from "./templates/cascade";
+import { CASCADE_DEMO, CASCADE_PATTERNS, cascadeBaseline, cascadeBeats, cascadeCase, cascadeHash, cascadeProgram, cascadeShears } from "./templates/cascade";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 const { cues } = demoCues(CASCADE_DEMO);
@@ -68,7 +68,7 @@ describe("Cascade geometry", () => {
     expect(cascadeBaseline(128)).toBe(106.5);
   });
 
-  test("the block, chevrons and rule are centred on the anchor and rows step in 46 px", () => {
+  test("the block and rule are centred on the anchor and rows step in 46 px", () => {
     const rows = ofCue(scene, 0).filter((piece) => /^w\d$/.test(idOf(piece)));
     expect(rows.length).toBe(5);
     const mid = (list: readonly Piece[]) => {
@@ -170,8 +170,6 @@ describe("Cascade motion", () => {
   test("the seeded helpers are pure and the build is deterministic", () => {
     expect(cascadeHash("a")).toBe(cascadeHash("a"));
     expect(cascadeHash("a")).not.toBe(cascadeHash("b"));
-    expect(cascadeRand(3)).toBe(cascadeRand(3));
-    expect(cascadeRand(3)).not.toBe(cascadeRand(4));
     expect(JSON.stringify(build(cues))).toBe(JSON.stringify(build(cues)));
   });
 });
@@ -215,17 +213,16 @@ describe("Cascade real speech and long clips", () => {
     const long = longClip(6);
     expect(long.length).toBeGreaterThanOrEqual(30);
     const list = build(long);
-    const chevronCounts = new Set<string>();
     const echoSignatures = new Set<string>();
     const bracketSignatures = new Set<string>();
     const scans = { total: 0, vertical: 0, horizontal: 0 };
     const sides = new Set<number>();
-    let chevronPairs = 0;
     let scanBars = 0;
     let brackets = 0;
     let ruleLeads = 0;
     long.forEach((cue, number) => {
       const mine = ofCue(list, number);
+      expect(mine.some((piece) => /^chev/.test(idOf(piece)))).toBe(false);
       const hero = cue.words.some((word) => word.role === "hero");
       expect(mine.some((piece) => /^rule\d/.test(idOf(piece)))).toBe(true);
       expect(mine.some((piece) => /^rule\d+r$/.test(idOf(piece)))).toBe(true);
@@ -237,12 +234,7 @@ describe("Cascade real speech and long clips", () => {
         bracketSignatures.add(br.map((piece) => idOf(piece)).join());
         const echoes = mine.filter((piece) => /^e/.test(idOf(piece)));
         echoSignatures.add(echoes.map((piece) => `${idOf(piece).match(/s\d/)![0]}${Math.round(evaluatePiece(piece, piece.fromMs).x)}`).join());
-        expect(mine.filter((piece) => /^chev/.test(idOf(piece))).length).toBeGreaterThanOrEqual(2);
       } else {
-        const chevs = mine.filter((piece) => /^chev/.test(idOf(piece)));
-        expect(chevs.length).toBeGreaterThanOrEqual(2);
-        chevronCounts.add(chevs.map((piece) => idOf(piece)).join());
-        chevronPairs++;
         const bars = mine.filter((piece) => /^scan\d/.test(idOf(piece))) as ShapePiece[];
         expect(bars.length).toBe(cue.words.length);
         scanBars += bars.length;
@@ -256,14 +248,12 @@ describe("Cascade real speech and long clips", () => {
       }
       for (const piece of mine) sides.add(Math.sign(Math.round(evaluatePiece(piece, piece.fromMs).x - 540)));
     });
-    // Three chevron variants, three bracket variants, four echo patterns, both scan directions.
-    expect(chevronCounts.size).toBeGreaterThanOrEqual(3);
+    // Three bracket variants, four echo patterns, both scan directions.
     expect(bracketSignatures.size).toBeGreaterThanOrEqual(3);
     expect(echoSignatures.size).toBeGreaterThanOrEqual(4);
     expect(scans.horizontal).toBeGreaterThan(0);
     expect(scans.vertical).toBeGreaterThan(scans.horizontal);
-    // Per 24+ cues: every lockup cue has a chevron pair and a scan bar per word, every hero cue brackets, every cue a rule lead.
-    expect(chevronPairs).toBeGreaterThanOrEqual(18);
+    // Per 24+ cues: every lockup cue has a scan bar per word, every hero cue brackets, every cue a rule lead.
     expect(scanBars).toBeGreaterThanOrEqual(60);
     expect(brackets).toBeGreaterThanOrEqual(24);
     expect(ruleLeads).toBeGreaterThanOrEqual(2 * 30);
@@ -371,17 +361,15 @@ describe("Cascade review fixes", () => {
     expect(wordOf(turkish, 0, "w0").text).toBe("İSTANBUL");
   });
 
-  test("5: a 70 ms hero with no gap still gets a chevron beat and a rule that starts at its onset", () => {
+  test("5: a 70 ms hero with no gap still gets a rule that starts at its onset", () => {
     const short = cuesOf(["I:h@70", "then:b@300"], { cueGap: 0 });
     const list = build(short);
     const mine = ofCue(list, 0);
-    const chevrons = mine.filter((piece) => /^chev\d\d$/.test(idOf(piece)));
-    expect(chevrons.length).toBeGreaterThanOrEqual(1);
     const rules = mine.filter((piece) => /^rule\d+$/.test(idOf(piece)));
     expect(rules.length).toBeGreaterThanOrEqual(1);
     // Nothing before the hero's own entrance, and each is painted on at least two frames.
     const heroFrom = wordOf(list, 0, "h0").fromMs;
-    for (const piece of [...rules, ...chevrons]) {
+    for (const piece of rules) {
       expect(piece.fromMs).toBeGreaterThanOrEqual(heroFrom);
       expect(paintedCount(piece)).toBeGreaterThanOrEqual(2);
     }
@@ -553,7 +541,7 @@ describe("Cascade re-check fixes (handoff rule)", () => {
   });
 
   test("6: painted frames decide one-frame flashes, and the cue's end bounds everything it schedules", () => {
-    // Speakers 2 ms apart: no chevron or bracket is painted on a single frame.
+    // Speakers 2 ms apart: no decoration is painted on a single frame.
     const a = demoCues({ lines: ["A> one:b@300"], options: { lead: 333 } }).cues[0]!;
     const b = demoCues({ lines: ["B> TWO:h@300"], options: {} }).cues[0]!;
     const close = [{ ...a, endMs: 1200 }, { ...b, index: 1, startMs: 335, endMs: 1200, words: b.words.map((word) => ({ ...word, startMs: 335, endMs: 635 })) }];
