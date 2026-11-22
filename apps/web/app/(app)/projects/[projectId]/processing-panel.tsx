@@ -514,11 +514,11 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
           <Box w={{ base: "220px", sm: "168px" }} maxW="full" flexShrink={0}>
             {props.mediaWell}
           </Box>
-          <Stack gap="1.5" minW="0" flex="1" align={{ base: "center", sm: "flex-start" }}>
-            <Text textStyle="title" fontSize="16px" color="fg" lineClamp={2}>
+          <Stack gap="1.5" minW="0" w="full" flex="1" align={{ base: "center", sm: "flex-start" }}>
+            <Text textStyle="title" fontSize="16px" color="fg" w="full" overflowWrap="anywhere" lineClamp={2}>
               {props.projectTitle}
             </Text>
-            <Flex align="center" gap="2" fontSize="13px" color={stopped ? "danger.fg" : "fg.muted"}>
+            <Flex align="center" gap="2" minW="0" maxW="full" fontSize="13px" color={stopped ? "danger.fg" : "fg.muted"}>
               <Box
                 boxSize="2"
                 flexShrink={0}
