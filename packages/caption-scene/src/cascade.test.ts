@@ -18,6 +18,40 @@ const need = <T extends Piece>(piece: Piece | undefined) => {
   return piece as T;
 };
 const idOf = (piece: Piece) => piece.id.split(":").slice(2).join(":");
+const wordOf = (list: readonly Piece[], cue: number, id: string) => need<TextPiece>(list.find((piece) => piece.id === `cascade:${cue}:${id}`));
+const frameAt = (n: number) => Math.round((n * 1000) / 30);
+/** The 30 fps frames in [from, to). */
+const framesIn = (from: number, to: number) => {
+  const out: number[] = [];
+  for (let n = Math.ceil((from * 30) / 1000 - 1e-9); frameAt(n) < to; n++) if (frameAt(n) >= from) out.push(frameAt(n));
+  return out;
+};
+/** Ink is painted on a frame: visible, not transparent, not clipped away (rule: reason in painted frames). */
+const paintedAt = (piece: Piece, t: number) => evaluatePiece(piece, t).visible && evaluatePiece(piece, t).o > 0 && pieceBounds(piece, t, fakeMeasure) !== null;
+const paintedCount = (piece: Piece) => framesIn(piece.fromMs, piece.toMs).filter((t) => paintedAt(piece, t)).length;
+const isFace = (piece: Piece) => /^cascade:\d+:(w|h)\d+$/.test(piece.id);
+const cueOf = (piece: Piece) => Number(piece.id.split(":")[1]);
+const overlap = (a: Box, b: Box) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
+/** The first painted frame on which a later cue's piece is drawn over an earlier cue's word, as a message; null when none is. */
+const coverage = (list: readonly Piece[]): string | null => {
+  const from = Math.min(...list.map((piece) => piece.fromMs));
+  const to = Math.max(...list.map((piece) => piece.toMs));
+  for (const t of framesIn(from, to)) {
+    const live = list.filter((piece) => paintedAt(piece, t));
+    for (const face of live.filter(isFace)) {
+      const box = pieceBounds(face, t, fakeMeasure)!;
+      for (const other of live) if (cueOf(other) > cueOf(face) && overlap(box, pieceBounds(other, t, fakeMeasure)!)) return `${other.id} covers ${face.id} at ${t}`;
+    }
+  }
+  return null;
+};
+/** The first frame in [from, to) on which no word ink is painted at all, null when there is none. */
+const blank = (list: readonly Piece[], from: number, to: number): number | null => {
+  // Word ink: the white faces and their colour copies.
+  const ink = list.filter((piece) => /^cascade:\d+:(w|h)\d+[ab]?$/.test(piece.id));
+  for (const t of framesIn(from, to)) if (!ink.some((piece) => paintedAt(piece, t))) return t;
+  return null;
+};
 
 describe("Cascade geometry", () => {
   test("a lockup word is Archivo Black caps at 84 px, sheared -12 and tipped -6 degrees, with the sample's split copies behind it", () => {
@@ -90,7 +124,7 @@ describe("Cascade geometry", () => {
 });
 
 describe("Cascade motion", () => {
-  test("a word cuts in 50 ms before it is spoken: white is opaque at once (an entrance under two frames is a cut), the red / cyan copies close from 14 px over 150 ms", () => {
+  test("a word cuts in 50 ms before it is spoken: white fades in over 67 ms (two frames, the sample's 50 ms), the red / cyan copies close from 14 px over 150 ms", () => {
     const cue = cues[0]!;
     const spoken = cue.words[2]!;
     const start = spoken.startMs - 50;
@@ -98,7 +132,8 @@ describe("Cascade motion", () => {
     const a = need<TextPiece>(scene.find((piece) => piece.id === "cascade:0:w2a"));
     const b = need<TextPiece>(scene.find((piece) => piece.id === "cascade:0:w2b"));
     expect(main.fromMs).toBe(start);
-    expect(evaluatePiece(main, start + 1).o).toBe(1);
+    expect(evaluatePiece(main, start + 33).o).toBeCloseTo(33 / 67, 2);
+    expect(evaluatePiece(main, start + 70).o).toBe(1);
     const gap = (t: number) => evaluatePiece(b, t).x - evaluatePiece(a, t).x;
     // 14 px each side at the start, along the tilted row (cos 6 degrees), closing with the sample's ease out.
     for (const t of [start, start + 40, start + 100, start + 150]) {
@@ -167,7 +202,7 @@ describe("Cascade real speech and long clips", () => {
         expect(mine).toHaveLength(1);
         const piece = mine[0] as TextPiece;
         const hero = word.role === "hero";
-        const landed = piece.fromMs + (hero ? 120 : 50);
+        const landed = piece.fromMs + (hero ? 120 : 67);
         const width = fakeMeasure(piece.text, piece.face, piece.sizePx, piece.letterSpacingEm).advance;
         for (let t = landed; t <= landed + 150; t += 10) {
           const pose = evaluatePiece(piece, t);
@@ -279,7 +314,6 @@ describe("Cascade scripts and edges", () => {
 describe("Cascade review fixes", () => {
   const cuesOf = (lines: string[], options = {}, language = "en") => demoCues({ lines, options, language }).cues;
   const safeW = 0.9 * 1080;
-  const wordOf = (list: readonly Piece[], cue: number, id: string) => need<TextPiece>(list.find((piece) => piece.id === `cascade:${cue}:${id}`));
 
   test("1: a long support word beside a hero shrinks (row plus split offsets) to fit the safe width", () => {
     const list = build(cuesOf(["I:h@200 pneumonoultramicroscopicsilicovolcanoconiosis:b@900"]));
@@ -294,36 +328,23 @@ describe("Cascade review fixes", () => {
     expect(box.x2).toBeLessThanOrEqual(0.95 * 1080 + 1);
   });
 
-  /** The outgoing cue's last ink is gone before the incoming cue's first face is opaque. */
-  const handoff = (list: readonly Piece[], out: number, into: number, hero: boolean) => {
-    const outgoing = ofCue(list, out).filter((piece) => piece.kind === "text");
-    const incoming = ofCue(list, into).filter((piece): piece is TextPiece => piece.kind === "text" && /^(w|h)\d$/.test(idOf(piece)));
-    const first = incoming.reduce((a, b) => (a.fromMs <= b.fromMs ? a : b));
-    const opaque = first.fromMs + (hero ? 0 : 50);
-    expect(Math.max(...outgoing.map((piece) => piece.toMs))).toBeLessThanOrEqual(opaque);
-  };
-
-  test("2: a 70 ms word and a 60 ms gap: the outgoing cue is gone before the next one is opaque, after at least 100 ms of reading", () => {
+  test("2: a 70 ms word and a 60 ms gap: no covering, and the word is read for at least 100 ms", () => {
     const fast = cuesOf(["I:b@70", "next:b@300"], { cueGap: 60 });
     const list = build(fast);
-    handoff(list, 0, 1, false);
+    expect(coverage(list)).toBeNull();
     const main = wordOf(list, 0, "w0");
-    expect(main.toMs - (main.fromMs + 50)).toBeGreaterThanOrEqual(100);
-    expect(main.toMs).toBeGreaterThan(main.fromMs + 50);
+    expect(main.toMs - (main.fromMs + 67)).toBeGreaterThanOrEqual(100);
   });
 
-  test("2: overlapping speakers OLD / NEW never draw at full opacity in the same spot", () => {
+  test("2: overlapping speakers OLD / NEW never share ink", () => {
     const old = cuesOf(["A> OLD:b@300"], {});
     const next = cuesOf(["B> NEW:b@300"], {});
     const shifted: SceneCue[] = [
       { ...old[0]!, index: 0, endMs: 650 },
       { ...next[0]!, index: 1, startMs: 650, endMs: 1400, words: next[0]!.words.map((word) => ({ ...word, startMs: 650, endMs: 950 })) },
     ];
-    const list = build(shifted);
-    handoff(list, 0, 1, false);
-    // A hero starting the next cue is opaque from its lead.
-    const hero = build(cuesOf(["I:b@70", "NOW:h@300"], { cueGap: 60 }));
-    handoff(hero, 0, 1, true);
+    expect(coverage(build(shifted))).toBeNull();
+    expect(coverage(build(cuesOf(["I:b@70", "NOW:h@300"], { cueGap: 60 })))).toBeNull();
   });
 
   test("3: Urdu keeps the mirrored tilt but is never sheared, and a wipe clip is full height", () => {
@@ -362,10 +383,11 @@ describe("Cascade review fixes", () => {
     expect(chevrons.length).toBeGreaterThanOrEqual(1);
     const rules = mine.filter((piece) => /^rule\d+$/.test(idOf(piece)));
     expect(rules.length).toBeGreaterThanOrEqual(1);
-    const onset = short[0]!.words[0]!.startMs;
+    // Nothing before the hero's own entrance, and each is painted on at least two frames.
+    const heroFrom = wordOf(list, 0, "h0").fromMs;
     for (const piece of [...rules, ...chevrons]) {
-      expect(piece.fromMs).toBeGreaterThanOrEqual(onset);
-      expect(piece.toMs).toBeGreaterThan(piece.fromMs);
+      expect(piece.fromMs).toBeGreaterThanOrEqual(heroFrom);
+      expect(paintedCount(piece)).toBeGreaterThanOrEqual(2);
     }
     // The rule is never drawn as an inverted clip.
     for (const piece of rules) for (let t = piece.fromMs; t < piece.toMs; t += 4) {
@@ -394,102 +416,181 @@ describe("Cascade review fixes", () => {
 });
 
 describe("Cascade re-check fixes (handoff rule)", () => {
-  const framesOn = (piece: Piece) => Math.max(0, Math.ceil((piece.toMs * 30) / 1000) - Math.ceil((piece.fromMs * 30) / 1000));
   const faceOf = (list: readonly Piece[], cue: number, index: number, hero: boolean) => list.find((piece) => piece.id === `cascade:${cue}:${hero ? "h" : "w"}${index}`) as TextPiece | undefined;
-  const hit = (a: Box, b: Box) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
   /** 12 cues: 150 ms words, 100 ms heroes, lockups, hero cues with rows before and after, one-word cues. */
-  const run = (gap: number) =>
-    demoCues({
-      lines: [
-        "so:m it:m was:b fine:b", "WOW:h@100", "I:b@150", "YES:h@100", "go:b@150 now:b@150", "a:m big:b@150 DEAL:h@100 today:b@150", "no:b@150", "STOP:h@100",
-        "and:m then:b@150 it:m broke:b@150", "I:h@100", "see:b@150 you:b@150", "NEVER:h@100",
-      ],
-      options: { gap: 0, cueGap: gap },
-    }).cues;
+  const lines = [
+    "so:m it:m was:b fine:b", "WOW:h@100", "I:b@150", "YES:h@100", "go:b@150 now:b@150", "a:m big:b@150 DEAL:h@100 today:b@150", "no:b@150", "STOP:h@100",
+    "and:m then:b@150 it:m broke:b@150", "I:h@100", "see:b@150 you:b@150", "NEVER:h@100",
+  ];
+  const run = (gap: number, offset = 0, source = lines) =>
+    demoCues({ lines: source, options: { gap: 0, cueGap: gap, lead: 350 + offset } }).cues;
 
   for (const gap of [0, 60]) {
-    test(`long run, cue gap ${gap}: entrances locked to speech, every word readable as long as the next cue allows, nothing covered, no one-frame flash`, () => {
-      const cuesRun = run(gap);
-      const list = build(cuesRun);
-      /** Fully readable: visible, opaque and not cut by its clip (the word's drift is not a cut). */
-      const readableUntil = (piece: TextPiece, settle: number) => {
-        const bare = { ...piece, clip: undefined };
-        let t = settle;
-        for (; t < piece.toMs; t++) {
-          const whole = pieceBounds(bare, t, fakeMeasure);
-          const cut = pieceBounds(piece, t, fakeMeasure);
-          if (!whole || !cut || evaluatePiece(piece, t).o < 0.9 || cut.x1 > whole.x1 + 0.5 || cut.x2 < whole.x2 - 0.5) break;
-        }
-        return t;
-      };
-      cuesRun.forEach((cue, number) => {
-        const mine = ofCue(list, number);
-        const nextFirst = Math.min(Number.POSITIVE_INFINITY, ...list.filter((piece) => Number(piece.id.split(":")[1]) > number).map((piece) => piece.fromMs));
-        cue.words.forEach((spoken, index) => {
-          const hero = spoken.role === "hero";
-          const face = faceOf(list, number, index, hero);
-          expect(face).toBeDefined();
-          // (1) first visible frame within 100 ms of the spoken start, never late.
-          expect(face!.fromMs).toBeLessThanOrEqual(spoken.startMs);
-          expect(face!.fromMs).toBeGreaterThanOrEqual(spoken.startMs - 100);
-          // (2) readable from settling (the split copies' end, the punch's last frame) for as long as the next cue's first frame leaves.
-          const copy = mine.find((piece) => piece.id === `cascade:${number}:w${index}a`);
-          const punch = face!.track.sx ? face!.track.sx[face!.track.sx.length - 1]![0] : face!.fromMs;
-          const settle = Math.max(face!.fromMs, hero ? punch : (copy?.toMs ?? face!.fromMs));
-          if (settle >= face!.toMs) return;
-          const readable = readableUntil(face!, settle) - settle;
-          expect(readable).toBeGreaterThanOrEqual(Math.min(150, nextFirst - settle) - 1);
-          // ... and no later cue's piece is ever drawn over it.
-          for (let t = face!.fromMs; t < face!.toMs; t += 8) {
-            const box = pieceBounds(face!, t, fakeMeasure);
-            if (!box) continue;
-            for (const other of list) {
-              if (Number(other.id.split(":")[1]) <= number) continue;
-              const over = pieceBounds(other, t, fakeMeasure);
-              if (over && hit(box, over)) throw new Error(`${other.id} covers ${face!.id} at ${t}`);
-            }
+    for (const offset of [0, 2, 7, 13, 23, 31]) {
+      test(`long run, cue gap ${gap}, offset ${offset}: sample entrances, words painted by their onset, readable, never covered, no blink, no one-frame flash`, () => {
+        const cuesRun = run(gap, offset);
+        const list = build(cuesRun);
+        /** Readable: painted, opaque and not cut by its clip (the word's drift is not a cut). */
+        const readableUntil = (piece: TextPiece, settle: number) => {
+          const bare = { ...piece, clip: undefined };
+          let t = settle;
+          for (; t < piece.toMs; t++) {
+            const whole = pieceBounds(bare, t, fakeMeasure);
+            const cut = pieceBounds(piece, t, fakeMeasure);
+            if (!whole || !cut || evaluatePiece(piece, t).o < 0.9 || cut.x1 > whole.x1 + 0.5 || cut.x2 < whole.x2 - 0.5) break;
           }
+          return t;
+        };
+        cuesRun.forEach((cue, number) => {
+          const nextFirst = Math.min(Number.POSITIVE_INFINITY, ...list.filter((piece) => cueOf(piece) > number && paintedCount(piece) > 0).map((piece) => framesIn(piece.fromMs, piece.toMs).find((t) => paintedAt(piece, t))!));
+          cue.words.forEach((spoken, index) => {
+            const hero = spoken.role === "hero";
+            const face = faceOf(list, number, index, hero);
+            expect(face).toBeDefined();
+            // (1) painted on the last 30 fps frame at or before the spoken start, and never earlier than 100 ms before it.
+            const lastFrame = framesIn(spoken.startMs - 40, spoken.startMs + 1).pop()!;
+            expect(paintedAt(face!, lastFrame)).toBe(true);
+            expect(face!.fromMs).toBeGreaterThanOrEqual(spoken.startMs - 100);
+            // (2) readable from settling for as long as the next cue's first painted frame leaves.
+            const fade = hero ? 0 : 67;
+            const punch = face!.track.sx ? face!.track.sx[face!.track.sx.length - 1]![0] : face!.fromMs;
+            const settle = Math.max(face!.fromMs, hero ? punch : face!.fromMs + fade);
+            if (settle >= face!.toMs) return;
+            const readable = readableUntil(face!, settle) - settle;
+            expect(readable).toBeGreaterThanOrEqual(Math.min(150, nextFirst - settle) - 34);
+          });
         });
+        // Never covered, and no empty frame while the speech runs on.
+        expect(coverage(list)).toBeNull();
+        if (gap === 0) expect(blank(list, cuesRun[0]!.words[0]!.startMs - 33, cuesRun[cuesRun.length - 1]!.words[0]!.startMs)).toBeNull();
+        // No decoration is painted on exactly one frame.
+        for (const piece of list) if (!isFace(piece)) expect(paintedCount(piece)).not.toBe(1);
       });
-      // (3) no decoration lives on exactly one 30 fps frame.
-      for (const piece of list) if (!/^cascade:\d+:(w|h)\d+$/.test(piece.id)) expect(framesOn(piece)).not.toBe(1);
-    });
+    }
   }
 
-  test("a colliding cue ends at the first colliding frame, one that does not collide overlaps and keeps its full hold", () => {
-    // Same spot: I is cut when YES arrives (spoken start 480), after at least 150 ms on screen counted from its settle.
-    const same = build(demoCues({ lines: ["I:b@70", "YES:b@300"], options: { cueGap: 60 } }).cues);
-    const i = faceOf(same, 0, 0, false)!;
-    const yes = faceOf(same, 1, 0, false)!;
-    expect(i.toMs).toBeLessThanOrEqual(yes.fromMs);
-    expect(i.toMs - i.fromMs).toBeGreaterThanOrEqual(150);
-    // The incoming cue is pulled to its spoken start, never past it.
-    expect(yes.fromMs).toBeLessThanOrEqual(480);
-    expect(yes.fromMs).toBeGreaterThanOrEqual(430);
+  test("1: the sample's entrance returns when time allows: the rule leads the word and the white fades in over the split", () => {
+    const first = cues[0]!;
+    const rule = scene.find((piece) => piece.id === "cascade:0:rule0")!;
+    const face = wordOf(scene, 0, "w0");
+    expect(rule.fromMs).toBeLessThan(face.fromMs);
+    expect(rule.fromMs).toBeLessThanOrEqual(first.startMs - 70);
+    expect(face.fromMs).toBe(first.words[0]!.startMs - 50);
+    expect(evaluatePiece(face, face.fromMs + 33).o).toBeGreaterThan(0.3);
+    expect(evaluatePiece(face, face.fromMs + 33).o).toBeLessThan(0.7);
+    expect(scene.some((piece) => piece.id === "cascade:0:w0a")).toBe(true);
+    // A 215 ms word with a 60 ms gap keeps every entrance: nothing is shifted, nothing is cut short.
+    const steady = build(demoCues({ lines: ["one:b@215 two:b@215", "three:b@215 four:b@215", "five:b@215"], options: { gap: 0, cueGap: 60 } }).cues);
+    steady.filter((piece) => /^cascade:\d:w\d$/.test(piece.id)).forEach((piece) => {
+      const cue = Number(piece.id.split(":")[1]);
+      const spoken = demoCues({ lines: ["one:b@215 two:b@215", "three:b@215 four:b@215", "five:b@215"], options: { gap: 0, cueGap: 60 } }).cues[cue]!.words[Number(piece.id.slice(-1))]!;
+      expect(piece.fromMs).toBe(spoken.startMs - 50);
+      expect(steady.some((other) => other.id === `${piece.id}a`)).toBe(true);
+    });
+    expect(steady.filter((piece) => /rule0$/.test(piece.id)).every((piece) => piece.fromMs <= demoCues({ lines: ["one:b@215 two:b@215", "three:b@215 four:b@215", "five:b@215"], options: { gap: 0, cueGap: 60 } }).cues[Number(piece.id.split(":")[1])]!.startMs - 70)).toBe(true);
   });
 
-  test("overlapping speakers 10 ms apart never draw two words in the same spot", () => {
-    const old = demoCues({ lines: ["A> OLD:b@300 talk:b@300"], options: {} }).cues[0]!;
+  test("2: the incoming lead shrinks only as far as needed, and its word paints on the last frame at or before its onset", () => {
+    // I (70 ms, settled at 367, 150 ms of reading to 517) then YES: its onset at 590 means 40 ms of lead is enough.
+    const list = build(demoCues({ lines: ["I:b@70", "YES:b@300"], options: { cueGap: 170 } }).cues);
+    const yes = wordOf(list, 1, "w0");
+    const onset = 590;
+    expect(yes.fromMs).toBeGreaterThanOrEqual(onset - 50);
+    expect(yes.fromMs).toBeLessThan(onset - 20);
+    expect(paintedAt(yes, framesIn(onset - 34, onset + 1).pop()!)).toBe(true);
+    const i = wordOf(list, 0, "w0");
+    expect(i.toMs - (i.fromMs + 67)).toBeGreaterThanOrEqual(150);
+    // Tight: the incoming word still paints by its onset frame (the last frame at or before 480).
+    const tight = build(demoCues({ lines: ["I:b@70", "YES:b@300"], options: { cueGap: 60 } }).cues);
+    expect(paintedAt(wordOf(tight, 1, "w0"), 467)).toBe(true);
+  });
+
+  test("3: speakers talking over each other: every word paints and no two cues share ink", () => {
+    const lead = demoCues({ lines: ["A> OLD:b@150 LATE:b@150"], options: { lead: 1000, gap: 30 } }).cues[0]!;
     const fresh = demoCues({ lines: ["B> NEW:b@300"], options: {} }).cues[0]!;
-    const cuesTwo: SceneCue[] = [
-      { ...old, index: 0, endMs: 1033 },
-      { ...fresh, index: 1, startMs: 360, endMs: 1400, words: fresh.words.map((word) => ({ ...word, startMs: 360, endMs: 660 })) },
+    const two: SceneCue[] = [
+      { ...lead, index: 0, endMs: 2000 },
+      { ...fresh, index: 1, startMs: 1010, endMs: 2000, words: fresh.words.map((word) => ({ ...word, startMs: 1010, endMs: 1310 })) },
     ];
-    const list = build(cuesTwo);
-    const faces = list.filter((piece) => /^cascade:\d:(w|h)\d$/.test(piece.id));
-    expect(faces.some((piece) => piece.id.startsWith("cascade:0:"))).toBe(true);
-    for (let t = 250; t < 1500; t++) {
-      const boxes = faces.map((piece) => ({ piece, box: pieceBounds(piece, t, fakeMeasure) })).filter((entry) => entry.box && evaluatePiece(entry.piece, t).o > 0);
-      for (const a of boxes) for (const b of boxes) {
-        if (a.piece.id.split(":")[1] < b.piece.id.split(":")[1] && hit(a.box!, b.box!)) throw new Error(`${a.piece.id} and ${b.piece.id} overlap at ${t}`);
+    const list = build(two);
+    for (const [cue, index] of [[0, 0], [0, 1], [1, 0]] as const) expect(faceOf(list, cue, index, false)).toBeDefined();
+    expect(coverage(list)).toBeNull();
+    for (const face of list.filter(isFace)) {
+      for (const t of framesIn(face.fromMs, face.toMs)) {
+        const box = pieceBounds(face, t, fakeMeasure);
+        if (!box) continue;
+        expect(box.y1).toBeGreaterThanOrEqual(0.05 * 1920 - 1);
+        expect(box.y2).toBeLessThanOrEqual(0.95 * 1920 + 1);
+      }
+    }
+    // The ordinary overlap of 30-200 ms never merges ink either.
+    for (const over of [30, 90, 200]) {
+      const a = demoCues({ lines: ["A> one:b@300 two:b@300"], options: {} }).cues[0]!;
+      const b = demoCues({ lines: ["B> three:b@300"], options: {} }).cues[0]!;
+      const start = a.words[1]!.endMs - over;
+      const pair: SceneCue[] = [{ ...a, endMs: 2500 }, { ...b, index: 1, startMs: start, endMs: 2500, words: b.words.map((word) => ({ ...word, startMs: start, endMs: start + 300 })) }];
+      expect(coverage(build(pair))).toBeNull();
+      expect(blank(build(pair), 350, start)).toBeNull();
+    }
+  });
+
+  test("4: an incoming echo never covers outgoing ink (size 200 on 1:1, a long support word before I, then WOW)", () => {
+    for (const gap of [0, 30, 60]) {
+      const list = build(demoCues({ lines: ["pneumonoultra:b@70 I:h@70", "WOW:h@70"], options: { cueGap: gap, gap: 0 } }).cues, { canvas: { width: 1080, height: 1080 }, scale: 200 / 84, anchor });
+      expect(coverage(list)).toBeNull();
+    }
+    // The cut comes from the echoes' real timing: the first echo piece of the incoming cue paints after the outgoing word is gone.
+    const list = build(demoCues({ lines: ["pneumonoultra:b@70 I:h@70", "WOW:h@70"], options: { cueGap: 0, gap: 0 } }).cues, { canvas: { width: 1080, height: 1080 }, scale: 200 / 84, anchor });
+    const echo = list.filter((piece) => cueOf(piece) === 1 && /^e\d/.test(idOf(piece))).map((piece) => framesIn(piece.fromMs, piece.toMs).find((t) => paintedAt(piece, t)) ?? 1e9);
+    const support = wordOf(list, 0, "w0");
+    expect(support.toMs).toBeLessThanOrEqual(Math.min(...echo));
+  });
+
+  test("5: continuous speech does not blink: word ink is on every frame from the first word to the last onset", () => {
+    const list = build(demoCues({ lines: ["I:b@450", "I:b@450"], options: { cueGap: 0, lead: 333 } }).cues);
+    expect(blank(list, 333, 783 + 33)).toBeNull();
+    expect(coverage(list)).toBeNull();
+  });
+
+  test("6: painted frames decide one-frame flashes, and the cue's end bounds everything it schedules", () => {
+    // Speakers 2 ms apart: no chevron or bracket is painted on a single frame.
+    const a = demoCues({ lines: ["A> one:b@300"], options: { lead: 333 } }).cues[0]!;
+    const b = demoCues({ lines: ["B> TWO:h@300"], options: {} }).cues[0]!;
+    const close = [{ ...a, endMs: 1200 }, { ...b, index: 1, startMs: 335, endMs: 1200, words: b.words.map((word) => ({ ...word, startMs: 335, endMs: 635 })) }];
+    for (const piece of build(close)) if (!isFace(piece)) expect(paintedCount(piece)).not.toBe(1);
+    // A final 70 ms hero whose cue ends at 420 renders and ends inside it.
+    const last = demoCues({ lines: ["I:h@70"], options: {} }).cues[0]!;
+    const list = build([{ ...last, endMs: 420 }]);
+    expect(Math.max(...list.map((piece) => piece.toMs))).toBeLessThanOrEqual(420);
+    expect(Math.min(...list.map((piece) => framesIn(piece.fromMs, piece.toMs).find((t) => paintedAt(piece, t)) ?? 1e9))).toBeLessThanOrEqual(420);
+  });
+
+  test("7: the rule stays inside the safe area at size 200 (1:1, 16:9, 9:16), with wide letters too", () => {
+    const wide = (text: string, _face: unknown, size: number, ls: number) => ({ advance: [...text].length * (0.72 + ls) * size - ls * size, inkTop: -0.74 * size, inkBottom: 0.22 * size, ascent: 1.1 * size, descent: 0.3 * size });
+    const texts = ["so:m the:m real:b reason:b most:b people:b never:b get:b there:m", "abcdefgh:b abcdefgh:b", "aaaa:b bbbb:b cccc:b dddd:b eeee:b ffff:b gggg:b", "go:b now:b"];
+    for (const canvas of [{ width: 1080, height: 1080 }, { width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
+      for (const measure of [fakeMeasure, wide]) {
+        for (const text of texts) {
+          const list = build(demoCues({ lines: [text], options: {} }).cues, { canvas, scale: 200 / 84, anchor, measure });
+          const rules = list.filter((piece) => /^rule\d+$/.test(idOf(piece)));
+          expect(rules.length).toBeGreaterThan(0);
+          for (const rule of rules) for (const t of framesIn(rule.fromMs, rule.toMs)) {
+            const box = pieceBounds(rule, t, measure as typeof fakeMeasure);
+            if (!box) continue;
+            expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 0.5);
+            expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 0.5);
+            expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 0.5);
+            expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 0.5);
+          }
+        }
       }
     }
   });
 
   test("echoes fit the safe area with their stroke at size 200 on 1:1 and 16:9, with a long support word before the hero", () => {
     for (const canvas of [{ width: 1080, height: 1080 }, { width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
-      for (const lines of [["WAIT:h@600"], ["pneumonoultramicroscopicsilicovolcanoconiosis:b@900 I:h@300"], ["so:m WAIT:h@600 now:b@300"]]) {
-        const list = build(demoCues({ lines, options: {} }).cues, { canvas, scale: 200 / 84, anchor });
+      for (const source of [["WAIT:h@600"], ["pneumonoultramicroscopicsilicovolcanoconiosis:b@900 I:h@300"], ["so:m WAIT:h@600 now:b@300"]]) {
+        const list = build(demoCues({ lines: source, options: {} }).cues, { canvas, scale: 200 / 84, anchor });
         const end = Math.max(...list.map((piece) => piece.toMs));
         for (let t = 0; t < end; t += 20) {
           const box = sceneBoundsAt(list, t, fakeMeasure);
