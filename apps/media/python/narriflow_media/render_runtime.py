@@ -181,10 +181,21 @@ async def run_render_group(session,package,work:Path,*,transport=None,source_tra
             if error.code in {'media_process_start_unconfirmed','media_execution_cancelled'}:raise ExecutionControlError('execution_authority_lost') from None
             raise NativeOperationFailure('render_process_unavailable',True) from None
         if control.error:raise control.error
-        detector_executions=None;phases={}
+        detector_executions=None;phases={};validation_lines=0
         for line in result.stderr.splitlines():
             try:
                 diagnostic=json.loads(line)
+                if (diagnostic.get('message')=='clip_render_output_validation' and validation_lines<8
+                        and type(diagnostic.get('accepted')) is bool):
+                    validation_lines+=1
+                    codes=diagnostic.get('diagnosticCodes',[])
+                    safe={'level':'info' if diagnostic['accepted'] else 'error','message':'clip_render_output_validation',
+                        'accepted':diagnostic['accepted'],'diagnosticCodes':[code for code in codes[:32]
+                            if isinstance(code,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,99}',code)] if isinstance(codes,list) else []}
+                    for key in ('expectedDurationSec','videoDurationSec','videoEndSec','videoFrames','audioDurationSec'):
+                        value=diagnostic.get(key)
+                        if type(value) in {int,float} and math.isfinite(value) and 0<=value<=36_000_000:safe[key]=value
+                    print(json.dumps(safe),file=sys.stderr)
                 value=diagnostic.get('counts',{}).get('detectorExecutions')
                 if diagnostic.get('message')=='clip_render_attempt_metrics' and type(value) is int and 0<=value<=32:detector_executions=value
                 if diagnostic.get('message')=='clip_render_attempt_metrics' and isinstance(diagnostic.get('phaseMs'),dict):

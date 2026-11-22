@@ -2463,6 +2463,31 @@ function cutJoinFades(durationSec: number, index: number, count: number): string
 const ALIGNED_SOURCE_AUDIO_LABEL = "[composition_source_audio_clock]";
 const AAC_FRAME_SAMPLES = 1024;
 
+/** A source can end its picture slightly before its audio/container ends.
+ * Repair at most 100 ms of measured stream-end skew before cuts and splits.
+ * Larger missing picture intervals remain invalid. The last frame
+ * covers the admitted source window. A truncated read still falls short by
+ * the same amount; this must never pad an unknown read up to the whole plan. */
+function alignSourceVideoTail(params: {
+	probe: SourceProbe;
+	startSec: number;
+	endSec: number;
+}): { filterParts: string[]; label: string } | null {
+	const { probe } = params;
+	const video = probe.facts?.videos[0];
+	if (!probe.hasVideo || !video || probe.durationSec == null || params.endSec > probe.durationSec + 0.000001) return null;
+	const videoEnd = video.endTimeSec ??
+		(video.startTimeSec != null && video.durationSec != null ? video.startTimeSec + video.durationSec : null);
+	if (videoEnd == null) return null;
+	const origin = probe.facts?.format.startTimeSec ?? video.startTimeSec ?? 0;
+	const sourceEnd = videoEnd - origin;
+	const rate = renderOutputFrameRate(probe);
+	const tailSec = params.endSec - sourceEnd;
+	if (params.startSec >= sourceEnd || tailSec > 0.1 || tailSec <= rate.denominator / rate.numerator + 0.000002) return null;
+	const label = "[composition_source_video_tail]";
+	return { label, filterParts: [`[0:v]tpad=stop_mode=clone:stop_duration=${tailSec.toFixed(6)}${label}`] };
+}
+
 /**
  * Lays the source's dialogue on the clip's own clock when the inspected audio
  * stream demonstrably misses part of the clip window. FFmpeg keeps each
@@ -3034,18 +3059,20 @@ function buildSingleVideoArgs(params: {
 	const hasDialogue = Boolean(dub) || params.probe.hasAudio;
 
 	const alignedAudio = dub ? null : alignSourceAudioClock(params);
+	const alignedVideo = alignSourceVideoTail(params);
 	const cutConcat = isCut
 		? buildCutConcatFilter({
 				cutPlan: params.cutPlan!,
 				clipStartSec: params.startSec,
 				includeAudio: !dub && params.probe.hasAudio,
+				...(alignedVideo ? { videoInputRef: alignedVideo.label } : {}),
 				...(alignedAudio ? { audioInputRef: alignedAudio.label } : {}),
 			})
 		: null;
 	const sourceVideo = displaySourceStage(
 		params.probe,
 		params.composition.plan,
-		cutConcat ? cutConcat.videoLabel! : "[0:v]",
+		cutConcat ? cutConcat.videoLabel! : (alignedVideo?.label ?? "[0:v]"),
 		isCut,
 	);
 	const videoInputLabel = sourceVideo.label;
@@ -3112,6 +3139,7 @@ function buildSingleVideoArgs(params: {
 					}),
 				]),
 		...(alignedAudio?.filterParts ?? []),
+		...(alignedVideo?.filterParts ?? []),
 		...(cutConcat ? cutConcat.filterParts : []),
 		...sourceVideo.filterParts,
 	];
@@ -3364,18 +3392,20 @@ function buildBrollVideoArgs(params: {
 	const hasDialogue = Boolean(dub) || params.probe.hasAudio;
 
 	const alignedAudio = dub ? null : alignSourceAudioClock(params);
+	const alignedVideo = alignSourceVideoTail(params);
 	const cutConcat = isCut
 		? buildCutConcatFilter({
 				cutPlan: params.cutPlan!,
 				clipStartSec: params.startSec,
 				includeAudio: !dub && params.probe.hasAudio,
+				...(alignedVideo ? { videoInputRef: alignedVideo.label } : {}),
 				...(alignedAudio ? { audioInputRef: alignedAudio.label } : {}),
 			})
 		: null;
 	const sourceVideo = displaySourceStage(
 		params.probe,
 		params.composition.plan,
-		cutConcat ? cutConcat.videoLabel! : "[0:v]",
+		cutConcat ? cutConcat.videoLabel! : (alignedVideo?.label ?? "[0:v]"),
 		isCut,
 	);
 	const videoInputLabel = sourceVideo.label;
@@ -3389,6 +3419,7 @@ function buildBrollVideoArgs(params: {
 
 	const parts: string[] = [
 		...(alignedAudio?.filterParts ?? []),
+		...(alignedVideo?.filterParts ?? []),
 		...(cutConcat ? cutConcat.filterParts : []),
 		...sourceVideo.filterParts,
 	];

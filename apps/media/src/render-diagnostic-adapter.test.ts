@@ -1,5 +1,20 @@
 import { expect, test } from "bun:test";
-import { ProductionRenderDiagnosticAdapter } from "./render-diagnostic-adapter";
+import { nativeRenderValidationDiagnostic, ProductionRenderDiagnosticAdapter } from "./render-diagnostic-adapter";
+
+test("native validation diagnostics retain codes and clocks without private facts", () => {
+  const result = nativeRenderValidationDiagnostic({
+    level: "error", message: "clip_render_output_validation", context: {
+      accepted: false, diagnosticCodes: ["output_video_duration_mismatch", "https://private.invalid", 1],
+      captionText: "private caption", facts: {
+        expected: { durationSec: 75.302, signedUrl: "https://private.invalid" },
+        decoded: { video: { durationSec: 75.242, endSec: Number.NaN, frames: 2255 }, audio: { durationSec: Number.POSITIVE_INFINITY } },
+      },
+    },
+  });
+  expect(result).toEqual({ level: "error", message: "clip_render_output_validation", accepted: false,
+    diagnosticCodes: ["output_video_duration_mismatch"], expectedDurationSec: 75.302, videoDurationSec: 75.242, videoFrames: 2255 });
+  expect(nativeRenderValidationDiagnostic({ level: "error", message: "other", context: { captionText: "private" } })).toBeNull();
+});
 
 test("render diagnostic adapter emits stable JSON fields that context cannot override", () => {
   const lines: string[] = [];

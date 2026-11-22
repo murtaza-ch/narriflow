@@ -53,11 +53,18 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 assert action=='work-package'
                 return type('Result',(),{'disposition':{'functionName':'render_group','inputHash':input_hash,'input':{'kind':'inline','command':command},'sources':[{'name':'original',**source}],'outputs':outputs}})()
         async def verified(*_,**__):return 'a'*64
-        result=ProcessResult(70,b'',json.dumps({'message':'clip_render_attempt_metrics','counts':{'detectorExecutions':0},'phaseMs':{'probe':2,'encode':float('nan'),'private':'https://signed.invalid/?key=private'},'caption':'private caption'}).encode())
+        result=ProcessResult(70,b'',('\n'.join(json.dumps(value) for value in [
+            {'message':'clip_render_output_validation','accepted':False,'diagnosticCodes':['output_video_duration_mismatch','https://private.invalid',1],
+                'expectedDurationSec':75.302,'videoDurationSec':75.242,'videoFrames':2255,'videoEndSec':float('nan'),
+                'audioDurationSec':float('inf'),'caption':'private caption','facts':{'source':'https://signed.invalid/?key=private'}},
+            {'message':'clip_render_attempt_metrics','counts':{'detectorExecutions':0},'phaseMs':{'probe':2,'encode':float('nan'),'private':'https://signed.invalid/?key=private'},'caption':'private caption'},
+        ])).encode())
         session=Session();package=await load_work_package(session);logs=StringIO()
         with tempfile.TemporaryDirectory() as directory,patch('narriflow_media.render_runtime.run_owned_process_async',AsyncMock(return_value=result)),redirect_stderr(logs):
             with self.assertRaises(NativeOperationFailure):await run_render_group(session,package,Path(directory),verify_runtime=verified)
-        measured=json.loads(logs.getvalue())
+        diagnostic,measured=[json.loads(line) for line in logs.getvalue().splitlines()]
+        self.assertEqual(diagnostic,{'level':'error','message':'clip_render_output_validation','accepted':False,
+            'diagnosticCodes':['output_video_duration_mismatch'],'expectedDurationSec':75.302,'videoDurationSec':75.242,'videoFrames':2255})
         self.assertEqual(measured['phaseMs'],{'probe':2})
         self.assertEqual(measured['controlOperations'],{})
         self.assertEqual(measured['sourceBytesTransferred'],0)
@@ -116,7 +123,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 if source_mismatch:
                     script=script.replace('delete raw.sourcePath;', 'delete raw.sourcePath;raw.sourceProbe.video.width++;raw.sourceProbe.facts.videos[0].width++;')
                 if many_assets:
-                    script=script.replace('const value=clipPreparationInputSchema',f'raw.document.studioEdits.music={{blocks:[{{id:'bed',assetId:{json.dumps(audio[-1]["id"])},url:null,title:null,startSec:0,endSec:null,sourceStartSec:0,volume:35,fadeInSec:0,fadeOutSec:0}}],ducking:false}};const value=clipPreparationInputSchema')
+                    script=script.replace('const value=clipPreparationInputSchema',f"""raw.document.studioEdits.music={{blocks:[{{id:'bed',assetId:{json.dumps(audio[-1]["id"])},url:null,title:null,startSec:0,endSec:null,sourceStartSec:0,volume:35,fadeInSec:0,fadeOutSec:0}}],ducking:false}};const value=clipPreparationInputSchema""")
                 if long_source:
                     script=script.replace('const value=clipPreparationInputSchema',"raw.document.clipStartSec+=5400;raw.document.clipEndSec+=5406;for(const utterance of raw.document.transcriptSlice){utterance.startSec+=5400;utterance.endSec+=5400;for(const word of utterance.words??[]){word.startSec+=5400;word.endSec+=5400;}}const value=clipPreparationInputSchema")
                 if fixture_document is not None:
@@ -131,7 +138,7 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 preparation=prepared_bundle['preparation'];preview_window=prepared_bundle['ready']['result']['preview']
                 self.assertEqual(preparation['source']['byteLength'],source_size);self.assertEqual(preparation['source']['sha256'],source_sha)
             render_id=str(uuid4());group_id=str(uuid4());hash='d'*64
-            command={'version':1,'kind':'render_group','watermark':True,'groupId':group_id,'workflowRunId':str(uuid4()),'workSetGeneration':str(uuid4()),'preparation':preparation,
+            command={'version':1,'kind':'render_group','watermark':True,'dub':None,'groupId':group_id,'workflowRunId':str(uuid4()),'workSetGeneration':str(uuid4()),'preparation':preparation,
                 'prepared':{'preview':dict(preparation['source'],storageKey='execution/prepared/preview.mp4'),'result':{'version':1,'preparationId':preparation['preparationId'],'bindingHash':preparation['bindingHash'],
                     'preview':{'artifactId':str(uuid4()),'startSec':preview_window['startSec'],'durationSec':preview_window['durationSec']},'peaks':{'state':'unavailable','reason':'peaks_unavailable'},
                     'layout':{'automatic':{'state':'failed','reason':'analysis_unavailable'},'screen':None,'split':None}}},

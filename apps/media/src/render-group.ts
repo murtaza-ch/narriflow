@@ -9,6 +9,7 @@ import { assertPublicHttpUrl } from "@narriflow/services/url-policy";
 import { clipExportAttemptStorageKey, clipRenderAttemptStorageKey } from "./render-object-key";
 import { parseRenderConfig } from "./render-config";
 import { createWorkerProcessModule } from "./worker-process";
+import { nativeRenderValidationDiagnostic } from "./render-diagnostic-adapter";
 import { createClipRenderAttempt, type ClipRenderControlPorts } from "./tasks/clip-render-attempt-runtime";
 import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "./tasks/clip-render-attempt";
 
@@ -106,11 +107,13 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
   };
   const worker = createWorkerProcessModule({ scratchRoot: options.work });
   const config = { ...parseRenderConfig({}), pexelsConfigured: input.autoBroll.configured };
-  let errorLines = 0;
+  let errorLines = 0, validationLines = 0;
   const renderer = createClipRenderAttempt({ run: { id: attempt.workflowRunId, projectId: attempt.projectId }, config, ports,
     lifecycle: { beginRenderGroup: async () => ({ variantIds: options.ports.renderIds }), startExecution: async () => { await request({ operation: "authority" }); },
       finishRenderGroup: async () => renderGroupOutcomeSchema.parse(await request({ operation: "finish" })) },
     adapters: { diagnose: event => {
+      const validation = nativeRenderValidationDiagnostic(event);
+      if (validation && validationLines++ < 8) console.error(JSON.stringify(validation));
       const code = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(value) ? value : undefined;
       if (event.level === "error" && errorLines++ < 16) console.error(JSON.stringify({ level: "error", message: code(event.message), failureCode: code(event.context?.failureCode ?? event.context?.errorCode), operation: code(event.context?.operation) }));
       if (event.message === "clip_render_attempt_metrics") console.error(JSON.stringify({ level: "info", message: event.message, counts: event.context?.counts, phaseMs: event.context?.phaseMs }));

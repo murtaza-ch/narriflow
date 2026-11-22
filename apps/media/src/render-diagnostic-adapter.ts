@@ -37,6 +37,29 @@ export class ProductionRenderDiagnosticAdapter {
 export const productionRenderDiagnosticAdapter =
   new ProductionRenderDiagnosticAdapter();
 
+/** Cross the native wrapper with codes and measured clocks, never raw media,
+ * captions, paths or exception text. Python validates this projection again. */
+export function nativeRenderValidationDiagnostic(event: RenderDiagnostic): Record<string, unknown> | null {
+  if (event.message !== "clip_render_output_validation") return null;
+  const context = event.context ?? {};
+  const facts = context.facts as Record<string, Record<string, unknown>> | undefined;
+  const decoded = facts?.decoded as Record<string, Record<string, unknown>> | undefined;
+  const numbers = {
+    expectedDurationSec: facts?.expected?.durationSec,
+    videoDurationSec: decoded?.video?.durationSec,
+    videoEndSec: decoded?.video?.endSec,
+    videoFrames: decoded?.video?.frames,
+    audioDurationSec: decoded?.audio?.durationSec,
+  };
+  return {
+    level: context.accepted === true ? "info" : "error",
+    message: event.message,
+    accepted: context.accepted === true,
+    diagnosticCodes: Array.isArray(context.diagnosticCodes) ? context.diagnosticCodes.filter((code): code is string => typeof code === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(code)).slice(0, 32) : [],
+    ...Object.fromEntries(Object.entries(numbers).filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 36_000_000)),
+  };
+}
+
 export type RenderPhase = "presign" | "probe" | "download" | "asset_validation" | "evidence_read" | "analysis" | "compose" | "encode" | "validate" | "upload" | "drain" | "persistence" | "cleanup";
 const privateField = /(?:authorization|password|secret|credential|apiKey|accessKey|accessToken|refreshToken|signature|^token$|signedUrl|captionText|transcript|stderr|rawText|commandArgs|parseErrors|^(?:message|error|text|caption|captions|glyph|emoji)$)/i;
 /** Diagnostics must not become a second store of source URLs or user text. */
