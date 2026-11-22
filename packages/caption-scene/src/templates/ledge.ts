@@ -1,6 +1,7 @@
 import { captionColourContrast } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, clamp, lerp, prog } from "../ease";
+import { SCENE_DEFAULT_FPS, exportFrameAtOrAfter, exportFrameAtOrBefore, paintedFrameCount, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, cueDirection, rowVisualOrder, sceneSpace, shiftPiece } from "../layout";
@@ -56,7 +57,14 @@ import { pathBounds, polygonPath, rectPath, roundedRectPath } from "../shapes";
  *   room, so two lockups never share a spot and the first one keeps its natural hold; the 150 ms of a word start where its ink is open
  *   and settled (not where its reveal's window ends), so a normal 60 ms gap keeps the next cue's sample entrance; the cube's hold is fitted
  *   into what is left; a cue too short for an accent's motion shows it static from two frames before it leaves; a word whose reveal
- *   cannot finish a frame before the cue goes is open at once; `ledgeFrameAtOrBefore` returns the real preceding frame.
+ *   cannot finish a frame before the cue goes is open at once; `frameAtOrBefore` returns the real preceding frame.
+ * - Ship fixes 2: the handoff looks at every later cue that can be painted before this one has gone (each built as a probe after the one before),
+ *   not only the next; a word is never exited before its spoken end (the first exit frame is at or after it; the next entrance's lead steps
+ *   down 85, 80, 78 ... 67 to find the frame boundary that allows it, and only then is its reveal quickened, before any lead under 67 ms); a
+ *   reveal that would end after the cue is shortened to two painted frames at least before it is dropped; and the text clips' open edges are
+ *   unbounded, so the safe-area shift of a stacked cue never moves one over the row it clips.
+ *   All frame reasoning (two painted frames, the first frame at or after an onset) uses the shared export frame grid at the render's own
+ *   rate (`input.fps`, 24/25/30/60), not 30 fps constants.
  * - New recurring beats, in the sample's own shapes and colours, on every cue: SPEED DASHES (two or three red slashes slanted like the
  *   depth faces pop out along the first bar's depth face as its edge passes them), POP TICKS (three short keylined ticks burst off the
  *   cube when it lands, a no-key-word cue gets a smaller cube on its last bar so it has them too) and POPCORN (two small flat cubes
@@ -107,31 +115,6 @@ const STICKER_MS = 420;
 const MINI_SCALE = 0.62;
 /** The lockup's own shadow: the sample's `0 14px 22px` is a 14 px offset and an 11 px sigma; this is 10 px and 4 (cost, see the header). */
 /** An animated exit, entrance or accent lasts at least this long (two 30 fps frames); anything shorter is a cut or is left out. */
-const MIN_ANIMATION = 67;
-
-/** The export paints at 30 fps frame times only: frame `n` is at `round(n * 1000 / 30)` ms. */
-const frameTime = (n: number) => Math.round((n * 1000) / 30);
-
-/** The first export frame time at or after `t`. */
-export function ledgeFrameAtOrAfter(t: number): number {
-  let n = Math.max(0, Math.floor(t * 0.03) - 1);
-  while (frameTime(n) < t) n++;
-  return frameTime(n);
-}
-
-/** The last export frame time at or before `t`. */
-export function ledgeFrameAtOrBefore(t: number): number {
-  let n = Math.max(0, Math.floor(t * 0.03) + 2);
-  while (n > 0 && frameTime(n) > t) n--;
-  return frameTime(n);
-}
-
-/** How many export frames a piece that lives over `[from, to)` is painted on. */
-export function ledgePaintedFrames(from: number, to: number): number {
-  let count = 0;
-  for (let n = Math.max(0, Math.floor(from * 0.03) - 1); frameTime(n) < to; n++) if (frameTime(n) >= from) count++;
-  return count;
-}
 /** Room kept between a word's ink and the keylines above and below it. */
 const INK_GAP = 4;
 const SHADOW = { dy: 10, blur: 4, alpha: 0.28 } as const;
@@ -293,6 +276,15 @@ const rad = (degrees: number) => (degrees * Math.PI) / 180;
 function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters: Counters, probe = false): Piece[] {
   const space = sceneSpace(input, ANCHOR_LINE);
   const { u, safe } = space;
+  // The export's own frame grid at the render's real rate: "painted frames" means what the ASS writer samples.
+  const fps = input.fps ?? SCENE_DEFAULT_FPS;
+  const rate = sceneSampleRate(fps);
+  const oneFrame = Math.ceil(1000 / rate);
+  /** Two painted frames: the least an animation (or a decoration) may last. */
+  const minAnim = Math.ceil(2000 / rate);
+  const frameAtOrAfter = (t: number) => exportFrameAtOrAfter(t, fps);
+  const frameAtOrBefore = (t: number) => exportFrameAtOrBefore(t, fps);
+  const paintedFrames = (from: number, to: number) => paintedFrameCount(from, to, fps);
   const rtl = cueDirection(cue) === "rtl";
   const m = rtl ? -1 : 1;
   const texts = cue.words.map((word) => ledgeCase(word.text));
@@ -505,11 +497,19 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     if (!next) return Number.POSITIVE_INFINITY;
     const known = meets.get(nextLead);
     if (known !== undefined) return known;
-    const incoming = buildCue(next, nextAt, input, { ...counters, lead: nextLead, prev: { box: ownBox, lastEnd: lastWordEnd } }, true);
+    // Every later cue that can be on screen before this one has cleared, not only the next: each is built as a probe after the one before.
+    const chain = { ...counters, lead: nextLead, prev: { box: ownBox, lastEnd: lastWordEnd } };
+    const incoming: Piece[] = [];
+    for (let at = nextAt; at < input.cues.length; at++) {
+      const later = input.cues[at]!;
+      if (later.words.length === 0) continue;
+      if (at > nextAt && Math.min(...later.words.map((word) => word.startMs)) - REVEAL_LEAD > cue.endMs + 150) break;
+      incoming.push(...buildCue(later, at, input, chain, true));
+    }
     const from = Math.min(...incoming.map((piece) => piece.fromMs));
     let hit = Number.POSITIVE_INFINITY;
     // Looked at on the export's frames only: the first painted frame in which they meet.
-    for (let t = ledgeFrameAtOrAfter(from); t < from + 1600 && hit === Number.POSITIVE_INFINITY; t = ledgeFrameAtOrAfter(t + 1)) {
+    for (let t = frameAtOrAfter(from); t < from + 1600 && hit === Number.POSITIVE_INFINITY; t = frameAtOrAfter(t + 1)) {
       for (const piece of incoming) {
         const box = pieceBounds(piece, t, input.measure);
         if (box && inkBoxes.some((ink) => ink.from <= t && box.x1 < ink.box.x2 && box.x2 > ink.box.x1 && box.y1 < ink.box.y2 && box.y2 > ink.box.y1)) {
@@ -523,9 +523,9 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   };
   /** Every word of this cue gets a window of its own, whatever the next cue does (speakers overlap). */
   const nextOverlaps = next !== undefined && nextFirst < lastWordEnd;
-  const wordFloor = nextOverlaps ? ledgeFrameAtOrAfter(lastSpoken) + 68 : ledgeFrameAtOrAfter(lastSpoken - lead) + 34;
+  const wordFloor = nextOverlaps ? frameAtOrAfter(lastSpoken) + minAnim + 1 : frameAtOrAfter(lastSpoken - lead) + oneFrame + 1;
   /** Where this cue would end for a next cue entering `nextLead` ms early: its first frame, or this cue's own end when nothing follows soon. */
-  const endFor = (nextLead: number) => (next ? (continuous || nextFirst < cue.endMs ? ledgeFrameAtOrAfter(Math.round(nextFirst - nextLead)) : Math.min(ledgeFrameAtOrAfter(Math.round(nextFirst - nextLead)), cue.endMs)) : cue.endMs);
+  const endFor = (nextLead: number) => (next ? (continuous || nextFirst < cue.endMs ? frameAtOrAfter(Math.round(nextFirst - nextLead)) : Math.min(frameAtOrAfter(Math.round(nextFirst - nextLead)), cue.endMs)) : cue.endMs);
   /** A bar's reveal as `ledgeBarWidth` reads it: in the order the words are spoken, the edge pulled out to the furthest reach so far. */
   const chronological = (bar: Bar, revealOf: (index: number) => number) => {
     let reached = 0;
@@ -555,16 +555,21 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
    */
   const schedule = (nextLead: number, endAt: number, own = false, quick = false) => {
     // On a frame; a cue bounded by its own end leaves on the last frame at or before it (the words' floor aside).
-    const deadline = own && endAt >= wordFloor ? Math.max(ledgeFrameAtOrBefore(endAt), wordFloor) : ledgeFrameAtOrAfter(Math.max(endAt, wordFloor));
+    const deadline = own && endAt >= wordFloor ? Math.max(frameAtOrBefore(endAt), wordFloor) : frameAtOrAfter(Math.max(endAt, wordFloor));
     const revealOf = (index: number) => {
-      const ms = lead < MIN_ANIMATION ? 0 : quick ? clamp(deadline - HOLD - (startOf(index) - lead), 80, REVEAL_MS) : REVEAL_MS;
-      return startOf(index) - lead + ms + 34 > deadline ? 0 : ms;
+      // A lead under 67 ms still animates when two painted frames fit before the word: the reveal then ends exactly at its onset.
+      const early = Math.round(startOf(index) - lead);
+      const ms = lead < minAnim ? (lead >= oneFrame && paintedFrames(early, Math.round(startOf(index))) >= 2 ? lead : 0) : quick ? clamp(deadline - HOLD - (startOf(index) - lead), 80, REVEAL_MS) : REVEAL_MS;
+      // A reveal that would end after the cue is shortened to what is left (a frame before the cue goes) while that still grows over
+      // two painted frames; only below that is the word open at once.
+      const room = deadline - oneFrame - 1 - (startOf(index) - lead);
+      return ms === 0 || room >= ms ? ms : room >= minAnim ? room : 0;
     };
-    const dropMsOf = (bar: Bar) => (quick && lead >= MIN_ANIMATION ? clamp((deadline - HOLD - (firstOf(bar) - lead)) / 0.79, 160, HERO_DROP_MS) : HERO_DROP_MS);
+    const dropMsOf = (bar: Bar) => (quick && lead >= minAnim ? clamp((deadline - HOLD - (firstOf(bar) - lead)) / 0.79, 160, HERO_DROP_MS) : HERO_DROP_MS);
     // The words are settled when their ink is open (and a key word's drop is over): that is where the 150 ms start.
     const barLand = (bar: Bar) => {
       const open = inkOpen(bar, revealOf);
-      return bar.plan.hero && lead >= MIN_ANIMATION ? Math.max(open, firstOf(bar) - lead + 0.79 * dropMsOf(bar)) : open;
+      return bar.plan.hero && lead >= minAnim ? Math.max(open, firstOf(bar) - lead + 0.79 * dropMsOf(bar)) : open;
     };
     const barsLand = Math.max(...bars.map(barLand));
     // Continuous speech (the next cue starts as this one ends) must not blink: the exit then ends exactly at the next cue's first frame.
@@ -573,13 +578,14 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const stickerAt0 = sticker.bar.plan.hero
       ? hostFirst + Math.min(STICKER_LEAD, 0.42 * dropMsOf(sticker.bar), Math.max(20, 0.35 * (deadline - hostFirst)))
       : lastOf(sticker.bar) + Math.min(120, 0.5 * Math.max(revealOf(stickerLastWord), 80), Math.max(10, 0.25 * (deadline - lastOf(sticker.bar))));
-    const stickerMs0 = clamp((Math.min(nominalExit, deadline - MIN_ANIMATION) - STICKER_HOLD - stickerAt0) / 0.55, 120, STICKER_MS);
+    const stickerMs0 = clamp((Math.min(nominalExit, deadline - minAnim) - STICKER_HOLD - stickerAt0) / 0.55, 120, STICKER_MS);
     // The words hold 150 ms once they are settled; the cube, which only decorates, is fitted into the time that is left.
-    const idealFrom = Math.max(nominalExit, barsLand + HOLD);
+    // And never before the last word has been spoken: the first exit frame that touches ink is at or after its end.
+    const idealFrom = Math.max(nominalExit, barsLand + HOLD, lastWordEnd);
     return { nextLead, deadline, revealOf, dropMsOf, stickerAt0, stickerMs0, idealFrom };
   };
   /** Whether this cue is bounded by its own end rather than by a next cue's first frame. */
-  const ownEnd = (nextLead: number) => !next || (!(continuous || nextFirst < cue.endMs) && ledgeFrameAtOrAfter(Math.round(nextFirst - nextLead)) > cue.endMs);
+  const ownEnd = (nextLead: number) => !next || (!(continuous || nextFirst < cue.endMs) && frameAtOrAfter(Math.round(nextFirst - nextLead)) > cue.endMs);
   /** The words get their 150 ms: the exit may be as short as a cut, but it never starts before the hold is over. */
   const roomFor = (candidate: ReturnType<typeof schedule>) => candidate.idealFrom <= candidate.deadline;
   // The handoff, in cue handoff rule 3's order: (a) the exit is shortened to a cut, (b) the two lockups overlap where the next cue's
@@ -588,21 +594,26 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   let plan = schedule(REVEAL_LEAD, endFor(REVEAL_LEAD), ownEnd(REVEAL_LEAD));
   if (next && !roomFor(plan)) {
     let settled = false;
-    const leads = [REVEAL_LEAD, 60, 40, 20, 0];
-    for (const tighter of leads) {
-      const direct = schedule(tighter, endFor(tighter), ownEnd(tighter));
-      if (roomFor(direct)) {
-        plan = direct;
-        settled = true;
-        break;
+    // Frames quantise the lead: a few ms less than 85 often moves the next cue's first painted frame past this cue's last word. Leads under
+    // 67 ms leave the next cue no room to animate its reveal, so the entrance is quickened (word by word) before any of them is taken.
+    const animatedLeads = [REVEAL_LEAD, 80, 78, 75, 72, 70, 67].filter((candidate) => candidate >= minAnim || candidate === REVEAL_LEAD);
+    const tryLeads = (leads: readonly number[]) => {
+      for (const tighter of leads) {
+        const direct = schedule(tighter, endFor(tighter), ownEnd(tighter));
+        if (roomFor(direct)) return direct;
+        const meeting = firstMeeting(tighter);
+        const overlapped = schedule(tighter, Number.isFinite(meeting) ? Math.max(meeting, endFor(tighter)) : direct.idealFrom + EXIT);
+        if (roomFor(overlapped)) return overlapped;
       }
-      const meeting = firstMeeting(tighter);
-      const overlapped = schedule(tighter, Number.isFinite(meeting) ? Math.max(meeting, endFor(tighter)) : direct.idealFrom + EXIT);
-      if (roomFor(overlapped)) {
-        plan = overlapped;
-        settled = true;
-        break;
-      }
+      return null;
+    };
+    const found =
+      tryLeads(animatedLeads) ??
+      animatedLeads.map((tighter) => schedule(tighter, endFor(tighter), ownEnd(tighter), true)).find(roomFor) ??
+      tryLeads([60, 40, 20, 0]);
+    if (found) {
+      plan = found;
+      settled = true;
     }
     if (!settled) {
       const meeting = firstMeeting(0);
@@ -615,14 +626,14 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const { deadline, revealOf, dropMsOf, stickerAt0, idealFrom } = plan;
   const stickerMs0 = plan.stickerMs0;
   // An exit is an animation of at least 67 ms (two 30 fps frames) that ends before the cue must be gone, or a cut exactly there.
-  const animated = ledgePaintedFrames(idealFrom, deadline) >= 2;
+  const animated = paintedFrames(idealFrom, deadline) >= 2;
   const exitDur = animated ? Math.min(EXIT, deadline - idealFrom) : 0;
   const exitFrom = animated ? (continuous ? deadline - exitDur : idealFrom) : deadline;
   /** What is left of the safe height above the lockup once its exit drop is counted: the popcorn's flight may use no more. */
   const spanRoom = safe.y2 - safe.y1 - (turned(geo).h + dropPx);
   const exitTo = exitFrom + exitDur;
   // The cube's pop fits before the cue leaves: it starts at least 80 ms before the end (a pop of under 67 ms would be a one-frame flash).
-  const stickerAt = Math.min(stickerAt0, Math.round(exitTo) - 80);
+  const stickerAt = Math.min(stickerAt0, Math.round(exitTo) - (minAnim + 13));
   const stickerMs = Math.min(stickerMs0, Math.max(60, exitTo - stickerAt - 10));
   const stickerLand = stickerAt + 0.55 * stickerMs;
   const exitY = (t: number) => (exitDur > 0 ? dropPx * EASES.in(prog(t, exitFrom, exitDur)) : 0);
@@ -680,8 +691,11 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     });
 
   const toMs = Math.round(exitTo);
-  const openClip = (x1: Frames, x2: Frames): Clip => ({ x1, x2, y1: [[0, 0]], y2: [[0, input.canvas.height]] });
-  const wideOpen: Frames = [[0, 0]];
+  // The clip's open edges are unbounded: the cue's shift into the safe area moves a clip with its piece, and an edge at the canvas would
+  // then cut away the row it was shifted past (a stacked cue's upper row). Only the reveal edge means anything.
+  const OPEN = 100_000;
+  const openClip = (x1: Frames, x2: Frames): Clip => ({ x1, x2, y1: [[0, -OPEN]], y2: [[0, OPEN]] });
+  const wideOpen: Frames = [[0, -OPEN]];
 
   const barInfo: { bar: Bar; width: (t: number) => number; dropOf: (t: number) => number; from: number; edges: number[] }[] = [];
   bars.forEach((bar, barAt) => {
@@ -696,7 +710,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     // A key word's drop is a spring that needs ~0.8 of its length plus a moment to be read: a cue that cannot fit it (or that enters with a
     // lead under 67 ms) shows the settled pose instead of a motion that never settles.
     const dropMs = dropMsOf(bar);
-    const dropFits = lead >= MIN_ANIMATION && exitFrom - (first - lead) >= 0.79 * dropMs + 70;
+    const dropFits = lead >= minAnim && exitFrom - (first - lead) >= 0.79 * dropMs + 70;
     const dropOf = bar.plan.hero && dropFits ? (t: number) => (1 - EASES.spring(prog(t, first - lead, dropMs))) * -HERO_DROP * bar.f : () => 0;
     const edges = [...bar.items.flatMap((item) => [startOf(item.index) - lead, startOf(item.index) - lead + revealOf(item.index)]), first - lead + dropMs];
     const origin = { x: bar.x, y: bar.y };
@@ -740,7 +754,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const centreY = bar.y + h / 2;
     const edgeAt = (t: number) => P(bar.x + width(t) - 4 * bar.f, centreY + dropOf(t)).x;
     const edgeFrames = sampled(edgeAt, from, toMs, edges, 0.25);
-    const clip = rtl ? openClip(edgeFrames, [[0, input.canvas.width]]) : openClip(wideOpen, edgeFrames);
+    const clip = rtl ? openClip(edgeFrames, [[0, OPEN]]) : openClip(wideOpen, edgeFrames);
     const baselineY = bar.y + bar.baseline;
     for (const item of bar.items) {
       const start = startOf(item.index);
@@ -773,13 +787,13 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   const zTop = band + 150;
   const k = sticker.bar.f * sticker.scale;
   // A cue too short for the pop shows the cube from two frames before it leaves, settled: a static accent rather than none.
-  const stickerFrom = Math.max(host?.from ?? 0, Math.min(Math.round(stickerAt) + 10, toMs - 68));
+  const stickerFrom = Math.max(host?.from ?? 0, Math.min(Math.round(stickerAt) + 10, toMs - (minAnim + 1)));
   const stickerAnchor = { x: sticker.cx, y: sticker.cy };
   // The pop is a spring (it lands in ~0.55 of its length): a cue that leaves before it can land shows the cube settled.
   const stickerLive = exitFrom - stickerAt >= 0.55 * stickerMs + 40;
   const stickerPop = (t: number) => (stickerLive ? EASES.spring(prog(t, stickerAt, stickerMs)) : 1);
   const stickerFall = (t: number) => (stickerLive ? -(1 - EASES.outExpo(prog(t, stickerAt, (stickerMs * 260) / 420))) * 60 * sticker.bar.f : 0);
-  if (host && ledgePaintedFrames(stickerFrom, toMs) >= 2) {
+  if (host && paintedFrames(stickerFrom, toMs) >= 2) {
     const edges = [stickerAt, stickerAt + stickerMs, stickerAt + (stickerMs * 260) / 420];
     const icon = sticker.bar.plan.hero ? HERO_ICONS[heroNumber % HERO_ICONS.length]! : PLAIN_ICONS[plainNumber % PLAIN_ICONS.length]!;
     const cube = cubePaths(stickerAnchor.x, stickerAnchor.y, (STICKER_SIZE / 2) * k, -12 * k, 13 * k);
@@ -803,10 +817,10 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const stagger = clamp((exitFrom - 40 - tickBase) / 2, 6, 45);
     set.forEach((angle, j) => {
       const phi = angle + (rng() - 0.5) * 14;
-      const t0 = Math.round(Math.max(stickerFrom, Math.min(tickBase + j * stagger, exitFrom - 20, toMs - 70)));
+      const t0 = Math.round(Math.max(stickerFrom, Math.min(tickBase + j * stagger, exitFrom - 20, toMs - (minAnim + 3))));
       const life = clamp(exitFrom + 60 - t0, 140, 380);
       const to = Math.min(toMs, t0 + life);
-      if (ledgePaintedFrames(t0, to) < 2) return;
+      if (paintedFrames(t0, to) < 2) return;
       const burst = to - t0 >= 160;
       const radius = (t: number) => reach0 + 12 * k * (burst ? EASES.out(prog(t, t0, 160)) : 1);
       const dir = { x: Math.cos(rad(phi)), y: Math.sin(rad(phi)) };
@@ -860,12 +874,12 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
       }
       if (Number.isNaN(appear)) return;
       // Late or short: a dash that cannot fit its pop shows from two frames before the cue leaves (settled), and none if there is no room.
-      const t0 = Math.max(from, Math.min(Math.round(appear + j * 25), toMs - 68));
+      const t0 = Math.max(from, Math.min(Math.round(appear + j * 25), toMs - (minAnim + 1)));
       const pivot = { x: bar.x + cxLocal, y: bar.y + bar.h + strip / 2 - 0.5 * bar.f };
       const dashEdges = [t0, t0 + 110, t0 + 500];
       const popped = sampled((t) => (toMs - t0 >= 130 ? lerp(0.15, 1, outBack125(prog(t, t0, 110))) : 1), t0, toMs, dashEdges, 0.002);
       const slide = (t: number) => (toMs - t0 >= 500 ? -8 * bar.f * (1 - EASES.out(prog(t, t0, 500))) : 0);
-      if (ledgePaintedFrames(t0, toMs) < 2) return;
+      if (paintedFrames(t0, toMs) < 2) return;
       const path = polygonPath([
         [pivot.x - dw / 2 + slant / 2, pivot.y - dh / 2],
         [pivot.x + dw / 2 + slant / 2, pivot.y - dh / 2],
@@ -886,11 +900,11 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
     const swatches = [[input.colours.primary, input.colours.highlight], [input.colours.highlight, input.colours.primary], [STICKER_RED, input.colours.primary]] as const;
     const sideBase = rng() < 0.5 ? 1 : -1;
     for (let j = 0; j < 2; j++) {
-      const latest = Math.max(from, Math.min(exitFrom - 40, toMs - 70));
+      const latest = Math.max(from, Math.min(exitFrom - 40, toMs - (minAnim + 3)));
       const at = Math.round(clamp(lastOf(bar) + 40 + j * 110, from, latest));
       const dur = clamp(toMs - at, 240, 600);
       const to = Math.min(toMs, at + dur);
-      if (ledgePaintedFrames(at, to) < 2) continue;
+      if (paintedFrames(at, to) < 2) continue;
       const start = { x: bar.x + (0.45 + 0.4 * rng()) * bar.full * (j === 0 ? 0.85 : 1.1) + 0, y: bar.y - 4 * bar.f };
       start.x = clamp(start.x, bar.x + 0.2 * bar.full, bar.x + 0.92 * bar.full);
       const rise0 = (70 + 40 * rng()) * bar.f;

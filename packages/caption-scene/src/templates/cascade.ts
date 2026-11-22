@@ -1,6 +1,7 @@
 import { toCaptionUpperCase } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, lerp, prog } from "../ease";
+import { SCENE_DEFAULT_FPS, exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, rowsFromRoles, sceneSpace } from "../layout";
@@ -34,6 +35,8 @@ import { polygonPath, rectPath } from "../shapes";
  * - Real speech: the sample's 160 ms wipe covered the last 180 ms of speech. The exit never starts before the last word has been
  *   fully visible for 150 ms, shortens (down to 90 ms) when the next cue is close and runs at most 60 ms into it. The slow drift is
  *   the sample's 0.018 px/ms, stopped after 1.7 s so it never leaves the safe area on a long hold.
+ *   Handoffs use the shared export grid at the render's actual frame rate. Overlapping speakers get lanes clear of live echoes;
+ *   trimming a decoration leaves the word's lead intact, and the hero includes the preceding frame even at 24 fps.
  * - The hero punch blur (14 px for 170 ms) is kept (two frames of it at 30 fps are visible); the rule's `0 2px 8px` shadow is
  *   dropped (invisible on the dark footage the template is judged on); the words' shadow is one soft layer.
  * - The tilted wipe edge is the sample's local vertical, a canvas clip per word at that word's row (it leans 6 degrees in the sample).
@@ -66,10 +69,13 @@ const LINE_EM = 1.02;
 const SPLIT_PX = 14;
 const SPLIT_MS = 150;
 const WORD_LEAD = 50;
-/** The least an animated entrance, exit or decoration lasts: two frames at 30 fps (handoff rule 4). */
+/** The least an animated entrance, exit or decoration lasts at 30 fps: two export frames (handoff rule 4); `minAnimOf` gives it for the render's rate. */
 const MIN_ANIM = 67;
+const minAnimOf = (fps: number) => Math.ceil(2000 / sceneSampleRate(fps));
 const FADE_MS = 67;
 const RULE_LEAD = 80;
+/** Clip edges that stay open: far enough that the safe-area shift cannot bring them into view. */
+const OPEN_EDGE = 20000;
 const HERO_LEAD = 40;
 const HERO_PUNCH = 170;
 const STROKE = 3.2;
@@ -131,11 +137,11 @@ export const CASCADE_PATTERNS: readonly (readonly CascadeMode[])[] = [
 ];
 
 /** How a hero cue spends the time `avail` ms it has between its first word and its exit: the beat, the modes used and the rule's window. */
-export function cascadeBeats(avail: number): { beat: number; steps: number; ruleDur: number } {
-  const ruleDur = clamp(avail * 0.3, 60, 420);
+export function cascadeBeats(avail: number, minAnim = MIN_ANIM): { beat: number; steps: number; ruleDur: number } {
+  const ruleDur = clamp(avail * 0.3, minAnim, 420);
   const modeTime = Math.max(0, avail - ruleDur);
   const steps = clamp(Math.floor(modeTime / 100), 1, 6);
-  const beat = clamp(modeTime / steps, MIN_ANIM, 150);
+  const beat = clamp(modeTime / steps, minAnim, 150);
   return { beat, steps, ruleDur };
 }
 
@@ -165,32 +171,24 @@ interface Plan {
 }
 
 /**
- * How the cue meets the others (handoff rule, `gallery3-brief.md`): `shift` is how much of its entrance lead is given up (words
- * never past the last 30 fps frame before their spoken start, the rule's lead all the way to the first word), `limit` the first
- * painted frame at which a later cue's piece would be drawn over this cue's words, `dy` a vertical lane when two speakers need the
- * same space at once.
+ * How the cue meets the others (handoff rule, `gallery3-brief.md`): `shift` is how much of its words' entrance lead is given up
+ * (never past the last export frame before the spoken start), `decor` how much of the rule's lead (all the way to the first word),
+ * `limit` the first painted frame at which a later cue's piece would be drawn over this cue's words, `dy` a vertical lane when two
+ * speakers need the same space at once.
  */
 interface Control {
   readonly shift: number;
+  readonly decor: number;
   readonly limit: number;
   readonly dy: number;
 }
 
-const FREE: Control = { shift: 0, limit: Number.POSITIVE_INFINITY, dy: 0 };
-
-const frameTime = (n: number) => Math.round((n * 1000) / 30);
-/** The last 30 fps frame at or before `t`. */
-function frameFloor(t: number): number {
-  let n = Math.floor((t * 30) / 1000);
-  while (frameTime(n) > t) n--;
-  while (frameTime(n + 1) <= t) n++;
-  return frameTime(n);
-}
+const FREE: Control = { shift: 0, decor: 0, limit: Number.POSITIVE_INFINITY, dy: 0 };
 
 /** How far a cue's words may give up their lead: their first painted frame stays at or before the last frame at their spoken start. */
-export function cascadeWordCap(cue: Pick<SceneCue, "words">): number {
+export function cascadeWordCap(cue: Pick<SceneCue, "words">, fps: number = SCENE_DEFAULT_FPS): number {
   const hero = rowsFromRoles(cue.words.map((word) => word.role)).hero;
-  const caps = cue.words.map((word, index) => frameFloor(word.startMs) - 1 - (word.startMs - (hero.includes(index) ? HERO_LEAD : WORD_LEAD)));
+  const caps = cue.words.map((word, index) => exportFrameAtOrBefore(word.startMs, fps) - 1 - (word.startMs - (hero.includes(index) ? HERO_LEAD : WORD_LEAD)));
   return Math.max(0, ...(caps.length > 0 ? [Math.min(...caps)] : [0]));
 }
 
@@ -220,48 +218,48 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
   const safeW = safe.x2 - safe.x1;
   const safeH = safe.y2 - safe.y1;
   const startOf = (index: number) => cue.words[index]!.startMs;
+  const fps = input.fps ?? SCENE_DEFAULT_FPS;
+  const minAnim = minAnimOf(fps);
+  const fadeMs = Math.max(FADE_MS, minAnim);
 
   // --- timing: entrances are locked to speech; the exit gives way to a later cue's colliding ink ---
-  const wordShift = Math.min(ctl.shift, cascadeWordCap(cue));
-  const lockupEnter = (index: number) => startOf(index) - WORD_LEAD + wordShift;
-  const heroEnter = (index: number) => startOf(index) - HERO_LEAD + wordShift;
-  // The cue leaves at its end at the latest; a later cue's first painted ink ends it sooner.
-  const ceiling = Math.min(ctl.limit, cue.endMs);
+  const wordShift = Math.min(ctl.shift, cascadeWordCap(cue, fps));
+  // At 24 fps the preceding frame can be more than the hero's 40 ms lead away. Include it even when
+  // the onset falls just before the next frame, rather than first painting after the word starts.
+  const enter = (index: number, lead: number) => Math.min(startOf(index) - lead + wordShift, exportFrameAtOrBefore(startOf(index), fps) - 1);
+  const lockupEnter = (index: number) => enter(index, WORD_LEAD);
+  const heroEnter = (index: number) => enter(index, HERO_LEAD);
+  // The cue leaves at its end at the latest, and never before its last word has been spoken (the shared cue end of overlapping
+  // speakers can come first); a later cue's first painted ink over its words ends it sooner.
+  const lastEnd = Math.max(...cue.words.map((word) => word.endMs));
+  const ceiling = Math.min(ctl.limit, Math.max(cue.endMs, lastEnd));
   // The reading hold is counted from settled ink (the white face opaque, a hero's punch cleared), not from the colour split's tail.
   // Entrance effects are the last thing to give: per word, only when the hold would not fit before the ceiling.
   const holdRoom = (enter: number) => ceiling - HOLD - enter;
-  const fadeOf = (index: number) => (holdRoom(lockupEnter(index)) >= FADE_MS ? FADE_MS : 0);
+  const fadeOf = (index: number) => (holdRoom(lockupEnter(index)) >= fadeMs ? fadeMs : 0);
   const splitOf = (index: number) => {
     const room = ceiling - lockupEnter(index);
-    return room >= SPLIT_MS ? SPLIT_MS : room >= MIN_ANIM ? Math.floor(room) : 0;
+    return room >= SPLIT_MS ? SPLIT_MS : room >= minAnim ? Math.floor(room) : 0;
   };
   const effectOf = (enter: number, full: number) => {
     const room = holdRoom(enter);
-    return room >= full ? full : room >= MIN_ANIM ? Math.floor(room) : 0;
+    return room >= full ? full : room >= minAnim ? Math.floor(room) : 0;
   };
   const punchOf = (index: number) => effectOf(heroEnter(index), HERO_PUNCH);
   const lastSettle = Math.max(
     ...cue.words.map((_, index) => (roles.hero.includes(index) ? heroEnter(index) + Math.round(0.7 * punchOf(index)) : lockupEnter(index) + fadeOf(index))),
   );
   const exitTo = Math.round(ceiling);
-  const wipeRoom = exitTo - (lastSettle + HOLD);
-  const exitDur = wipeRoom >= MIN_ANIM ? Math.round(Math.min(wipeRoom, EXIT)) : 0;
+  // The wipe starts after the last word has been spoken and held; with no room for two painted frames it is dropped (a cut).
+  const wipeRoom = exitTo - Math.max(lastSettle + HOLD, lastEnd);
+  const exitDur = wipeRoom >= minAnim ? Math.round(Math.min(wipeRoom, EXIT)) : 0;
   const exitFrom = exitTo - exitDur;
   // A wipe that a later cue cuts short ends with ink still on its last frame (no blink): it accelerates, it does not settle.
   const wipeEase = ctl.limit < cue.endMs ? EASES.in : EASES.inOut;
   const wipeP = (t: number) => wipeEase(prog(t, exitFrom, exitDur));
-  /** Frames of the 30 fps grid a piece paints ink on (visible, not transparent, not clipped away). */
-  const paintedFrames = (piece: Piece) => {
-    let count = 0;
-    for (let n = Math.ceil((piece.fromMs * 30) / 1000 - 1e-9); ; n++) {
-      const t = frameTime(n);
-      if (t >= piece.toMs) break;
-      if (t < piece.fromMs) continue;
-      if (evaluatePiece(piece, t).o > 0 && pieceBounds(piece, t, input.measure)) count++;
-    }
-    return count;
-  };
-  /** What survives the cue's cut: nothing that starts after it, and no decoration that would flash on one painted frame (rule 4). */
+  /** Export frames a piece paints ink on (visible, not transparent, not clipped away). */
+  const paintedFrames = (piece: Piece) => exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => evaluatePiece(piece, t).o > 0 && pieceBounds(piece, t, input.measure) !== null).length;
+  /** What survives the cue's cut: nothing that starts after it, and no decoration is painted on a single frame (rule 4). */
   const finish = (list: Piece[]) =>
     clampToSafeArea(
       list.filter((piece) => piece.fromMs < exitTo && piece.toMs > piece.fromMs && (/^cascade:\d+:(w|h)\d+$/.test(piece.id) || paintedFrames(piece) >= 2)),
@@ -368,10 +366,10 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
   const cutX = (fr: Frame, t: number, lyc: number, dr: (t: number) => number) => fr.ex + edgeLx(t) * fr.cos - lyc * fr.sin + dr(exitFrom);
   function wipeClip(fr: Frame, lyc: number, dr: (t: number) => number, from: number, to: number): Clip {
     const cut = chan((t) => cutX(fr, t, lyc, dr), from, to, [exitFrom, exitTo], 0.3);
-    const far = frame(from, space.canvas.width + 80);
-    const near = frame(from, -80);
+    const far = frame(from, OPEN_EDGE);
+    const near = frame(from, -OPEN_EDGE);
     // Full height: the wipe is a vertical edge, so a tall script (Arabic, Devanagari) is never cut above or below.
-    return { x1: rtl ? near : cut, x2: rtl ? cut : far, y1: frame(from, -80), y2: frame(from, space.canvas.height + 80) };
+    return { x1: rtl ? near : cut, x2: rtl ? cut : far, y1: frame(from, -OPEN_EDGE), y2: frame(from, OPEN_EDGE) };
   }
 
   /** Local coordinates -> canvas for a frame. */
@@ -556,8 +554,8 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
     const ruleA = rtl ? -(laid.blockW + RULE_OVER * u) : -leftReach;
     const ruleB = rtl ? leftReach : laid.blockW + RULE_OVER * u;
     // The sample's rule leads the word by 80 ms; a later cue's collision takes that lead back first (`shift`).
-    const drawFrom = Math.round(cue.startMs - RULE_LEAD + ctl.shift);
-    const drawDur = Math.round(clamp(exitFrom - drawFrom - 20, MIN_ANIM, 420));
+    const drawFrom = Math.round(cue.startMs - RULE_LEAD + Math.min(ctl.decor, RULE_LEAD));
+    const drawDur = Math.round(clamp(exitFrom - drawFrom - 20, minAnim, 420));
     rule("rule", fr, ruleA, ruleB, ruleY, drawFrom, drawDur, rtl ? -1 : 1, dr, 1);
 
     // chevron pair: points into the first word, nudges ahead as each word lands
@@ -718,14 +716,14 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
   // A very short cue has its exit right after the hero lands: the cascade then runs to the cut.
   const cEnd = exitFrom - heroFirst >= 100 ? exitFrom : exitTo;
   // Too short for two frames of cascade after the word: the decoration starts with the hero's own entrance.
-  const castFrom = cEnd - heroFirst >= 2 * MIN_ANIM ? heroFirst : Math.min(...heroIdx.map(heroEnter));
+  const castFrom = cEnd - heroFirst >= 2 * minAnim ? heroFirst : Math.min(...heroIdx.map(heroEnter));
   const avail = cEnd - castFrom;
-  const { beat, steps, ruleDur: ruleDur0 } = cascadeBeats(avail);
+  const { beat, steps, ruleDur: ruleDur0 } = cascadeBeats(avail, minAnim);
   const pattern = CASCADE_PATTERNS[heroNumber % CASCADE_PATTERNS.length]!.slice(-steps);
   // The rule draws once the cascade has cleared; a cue too short for both runs them together from the hero's onset.
-  const roomy = avail >= steps * beat + MIN_ANIM;
-  const ruleStart = Math.round(roomy ? Math.max(castFrom, Math.min(castFrom + steps * beat, cEnd - MIN_ANIM)) : castFrom);
-  const ruleDur = Math.max(MIN_ANIM, Math.min(ruleDur0, cEnd - ruleStart));
+  const roomy = avail >= steps * beat + minAnim;
+  const ruleStart = Math.round(roomy ? Math.max(castFrom, Math.min(castFrom + steps * beat, cEnd - minAnim)) : castFrom);
+  const ruleDur = Math.max(minAnim, Math.min(ruleDur0, cEnd - ruleStart));
 
   // lockup rows above and below
   const swap = (heroNumber + (seed & 1)) % 2 === 1;
@@ -913,7 +911,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, variant: 
           y: chan(py, from, exitTo, [from + dur], 0.2),
           o: [[from, 0], [from + 50, 1]],
         },
-        clip: { x1: rtl ? near : x1, x2: rtl ? x1 : far, y1: frame(from, 0), y2: frame(from, space.canvas.height) },
+        clip: { x1: rtl ? near : x1, x2: rtl ? x1 : far, y1: frame(from, -OPEN_EDGE), y2: frame(from, OPEN_EDGE) },
       });
     }
   }
@@ -991,15 +989,12 @@ function quadsMeet(a: Quad, b: Quad): boolean {
 }
 
 /**
- * The first painted frame (at or after `after`) on which piece `q` of a later cue is drawn over one of an earlier cue's words (their
- * oriented ink boxes meet), the words counted as they are drawn from their own first frame, uncut. `dyQ`/`dyWords` are lanes.
+ * The first export frame on which piece `q` of a later cue is drawn over one of the earlier pieces `words` (their oriented ink boxes
+ * meet), those counted as they are drawn from their own first frame, uncut. `dyQ` and each `dy` are lanes.
  */
-function coverFrame(q: Piece, dyQ: number, words: readonly { piece: Piece; dy: number; box: Box }[], measure: Measure, qBox: Box): number | null {
+function coverFrame(q: Piece, dyQ: number, words: readonly { piece: Piece; dy: number; box: Box }[], measure: Measure, qBox: Box, fps: number): number | null {
   if (!words.some((word) => overlaps(moved(qBox, dyQ), moved(word.box, word.dy)))) return null;
-  for (let n = Math.ceil((q.fromMs * 30) / 1000 - 1e-9); ; n++) {
-    const t = frameTime(n);
-    if (t >= q.toMs) return null;
-    if (t < q.fromMs) continue;
+  for (const t of exportFrameTimes(q.fromMs, q.toMs, fps)) {
     if (!(evaluatePiece(q, t).o > 0) || !pieceBounds(q, t, measure)) continue;
     const mine = quadAt(q, t, measure, dyQ);
     if (!mine) continue;
@@ -1009,19 +1004,26 @@ function coverFrame(q: Piece, dyQ: number, words: readonly { piece: Piece; dy: n
       if (theirs && quadsMeet(mine, theirs)) return t;
     }
   }
+  return null;
 }
+
+const inkId = (piece: Piece) => /^cascade:\d+:(w|h)\d+[ab]?$/.test(piece.id);
+const decorId = (piece: Piece) => /^cascade:\d+:(e\d|chev|br|scan)/.test(piece.id);
 
 /**
  * The handoff rule between cues (`gallery3-brief.md`), in its order: the earlier cue's exit gives way (a wipe shortens or drops
- * inside `buildCue`); cues whose real, oriented ink does not meet overlap freely; a later cue that collides gives up its lead only
- * as far as the earlier cue's reading hold needs (the rule's lead first, then the words', never past the last frame before their
- * spoken start); only then do the earlier cue's entrance effects compress, per word, and the cue end at the first frame a colliding
- * piece of the later cue paints. Speakers who talk over each other, or who need the same space while the earlier one still has words
- * to say, get a second lane. Cues are built last to first, so the cut comes from the later cues' actual, final pieces.
+ * inside `buildCue`); cues whose real, oriented ink does not meet overlap freely; a later cue that collides gives up lead only as far
+ * as the earlier cue's reading hold needs, its decoration (the rule's lead) before its words' lead, never past the last export frame
+ * before a word's spoken start; only then do the earlier cue's entrance effects compress, per word, and the cue end at the first
+ * frame a colliding piece of the later cue paints. Speakers who talk over each other, or who need the same space while the earlier
+ * one still has words to say, get a second lane clear of the earlier cue's words and live decoration; decoration the later cue's
+ * words still cover is trimmed before any word is cut. Cues are built last to first, so every cut comes from the later cues'
+ * actual, final pieces.
  */
 function orchestrate(input: SceneInput, probes: readonly Piece[][], variants: readonly { hero: number; lockup: number }[]): Piece[][] {
   const cues = input.cues;
   const { measure } = input;
+  const fps = input.fps ?? SCENE_DEFAULT_FPS;
   const space = sceneSpace(input, CENTER_Y);
   const cache = new Map<Piece, Box | null>();
   const boxOf = (piece: Piece) => {
@@ -1029,38 +1031,42 @@ function orchestrate(input: SceneInput, probes: readonly Piece[][], variants: re
     return cache.get(piece)!;
   };
   const n = cues.length;
-  const caps = cues.map((cue) => cascadeWordCap(cue));
+  const caps = cues.map((cue) => cascadeWordCap(cue, fps));
   const faces = probes.map((list) => list.filter(isFace));
   const heroCue = cues.map((cue) => cue.words.some((word) => word.role === "hero"));
+  const endOf = cues.map((cue) => Math.max(cue.endMs, ...cue.words.map((word) => word.endMs)));
   const dy = cues.map(() => 0);
   const shift = cues.map(() => 0);
-  const wordsOf = (i: number) =>
-    faces[i]!.flatMap((piece) => {
+  const decor = cues.map(() => 0);
+  const entries = (list: readonly Piece[], at: number) =>
+    list.flatMap((piece) => {
       const box = boxOf(piece);
-      return box ? [{ piece, dy: dy[i]!, box }] : [];
+      return box ? [{ piece, dy: dy[at]!, box }] : [];
     });
-  /** When a probe piece of cue j first shows if j gives up `d` ms of lead. */
-  const shiftOf = (piece: Piece, j: number, d: number) => {
+  const wordsOf = (i: number) => entries(faces[i]!, i);
+  /** How a probe piece of cue j moves when j gives up lead: 0 never, 1 with the rule's lead, 2 with the words'. */
+  const kindOf = (piece: Piece, j: number) => {
     const id = piece.id.split(":").slice(2).join(":");
     if (/^e\d/.test(id) || /^chev\d\d$/.test(id)) return 0;
-    if (/^rule\d+[rc]?$/.test(id)) return heroCue[j] ? 0 : Math.min(d, RULE_LEAD);
-    return Math.min(d, caps[j]!);
+    if (/^rule\d+[rc]?$/.test(id)) return heroCue[j] ? 0 : 1;
+    return 2;
   };
+  const moveBy = (kind: number, j: number, dw: number, dd: number) => (kind === 0 ? 0 : kind === 1 ? Math.min(dd, RULE_LEAD) : Math.min(dw, caps[j]!));
   /** The pieces of cue j that meet cue i's words, with the first frame each does (before any shift). */
   const meets = (i: number, j: number) => {
     const words = wordsOf(i);
-    const out: { piece: Piece; at: number }[] = [];
+    const out: { piece: Piece; at: number; kind: number }[] = [];
     for (const piece of probes[j]!) {
       const box = boxOf(piece);
       if (!box) continue;
-      const at = coverFrame(piece, dy[j]!, words, measure, box);
-      if (at !== null) out.push({ piece, at });
+      const at = coverFrame(piece, dy[j]!, words, measure, box, fps);
+      if (at !== null) out.push({ piece, at, kind: kindOf(piece, j) });
     }
     return out;
   };
   const near = (i: number, j: number) => {
     if (faces[i]!.length === 0 || probes[j]!.length === 0) return false;
-    return Math.min(...probes[j]!.map((piece) => piece.fromMs)) - 100 <= cues[i]!.endMs + 400;
+    return Math.min(...probes[j]!.map((piece) => piece.fromMs)) - 100 <= endOf[i]! + 400;
   };
   const enterOf = (i: number, face: Piece) => face.fromMs + Math.min(shift[i]!, caps[i]!);
 
@@ -1070,45 +1076,63 @@ function orchestrate(input: SceneInput, probes: readonly Piece[][], variants: re
     for (let i = 0; i < j; i++) {
       if (!near(i, j)) continue;
       const hit = meets(i, j);
-      if (hit.length === 0) continue;
-      const best = Math.min(...hit.map((entry) => entry.at + shiftOf(entry.piece, j, RULE_LEAD)));
-      const dropped = faces[i]!.some((face) => enterOf(i, face) >= best);
+      const earliest = Math.min(...probes[j]!.map((piece) => piece.fromMs));
       const talkingOver = cues[j]!.words[0]!.startMs < Math.max(...cues[i]!.words.map((word) => word.endMs));
+      const best = hit.length === 0 ? Number.POSITIVE_INFINITY : Math.min(...hit.map((entry) => entry.at + moveBy(entry.kind, j, RULE_LEAD, RULE_LEAD)));
+      const dropped = faces[i]!.some((face) => enterOf(i, face) >= best);
       if (!dropped && !talkingOver) continue;
-      const rival = joinBoxes(wordsOf(i).map((word) => moved(word.box, word.dy)))!;
+      // The lane clears the earlier cue's words and the decoration still alive when the later cue appears (hero echoes reach far).
+      const alive = probes[i]!.filter((piece) => isFace(piece) || (decorId(piece) && piece.toMs > earliest));
+      const wordsOnly = probes[i]!.filter(isFace);
       const gap = 16 * space.u;
       const own = (all: boolean) => joinBoxes(probes[j]!.filter((piece) => all || isFace(piece)).map((piece) => boxOf(piece)).filter((box): box is Box => box !== null).map((box) => moved(box, dy[j]!)));
-      for (const all of [true, false]) {
-        const mine = own(all);
-        if (!mine) continue;
-        const up = rival.y1 - gap - mine.y2;
-        const down = rival.y2 + gap - mine.y1;
-        const fits = (by: number) => mine.y1 + by >= space.safe.y1 && mine.y2 + by <= space.safe.y2;
-        const choice = fits(up) ? up : fits(down) ? down : null;
-        if (choice !== null) {
-          dy[j] = dy[j]! + choice;
-          break;
+      let placed = false;
+      for (const rivalSet of [alive, wordsOnly]) {
+        const rival = joinBoxes(entries(rivalSet, i).map((entry) => moved(entry.box, entry.dy)));
+        if (!rival) continue;
+        for (const all of [true, false]) {
+          const mine = own(all);
+          if (!mine) continue;
+          const up = rival.y1 - gap - mine.y2;
+          const down = rival.y2 + gap - mine.y1;
+          const fits = (by: number) => mine.y1 + by >= space.safe.y1 && mine.y2 + by <= space.safe.y2;
+          const choice = fits(up) ? up : fits(down) ? down : null;
+          if (choice !== null) {
+            dy[j] = dy[j]! + choice;
+            placed = true;
+            break;
+          }
         }
+        if (placed) break;
       }
     }
-    // 2. Give up lead only as far as the earlier cues' settled word and reading hold need.
+    // 2. Give up lead only as far as the earlier cues' settled word and reading hold need: the rule's lead (decoration) first,
+    //    the words' lead only when the words themselves must yield.
     for (let i = 0; i < j; i++) {
       if (!near(i, j)) continue;
       const hit = meets(i, j);
       if (hit.length === 0) continue;
       const last = faces[i]!.reduce((a, b) => (a.fromMs >= b.fromMs ? a : b));
-      const target = enterOf(i, last) + (/:h\d+$/.test(last.id) ? Math.round(0.7 * HERO_PUNCH) : FADE_MS) + HOLD;
-      const reach = (d: number) => Math.min(...hit.map((entry) => entry.at + shiftOf(entry.piece, j, d)));
-      const goal = Math.min(target, reach(RULE_LEAD));
-      // Nor may decoration cut the earlier words before the later cue's own word ink paints (that would blink): the rule waits for it.
-      const ink = (piece: Piece) => /^cascade:\d+:(w|h)\d+[ab]?$/.test(piece.id);
-      const wordFrom = Math.min(...probes[j]!.filter(ink).map((piece) => piece.fromMs));
-      const inkFrame = (d: number) => frameTime(Math.ceil(((wordFrom + Math.min(d, caps[j]!)) * 30) / 1000 - 1e-9));
-      const loose = hit.filter((entry) => !ink(entry.piece));
-      const looseReach = (d: number) => Math.min(Number.POSITIVE_INFINITY, ...loose.map((entry) => entry.at + shiftOf(entry.piece, j, d)));
-      let d = 0;
-      while (d < RULE_LEAD && (reach(d) < goal || looseReach(d) < inkFrame(d))) d++;
-      shift[j] = Math.max(shift[j]!, d);
+      const target = enterOf(i, last) + (/:h\d+$/.test(last.id) ? Math.round(0.7 * HERO_PUNCH) : Math.max(FADE_MS, minAnimOf(fps))) + HOLD;
+      const reach = (dw: number, dd: number) => Math.min(...hit.map((entry) => entry.at + moveBy(entry.kind, j, dw, dd)));
+      const goal = Math.min(target, reach(caps[j]!, RULE_LEAD));
+      // Decoration must not cut the earlier words before the later cue's own word ink paints (that would blink): it waits for it.
+      const wordFrom = Math.min(...probes[j]!.filter(inkId).map((piece) => piece.fromMs));
+      const inkFrame = (dw: number) => exportFrameAtOrAfter(wordFrom + Math.min(dw, caps[j]!), fps);
+      const loose = hit.filter((entry) => !inkId(entry.piece));
+      const looseReach = (dw: number, dd: number) => Math.min(Number.POSITIVE_INFINITY, ...loose.map((entry) => entry.at + moveBy(entry.kind, j, dw, dd)));
+      let pick: [number, number] | null = null;
+      for (let dw = 0; dw <= caps[j]! && !pick; dw++) {
+        for (let dd = 0; dd <= RULE_LEAD; dd++) {
+          if (reach(dw, dd) >= goal && looseReach(dw, dd) >= inkFrame(dw)) {
+            pick = [dw, dd];
+            break;
+          }
+        }
+      }
+      const [dw, dd] = pick ?? [caps[j]!, RULE_LEAD];
+      shift[j] = Math.max(shift[j]!, dw);
+      decor[j] = Math.max(decor[j]!, dd);
     }
   }
 
@@ -1118,18 +1142,40 @@ function orchestrate(input: SceneInput, probes: readonly Piece[][], variants: re
     if (probes[i]!.length === 0) continue;
     let limit = Number.POSITIVE_INFINITY;
     const words = wordsOf(i);
-    for (let j = i + 1; j < n && words.length > 0; j++) {
-      if (built[j]!.length === 0 || Math.min(...built[j]!.map((piece) => piece.fromMs)) - 100 > cues[i]!.endMs + 400) continue;
+    const later = Array.from({ length: n - i - 1 }, (_, at) => i + 1 + at).filter((j) => built[j]!.length > 0 && Math.min(...built[j]!.map((piece) => piece.fromMs)) - 100 <= endOf[i]! + 400);
+    for (const j of later) {
+      if (words.length === 0) break;
       for (const piece of built[j]!) {
         if (piece.fromMs >= limit) continue;
         const box = boxOf(piece);
         if (!box) continue;
-        const at = coverFrame(piece, 0, words, measure, box);
+        const at = coverFrame(piece, 0, words, measure, box, fps);
         if (at !== null) limit = Math.min(limit, at);
       }
     }
-    const ctl: Control = { shift: shift[i]!, limit, dy: dy[i]! };
-    built[i] = ctl.shift === 0 && ctl.dy === 0 && !Number.isFinite(ctl.limit) ? probes[i]! : buildCue(cues[i]!, i, input, variants[i]!, ctl);
+    const ctl: Control = { shift: shift[i]!, decor: decor[i]!, limit, dy: dy[i]! };
+    let mine = ctl.shift === 0 && ctl.decor === 0 && ctl.dy === 0 && !Number.isFinite(ctl.limit) ? probes[i]! : buildCue(cues[i]!, i, input, variants[i]!, ctl);
+    // Decoration (echoes, chevrons, brackets, scan bars) a later cue's word ink still covers ends before it, ahead of any word.
+    const ink = later.flatMap((j) => built[j]!.filter(inkId));
+    if (ink.length > 0) {
+      mine = mine.flatMap((piece) => {
+        if (!decorId(piece)) return [piece];
+        const box = lifeBox(piece, measure);
+        if (!box) return [piece];
+        let cut = Number.POSITIVE_INFINITY;
+        for (const q of ink) {
+          const qBox = boxOf(q);
+          if (!qBox) continue;
+          const at = coverFrame(q, 0, [{ piece, dy: 0, box }], measure, qBox, fps);
+          if (at !== null) cut = Math.min(cut, at);
+        }
+        if (!Number.isFinite(cut)) return [piece];
+        const trimmed = { ...piece, toMs: Math.min(piece.toMs, cut) };
+        const painted = exportFrameTimes(trimmed.fromMs, trimmed.toMs, fps).filter((t) => evaluatePiece(trimmed, t).o > 0 && pieceBounds(trimmed, t, measure) !== null).length;
+        return trimmed.toMs > trimmed.fromMs && painted >= 2 ? [trimmed] : [];
+      });
+    }
+    built[i] = mine;
   }
   return built;
 }

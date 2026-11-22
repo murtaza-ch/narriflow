@@ -39,7 +39,7 @@ export function sceneDemo(name: CaptionSceneName, options: SceneDemoOptions = {}
   const demo = captionSceneDemo(name);
   const cues = options.cues ?? demo.cues.map((cue) => ({ ...cue, language: options.language === undefined ? cue.language : options.language }));
   const measurer = new SceneMeasurer({ notices: new Map(), omitted: new Map() }, new Set(), cues[0]?.language ?? null);
-  const input = sceneInputFromPreset(preset, { cues, canvas, measure: measurer.measure });
+  const input = sceneInputFromPreset(preset, { cues, canvas, measure: measurer.measure, ...(options.fps ? { fps: options.fps } : {}) });
   const scene = buildCaptionScene(name, input);
   const events = sceneEvents(scene, measurer, { canvas, ...(options.fps ? { fps: options.fps } : {}) });
   return { name, canvas, cues, durationMs: demo.duration, scene, events, ass: assScript(events, canvas, preset), measurer };

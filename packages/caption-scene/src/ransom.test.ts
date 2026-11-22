@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { demoCues, sceneEdgeDemo } from "./demo";
+import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
 import { EASES, lerp, prog } from "./ease";
 import type { SceneCue } from "./input";
 import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, pieceLocalBox, sceneBoundsAt } from "./scene";
@@ -9,7 +10,9 @@ import { fakeMeasure, sceneInput } from "./test-support";
 
 const { cues } = demoCues(RANSOM_DEMO);
 const COLOURS = { primary: "#F7F2E6", highlight: "#F39A1E", accent: "#1D2A7A", shadow: "#000000" };
-const build = (list: readonly SceneCue[], overrides = {}) => ransomProgram.build(sceneInput(list, { anchor: { xPct: 50, yPct: (1290 / 1920) * 100 }, colours: COLOURS, ...overrides })).pieces;
+/** The frame rate the helpers plan and judge at (the render's own; tests loop it). */
+let FPS = 30;
+const build = (list: readonly SceneCue[], overrides = {}) => ransomProgram.build(sceneInput(list, { anchor: { xPct: 50, yPct: (1290 / 1920) * 100 }, colours: COLOURS, fps: FPS, ...overrides })).pieces;
 const scene = build(cues);
 const ofCue = (list: readonly Piece[], cue: number) => list.filter((piece) => piece.id.split(":")[1] === String(cue));
 const texts = (list: readonly Piece[]) => list.filter((piece): piece is TextPiece => piece.kind === "text");
@@ -450,11 +453,7 @@ function fastRun(cuesCount: number, gap: number): SceneCue[] {
   out[out.length - 1] = { ...last, endMs: last.words[last.words.length - 1]!.endMs + 650 };
   return out;
 }
-const frameTimes = (from: number, to: number) => {
-  const times: number[] = [];
-  for (let k = Math.max(0, Math.floor((from * 30) / 1000) - 1); Math.round((k * 1000) / 30) < to; k++) if (Math.round((k * 1000) / 30) >= from) times.push(Math.round((k * 1000) / 30));
-  return times;
-};
+const frameTimes = (from: number, to: number) => exportFrameTimes(from, to, FPS);
 
 describe("Ransom cue handoff rule", () => {
   for (const gap of [0, 60]) {
@@ -536,11 +535,7 @@ const painted = (piece: Piece, t: number) => {
   return pose.visible && pose.o > 0.05 && pieceBounds(piece, t, fakeMeasure) !== null;
 };
 const paintedFrames = (piece: Piece) => frameTimes(piece.fromMs, piece.toMs).filter((t) => painted(piece, t));
-const frameCeil = (ms: number) => {
-  let k = Math.floor((ms * 30) / 1000);
-  while (Math.round((k * 1000) / 30) < ms) k++;
-  return Math.round((k * 1000) / 30);
-};
+const frameCeil = (ms: number) => exportFrameAtOrAfter(ms, FPS);
 /** No painted piece of the outgoing cue's words overlaps (as oriented ink boxes) a painted piece of the incoming one on any export frame. */
 const covered = (list: readonly Piece[], outgoing: number, incoming: number) => {
   const out = ofCue(list, outgoing).filter((piece) => /:(r\d+(u|s|w\d+)|h\d+l\d+t?)$/.test(piece.id));
@@ -683,6 +678,133 @@ describe("Ransom re-check 2", () => {
       const begin = frames.find((frame) => frame[1] > frames[0]![1] + 0.5)![0];
       const end = frames[frames.length - 1]![0];
       expect(end - begin).toBeGreaterThanOrEqual(190);
+    }
+  });
+});
+
+/** Every export frame from `from` to `to` on which the cue's words are not all painted whole. */
+const wordGaps = (list: readonly Piece[], cue: number, from: number, to: number) =>
+  frameTimes(from, to).filter((t) => texts(ofCue(list, cue)).some((piece) => evaluatePiece(piece, t).visible && !whole(piece, t)));
+
+describe("Ransom ship fixes", () => {
+  test("A2. a roll never touches a word before it has been spoken (300 ms words, 60 ms gaps)", () => {
+    for (const hero of [false, true]) {
+      const run: SceneCue[] = [];
+      let t = 400;
+      for (let n = 0; n < 8; n++) {
+        const startMs = t;
+        t += 300 + 60;
+        run.push(mkCue(n, startMs, t, [{ text: ["now", "then", "here", "this", "that", "when", "over", "done"][n]!, startMs, endMs: startMs + 300, role: hero ? "hero" : "body" }]));
+      }
+      const list = build(run);
+      run.forEach((cue, n) => {
+        const end = cue.words[0]!.endMs;
+        const landed = frameTimes(cue.startMs - 100, end + 300).find((t0) => texts(ofCue(list, n)).every((piece) => painted(piece, t0) && whole(piece, t0) && (!hero || Math.abs(evaluatePiece(piece, t0).sx - 1) < 0.05)));
+        expect(landed).toBeDefined();
+        // From landing to the end of speech the whole word is on screen: nothing has swept over it.
+        for (const t0 of frameTimes(landed!, end)) for (const piece of texts(ofCue(list, n))) expect(whole(piece, t0)).toBe(true);
+        for (const roll of ofCue(list, n).filter((piece) => /roll/.test(piece.id))) expect(roll.fromMs).toBeGreaterThanOrEqual(end);
+      });
+    }
+  });
+
+  test("A1. speakers who overlap by 30 to 200 ms keep both captions through every spoken end, on every canvas", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+      for (const overlap of [30, 70, 120, 200]) {
+        const a = mkCue(0, 1000, 1300 - overlap, [{ text: "taste", startMs: 1000, endMs: 1300 }]);
+        const b = mkCue(1, 1300 - overlap, 3200, [{ text: "skill", startMs: 1300 - overlap, endMs: 1600 - overlap }]);
+        const list = build([a, b], { canvas });
+        expect(covered(list, 0, 1)).toBeNull();
+        // The first word is whole on every frame until it has been spoken.
+        const first = frameTimes(1000 - 100, 1300).find((t) => texts(ofCue(list, 0)).every((piece) => painted(piece, t)))!;
+        expect(first).toBeDefined();
+        expect(wordGaps(list, 0, first, 1300)).toEqual([]);
+        for (const t of frameTimes(first, 1300)) expect(texts(ofCue(list, 0)).every((piece) => painted(piece, t))).toBe(true);
+        // And so is the second, from its start.
+        for (const t of frameTimes(frameCeil(1300 - overlap), 1600 - overlap)) expect(texts(ofCue(list, 1)).every((piece) => painted(piece, t))).toBe(true);
+      }
+    }
+  });
+
+  test("B. back-to-back 100 ms heroes never share a painted frame, at any sub-frame offset", () => {
+    const words = ["unbelievable", "overwhelming", "unbelievable", "overwhelming", "unbelievable"];
+    for (const offset of [0, 2, 7, 13, 23, 31]) {
+      const run = words.map((text, n) => mkCue(n, 1000 + n * 100 - offset, 1100 + n * 100 - offset, [{ text, startMs: 1000 + n * 100 - offset, endMs: 1100 + n * 100 - offset, role: "hero" }]));
+      run[4] = { ...run[4]!, endMs: 3000 };
+      const list = build(run);
+      for (let n = 0; n + 1 < run.length; n++) expect(covered(list, n, n + 1)).toBeNull();
+    }
+  });
+
+  test("1. a third cue never covers live text either (LATE / WAIT / WHAT)", () => {
+    const late = mkCue(0, 1320, 1430, [{ text: "late", startMs: 1320, endMs: 1500 }]);
+    const wait = mkCue(1, 1430, 1640, [{ text: "wait", startMs: 1430, endMs: 1580 }]);
+    const what = mkCue(2, 1640, 3200, [{ text: "what", startMs: 1640, endMs: 1900 }]);
+    const list = build([late, wait, what]);
+    expect(covered(list, 0, 1)).toBeNull();
+    expect(covered(list, 0, 2)).toBeNull();
+    expect(covered(list, 1, 2)).toBeNull();
+    for (const [n, end] of [[0, 1500], [1, 1580]] as const) {
+      const first = frameTimes(1200, end).find((t) => texts(ofCue(list, n)).every((piece) => painted(piece, t)))!;
+      for (const t of frameTimes(first, end)) expect(texts(ofCue(list, n)).every((piece) => painted(piece, t))).toBe(true);
+    }
+  });
+
+  test("2. stacked four-word cues lose no word to the safe-area shift (150 ms words, 70 ms overlap, 1:1 and 16:9)", () => {
+    for (const canvas of [{ width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+      const word = (text: string, startMs: number) => ({ text, startMs, endMs: startMs + 150 });
+      const a = mkCue(0, 1000, 1530, ["one", "two", "three", "four"].map((text, at) => word(text, 1000 + at * 150)));
+      const b = mkCue(1, 1530, 3400, ["five", "six", "seven", "eight"].map((text, at) => word(text, 1530 + at * 150)));
+      const list = build([a, b], { canvas });
+      expect(covered(list, 0, 1)).toBeNull();
+      for (const piece of texts(list)) expect(paintedFrames(piece).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("3. at 150 ms per word and 60 ms gaps every strip still animates in (two or more painted frames of motion)", () => {
+    const run: SceneCue[] = [];
+    let t = 400;
+    for (let n = 0; n < 8; n++) {
+      const words = ["aaa", "bbb", "ccc"].map((text, at) => ({ text: `${text}${"abcdefgh"[n]}`, startMs: t + at * 150, endMs: t + at * 150 + 150 }));
+      t += 450 + 60;
+      run.push(mkCue(n, words[0]!.startMs, t, words));
+    }
+    const list = build(run);
+    for (const [n] of run.entries()) {
+      const strip = need<ShapePiece>(ofCue(list, n).find((piece) => /:r\d+s$/.test(piece.id)));
+      const sizes = paintedFrames(strip).slice(0, 4).map((frame) => evaluatePiece(strip, frame).sx.toFixed(3));
+      expect(new Set(sizes).size).toBeGreaterThanOrEqual(2);
+      const second = need<TextPiece>(texts(ofCue(list, n)).find((piece) => piece.text.startsWith("BBB")));
+      const edges = paintedFrames(second).slice(0, 4).map((frame) => evaluatePiece(second, frame).clip!.x2.toFixed(1));
+      expect(new Set(edges).size).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  test("8. the two-frame and onset rules hold at 24, 25, 30 and 60 fps", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      FPS = fps;
+      try {
+        for (const offset of [0, 7, 23]) {
+          const run = fastRun(8, 60).map((cue) => ({ ...cue, startMs: cue.startMs - offset, endMs: cue.endMs - offset, words: cue.words.map((word) => ({ ...word, startMs: word.startMs - offset, endMs: word.endMs - offset })) }));
+          const list = build(run);
+          // Nothing decorative paints on exactly one frame.
+          for (const piece of list.filter((p) => /:(r\d+t|x|q|qu|roll|rollc)$/.test(p.id))) expect(paintedFrames(piece).length).not.toBe(1);
+          for (let n = 0; n + 1 < run.length; n++) expect(covered(list, n, n + 1)).toBeNull();
+          run.forEach((cue, n) => {
+            for (const [at, word] of cue.words.entries()) {
+              const pieces = word.role === "hero" ? texts(ofCue(list, n)).filter((piece) => piece.id.includes(`:h${at}l`)) : texts(ofCue(list, n)).filter((piece) => piece.text === word.text.toUpperCase());
+              const shown = Math.min(...pieces.map((piece) => paintedFrames(piece)[0] ?? Number.POSITIVE_INFINITY));
+              expect(shown).toBeLessThanOrEqual(frameCeil(word.startMs));
+              expect(shown).toBeGreaterThanOrEqual(word.startMs - 100 - 1000 / fps);
+            }
+          });
+          const first = run[0]!.words[0]!.startMs;
+          const last = run[run.length - 1]!.words[2]!.endMs;
+          for (const t of frameTimes(frameCeil(first), last)) expect(list.some((piece) => painted(piece, t))).toBe(true);
+        }
+      } finally {
+        FPS = 30;
+      }
     }
   });
 });

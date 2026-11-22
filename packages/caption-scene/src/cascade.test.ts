@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { applyBrandColorsToScene } from "@narriflow/validators";
 import { demoCues, sceneEdgeDemo } from "./demo";
+import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
 import { type Box, type Piece, type ShapePiece, type TextPiece, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
@@ -19,24 +20,19 @@ const need = <T extends Piece>(piece: Piece | undefined) => {
 };
 const idOf = (piece: Piece) => piece.id.split(":").slice(2).join(":");
 const wordOf = (list: readonly Piece[], cue: number, id: string) => need<TextPiece>(list.find((piece) => piece.id === `cascade:${cue}:${id}`));
-const frameAt = (n: number) => Math.round((n * 1000) / 30);
-/** The 30 fps frames in [from, to). */
-const framesIn = (from: number, to: number) => {
-  const out: number[] = [];
-  for (let n = Math.ceil((from * 30) / 1000 - 1e-9); frameAt(n) < to; n++) if (frameAt(n) >= from) out.push(frameAt(n));
-  return out;
-};
+/** The export's own frame grid at `fps` (frame-grid.ts), the one the ASS writer and the program use. */
+const framesIn = (from: number, to: number, fps = 30) => exportFrameTimes(from, to, fps);
 /** Ink is painted on a frame: visible, not transparent, not clipped away (rule: reason in painted frames). */
 const paintedAt = (piece: Piece, t: number) => evaluatePiece(piece, t).visible && evaluatePiece(piece, t).o > 0 && pieceBounds(piece, t, fakeMeasure) !== null;
-const paintedCount = (piece: Piece) => framesIn(piece.fromMs, piece.toMs).filter((t) => paintedAt(piece, t)).length;
+const paintedCount = (piece: Piece, fps = 30) => framesIn(piece.fromMs, piece.toMs, fps).filter((t) => paintedAt(piece, t)).length;
 const isFace = (piece: Piece) => /^cascade:\d+:(w|h)\d+$/.test(piece.id);
 const cueOf = (piece: Piece) => Number(piece.id.split(":")[1]);
 const overlap = (a: Box, b: Box) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
 /** The first painted frame on which a later cue's piece is drawn over an earlier cue's word, as a message; null when none is. */
-const coverage = (list: readonly Piece[]): string | null => {
+const coverage = (list: readonly Piece[], fps = 30): string | null => {
   const from = Math.min(...list.map((piece) => piece.fromMs));
   const to = Math.max(...list.map((piece) => piece.toMs));
-  for (const t of framesIn(from, to)) {
+  for (const t of framesIn(from, to, fps)) {
     const live = list.filter((piece) => paintedAt(piece, t));
     for (const face of live.filter(isFace)) {
       const box = pieceBounds(face, t, fakeMeasure)!;
@@ -46,10 +42,10 @@ const coverage = (list: readonly Piece[]): string | null => {
   return null;
 };
 /** The first frame in [from, to) on which no word ink is painted at all, null when there is none. */
-const blank = (list: readonly Piece[], from: number, to: number): number | null => {
+const blank = (list: readonly Piece[], from: number, to: number, fps = 30): number | null => {
   // Word ink: the white faces and their colour copies.
   const ink = list.filter((piece) => /^cascade:\d+:(w|h)\d+[ab]?$/.test(piece.id));
-  for (const t of framesIn(from, to)) if (!ink.some((piece) => paintedAt(piece, t))) return t;
+  for (const t of framesIn(from, to, fps)) if (!ink.some((piece) => paintedAt(piece, t))) return t;
   return null;
 };
 
@@ -425,47 +421,51 @@ describe("Cascade re-check fixes (handoff rule)", () => {
   const run = (gap: number, offset = 0, source = lines) =>
     demoCues({ lines: source, options: { gap: 0, cueGap: gap, lead: 350 + offset } }).cues;
 
-  for (const gap of [0, 60]) {
-    for (const offset of [0, 2, 7, 13, 23, 31]) {
-      test(`long run, cue gap ${gap}, offset ${offset}: sample entrances, words painted by their onset, readable, never covered, no blink, no one-frame flash`, () => {
-        const cuesRun = run(gap, offset);
-        const list = build(cuesRun);
-        /** Readable: painted, opaque and not cut by its clip (the word's drift is not a cut). */
-        const readableUntil = (piece: TextPiece, settle: number) => {
-          const bare = { ...piece, clip: undefined };
-          let t = settle;
-          for (; t < piece.toMs; t++) {
-            const whole = pieceBounds(bare, t, fakeMeasure);
-            const cut = pieceBounds(piece, t, fakeMeasure);
-            if (!whole || !cut || evaluatePiece(piece, t).o < 0.9 || cut.x1 > whole.x1 + 0.5 || cut.x2 < whole.x2 - 0.5) break;
-          }
-          return t;
-        };
-        cuesRun.forEach((cue, number) => {
-          const nextFirst = Math.min(Number.POSITIVE_INFINITY, ...list.filter((piece) => cueOf(piece) > number && paintedCount(piece) > 0).map((piece) => framesIn(piece.fromMs, piece.toMs).find((t) => paintedAt(piece, t))!));
-          cue.words.forEach((spoken, index) => {
-            const hero = spoken.role === "hero";
-            const face = faceOf(list, number, index, hero);
-            expect(face).toBeDefined();
-            // (1) painted on the last 30 fps frame at or before the spoken start, and never earlier than 100 ms before it.
-            const lastFrame = framesIn(spoken.startMs - 40, spoken.startMs + 1).pop()!;
-            expect(paintedAt(face!, lastFrame)).toBe(true);
-            expect(face!.fromMs).toBeGreaterThanOrEqual(spoken.startMs - 100);
-            // (2) readable from settling for as long as the next cue's first painted frame leaves.
-            const fade = hero ? 0 : 67;
-            const punch = face!.track.sx ? face!.track.sx[face!.track.sx.length - 1]![0] : face!.fromMs;
-            const settle = Math.max(face!.fromMs, hero ? punch : face!.fromMs + fade);
-            if (settle >= face!.toMs) return;
-            const readable = readableUntil(face!, settle) - settle;
-            expect(readable).toBeGreaterThanOrEqual(Math.min(150, nextFirst - settle) - 34);
+  for (const fps of [24, 25, 30, 60]) {
+    for (const gap of [0, 60]) {
+      for (const offset of fps === 30 ? [0, 2, 7, 13, 23, 31] : [0, 7, 23]) {
+        test(`long run at ${fps} fps, cue gap ${gap}, offset ${offset}: sample entrances, words painted by their onset, readable through their spoken end, never covered, no blink, no one-frame flash`, () => {
+          const cuesRun = run(gap, offset);
+          const list = build(cuesRun, { fps });
+          const frameMs = 1000 / fps;
+          /** Readable: painted, opaque and not cut by its clip (the word's drift is not a cut). */
+          const readableUntil = (piece: TextPiece, settle: number) => {
+            const bare = { ...piece, clip: undefined };
+            let t = settle;
+            for (; t < piece.toMs; t++) {
+              const whole = pieceBounds(bare, t, fakeMeasure);
+              const cut = pieceBounds(piece, t, fakeMeasure);
+              if (!whole || !cut || evaluatePiece(piece, t).o < 0.9 || cut.x1 > whole.x1 + 0.5 || cut.x2 < whole.x2 - 0.5) break;
+            }
+            return t;
+          };
+          cuesRun.forEach((cue, number) => {
+            const nextFirst = Math.min(Number.POSITIVE_INFINITY, ...list.filter((piece) => cueOf(piece) > number && paintedCount(piece, fps) > 0).map((piece) => framesIn(piece.fromMs, piece.toMs, fps).find((t) => paintedAt(piece, t))!));
+            cue.words.forEach((spoken, index) => {
+              const hero = spoken.role === "hero";
+              const face = faceOf(list, number, index, hero);
+              expect(face).toBeDefined();
+              // (1) painted on the last export frame at or before the spoken start, and never earlier than 100 ms before it.
+              expect(paintedAt(face!, exportFrameAtOrBefore(spoken.startMs, fps))).toBe(true);
+              expect(face!.fromMs).toBeGreaterThanOrEqual(spoken.startMs - 100);
+              // (2) readable from settling for as long as the next cue's first painted frame leaves.
+              const fade = hero ? 0 : Math.max(67, Math.ceil(2000 / fps));
+              const punch = face!.track.sx ? face!.track.sx[face!.track.sx.length - 1]![0] : face!.fromMs;
+              const settle = Math.max(face!.fromMs, hero ? punch : face!.fromMs + fade);
+              if (settle >= face!.toMs) return;
+              const readable = readableUntil(face!, settle) - settle;
+              expect(readable).toBeGreaterThanOrEqual(Math.min(150, nextFirst - settle) - frameMs - 1);
+              // Never before its spoken end unless a later cue forced the cut.
+              if (nextFirst > spoken.endMs) expect(readableUntil(face!, settle)).toBeGreaterThanOrEqual(Math.min(spoken.endMs, face!.toMs));
+            });
           });
+          // Never covered, and no empty frame while the speech runs on.
+          expect(coverage(list, fps)).toBeNull();
+          if (gap === 0) expect(blank(list, cuesRun[0]!.words[0]!.startMs - frameMs, cuesRun[cuesRun.length - 1]!.words[0]!.startMs, fps)).toBeNull();
+          // No decoration is painted on exactly one frame.
+          for (const piece of list) if (!isFace(piece)) expect(paintedCount(piece, fps)).not.toBe(1);
         });
-        // Never covered, and no empty frame while the speech runs on.
-        expect(coverage(list)).toBeNull();
-        if (gap === 0) expect(blank(list, cuesRun[0]!.words[0]!.startMs - 33, cuesRun[cuesRun.length - 1]!.words[0]!.startMs)).toBeNull();
-        // No decoration is painted on exactly one frame.
-        for (const piece of list) if (!isFace(piece)) expect(paintedCount(piece)).not.toBe(1);
-      });
+      }
     }
   }
 
