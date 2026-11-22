@@ -3,7 +3,7 @@ import { demoCues, parseDemoScript, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import type { SceneCue } from "./input";
 import { type Piece, type ShapePiece, type TextPiece, evaluatePiece } from "./scene";
-import { PREMIERE_DEMO, premiereCapsSize, premiereHash, premiereProgram, premiereTimestamp } from "./templates/premiere";
+import { PREMIERE_DEMO, premiereCapsSize, premiereHash, premiereProgram } from "./templates/premiere";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 const COLOURS = { primary: "#F5A623", highlight: "#FFF1D6", accent: "#FFF1D6", shadow: "#000000" };
@@ -68,19 +68,10 @@ describe("Premiere geometry", () => {
     expect(hero.fill).toBe("#FFF1D6");
   });
 
-  test("a lone script word is centred (the sample pushed it to the frame's edge) and clears the rule", () => {
+  test("a lone script word is centred (the sample pushed it to the frame's edge) without a footer", () => {
     const lone = build(sceneEdgeDemo("one-word").cues);
     const hero = need<TextPiece>(find(lone, "0:hero"));
     expect(evaluatePiece(hero, 1000).x).toBeCloseTo(540, 0);
-    const rule = need<ShapePiece>(find(lone, "0:rule"));
-    const bottom = evaluatePiece(hero, 1000).y - hero.origin!.dy + 0.34 * hero.sizePx;
-    expect(evaluatePiece(rule, 1000).y).toBeGreaterThan(bottom - 0.2 * hero.sizePx);
-  });
-
-  test("the credit line is the cue's own clip time", () => {
-    expect(premiereTimestamp(1804)).toBe("00:01");
-    expect(premiereTimestamp(75_000)).toBe("01:15");
-    expect(need<TextPiece>(find(scene, "2:credit")).text).toBe("00:03");
   });
 });
 
@@ -154,22 +145,19 @@ describe("Premiere across a whole clip", () => {
     return demoCues({ lines, options: { rate: 290, cueGap: gap, tail: 800, lead: 350 } }).cues;
   };
 
-  test("every cue of a 24-cue clip keeps its rule, credit, sparkle and words (no cue-indexed tables)", () => {
+  test("every cue of a 24-cue clip keeps its sparkle and words without a timestamp or line", () => {
     const list = build(long(24));
     for (let n = 0; n < 24; n++) {
-      for (const part of ["rule", "credit", "star"]) expect(find(list, `${n}:${part}`)).toBeDefined();
+      expect(find(list, `${n}:star`)).toBeDefined();
+      for (const part of ["rule", "credit"]) expect(find(list, `${n}:${part}`)).toBeUndefined();
       expect(list.filter((piece) => piece.id.startsWith(`premiere:${n}:w`)).length).toBeGreaterThanOrEqual(3);
     }
   });
 
-  test("the decoration varies cue to cue: sparkle spots, script tilts, rule widths and alignments cycle", () => {
+  test("the decoration varies cue to cue: sparkle spots, sizes and script tilts cycle", () => {
     const list = build(long(24));
     const tilts = new Set(list.filter((piece) => piece.id.endsWith(":hero")).map((piece) => Math.round(evaluatePiece(piece, piece.fromMs + 600).rz * 10)));
     expect(tilts.size).toBeGreaterThanOrEqual(3);
-    const widths = new Set(list.filter((piece): piece is ShapePiece => piece.id.endsWith(":rule")).map((piece) => Math.round(Math.max(...piece.path.flatMap((cmd) => (cmd[0] === "Z" ? [] : [cmd[1] as number]))))));
-    expect(widths.size).toBe(3);
-    const origins = new Set(list.filter((piece) => piece.id.endsWith(":rule")).map((piece) => Math.sign(piece.origin!.dx - 1)));
-    expect(origins.size).toBeGreaterThanOrEqual(2);
     const stars = list.filter((piece) => piece.id.endsWith(":star"));
     const sizes = new Set(stars.map((piece) => Math.round((piece as ShapePiece).origin!.dx)));
     expect(sizes.size).toBe(3);

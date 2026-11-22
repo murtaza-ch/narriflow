@@ -4,31 +4,28 @@ import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { clampToSafeArea, cueDirection, fitScale, greedyRows, rowVisualOrder, sceneSpace } from "../layout";
 import { type Clip, type PathCmd, type Piece, type ShapePiece, type TextPiece, mixColour } from "../scene";
-import { rectPath } from "../shapes";
 
 /**
  * Premiere (`samples/templates/m04-poster.js`): a film-festival poster set as captions. Tall amber condensed caps (Anton)
  * wipe in word by word, each with a brief glow as it lands; the key word writes on in a cream retro script (Yesteryear,
- * tipped -6 degrees, a dark knockout around it) across the caps stack with a four-point sparkle popping at its end; a
- * hairline and a tiny credit line sit under the block, and the whole poster pushes in 3 % while the cue holds.
+ * tipped -6 degrees, a dark knockout around it) across the caps stack with a four-point sparkle popping at its end.
+ * The whole poster pushes in 3 % while the cue holds.
  *
  * Geometry is the sample's, read in Chrome (`probe-sample.ts`): caps 200 / 172 / 150 px by the cue's character count
  * (Anton, line box 0.98 em, baseline 0.9135 em, 0.16 em between words, rows wrapped greedily at 860 px), the script at
  * 1.12x with a 0.075 em knockout, its box padded 0.18 / 0.3 / 0.34 em and pulled over the caps by 0.5 / 0.48 / 0.4 em
- * (first / last / middle), the block centred on y 1290 with 26 px, a 3 px rule, 16 px and the credit line below.
+ * (first / last / middle), the block centred on y 1290 with bottom padding.
  *
  * What changed from the sample, and why (Gallery 2 brief):
- * - The credit line "IN CONVERSATION - EP. 12" was invented text: it is now the cue's own clip time (`00:12`), set the same way.
+ * - The timestamp and decorative line are omitted at the owner's request. Bottom padding keeps the spoken words in place.
  * - Caps size came from the cue's character count only; every cue now also fits its widest word to the row (no floor: a
  *   word cannot wrap), the script fits the safe width, and the whole block fits the safe height (16:9).
- * - A lone script word (no caps) had `dx = Infinity` and was pushed to the frame's edge: it is centred, and the rule
- *   clears it.
+ * - A lone script word (no caps) had `dx = Infinity` and was pushed to the frame's edge: it is centred.
  * - The script's placement is clamped to the safe area (the sample's 70 to 1010 px) and mirrors for right-to-left cues
- *   (caps wipe, rule and credit run from the right).
+ *   (caps wipe from the right).
  * - Recurring variants (the sample's cues are one fixed look): the script's tilt, the sparkle's corner and size cycle by a
- *   per-hero-cue counter; the rule's width and alignment (centre / leading / trailing) cycle by cue number; a cue without
- *   a script gets a sparkle too, on its last word's top corner, its first word's or its last word's bottom, cycling by
- *   its own counter. The sparkle twinkles while a cue holds. All jitter is a hash of the cue's index and text.
+ *   per-hero-cue counter; a cue without a script gets a sparkle too, on its last word's top corner, its first word's or its
+ *   last word's bottom, cycling by its own counter. The sparkle twinkles while a cue holds. All jitter is a hash of the cue's index and text.
  * - Exit: the sample's 120 ms fade ends 80 ms before the cue's end; it now never starts before the last word has landed
  *   and been readable for 150 ms (it shortens, down to 60 ms, and may run 60 ms into the next cue in fast speech).
  * - Glow: the sample's text-shadow of 18 to 44 px is a blurred copy of the word under it (sigma 0.1 em falling to 0.06 em),
@@ -52,7 +49,6 @@ const MAX_W = 860;
 const PAD = 0.24;
 const CAPS_FACE = "Anton" as const;
 const SCRIPT_FACE = "Yesteryear" as const;
-const MICRO_FACE = "Inter Tight SemiBold" as const;
 const CAPS_LS = 0.004;
 const KNOCKOUT = "#140E06";
 const GLOW_MIX = 0.3;
@@ -75,13 +71,6 @@ const OVERLAP_MS = 60;
 const EXIT_LIFT = 18;
 const EXIT_BLUR = 8;
 const READABLE_MS = 150;
-const RULE_H = 3;
-const RULE_WIDTHS = [200, 150, 260] as const;
-const FOOT_ALIGNS = ["center", "lead", "trail"] as const;
-const MICRO_SIZE = 22;
-const MICRO_LS = 0.34;
-const MICRO_BASELINE = 0.973;
-const MICRO_LINE = 26.5;
 const SPARKLE_SIZES = [23, 20, 26] as const;
 const HERO_SPOTS = ["trail-top", "lead-bottom", "lead-top", "trail-bottom"] as const;
 const PLAIN_SPOTS = ["last-top", "first-top", "last-bottom"] as const;
@@ -112,12 +101,6 @@ export function premiereHash(index: number, text: string): number {
 /** The sample's caps size in sample px from the cue's character count (a letter and a space per caps word). */
 export function premiereCapsSize(capsChars: number): number {
   return capsChars <= 10 ? 200 : capsChars <= 16 ? 172 : 150;
-}
-
-/** The credit line: the cue's own clip time, `mm:ss`. */
-export function premiereTimestamp(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 const upper = (text: string) => (CASED.test(text) ? text.toUpperCase() : text);
@@ -183,8 +166,6 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     rows: CapsRow[];
     hero: { fs: number; W: number; H: number; top: number; dx: number; reach: number } | null;
     height: number;
-    blockTop: number;
-    foot: { ruleTop: number; microTop: number; left: number; right: number };
   }
   const layout = (sz: number): Layout => {
     const gap = CAPS_GAP * sz;
@@ -217,7 +198,7 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     const fs = SCRIPT_SCALE * sz * scriptScale;
     const W = scriptAdvance(fs) + 2 * SCRIPT_PAD.side * fs;
     const H = SCRIPT_BOX * fs;
-    // The script's margins by where it sits in the stack (the sample's `place`); alone it keeps clear of the rule.
+    // The script's margins by where it sits in the stack (the sample's `place`).
     const solo = leadRows.length === 0 && tailRows.length === 0;
     const spot = leadRows.length === 0 ? "first" : tailRows.length === 0 ? "last" : "middle";
     const margins = solo ? { top: 0, bottom: -0.12 * sz } : spot === "first" ? { top: 0, bottom: -0.5 * sz } : spot === "last" ? { top: -0.48 * sz, bottom: -0.12 * sz } : { top: -0.4 * sz, bottom: -0.4 * sz };
@@ -236,10 +217,7 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
       row.top = y;
       y += row.height;
     }
-    const footMargin = 26 * u;
-    const ruleTop = y + footMargin;
-    const microTop = ruleTop + RULE_H * u + 16 * u;
-    const height = microTop + MICRO_LINE * u;
+    const height = y + 71.5 * u;
     const blockTop = cy - height / 2;
     for (const row of [...leadRows, ...tailRows]) row.top += blockTop;
 
@@ -265,18 +243,10 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
       dx = lo <= hi ? clamp(dx, lo, hi) : 0;
       heroInfo = { fs, W, H, top: heroTop + blockTop, dx, reach };
     }
-    const lefts = [...leadRows, ...tailRows].map((row) => row.left);
-    const rights = [...leadRows, ...tailRows].map((row) => row.right);
-    if (heroInfo) {
-      lefts.push(cx + heroInfo.dx - heroInfo.reach / 2);
-      rights.push(cx + heroInfo.dx + heroInfo.reach / 2);
-    }
     return {
       rows: [...leadRows, ...tailRows],
       hero: heroInfo,
       height,
-      blockTop,
-      foot: { ruleTop: ruleTop + blockTop, microTop: microTop + blockTop, left: Math.min(...lefts), right: Math.max(...rights) },
     };
   };
 
@@ -336,7 +306,6 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
   const fromAll = cue.startMs - 60;
 
   // --- the caps: a left-to-right wipe with a blur settling and a glow that lights as the word lands ---
-  const firstCaps = capsIndices.length > 0 ? Math.min(...capsIndices.map((at) => cue.words[at]!.startMs)) : cue.startMs;
   for (const row of rows) {
     const baseline = row.top + row.up;
     const boxTop = row.top - PAD * size;
@@ -524,83 +493,6 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     }
   }
 
-  // --- the hairline and the credit line (the cue's clip time), under the first caps word ---
-  const align = FOOT_ALIGNS[cueNumber % FOOT_ALIGNS.length]!;
-  const ruleW = RULE_WIDTHS[cueNumber % RULE_WIDTHS.length]! * u;
-  const ruleH = RULE_H * u;
-  const footAt = Math.max(cue.startMs, firstCaps);
-  const leadEdge = rtl ? laid.foot.right : laid.foot.left;
-  const trailEdge = rtl ? laid.foot.left : laid.foot.right;
-  // `end` is the rule's fixed end: its centre, its leading edge or its trailing edge.
-  const ruleEnd = align === "center" ? cx : align === "lead" ? leadEdge : trailEdge;
-  const ruleLeft = align === "center" ? cx - ruleW / 2 : (align === "lead") === !rtl ? ruleEnd : ruleEnd - ruleW;
-  const pivotDx = align === "center" ? ruleW / 2 : ruleEnd - ruleLeft;
-  const drawAt = footAt + 120;
-  const drawFrom = Math.max(fromAll, drawAt + 8);
-  const ruleTop = laid.foot.ruleTop;
-  if (exitTo > drawFrom) {
-    const draw = (t: number) => EASES.outExpo(prog(t, drawAt, 520));
-    const shape: ShapePiece = {
-      id: `premiere:${cueNumber}:rule`,
-      kind: "shape",
-      z: band + 3,
-      fromMs: drawFrom,
-      toMs: exitTo,
-      track: {
-        x: framesX(() => ruleLeft + pivotDx, drawFrom, exitTo),
-        y: framesY(() => ruleTop + ruleH / 2, drawFrom, exitTo),
-        sx: scaleFrames(draw, drawFrom, exitTo, [drawAt, drawAt + 520]),
-        sy: scaleFrames(() => 1, drawFrom, exitTo),
-        ...(exitTo > exitFrom ? { o: exitOpacity(() => 1, drawFrom, exitTo), blur: exitBlur(() => 0, drawFrom, exitTo) } : {}),
-      },
-      origin: { dx: pivotDx, dy: ruleH / 2 },
-      path: rectPath(0, 0, ruleW, ruleH),
-      fill: { colour: input.colours.accent },
-      shadows: [{ dx: 0, dy: 2 * u, blur: 3 * u, colour: SHADOW, alpha: 0.5 }],
-    };
-    pieces.push(shape);
-  }
-  const microText = premiereTimestamp(cue.startMs);
-  const microSize = MICRO_SIZE * u;
-  const microAdvance = input.measure(microText, MICRO_FACE, microSize, MICRO_LS).advance;
-  const microLeft = align === "center" ? cx - microAdvance / 2 : (align === "lead") === !rtl ? ruleEnd : ruleEnd - microAdvance;
-  const typeAt = footAt + 220;
-  const microFrom = Math.max(fromAll, typeAt + 4);
-  const microTop = laid.foot.microTop;
-  if (exitTo > microFrom) {
-    const type = (t: number) => prog(t, typeAt, 420);
-    const boxTop = microTop - 0.1 * microSize;
-    const boxBottom = microTop + MICRO_LINE * u + 0.1 * microSize;
-    const x1 = microLeft - 0.05 * microSize;
-    const x2 = microLeft + microAdvance + MICRO_LS * microSize;
-    const clip = rtl
-      ? rect((t) => x2 - type(t) * (x2 - x1), () => x2, boxTop, boxBottom, microFrom, exitTo, [typeAt, typeAt + 420])
-      : rect(() => x1, (t) => x1 + type(t) * (x2 - x1), boxTop, boxBottom, microFrom, exitTo, [typeAt, typeAt + 420]);
-    pieces.push({
-      id: `premiere:${cueNumber}:credit`,
-      kind: "text",
-      z: band + 3,
-      fromMs: microFrom,
-      toMs: exitTo,
-      track: {
-        x: framesX(() => microLeft, microFrom, exitTo),
-        y: framesY(() => microTop + MICRO_BASELINE * microSize, microFrom, exitTo),
-        sx: scaleFrames(() => 1, microFrom, exitTo),
-        sy: scaleFrames(() => 1, microFrom, exitTo),
-        o: exitOpacity(() => 0.88, microFrom, exitTo),
-        ...(exitTo > exitFrom ? { blur: exitBlur(() => 0, microFrom, exitTo) } : {}),
-      },
-      clip,
-      text: microText,
-      face: MICRO_FACE,
-      sizePx: microSize,
-      letterSpacingEm: MICRO_LS,
-      fill: input.colours.accent,
-      shadows: [{ dx: 0, dy: 2 * u, blur: 3 * u, colour: SHADOW, alpha: 0.7 }],
-      anchor: "baseline-left",
-      language: null,
-    });
-  }
   return clampToSafeArea(pieces, safe, input.measure);
 }
 
