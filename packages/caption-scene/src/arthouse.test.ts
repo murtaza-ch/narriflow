@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { demoCues, parseDemoScript, sceneEdgeDemo } from "./demo";
 import type { SceneCue } from "./input";
-import { type Piece, type ShapePiece, type TextPiece, evaluatePiece, sceneBoundsAt } from "./scene";
+import { type Piece, type TextPiece, evaluatePiece, sceneBoundsAt } from "./scene";
 import { ARTHOUSE_DEMO, arthouseHash, arthouseProgram, arthouseSize } from "./templates/arthouse";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -50,18 +50,6 @@ describe("Arthouse geometry", () => {
     expect(word.origin!.dy).toBeCloseTo(0.602 * 196 - 0.811 * 196, 3);
   });
 
-  test("a red rule sits under the last row and wipes in with that row's first word", () => {
-    const rule = need<ShapePiece>(find(scene, "2:rule"));
-    expect(rule.fill!.colour).toBe("#FF2B2B");
-    const last = cues[2]!.words[0]!;
-    expect(rule.fromMs).toBeGreaterThanOrEqual(last.startMs - 60);
-    const mid = evaluatePiece(rule, rule.fromMs + 100);
-    const rest = evaluatePiece(rule, rule.fromMs + 700);
-    expect(mid.sx).toBeLessThan(rest.sx);
-    expect(rest.sx).toBeCloseTo(1, 0);
-    const word = evaluatePiece(need<TextPiece>(find(scene, "2:w2")), rule.fromMs + 700);
-    expect(rest.y).toBeGreaterThan(word.y);
-  });
 });
 
 describe("Arthouse motion", () => {
@@ -135,10 +123,10 @@ describe("Arthouse across a whole clip", () => {
     return demoCues({ lines, options: { rate: 290, cueGap: gap, tail: 800, lead: 350 } }).cues;
   };
 
-  test("every cue of a 24-cue clip keeps its rule, fringe, words and drift (no cue-indexed tables)", () => {
+  test("every cue of a 24-cue clip keeps its fringe, words and drift without an underline", () => {
     const list = build(long(24));
     for (let n = 0; n < 24; n++) {
-      expect(find(list, `${n}:rule`)).toBeDefined();
+      expect(find(list, `${n}:rule`)).toBeUndefined();
       expect(list.filter((piece) => piece.id.startsWith(`arthouse:${n}:f`)).length).toBeGreaterThanOrEqual(4);
       expect(list.filter((piece) => /^arthouse:\d+:w\d+$/.test(piece.id) && piece.id.split(":")[1] === String(n)).length).toBeGreaterThanOrEqual(4);
     }
@@ -148,18 +136,14 @@ describe("Arthouse across a whole clip", () => {
     expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeGreaterThan(0.5);
   });
 
-  test("the look varies cue to cue: swing side, tilt, rule width and place, hero tilt", () => {
+  test("the look varies cue to cue: swing side and tilt", () => {
     const list = build(long(24));
     const words = list.filter((piece): piece is TextPiece => piece.kind === "text" && /^arthouse:\d+:w1$/.test(piece.id));
     const sides = new Set(words.map((piece) => Math.sign(evaluatePiece(piece, piece.fromMs + 60).ry)));
     expect(sides).toEqual(new Set([1, -1]));
     const tilts = new Set(words.map((piece) => Math.round(evaluatePiece(piece, piece.fromMs + 700).rz)));
     expect(tilts.size).toBeGreaterThanOrEqual(5);
-    const rules = list.filter((piece): piece is ShapePiece => piece.id.endsWith(":rule"));
-    const widths = new Set(rules.map((piece) => Math.round(Math.max(...piece.path.flatMap((cmd) => (cmd[0] === "Z" ? [] : [cmd[1] as number]))))));
-    expect(widths.size).toBeGreaterThanOrEqual(5);
-    const places = new Set(rules.map((piece) => Math.round(evaluatePiece(piece, piece.fromMs + 700).x / 20)));
-    expect(places.size).toBeGreaterThanOrEqual(3);
+
   });
 
   test("the hash is deterministic and spreads", () => {

@@ -3,20 +3,18 @@ import { type Frames, EASES, clamp, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { clampToSafeArea, cueDirection, fitScale, greedyRows, rowVisualOrder, sceneSpace } from "../layout";
-import { type ColourFrames, type Piece, type ShapePiece, type TextPiece, SCENE_PERSPECTIVE_PX } from "../scene";
-import { rectPath } from "../shapes";
+import { type ColourFrames, type Piece, type TextPiece, SCENE_PERSPECTIVE_PX } from "../scene";
 
 /**
  * Arthouse (`samples/templates/m13-cinema.js`): indie-film title cards as captions. Tight condensed caps (Big Shoulders
  * Display Black) on a tilted baseline; each cue swings in from flat in perspective with a brief cyan / magenta fringe, holds
  * with a slow drift and swings out. Words land on their spoken time in acid yellow and cool to white once said; the key word
- * is a bigger red groovy serif (Shrikhand) overlapping the line; a thin red rule wipes in under the last row.
+ * is a bigger red groovy serif (Shrikhand) overlapping the line.
  *
  * Geometry is the sample's, read in Chrome (`probe-sample.ts`): caps 196 / 168 / 148 px by the cue's character count (line box
  * 0.86 em, baseline 0.811 em in it), hero 1.08x (line box 0.72 em, baseline 0.6575 em, margins -0.04 size), words 0.2 size apart,
- * rows wrapped at 820 px and baseline-aligned like the flex row, the rule 1.3 size by 10 px under 0.4 / 0.26 size, the block
- * centred on y 1290. Every word and the rule are posed through the block's transform (translate, perspective 1100, rotateY,
- * rotate, scale about its centre), the way a CSS parent would pose its children.
+ * rows wrapped at 820 px and baseline-aligned like the flex row, the block centred on y 1290. Every word is posed through the
+ * block's transform (translate, perspective 1100, rotateY, rotate, scale about its centre), the way a CSS parent would pose its children.
  *
  * What changed from the sample, and why (Gallery 2 brief and spec section 7):
  * - Perspective. A piece has no parent, so each word's pivot goes through the block's projection (perspective 1100 px, in
@@ -28,16 +26,16 @@ import { rectPath } from "../shapes";
  *   safe area with its tilt (up to 1.3x the sample's), 1.06x exit scale, 52 px of drift and the fringe's 12 px offset counted.
  * - Fringe: the two coloured text-shadows are two coloured copies under each word (a piece cannot animate a shadow), offset along
  *   the word's own baseline; they exist only while the fringe does (the swing, each word's arrival, the exit).
- * - The block's `drop-shadow(0 8px 18px)` is a blurred dark layer under each word and the rule (blur sigma 9, half the CSS radius).
+ * - The block's `drop-shadow(0 8px 18px)` is a blurred dark layer under each word (blur sigma 9, half the CSS radius).
  * - Recurring variants (the sample's cues are one fixed look): the swing alternates side (rotateY +38 / -38, drift and exit
  *   mirror), the tilt cycles -12 / -9 / -14 / -7 degrees with a hash jitter (hero cues and plain cues each own a counter), the
- *   hero's rest tilt cycles -3 / -5 / -2 / -4, the rule's width (1.3 / 0.9 / 1.9 size) and place (centre / leading / trailing
- *   under the last row) cycle by cue number, and the fringe's two colours swap sides by hash. A cue with no hero keeps the
- *   caps, the fringe, the rule and the drift (its lightest recurring motion is the same swing and rule).
+ *   hero's rest tilt cycles -3 / -5 / -2 / -4, and the fringe's two colours swap sides by hash. A cue with no hero keeps the
+ *   caps, the fringe and the drift.
+ * - The underline is removed at the owner's request. The block keeps its bottom padding so the words retain their placement.
  * - Exit: the 140 ms swing-out never starts before the last word has landed and been readable for 150 ms (it shortens, down to
  *   60 ms, and may run 60 ms into the next cue in fast speech).
  * - Cased scripts only (Latin, Cyrillic, Greek) are upper-cased and spaced; other scripts keep their letters, start 25 % smaller
- *   and rows grow to their ink. Rows of a right-to-left cue run right to left and the rule wipes from the right.
+ *   and rows grow to their ink. Rows of a right-to-left cue run right to left.
  */
 
 export const ARTHOUSE_DEMO: DemoScript = {
@@ -59,8 +57,6 @@ const FRINGE_B = "#FF2BD6";
 const SHADOW = "#000000";
 const TILTS = [-12, -9, -14, -7] as const;
 const HERO_REST = [-3, -5, -2, -4] as const;
-const RULE_WIDTHS = [1.3, 0.9, 1.9] as const;
-const RULE_PLACES = ["center", "lead", "trail"] as const;
 /** Line box and baseline of Big Shoulders at `line-height: 0.86` and of Shrikhand at 0.72 (probe, em of the face's own size). */
 const BODY_LINE = 0.86;
 const BODY_ABOVE = 0.811;
@@ -69,7 +65,6 @@ const HERO_ABOVE = 0.6575;
 const HERO_SCALE = 1.08;
 const HERO_MARGIN = 0.04;
 const WORD_GAP = 0.2;
-const RULE_H = 10;
 const PIVOT_Y = 0.7;
 const SAMPLE_PERSPECTIVE = 1100;
 const SWING_MS = 480;
@@ -153,9 +148,6 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
   let size = arthouseSize(chars) * u * (nonCased ? NON_CASED_SCALE : 1);
   size *= fitScale(Math.max(...words.map((_, at) => outerOf(at, size))), maxW);
 
-  const ruleWidth = RULE_WIDTHS[(cueNumber + 1) % RULE_WIDTHS.length]!;
-  const rulePlace = RULE_PLACES[cueNumber % RULE_PLACES.length]!;
-
   const layout = (sz: number) => {
     const gap = WORD_GAP * sz;
     const rows: Row[] = greedyRows(words.map((_, at) => outerOf(at, sz)), gap, maxW).map((row) => {
@@ -184,12 +176,8 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
       row.top = y;
       y += row.above + row.below;
     }
-    const ruleMargin = sz * (hasHero ? 0.4 : 0.26);
-    const rowsBottom = y;
-    const ruleTop = y + ruleMargin;
-    const height = ruleTop + RULE_H * u;
-    const ruleW = Math.min(ruleWidth * sz, safeW);
-    const widest = Math.max(...rows.map((row) => row.width), ruleW);
+    const height = y + sz * (hasHero ? 0.4 : 0.26) + 10 * u;
+    const widest = Math.max(...rows.map((row) => row.width));
     for (const row of rows) {
       let x = -row.width / 2;
       for (const item of row.items) {
@@ -205,7 +193,7 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
         item.originDy = item.qy - (row.top + row.above - height / 2);
       }
     }
-    return { rows, height, widest, ruleTop, ruleW, rowsBottom };
+    return { rows, height, widest };
   };
 
   let laid = layout(size);
@@ -223,7 +211,7 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     size *= k * 0.99;
     laid = layout(size);
   }
-  const { rows, height, ruleW, ruleTop } = laid;
+  const { rows } = laid;
 
   // --- the timeline: the swing in, the drift, the exit (held until the last word has been readable) ---
   const ats = words.map((word) => word.startMs - 60);
@@ -418,35 +406,6 @@ function buildCue(cue: SceneCue, cueNumber: number, counters: { hero: number; pl
     }
   }
 
-  // --- the rule: wipes in under the last row with that row's first word ---
-  const lastRow = rows[rows.length - 1]!;
-  const ruleAt = Math.min(...lastRow.items.map((item) => ats[item.index]!)) - 60;
-  const ruleFrom = ruleAt + 8;
-  if (exitTo > ruleFrom + 1) {
-    const lead = rtl ? lastRow.width / 2 - ruleW : -lastRow.width / 2;
-    const trail = rtl ? -lastRow.width / 2 : lastRow.width / 2 - ruleW;
-    const left = rulePlace === "center" ? -ruleW / 2 : rulePlace === "lead" ? lead : trail;
-    const pivotX = rtl ? left + ruleW : left;
-    const qy = ruleTop + (RULE_H * u) / 2 - height / 2;
-    const wipe = (t: number) => EASES.outExpo(prog(t, ruleAt, 340));
-    const get = memo((t) => pose(t, pivotX, qy, { rot: 0, sx: Math.max(0.0001, wipe(t)), sy: 1 }));
-    const rule: ShapePiece = {
-      id: `arthouse:${cueNumber}:rule`,
-      kind: "shape",
-      z: band + 2,
-      fromMs: ruleFrom,
-      toMs: exitTo,
-      track: {
-        ...poseTracks(get, ruleFrom, exitTo, [ruleAt + 340]),
-        o: track((t) => 1 - out(t), ruleFrom, exitTo, [], 0.01),
-      },
-      origin: { dx: rtl ? ruleW : 0, dy: (RULE_H * u) / 2 },
-      path: rectPath(0, 0, ruleW, RULE_H * u),
-      fill: { colour: input.colours.highlight },
-      shadows: shadow,
-    };
-    pieces.push(rule);
-  }
   // The clamp samples every 16 ms and the key word's spring peaks between samples: keep a few px inside the safe area.
   const margin = 6 * u;
   return clampToSafeArea(pieces, { x1: safe.x1 + margin, y1: safe.y1 + margin, x2: safe.x2 - margin, y2: safe.y2 - margin }, input.measure);
