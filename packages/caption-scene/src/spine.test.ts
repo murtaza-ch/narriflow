@@ -20,16 +20,13 @@ const widthOf = (shape: ShapePiece) => Math.max(...shape.path.flatMap((cmd) => (
 const plateWidth = (text: string, size: number) => Math.round(fakeMeasure(text, "Inter Tight Bold", size, -0.02).advance - 0.02 * size + 32);
 
 describe("Spine geometry", () => {
-  test("the column: counter, a 5 px rule from x 330 to 996 at y 1290, plates 16 px under it", () => {
-    const rule = need<ShapePiece>(find(scene, "0:rule"));
-    const pose = evaluatePiece(rule, 1500);
-    expect(pose.x).toBeCloseTo(330, 6);
-    expect(pose.y - rule.origin!.dy).toBeCloseTo(1290, 6);
-    expect(widthOf(rule)).toBeCloseTo(666, 6);
-    const counter = need<TextPiece>(find(scene, "0:counter"));
-    expect(counter.text).toBe("01");
-    expect(evaluatePiece(counter, 1500)).toMatchObject({ x: 330, y: 1270 });
+  test("the column keeps its plates at x 330 and y 1311 without a number or line", () => {
+    for (const cue of cues) {
+      expect(find(scene, `${cue.index}:rule`)).toBeUndefined();
+      expect(find(scene, `${cue.index}:counter`)).toBeUndefined();
+    }
     const plate = need<ShapePiece>(find(scene, "0:p0"));
+    expect(evaluatePiece(plate, 1500).x).toBeCloseTo(330, 6);
     expect(evaluatePiece(plate, 1500).y).toBeCloseTo(1311, 6);
     // 9 + 58 + 13 px tall; the word's baseline 50 px into its 58 px line box.
     const height = Math.max(...plate.path.flatMap((cmd) => (cmd[0] === "Z" ? [] : [cmd[2] as number])));
@@ -53,9 +50,8 @@ describe("Spine geometry", () => {
   });
 
   test("a cue without a hero sets its column at x 96 with 72 px plates", () => {
-    const rule = need<ShapePiece>(find(scene, "1:rule"));
-    expect(evaluatePiece(rule, 3000).x).toBeCloseTo(96, 6);
-    expect(widthOf(rule)).toBeCloseTo(900, 6);
+    const plate = need<ShapePiece>(find(scene, "1:p0"));
+    expect(evaluatePiece(plate, 3000).x).toBeCloseTo(96, 6);
     expect(need<TextPiece>(find(scene, "1:t0")).sizePx).toBe(72);
     expect(find(scene, "1:hero")).toBeUndefined();
   });
@@ -105,10 +101,8 @@ describe("Spine motion", () => {
     expect(hero.toMs).toBe(cue.endMs - 10);
   });
 
-  test("the rule draws in 360 ms, the counter ticks in over 300 ms, each plate wipes in from the left on its word", () => {
+  test("each plate wipes in from the left on its word", () => {
     const cue = cues[0]!;
-    const rule = need<ShapePiece>(find(scene, "0:rule"));
-    for (const t of [cue.startMs, cue.startMs + 100, cue.startMs + 320]) expect(evaluatePiece(rule, t).sx).toBeCloseTo(EASES.outExpo(prog(t, cue.startMs - 40, 360)), 3);
     const word = cue.words[1]!;
     const plate = need<ShapePiece>(find(scene, "0:p1"));
     const left = evaluatePiece(plate, 1500).x;
@@ -122,12 +116,13 @@ describe("Spine motion", () => {
 
   test("the column wipes away left to right in the 120 ms before end - 70 ms", () => {
     const cue = cues[0]!;
-    const rule = need<ShapePiece>(find(scene, "0:rule"));
+    const plate = need<ShapePiece>(find(scene, "0:p0"));
     const from = cue.endMs - 190;
     for (const t of [from, from + 60, from + 110]) {
-      expect(evaluatePiece(rule, t).clip!.x1).toBeCloseTo(330 - 12 + EASES.in(prog(t, from, 120)) * (996 - 330 + 24), 1);
+      expect(evaluatePiece(plate, t).clip!.x1).toBeCloseTo(330 - 12 + EASES.in(prog(t, from, 120)) * (996 - 330 + 24), 1);
     }
-    expect(rule.toMs).toBe(cue.endMs - 70);
+    expect(plate.toMs).toBeLessThanOrEqual(cue.endMs - 70);
+    expect(plate.toMs).toBeGreaterThan(from);
   });
 
   test("fast speech: a word that lands inside the exit never inverts its clip", () => {

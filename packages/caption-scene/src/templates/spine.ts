@@ -2,26 +2,25 @@ import type { DemoScript } from "../demo";
 import { type Frames, EASES, prog } from "../ease";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { clampToSafeArea, cueDirection, fitScale, rowVisualOrder, sceneSpace } from "../layout";
-import type { Clip, Piece, ShapePiece, TextPiece } from "../scene";
+import type { Clip, Piece, TextPiece } from "../scene";
 import { rectPath } from "../shapes";
 import { sampleFrames } from "../frames";
 
 /**
  * Spine (`samples/templates/43-spine.js`): a Swiss poster. The hero runs up the left edge of the frame in red
  * capitals, reading bottom to top, rising out of a hard edge with a near-black print offset. Beside it a tidy
- * column: a cue number, a black rule that draws, and the support words on white plates that wipe in as they
- * are spoken. The column wipes away left to right at the cue's end while the hero keeps rising out of the top.
+ * column of support words on white plates that wipe in as they are spoken. The column wipes away left to right at the cue's end
+ * while the hero keeps rising out of the top.
  *
  * Geometry is the sample's, read from its layout in Chrome (`.scratch/motion-captions/tools/probe-sample.ts`):
- * the rule is 5 px at y 1290 from the column's x (330 beside a hero, 96 without) to 996; the counter sits on a
- * baseline 20 px above it; the plates start 16 px under the rule, Inter Tight Bold 58 px (72 px without a hero,
- * -0.02 em) padded 9 / 16 / 13 px, 8 px apart, packed into the fewest rows at the narrowest width that keeps
+ * the plates start at y 1311 from the column's x (330 beside a hero, 96 without) to 996, Inter Tight Bold 58 px
+ * (72 px without a hero, -0.02 em) padded 9 / 16 / 13 px, 8 px apart, packed into the fewest rows at the narrowest width that keeps
  * that count. The hero is Archivo Black at the size that makes it 660 px long (150 to 250 px, -0.01 em), its
  * bottom end at y 1560. Chrome sets the sideways capitals with their baseline 0.833 em and their cap tops
  * 0.145 em across a box whose left is `96 - 0.105 em`; the mask is that box, `size + 10` wide, from the hero's
  * top to 8 px under its bottom.
  *
- * The counter is JetBrains Mono Medium (the sample's IBM Plex Mono Medium is not bundled; two digits at 30 px).
+ * The cue number and horizontal line are omitted at the owner's request.
  */
 
 export const SPINE_DEMO: DemoScript = {
@@ -40,8 +39,8 @@ const HERO_X = 96;
 const COL_X = 330;
 const SOLO_X = 96;
 const RIGHT = 996;
-const RULE_Y = 1290;
-const RULE_H = 5;
+const ANCHOR_Y = 1290;
+const PLATE_TOP = 1311;
 const PLATE_FS = 58;
 const SOLO_FS = 72;
 const OFF = 6;
@@ -57,17 +56,11 @@ const PLATE_PAD = { top: 9, side: 16, bottom: 13 } as const;
 const PLATE_GAP = 8;
 /** Baseline of Inter Tight's `line-height: 1` box (50 of 58 px, 62 of 72 in the probe). */
 const PLATE_BASELINE_EM = 0.862;
-const COUNTER_FACE = "JetBrains Mono Medium" as const;
-const COUNTER_SIZE = 30;
-const COUNTER_LS = 0.02;
-const COUNTER_BASELINE = 1270;
 const OFFSET_COLOUR = "#141414";
 const HERO_EXIT = 180;
 const COL_EXIT = 120;
 const RISE_MS = 520;
 const WIPE_MS = 260;
-const DRAW_MS = 360;
-const TICK_MS = 300;
 
 /** The sample's balanced packing: the fewest rows, at the narrowest width (4 px steps) that still needs that many. */
 export function spineRows(widths: readonly number[], limit: number, gap = PLATE_GAP): number[][] {
@@ -100,7 +93,7 @@ export function spineHeroOffset(t: number, wordStartMs: number, cueEndMs: number
 }
 
 function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput): Piece[] {
-  const space = sceneSpace(input, RULE_Y);
+  const space = sceneSpace(input, ANCHOR_Y);
   const { u } = space;
   const rtl = cueDirection(cue) === "rtl";
   const heroAt = cue.words.findIndex((word) => word.role === "hero");
@@ -144,50 +137,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput): Piece[] 
     return { x1: exitFrames(from), x2, y1: [[from, top]], y2: [[from, bottom]] };
   };
 
-  // The rule draws left to right from the column's x (scaleX about its left end).
-  const ruleWidth = space.px(RIGHT - colX);
-  const ruleH = space.px(RULE_H);
-  const drawFrom = cue.startMs - 40 + 4;
-  const rule: ShapePiece = {
-    id: `spine:${cueNumber}:rule`,
-    kind: "shape",
-    z: band + 3,
-    fromMs: Math.max(fromMs, drawFrom),
-    toMs: colEnd,
-    track: {
-      x: [[fromMs, space.x(colX)]],
-      y: [[fromMs, space.y(RULE_Y) + ruleH / 2]],
-      sx: [[cue.startMs - 40, 0], [cue.startMs - 40 + DRAW_MS, 1, "outExpo"]],
-    },
-    clip: { x1: exitFrames(fromMs), x2: [[fromMs, space.x(RIGHT + 12)]], y1: [[fromMs, space.y(RULE_Y - 10)]], y2: [[fromMs, space.y(RULE_Y + RULE_H + 10)]] },
-    origin: { dx: 0, dy: ruleH / 2 },
-    path: rectPath(0, 0, ruleWidth, ruleH),
-    fill: { colour: input.colours.primary },
-  };
-  pieces.push(rule);
-
-  // The counter ticks in from the left (`inset(-10% x% -10% 0)`).
-  const counterText = String(cue.index + 1).padStart(2, "0");
-  const counterSize = COUNTER_SIZE * u;
-  const counterWidth = input.measure(counterText, COUNTER_FACE, counterSize, COUNTER_LS).advance + COUNTER_LS * counterSize;
-  const counterTop = space.y(COUNTER_BASELINE - 26);
-  pieces.push({
-    id: `spine:${cueNumber}:counter`,
-    kind: "text",
-    z: band + 4,
-    fromMs: Math.max(fromMs, drawFrom),
-    toMs: exitPasses(space.x(colX) + counterWidth),
-    track: { x: [[fromMs, space.x(colX)]], y: [[fromMs, space.y(COUNTER_BASELINE)]] },
-    clip: wipeClip(fromMs, cue.startMs - 40, TICK_MS, space.x(colX), space.x(colX) + counterWidth, counterTop - 0.1 * counterSize, counterTop + 1.1 * counterSize),
-    text: counterText,
-    face: COUNTER_FACE,
-    sizePx: counterSize,
-    letterSpacingEm: COUNTER_LS,
-    fill: input.colours.primary,
-    anchor: "baseline-left",
-    language: null,
-  });
-
   // --- the plates ---
   if (support.length > 0) {
     const limit = space.px(RIGHT - colX);
@@ -206,7 +155,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput): Piece[] 
     const height = pad.top + size + pad.bottom;
     const gap = space.px(PLATE_GAP);
     const rows = spineRows(widths, limit, gap);
-    const top0 = space.y(RULE_Y + RULE_H + 16);
+    const top0 = space.y(PLATE_TOP);
     rows.forEach((row, ri) => {
       const ordered = rowVisualOrder(row.map((at) => cue.words[support[at]!]!.text), rtl ? "rtl" : "ltr").map((at) => row[at]!);
       const rowWidth = ordered.reduce((sum, at) => sum + widths[at]!, 0) + gap * (ordered.length - 1);
