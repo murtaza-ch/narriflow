@@ -68,7 +68,7 @@ describe("Cascade geometry", () => {
     expect(cascadeBaseline(128)).toBe(106.5);
   });
 
-  test("the block and rule are centred on the anchor and rows step in 46 px", () => {
+  test("the block is centred on the anchor and rows step in 46 px", () => {
     const rows = ofCue(scene, 0).filter((piece) => /^w\d$/.test(idOf(piece)));
     expect(rows.length).toBe(5);
     const mid = (list: readonly Piece[]) => {
@@ -148,10 +148,10 @@ describe("Cascade motion", () => {
   });
 
   test("the cascade beats compress to the time the hero has and four patterns cycle by hero cue", () => {
-    expect(cascadeBeats(2000)).toEqual({ beat: 150, steps: 6, ruleDur: 420 });
+    expect(cascadeBeats(2000)).toEqual({ beat: 150, steps: 6 });
     const short = cascadeBeats(500);
     expect(short.steps).toBeLessThan(6);
-    expect(short.steps * short.beat + short.ruleDur).toBeLessThanOrEqual(500 + 1);
+    expect(short.steps * short.beat).toBeLessThanOrEqual(500 + 1);
     expect(short.beat).toBeGreaterThanOrEqual(66);
     expect(CASCADE_PATTERNS.length).toBe(4);
     expect(new Set(CASCADE_PATTERNS.map((pattern) => pattern.join())).size).toBe(4);
@@ -219,14 +219,11 @@ describe("Cascade real speech and long clips", () => {
     const sides = new Set<number>();
     let scanBars = 0;
     let brackets = 0;
-    let ruleLeads = 0;
     long.forEach((cue, number) => {
       const mine = ofCue(list, number);
       expect(mine.some((piece) => /^chev/.test(idOf(piece)))).toBe(false);
       const hero = cue.words.some((word) => word.role === "hero");
-      expect(mine.some((piece) => /^rule\d/.test(idOf(piece)))).toBe(true);
-      expect(mine.some((piece) => /^rule\d+r$/.test(idOf(piece)))).toBe(true);
-      ruleLeads += mine.filter((piece) => /^rule\d+[rc]$/.test(idOf(piece))).length;
+      expect(mine.some((piece) => /^rule/.test(idOf(piece)))).toBe(false);
       if (hero) {
         const br = mine.filter((piece) => /^br/.test(idOf(piece))) as ShapePiece[];
         expect(br.length).toBeGreaterThanOrEqual(2);
@@ -253,10 +250,9 @@ describe("Cascade real speech and long clips", () => {
     expect(echoSignatures.size).toBeGreaterThanOrEqual(4);
     expect(scans.horizontal).toBeGreaterThan(0);
     expect(scans.vertical).toBeGreaterThan(scans.horizontal);
-    // Per 24+ cues: every lockup cue has a scan bar per word, every hero cue brackets, every cue a rule lead.
+    // Per 24+ cues: every lockup cue has a scan bar per word, every hero cue brackets.
     expect(scanBars).toBeGreaterThanOrEqual(60);
     expect(brackets).toBeGreaterThanOrEqual(24);
-    expect(ruleLeads).toBeGreaterThanOrEqual(2 * 30);
     expect(JSON.stringify(list).includes("NaN")).toBe(false);
   });
 });
@@ -361,23 +357,14 @@ describe("Cascade review fixes", () => {
     expect(wordOf(turkish, 0, "w0").text).toBe("İSTANBUL");
   });
 
-  test("5: a 70 ms hero with no gap still gets a rule that starts at its onset", () => {
+  test("5: a 70 ms hero with no gap keeps its brackets without an underline", () => {
     const short = cuesOf(["I:h@70", "then:b@300"], { cueGap: 0 });
     const list = build(short);
     const mine = ofCue(list, 0);
-    const rules = mine.filter((piece) => /^rule\d+$/.test(idOf(piece)));
-    expect(rules.length).toBeGreaterThanOrEqual(1);
-    // Nothing before the hero's own entrance, and each is painted on at least two frames.
-    const heroFrom = wordOf(list, 0, "h0").fromMs;
-    for (const piece of rules) {
-      expect(piece.fromMs).toBeGreaterThanOrEqual(heroFrom);
-      expect(paintedCount(piece)).toBeGreaterThanOrEqual(2);
-    }
-    // The rule is never drawn as an inverted clip.
-    for (const piece of rules) for (let t = piece.fromMs; t < piece.toMs; t += 4) {
-      const clip = evaluatePiece(piece, t).clip!;
-      expect(clip.x2).toBeGreaterThanOrEqual(clip.x1);
-    }
+    const brackets = mine.filter((piece) => /^br/.test(idOf(piece)));
+    expect(brackets.length).toBeGreaterThanOrEqual(2);
+    expect(mine.some((piece) => /^rule/.test(idOf(piece)))).toBe(false);
+    for (const piece of brackets) expect(paintedCount(piece)).toBeGreaterThanOrEqual(2);
   });
 
   test("6: the brand map refuses colours that vanish on the dark backdrop", () => {
@@ -457,12 +444,9 @@ describe("Cascade re-check fixes (handoff rule)", () => {
     }
   }
 
-  test("1: the sample's entrance returns when time allows: the rule leads the word and the white fades in over the split", () => {
+  test("1: the sample's entrance returns when time allows: the white fades in over the split", () => {
     const first = cues[0]!;
-    const rule = scene.find((piece) => piece.id === "cascade:0:rule0")!;
     const face = wordOf(scene, 0, "w0");
-    expect(rule.fromMs).toBeLessThan(face.fromMs);
-    expect(rule.fromMs).toBeLessThanOrEqual(first.startMs - 70);
     expect(face.fromMs).toBe(first.words[0]!.startMs - 50);
     expect(evaluatePiece(face, face.fromMs + 33).o).toBeGreaterThan(0.3);
     expect(evaluatePiece(face, face.fromMs + 33).o).toBeLessThan(0.7);
@@ -475,7 +459,6 @@ describe("Cascade re-check fixes (handoff rule)", () => {
       expect(piece.fromMs).toBe(spoken.startMs - 50);
       expect(steady.some((other) => other.id === `${piece.id}a`)).toBe(true);
     });
-    expect(steady.filter((piece) => /rule0$/.test(piece.id)).every((piece) => piece.fromMs <= demoCues({ lines: ["one:b@215 two:b@215", "three:b@215 four:b@215", "five:b@215"], options: { gap: 0, cueGap: 60 } }).cues[Number(piece.id.split(":")[1])]!.startMs - 70)).toBe(true);
   });
 
   test("2: the incoming lead shrinks only as far as needed, and its word paints on the last frame at or before its onset", () => {
@@ -553,17 +536,17 @@ describe("Cascade re-check fixes (handoff rule)", () => {
     expect(Math.min(...list.map((piece) => framesIn(piece.fromMs, piece.toMs).find((t) => paintedAt(piece, t)) ?? 1e9))).toBeLessThanOrEqual(420);
   });
 
-  test("7: the rule stays inside the safe area at size 200 (1:1, 16:9, 9:16), with wide letters too", () => {
+  test("7: the text stays inside the safe area at size 200 (1:1, 16:9, 9:16), with wide letters too", () => {
     const wide = (text: string, _face: unknown, size: number, ls: number) => ({ advance: [...text].length * (0.72 + ls) * size - ls * size, inkTop: -0.74 * size, inkBottom: 0.22 * size, ascent: 1.1 * size, descent: 0.3 * size });
     const texts = ["so:m the:m real:b reason:b most:b people:b never:b get:b there:m", "abcdefgh:b abcdefgh:b", "aaaa:b bbbb:b cccc:b dddd:b eeee:b ffff:b gggg:b", "go:b now:b"];
     for (const canvas of [{ width: 1080, height: 1080 }, { width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
       for (const measure of [fakeMeasure, wide]) {
         for (const text of texts) {
           const list = build(demoCues({ lines: [text], options: {} }).cues, { canvas, scale: 200 / 84, anchor, measure });
-          const rules = list.filter((piece) => /^rule\d+$/.test(idOf(piece)));
-          expect(rules.length).toBeGreaterThan(0);
-          for (const rule of rules) for (const t of framesIn(rule.fromMs, rule.toMs)) {
-            const box = pieceBounds(rule, t, measure as typeof fakeMeasure);
+          const faces = list.filter(isFace);
+          expect(faces.length).toBeGreaterThan(0);
+          for (const face of faces) for (const t of framesIn(face.fromMs, face.toMs)) {
+            const box = pieceBounds(face, t, measure as typeof fakeMeasure);
             if (!box) continue;
             expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 0.5);
             expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 0.5);
