@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo, useLayoutEffect } from "react";
 import { Box, Flex, Menu, Portal, Text } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
@@ -19,7 +19,6 @@ import {
   type CompositionTextVisualLayer,
   type CompositionTransitionVisualLayer,
   type CompositionInsertedSceneLayer,
-  type SampledCompositionMotion,
   type CompositionAssetAvailability,
 } from "@narriflow/composition-plan";
 import {
@@ -99,6 +98,7 @@ import {
   applyCompositionPlanQaFixture,
 } from "./composition-plan-qa-fixture";
 import { applyStudioMotionPreview } from "./studio-editing-session";
+import { createClipTransitionPreview, previewMotionStyle } from "./composition-motion-preview";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -245,34 +245,6 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-function previewMotionStyle(
-  motion: SampledCompositionMotion | null,
-  canvas: { width: number; height: number } | null,
-) {
-  if (!motion || !canvas) return undefined;
-  const cropScale = canvas.width / Math.max(1, motion.crop.width);
-  const cropCenterX = motion.crop.x + motion.crop.width / 2;
-  const cropCenterY = motion.crop.y + motion.crop.height / 2;
-  const translateX =
-    (motion.transform.translateX + canvas.width / 2 - cropCenterX) /
-    canvas.width;
-  const translateY =
-    (motion.transform.translateY + canvas.height / 2 - cropCenterY) /
-    canvas.height;
-  const clipTop = (motion.clip.y / canvas.height) * 100;
-  const clipRight =
-    ((canvas.width - motion.clip.x - motion.clip.width) / canvas.width) * 100;
-  const clipBottom =
-    ((canvas.height - motion.clip.y - motion.clip.height) / canvas.height) * 100;
-  const clipLeft = (motion.clip.x / canvas.width) * 100;
-  return {
-    opacity: motion.opacity,
-    transform: `translate(${(translateX * 100).toFixed(3)}%, ${(translateY * 100).toFixed(3)}%) scale(${(motion.transform.scale * cropScale).toFixed(6)})`,
-    transformOrigin: "center",
-    clipPath: `inset(${clipTop.toFixed(3)}% ${clipRight.toFixed(3)}% ${clipBottom.toFixed(3)}% ${clipLeft.toFixed(3)}%)`,
-  };
-}
-
 function BrollPreviewLayer({
   src,
   poster,
@@ -414,6 +386,7 @@ export function VideoPreview() {
     setStudioEdits,
     endCoalesce,
     isPlaying,
+    playbackRate,
     duration,
     brandLogo,
     layoutAnalysis,
@@ -425,7 +398,7 @@ export function VideoPreview() {
     reportCompositionPlanStatus,
     reportCaptionLayers,
     compositionPlanQaFixture,
-  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "activeTool", "setActiveTool", "reportLayoutScene", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "reportCaptionLayers", "compositionPlanQaFixture");
+  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "activeTool", "setActiveTool", "reportLayoutScene", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "playbackRate", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "reportCaptionLayers", "compositionPlanQaFixture");
   const audioApi = useAudioApi();
   const previewEditorDocument = useMemo(
     () => applyCompositionDocumentQaFixture(
@@ -453,6 +426,7 @@ export function VideoPreview() {
   const [videoLoaded, setVideoLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [isStalled, setIsStalled] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [bufferedFraction, setBufferedFraction] = useState(0);
   const [slowLoadHint, setSlowLoadHint] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -497,6 +471,7 @@ export function VideoPreview() {
 	}, [studioEdits.visualBroll, visualAssets]);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const transitionOverlayRef = useRef<HTMLDivElement>(null);
   const mainVideoRef = useRef<HTMLVideoElement | null>(null);
   const attachMainVideo = useCallback(
     (element: HTMLVideoElement | null) => {
@@ -1225,21 +1200,24 @@ export function VideoPreview() {
     (layer): layer is CompositionOutputTreatmentVisualLayer =>
       layer.kind === "output-treatment",
   );
-  const transitionMotion = plannedTransitionLayer
-    ? adoptCompositionMotion(
-        plannedTransitionLayer.motion,
-        currentTime,
-        prefersReducedMotion,
-      )
-    : null;
-  const transitionOverlayOpacity =
-    plannedTransitionLayer?.application === "overlay"
-      ? (transitionMotion?.opacity ?? 0)
-      : 0;
-  const transitionSourceStyle =
-    plannedTransitionLayer?.application === "source"
-      ? previewMotionStyle(transitionMotion, compositionPreview?.canvas ?? null)
-      : undefined;
+  const transitionCanvas = compositionPreview?.canvas;
+  useLayoutEffect(() => {
+    if (!plannedTransitionLayer || !transitionCanvas || prefersReducedMotion) return;
+    const element = plannedTransitionLayer.application === "overlay"
+      ? transitionOverlayRef.current
+      : videoContainerRef.current;
+    if (!element) return;
+    const preview = createClipTransitionPreview({
+      element,
+      motion: plannedTransitionLayer.motion,
+      canvas: transitionCanvas,
+      application: plannedTransitionLayer.application,
+      clock: playbackClock,
+      playing: isPlaying && !isBuffering,
+      rate: playbackRate,
+    });
+    return () => preview.dispose();
+  }, [plannedTransitionLayer, transitionCanvas, playbackClock, isPlaying, isBuffering, playbackRate, prefersReducedMotion]);
   const plannedSourceDims = compositionPlanResult?.status === "invalid"
     ? null
     : compositionPlanResult?.plan.source ?? null;
@@ -1417,6 +1395,7 @@ export function VideoPreview() {
     setVideoLoaded(false);
     setLoadError(false);
     setIsStalled(false);
+    setIsBuffering(false);
     setBufferedFraction(0);
     setSlowLoadHint(false);
   }, []);
@@ -1821,7 +1800,6 @@ export function VideoPreview() {
             maxWidth: "100%",
             height: "100%",
             width: "auto",
-            ...transitionSourceStyle,
           }}
           bg="black"
           overflow="hidden"
@@ -2048,6 +2026,10 @@ export function VideoPreview() {
                 onLoadedMetadata={handleLoadedMetadata}
                 onError={handleVideoError}
                 onStalled={handleVideoStalled}
+                onSeeking={() => setIsBuffering(true)}
+                onSeeked={() => setIsBuffering(false)}
+                onWaiting={() => setIsBuffering(true)}
+                onPlaying={() => setIsBuffering(false)}
                 onProgress={handleVideoProgress}
               />
             </Box>
@@ -2313,12 +2295,13 @@ export function VideoPreview() {
             />
           ) : null}
 
-          {plannedTransitionLayer && transitionOverlayOpacity > 0 ? (
+          {plannedTransitionLayer?.application === "overlay" ? (
             <Box
               position="absolute"
               inset="0"
+              ref={transitionOverlayRef}
               bg={plannedTransitionLayer.color}
-              opacity={transitionOverlayOpacity}
+              style={{ opacity: 0 }}
               pointerEvents="none"
               zIndex={30}
               aria-hidden="true"
