@@ -13,7 +13,8 @@ type ThumbnailRow = { projectId: string; role: string; storageKey: string };
 
 /** One page-wide read. Sealed images must belong to the exact owner that
  * published the Project's current source, including after retries/replacement.
- * ExecutionArtifact is already the durable object ledger and retention owner. */
+ * Queued uploads use their admitted Upload Session poster until the native
+ * source owner publishes its optimized image pair. */
 export async function readProjectThumbnails(
   database: Pick<PrismaClient, "$queryRaw">,
   workspaceId: string,
@@ -24,7 +25,8 @@ export async function readProjectThumbnails(
   const result = new Map<string, ProjectThumbnailAccess>();
   if (eligible.length === 0) return result;
   const rows = await database.$queryRaw<ThumbnailRow[]>(Prisma.sql`
-    SELECT DISTINCT ON (p.id, image.role) p.id AS "projectId", image.role, image."storageKey"
+    WITH candidates AS (
+    SELECT p.id AS "projectId", image.role, image."storageKey", 0 AS priority, image."committedAt" AS published
     FROM "Project" p
     JOIN "IngestJob" job ON job."projectId" = p.id AND job."sourceRevision" = p."sourceRevision"
     JOIN "ExecutionDispatch" dispatch ON dispatch."subjectKind" = 'ingest_job' AND dispatch."subjectId" = job.id::text
@@ -36,7 +38,16 @@ export async function readProjectThumbnails(
       AND image.role IN ('source_thumbnail_small', 'source_thumbnail_large')
     WHERE p."workspaceId" = ${workspaceId}::uuid AND p.id IN (${Prisma.join(eligible.map((project) => Prisma.sql`${project.id}::uuid`))})
       AND p."sourceType" = 'upload' AND ${accessibleProjectSql("p")}
-    ORDER BY p.id, image.role, image."committedAt" DESC, image.id DESC`);
+    UNION ALL
+    SELECT p.id AS "projectId", 'source_thumbnail_large' AS role, session."thumbnailStorageKey" AS "storageKey", 1 AS priority, session."queuedAt" AS published
+    FROM "Project" p
+    JOIN "IngestJob" job ON job."projectId" = p.id AND job."sourceRevision" = p."sourceRevision"
+    JOIN "UploadSession" session ON session.id = job."uploadSessionId" AND session."preallocatedProjectId" = p.id
+    WHERE p."workspaceId" = ${workspaceId}::uuid AND p.id IN (${Prisma.join(eligible.map((project) => Prisma.sql`${project.id}::uuid`))})
+      AND p."sourceType" = 'upload' AND session.status = 'queued_for_ingest'
+      AND session."thumbnailStorageKey" IS NOT NULL AND ${accessibleProjectSql("p")}
+    ) SELECT DISTINCT ON ("projectId", role) "projectId", role, "storageKey" FROM candidates
+    ORDER BY "projectId", role, priority, published DESC, "storageKey" DESC`);
   const now = Date.now();
   await Promise.all(eligible.map(async (project) => {
     const images = rows.filter((row) => row.projectId === project.id);

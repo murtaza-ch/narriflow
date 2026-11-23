@@ -948,6 +948,7 @@ model UploadSession {
   partSizeBytes                Int?
   partCount                    Int                 @default(1)
   storageKey                   String              @unique
+  thumbnailStorageKey          String?
   providerUploadId             String?
   providerInitiatedAt          DateTime?
   status                       UploadSessionStatus @default(initiating)

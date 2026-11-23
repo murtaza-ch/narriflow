@@ -1,3 +1,4 @@
+import { uploadThumbnailKey } from "./upload-thumbnail";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
@@ -197,7 +198,7 @@ async function unassignedObjects(tx: Tx, projectId: string) {
     }),
     upload = await tx.uploadSession.findUnique({
       where: { preallocatedProjectId: projectId },
-      select: { storageKey: true },
+      select: { id: true, storageKey: true },
     });
   const source =
     project.sourceStorageKey &&
@@ -205,7 +206,7 @@ async function unassignedObjects(tx: Tx, projectId: string) {
       ? project.sourceStorageKey
       : null;
   return [
-    ...[source, upload?.storageKey].flatMap((key) =>
+    ...[source, upload?.storageKey, upload ? uploadThumbnailKey(upload.id) : null].flatMap((key) =>
       key
         ? [{ origin: "project_retention" as const, cleanupClass: "upload_source" as const, projectId, objectKey: key }]
         : [],

@@ -168,5 +168,6 @@
   "20261112000000_clip_cleanup",
   "20261119120000_sentence_timed_dubbing",
   "20261119180000_clip_emphasis_words",
-  "20261120120000_audio_library_catalog"
+  "20261120120000_audio_library_catalog",
+  "20261123160000_upload_session_thumbnail"
 ]

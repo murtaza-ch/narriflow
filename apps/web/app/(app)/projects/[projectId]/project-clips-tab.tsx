@@ -87,6 +87,7 @@ export function ProjectClipsTab({
 								sourceType={project.sourceType}
 								sourceInput={project.sourceInput}
 								sourceMediaUrl={project.sourceMediaUrl}
+                thumbnail={project.thumbnail}
 							/>
 						</SourceHoverPreview>
 					</MediaWell>

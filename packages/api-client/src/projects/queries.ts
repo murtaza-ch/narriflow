@@ -88,7 +88,8 @@ export const projectQueries = {
    * refreshes every tab that was opened.
    */
   detail(client: ProjectsClient, scope: WorkspaceScope, projectId: string, tab: ProjectTab = "clips") {
-    return queryOptions({
+    return queryOptions<ProjectDetail>({
+      refetchInterval: (query) => projectThumbnailRefreshInterval(query.state.data?.snapshot.project ? [query.state.data.snapshot.project] : []),
       queryKey: [...scopedKey(scope, "projects", PROJECT_RESOURCES.detail, projectId), tab],
       staleTime: STALE_TIME.default,
       queryFn: async ({ signal }): Promise<ProjectDetail> =>

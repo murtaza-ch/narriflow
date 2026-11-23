@@ -105,6 +105,8 @@ export const openUploadSessionSchema = z
 export const finalizeUploadSessionSchema = z
   .object({
     sessionId: z.string().uuid(),
+    /** Optional bounded browser poster; source verification never depends on it. */
+    thumbnail: z.string().max(349_528).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
     parts: z
       .array(
         z

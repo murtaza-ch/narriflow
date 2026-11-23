@@ -2684,3 +2684,36 @@ describe("Upload Session browser adapter", () => {
     expect(storage.values.get(UPLOAD_RESUME_STORAGE_KEY)).toBeDefined();
   });
 });
+
+test("selected video thumbnail accompanies finalization before the queued project is opened", async () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111", projectId = "22222222-2222-4222-8222-222222222222";
+  const order: string[] = [];
+  let resolvePoster!: (value: string | null) => void;
+  const poster = new Promise<string | null>(resolve => { resolvePoster = resolve; });
+  const adapter = createAdapterWithControls({
+    storage: null,
+    controls: {
+      open: async () => ({ outcome: "uploading", sessionId, projectId, transfer: { kind: "single", contentType: "video/mp4", grant: { url: "https://storage.example/upload", contentType: "video/mp4" } } }),
+      finalize: async (input) => { order.push("finalize"); expect(input).toMatchObject({ sessionId, thumbnail: "encoded-frame", parts: [] }); return { outcome: "queued_for_ingest", sessionId, projectId }; },
+      grants: async () => ({}), status: async () => ({}), discard: async () => ({}),
+    },
+    prepareThumbnail: async () => { order.push("extract"); return poster; },
+    uploadTransport: async () => { order.push("upload"); resolvePoster("encoded-frame"); return { etag: null }; },
+    navigate: id => { expect(id).toBe(projectId); order.push("navigate"); },
+  });
+  await adapter.start({ file: new File(["video"], "source.mp4", { type: "video/mp4" }), title: "Source", brandTemplateId: null, generationContext: {} });
+  expect(order).toEqual(["extract", "upload", "finalize", "navigate"]);
+  adapter.dispose();
+});
+
+test("an unavailable local poster never prevents source finalization", async () => {
+  let finalized = false, navigated = false;
+  const sessionId = "11111111-1111-4111-8111-111111111111", projectId = "22222222-2222-4222-8222-222222222222";
+  const adapter = createAdapterWithControls({ storage:null, controls:{
+    open:async()=>({outcome:"uploading",sessionId,projectId,transfer:{kind:"single",contentType:"video/mp4",grant:{url:"https://storage.example/upload",contentType:"video/mp4"}}}),
+    finalize:async(input)=>{ expect(input).toEqual({sessionId,parts:[]}); finalized=true;return {outcome:"queued_for_ingest",sessionId,projectId};},
+    status:async()=>({}),grants:async()=>({}),discard:async()=>({}),
+  }, prepareThumbnail:async()=>{throw Error("unsupported codec");},uploadTransport:async()=>({etag:null}),navigate:()=>{navigated=true;} });
+  await adapter.start({file:new File(["video"],"source.mp4",{type:"video/mp4"}),title:"Source",brandTemplateId:null,generationContext:{}});
+  expect(finalized && navigated).toBe(true);adapter.dispose();
+});

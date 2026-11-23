@@ -1,23 +1,28 @@
+import { UploadThumb } from "../_components/project-thumbnail";
+import type { ProjectListItem } from "../_lib/api";
 import Image from "next/image";
 import { Box, Flex } from "@chakra-ui/react";
 import { Film, Link2 } from "lucide-react";
 import { gradientForId } from "../_lib/gradient";
 import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";
 
-/** The source's poster: the YouTube frame when there is one, else a gradient keyed to the Project. */
+/** Private uploaded poster or provider frame, with a stable placeholder when unavailable. */
 export function SourceThumb({
 	projectId,
 	title,
 	sourceType,
 	sourceInput,
 	sourceMediaUrl,
+  thumbnail,
 }: {
 	projectId: string;
 	title: string;
 	sourceType: string;
 	sourceInput: string | null;
 	sourceMediaUrl: string;
+  thumbnail?: ProjectListItem["thumbnail"];
 }) {
+  if (thumbnail) return <UploadThumb key={`${projectId}:${sourceMediaUrl}`} project={{ id: projectId, sourceType: "upload", thumbnail }} priority variant="card" sizes="(min-width: 768px) 232px, 100vw" />;
 	const youtubeId =
 		sourceType === "youtube"
 			? extractYoutubeId(sourceInput, sourceMediaUrl)

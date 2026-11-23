@@ -1,3 +1,4 @@
+import { extractLocalVideoThumbnail } from "./local-media-preview";
 import { type ApiError, isApiError } from "@narriflow/api-client/core";
 import { uploadMimeTypeForFile } from "@narriflow/validators";
 import {
@@ -92,6 +93,7 @@ export interface UploadSessionBrowserAdapterDependencies {
   progressClock?: () => number;
   random?: () => number;
   uploadTransport?: RunUploadSessionTransferInput["uploadTransport"];
+  prepareThumbnail?: (file: File, signal?: AbortSignal) => Promise<string | null>;
 }
 
 export interface UploadSessionBrowserAdapter {
@@ -106,6 +108,7 @@ export interface UploadSessionBrowserAdapter {
 }
 
 interface RunUploadSessionTransferInput {
+  prepareThumbnail?: (file: File, signal?: AbortSignal) => Promise<string | null>;
   file: File;
   title: string;
   brandTemplateId: string | null;
@@ -709,6 +712,7 @@ async function transferUploadSession(
   };
   if (input.storage) saveUploadResume(input.storage, { ...resume, transferActiveAt: clock() });
 
+  const thumbnail = (input.prepareThumbnail ?? prepareUploadThumbnail)(input.file, input.signal).catch(() => null);
   const progressClock = input.progressClock ?? Date.now;
   const progressStartedAt = progressClock();
   const reportTransfer = (transferredBytes: number, initialStoredBytes: number) => {
@@ -936,10 +940,12 @@ async function transferUploadSession(
     transferredBytes: input.file.size,
     totalBytes: input.file.size,
   });
+  const poster = await thumbnail;
+  input.signal?.throwIfAborted();
   const finalized = await control(
     () =>
       input.controls.finalize(
-        { sessionId: opened.sessionId, parts: completedParts },
+        { sessionId: opened.sessionId, parts: completedParts, ...(poster ? { thumbnail: poster } : {}) },
         input.signal,
       ),
     "Failed to verify upload.",
@@ -1194,6 +1200,7 @@ export function createUploadSessionBrowserAdapter(
           progressClock: dependencies.progressClock,
           random: dependencies.random,
           uploadTransport: dependencies.uploadTransport,
+          prepareThumbnail: dependencies.prepareThumbnail,
           onProgress(progress) {
             const phase =
               progress.stage === "prepare"
@@ -1424,4 +1431,15 @@ export function createUploadSessionBrowserAdapter(
       listeners.clear();
     },
   };
+}
+
+/** Runs beside byte transfer. Browsers without WebP encoding use the native poster. */
+async function prepareUploadThumbnail(file: File, signal?: AbortSignal): Promise<string | null> {
+  if (typeof document === "undefined" || !uploadMimeTypeForFile(file)?.startsWith("video/")) return null;
+  const blob = await extractLocalVideoThumbnail(file, signal ?? new AbortController().signal);
+  if (blob.type !== "image/webp") return null;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }

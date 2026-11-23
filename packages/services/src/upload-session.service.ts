@@ -1,3 +1,4 @@
+import { saveUploadThumbnail, uploadThumbnailKey } from "./upload-thumbnail";
 import { appendUploadSessionDispatch } from "./upload-session-dispatch";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
@@ -3162,13 +3163,13 @@ export function uploadSessionConfigFromEnv(
 
 
 async function admitTerminatedUploadCleanup(tx: Prisma.TransactionClient, session: PrismaUploadSession, now: Date) {
-  await admitMediaCleanupObligations(tx, [{
-    origin: "upload_session_termination",
-    cleanupClass: "upload_source",
+  await admitMediaCleanupObligations(tx, [session.storageKey, uploadThumbnailKey(session.id)].map(objectKey => ({
+    origin: "upload_session_termination" as const,
+    cleanupClass: "upload_source" as const,
     projectId: session.preallocatedProjectId,
-    objectKey: session.storageKey,
+    objectKey,
     notBefore: new Date(now.getTime() + SINGLE_PUT_CLEANUP_DELAY_MS),
-  }]);
+  })));
 }
 
 function completionPartsFromJson(value: Prisma.JsonValue | null) {
@@ -4499,6 +4500,10 @@ export class UploadSessionService {
       workspaceId,
       "processing.consume",
     );
+    if (parsed.thumbnail) {
+      try { await saveUploadThumbnail(requirePrisma(), scope, parsed.sessionId, parsed.thumbnail); }
+      catch { console.warn(JSON.stringify({ level: "warn", message: "upload_thumbnail_unavailable", uploadSessionId: parsed.sessionId })); }
+    }
     const result = await productionUploadSessionModule().finalize({
       actorUserId,
       workspaceId: workspaceId,

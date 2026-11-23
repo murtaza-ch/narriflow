@@ -13,7 +13,7 @@ import type {
 
 const KIB = 1024;
 
-/** Streaming request-body ceilings by route class. Media uploads never pass through the API. */
+/** Streaming request-body ceilings by route class. Source media uploads never pass through the API; optional posters are capped at 256 KiB. */
 export const BODY_LIMIT_BYTES = {
   /** Review guest access and opt-out. */
   guest: 32 * KIB,

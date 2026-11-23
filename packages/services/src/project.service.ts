@@ -1,3 +1,4 @@
+import { readProjectThumbnails } from "./project-thumbnails";
 import { freezeAutopilotFinishingAuthority, type AutopilotImportSource } from "./autopilot-finishing-authority";
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
 import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
@@ -555,7 +556,8 @@ export class ProjectService {
 				}),
 				this.hasRenderedVideo(projectId),
 			]);
-		const project = toProjectSnapshot(row);
+		const thumbnail = (await readProjectThumbnails(prisma, scope.workspaceId, [toProjectSnapshot(row)])).get(row.id) ?? null;
+		const project = { ...toProjectSnapshot(row), thumbnail };
 		const relevantRun = activeWorkflowRun ?? latestRun;
 
 		return {
