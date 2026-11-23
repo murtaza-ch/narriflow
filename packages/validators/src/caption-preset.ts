@@ -340,6 +340,7 @@ export const CAPTION_PRESETS = [
   scenePreset("ransom"),
   scenePreset("ledge"),
   scenePreset("cascade"),
+  scenePreset("orbit"),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

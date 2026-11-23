@@ -34,7 +34,7 @@ export const SAMPLE_FILES: Readonly<Record<CaptionSceneName, string>> = {
   velocity: "54-velocity", wordform: "55-wordform", chrome: "23-chrome", reveal: "10-reveal", spine: "43-spine", boom: "41-boom",
   aura: "44-aura", wonky: "m01-wonky", verified: "m02-verified", cursor: "m03-cursor", premiere: "m04-poster", tape: "m05-tape", beat: "m06-beat",
   stretch: "m07-stretch", hype: "m08-sticker", wallpaper: "m09-wallpaper", slice: "m11-slice", arthouse: "m13-cinema", heft: "m14-weight", popup: "m16-y2k",
-  trail: "m17-trail", ransom: "m18-collage", ledge: "m19-dropbar", cascade: "m20-mechanica",
+  trail: "m17-trail", ransom: "m18-collage", ledge: "m19-dropbar", cascade: "m20-mechanica", orbit: "m21-mood",
 };
 
 export function studioShot(input: { readonly url: string; readonly output: string; readonly width?: number; readonly height?: number }): void {

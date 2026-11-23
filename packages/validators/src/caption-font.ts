@@ -66,6 +66,7 @@ export const CAPTION_FONT_FACES = [
   { name: "Unbounded Medium", file: "Unbounded-Medium.ttf", assName: "Unbounded Medium", weight: 500, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75, templateOnly: true },
   { name: "Unbounded Black", file: "Unbounded-Black.ttf", assName: "Unbounded Black", weight: 900, style: "normal", ascent: 1.262, descent: 0.286, capHeight: 0.75, templateOnly: true },
   { name: "Inter Tight Medium", file: "InterTight-Medium.ttf", assName: "Inter Tight Medium", weight: 500, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Inter Tight Regular", file: "InterTight-Regular.ttf", assName: "Inter Tight Regular", weight: 400, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
   { name: "Instrument Serif Regular", file: "InstrumentSerif-Regular.ttf", assName: "Instrument Serif Regular", weight: 400, style: "normal", ascent: 0.99, descent: 0.31, capHeight: 0.72, templateOnly: true },
   { name: "Archivo Expanded ExtraBold", file: "Archivo-ExpandedExtraBold.ttf", assName: "Archivo Expanded ExtraBold", weight: 800, style: "normal", ascent: 1.1, descent: 0.41, capHeight: 0.688, templateOnly: true },
   { name: "Archivo Expanded ExtraBold Italic", file: "Archivo-ExpandedExtraBoldItalic.ttf", assName: "Archivo Expanded ExtraBold Italic", weight: 800, style: "italic", ascent: 1.1, descent: 0.41, capHeight: 0.688, templateOnly: true },

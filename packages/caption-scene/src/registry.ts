@@ -39,6 +39,7 @@ import { CURSOR_DEMO, cursorProgram } from "./templates/cursor";
 import { VERIFIED_DEMO, verifiedProgram } from "./templates/verified";
 import { WONKY_DEMO, wonkyProgram } from "./templates/wonky";
 import { AURA_DEMO, auraProgram } from "./templates/aura";
+import { ORBIT_DEMO, orbitProgram } from "./templates/orbit";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -83,6 +84,7 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   ransom: { program: ransomProgram, demo: RANSOM_DEMO },
   ledge: { program: ledgeProgram, demo: LEDGE_DEMO },
   cascade: { program: cascadeProgram, demo: CASCADE_DEMO },
+  orbit: { program: orbitProgram, demo: ORBIT_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

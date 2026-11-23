@@ -492,6 +492,21 @@ const captionUnboundedBlack = localFont({
   ],
 });
 
+const captionInterTightRegular = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-inter-tight-regular",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 const captionInterTightMedium = localFont({
   src: "../../../packages/caption-fonts/fonts/InterTight-Medium.ttf",
   weight: "500",
@@ -767,6 +782,7 @@ export const captionFontVariables = [
   captionUnboundedMedium.variable,
   captionUnboundedBlack.variable,
   captionInterTightMedium.variable,
+  captionInterTightRegular.variable,
   captionInstrumentSerifRegular.variable,
   captionArchivoExpandedExtraBold.variable,
   captionArchivoExpandedExtraBoldItalic.variable,

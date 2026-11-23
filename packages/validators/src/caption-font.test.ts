@@ -14,6 +14,7 @@ const TEMPLATE_FACES = [
   "Caveat Brush",
   "Permanent Marker",
   "Inter Tight Medium",
+  "Inter Tight Regular",
   "Instrument Serif Regular",
   "Archivo Expanded ExtraBold",
   "Archivo Expanded ExtraBold Italic",

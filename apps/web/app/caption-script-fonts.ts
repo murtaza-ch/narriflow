@@ -205,6 +205,7 @@ export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionO
   "Unbounded Medium": ["Cyrillic"],
   "Unbounded Black": ["Cyrillic"],
   "Inter Tight Medium": ["Cyrillic", "Greek"],
+  "Inter Tight Regular": ["Cyrillic", "Greek"],
   "Rubik Black": ["Cyrillic"],
 };
 

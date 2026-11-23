@@ -44,6 +44,7 @@ export const CAPTION_SCENE_NAMES = [
   "ransom",
   "ledge",
   "cascade",
+  "orbit",
 ] as const;
 
 export type CaptionSceneName = (typeof CAPTION_SCENE_NAMES)[number];
@@ -127,6 +128,7 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
   ransom: { name: "Ransom", bodyPx: 118, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#F7F2E6", highlight: "#F39A1E", accent: "#1D2A7A" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor", readsOn: ["#1D2A7A"] } }, fontName: "Alfa Slab One", backdrop: "bright" },
   ledge: { name: "Ledge", bodyPx: 80, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFD83A", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor", readsOn: ["#111111", "#E82D37"] }, secondary: { slot: "highlightColor", readsOn: ["#111111"] } }, fontName: "Anton", backdrop: "busy" },
   cascade: { name: "Cascade", bodyPx: 84, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FF2D55", accent: "#1FE3FF" }, brand: { primary: { slot: "primaryColor", readsOn: ["#0B0B0B"] }, secondary: { slot: "highlightColor", readsOn: ["#0B0B0B"] } }, fontName: "Archivo Black", backdrop: "dark" },
+  orbit: { name: "Orbit", bodyPx: 124, anchorLineY: 1290, wordsPerCue: 5, emphasis: "auto", colours: { primary: "#F3ECDC", highlight: "#FF7A1A", accent: "#FF5FA8" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight Regular", backdrop: "dark" },
   reveal: { name: "Reveal", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
 };
 
