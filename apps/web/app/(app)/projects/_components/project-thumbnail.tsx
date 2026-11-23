@@ -109,7 +109,7 @@ export function UploadThumb({ project, priority, fetchPriority, variant, sizes }
   return (
     <img
       src={src}
-      srcSet={[thumbnail.small ? `${thumbnail.small} 480w` : null, thumbnail.large ? `${thumbnail.large} 960w` : null].filter(Boolean).join(", ")}
+      srcSet={thumbnail.small && thumbnail.large ? `${thumbnail.small} 480w, ${thumbnail.large} 960w` : undefined}
       sizes={sizes ?? (variant === "sliver" ? "80px" : `${priority ? "" : "auto, "}(min-width: 1280px) 33vw, (min-width: 640px) 50vw, 100vw`)}
       width={480}
       height={270}

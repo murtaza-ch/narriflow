@@ -50,6 +50,12 @@ describe("ProjectCard", () => {
     expect(markup).toContain('width="480" height="270" alt="" loading="lazy"');
     expect(markup).not.toContain("<video");
   });
+  test("a queued browser poster uses its intrinsic size instead of claiming a native variant width", () => {
+    const markup = render({ ...project(null), thumbnail: { small: null, large: "https://storage.example/queued.webp", expiresAt: "2030-01-01T00:00:00Z" } });
+    expect(markup).toContain('src="https://storage.example/queued.webp"');
+    expect(markup).not.toContain("srcSet=");
+    expect(markup).not.toContain("<video");
+  });
   test("offers delete only to members who can edit", () => {
     expect(render(project(null), true)).toContain(`Delete &quot;Founder interview&quot;`);
     expect(render(project(null))).not.toContain("Delete &quot;");
