@@ -24,6 +24,7 @@ import {
   projectCommands,
   projectMutationOptions,
   projectQueries,
+  projectThumbnailRefreshInterval,
   type ProjectListFilters,
 } from "@narriflow/api-client/projects";
 import type {
@@ -266,7 +267,8 @@ export function ProjectsExplorer({
     enabled: ready,
     placeholderData: keepPreviousData,
     refetchInterval: (current) =>
-      current.state.data?.pages.some((page) => page.items.some(isProjectActive)) ? LIVE_REFRESH_INTERVAL_MS : false,
+      current.state.data?.pages.some((page) => page.items.some(isProjectActive)) ? LIVE_REFRESH_INTERVAL_MS
+        : projectThumbnailRefreshInterval(current.state.data?.pages.flatMap((page) => page.items) ?? []),
   });
   const pages = list.data?.pages;
 
@@ -420,6 +422,7 @@ export function ProjectsExplorer({
               <ProjectCard
                 project={project}
                 priority={index < 4}
+                fetchPriority={index === 0 ? "high" : undefined}
                 selectable={canEdit}
                 canDelete={canEdit}
                 selected={selectedIds.includes(project.id)}

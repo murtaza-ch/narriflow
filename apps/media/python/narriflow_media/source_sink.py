@@ -1,16 +1,20 @@
 """Publish audio first, prepare its optional probe, then publish full video."""
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .artifacts import AssignedArtifacts, valid_quiet_ranges
 from .control import ExecutionControlError, ExecutorSession
 from .fetch import ExistingSourceAudio, VerifiedSourceFile
-from .process import MediaProcessError, run_owned_process_async
+from .process import ChildCancellation, MediaProcessError, run_owned_process_async
 from .transfer import WorkPackage, load_work_package
+from .multipart import SignedHttpTransport
 
 
 def _environment():
@@ -29,6 +33,8 @@ def _content_type(path: Path, video: bool):
         raise ExecutionControlError("execution_artifact_invalid")
     return value
 
+
+SOURCE_THUMBNAIL_TIMEOUT_SECONDS = 30
 
 QUIET_RANGES_WIRE_BYTES = 48 * 1024  # leaves room for the binding inside the 60 KB facts limit
 QUIET_RANGES_MIN_SECONDS = 10
@@ -166,6 +172,43 @@ class ScopedSourceSink:
         await self.artifacts.upload(output["artifactId"], path, content_type="audio/wav", byte_length=facts["byteLength"], sha256=facts["sha256"])
         self._published.add("probe")
 
+    async def publish_thumbnails(self, artifact: VerifiedSourceFile):
+        """Optional images share this source attempt, its grants and its cleanup.
+        They must commit before source_video closes execution authority."""
+        roles = {'source_thumbnail_small', 'source_thumbnail_large'}
+        outputs = [value for value in self.package.outputs if value['role'] in roles]
+        if (self.command['kind'] != 'upload_source' or not outputs or self.session.remaining_seconds <= 40
+                or not artifact.probe.get('hasVideo', bool(artifact.probe.get('facts', {}).get('videos')))):
+            return
+        try:
+            async with asyncio.timeout(SOURCE_THUMBNAIL_TIMEOUT_SECONDS):
+                result = await self._run([self._bun, str(Path(__file__).resolve().parents[2] / 'src/source-thumbnails-cli.ts')],
+                    input_bytes=json.dumps({'sourcePath': str(artifact.path.resolve()), 'outputDirectory': str(artifact.path.parent.resolve()),
+                        'durationSec': artifact.probe['sourceProbe']['durationSec']}).encode(), env=_environment(),
+                    timeout_seconds=min(20, self.session.remaining_seconds), max_file_bytes=256*1024,
+                    on_start=self.session.on_process_start, cancel_event=ChildCancellation(self.session.cancel_event))
+                self.session.assert_live()
+                if result.returncode or len(result.stdout) > 8192:
+                    raise ValueError()
+                value = json.loads(result.stdout)
+                variants = value['variants']
+                if len(variants) != 2 or {item['role'] for item in variants} != roles:
+                    raise ValueError()
+                for variant in variants:
+                    output = self._output(variant['role'])
+                    path = artifact.path.parent / (variant['role'] + '.webp')
+                    if variant['path'] != str(path.resolve()) or path.is_symlink() or not 0 < path.stat().st_size == variant['byteLength'] <= 256*1024:
+                        raise ValueError()
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != variant['sha256']:
+                        raise ValueError()
+                    await self.artifacts.upload(output['artifactId'], path, content_type='image/webp',
+                        byte_length=variant['byteLength'], sha256=variant['sha256'], transport=SignedHttpTransport(timeout_seconds=10))
+        except Exception:
+            # Source publication remains authoritative. Cancellation and lost
+            # ownership still stop it at the next live-authority check.
+            self.session.assert_live()
+            print(json.dumps({'level': 'warn', 'message': 'source_thumbnail_unavailable'}), file=sys.stderr)
+
     async def video_ready(self, artifact: VerifiedSourceFile, audio, *, completed=None):
         self._check(artifact)
         if "source_video" in self._published:
@@ -175,6 +218,8 @@ class ScopedSourceSink:
         if not isinstance(normalized,dict) or not isinstance(artifact.probe.get("facts"),dict):
             raise ExecutionControlError("execution_artifact_facts_invalid")
         normalized={**normalized,"facts":dict(artifact.probe["facts"])}
+        await self.publish_thumbnails(artifact)
+        self._check(artifact)
         def facts(_completed):
             videos = artifact.probe["facts"]["videos"]
             return {"sourceVideo": {"projectId": self.command["projectId"], "sourceRevision": self.command["sourceRevision"],

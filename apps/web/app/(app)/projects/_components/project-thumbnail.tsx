@@ -3,7 +3,7 @@
 import { Box, Center, Flex, Text } from "@chakra-ui/react";
 import Image from "next/image";
 import { Link2, Rss, Upload, Youtube } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import type { ProjectListItem } from "../_lib/api";
 import { LINK_PROVIDERS } from "@narriflow/validators";
@@ -20,6 +20,7 @@ function linkProviderLabel(sourceProvider: string | null | undefined): string {
 interface ProjectThumbnailProps {
   project: ProjectListItem;
   priority?: boolean;
+  fetchPriority?: "high";
   /**
    * "card" — full treatment: source chip + timecode chip.
    * "sliver" — bare footage for compact list rows.
@@ -38,6 +39,7 @@ export function ProjectThumbnail({
   project,
   variant = "card",
   priority = false,
+  fetchPriority,
 }: ProjectThumbnailProps) {
   const youtubeId =
     project.sourceType === "youtube"
@@ -57,12 +59,15 @@ export function ProjectThumbnail({
       timecode={variant === "card" && duration ? duration : undefined}
       borderWidth="0"
     >
-      {youtubeId ? (
+      {project.thumbnail ? (
+        <UploadThumb key={`${project.id}:${project.sourceStorageKey}`} project={project} priority={priority} fetchPriority={fetchPriority} variant={variant} />
+      ) : youtubeId ? (
         <YoutubeThumb
           youtubeId={youtubeId}
           alt={project.title}
           fallbackId={project.id}
           priority={priority}
+          fetchPriority={fetchPriority}
         />
       ) : (
         <GradientThumb
@@ -82,16 +87,54 @@ export function ProjectThumbnail({
   );
 }
 
+function UploadThumb({ project, priority, fetchPriority, variant }: { project: ProjectListItem; priority: boolean; fetchPriority?: "high"; variant: "card" | "sliver" }) {
+  const [failed, setFailed] = useState(false);
+  const [thumbnail, setThumbnail] = useState(project.thumbnail);
+  // Progress polling issues fresh grants. Keep the loaded image until renewal
+  // is needed, so polling never downloads every thumbnail again.
+  useEffect(() => {
+    if (!thumbnail || !project.thumbnail) return;
+    const renew = () => { setThumbnail(project.thumbnail); setFailed(false); };
+    const delay = Date.parse(thumbnail.expiresAt) - Date.now() - 60_000;
+    if (delay <= 0) {
+      if (thumbnail !== project.thumbnail) renew();
+      return;
+    }
+    const timer = window.setTimeout(renew, delay);
+    return () => window.clearTimeout(timer);
+  }, [thumbnail, project.thumbnail]);
+  if (failed || !thumbnail) return <GradientThumb projectId={project.id} sourceType={project.sourceType} iconSize={variant === "sliver" ? 16 : 32} />;
+  const src = thumbnail.small ?? thumbnail.large;
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      srcSet={[thumbnail.small ? `${thumbnail.small} 480w` : null, thumbnail.large ? `${thumbnail.large} 960w` : null].filter(Boolean).join(", ")}
+      sizes={variant === "sliver" ? "80px" : `${priority ? "" : "auto, "}(min-width: 1280px) 33vw, (min-width: 640px) 50vw, 100vw`}
+      width={480}
+      height={270}
+      alt=""
+      loading={priority ? "eager" : "lazy"}
+      fetchPriority={fetchPriority}
+      decoding="async"
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function YoutubeThumb({
   youtubeId,
   alt,
   fallbackId,
   priority,
+  fetchPriority,
 }: {
   youtubeId: string;
   alt: string;
   fallbackId: string;
   priority: boolean;
+  fetchPriority?: "high";
 }) {
   const [src, setSrc] = useState(youtubeThumbnailUrl(youtubeId, "max"));
   const [usedFallback, setUsedFallback] = useState(false);
@@ -112,6 +155,7 @@ function YoutubeThumb({
       style={{ objectFit: "cover" }}
       unoptimized
       loading={priority ? "eager" : "lazy"}
+      fetchPriority={fetchPriority}
       onError={() => {
         if (!usedFallback) {
           setUsedFallback(true);

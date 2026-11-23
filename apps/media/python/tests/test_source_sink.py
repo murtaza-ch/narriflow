@@ -8,6 +8,8 @@ from threading import Event
 from types import SimpleNamespace
 from datetime import datetime, timezone
 import unittest
+import asyncio
+from unittest.mock import patch
 from uuid import uuid4
 
 from narriflow_media.control import ExecutionControlError
@@ -19,6 +21,61 @@ from narriflow_media.transfer import WorkPackage, _wire
 
 
 class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
+    async def thumbnail_fixture(self, directory, *, fail=False):
+        sink, audio, video, trace, state = self.fixture(directory, provider="upload")
+        extra = [{"artifactId": str(uuid4()), "role": role, "bindingHash": "b"*64, "contentType": "image/webp",
+            "contentTypes": ["image/webp"], "maxBytes": 256*1024} for role in ["source_thumbnail_small", "source_thumbnail_large"]]
+        package = sink.package
+        sink._replace(WorkPackage(package.function_name, package.input_hash, _wire(package.command), _wire(package.sources),
+            _wire([*package.outputs, *extra]), _wire(sink.session.fence)))
+        original = sink._run
+        async def run(argv, **options):
+            if not argv[1].endswith("source-thumbnails-cli.ts"):
+                return await original(argv, **options)
+            trace.append("thumbnail_process")
+            self.assertLessEqual(options["timeout_seconds"], 20)
+            self.assertNotIn("DATABASE_URL", options["env"])
+            if fail: return SimpleNamespace(returncode=1, stdout=b"")
+            variants = []
+            for output in extra:
+                path = Path(directory) / (output['role'] + '.webp')
+                path.write_bytes(b"image")
+                variants.append({"role": output["role"], "path": str(path.resolve()), "byteLength": 5, "sha256": hashlib.sha256(b"image").hexdigest()})
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"variants": variants}).encode())
+        sink._run = run
+        return sink, audio, video, trace, state
+
+    async def test_upload_images_commit_before_the_source_closes_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink, audio, video, trace, state = await self.thumbnail_fixture(directory)
+            await sink.video_ready(video, audio)
+            self.assertEqual(trace, ["thumbnail_process", "source_thumbnail_small", "source_thumbnail_large", "source_video"])
+            self.assertEqual(state["video"]["mediaIdentity"]["provider"], "upload")
+
+    async def test_thumbnail_failure_still_publishes_the_verified_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink, audio, video, trace, state = await self.thumbnail_fixture(directory, fail=True)
+            await sink.video_ready(video, audio)
+            self.assertEqual(trace, ["thumbnail_process", "source_video"])
+            self.assertIn("video", state)
+
+    async def test_optional_thumbnail_timeout_cannot_cancel_source_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink, audio, video, trace, state = await self.thumbnail_fixture(directory)
+            async def stalled(_argv, **options):
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    # The process owner sets its child event while reaping.
+                    options['cancel_event'].set()
+                    raise
+            sink._run = stalled
+            with patch('narriflow_media.source_sink.SOURCE_THUMBNAIL_TIMEOUT_SECONDS', 0.01):
+                await sink.video_ready(video, audio)
+            self.assertFalse(sink.session.cancel_event.is_set())
+            self.assertEqual(trace, ['source_video'])
+            self.assertIn('video', state)
+
     def fixture(self, directory, *, seeded=False, probe_fails=False, provider="youtube", quiet="ok"):
         trace, state = [], {}
         session = SimpleNamespace(fence={"reference": {"inputHash": "a"*64}, "attemptToken": str(uuid4()), "owner": str(uuid4())},

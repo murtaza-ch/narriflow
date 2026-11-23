@@ -14,6 +14,7 @@ import {
 	type SocialPostSnapshot,
 } from "@narriflow/validators";
 import { projectSnapshotSelect, toProjectSnapshot, type ProjectSnapshot } from "./project-snapshot";
+import { readProjectThumbnails, type ProjectThumbnailAccess } from "./project-thumbnails";
 import {
 	projectProgressStatusSql,
 	projectProgressWorkflowOrderSql,
@@ -130,6 +131,7 @@ function nextLibraryCursor(rows: { id: string; createdAt: Date }[]) {
 }
 
 export interface ProjectListItem extends ProjectSnapshot {
+  thumbnail: ProjectThumbnailAccess | null;
 	clipCount: number;
 	avgViralityScore: number | null;
 	/** Product-facing pipeline state. Source intake remains separate from
@@ -403,6 +405,7 @@ export class WorkspaceLibraryService {
 			projectRows.map((row) => [row.id, row] as const),
 		);
 
+		const thumbnails = await readProjectThumbnails(prisma, workspaceId, projectRows.map(toProjectSnapshot));
 		const items = pageRows.flatMap((progressRow) => {
 			const row = projectMap.get(progressRow.id);
 			if (!row) return [];
@@ -412,6 +415,7 @@ export class WorkspaceLibraryService {
 			return [
 				{
 					...toProjectSnapshot(row),
+					thumbnail: thumbnails.get(row.id) ?? null,
 					clipCount: clip?._count._all ?? 0,
 					avgViralityScore: clip?._avg.viralityScore ?? null,
 					progress: deriveProjectListProgress({

@@ -26,6 +26,7 @@ export {
 export {
   PROJECT_RESOURCES,
   projectQueries,
+  projectThumbnailRefreshInterval,
   type ExplorerData,
   type HomeData,
   type ProjectDetail,

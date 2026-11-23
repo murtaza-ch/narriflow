@@ -15,6 +15,7 @@ import { ingestSourceMediaIdentity,resolveIngestSourceDefinition,IngestSourceDef
 import type { ExecutorLiveAuthority } from "./executor-control";
 import { sha256Hex } from "./execution-hash";
 import { canonicalJson } from "./canonical-json";
+import { isSourceThumbnailRole, SOURCE_THUMBNAIL_MAX_BYTES, SOURCE_THUMBNAIL_VARIANTS, type SourceThumbnailRole } from "@narriflow/validators/source-thumbnail";
 
 async function digest(value: string) { return await sha256Hex(value); }
 
@@ -107,6 +108,10 @@ export function createIngestSourceExecution(options: {
       const attempt = await options.database.executionAttempt.findUniqueOrThrow({ where: { attemptToken: assignment.attemptToken }, include: { dispatch: true } });
       const job = await options.database.ingestJob.findUniqueOrThrow({ where: { id: attempt.dispatch.subjectId } });
       if (attempt.dispatch.subjectKind !== "ingest_job" || attempt.inputHash !== await ingestExecutionInputHash(job, options.toolchainFingerprint)) throw new ExecutorControlError("artifact_invalid");
+      if (isSourceThumbnailRole(reported.role)) {
+        if (job.jobType !== "upload_finalize" || artifact.contentType !== "image/webp" || artifact.byteLength > BigInt(SOURCE_THUMBNAIL_MAX_BYTES)) throw new ExecutorControlError("artifact_invalid");
+        return { ...artifact, role: reported.role };
+      }
       const mediaIdentity=await identity(job),acquisition=ingestAcquisitionSchema.parse((job.payload as Prisma.JsonObject).acquisition);
       const expected = (binding: { projectId: string; sourceRevision: number; mediaIdentity: { provider: string; mediaId: string }; toolchainFingerprint: string; probeVersion: string }) =>
         binding.projectId === job.projectId && binding.sourceRevision === job.sourceRevision && binding.mediaIdentity.provider === mediaIdentity.provider && binding.mediaIdentity.mediaId === mediaIdentity.mediaId &&
@@ -152,7 +157,7 @@ export function createIngestSourceExecution(options: {
         projectId: job.projectId, sourceRevision: job.sourceRevision,
         audioPolicy:acquisition.audioPolicy,sourceAudioId: existingSourceAudio?.sourceAudioId ?? attemptToken, toolchainFingerprint: options.toolchainFingerprint,
         probeVersion: "normalized-probe-v1", existingSourceAudio, languageProbe: optionalProbe?.input ?? null });
-      const output = async (role: "source_audio" | "source_video", contentType: string, maxBytes: number) => ({ role, contentType, maxBytes,
+      const output = async (role: "source_audio" | "source_video" | SourceThumbnailRole, contentType: string, maxBytes: number) => ({ role, contentType, maxBytes,
         bindingHash: await digest(JSON.stringify(["ingest_assigned_v1", reference.inputHash, role])) });
       const pin=definition.kind==="upload_source"?definition.source:null;
       const video=await output("source_video",pin?.contentType??(definition.kind==="youtube_source"?"video/mp4":"application/octet-stream"),pin?.byteLength??10*1024**3);
@@ -160,7 +165,8 @@ export function createIngestSourceExecution(options: {
         sources: [...(pin?[{name:"upload_source",storageKey:pin.storageKey,etag:pin.etag,byteLength:pin.byteLength}]:[]),
           ...(optionalProbe && existingSourceAudio ? [{ name: "source_audio", storageKey: existingSourceAudio.object.key, etag: existingSourceAudio.object.etag,
           byteLength: existingSourceAudio.object.byteLength, sha256: existingSourceAudio.object.sha256 }] : [])],
-        outputs: [{...video,...(pin?{sourceEtag:pin.etag,sourceByteLength:pin.byteLength}:{})}, ...(!existingSourceAudio && acquisition.audioPolicy!=="none" ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : [])] };
+        outputs: [{...video,...(pin?{sourceEtag:pin.etag,sourceByteLength:pin.byteLength}:{})}, ...(!existingSourceAudio && acquisition.audioPolicy!=="none" ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : []),
+          ...(pin ? await Promise.all(SOURCE_THUMBNAIL_VARIANTS.map(({ role }) => output(role, "image/webp", SOURCE_THUMBNAIL_MAX_BYTES))) : [])] };
     },
     resolvePinSource:async(row,authority,tx)=>{
       const job=await current(authority,tx),definition=await resolveIngestSourceDefinition(job,{});

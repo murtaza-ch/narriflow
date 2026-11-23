@@ -476,6 +476,7 @@ export * from "./url-policy";
 export * from "./rate-limit";
 export * from "./workspace.service";
 export * from "./workspace-library.service";
+export * from "./project-thumbnails";
 export * from "./workspace-membership.service";
 export * from "./calendar-time";
 export { nextFreeSlots, postingSlotInstants } from "./posting-schedule";

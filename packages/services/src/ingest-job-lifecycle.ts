@@ -46,6 +46,7 @@ import { resolveIngestSourceDefinition } from "./ingest-source-definition";
 import { commitSourceLanguageProbeWithinTransaction } from "./transcription-probe";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
+import { isSourceThumbnailRole, type SourceThumbnailRole } from "@narriflow/validators/source-thumbnail";
 
 export interface IngestExecutionReference {
   id: string;
@@ -56,7 +57,7 @@ export interface IngestExecutionReference {
   attemptToken: string;
 }
 export type IngestArtifactCommit = ExecutorArtifactCommit & (
-  { role: "source_audio"; binding: SourceAudioBinding; quietRanges?: EncodedQuietRanges } | { role: "source_video"; binding: SourceVideoBinding } | { role: "probe" }
+  { role: "source_audio"; binding: SourceAudioBinding; quietRanges?: EncodedQuietRanges } | { role: "source_video"; binding: SourceVideoBinding } | { role: "probe" } | { role: SourceThumbnailRole }
 );
 export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
   ref: IngestExecutionReference;
@@ -402,6 +403,9 @@ export class IngestJobLifecycle {
 
   async commitArtifactExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, artifact: IngestArtifactCommit): Promise<ExecutorMutationResult> {
     await this.ownedExecution(tx, ref, context);
+    // Optional images are sealed by executor control. Reads expose them only
+    // beside the same owner's accepted source_video, never a failed attempt.
+    if (isSourceThumbnailRole(artifact.role)) return;
     if (artifact.role === "probe") return commitSourceLanguageProbeWithinTransaction(tx, { reference: context.reference, attemptToken: context.attemptToken, owner: context.owner }, artifact);
     if (artifact.role === "source_audio") {
       const binding = sourceAudioBindingSchema.parse(artifact.binding);

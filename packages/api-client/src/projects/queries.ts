@@ -16,6 +16,12 @@ export type ProjectListPage = Ok<ProjectsClient["projects"]["$get"]>;
 export type ProjectDetail = Ok<ProjectsClient["projects"][":id"]["detail"]["$get"]>;
 export type ProjectSnapshotData = Ok<ProjectsClient["projects"][":id"]["$get"]>;
 
+/** Renew signed image access before it expires, without a request per card. */
+export function projectThumbnailRefreshInterval(items: readonly { thumbnail?: { expiresAt: string } | null }[]): number | false {
+  const deadlines = items.flatMap((item) => item.thumbnail ? [Date.parse(item.thumbnail.expiresAt)] : []).filter(Number.isFinite);
+  return deadlines.length ? Math.max(1000, Math.min(...deadlines) - Date.now() - 60_000) : false;
+}
+
 /** Query-key resources of the projects domain; `invalidate.ts` is the only place that targets them in bulk. */
 export const PROJECT_RESOURCES = {
   home: "home",
@@ -40,9 +46,11 @@ export const PROJECT_RESOURCES = {
 export const projectQueries = {
   /** Recent Projects and the dashboard's access facts. */
   home(client: ProjectsClient, scope: WorkspaceScope) {
-    return queryOptions({
+    return queryOptions<HomeData>({
       queryKey: scopedKey(scope, "projects", PROJECT_RESOURCES.home),
       staleTime: STALE_TIME.default,
+      refetchInterval: (query) => query.state.data?.items.some((item) => item.progress.active)
+        ? 5000 : projectThumbnailRefreshInterval(query.state.data?.items ?? []),
       queryFn: async ({ signal }): Promise<HomeData> =>
         (await client.home.$get(undefined, withSignal(signal))).json() as Promise<HomeData>,
     });

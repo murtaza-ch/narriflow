@@ -85,6 +85,7 @@ export const executorFenceSchema = z.strictObject({
 });
 
 export const executionArtifactRoleSchema = z.enum([
+  "source_thumbnail_small", "source_thumbnail_large",
   "source_audio", "source_video", "layout_evidence", "render_variant", "render_outcome", "clip_preview", "preview_peaks", "probe",
   "thumbnail", "export_bundle", "dub_mix", "validated_font", "validated_asset", "selection_window", "outbound_receipt", "publication_checkpoint",
 ]);

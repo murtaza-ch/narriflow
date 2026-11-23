@@ -6,7 +6,7 @@ import { Link2, Play, FileVideo } from "lucide-react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import type { LinkProviderId } from "@narriflow/validators";
 import { LINK_PROVIDERS } from "@narriflow/validators";
-import { attachLocalMediaPreview } from "../_lib/local-media-preview";
+import { attachLocalMediaPreview, extractLocalVideoThumbnail } from "../_lib/local-media-preview";
 import { formatTimecode } from "@/lib/format";
 import {
   extractYoutubeId,
@@ -212,17 +212,27 @@ function LocalVideoPreview({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [thumbnail, setThumbnail] = useState<{ file: File; url: string } | null>(null);
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     setUnavailable(false);
     const detach = attachLocalMediaPreview(video, file);
+    const controller = new AbortController();
+    let thumbnailUrl: string | undefined;
+    extractLocalVideoThumbnail(file, controller.signal).then((blob) => {
+      if (controller.signal.aborted) return;
+      thumbnailUrl = URL.createObjectURL(blob);
+      setThumbnail({ file, url: thumbnailUrl });
+    }).catch(() => { /* The player and upload remain available without an image. */ });
     const timeout = window.setTimeout(() => {
       if (video.readyState === 0) setUnavailable(true);
     }, 15000);
     return () => {
       window.clearTimeout(timeout);
+      controller.abort();
       detach();
+      if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
     };
   }, [file]);
   return (
@@ -233,6 +243,7 @@ function LocalVideoPreview({
       {/* biome-ignore lint/a11y/useMediaCaption: source preview precedes transcription; no captions exist yet. */}
       <video
         ref={videoRef}
+        poster={thumbnail?.file === file ? thumbnail.url : undefined}
         controls
         playsInline
         preload="metadata"

@@ -15,6 +15,7 @@ export { STATUS_CONFIG };
 interface ProjectCardProps {
   project: ProjectListItem;
   priority?: boolean;
+  fetchPriority?: "high";
   selectable?: boolean;
   /** Members who can't edit never see a delete that would be refused. */
   canDelete?: boolean;
@@ -68,6 +69,7 @@ export function ProjectMeta({ project }: { project: ProjectListItem }) {
 export function ProjectCard({
   project,
   priority = false,
+  fetchPriority,
   selectable = false,
   canDelete = false,
   selected = false,
@@ -106,7 +108,7 @@ export function ProjectCard({
           }}
         >
           <Box position="relative">
-            <ProjectThumbnail project={project} priority={priority} />
+            <ProjectThumbnail project={project} priority={priority} fetchPriority={fetchPriority} />
             {activity.active ? <ShimmerStrip /> : null}
           </Box>
 

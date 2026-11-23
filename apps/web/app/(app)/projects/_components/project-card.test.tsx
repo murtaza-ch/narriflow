@@ -43,6 +43,13 @@ function render(item: ProjectListItem, canDelete = false) {
 }
 
 describe("ProjectCard", () => {
+  test("an uploaded project uses its saved responsive image with reserved dimensions", () => {
+    const markup = render({ ...project(null), thumbnail: { small: "https://storage.example/small.webp?signed=1", large: "https://storage.example/large.webp?signed=1", expiresAt: "2026-12-01T00:00:00.000Z" } });
+    expect(markup).toContain("small.webp?signed=1 480w");
+    expect(markup).toContain("large.webp?signed=1 960w");
+    expect(markup).toContain('width="480" height="270" alt="" loading="lazy"');
+    expect(markup).not.toContain("<video");
+  });
   test("offers delete only to members who can edit", () => {
     expect(render(project(null), true)).toContain(`Delete &quot;Founder interview&quot;`);
     expect(render(project(null))).not.toContain("Delete &quot;");

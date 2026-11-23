@@ -493,6 +493,7 @@ export async function presignDownloadUrl(params: {
   key: string;
   expiresIn?: number;
   fileName?: string;
+  cacheControl?: string;
 }): Promise<string> {
   const client = getClient();
   const { bucket } = getR2Config();
@@ -506,6 +507,7 @@ export async function presignDownloadUrl(params: {
     new GetObjectCommand({
       Bucket: bucket,
       Key: params.key,
+      ...(params.cacheControl && { ResponseCacheControl: params.cacheControl }),
       ...(params.fileName && {
         ResponseContentDisposition: buildAttachmentContentDisposition(
           params.fileName,
