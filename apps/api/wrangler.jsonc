@@ -9,9 +9,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "limits": { "cpu_ms": 30000 },
-  // Neon is in AWS us-east-2. Control commands make several transactional
+  // Neon is in AWS us-east-1. Control commands make several transactional
   // round trips; run fetch handlers near that database.
-  "placement": { "region": "aws:us-east-2" },
+  "placement": { "region": "aws:us-east-1" },
   "routes": [],
   // Each Cron registers one bounded metadata page; Workflows own continuation.
   // Fenced snapshots refuse Cron before DB access. Remove both with crons: []
