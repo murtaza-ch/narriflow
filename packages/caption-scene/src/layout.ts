@@ -1,5 +1,5 @@
 import { captionWordVisualOrder, type CaptionDirection } from "@narriflow/caption-fonts/bidi-order";
-import { languageDirection, textDirection } from "@narriflow/validators";
+import { captionTextDirection, languageDirection, textDirection } from "@narriflow/validators";
 import type { SceneCue, SceneInput } from "./input";
 import { type Box, type Frames, type Measure, type Piece, sceneBoundsAt } from "./scene";
 
@@ -43,9 +43,9 @@ export function sceneSpace(input: SceneInput, anchorLineY: number): SceneSpace {
   };
 }
 
-/** A cue's base direction: its first strong character, else the language's. */
+/** A cue's base direction: its spoken text's script balance, else the language's. */
 export function cueDirection(cue: Pick<SceneCue, "words" | "language">): CaptionDirection {
-  return textDirection(cue.words.map((word) => word.text).join(" "), languageDirection(cue.language));
+  return captionTextDirection(cue.words.map((word) => word.text).join(" "), cue.language ? languageDirection(cue.language) : undefined);
 }
 
 /** Word indices of a row in the order the viewer reads them from the left edge: logical for LTR, bidi visual for RTL. */

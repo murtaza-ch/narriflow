@@ -45,6 +45,14 @@ describe("layout helpers", () => {
     expect(cueDirection({ language: "en", words: [{ text: "hi", startMs: 0, endMs: 1, role: "body", key: null }] })).toBe("ltr");
   });
 
+  test("scene cue direction follows mixed speech independently on each cue", () => {
+    const cue = (text: string, language: string) => ({ language, words: text.split(" ").map((text) => ({ text, startMs: 0, endMs: 1, role: "body" as const, key: null })) });
+    expect(cueDirection(cue("45 degrees ہو یا 90 فون", "ur"))).toBe("rtl");
+    expect(cueDirection(cue("پھر verdict first win ہے", "ur"))).toBe("ltr");
+    expect(cueDirection(cue("say مرحبا بالعالم now", "en"))).toBe("ltr");
+    expect(cueDirection(cue("שלום 2026 עולם", "he"))).toBe("rtl");
+  });
+
   const piece = (x: number): TextPiece => ({
     id: "t",
     kind: "text",

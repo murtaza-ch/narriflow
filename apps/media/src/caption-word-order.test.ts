@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { captionWordVisualOrder } from "@narriflow/caption-fonts/bidi-order";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
-import { captionPresetSchema, hasSpaceBefore, textDirection, languageDirection } from "@narriflow/validators";
+import { captionPresetSchema, hasSpaceBefore, captionTextDirection, languageDirection } from "@narriflow/validators";
 import { renderCaptionTrack } from "./caption-ass";
 
 /**
@@ -27,7 +27,7 @@ function burnedOrder(words: readonly string[], language: string | null): number[
 }
 
 function studioOrder(words: readonly string[], language: string | null): readonly number[] {
-  const direction = textDirection(words.join(" "), languageDirection(language));
+  const direction = captionTextDirection(words.join(" "), languageDirection(language));
   return captionWordVisualOrder(
     words.map((text, index) => ({ text, space: index > 0 && hasSpaceBefore(words[index - 1]!, { word: text }) })),
     direction,
@@ -42,6 +42,9 @@ describe("burn-in and Studio order a cue's words alike", () => {
     ["Hebrew with numbers", ["שלום", "12", "34", "עולם"], "he"],
     ["English with an Arabic phrase", ["say", "مرحبا", "بالعالم", "now"], "en"],
     ["English", ["hello", "big", "world"], "en"],
+    ["Urdu opening with a number and an English word", ["45", "degrees", "ہو", "یا", "90", "فون"], "ur"],
+    ["Urdu ending a product name", ["factor", "ہر"], "ur"],
+    ["English-dominant line opening in Urdu", ["پھر", "verdict", "first", "win", "ہے"], "ur"],
   ];
   for (const [name, words, language] of cases) {
     test(name, () => {

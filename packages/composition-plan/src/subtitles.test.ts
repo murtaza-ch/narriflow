@@ -176,7 +176,27 @@ describe("subtitle cues share burn-in's derivation", () => {
   test("a short final word never extends a cue past the export's end", () => {
     // A 10 ms final word would otherwise keep its 50 ms minimum segment.
     const short = document({ clipStartSec: 0, clipEndSec: 4.41, transcriptSlice: [utterance(0, [["Ship", 3.8, 4.2], ["it.", 4.39, 4.4]])] });
-    expect(deriveCaptionCues(short).at(-1)).toMatchObject({ text: "Ship it.", endSec: 4.41 });
+    expect(deriveCaptionCues(short).at(-1)).toMatchObject({ text: "Ship it.", endSec: 4.4 });
+  });
+
+  test("a short Urdu cue cannot overlap the next English line", () => {
+    const cues = deriveCaptionCues(document({
+      transcriptSlice: [
+        utterance(0, [["ہے۔", 1, 1.02]]),
+        utterance(1, [["Productivity", 1.04, 1.4], ["content", 1.4, 1.8]]),
+      ],
+    }), { language: "ur" });
+    expect(cues[0]).toMatchObject({ text: "ہے۔", startSec: 1, endSec: 1.04 });
+    expect(cues[1]!.startSec).toBe(1.04);
+  });
+
+  test("a zero-duration final word at the next utterance's onset remains visible before handoff", () => {
+    const cues = deriveCaptionCues(document({ transcriptSlice: [
+      utterance(0, [["نہیں", 1, 1.2], ["ہے۔", 1.4, 1.4]]),
+      utterance(1, [["ہاں", 1.4, 1.6]]),
+    ] }), { language: "ur" });
+    expect(cues.map((cue) => cue.text).join(" ")).toBe("نہیں ہے۔ ہاں");
+    expect(cues[0]!.endSec).toBe(cues[1]!.startSec);
   });
 
   test("non-ASCII text survives grouping, casing, and both formats", () => {

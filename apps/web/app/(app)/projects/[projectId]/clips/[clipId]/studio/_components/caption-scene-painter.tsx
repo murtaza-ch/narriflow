@@ -36,7 +36,7 @@ import {
   sceneBuildKey,
   sceneInputFromPreset,
 } from "@narriflow/caption-scene";
-import { type CaptionFontName, type CaptionPreset, languageDirection, textDirection } from "@narriflow/validators";
+import { type CaptionFontName, type CaptionPreset, languageDirection, captionTextDirection } from "@narriflow/validators";
 import { CaptionText, hexToRgba } from "./caption-style-engine";
 import {
   type CaptionTimeSource,
@@ -82,7 +82,7 @@ export function canvasMeasure(language: string | null, wanted: Map<string, () =>
     if (!face) return { advance: text.length * sizePx * 0.55, inkTop: -sizePx * 0.72, inkBottom: sizePx * 0.2, ascent: sizePx, descent: sizePx * 0.3 };
     const loaded = !wanted || facesLoaded(text, face, language);
     if (wanted && !loaded) wanted.set(`${fontName}\0${text}`, () => loadFaces(text, face, language));
-    const direction = textDirection(text, languageDirection(language));
+    const direction = captionTextDirection(text, language ? languageDirection(language) : undefined);
     const m = measureWord(text, face, letterSpacingEm, direction, language, loaded);
     return { advance: m.advanceEm * sizePx, inkTop: -m.inkTopEm * sizePx, inkBottom: m.inkBottomEm * sizePx, ascent: face.ascent * sizePx, descent: face.descent * sizePx };
   };
@@ -397,7 +397,7 @@ const PieceView = memo(function PieceView({ piece, index, face, measure, scale, 
   const text = piece.kind === "text" ? piece : null;
   if (text && !face) return null;
   const advance = text ? measure(text.text, text.face, text.sizePx, text.letterSpacingEm).advance : 0;
-  const direction = text ? textDirection(text.text, languageDirection(language)) : "ltr";
+  const direction = text ? captionTextDirection(text.text, language ? languageDirection(language) : undefined) : "ltr";
   let content: ReactNode;
   if (text) {
     const Layer = (text.fillAlpha ?? 1) <= 0 && text.stroke ? HollowTextLayer : TextLayer;

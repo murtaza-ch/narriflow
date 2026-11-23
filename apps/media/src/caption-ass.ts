@@ -31,6 +31,7 @@ import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock }
 import {
 	CAPTION_CUE_TILTS_DEG,
 	CAPTION_EASE_ACCEL,
+	CAPTION_ENTRANCE_MIN_REMAINING_MS,
 	CAPTION_EXTRUDE,
 	CAPTION_FIT_WIDTH_FRACTION,
 	CAPTION_GLITCH,
@@ -54,6 +55,7 @@ import {
 	captionTravelWindow,
 	captionTypewriterLetterDelays,
 	hasSpaceBefore,
+	captionTextDirection,
 	languageDirection,
 	textDirection,
 } from "@narriflow/validators";
@@ -162,6 +164,7 @@ interface Span {
 type StackLayer = "shadow" | "outer" | "glow" | "text";
 
 interface CueGeometry {
+	readonly direction: "ltr" | "rtl";
 	/** Canvas px per em for this cue (font size after fit-to-width). */
 	readonly px: number;
 	readonly anchorX: number;
@@ -556,11 +559,11 @@ function classicCueEvents(
 
 	cue.words.forEach((activeWord, activeIndex) => {
 		const segStart = activeWord.startSec;
-		const segEnd = captionWordSegmentEnd(cue.words, activeIndex);
+    const segEnd = captionWordSegmentEnd(cue.words, activeIndex, cueEnd);
 		if (segEnd <= segStart) return;
 		const segMs = Math.round((segEnd - segStart) * 1000);
 		const fade =
-			activeIndex === 0 && motion.cueFadeMs > 0
+			activeIndex === 0 && motion.cueFadeMs > 0 && segMs >= CAPTION_ENTRANCE_MIN_REMAINING_MS
 				? `\\fad(${motion.cueFadeMs},0)`
 				: "";
 
@@ -606,6 +609,7 @@ function classicCueEvents(
 					px: geometry.px,
 					spans,
 					separators: plans.map((plan) => gapText(plan, preset, geometry.px)),
+					direction: geometry.direction,
 					startSec: segStart,
 					endSec: segEnd,
 					position: { x: geometry.anchorX, y: geometry.anchorY },
@@ -630,6 +634,7 @@ function classicCueEvents(
 					px: geometry.px,
 					spans: spans.map((span, index) => (index === activeIndex ? { ...span, fill: preset.highlightColor, visibility: 1 } : { ...span, visibility: 0 })),
 					separators: plans.map((plan) => gapText(plan, preset, geometry.px)),
+					direction: geometry.direction,
 					startSec: segStart,
 					endSec: segEnd,
 					position: { x: geometry.anchorX, y: geometry.anchorY },
@@ -705,11 +710,12 @@ function classicCueEvents(
 						preset, face, glyphs,
 						px: geometry.px,
 						spans: [activeSpan],
+						direction: textDirection(activeWord.text, geometry.direction),
 						startSec: segStart,
 						endSec: segEnd,
 						position: { x: box.eventX, y: box.anchorY },
 						common: `${tilt}${fade}`,
-						keyframes: motion.word,
+						keyframes: segMs < CAPTION_ENTRANCE_MIN_REMAINING_MS ? [] : motion.word,
 						layers: {
 							shadow: LAYER.overlayShadow,
 							outer: LAYER.overlayOuter,
@@ -800,7 +806,7 @@ function cueGeometry(
 	const lineFaces = [...new Set([...plans.flatMap((plan) => plan.parts.map((part) => part.face)), ...(plans.some((plan) => plan.space) ? [requested] : [])])];
 	const line = metricsOf(lineFaces);
 	const strokePx = preset.outlineWidth + (preset.outerOutlineWidth ?? 0);
-	const direction = textDirection(lineWords.map((word) => word.parts.map((part) => part.text).join("")).join(" "), languageDirection(cue.language));
+	const direction = captionTextDirection(lineWords.map((word) => word.parts.map((part) => part.text).join("")).join(" "), cue.language ? languageDirection(cue.language) : undefined);
 
 	let layout: CaptionLineLayout | null = null;
 	try {
@@ -815,7 +821,7 @@ function cueGeometry(
 	const px = preset.fontSize * fit;
 	const baselineY = anchorY + ((line.ascentEm - line.descentEm) / 2) * px;
 	const lineTopY = anchorY - ((line.ascentEm + line.descentEm) / 2) * px;
-	const base = { px, anchorX, anchorY, baselineY, lineTopY, tiltDeg };
+	const base = { px, anchorX, anchorY, baselineY, lineTopY, tiltDeg, direction };
 	if (!layout) return { ...base, words: null, lineWidth: null, lineCenterX: anchorX, inkTopEm: 0, inkBottomEm: 0 };
 	// libass puts the middle of its `\pos` bbox, not of the advance box, on the anchor.
 	const left = anchorX - layout.bboxCenterEm * px;
@@ -823,7 +829,7 @@ function cueGeometry(
 		const word = metricsOf(plans[index]!.parts.map((part) => part.face));
 		const centerX = left + (box.leftEm + box.widthEm / 2) * px;
 		// An event holding only this word is anchored by that word's own bbox.
-		const alone = layoutCaptionLine([{ ...lineWords[index]!, gap: null, gapExtraEm: 0 }], preset.letterSpacing, textDirection(cue.words[index]!.text, "ltr"));
+		const alone = layoutCaptionLine([{ ...lineWords[index]!, gap: null, gapExtraEm: 0 }], preset.letterSpacing, textDirection(cue.words[index]!.text, direction));
 		return {
 			centerX,
 			eventX: centerX + (alone.bboxCenterEm - alone.widthEm / 2) * px,
@@ -893,6 +899,8 @@ function stackEvents(input: {
 	preset: CaptionPreset;
 	px: number;
 	spans: readonly Span[];
+	/** Explicit paragraph direction when speech differs from the first strong letter. */
+	direction?: "ltr" | "rtl";
 	/** Text before each span after the first: a space (with the pill's extra advance), or nothing between abutting words. */
 	separators?: readonly string[];
 	startSec: number;
@@ -934,6 +942,13 @@ function stackEvents(input: {
 		const body = input.spans
 			.map((span, index) => (index > 0 ? (input.separators?.[index] ?? "") : "") + spanText(span, paint(span), preset.primaryColor, input.glyphs, px, letterSpacing))
 			.join("");
+		// libass otherwise picks its paragraph direction from the first strong
+		// letter, which may be an English product name in an Urdu line. Marks
+		// choose the paragraph level without overriding the nested language runs.
+		const logicalText = input.spans.map((span) => span.text).join(" ");
+		const mark = input.direction && textDirection(logicalText) !== input.direction
+			? input.direction === "rtl" ? "\u200F" : "\u200E"
+			: "";
 		const position = motion.position(input.position.x + offset.x, input.position.y + offset.y);
 		events.push({
 			layer,
@@ -943,7 +958,7 @@ function stackEvents(input: {
 			text:
 				`{\\an5\\fn${input.face.assName}${position}${input.common}\\fs${num(assFontSize(input.face, px))}` +
 				`\\fsp${num(letterSpacing * px)}\\bord${num(bord)}\\shad0` +
-				`${motion.tags(extraBlurPx)}${clip}}${body}`,
+				`${motion.tags(extraBlurPx)}${clip}}${mark}${body}`,
 		});
 	};
 

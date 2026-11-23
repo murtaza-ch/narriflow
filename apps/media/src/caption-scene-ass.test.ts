@@ -16,6 +16,16 @@ import { SCENE_ASS, SCENE_TOLERANCE, SceneMeasurer, sceneEvents } from "./captio
 const FPS = 30;
 const hasLibass = spawnSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8" }).stdout?.includes(" ass ") ?? false;
 
+test("scene text pins both mixed paragraph directions to the measured direction", () => {
+  const measurer = new SceneMeasurer({ notices: new Map(), omitted: new Map() }, new Set(), "ur");
+  const rtl = measurer.metrics("45 degrees ہو یا 90 فون", "Inter Tight Bold", 0);
+  expect(rtl.direction).toBe("rtl");
+  expect(rtl.clusters[0]!.text).toBe("\u200F");
+  const ltr = measurer.metrics("پھر verdict first win ہے", "Inter Tight Bold", 0);
+  expect(ltr.direction).toBe("ltr");
+  expect(ltr.clusters[0]!.text).toBe("\u200E");
+});
+
 function eventsOf(pieces: readonly Piece[], canvas = SHEET_CANVAS) {
   const measurer = new SceneMeasurer({ notices: new Map(), omitted: new Map() }, new Set(), null);
   const events = sceneEvents({ pieces }, measurer, { canvas, fps: FPS });

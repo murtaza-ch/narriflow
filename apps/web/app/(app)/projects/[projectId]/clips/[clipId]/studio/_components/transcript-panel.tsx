@@ -4,7 +4,7 @@ import { memo, useRef, useEffect, useCallback, useLayoutEffect, useState, useMem
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { autoCensorWordId, censoredCaptionWordText, editedToSource, getSourceLanguageLabel, hasSpaceBefore, joinTranscriptWords, languageDirection, sourceLanguageCodeSchema, sourceToEdited, splitSpacedTokens, textDirection, userErrorMessage } from "@narriflow/validators";
+import { autoCensorWordId, censoredCaptionWordText, editedToSource, getSourceLanguageLabel, hasSpaceBefore, joinTranscriptWords, languageDirection, sourceLanguageCodeSchema, sourceToEdited, splitSpacedTokens, captionTextDirection, userErrorMessage } from "@narriflow/validators";
 import type {
   ClipSnapshot,
   EditedTimeMap,
@@ -112,9 +112,9 @@ function buildDisplayTokens(words: TranscriptWord[]): DisplayToken[] {
   return tokens;
 }
 
-/** `lang` and `dir` for transcript text: direction from its first strong character, else the language's. */
+/** `lang` and `dir` for transcript text: direction from the line's script balance, else the language's. */
 function textAttributes(text: string, language: string | null) {
-  return { lang: language ?? undefined, dir: textDirection(text, languageDirection(language)) };
+  return { lang: language ?? undefined, dir: captionTextDirection(text, language ? languageDirection(language) : undefined) };
 }
 
 function joiningSpaceAfter(tokens: DisplayToken[], index: number): string {

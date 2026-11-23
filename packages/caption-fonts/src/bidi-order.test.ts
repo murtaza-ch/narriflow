@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { captionWordVisualOrder, reorderByLevels, resolveBidiLevels, type CaptionDirection } from "./bidi-order";
+import { captionBlockDirection } from "./caption-block";
 
 /** Words with a space before each but the first, as a provider emits them. */
 const line = (texts: string[], direction: CaptionDirection) =>
@@ -9,6 +10,12 @@ const line = (texts: string[], direction: CaptionDirection) =>
   );
 
 describe("caption word visual order", () => {
+  test("mixed speech uses the line's script balance, not its first product name", () => {
+    expect(captionBlockDirection(["45", "degrees", "ہو", "یا", "90", "فون"], "ur")).toBe("rtl");
+    expect(captionBlockDirection(["factor", "ہر"], "ur")).toBe("rtl");
+    expect(captionBlockDirection(["پھر", "verdict", "first", "win", "ہے"], "ur")).toBe("ltr");
+    expect(captionBlockDirection(["But", "here", "is", "the", "hack."], "ur")).toBe("ltr");
+  });
   test("pure LTR keeps logical order", () => {
     const order = line(["Hello", "big", "world"], "ltr");
     expect(order.wordOrder).toEqual([0, 1, 2]);

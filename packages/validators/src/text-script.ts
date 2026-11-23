@@ -138,6 +138,36 @@ export function textDirection(
   return fallback;
 }
 
+/**
+ * Base direction of a spoken caption line. Count words with letters, rather
+ * than characters: an English product name must not outweigh several Urdu
+ * words just because it is longer. Numbers and punctuation have no vote.
+ * At least 60% of the words choose a direction (including romanized speech).
+ * Balanced or neutral-only text uses the supplied language direction, or
+ * the first strong letter when the language is unknown. Word shaping still
+ * uses `textDirection`.
+ */
+export function captionTextDirection(text: string, fallback: TextDirection = textDirection(text)): TextDirection {
+  let ltr = 0;
+  let rtl = 0;
+  for (const word of text.trim().split(/\s+/u)) {
+    let hasLtr = false;
+    let hasRtl = false;
+    for (const char of word) {
+      if (!/\p{L}/u.test(char)) continue;
+      if (isRtlCodePoint(char.codePointAt(0)!)) hasRtl = true;
+      else hasLtr = true;
+    }
+    if (hasRtl) rtl++;
+    else if (hasLtr) ltr++;
+  }
+  const total = ltr + rtl;
+  if (total === 0) return fallback;
+  if (ltr / total >= 0.6) return "ltr";
+  if (rtl / total >= 0.6) return "rtl";
+  return fallback;
+}
+
 const NON_GEORGIAN_RUN_RE = /[^\p{Script=Georgian}]+/gu;
 
 /**

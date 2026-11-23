@@ -52,6 +52,7 @@ import {
 } from "@narriflow/caption-fonts/emoji";
 import {
   CAPTION_CUE_TILTS_DEG,
+  CAPTION_ENTRANCE_MIN_REMAINING_MS,
   CAPTION_EXTRUDE,
   CAPTION_FIT_WIDTH_FRACTION,
   CAPTION_GLITCH,
@@ -69,9 +70,8 @@ import {
   emojiForWord,
   formatCaptionWord,
   hasSpaceBefore,
-  joinTranscriptWords,
   languageDirection,
-  textDirection,
+  captionTextDirection,
   type CaptionEase,
   type CaptionFontFace,
   type CaptionFontName,
@@ -345,11 +345,11 @@ export function CaptionCue({
       ? item.word
       : applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform, language),
   );
-  // The cue's base direction is the first strong character of the whole line
-  // (a leading number or mark has none), else the language's: the burn-in's rule.
-  const cueDir = textDirection(
-    joinTranscriptWords(display.map((text) => ({ word: text }))),
-    languageDirection(language),
+  // Resolve the spoken line as a whole, as the burn-in does; an opening
+  // English product name alone does not choose the surrounding Urdu flow.
+  const cueDir = captionTextDirection(
+    display.join(" "),
+    language ? languageDirection(language) : undefined,
   );
 
   // The keyed cue entrance replaces this node on every cue change. Observe
@@ -442,7 +442,7 @@ export function CaptionCue({
             ease: "linear" as const,
           },
         }
-      : spec.cueFadeMs > 0
+      : spec.cueFadeMs > 0 && (words[0]?.durationMs ?? 400) >= CAPTION_ENTRANCE_MIN_REMAINING_MS
         ? { initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { duration: spec.cueFadeMs / 1000, ease: "linear" as const } }
         : {};
 
@@ -548,9 +548,9 @@ export function CaptionCue({
             // word is the primary colour, as `\kf` draws it in the burn-in.
             const fill = (isActive && spec.effect !== "karaoke") || sung ? preset.highlightColor : preset.primaryColor;
             const glow = isActive ? (preset.highlightGlowColor ?? preset.glowColor ?? null) : (preset.glowColor ?? null);
-            const entrance = isActive && animated ? keyframeMotion(spec.word, emPx, perspectivePx) : null;
-            const emoji = showEmojis ? (item.emoji ?? emojiForWord(item.word)) : null;
             const durationMs = item.durationMs ?? 400;
+            const entrance = isActive && animated && durationMs >= CAPTION_ENTRANCE_MIN_REMAINING_MS ? keyframeMotion(spec.word, emPx, perspectivePx) : null;
+            const emoji = showEmojis ? (item.emoji ?? emojiForWord(item.word)) : null;
             const wordInk = cueInk?.words[index];
             const pillExtent = captionDecorationExtentEm(face.capHeight, CAPTION_PILL, wordInk?.ink ?? NO_CAPTION_INK);
             return (

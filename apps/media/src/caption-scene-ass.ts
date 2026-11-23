@@ -23,6 +23,7 @@ import {
   type CaptionSceneName,
   captionFontFace,
   languageDirection,
+  captionTextDirection,
   textDirection,
 } from "@narriflow/validators";
 import { ASS_BLUR_PER_SIGMA, type AssEvent, alphaByte, assColor, assText, num } from "./ass-format";
@@ -119,11 +120,13 @@ export class SceneMeasurer {
     if (cached) return cached;
     const planner = this.planner(fontName);
     const planned = planner.plan(text);
-    const direction = textDirection(text, languageDirection(this.language));
-    // An RTL run starts with U+200F so libass orders its neutral characters as the Studio does.
-    const markFace = direction === "rtl" ? planner.markFace(CAPTION_RTL_MARK, wordParts(planned).map((part) => part.face)) : null;
+    const direction = captionTextDirection(text, this.language ? languageDirection(this.language) : undefined);
+    // Select the same paragraph level as Canvas, including LTR phrases that
+    // open with an RTL word. A mark preserves the inner runs' own directions.
+    const mark = direction === "rtl" ? CAPTION_RTL_MARK : "\u200E";
+    const markFace = direction === "rtl" || textDirection(text) !== direction ? planner.markFace(mark, wordParts(planned).map((part) => part.face)) : null;
     const clusters: readonly PlannedCluster[] = markFace
-      ? [{ text: CAPTION_RTL_MARK, parts: [{ text: CAPTION_RTL_MARK, face: markFace, spaced: false }] }, ...planned]
+      ? [{ text: mark, parts: [{ text: mark, face: markFace, spaced: false }] }, ...planned]
       : planned;
     const parts = wordParts(clusters);
     const line = layoutCaptionLine(

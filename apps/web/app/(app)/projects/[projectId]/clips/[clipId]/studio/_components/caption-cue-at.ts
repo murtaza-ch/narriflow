@@ -25,24 +25,25 @@ export function classicCaptionLayerOf(layers: readonly { readonly kind: string }
 }
 
 /** Index of the word active at `timeSec`, or -1: the classic engine's active-word state. */
-export function captionActiveWordIndex(layer: Pick<CompositionCaptionVisualLayer, "words">, timeSec: number): number {
+export function captionActiveWordIndex(layer: Pick<CompositionCaptionVisualLayer, "words" | "activeRange">, timeSec: number): number {
+  if (timeSec < layer.activeRange.startSec || timeSec >= layer.activeRange.endSec) return -1;
   return layer.words.findIndex(
     (word, index) =>
       timeSec >= word.startSec &&
-      (timeSec < word.endSec || (index === layer.words.length - 1 && timeSec <= word.endSec)),
+      timeSec < captionWordSegmentEnd(layer.words, index, layer.activeRange.endSec),
   );
 }
 
 /** A classic caption layer's words for `CaptionCue` at `timeSec`. */
-export function captionCueWordsAt(layer: Pick<CompositionCaptionVisualLayer, "words">, timeSec: number): CaptionCueWord[] {
+export function captionCueWordsAt(layer: Pick<CompositionCaptionVisualLayer, "words" | "activeRange">, timeSec: number): CaptionCueWord[] {
   const active = captionActiveWordIndex(layer, timeSec);
   return layer.words.map((word, index) => ({
     word: word.text,
     emoji: word.emoji,
     ...(word.spaceBefore === undefined ? {} : { spaceBefore: word.spaceBefore }),
-    durationMs: Math.max(50, Math.round((word.endSec - word.startSec) * 1000)),
+    durationMs: Math.max(50, Math.round((captionWordSegmentEnd(layer.words, index, layer.activeRange.endSec) - word.startSec) * 1000)),
     // The export's own window for this word's emoji: through the next word's start.
-    emojiWindow: { startSec: word.startSec, endSec: captionWordSegmentEnd(layer.words, index) },
+    emojiWindow: { startSec: word.startSec, endSec: captionWordSegmentEnd(layer.words, index, layer.activeRange.endSec) },
     isActive: index === active,
   }));
 }

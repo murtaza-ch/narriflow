@@ -18,14 +18,14 @@ const WIDTH = 1080;
 const HEIGHT = 400;
 const HIGHLIGHT = [0x00, 0xff, 0x88] as const;
 
-function frame(words: readonly string[], atSec: number): Buffer {
+function frame(words: readonly string[], atSec: number, language: string | null = null): Buffer {
   const preset = getCaptionPresetById("karaoke")!.preset;
   const layer: CompositionCaptionVisualLayer = {
     id: "caption:0", kind: "caption", cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
     anchor: { xPct: 50, yPct: 50 }, destination: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset,
     words: words.map((text, index) => ({ text, emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
-    language: null,
+    language,
   };
   const directory = mkdtempSync(join(tmpdir(), "caption-rtl-"));
   try {
@@ -63,6 +63,20 @@ function highlight(pixels: Buffer): { left: number; right: number; count: number
 }
 
 describe.skipIf(!Bun.which("ffmpeg"))("right-to-left karaoke on the real libass", () => {
+  test("an English opening does not move an Urdu line's active word to the wrong side", () => {
+    const first = highlight(frame(["factor", "ہر"], 0.45, "ur"));
+    const second = highlight(frame(["factor", "ہر"], 0.95, "ur"));
+    // The English word is spoken first on the right; Urdu follows on the left.
+    expect((first.left + first.right) / 2).toBeGreaterThan(WIDTH / 2);
+    expect(second.left).toBeLessThan(WIDTH / 2);
+    expect(second.right).toBeGreaterThan(first.right - 6);
+  }, 30_000);
+
+  test("an English-dominant line may start in Urdu and still burn left to right", () => {
+    const first = highlight(frame(["پھر", "verdict", "first", "win", "ہے"], 0.45, "ur"));
+    expect(first.right).toBeLessThan(WIDTH / 2);
+  }, 30_000);
+
   test("an Arabic word fills from its right edge toward the left", () => {
     const words = ["مرحبا", "بالعالم", "العالم"];
     const early = highlight(frame(words, 0.6));

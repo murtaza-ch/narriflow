@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  captionTextDirection,
   isNoSpaceScriptChar,
   joinTranscriptWords,
   stripCaptionEdgePunctuation,
@@ -99,6 +100,37 @@ describe("textDirection", () => {
     expect(textDirection("١٢٣")).toBe("ltr");
     expect(textDirection("", "rtl")).toBe("rtl");
     expect(textDirection("今天")).toBe("ltr");
+  });
+});
+
+describe("captionTextDirection", () => {
+  test("follows mixed speech rather than an opening English word or number", () => {
+    expect(captionTextDirection("45 degrees ہو یا 90 فون", "rtl")).toBe("rtl");
+    expect(captionTextDirection("hidden کہ visible ہی نہیں", "rtl")).toBe("rtl");
+    expect(captionTextDirection("factor ہر", "rtl")).toBe("rtl");
+    expect(captionTextDirection("پھر verdict first win ہے", "rtl")).toBe("ltr");
+    expect(captionTextDirection("But here is the hack.", "rtl")).toBe("ltr");
+    expect(captionTextDirection("mujhe tumse pyar hai", "rtl")).toBe("ltr");
+  });
+
+  test("counts words, ignores neutral tokens, and supports non-Latin LTR scripts", () => {
+    expect(captionTextDirection("Narriflow آپ کو بتایا", "rtl")).toBe("rtl");
+    expect(captionTextDirection("عام 2026 Narriflow الجديد", "rtl")).toBe("rtl");
+    expect(captionTextDirection("שלום 12 34 עולם", "rtl")).toBe("rtl");
+    expect(captionTextDirection("Bonjour שלום monde", "ltr")).toBe("ltr");
+    expect(captionTextDirection("Привет שלום мир", "ltr")).toBe("ltr");
+    expect(captionTextDirection("say مرحبا بالعالم now", "ltr")).toBe("ltr");
+    for (const text of ["你好世界", "नमस्ते दुनिया", "สวัสดีครับ", "こんにちは"]) {
+      expect(captionTextDirection(text, "rtl")).toBe("ltr");
+    }
+    for (const text of ["فارسی", "پښتو", "سنڌي", "ܫܠܡܐ", "ދިވެހި", "ߒߞߏ", "𞤀𞤣𞤤𞤢𞤥"]) {
+      expect(captionTextDirection(text, "ltr")).toBe("rtl");
+    }
+    expect(captionTextDirection("123 … ١٢٣", "rtl")).toBe("rtl");
+    expect(captionTextDirection("123 …", "ltr")).toBe("ltr");
+    expect(captionTextDirection("", "rtl")).toBe("rtl");
+    expect(captionTextDirection("مرحبا Hello")).toBe("rtl");
+    expect(captionTextDirection("Hello مرحبا")).toBe("ltr");
   });
 });
 

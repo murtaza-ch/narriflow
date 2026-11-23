@@ -3,6 +3,27 @@ import { deriveCaptionCues, planClipComposition, type CompositionCaptionVisualLa
 import { CAPTION_PRESETS, captionPresetSchema, editorDocumentSchema, getCaptionPresetById, studioEditsSchema } from "@narriflow/validators";
 import { renderCaptionTrack } from "./caption-ass";
 
+test("a classic caption ends at its cue boundary even when the final word overlaps the next cue", () => {
+  const layer: CompositionCaptionVisualLayer = {
+    id: "caption:0", kind: "caption", cueIndex: 0,
+    activeRange: { startSec: 0, endSec: 0.6 },
+    anchor: { xPct: 50, yPct: 72 },
+    destination: { x: 0, y: 0, width: 1080, height: 1920 },
+    rotationDeg: 0, opacity: 1, zIndex: 40,
+    preset: getCaptionPresetById("flip")!.preset,
+    language: "ur",
+    words: [{ text: "نہیں", emoji: null, startSec: 0, endSec: 0.8 }],
+  };
+  const { ass } = renderCaptionTrack({ layers: [layer], canvas: { width: 1080, height: 1920 } });
+  const dialogue = ass.split("\n").filter((line) => line.startsWith("Dialogue:"));
+  expect(dialogue.length).toBeGreaterThan(0);
+  expect(dialogue.every((line) => line.split(",")[2] === "0:00:00.60")).toBe(true);
+  const short = { ...layer, activeRange: { startSec: 0, endSec: 0.04 } };
+  const shortAss = renderCaptionTrack({ layers: [short], canvas: { width: 1080, height: 1920 } }).ass;
+  expect(shortAss).not.toContain("\\frx");
+  expect(shortAss).not.toContain("\\fad");
+});
+
 function render(id: string, texts = ["READY", "TO", "GO"]) {
   const preset = getCaptionPresetById(id)!.preset;
   const cue: CompositionCaptionVisualLayer = {

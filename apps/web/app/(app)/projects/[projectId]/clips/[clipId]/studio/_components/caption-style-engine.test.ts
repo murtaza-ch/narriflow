@@ -101,7 +101,7 @@ describe("caption cues in other languages", () => {
   const renderPlain = (props: Record<string, unknown>) =>
     renderToStaticMarkup(createElement(CaptionCue, { preset: plainPreset, scale: 1, cueKey: 0, ...props } as never));
 
-  test("a cue carries its language and the direction of its first strong character", () => {
+  test("a cue carries its language and its displayed script direction", () => {
     const urdu = render({ words: [{ word: "اردو", isActive: true }, { word: "زبان", isActive: false }], language: "ur" });
     expect(urdu).toContain('lang="ur"');
     expect(urdu).toContain('data-caption-direction="rtl"');
@@ -113,18 +113,20 @@ describe("caption cues in other languages", () => {
     expect(render({ words: [{ word: "Hello", isActive: true }], language: null })).not.toContain("lang=");
   });
 
-  test("the cue's direction is the first strong character of the whole line, as the burn-in scans it", () => {
+  test("the cue resolves the whole line, using its language for a balanced mix", () => {
     const lineDir = (words: string[], language: string | null) =>
       /data-caption-direction="(ltr|rtl)"/.exec(render({ words: words.map((word) => ({ word, isActive: false })), language }))![1];
     // A number or mark ahead of the text has no direction of its own: the Arabic after it leads an English cue...
     expect(lineDir(["2026", "مرحبا"], "en")).toBe("rtl");
     expect(lineDir(["—", "2026", "مرحبا"], "en")).toBe("rtl");
-    // ...and the Latin after a number leads an Arabic one.
-    expect(lineDir(["2026", "OpenAI", "نظام"], "ar")).toBe("ltr");
+    // A balanced mix keeps the surrounding language, even after an English name.
+    expect(lineDir(["2026", "OpenAI", "نظام"], "ar")).toBe("rtl");
     // A line with no strong character anywhere takes the language's direction.
     expect(lineDir(["2026", "!?"], "ar")).toBe("rtl");
     expect(lineDir(["...", "—"], "en")).toBe("ltr");
     expect(lineDir(["2026"], null)).toBe("ltr");
+    // Timed CJK tokens count alike in every painter even though they draw without spaces.
+    expect(lineDir(["你", "好", "שלום"], "ur")).toBe("ltr");
   });
 
   test("Arabic words keep their numbers and Latin names in their own direction", () => {
@@ -137,19 +139,19 @@ describe("caption cues in other languages", () => {
 
   test("words stand in the burn-in's visual order inside a left-to-right line, so the browser does not order them again", () => {
     const html = renderPlain({
-      words: [{ word: "لیے", isActive: false }, { word: "Extended", isActive: true }, { word: "Family", isActive: false }],
+      words: [{ word: "اس", isActive: false }, { word: "کے", isActive: false }, { word: "لیے", isActive: false }, { word: "Extended", isActive: true }, { word: "Family", isActive: false }],
       language: "ur",
     });
     // The cue's base direction is Urdu's, but the words are laid out in a line that does not reorder them.
     expect(html).toMatch(/<div lang="ur" dir="ltr" data-caption-direction="rtl"/);
-    // Logical لیے Extended Family reads "Extended Family لیے" from the left, as libass draws it.
-    expect(text(html)).toBe("Extended Family لیے");
+    // The English phrase stays LTR within the Urdu line, as libass draws it.
+    expect(text(html)).toBe("Extended Family لیے کے اس");
     expect(html.indexOf("Extended")).toBeLessThan(html.indexOf("Family"));
     expect(html.indexOf("Family")).toBeLessThan(html.indexOf("لیے"));
     // Each word keeps its own direction for shaping inside its box.
-    expect(html.match(/<span dir="(ltr|rtl)"/g)).toEqual(['<span dir="ltr"', '<span dir="ltr"', '<span dir="rtl"']);
+    expect(html.match(/<span dir="(ltr|rtl)"/g)).toEqual(['<span dir="ltr"', '<span dir="ltr"', '<span dir="rtl"', '<span dir="rtl"', '<span dir="rtl"']);
     // Baseline anchors stay keyed by the logical word, for the ink measurement.
-    expect(html.match(/data-caption-baseline="(\d)"/g)).toEqual(['data-caption-baseline="1"', 'data-caption-baseline="2"', 'data-caption-baseline="0"']);
+    expect(html.match(/data-caption-baseline="(\d)"/g)).toEqual(['data-caption-baseline="3"', 'data-caption-baseline="4"', 'data-caption-baseline="2"', 'data-caption-baseline="1"', 'data-caption-baseline="0"']);
   });
 
   test("a pure right-to-left cue runs its words right to left", () => {

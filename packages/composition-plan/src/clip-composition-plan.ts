@@ -2509,19 +2509,18 @@ export function captionCueText(words: readonly CompositionCaptionWord[]) {
 }
 
 /** When a caption word stops being the active word. Burned-in text events
- * and subtitle cue ends both use it, so subtitles track the visible text
- * rather than the cue's background envelope. */
-export function captionWordSegmentEnd(words: readonly CompositionCaptionWord[], index: number) {
+ * and subtitle cue ends both use it, bounded by the cue window when supplied. */
+export function captionWordSegmentEnd(words: readonly CompositionCaptionWord[], index: number, cueEndSec = Number.POSITIVE_INFINITY) {
   const word = words[index]!;
-  return index + 1 < words.length ? words[index + 1]!.startSec : Math.max(word.endSec, word.startSec + 0.05);
+  return Math.min(cueEndSec, index + 1 < words.length ? words[index + 1]!.startSec : Math.max(word.endSec, word.startSec + 0.05));
 }
 
 /** A cue's text is visible from its first word until its last word's segment
- * ends, and never after the export ends. */
+ * ends, bounded by the cue window and the export end. */
 export function captionCueVisibleRange(layer: CompositionCaptionVisualLayer, totalDurationSec: number) {
   return {
     startSec: layer.words[0]!.startSec,
-    endSec: Math.min(totalDurationSec, captionWordSegmentEnd(layer.words, layer.words.length - 1)),
+    endSec: captionWordSegmentEnd(layer.words, layer.words.length - 1, Math.min(totalDurationSec, layer.activeRange.endSec)),
   };
 }
 
@@ -2695,7 +2694,7 @@ function captionLayersForTarget(input: {
       }
     }
     // Dub captions are in another language: Clip Emphasis Words do not apply.
-    return withCaptionBlocks(layers, pending, document, language, undefined);
+    return finalizeCaptionLayers(layers, pending, document, language, undefined);
   }
 
   for (const utterance of document.transcriptSlice) {
@@ -2840,17 +2839,42 @@ function captionLayersForTarget(input: {
     });
   }
 
-  return withCaptionBlocks(layers, pending, document, language, document.emphasisWords);
+  return finalizeCaptionLayers(layers, pending, document, language, document.emphasisWords);
 }
 
-/** Roles as a second pass over every cue of a target, then one Caption Block per timed cue. */
-function withCaptionBlocks(
+/** Bound each cue to its successor, then attach roles and a Caption Block or Scene Style facts. */
+function finalizeCaptionLayers(
   layers: CompositionCaptionVisualLayer[],
   pending: readonly PendingCaptionCue[],
   document: EditorDocument,
   language: string | null,
   emphasisWords: readonly string[] | undefined,
 ): CompositionCaptionVisualLayer[] {
+  // Provider word windows and the minimum cue duration may overlap the next
+  // utterance. One caption line owns each instant in both preview and export.
+  for (let index = 0; index + 1 < layers.length; index++) {
+    const layer = layers[index]!;
+    const next = layers[index + 1]!;
+    if (layer.activeRange.endSec > next.activeRange.startSec) {
+      layers[index] = { ...layer, activeRange: { ...layer.activeRange, endSec: Math.max(layer.activeRange.startSec, next.activeRange.startSec) } };
+    }
+  }
+  for (let index = 0; index < layers.length; index++) {
+    const layer = layers[index]!;
+    let before = layer.activeRange.endSec;
+    // A provider can put a zero-duration final word exactly on the next
+    // utterance's onset. Reserve its minimum display window before that
+    // handoff instead of dropping the word or painting two cues together.
+    const words = [...layer.words];
+    for (let at = words.length - 1; at >= 0; at--) {
+      const word = words[at]!;
+      if (word.startSec >= before) {
+        words[at] = { ...word, startSec: Math.max(layer.activeRange.startSec, before - 0.05) };
+      }
+      before = words[at]!.startSec;
+    }
+    layers[index] = { ...layer, words };
+  }
   const preset = document.captionPreset;
   if ((!preset.dynamic && !preset.scene) || pending.length === 0) return layers;
   const roles = assignCaptionRoles({

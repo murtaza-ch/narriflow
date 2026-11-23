@@ -14,6 +14,7 @@ import {
   captionHeroGradient,
   captionStyleCurves,
   isNoSpaceScriptChar,
+  captionTextDirection,
   languageDirection,
   textDirection,
   type CaptionBlock,
@@ -36,11 +37,11 @@ import { canonicalCaptionLanguage, captionRunScript, isShapingSensitiveText } fr
  */
 
 /**
- * A Caption Block cue's base direction: its first strong character, else the caption
+ * A Caption Block cue's base direction: its spoken text's script balance, else the caption
  * language's direction. Rows read in its bidi visual order; left styles mirror for "rtl".
  */
 export function captionBlockDirection(texts: readonly string[], language: string | null | undefined): CaptionDirection {
-  return textDirection(texts.join(" "), languageDirection(language));
+  return captionTextDirection(texts.join(" "), language ? languageDirection(language) : undefined);
 }
 
 /**
