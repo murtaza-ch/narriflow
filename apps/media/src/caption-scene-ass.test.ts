@@ -118,6 +118,26 @@ describe("the tags imply the evaluator's values at every frame (spec 5.4)", () =
 });
 
 describe("a Scene Style target through renderCaptionTrack's writer", () => {
+  test("Orbit's continuous tracking reaches the ASS writer at every export frame", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      const demo = sceneDemo("orbit", { fps });
+      const piece = demo.scene.pieces.find((item) => item.id === "orbit:0:w0c5")!;
+      expect(piece).toBeDefined();
+      const events = sceneEvents({ pieces: [piece] }, demo.measurer, { canvas: demo.canvas, fps })
+        .filter((event) => event.layer % 10 === 5)
+        .map((event) => ({ ...event, startMs: Math.round(event.startSec * 1000), endMs: Math.round(event.endSec * 1000) }));
+      let alignmentOffset: number | undefined;
+      for (const t of exportFrameTimes(piece.fromMs + 80, piece.fromMs + 520, fps)) {
+        const active = events.filter((event) => event.startMs <= t && t < event.endMs);
+        expect(active).toHaveLength(1);
+        const state = assStateAt(active[0]!.text, t - active[0]!.startMs);
+        const pose = evaluatePiece(piece, t);
+        alignmentOffset ??= state.x - pose.x;
+        expect(Math.abs(state.x - pose.x - alignmentOffset)).toBeLessThanOrEqual(SCENE_TOLERANCE.px);
+      }
+    }
+  });
+
   test("every template's demo writes valid ASS: no NaN, ordered layers, events inside the scene's life", () => {
     for (const name of CAPTION_SCENE_NAMES) {
       const demo = sceneDemo(name);

@@ -1,3 +1,4 @@
+import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, prog } from "../ease";
 import { paintedFrameCount } from "../frame-grid";
@@ -10,8 +11,8 @@ import { ellipsePath, pathBounds, polylinePath, starPath } from "../shapes";
 /**
  * Orbit, gallery-3's m21-mood: cream grotesk, closing tracking, an orange ellipse and moving
  * planet, three cycling flat stickers, pink sparkles, then a squash exit about the block centre.
- * Whole-word spacing steps preserve shaping and match Aura's shared-renderer approach. Joined
- * scripts keep their natural spacing. Wrapping uses the final word widths, as the sample does.
+ * Letter positions close continuously along the sample's outExpo curve; no text copies swap
+ * during an entrance. Joined scripts and symbols stay whole. Wrapping uses the final word widths.
  * Unlike the sample's fixed exit, the squash waits until the last spoken word has finished.
  */
 export const ORBIT_DEMO: DemoScript = {
@@ -23,7 +24,8 @@ const BODY = 124;
 const ANCHOR = 1290;
 const REST = -0.03;
 const SIMPLE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{N}\p{P}\p{S}]+$/u;
-const SPACING_STEPS = [0, 0.07, 0.18, 0.36, 0.64, 1] as const;
+// 60 text pieces with one shadow each leave room for the largest sticker's 29 shape pieces.
+const TEXT_PIECE_LIMIT = 60;
 const INK = "#1C1B1F";
 
 interface WordBox {
@@ -100,27 +102,38 @@ function buildCue(cue: SceneCue, number: number, heroNumber: number, end: number
     sx: sample(sx, from, [], 0.001), sy: sample(sy, from, [], 0.001),
   });
   const pieces: Piece[] = [];
+  let textBudget = TEXT_PIECE_LIMIT;
+  let wordsLeft = boxes.length;
   for (const box of boxes) {
     const word = cue.words[box.at]!;
     const from = word.startMs - 80;
     if (from >= end) continue;
     const focus = Math.min(520, Math.max(1, end - from));
     const fade = Math.min(150, Math.max(1, word.startMs + Math.min(40, (word.endMs - word.startMs) / 3) - from));
+    const clusters = SIMPLE.test(word.text) && !/\p{S}/u.test(word.text) ? captionTextClusters(word.text) : [word.text];
+    // Exceptionally long cues move contiguous chunks; no letters are dropped and no piece swaps occur.
+    const partLimit = Math.max(1, Math.floor(textBudget / wordsLeft));
+    const chunkSize = Math.ceil(clusters.length / partLimit);
+    const parts = Array.from({ length: Math.ceil(clusters.length / chunkSize) }, (_, i) => ({
+      start: i * chunkSize, text: clusters.slice(i * chunkSize, (i + 1) * chunkSize).join(""),
+    }));
+    textBudget -= parts.length;
+    wordsLeft--;
     const room = rtl ? box.x - left : left + maxWidth + 10 * space.u - box.x - box.width;
-    const extra = box.spacing === REST ? clamp(room / Math.max(1, [...word.text].length - 1) / box.size, 0, 0.34) : 0;
-    const steps = extra > 0 ? SPACING_STEPS : [0];
-    steps.forEach((share, step) => {
-      const a = from + share * focus;
-      const b = step === steps.length - 1 ? end : Math.min(end, from + steps[step + 1]! * focus);
-      if (b <= a) return;
-      const middle = step === steps.length - 1 ? 1 : (share + steps[step + 1]!) / 2;
-      const spacing = box.spacing + extra * (1 - EASES.outExpo(middle));
-      const advance = input.measure(word.text, box.face, box.size, spacing).advance;
-      const x = rtl ? box.x + box.width - advance : box.x;
+    const extra = parts.length > 1 ? clamp(room / (clusters.length - 1) / box.size, 0, 0.34) : 0;
+    const opacity = sampleFrames((t) => EASES.out(prog(t, from, fade)), [from + fade], 0.003, { range: [from, end] });
+    parts.forEach((part, i) => {
+      // Prefix measurement retains kerning at rest. Only translation changes during tracking;
+      // glyph widths, baselines and their text nodes stay fixed for the word's whole lifetime.
+      const prefix = clusters.slice(0, part.start).join("");
+      const offset = prefix ? input.measure(prefix + part.text, box.face, box.size, box.spacing).advance - input.measure(part.text, box.face, box.size, box.spacing).advance : 0;
+      const lead = part.start - (rtl ? parts.at(-1)!.start : 0);
+      const x = box.x + offset;
+      const xAt = (t: number) => x + lead * box.size * extra * (1 - EASES.outExpo(prog(t, from, focus)));
       pieces.push({
-        id: `orbit:${number}:w${box.at}s${step}`, kind: "text", z: 2,
-        fromMs: a, toMs: b, track: { ...position(x, box.y, a), o: sampleFrames((t) => EASES.out(prog(t, from, fade)), [from + fade], 0.003, { range: [a, b] }) },
-        text: word.text, face: box.face, sizePx: box.size, letterSpacingEm: spacing,
+        id: `orbit:${number}:w${box.at}c${i}`, kind: "text", z: 2,
+        fromMs: from, toMs: end, track: { ...position(x, box.y, from), x: sample((t) => px + (xAt(t) - px) * sx(t), from, [from + focus]), o: opacity },
+        text: part.text, face: box.face, sizePx: box.size, letterSpacingEm: box.spacing,
         fill: input.colours.primary, anchor: "baseline-left", language: cue.language,
         shadows: [{ dx: 0, dy: 3 * space.u, blur: 8 * space.u, colour: input.colours.shadow, alpha: 0.55 }],
       });
@@ -231,7 +244,7 @@ function buildCue(cue: SceneCue, number: number, heroNumber: number, end: number
     piece.track.sy = sample((t) => pop(t) * sy(t), from, edges, 0.002);
     piece.track.rz = sample((t) => (1 - pop(t)) * 90, from, edges);
   });
-  // The shared union samples every 16 ms; leave room for a step edge or the squash's final frame.
+  // The shared union samples every 16 ms; leave room for the squash's final frame.
   const margin = 12 * space.u;
   return clampToSafeArea(pieces, { x1: space.safe.x1 + margin, y1: space.safe.y1 + margin, x2: space.safe.x2 - margin, y2: space.safe.y2 - margin }, input.measure);
 }

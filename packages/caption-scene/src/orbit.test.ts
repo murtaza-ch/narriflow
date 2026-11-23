@@ -7,6 +7,20 @@ import { evaluatePiece, pieceBounds, SCENE_PIECE_BUDGET, sceneBoundsAt } from ".
 import { fakeMeasure, sceneInput } from "./test-support";
 
 describe("Orbit", () => {
+  test("an entering word never jumps sideways between animation pieces", () => {
+    const { cues } = demoCues({ lines: ["with:m Apple:b@900 Pencil:b@900 support:h@900"] });
+    const word = cues[0]!.words[1]!;
+    const pieces = buildCaptionScene("orbit", sceneInput(cues)).pieces.filter((piece) => piece.id.startsWith("orbit:0:w1"));
+    let largestJump = 0;
+    const boundaries = [...pieces.map((piece) => piece.fromMs), ...Array.from({ length: 519 }, (_, i) => word.startMs - 79 + i)];
+    for (const boundary of boundaries.filter((ms) => ms > word.startMs - 80 && ms < word.startMs + 440)) {
+      const before = sceneBoundsAt(pieces, boundary - 0.001, fakeMeasure);
+      const after = sceneBoundsAt(pieces, boundary + 0.001, fakeMeasure);
+      if (before && after) largestJump = Math.max(largestJump, Math.abs(after.x1 - before.x1), Math.abs(after.x2 - before.x2));
+    }
+    expect(largestJump).toBeLessThan(0.1);
+  });
+
   test("the preset and sample register the cream regular face and five-word cues", () => {
     expect(getCaptionPresetById("orbit")!.preset).toMatchObject({ scene: "orbit", fontName: "Inter Tight Regular", wordsPerCue: 5, primaryColor: "#F3ECDC", highlightColor: "#FF7A1A", accentColor: "#FF5FA8" });
     expect(captionSceneMeta("orbit").bodyPx).toBe(124);
@@ -26,13 +40,13 @@ describe("Orbit", () => {
       const { pieces } = buildCaptionScene("orbit", sceneInput(cues, { fps }));
       cues.forEach((cue, n) => { cue.words.forEach((word, at) => {
         const t = exportFrameAtOrBefore(word.endMs - 1, fps);
-        const face = pieces.find((piece) => piece.id.startsWith(`orbit:${n}:w${at}s`) && evaluatePiece(piece, t).visible)!;
+        const face = pieces.find((piece) => piece.id.startsWith(`orbit:${n}:w${at}c`) && evaluatePiece(piece, t).visible)!;
         expect(face).toBeDefined();
         expect(evaluatePiece(face, t).sy).toBe(1);
         expect(evaluatePiece(face, t).o).toBeGreaterThan(0.9);
       }); });
       const final = cues.at(-1)!;
-      const rest = pieces.find((piece) => piece.id.startsWith("orbit:1:w1s") && evaluatePiece(piece, final.endMs - 20).visible)!;
+      const rest = pieces.find((piece) => piece.id.startsWith("orbit:1:w1c") && evaluatePiece(piece, final.endMs - 20).visible)!;
       expect(evaluatePiece(rest, final.endMs - 20).sy).toBeLessThan(0.5);
       for (const piece of pieces.filter((piece) => piece.kind === "shape")) {
         const painted = exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => pieceBounds(piece, t, fakeMeasure));
@@ -41,19 +55,48 @@ describe("Orbit", () => {
     });
   }
 
-  test("tracking closes while whole words keep their font, case and shaping", () => {
+  test("tracking moves continuously while glyphs keep their size, font and case", () => {
     const { cues } = demoCues({ lines: ["Stay:b@900 focused:h@900"] });
     const { pieces } = buildCaptionScene("orbit", sceneInput(cues));
-    const faces = pieces.filter((piece) => piece.kind === "text" && piece.id.startsWith("orbit:0:w0s"));
-    expect(faces.length).toBeGreaterThan(1);
-    const spacings = faces.map((piece) => piece.kind === "text" ? piece.letterSpacingEm : 0);
-    for (let i = 1; i < spacings.length; i++) expect(spacings[i]!).toBeLessThan(spacings[i - 1]!);
-    expect(spacings.at(-1)).toBe(-0.03);
-    expect(faces.every((piece) => piece.kind === "text" && piece.text === "Stay" && piece.face === "Inter Tight Regular")).toBe(true);
+    const faces = pieces.filter((piece) => piece.kind === "text" && piece.id.startsWith("orbit:0:w0c"));
+    expect(faces.map((piece) => piece.kind === "text" ? piece.text : "").join("")).toBe("Stay");
+    expect(faces.every((piece) => piece.kind === "text" && piece.face === "Inter Tight Regular" && piece.letterSpacingEm === -0.03)).toBe(true);
+    const first = faces[0]!;
+    const last = faces.at(-1)!;
+    let previous = Number.POSITIVE_INFINITY;
+    for (let t = first.fromMs + 20; t <= first.fromMs + 520; t += 10) {
+      const a = evaluatePiece(first, t), b = evaluatePiece(last, t);
+      expect(b.x - a.x).toBeLessThan(previous);
+      expect(a.sx).toBe(1);
+      expect(b.sx).toBe(1);
+      previous = b.x - a.x;
+    }
+    expect(evaluatePiece(first, first.fromMs + 60).x).toBe(evaluatePiece(first, first.fromMs + 520).x);
+    expect(evaluatePiece(last, last.fromMs + 60).x - evaluatePiece(last, last.fromMs + 61).x).toBeGreaterThan(0);
+  });
+
+  test("joining scripts and emoji keep their whole-word shaping", () => {
     const urdu = sceneEdgeDemo("urdu");
     const joined = buildCaptionScene("orbit", sceneInput(urdu.cues)).pieces.filter((piece) => piece.kind === "text");
     expect(joined).toHaveLength(urdu.cues.reduce((sum, cue) => sum + cue.words.length, 0));
     expect(joined.every((piece) => piece.kind === "text" && piece.letterSpacingEm === 0)).toBe(true);
+    const emoji = demoCues({ lines: ["🇵🇰:b@900 👩‍💻:b@900"] });
+    const symbols = buildCaptionScene("orbit", sceneInput(emoji.cues)).pieces.filter((piece) => piece.kind === "text");
+    expect(symbols.map((piece) => piece.kind === "text" ? piece.text : "")).toEqual(["🇵🇰", "👩‍💻"]);
+  });
+
+  test("long cues retain every character within the piece budget", () => {
+    const words = ["extraordinarily".repeat(3), "unbelievable".repeat(3), "impressive".repeat(3), "incredible".repeat(3), "beautiful".repeat(3)];
+    const { cues } = demoCues({ lines: Array.from({ length: 3 }, () => words.map((text, i) => `${text}:${i === 4 ? "h" : "b"}@900`).join(" ")) });
+    const { pieces } = buildCaptionScene("orbit", sceneInput(cues));
+    for (let n = 0; n < cues.length; n++) {
+      const group = pieces.filter((piece) => piece.id.split(":")[1] === String(n));
+      expect(group.reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0)).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
+      words.forEach((text, at) => {
+        const parts = group.filter((piece) => piece.kind === "text" && piece.id.startsWith(`orbit:${n}:w${at}c`));
+        expect(parts.map((piece) => piece.kind === "text" ? piece.text : "").join("")).toBe(text);
+      });
+    }
   });
 
   test("the planet travels a tilted ellipse throughout a long held cue", () => {
