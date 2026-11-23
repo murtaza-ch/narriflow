@@ -33,6 +33,7 @@ RUN set -eux; \
     case "$MEDIA_PROFILE" in render|lean) ;; *) exit 1 ;; esac; \
     media_font_packages=""; \
     if [ "$MEDIA_PROFILE" = render ]; then media_font_packages='fonts-dejavu-core=2.37-8 fonts-liberation=1:2.1.5-3 fonts-noto-core=20201225-2 fonts-noto-cjk=1:20240730+repack1-1 fonts-noto-extra=20201225-2 fonts-noto-color-emoji=2.051-0+deb13u1'; fi; \
+    media_kerberos_version='1.21.3-5+deb13u1'; \
     rm -f /etc/apt/sources.list; \
     printf '%s\n' \
       'Types: deb' \
@@ -47,7 +48,7 @@ RUN set -eux; \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       > /etc/apt/sources.list.d/debian.sources; \
-    media_packages="ffmpeg=7:7.1.5-0+deb13u1 fontconfig=2.15.0-2.3 curl=8.14.1-2+deb13u7 ca-certificates=20250419+deb13u1 python3=3.13.5-1 python3-pip=25.1.1+dfsg-1 $media_font_packages"; \
+    media_packages="ffmpeg=7:7.1.5-0+deb13u1 fontconfig=2.15.0-2.3 curl=8.14.1-2+deb13u7 ca-certificates=20250419+deb13u1 python3=3.13.5-1 python3-pip=25.1.1+dfsg-1 libgssapi-krb5-2=$media_kerberos_version libk5crypto3=$media_kerberos_version libkrb5-3=$media_kerberos_version libkrb5support0=$media_kerberos_version $media_font_packages"; \
     for pass in 1 2 3 4 5 6 7 8 9 10 11 12; do \
       apt-get -o Acquire::Retries=0 update \
         && apt-get install -y --no-install-recommends --download-only -o Acquire::Retries=0 $media_packages \
