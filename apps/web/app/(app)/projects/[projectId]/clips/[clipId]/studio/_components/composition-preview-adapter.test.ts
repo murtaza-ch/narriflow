@@ -545,7 +545,7 @@ describe("composition preview adapter", () => {
         effectiveMode: "center",
       }),
     ).toBe(
-      "9:16 · Auto requested; previewing Center while this composition update completes. Analyzing speakers… Center framing is shown for now.",
+      "9:16 · Auto requested; previewing Center. Speaker framing is not ready. Center framing is shown for now.",
     );
     expect(
       compositionNoticeText("screen_no_face_detected", {

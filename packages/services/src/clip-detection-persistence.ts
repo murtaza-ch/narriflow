@@ -105,11 +105,12 @@ export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brand
       contentPack?.captionPreset,
     );
     // A caption-only generation's clip is its whole source (see
-    // clipDurationBounds). A captioned video also states how to frame it.
+    // clipDurationBounds). Preserve its whole frame unless it explicitly asks
+    // for Center; Auto framing belongs to AI clipping by default.
     const wholeSource = contentPack?.mode === "caption_only";
     const studioEdits = seedBrandMusic(
       studioEditsSchema.parse(
-        contentPack?.captionedVideo ? captionedVideoFramingEdits(contentPack.captionedVideo.framing) : undefined,
+        wholeSource ? captionedVideoFramingEdits(contentPack?.captionedVideo?.framing ?? "fit") : undefined,
       ),
       project?.brandProfileSnapshot,
     );

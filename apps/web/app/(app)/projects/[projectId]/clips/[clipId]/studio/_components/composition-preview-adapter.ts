@@ -237,10 +237,10 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
   background_image_unavailable:
     "Background image unavailable. Using the selected color.",
   automatic_layout_analyzing:
-    "Analyzing speakers… Center framing is shown for now.",
+    "Speaker framing is not ready. Center framing is shown for now.",
   automatic_layout_disabled: "Automatic speaker layout is disabled. Using Center.",
   automatic_layout_unavailable: "Speaker analysis unavailable. Using Center.",
-  split_layout_analyzing: "Analyzing speakers… Center framing is shown for now.",
+  split_layout_analyzing: "Speaker framing is not ready. Center framing is shown for now.",
   split_layout_disabled:
     "Split analysis is disabled. Using single-speaker framing.",
   split_target_ineligible:
@@ -334,7 +334,7 @@ export function compositionNoticeText(
   const effective = compositionModeLabel(context.effectiveMode);
   const fidelity =
     context.notice.fidelity === "pending"
-      ? `${requested} requested; previewing ${effective} while this composition update completes.`
+      ? `${requested} requested; previewing ${effective}.`
       : `${requested} requested; preview and export use ${effective}.`;
   const action = context.notice.userActionPossible
     ? ` ${compositionNoticeAction(context.notice.code)}`

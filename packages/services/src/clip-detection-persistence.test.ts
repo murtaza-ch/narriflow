@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { buildGenerationContentPack, encodeQuietRanges, fillerWordKey, type FillerTaggingOutcome, type TranscriptUtterance, type TranscriptWord } from "@narriflow/validators";
+import { planClipComposition } from "@narriflow/composition-plan";
+import { buildCaptionedVideoContentPack, buildCaptionedVideoSettings, buildGenerationContentPack, encodeQuietRanges, fillerWordKey, type FillerTaggingOutcome, type TranscriptUtterance, type TranscriptWord } from "@narriflow/validators";
+import { decodeClipEditorDocumentFromStorage } from "./clip-editor-document-codec";
 import { buildDetectedClipRows, prepareDetectedClipSeed, type DetectedClip } from "./clip-detection-persistence";
 
 function word(startSec: number, endSec: number, text: string): TranscriptWord {
@@ -22,6 +24,32 @@ function clip(): DetectedClip {
 
 const project = { brandSnapshot: null, brandProfileSnapshot: null, sourceDurationSeconds: 60 };
 const quietRanges = encodeQuietRanges([{ startSec: 10.9, endSec: 13.6 }]);
+
+describe("generation framing", () => {
+  test.each([
+    { name: "caption-only upload", pack: buildGenerationContentPack({ mode: "caption_only" }), mode: "fit" },
+    { name: "captioned video Fit", pack: buildCaptionedVideoContentPack(buildCaptionedVideoSettings({ framing: "fit" })), mode: "fit" },
+    { name: "captioned video Center", pack: buildCaptionedVideoContentPack(buildCaptionedVideoSettings({ framing: "center" })), mode: "center" },
+    { name: "AI clipping", pack: buildGenerationContentPack({ mode: "clip" }), mode: "auto" },
+  ])("$name starts with $mode framing", ({ pack, mode }) => {
+    const seed = prepareDetectedClipSeed(project, pack, { quietRanges: null, languageCode: "en" });
+    const [row] = buildDetectedClipRows({ projectId: "p", workflowRunId: "w", clips: [clip()], seed,
+      llmMeta: { provider: "openai", model: pack.mode === "caption_only" ? "caption-only" : "m", totalTokensUsed: 0 } });
+    const result = planClipComposition({
+      document: decodeClipEditorDocumentFromStorage(row!, { durationSec: 60, wholeSource: seed.wholeSource }),
+      source: { identity: "source:p", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]!.requestedMode).toBe(mode);
+    expect(result.plan.evidenceRequests.map(request => request.kind)).toEqual(mode === "auto" ? ["automatic-speaker-layout"] : []);
+    expect(result.plan.notices.map(notice => notice.code)).toEqual(mode === "auto" ? ["automatic_layout_analyzing"] : []);
+    expect(result.status).toBe(mode === "auto" ? "pending" : "ready");
+  });
+});
 
 function rows(settings: { removeSilences?: boolean; removeFillerWords?: boolean }, source = { quietRanges, languageCode: "en" as string | null }) {
   const seed = prepareDetectedClipSeed(project, buildGenerationContentPack(settings), source);
