@@ -206,11 +206,14 @@ async function unassignedObjects(tx: Tx, projectId: string) {
       ? project.sourceStorageKey
       : null;
   return [
-    ...[source, upload?.storageKey, upload ? uploadThumbnailKey(upload.id) : null].flatMap((key) =>
+    ...[source, upload?.storageKey].flatMap((key) =>
       key
         ? [{ origin: "project_retention" as const, cleanupClass: "upload_source" as const, projectId, objectKey: key }]
         : [],
     ),
+    // Drain bounded API poster writes that started just before purge admission.
+    ...(upload ? [{ origin: "project_retention" as const, cleanupClass: "thumbnail_asset" as const,
+      projectId, objectKey: uploadThumbnailKey(upload.id), notBefore: new Date(Date.now() + 120_000) }] : []),
     ...(project.transcript?.rawStorageKey
       ? [
           {

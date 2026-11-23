@@ -1,3 +1,4 @@
+import { accessibleProjectWhere } from "./project-access";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { SOURCE_THUMBNAIL_MAX_BYTES } from "@narriflow/validators/source-thumbnail";
 import type { ActorScope } from "./actor-scope";
@@ -52,7 +53,9 @@ export async function saveUploadThumbnail(
   const bytes = decodeUploadThumbnail(encoded);
   if (!bytes) return;
   const now = new Date();
-  const where: Prisma.UploadSessionWhereInput = { id: sessionId, workspaceId: scope.workspaceId, actorUserId: scope.actorUserId, status: { in: ["uploading", "finalizing", "reconciling", "queued_for_ingest"] }, hardExpiresAt: { gt: now } };
+  const where: Prisma.UploadSessionWhereInput = { id: sessionId, workspaceId: scope.workspaceId, actorUserId: scope.actorUserId, status: { in: ["uploading", "finalizing", "reconciling", "queued_for_ingest"] }, hardExpiresAt: { gt: now },
+    OR: [{ ingestJob: { is: null } }, { ingestJob: { is: { project: { is: accessibleProjectWhere(now) } } } }],
+  };
   const session = await database.uploadSession.findFirst({ where, select: { thumbnailStorageKey: true } });
   if (!session || session.thumbnailStorageKey) return;
   const key = uploadThumbnailKey(sessionId);

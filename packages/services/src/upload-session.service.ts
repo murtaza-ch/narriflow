@@ -3168,7 +3168,7 @@ async function admitTerminatedUploadCleanup(tx: Prisma.TransactionClient, sessio
     cleanupClass: "upload_source" as const,
     projectId: session.preallocatedProjectId,
     objectKey,
-    notBefore: new Date(now.getTime() + SINGLE_PUT_CLEANUP_DELAY_MS),
+    notBefore: new Date(now.getTime() + (objectKey === session.storageKey ? SINGLE_PUT_CLEANUP_DELAY_MS : 120_000)),
   })));
 }
 
