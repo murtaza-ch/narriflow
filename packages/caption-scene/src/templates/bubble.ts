@@ -5,7 +5,7 @@ import { SCENE_DEFAULT_FPS, paintedFrameCount, sceneSampleRate } from "../frame-
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
-import { type Box, type Clip, type Piece, type ShapePiece, type TextPiece, type Track, mixColour } from "../scene";
+import { type Box, type Clip, type Piece, type ShapePiece, type TextPiece, type Track, mixColour, pieceBounds } from "../scene";
 import { ellipsePath, polygonPath, roundedRectPath, sparklePath } from "../shapes";
 import { hasTwoPaintedFrames, speechLaneSpace, speechWindows } from "./speech-layout";
 
@@ -39,6 +39,10 @@ import { hasTwoPaintedFrames, speechLaneSpace, speechWindows } from "./speech-la
  *   sparks    short dashes thrown out of every bubble as it closes;
  *   rings     two small hollow neon rings pop beside the bubble and drift up;
  *   twinkle   a four-point sparkle on the bubble's edge.
+ *
+ * Real-cue fixes (gallery review, 2026-11-25): the bubble is lifted by its tilted box's own half height (the sample's gap was
+ * measured from the unturned box, so a 7 degree burst reached into the line below), and the twinkle takes the first spot on the
+ * outline that no label letter reaches (a pill's label fills the old spot) and is left out when there is none.
  */
 export const BUBBLE_DEMO: DemoScript = {
   lines: [
@@ -82,6 +86,8 @@ const GLOW = 24;
 const GLOW_BLUR = 9;
 const PAD = 40;
 const DECO = 64;
+/** The tilted bubble's whole bounding box rests this far (sample px) above the line's top, less the kind's gap. */
+const TILT_CLEAR = 24;
 const IDLE_MIN = 1500;
 const FILL = "#0E051C";
 const FILL_ALPHA = 0.82;
@@ -315,7 +321,7 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space, heroCount: nu
       const px = cx + clamp(dir * KIND_X[kind] * S + jitter, -room, room);
       const bcx = (d.bbox.x1 + d.bbox.x2) / 2;
       const bcy = (d.bbox.y1 + d.bbox.y2) / 2;
-      const py = rows.length > 0 ? rowsTop - KIND_GAP[kind] * S - bh / 2 : centre;
+      const py = rows.length > 0 ? rowsTop - (KIND_GAP[kind] - TILT_CLEAR) * S - hh : centre;
       void bcx;
       bubble = { ...label, px, py, body: [-bcx, -bcy] };
       boxes.push({ x1: px - hw - padX, x2: px + hw + padX, y1: py - hh - Math.max(PAD * S, 80 * S), y2: py + hh + (rows.length > 0 ? 0 : PAD * S) });
@@ -688,15 +694,28 @@ function bubblePieces(n: number, cue: SceneCue, geo: Geo, bubble: BubbleGeo, pla
   const tw = doneAt + 60;
   const twTo = Math.min(goneAt, tw + 640);
   if (paintedFrameCount(tw, twTo, fps) >= 4) {
-    const phi = (-132 * Math.PI) / 180;
     const sr = (16 + 8 * seeded(`${cue.index}s`, 61)) * S;
+    // The sparkle sits on the bubble's upper edge, upper-left by default; a pill's label fills its edge, so the sparkle takes the
+    // first spot on the outline (or just outside it) that no letter's box reaches, and is left out when there is none.
+    const letters = out.flatMap((piece) => (piece.kind === "text" && /^bubble:\d+:w\d+l\d+$/.test(piece.id) ? [piece] : []));
+    const inked = letters.flatMap((piece) => pieceBounds(piece, Math.max(piece.fromMs, tw) + 1, input.measure) ?? []);
+    const reach = sr * 1.42 + 2 * S;
+    const spots = [-132, -145, -120, -158, -108, -170].flatMap((deg) => [1.08, 1.2].map((f) => ({ deg, f })));
+    const spot = spots
+      .map(({ deg, f }) => {
+        const phi = (deg * Math.PI) / 180;
+        return { x: bx - side * Math.cos(phi) * d.rx * f, y: by + Math.sin(phi) * d.ry * f };
+      })
+      .find(({ x, y }) => !inked.some((b) => x - reach < b.x2 && b.x1 < x + reach && y - reach < b.y2 && b.y1 < y + reach));
     const life = twTo - tw;
     const pulse: Frames = [[tw, 0.2], [tw + life * 0.28, 1, "outBack"], [tw + life * 0.55, 0.6], [tw + life * 0.78, 1], [twTo, 0, "in"]];
-    out.push({
-      id: `bubble:${n}:twinkle`, kind: "shape", z: z + 7, fromMs: tw, toMs: twTo,
-      track: { x: [[tw, bx - side * Math.cos(phi) * d.rx * 1.08]], y: [[tw, by + Math.sin(phi) * d.ry * 1.08]], sx: pulse, sy: pulse, rz: [[tw, 0], [twTo, 90]] },
-      path: sparklePath(sr, sr, sr), origin: { dx: sr, dy: sr }, fill: { colour: palette.core },
-    });
+    if (spot) {
+      out.push({
+        id: `bubble:${n}:twinkle`, kind: "shape", z: z + 7, fromMs: tw, toMs: twTo,
+        track: { x: [[tw, spot.x]], y: [[tw, spot.y]], sx: pulse, sy: pulse, rz: [[tw, 0], [twTo, 90]] },
+        path: sparklePath(sr, sr, sr), origin: { dx: sr, dy: sr }, fill: { colour: palette.core },
+      });
+    }
   }
   void rtl;
   return out;
