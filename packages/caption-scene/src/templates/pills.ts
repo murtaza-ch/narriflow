@@ -4,12 +4,39 @@ import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { Piece } from "../scene";
 import { polylinePath } from "../shapes";
-import { galleryScene, roleRows, rotatePoint, rowsOf } from "./gallery-layout";
+import { galleryScene, rotatePoint, rowsOf } from "./gallery-layout";
 
 export const PILLS_DEMO: DemoScript = {
   lines: ["nobody:b is:m coming:b to:m save:b you", "so:m build:h@560", "before:b you:m feel:b ready:h@620", "today:b@560", "not:m someday:b", "the:m work:b gets:b easier:h@640"],
   options: { rate: 255, cueGap: 150, tail: 760 },
 };
+
+const ROW_WORDS = 3;
+
+/** Key words sit alone; the words around them wrap into evenly filled rows, never a lone orphan word. */
+function pillRows(count: number, heroes: ReadonlySet<number>): number[][] {
+  const rows: number[][] = [];
+  let at = 0;
+  while (at < count) {
+    if (heroes.has(at)) {
+      rows.push([at++]);
+      continue;
+    }
+    let end = at;
+    while (end < count && !heroes.has(end)) end++;
+    const n = end - at;
+    const k = Math.ceil(n / ROW_WORDS);
+    for (let r = 0; r < k; r++) {
+      const size = Math.floor(n / k) + (r < n % k ? 1 : 0);
+      rows.push(Array.from({ length: size }, (_, i) => at + i));
+      at += size;
+    }
+  }
+  return rows;
+}
+
+// Manrope's baseline sits this far below the middle of a line box of height 1 em, which is how the sample centres its words.
+const BASELINE_BELOW_CENTRE = 0.383;
 
 export const pillsProgram = galleryScene("pills", 1290, (ctx) => {
   const { cue, spokenEnd, from: cueFrom, to } = ctx.window;
@@ -18,7 +45,7 @@ export const pillsProgram = galleryScene("pills", 1290, (ctx) => {
   const hasHero = heroAt >= 0;
   const few = !hasHero && cue.words.length <= 2;
   const { cells, unit: u } = ctx.layout({
-    column: 738, padding: 89, gap: few ? 138 : 98, groups: roleRows(cue, 3),
+    column: 738, padding: 89, gap: few ? 138 : 98, groups: pillRows(cue.words.length, new Set(cue.words.flatMap((word, at) => word.role === "hero" ? [at] : []))),
     words: cue.words.map((word) => ({ text: word.text, size: word.role === "hero" ? 104 : few ? 92 : 64,
       face: word.role === "hero" ? "Manrope ExtraBold" : "Manrope Bold", spacing: -0.01 })),
   });
@@ -27,14 +54,23 @@ export const pillsProgram = galleryScene("pills", 1290, (ctx) => {
   const heights = rows.map((row) => Math.max(...row.map((cell) =>
     heightOf(cell.at, cell.inkBottom - cell.inkTop) + (cue.words[cell.at]!.role === "hero" ? 20 * u : 0))));
   const gap = 20 * u;
-  const total = heights.reduce((sum, height) => sum + height, (rows.length - 1) * gap);
+  // The circled arrow hangs under the key word's left end (tilted, so a little lower); a row below
+  // it starts under the badge instead of running into it.
+  const badgeDrop = (row: typeof rows[number]) => {
+    const hero = row.find((cell) => cue.words[cell.at]!.role === "hero");
+    if (!hero) return 0;
+    const half = (hero.width + 120 * u + 12 * u) / 2;
+    return 4 * u + 52 * u + Math.sin(5 * Math.PI / 180) * (half - 26 * u) + 10 * u;
+  };
+  const gaps = rows.map((row, i) => i === rows.length - 1 ? 0 : Math.max(gap, badgeDrop(row) - 10 * u));
+  const total = heights.reduce((sum, height) => sum + height, gaps.reduce((sum, g) => sum + g, 0));
   const cx = ctx.space.x(540);
   const anchor = ctx.space.y(1290);
   let top = anchor - total / 2;
   const centres = new Map<number, number>();
   rows.forEach((row, i) => {
     for (const { at } of row) centres.set(at, top + heights[i]! / 2);
-    top += heights[i]! + gap;
+    top += heights[i]! + gaps[i]!;
   });
   const holdUntil = spokenEnd + 150;
   // Leave the demo's quiet beat before the cut when there is time for it after the speech hold.
@@ -83,7 +119,7 @@ export const pillsProgram = galleryScene("pills", 1290, (ctx) => {
     const w = Math.max(h, cell.width + (hero ? 120 : few ? 112 : 72) * u + 2 * border);
     pieces.push({ ...ctx.rect(`outline${cell.at}`, from, cell.x, cy, w - border, h - border, (h - border) / 2, "#08080C", pose), toMs: endAt,
       fill: { colour: "#08080C", alpha: 0.55 }, stroke: { colour, widthPx: border } });
-    const origin = { dx: 0, dy: (cell.inkTop + cell.inkBottom) / 2 };
+    const origin = { dx: 0, dy: -BASELINE_BELOW_CENTRE * cell.size };
     const base = ctx.face(cell, from, c.primary, { ...pose, o: frames((t) => alpha(t) * lerp(0.5, 1, flood(t)), 0.004) });
     pieces.push({ ...base, z: 3, origin, toMs: endAt });
 
