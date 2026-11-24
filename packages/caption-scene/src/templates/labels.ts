@@ -454,7 +454,10 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
       // The scrap rides the label it is stuck to: its offset from the label's pivot turns and scales with the label's own pose.
       const hostPlate = plateOf(host, hostTm, release, false);
       const offX = tapeCorner * (host.w / 2 + TAPE_OUT.x * host.q);
-      const offY = -host.h + TAPE_OUT.y * host.q;
+      // The plate hugs ink that rises past Montserrat's caps (Devanagari headline strokes), so the scrap rides up by that rise to
+      // keep the distance to the ink it has over Latin. "HOS" is the Latin reference; under a tenth of the size is no rise.
+      const rise = input.measure("HOS", FACE, host.fs, LS).inkTop - input.measure(words[host.at]!.text, FACE, host.fs, LS).inkTop;
+      const offY = -host.h + TAPE_OUT.y * host.q - (rise > 0.1 * host.fs ? rise : 0);
       const settled = Math.max(from + pop, hostTm.from + hostTm.settle);
       const popOf = (t: number) => EASES.outBack(prog(t, from, pop));
       const pose = (t: number) => {

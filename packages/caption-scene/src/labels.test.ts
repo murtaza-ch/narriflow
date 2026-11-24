@@ -5,7 +5,7 @@ import { SCENE_EDGE_DEMOS, demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
-import { type Piece, type ShapePiece, type TextPiece, SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds } from "./scene";
+import { type Measure, type Piece, type ShapePiece, type TextPiece, SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds } from "./scene";
 import { fakeMeasure, sceneInput } from "./test-support";
 import { LABELS_DEMO, labelsHash, labelsProgram } from "./templates/labels";
 
@@ -272,6 +272,35 @@ describe("Labels", () => {
         }
       }
     });
+  });
+
+  test("the tape stays off a Devanagari word's ink, whose strokes rise past Montserrat's caps", () => {
+    const tall: Measure = (text, face, size, spacing) => {
+      const base = fakeMeasure(text, face, size, spacing);
+      return /[\u0900-\u097f]/.test(text) ? { ...base, inkTop: -0.9 * size, inkBottom: 0.14 * size } : base;
+    };
+    const lines = ["ही:m कम:b है।:b", "देखो:b तो:m इतना:h@380", "और:m अगर:b इसे:m सीधा:h@400"];
+    const { cues: hindi } = demoCues({ lines, language: "hi", options: { lead: 400, gap: 30, cueGap: 120, tail: 500 } });
+    const pieces = build(hindi, { measure: tall });
+    hindi.forEach((cue, n) => {
+      const tape = need<ShapePiece>(find(pieces, `labels:${n}:tape`));
+      const words = ofCue(pieces, n).filter((piece): piece is TextPiece => piece.kind === "text");
+      for (const t of exportFrameTimes(cue.startMs, cue.endMs, 30)) {
+        const box = pieceBounds(tape, t, tall);
+        if (!box) continue;
+        for (const word of words) {
+          const ink = pieceBounds(word, t, tall);
+          if (!ink) continue;
+          const dx = (ink.x2 - ink.x1) * 0.06;
+          const dy = (ink.y2 - ink.y1) * 0.18;
+          const hit = box.x1 + 0.5 < ink.x2 - dx && ink.x1 + dx < box.x2 - 0.5 && box.y1 + 0.5 < ink.y2 - dy && ink.y1 + dy < box.y2 - 0.5;
+          expect(hit, `cue ${n} ${word.text} at ${t}`).toBe(false);
+        }
+      }
+    });
+    // Latin ink, even measured by the same function, leaves the tape where it was.
+    const latin = demoCues({ lines: ["it's:b time:b to:m say:b goodbye:h@420"], options: { lead: 400, gap: 30, cueGap: 120, tail: 500 } }).cues;
+    expect(JSON.stringify(build(latin, { measure: tall }))).toBe(JSON.stringify(build(latin)));
   });
 
   test("all edge cues and aspect ratios keep every painted frame inside the safe area and the budget", () => {
