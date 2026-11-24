@@ -46,6 +46,7 @@ export const MOMENTS: Record<string, number[]> = {
   ransom: [467, 1300, 1833, 3300, 6500],
   labels: [433, 1067, 1400, 1567, 3100, 5000],
   slab: [400, 1500, 1833, 2000, 3900, 8233],
+  squash: [480, 1100, 1500, 3100, 3800, 5200, 7000],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
