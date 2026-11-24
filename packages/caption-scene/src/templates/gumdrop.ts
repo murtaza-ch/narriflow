@@ -34,17 +34,18 @@ export const gumdropProgram = galleryScene("gumdrop", 1290, (ctx) => {
   if (hasHero) {
     rowCentre[heroRow] = ctx.space.y(1290) - 52 * u;
     for (let i = heroRow - 1; i >= 0; i--) rowCentre[i] = rowCentre[i + 1]! - (rowHeight[i]! + rowHeight[i + 1]!) / 2;
-    const stackDepth = Math.max(...rows[heroRow]!.map((cell) => 1.2 * cell.size));
-    for (let i = heroRow + 1; i < rows.length; i++) {
-      rowCentre[i] = rowCentre[i - 1]! + (rowHeight[i - 1]! + rowHeight[i]!) / 2 + (i === heroRow + 1 ? stackDepth : 0);
-    }
+    // Words spoken after the key word sit right under it: its copies fold back before the first of them appears.
+    for (let i = heroRow + 1; i < rows.length; i++) rowCentre[i] = rowCentre[i - 1]! + (rowHeight[i - 1]! + rowHeight[i]!) / 2;
   }
+  const heroAt = cue.words.findIndex((word) => word.role === "hero");
+  const tailFrom = heroAt < 0 ? Infinity : Math.min(Infinity, ...cue.words.slice(heroAt + 1).map((word) => ctx.enter(word, 230).from));
+  const centreOf = (cell: (typeof cells)[number]) => rowCentre[rows.findIndex((row) => row.includes(cell))] ?? inkCentre(cell);
   const pieces: Piece[] = [];
   for (const cell of cells) {
     const word = cue.words[cell.at]!;
     const hero = word.role === "hero";
     const { from, settled, motion } = ctx.enter(word, 230);
-    const y = rowCentre[rows.findIndex((row) => row.includes(cell))] ?? inkCentre(cell);
+    const y = centreOf(cell);
     const sx = motion ? [[from, 0.5], [settled, 1, "outBack"]] as const : [[from, 1]] as const;
     const base = ctx.face(cell, from, hero ? (index % THEMES.length ? theme[0] : c.highlight) : hasHero ? c.primary : theme[3], {
       y: ctx.drift(from, y, motion ? 19 * u : 0, settled, 34 * u), rz: [[from, -6 * ctx.side]], sx, sy: sx,
@@ -55,7 +56,7 @@ export const gumdropProgram = galleryScene("gumdrop", 1290, (ctx) => {
     pieces.push(base);
     if (!hero) continue;
     const foldIn = Math.min(word.startMs + 130, settled);
-    const foldOut = Math.min(to, word.endMs + 110);
+    const foldOut = Math.min(to, word.endMs + 110, tailFrom);
     if (paintedFrameCount(foldIn, foldOut, ctx.fps) < 3) continue;
     const span = foldOut - foldIn;
     for (let j = 1; j < 4; j++) {
@@ -64,8 +65,19 @@ export const gumdropProgram = galleryScene("gumdrop", 1290, (ctx) => {
         track: { x: [[foldIn, cell.x]], y: [[foldIn, y], [foldIn + span * 0.29, y + rise, "outBack"],
           [foldIn + span * 0.6, y + rise], [foldOut, y, "inOut"]], rz: [[foldIn, -6 * ctx.side]] } });
     }
+    // The spark sits on whichever corner of the key word no other word reaches.
+    const reach = 37 * u * 1.1;
+    const sparkAt = [[1, -1], [-1, -1], [1, 1], [-1, 1]].map(([sx0, sy0]) => ({
+      x: cell.x + (cell.width / 2 + 16 * u) * ctx.side * sx0!, y: y + 95 * u * sy0!,
+    })).map((spot) => ({ ...spot, hit: cells.filter((other) => other !== cell).reduce((sum, other) => {
+      const tilt = (other.width / 2) * Math.sin(6 * Math.PI / 180) + 4 * u;
+      const half = (other.inkBottom - other.inkTop) / 2 + tilt;
+      const dx = Math.min(spot.x + reach, other.x + other.width / 2) - Math.max(spot.x - reach, other.x - other.width / 2);
+      const dy = Math.min(spot.y + reach, centreOf(other) + half) - Math.max(spot.y - reach, centreOf(other) - half);
+      return sum + (dx > 0 && dy > 0 ? dx * dy : 0);
+    }, 0) })).reduce((best, spot) => (spot.hit < best.hit ? spot : best));
     pieces.push({ ...ctx.shape(`spark${cell.at}`, foldIn, sparklePath(37 * u), {
-      x: [[foldIn, cell.x + (cell.width / 2 + 16 * u) * ctx.side]], y: [[foldIn, y - 95 * u]],
+      x: [[foldIn, sparkAt.x]], y: [[foldIn, sparkAt.y]],
       sx: [[foldIn, 0.4], [foldIn + span * 0.26, 1, "outBack"]],
       sy: [[foldIn, 0.4], [foldIn + span * 0.26, 1, "outBack"]],
     }, theme[1]), stroke: { colour: ink, widthPx: 5 * u }, z: 9 });
