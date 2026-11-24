@@ -1,7 +1,7 @@
 import type { DemoScript } from "../demo";
 import type { Piece } from "../scene";
 import { sparklePath } from "../shapes";
-import { caps, galleryScene, inkCentre, letterCells, rectClip, roleRows } from "./gallery-layout";
+import { caps, galleryScene, inkCentre, letterCells, rectClip, roleRows, rowsOf } from "./gallery-layout";
 
 export const TRACE_DEMO: DemoScript = {
   lines: ["most:b rules:b are:m just:m fear:h", "nobody:b remembers:b the:m safe:b ones", "go:b big:h or:m go:b home", "so:m be:b loud:h"],
@@ -17,6 +17,7 @@ export const traceProgram = galleryScene("trace", 1290, (ctx) => {
       size: word.role === "hero" ? 168 : 150, spacing: word.role === "hero" ? -0.02 : 0.005 })),
   });
   const pieces: Piece[] = [];
+  const rows = rowsOf(cells);
   let budget = 28;
   for (const cell of cells) {
     const word = cue.words[cell.at]!;
@@ -37,8 +38,14 @@ export const traceProgram = galleryScene("trace", 1290, (ctx) => {
         pieces.push({ ...letter, id: `${letter.id}gap`, z: 4, stroke: { colour: c.accent, widthPx: 7.5 * u } });
         pieces.push(letter);
       }
-      const x = cell.x + (cell.width / 2 + 12 * u) * ctx.side;
-      const by = y - cell.size * 0.45;
+      // The badge sits on the hero's top corner, between the rows. Ink that hangs below the row above's baseline (Devanagari
+      // matras and tails) would be covered, so the badge keeps the Latin clearance to that measured ink: it drops by the
+      // overhang and moves out beside the word rather than over its first letters.
+      const badgeR = 42 * u;
+      const above = rows[rows.findIndex((row) => row.includes(cell)) - 1] ?? [];
+      const hang = Math.max(0, ...above.map((other) => other.inkBottom - ctx.input.measure("O", other.face, other.size, other.spacing).inkBottom));
+      const by = y - cell.size * 0.45 + hang;
+      const x = cell.x + (cell.width / 2 + (hang > 0 ? 4 * u + badgeR : 12 * u)) * ctx.side;
       const badgeAt = Math.min(word.startMs + 200, word.endMs - 1);
       const badgeEnd = Math.min(to, badgeAt + 280);
       const scale = [[badgeAt, 0.15], [badgeEnd, 1, "outBack"]] as const;
