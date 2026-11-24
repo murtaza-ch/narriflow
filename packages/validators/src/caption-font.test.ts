@@ -30,6 +30,13 @@ const TEMPLATE_FACES = [
   "Chango",
   "Alfa Slab One",
   "Abril Fatface",
+  "Montserrat ExtraBold",
+  "Rubik ExtraBold",
+  "DM Serif Display Italic",
+  "Inter Tight Light",
+  "Inter Tight Light Italic",
+  "Inter Tight Medium Italic",
+  "Inter Tight ExtraBold Italic",
 ];
 
 describe("template-only caption faces", () => {

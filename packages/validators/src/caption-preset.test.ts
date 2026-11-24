@@ -42,13 +42,13 @@ describe("captionPresetSchema defaults", () => {
 });
 
 describe("caption preset catalog", () => {
-  test("has 68 presets with unique ids and names, the Dynamic group first and the Motion group after it", () => {
-    expect(CAPTION_PRESETS).toHaveLength(68);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(68);
-    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(68);
+  test("has 79 presets with unique ids and names, the Dynamic group first and the Motion group after it", () => {
+    expect(CAPTION_PRESETS).toHaveLength(79);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.id)).size).toBe(79);
+    expect(new Set(CAPTION_PRESETS.map((named) => named.name)).size).toBe(79);
     expect(CAPTION_PRESET_GROUPS.slice(0, 2)).toEqual(["Dynamic", "Motion"]);
     expect(CAPTION_PRESETS[0]!.group).toBe("Dynamic");
-    expect(CAPTION_PRESETS.filter((named) => named.group === "Motion")).toHaveLength(37);
+    expect(CAPTION_PRESETS.filter((named) => named.group === "Motion")).toHaveLength(48);
     for (const group of CAPTION_PRESET_GROUPS.filter((name) => name !== "Dynamic" && name !== "Motion")) {
       expect(CAPTION_PRESETS.filter((named) => named.group === group)).toHaveLength(6);
     }

@@ -40,6 +40,17 @@ import { VERIFIED_DEMO, verifiedProgram } from "./templates/verified";
 import { WONKY_DEMO, wonkyProgram } from "./templates/wonky";
 import { AURA_DEMO, auraProgram } from "./templates/aura";
 import { ORBIT_DEMO, orbitProgram } from "./templates/orbit";
+import { SHUFFLE_DEMO, shuffleProgram } from "./templates/shuffle";
+import { SQUASH_DEMO, squashProgram } from "./templates/squash";
+import { SLAB_DEMO, slabProgram } from "./templates/slab";
+import { LABELS_DEMO, labelsProgram } from "./templates/labels";
+import { GOOGLY_DEMO, googlyProgram } from "./templates/googly";
+import { BUBBLE_DEMO, bubbleProgram } from "./templates/bubble";
+import { STRIKE_DEMO, strikeProgram } from "./templates/strike";
+import { SEVENTIES_DEMO, seventiesProgram } from "./templates/seventies";
+import { THERMAL_DEMO, thermalProgram } from "./templates/thermal";
+import { SLOT_DEMO, slotProgram } from "./templates/slot";
+import { INKUP_DEMO, inkupProgram } from "./templates/inkup";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -85,6 +96,17 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   ledge: { program: ledgeProgram, demo: LEDGE_DEMO },
   cascade: { program: cascadeProgram, demo: CASCADE_DEMO },
   orbit: { program: orbitProgram, demo: ORBIT_DEMO },
+  shuffle: { program: shuffleProgram, demo: SHUFFLE_DEMO },
+  squash: { program: squashProgram, demo: SQUASH_DEMO },
+  slab: { program: slabProgram, demo: SLAB_DEMO },
+  labels: { program: labelsProgram, demo: LABELS_DEMO },
+  googly: { program: googlyProgram, demo: GOOGLY_DEMO },
+  bubble: { program: bubbleProgram, demo: BUBBLE_DEMO },
+  strike: { program: strikeProgram, demo: STRIKE_DEMO },
+  seventies: { program: seventiesProgram, demo: SEVENTIES_DEMO },
+  thermal: { program: thermalProgram, demo: THERMAL_DEMO },
+  slot: { program: slotProgram, demo: SLOT_DEMO },
+  inkup: { program: inkupProgram, demo: INKUP_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

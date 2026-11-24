@@ -207,6 +207,12 @@ export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionO
   "Inter Tight Medium": ["Cyrillic", "Greek"],
   "Inter Tight Regular": ["Cyrillic", "Greek"],
   "Rubik Black": ["Cyrillic"],
+  "Montserrat ExtraBold": ["Cyrillic"],
+  "Rubik ExtraBold": ["Cyrillic"],
+  "Inter Tight Light": ["Cyrillic", "Greek"],
+  "Inter Tight Light Italic": ["Cyrillic", "Greek"],
+  "Inter Tight Medium Italic": ["Cyrillic", "Greek"],
+  "Inter Tight ExtraBold Italic": ["Cyrillic", "Greek"],
 };
 
 const LATIN_RE = /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]*$/u;

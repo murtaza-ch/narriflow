@@ -82,6 +82,13 @@ export const CAPTION_FONT_FACES = [
   { name: "Chango", file: "Chango-Regular.ttf", assName: "Chango Regular", weight: 400, style: "normal", ascent: 0.995, descent: 0.216, capHeight: 0.701, templateOnly: true },
   { name: "Alfa Slab One", file: "AlfaSlabOne-Regular.ttf", assName: "Alfa Slab One Regular", weight: 400, style: "normal", ascent: 1.238, descent: 0.327, capHeight: 0.778, templateOnly: true },
   { name: "Abril Fatface", file: "AbrilFatface-Regular.ttf", assName: "Abril Fatface", weight: 400, style: "normal", ascent: 1.058, descent: 0.291, capHeight: 0.7, templateOnly: true },
+  { name: "Montserrat ExtraBold", file: "Montserrat-ExtraBold.ttf", assName: "Montserrat ExtraBold", weight: 800, style: "normal", ascent: 1.109, descent: 0.453, capHeight: 0.7, templateOnly: true },
+  { name: "Rubik ExtraBold", file: "Rubik-ExtraBold.ttf", assName: "Rubik ExtraBold", weight: 800, style: "normal", ascent: 1.066, descent: 0.466, capHeight: 0.7, templateOnly: true },
+  { name: "DM Serif Display Italic", file: "DMSerifDisplay-Italic.ttf", assName: "DM Serif Display Italic", weight: 400, style: "italic", ascent: 1.036, descent: 0.335, capHeight: 0.66, templateOnly: true },
+  { name: "Inter Tight Light", file: "InterTight-Light.ttf", assName: "Inter Tight Light", weight: 300, style: "normal", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Inter Tight Light Italic", file: "InterTight-LightItalic.ttf", assName: "Inter Tight Light Italic", weight: 300, style: "italic", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Inter Tight Medium Italic", file: "InterTight-MediumItalic.ttf", assName: "Inter Tight Medium Italic", weight: 500, style: "italic", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Inter Tight ExtraBold Italic", file: "InterTight-ExtraBoldItalic.ttf", assName: "Inter Tight ExtraBold Italic", weight: 800, style: "italic", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];

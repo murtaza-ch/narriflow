@@ -747,6 +747,111 @@ const captionAbrilFatface = localFont({
   ],
 });
 
+const captionMontserratExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Montserrat-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-montserrat-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.9%" },
+    { prop: "descent-override", value: "45.3%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionRubikExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Rubik-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-rubik-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "106.6%" },
+    { prop: "descent-override", value: "46.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionDmSerifDisplayItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/DMSerifDisplay-Italic.ttf",
+  weight: "400",
+  style: "italic",
+  variable: "--font-caption-dm-serif-display-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "103.6%" },
+    { prop: "descent-override", value: "33.5%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightLight = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-Light.ttf",
+  weight: "300",
+  style: "normal",
+  variable: "--font-caption-inter-tight-light",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightLightItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-LightItalic.ttf",
+  weight: "300",
+  style: "italic",
+  variable: "--font-caption-inter-tight-light-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightMediumItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-MediumItalic.ttf",
+  weight: "500",
+  style: "italic",
+  variable: "--font-caption-inter-tight-medium-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionInterTightExtraBoldItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/InterTight-ExtraBoldItalic.ttf",
+  weight: "800",
+  style: "italic",
+  variable: "--font-caption-inter-tight-extrabold-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "110.5%" },
+    { prop: "descent-override", value: "31.93%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 /** CSS variable classes for <html>; each variable holds one caption face's family. */
 export const captionFontVariables = [
   captionAnton.variable,
@@ -798,4 +903,11 @@ export const captionFontVariables = [
   captionChango.variable,
   captionAlfaSlabOne.variable,
   captionAbrilFatface.variable,
+  captionMontserratExtraBold.variable,
+  captionRubikExtraBold.variable,
+  captionDmSerifDisplayItalic.variable,
+  captionInterTightLight.variable,
+  captionInterTightLightItalic.variable,
+  captionInterTightMediumItalic.variable,
+  captionInterTightExtraBoldItalic.variable,
 ].join(" ");
