@@ -43,6 +43,11 @@ import { hasTwoPaintedFrames, speechLaneSpace, speechWindows } from "./speech-la
  *             (the last word on a cue without one) into free space, spin, and fade before the cue leaves;
  *   twinkle   every cue: white sparkles with the violet keyline pop on the top corner of the first word (the first and last on
  *             a cue without a key word) and twinkle again every 1.4 s of a long hold.
+ *
+ * Real-cue fixes (gallery review, 2026-11-25): the key label's small bottom-left sparkle took the next row's first word, and the
+ * twinkle's biggest, turning pose reached the caps under it. The small sparkle now takes the first corner (bottom-left, bottom-right,
+ * top-left) that no other word or sparkle is near and is left out when none is free; the twinkle sits lifted above the caps (or
+ * beside the corner when a row above leaves no room), never on the ink.
  */
 export const GOOGLY_DEMO: DemoScript = {
   lines: [
@@ -85,6 +90,8 @@ const EXIT_MS = 170;
 const EXIT_ANCHOR = 200;
 const EXIT_DROP = 14;
 const EXIT_SHRINK = 0.12;
+/** The most a sparkle grows: `outBack(p, 3)` peaks at 1.25 of its size. */
+const SPARK_PEAK = 1.25;
 const INK = "#2A1740";
 const SIMPLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Common}\p{Script=Inherited}]+$/u;
 const PICTO = /\p{Extended_Pictographic}/u;
@@ -523,8 +530,18 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
       };
     };
     const spark1 = sparkPiece(`googly:${n}:w${cell.at}spark1`, 24 * k, 4.8 * k, outer(W - 4 * k), top - 4 * k, Math.round(done - 20), -40 * dir, 12 * dir);
-    const spark2 = sparkPiece(`googly:${n}:w${cell.at}spark2`, 13.6 * k, 2.72 * k, outer(-5 * k), top + H + 3 * k, Math.round(done + 90), 30 * dir, -10 * dir);
     if (spark1) pieces.push(spark1);
+    // The small sparkle: the label's bottom-left corner in the sample. With a row under the label that corner is the next
+    // row's first word, so it takes the first corner that no other word or sparkle is near, and is left out when none is free.
+    const labelBox = obstacles.find((o) => o.x1 === left && o.x2 === right && o.y1 === top);
+    const spark2Spots: [number, number][] = [[-5 * k, top + H + 3 * k], [W + 5 * k, top + H + 3 * k], [-5 * k, top - 4 * k]];
+    const spark2Reach = 13.6 * k * SPARK_PEAK * 1.42 + 3 * k;
+    const spark2At = spark2Spots.find(([dx, y]) => {
+      const at2 = outer(dx);
+      const disc: Box = { x1: at2 - spark2Reach, x2: at2 + spark2Reach, y1: y - spark2Reach, y2: y + spark2Reach };
+      return ![...obstacles.filter((o) => o !== labelBox), ...zones].some((o) => meets(disc, o));
+    });
+    const spark2 = spark2At ? sparkPiece(`googly:${n}:w${cell.at}spark2`, 13.6 * k, 2.72 * k, outer(spark2At[0]), spark2At[1], Math.round(done + 90), 30 * dir, -10 * dir) : null;
     if (spark2) pieces.push(spark2);
 
     // Googly eyes: rise from behind the label's top edge, look around and blink.
@@ -651,12 +668,17 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
       const cy = cell.cy + dy;
       const trailing = i === 1 || (picks.length === 1 && seeded(seed, 7) < 0.5);
       const rightSide = trailing !== rtl;
-      const x = rightSide ? cell.x + cell.w - 4 * k : cell.x + 4 * k;
-      const y = cy - 60 * k;
+      const corner = rightSide ? cell.x + cell.w - 4 * k : cell.x + 4 * k;
+      const out = rightSide ? 1 : -1;
       const radius = 15 * k;
       const t0 = Math.max(from, Math.round(word.startMs + 80 + i * 40));
       const own = obstacles.filter((o) => o.x1 === cell.x && o.x2 === cell.x + cell.w);
-      if (exitStart - t0 < frameMs * 4 || !freeSpot(x, y, radius + 3 * k, own)) return;
+      if (exitStart - t0 < frameMs * 4) return;
+      // On the corner but lifted above the caps, so the sparkle at its largest and turning never reaches the word's ink; when a
+      // row above leaves no room, beside the corner instead; when neither is free the sparkle is left out.
+      const spot = [[corner, cy - 78 * k], [corner + out * 20 * k, cy - 62 * k], [corner + out * 20 * k, cy - 78 * k]].find(([sx, sy]) => freeSpot(sx!, sy!, radius + 3 * k, own));
+      if (!spot) return;
+      const [x, y] = spot as [number, number];
       zones.push({ x1: x - radius, x2: x + radius, y1: y - radius, y2: y + radius });
       const pulses: number[] = [];
       for (let a = t0 + 650; a + 420 < exitStart; a += 1400) pulses.push(a);
