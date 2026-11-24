@@ -2,7 +2,7 @@ import type { CaptionFontName } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { paintedFrameCount } from "../frame-grid";
 import type { Piece } from "../scene";
-import { galleryScene, inkCentre } from "./gallery-layout";
+import { galleryScene, inkCentre, rowsOf } from "./gallery-layout";
 
 export const MATCH_DEMO: DemoScript = {
   lines: ["nobody:b warns:b you:m about:m the:m dip:h@520", "everyone:b quits:b right:m here:b", "the:m ones:b who:m stay:b win:h@560", "so:m keep:b going:b", "day:b ninety:h@620 is:m where:b it:m clicks:b"],
@@ -19,11 +19,29 @@ const CUTS: readonly { face: CaptionFontName; scale: number; spacing: number }[]
 export const matchProgram = galleryScene("match", 1290, (ctx) => {
   const { cue, index, to } = ctx.window;
   const { colours, measure } = ctx.input;
-  const { cells, unit: u } = ctx.layout({
-    column: 900, padding: 52, gap: 22,
+  const gap = 24;
+  const boxPad = 30;
+  const heroes = cue.words.some((word) => word.role === "hero");
+  const laid = ctx.layout({
+    // Leave room for the box padding the key word takes up in its row (placed below).
+    column: heroes ? 900 - 2 * boxPad : 900, padding: 52, gap,
     groups: Array.from({ length: Math.ceil(cue.words.length / 3) }, (_, i) => [i * 3, i * 3 + 1, i * 3 + 2].filter((at) => at < cue.words.length)),
     words: cue.words.map((word) => ({ text: word.text, face: word.role === "hero" ? "Inter Tight ExtraBold" : "Inter Tight Bold",
       size: word.role === "hero" ? 114 : 100, spacing: -0.015 })),
+  });
+  const { unit: u } = laid;
+  // The yellow box is the key word's slot: it takes its padding out of the row, so the sample's word gap stays outside the box.
+  const cells = rowsOf(laid.cells).flatMap((row) => {
+    const sorted = [...row].sort((a, b) => a.x - b.x);
+    const pad = (cell: typeof row[number]) => cue.words[cell.at]!.role === "hero" ? boxPad * u : 0;
+    const total = sorted.reduce((sum, cell) => sum + cell.width + 2 * pad(cell), (sorted.length - 1) * gap * u);
+    let left = (sorted[0]!.x - sorted[0]!.width / 2 + sorted.at(-1)!.x + sorted.at(-1)!.width / 2) / 2 - total / 2;
+    return sorted.map((cell) => {
+      left += pad(cell);
+      const placed = { ...cell, x: left + cell.width / 2 };
+      left += cell.width + pad(cell) + gap * u;
+      return placed;
+    });
   });
   const pieces: Piece[] = [];
   for (const cell of cells) {
@@ -39,7 +57,7 @@ export const matchProgram = galleryScene("match", 1290, (ctx) => {
         return at < settled ? [[at, angle], [Math.min(at + 99, settled - 1), angle]] as const : [];
       });
       const rotation = cuts.length ? [...cuts, [settled, -0.8] as const] : [[from, -0.8] as const];
-      pieces.push(ctx.rect(`box${cell.at}`, from, cell.x, centre, cell.width + 38 * u, cell.size * 1.12, 0, colours.highlight, { rz: rotation }));
+      pieces.push(ctx.rect(`box${cell.at}`, from, cell.x, centre, cell.width + 2 * boxPad * u, cell.size * 1.12, 0, colours.highlight, { rz: rotation }));
       base.track = { ...base.track, y: [[from, centre]], rz: rotation };
       base.origin = { dx: 0, dy: centre - cell.baseline };
     } else {
