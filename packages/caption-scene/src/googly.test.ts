@@ -67,3 +67,35 @@ test("Googly's small sparkles and twinkles never reach a spoken word's ink on re
   expect(pieces.filter((piece) => /twinkle/.test(piece.id)).length).toBeGreaterThanOrEqual(cues.length);
   expect(kept).toBeGreaterThan(cues.length);
 });
+
+test("Googly's twinkle sits above a Devanagari word's measured ink, and Latin words keep their place", () => {
+  // Devanagari's headline strokes and vowel signs rise far above Latin caps; a twinkle set from the caps' height landed on them.
+  const tall: typeof fakeMeasure = (text, face, size, spacing) => {
+    const base = fakeMeasure(text, face, size, spacing);
+    return /[ऀ-ॿ]/.test(text) ? { ...base, inkTop: -1.1 * size } : base;
+  };
+  const hindi = demoCues({ lines: ["ही:m कम:b है।:b"], language: "hi", options: { lead: 400, gap: 30, cueGap: 120, tail: 500 } }).cues;
+  const input = sceneInput(hindi, { measure: tall });
+  const { pieces } = googlyProgram.build(input);
+  const cue = hindi[0]!;
+  const twinkle = pieces.find((piece) => piece.id === "googly:0:twinkle1")!;
+  const word = pieces.find((piece) => piece.id === "googly:0:w2")!;
+  expect(twinkle).toBeDefined();
+  let checked = 0;
+  let run = 0;
+  for (const t of exportFrameTimes(cue.startMs, cue.endMs, 30)) {
+    const sparkle = pieceBounds(twinkle, t, tall);
+    const ink = pieceBounds(word, t, tall);
+    if (!sparkle || !ink) continue;
+    checked++;
+    // Like the real-measure occlusion test: a sparkle brushing the word's box on a frame or two at its largest is motion, three
+    // consecutive frames inside the box less its margin is a covered word.
+    const core = { x1: ink.x1 + (ink.x2 - ink.x1) * 0.06, x2: ink.x2 - (ink.x2 - ink.x1) * 0.06, y1: ink.y1 + (ink.y2 - ink.y1) * 0.18, y2: ink.y2 - (ink.y2 - ink.y1) * 0.18 };
+    run = sparkle.x1 + 0.5 < core.x2 && core.x1 + 0.5 < sparkle.x2 && sparkle.y1 + 0.5 < core.y2 && core.y1 + 0.5 < sparkle.y2 ? run + 1 : 0;
+    expect(run, `twinkle over its word at ${t}`).toBeLessThan(3);
+  }
+  expect(checked).toBeGreaterThan(10);
+  // Latin ink does not move the twinkle: taller Devanagari ink and nothing else changes where it goes.
+  const latin = demoCues({ lines: ["my:m cat:h@480 runs:b my:m life:b"], options: { lead: 400, gap: 30, cueGap: 120, tail: 500 } }).cues;
+  expect(JSON.stringify(googlyProgram.build(sceneInput(latin, { measure: tall })).pieces)).toBe(JSON.stringify(googlyProgram.build(sceneInput(latin)).pieces));
+});

@@ -322,6 +322,8 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
   const seed = `${n}|${cue.words.map((word) => word.text).join(" ")}`;
   const obstacles: Box[] = [];
   const zones: Box[] = [];
+  /** How far each plain word's measured ink rises above the Latin caps' (0 for Latin). */
+  const inkReach = new Map<number, number>();
 
   // ---- Plain words -------------------------------------------------------------------------------------
   for (const cell of cells) {
@@ -365,7 +367,13 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
       anchor: "baseline-left", language: cue.language,
     } satisfies TextPiece);
     // Anchor of a baseline-left text is its left edge, so the pivot x offset above is half the cell's width.
-    obstacles.push({ x1: cell.x, x2: cell.x + cell.w, y1: cy - 66 * k, y2: cy + 40 * k });
+    // Ink taller than the Latin caps (Devanagari's headline strokes and vowel signs, accented capitals) lifts the box and the beats
+    // set above it. "HOS" is the Latin reference (flat and round caps); an apostrophe or a round overshoot rises under a tenth of
+    // the size and stays where Latin has always put it.
+    const rise = input.measure("HOS", FACE, size, ls).inkTop - input.measure(cell.text, FACE, size, ls).inkTop;
+    const reach = rise > 0.1 * size ? rise : 0;
+    inkReach.set(cell.at, reach);
+    obstacles.push({ x1: cell.x, x2: cell.x + cell.w, y1: cy - 66 * k - reach, y2: cy + 40 * k });
   }
 
   // ---- Key labels ------------------------------------------------------------------------------------------
@@ -676,7 +684,8 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
       if (exitStart - t0 < frameMs * 4) return;
       // On the corner but lifted above the caps, so the sparkle at its largest and turning never reaches the word's ink; when a
       // row above leaves no room, beside the corner instead; when neither is free the sparkle is left out.
-      const spot = [[corner, cy - 78 * k], [corner + out * 20 * k, cy - 62 * k], [corner + out * 20 * k, cy - 78 * k]].find(([sx, sy]) => freeSpot(sx!, sy!, radius + 3 * k, own));
+      const reach = inkReach.get(cell.at) ?? 0;
+      const spot = [[corner, cy - 78 * k - reach], [corner + out * 20 * k, cy - 62 * k - reach], [corner + out * 20 * k, cy - 78 * k - reach]].find(([sx, sy]) => freeSpot(sx!, sy!, radius + 3 * k, own));
       if (!spot) return;
       const [x, y] = spot as [number, number];
       zones.push({ x1: x - radius, x2: x + radius, y1: y - radius, y2: y + radius });
