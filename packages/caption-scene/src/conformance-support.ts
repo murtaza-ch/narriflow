@@ -11,6 +11,7 @@ import { fakeMeasure, sceneInput } from "./test-support";
  * Gallery 3's first ports each wrote their own version of these checks and each missed a different
  * clause; a template's test file calls `describeSpeechConformance` instead.
  *
+ * Two runs: ordinary speech (150 ms words) and staccato speech (one- and two-word cues of 70 ms words).
  * It reasons in painted frames on the export grid (`frame-grid.ts`) at 24, 25, 30 and 60 fps, with
  * the run shifted by sub-frame offsets, and checks:
  *   1. every spoken word has a readable face piece, and nothing else is text the speaker did not say;
@@ -21,7 +22,7 @@ import { fakeMeasure, sceneInput } from "./test-support";
  *   5. no piece of a later cue ever overlaps a live face of an earlier cue;
  *   6. no piece paints on exactly one frame;
  *   7. nothing paints after the last cue's end;
- *   8. overlapping speakers both keep every word through its spoken end, uncovered;
+ *   8. overlapping speakers both keep every word through its spoken end, uncovered, also at 2x on 16:9;
  *   9. at twice the sample size on 9:16, 1:1 and 16:9, every painted frame stays in the safe area.
  *
  * Face pieces: by default a piece whose id is `<scene>:<cue>:w<word>` (the whole word) or
@@ -105,6 +106,12 @@ export function fastRun(cueGap: number): SceneCue[] {
   return demoCues({ lines, options: { lead: 400, gap: 0, cueGap, tail: 400 } }).cues;
 }
 
+/** Staccato speech: one- and two-word cues of 70 ms words and 100-120 ms heroes (Sol's Slab probes, 2026-11-24). */
+export function staccatoRun(cueGap: number): SceneCue[] {
+  const lines = ["go@70", "on@70", "then@120", "we@100 stop:h@120", "we@70 stop:h@100", "one@70 more@70 step@80", "yes:h@100", "no@70", "right@90 now:h@100", "ok@70"];
+  return demoCues({ lines, options: { lead: 311, gap: 0, cueGap, tail: 400 } }).cues;
+}
+
 export function describeSpeechConformance(name: string, program: SceneProgram, options: SpeechConformanceOptions = {}): void {
   const faceOf = options.face ?? defaultFace(name);
   const leadMs = options.leadMs ?? 100;
@@ -114,10 +121,10 @@ export function describeSpeechConformance(name: string, program: SceneProgram, o
 
   describe(`${name}: speech conformance`, () => {
     for (const fps of FPS) {
-      for (const cueGap of [0, 60]) {
-        test(`${fps} fps, cue gap ${cueGap}: words paint on time, stay readable, are never covered or flashed`, () => {
+      for (const [runName, makeRun, cueGap] of [["ordinary", fastRun, 0], ["ordinary", fastRun, 60], ["staccato", staccatoRun, 0], ["staccato", staccatoRun, 60]] as const) {
+        test(`${fps} fps, ${runName} speech, cue gap ${cueGap}: words paint on time, stay readable, are never covered or flashed`, () => {
           for (const offset of OFFSETS) {
-            const run = shift(fastRun(cueGap), offset);
+            const run = shift(makeRun(cueGap), offset);
             const pieces = build(run, { fps });
             const at = `(offset ${offset})`;
             const faces = pieces.flatMap((piece) => {
@@ -193,24 +200,27 @@ export function describeSpeechConformance(name: string, program: SceneProgram, o
             const end = run.at(-1)!.endMs;
             for (const piece of pieces) {
               const frames = exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => painted(piece, t));
-              expect(frames.length, `${piece.id} paints on a single frame (${frames[0]}) ${at}`).not.toBe(1);
+              // A face may be a static pose on the one frame its word gets; anything else on one frame is a flash.
+              if (!faceOf(piece)) expect(frames.length, `${piece.id} paints on a single frame (${frames[0]}) ${at}`).not.toBe(1);
               if (frames.length) expect(frames.at(-1)!, `${piece.id} paints at ${frames.at(-1)}, after the last cue ends at ${end} ${at}`).toBeLessThan(end + 1);
             }
           }
         });
       }
 
-      test(`${fps} fps: overlapping speakers keep every word through its spoken end, uncovered`, () => {
+      test(`${fps} fps: overlapping speakers keep every word through its spoken end, uncovered (1x and 2x, 9:16 and 16:9)`, () => {
+        for (const look of [{ scale: 1, canvas: { width: 1080, height: 1920 } }, { scale: 2, canvas: { width: 1080, height: 1920 } }, { scale: 2, canvas: { width: 1920, height: 1080 } }])
         for (const scenario of [
           { lines: ["first:b@300 late:b@300", "wait:b@300", "what:b@300"], starts: [357, 887, 1187] },
           { lines: ["first:b@150 second:b@150 third:b@150 fourth:b@150", "other:b@150 speaker:b@150 keeps:b@150 talking:b@150"], starts: [357, 887] },
+          { lines: ["some:b@300 fairly:b@300 long:b@300 words:b@300 collide:b@300", "other:b@300 fairly:b@300 long:b@300 words:b@300 interrupt:b@300"], starts: [400, 500] },
         ]) {
           const { cues } = demoCues({ lines: scenario.lines, options: { lead: 357, gap: 0, cueGap: 0 } });
           const run: SceneCue[] = cues.map((cue, i) => {
             const by = scenario.starts[i]! - cue.startMs;
             return { ...shift([cue], by)[0]!, speaker: i % 2 };
           });
-          const pieces = build(run, { fps });
+          const pieces = build(run, { fps, ...look });
           for (const piece of pieces) {
             const ref = faceOf(piece);
             if (!ref) continue;
