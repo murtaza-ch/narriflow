@@ -89,6 +89,19 @@ export const CAPTION_FONT_FACES = [
   { name: "Inter Tight Light Italic", file: "InterTight-LightItalic.ttf", assName: "Inter Tight Light Italic", weight: 300, style: "italic", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
   { name: "Inter Tight Medium Italic", file: "InterTight-MediumItalic.ttf", assName: "Inter Tight Medium Italic", weight: 500, style: "italic", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
   { name: "Inter Tight ExtraBold Italic", file: "InterTight-ExtraBoldItalic.ttf", assName: "Inter Tight ExtraBold Italic", weight: 800, style: "italic", ascent: 1.105, descent: 0.3193, capHeight: 0.7275, templateOnly: true },
+  { name: "Barlow Condensed Medium", file: "BarlowCondensed-Medium.ttf", assName: "Barlow Condensed Medium", weight: 500, style: "normal", ascent: 1.075, descent: 0.274, capHeight: 0.7, templateOnly: true },
+  { name: "Barlow Condensed Bold", file: "BarlowCondensed-Bold.ttf", assName: "Barlow Condensed Bold", weight: 700, style: "normal", ascent: 1.075, descent: 0.274, capHeight: 0.7, templateOnly: true },
+  { name: "Barlow Condensed ExtraBold Italic", file: "BarlowCondensed-ExtraBoldItalic.ttf", assName: "Barlow Condensed ExtraBold Italic", weight: 800, style: "italic", ascent: 1.075, descent: 0.274, capHeight: 0.7, templateOnly: true },
+  { name: "Playfair Display Bold", file: "PlayfairDisplay-Bold.ttf", assName: "Playfair Display Bold", weight: 700, style: "normal", ascent: 1.159, descent: 0.251, capHeight: 0.708, templateOnly: true },
+  { name: "Playfair Display Bold Italic", file: "PlayfairDisplay-BoldItalic.ttf", assName: "Playfair Display Bold Italic", weight: 700, style: "italic", ascent: 1.159, descent: 0.251, capHeight: 0.708, templateOnly: true },
+  { name: "Space Grotesk Bold", file: "SpaceGrotesk-Bold.ttf", assName: "Space Grotesk Bold", weight: 700, style: "normal", ascent: 1.15, descent: 0.292, capHeight: 0.7, templateOnly: true },
+  { name: "DM Sans Bold", file: "DMSans-Bold.ttf", assName: "DM Sans 14pt Bold", weight: 700, style: "normal", ascent: 1.012, descent: 0.31, capHeight: 0.7, templateOnly: true },
+  { name: "DM Sans Black", file: "DMSans-Black.ttf", assName: "DM Sans 14pt Black", weight: 900, style: "normal", ascent: 1.012, descent: 0.31, capHeight: 0.7, templateOnly: true },
+  { name: "Manrope Bold", file: "Manrope-Bold.ttf", assName: "Manrope Bold", weight: 700, style: "normal", ascent: 1.066, descent: 0.3, capHeight: 0.72, templateOnly: true },
+  { name: "Manrope ExtraBold", file: "Manrope-ExtraBold.ttf", assName: "Manrope ExtraBold", weight: 800, style: "normal", ascent: 1.066, descent: 0.3, capHeight: 0.72, templateOnly: true },
+  { name: "Space Mono Bold", file: "SpaceMono-Bold.ttf", assName: "Space Mono Bold", weight: 700, style: "normal", ascent: 1.12, descent: 0.361, capHeight: 0.7, templateOnly: true },
+  { name: "Silkscreen Bold", file: "Silkscreen-Bold.ttf", assName: "Silkscreen Bold", weight: 700, style: "normal", ascent: 1.0, descent: 0.25, capHeight: 0.625, templateOnly: true },
+  { name: "Bagel Fat One", file: "BagelFatOne-Regular.ttf", assName: "Bagel Fat One Regular", weight: 400, style: "normal", ascent: 1.16, descent: 0.288, capHeight: 0.734, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];

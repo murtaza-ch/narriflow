@@ -1,12 +1,11 @@
 import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import { toCaptionUpperCase } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
-import { type Ease, type Frames } from "../ease";
+import type { Ease } from "../ease";
 import { exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import type { SceneProgram } from "../input";
 import { cueDirection, sceneSpace } from "../layout";
 import { type Clip, type Piece, type TextPiece, pieceBounds } from "../scene";
-import { rectPath } from "../shapes";
 import { layoutSpeechWords, renderWithReadingHolds, speechWindows } from "./speech-layout";
 
 /** Slot rolls Anton caps through fixed windows. The key word's upper and lower reels use
@@ -51,7 +50,7 @@ export const slotProgram: SceneProgram = {
         const text = toCaptionUpperCase(word.text, cue.language);
         return { text, size: hero ? 270 : heroCue ? 106 : 150, face: FACE, spacing: SIMPLE.test(text) ? TRACKING : 0 } as const;
       });
-      const { cells, box, unit } = layoutSpeechWords(input, window, { anchor: ANCHOR, column: 910, gap: heroCue ? 22 : 30, padding: 42, words: specs, groups });
+      const { cells, unit } = layoutSpeechWords(input, window, { anchor: ANCHOR, column: 910, gap: heroCue ? 22 : 30, padding: 42, words: specs, groups });
       const exitStart = Math.max(window.spokenEnd + HOLD, to - 130);
       const exit = paintedFrameCount(exitStart, to, fps) >= 2;
       let letterRoom = 22;
@@ -122,29 +121,6 @@ export const slotProgram: SceneProgram = {
         });
       }
 
-      if (paintedFrameCount(window.from, to, fps) < 2) return pieces;
-      const from = window.from;
-      const ruleEnd = Math.min(to, from + 300);
-      const rule: Frames = [[from, 0.08], [ruleEnd, 1, "outExpo"]];
-      const y = box.y2 + 12 * unit;
-      const width = box.x2 - box.x1;
-      const x = rtl ? box.x2 : box.x1;
-      pieces.push({
-        id: `slot:${index}:rule`, kind: "shape", z: 1, fromMs: from, toMs: to,
-        path: rectPath(0, 0, width, 5 * unit), origin: { dx: rtl ? width : 0, dy: 0 }, fill: { colour: colours.primary },
-        track: { x: [[from, x]], y: [[from, y]], sx: rule, ...(exit ? { o: [[exitStart, 1], [to, 0, "in"]] } : {}) },
-      });
-      // An accent cap follows the rule and the second tick rises behind it like a reel index.
-      const side = rtl ? -1 : 1;
-      const cap = width * (index % 2 === 0 ? 0.12 : 0.17);
-      for (let i = 0; i < 2; i++) {
-        const offset = (i === 0 ? cap * 0.3 : cap) * side;
-        pieces.push({
-          id: `slot:${index}:tick${i}`, kind: "shape", z: 2, fromMs: from, toMs: to,
-          path: rectPath(0, 0, (i === 0 ? 12 : 6) * unit, 7 * unit), origin: { dx: 3 * unit, dy: 0 }, fill: { colour: colours.highlight },
-          track: { x: [[from, x + (side * width - offset) * 0.08], [ruleEnd, x + side * width - offset, "outExpo"]], y: [[from, y + (5 + 3 * i) * unit], [ruleEnd, y + 2 * unit, "outExpo"]], ...(exit ? { o: [[exitStart, 1], [to, 0, "in"]] } : {}) },
-        });
-      }
       return pieces;
     });
     return { pieces };

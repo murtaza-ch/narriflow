@@ -140,9 +140,9 @@ export function shiftPiece<P extends Piece>(piece: P, dx: number, dy: number): P
   const track = { ...piece.track };
   if (track.x) track.x = shiftFrames(track.x, dx);
   if (track.y) track.y = shiftFrames(track.y, dy);
-  const clip = piece.clip
+  const clip = piece.clip && piece.clip.radius === undefined
     ? { ...piece.clip, x1: shiftFrames(piece.clip.x1, dx), x2: shiftFrames(piece.clip.x2, dx), y1: shiftFrames(piece.clip.y1, dy), y2: shiftFrames(piece.clip.y2, dy) }
-    : undefined;
+    : piece.clip;
   return { ...piece, track, ...(clip ? { clip } : {}) };
 }
 

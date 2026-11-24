@@ -852,6 +852,201 @@ const captionInterTightExtraBoldItalic = localFont({
   ],
 });
 
+const captionBarlowCondensedMedium = localFont({
+  src: "../../../packages/caption-fonts/fonts/BarlowCondensed-Medium.ttf",
+  weight: "500",
+  style: "normal",
+  variable: "--font-caption-barlow-condensed-medium",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "107.50%" },
+    { prop: "descent-override", value: "27.40%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionBarlowCondensedBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/BarlowCondensed-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-barlow-condensed-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "107.50%" },
+    { prop: "descent-override", value: "27.40%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionBarlowCondensedExtraBoldItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/BarlowCondensed-ExtraBoldItalic.ttf",
+  weight: "800",
+  style: "italic",
+  variable: "--font-caption-barlow-condensed-extrabold-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "107.50%" },
+    { prop: "descent-override", value: "27.40%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPlayfairDisplayBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/PlayfairDisplay-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-playfair-display-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "115.90%" },
+    { prop: "descent-override", value: "25.10%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPlayfairDisplayBoldItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/PlayfairDisplay-BoldItalic.ttf",
+  weight: "700",
+  style: "italic",
+  variable: "--font-caption-playfair-display-bold-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "115.90%" },
+    { prop: "descent-override", value: "25.10%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionSpaceGroteskBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/SpaceGrotesk-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-space-grotesk-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "115.00%" },
+    { prop: "descent-override", value: "29.20%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionDMSansBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/DMSans-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-dm-sans-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "101.20%" },
+    { prop: "descent-override", value: "31.00%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionDMSansBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/DMSans-Black.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-dm-sans-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "101.20%" },
+    { prop: "descent-override", value: "31.00%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionManropeBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Manrope-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-manrope-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "106.60%" },
+    { prop: "descent-override", value: "30.00%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionManropeExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Manrope-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-manrope-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "106.60%" },
+    { prop: "descent-override", value: "30.00%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionSpaceMonoBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/SpaceMono-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-space-mono-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "112.00%" },
+    { prop: "descent-override", value: "36.10%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionSilkscreenBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Silkscreen-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-silkscreen-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "100.00%" },
+    { prop: "descent-override", value: "25.00%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionBagelFatOne = localFont({
+  src: "../../../packages/caption-fonts/fonts/BagelFatOne-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-bagel-fat-one",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "116.00%" },
+    { prop: "descent-override", value: "28.80%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 /** CSS variable classes for <html>; each variable holds one caption face's family. */
 export const captionFontVariables = [
   captionAnton.variable,
@@ -910,4 +1105,17 @@ export const captionFontVariables = [
   captionInterTightLightItalic.variable,
   captionInterTightMediumItalic.variable,
   captionInterTightExtraBoldItalic.variable,
+  captionBarlowCondensedMedium.variable,
+  captionBarlowCondensedBold.variable,
+  captionBarlowCondensedExtraBoldItalic.variable,
+  captionPlayfairDisplayBold.variable,
+  captionPlayfairDisplayBoldItalic.variable,
+  captionSpaceGroteskBold.variable,
+  captionDMSansBold.variable,
+  captionDMSansBlack.variable,
+  captionManropeBold.variable,
+  captionManropeExtraBold.variable,
+  captionSpaceMonoBold.variable,
+  captionSilkscreenBold.variable,
+  captionBagelFatOne.variable,
 ].join(" ");

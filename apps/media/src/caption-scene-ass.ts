@@ -14,6 +14,7 @@ import {
   pathBounds,
   pathToAss,
   retracePath,
+  roundedClipPath,
   sceneCuesFromLayers,
   sceneInputFromPreset,
 } from "@narriflow/caption-scene";
@@ -290,6 +291,8 @@ function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: Sc
   if (times.length === 0) return [];
   const poses = times.map((t) => evaluatePiece(piece, t));
   const drawn = poses.map(frameDrawn);
+  const roundedClips = piece.clip?.radius === undefined ? undefined : poses.map((pose, at) =>
+    drawn[at] ? `\\${pose.clip!.inverse ? "iclip" : "clip"}(4,${pathToAss(roundedClipPath(pose), 4)})` : "");
   const geometry = pieceGeometry(piece, metrics);
   const layers = paintLayers(piece);
   const events: AssEvent[] = [];
@@ -299,6 +302,11 @@ function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: Sc
   for (let at = 0; at <= times.length; at++) {
     if (at < times.length && drawn[at]) {
       if (runStart < 0) runStart = at;
+      // ASS can interpolate rectangle clips. Carry a new rounded vector mask on each changed frame.
+      else if (roundedClips && roundedClips[at] !== roundedClips[at - 1]) {
+        runs.push({ from: runStart, to: at - 1 });
+        runStart = at;
+      }
     } else if (runStart >= 0) {
       runs.push({ from: runStart, to: at - 1 });
       runStart = -1;
@@ -308,7 +316,7 @@ function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: Sc
     for (const span of cutSpans(run, times, poses, geometry, layers)) {
       const startMs = csFloor(times[span.from]!);
       const endMs = csFloor(span.to + 1 < times.length && drawn[span.to + 1] ? times[span.to + 1]! : exportFrameAfter(times[span.to]!, fps));
-      for (const layer of layers) events.push(layerEvent(piece, metrics, geometry, layer, span, times, poses, startMs, endMs));
+      for (const layer of layers) events.push(layerEvent(piece, metrics, geometry, layer, span, times, poses, startMs, endMs, roundedClips?.[span.from]));
     }
   }
   return events;
@@ -402,6 +410,7 @@ function layerEvent(
   poses: readonly PiecePose[],
   startMs: number,
   endMs: number,
+  roundedClip?: string,
 ): AssEvent {
   const indices = Array.from({ length: span.to - span.from + 1 }, (_, k) => span.from + k);
   const rel = indices.map((k) => times[k]! - startMs);
@@ -440,7 +449,8 @@ function layerEvent(
   if (!uniform(blurs) || blurs[0]! > 0) tags.push(chain("blur", rel, blurs, SCENE_TOLERANCE.blur, num));
 
   // Clip, in canvas px, not carried by the piece's own transform.
-  if (piece.clip) tags.push(clipTags(piece, rel, at((pose) => pose.clip!)));
+  if (roundedClip) tags.push(roundedClip);
+  else if (piece.clip) tags.push(clipTags(piece, rel, at((pose) => pose.clip!)));
 
   // Colour and alpha per layer.
   const alphaFor = (base: number) => at((pose) => alphaByte(base * pose.o));

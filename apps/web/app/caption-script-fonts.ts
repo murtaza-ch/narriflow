@@ -213,6 +213,10 @@ export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionO
   "Inter Tight Light Italic": ["Cyrillic", "Greek"],
   "Inter Tight Medium Italic": ["Cyrillic", "Greek"],
   "Inter Tight ExtraBold Italic": ["Cyrillic", "Greek"],
+  "Playfair Display Bold": ["Cyrillic"],
+  "Playfair Display Bold Italic": ["Cyrillic"],
+  "Manrope Bold": ["Cyrillic", "Greek"],
+  "Manrope ExtraBold": ["Cyrillic", "Greek"],
 };
 
 const LATIN_RE = /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]*$/u;

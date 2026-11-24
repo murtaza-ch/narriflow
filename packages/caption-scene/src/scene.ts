@@ -1,7 +1,7 @@
 import type { CaptionFontName } from "@narriflow/validators";
 import { ease, type Ease, type Frames, kf } from "./ease";
 import { livePieceIndexes } from "./piece-index";
-import { pathBounds } from "./shapes";
+import { pathBounds, roundedRectPath } from "./shapes";
 
 /**
  * The Caption Scene model (spec section 3.1, ADR 0021). A Scene Style is a program that turns all
@@ -40,12 +40,14 @@ export interface Track {
   colour?: ColourFrames;
 }
 
-/** A rectangle in CANVAS px that does not move with the piece: what libass `\clip` does. */
+/** A clip in canvas px, or a rounded rectangle relative to the piece's pivot when radius is set. */
 export interface Clip {
   x1: Frames;
   y1: Frames;
   x2: Frames;
   y2: Frames;
+  /** A local corner radius in px. The rounded clip follows the piece's scale and Z rotation. */
+  radius?: number;
   /** Keep what is outside the rectangle (`\iclip`). */
   inverse?: boolean;
 }
@@ -148,7 +150,7 @@ export interface PiecePose {
   readonly blur: number;
   /** `#RRGGBB` fill now (the track's, else the piece's own fill). */
   readonly colour: string;
-  readonly clip: { readonly x1: number; readonly y1: number; readonly x2: number; readonly y2: number; readonly inverse: boolean } | null;
+  readonly clip: (Box & { readonly inverse: boolean; readonly radius?: number }) | null;
 }
 
 const channel = (hex: string, at: number) => Number.parseInt(hex.slice(1 + 2 * at, 3 + 2 * at), 16);
@@ -184,7 +186,7 @@ export function evaluatePiece(piece: Piece, ms: number): PiecePose {
   const { track } = piece;
   const at = (frames: Frames | undefined, rest: number) => (frames ? kf(ms, frames) : rest);
   const clip = piece.clip
-    ? { x1: kf(ms, piece.clip.x1), y1: kf(ms, piece.clip.y1), x2: kf(ms, piece.clip.x2), y2: kf(ms, piece.clip.y2), inverse: piece.clip.inverse === true }
+    ? { x1: kf(ms, piece.clip.x1), y1: kf(ms, piece.clip.y1), x2: kf(ms, piece.clip.x2), y2: kf(ms, piece.clip.y2), inverse: piece.clip.inverse === true, ...(piece.clip.radius !== undefined ? { radius: piece.clip.radius } : {}) }
     : null;
   return {
     visible: ms >= piece.fromMs && ms < piece.toMs,
@@ -209,6 +211,26 @@ export interface Box {
   readonly y1: number;
   readonly x2: number;
   readonly y2: number;
+}
+
+/** Transform the local rounded clip to canvas coordinates for both renderers. */
+export function roundedClipPath(pose: PiecePose, scale = 1): PathCmd[] {
+  const clip = pose.clip;
+  if (!clip || clip.radius === undefined || clip.x2 <= clip.x1 || clip.y2 <= clip.y1) return [];
+  const angle = pose.rz * Math.PI / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const point = (x: number, y: number) => [
+    (pose.x + x * pose.sx * cos - y * pose.sy * sin) * scale,
+    (pose.y + x * pose.sx * sin + y * pose.sy * cos) * scale,
+  ] as const;
+  return roundedRectPath(clip.x1, clip.y1, clip.x2 - clip.x1, clip.y2 - clip.y1, clip.radius).map((command): PathCmd => {
+    switch (command[0]) {
+      case "Z": return command;
+      case "C": return ["C", ...point(command[1], command[2]), ...point(command[3], command[4]), ...point(command[5], command[6])];
+      default: return [command[0], ...point(command[1], command[2])];
+    }
+  });
 }
 
 /** What a renderer measures for a run of text: px, advance excludes the trailing letter spacing. */
@@ -268,11 +290,14 @@ export function pieceBounds(piece: Piece, ms: number, measure: Measure): Box | n
   }
   let box: Box = { x1, y1, x2, y2 };
   if (pose.clip && !pose.clip.inverse) {
+    const path = pose.clip.radius === undefined ? undefined : roundedClipPath(pose);
+    if (path?.length === 0) return null;
+    const clip = path ? pathBounds(path) : pose.clip;
     box = {
-      x1: Math.max(box.x1, Math.min(pose.clip.x1, pose.clip.x2)),
-      y1: Math.max(box.y1, Math.min(pose.clip.y1, pose.clip.y2)),
-      x2: Math.min(box.x2, Math.max(pose.clip.x1, pose.clip.x2)),
-      y2: Math.min(box.y2, Math.max(pose.clip.y1, pose.clip.y2)),
+      x1: Math.max(box.x1, Math.min(clip.x1, clip.x2)),
+      y1: Math.max(box.y1, Math.min(clip.y1, clip.y2)),
+      x2: Math.min(box.x2, Math.max(clip.x1, clip.x2)),
+      y2: Math.min(box.y2, Math.max(clip.y1, clip.y2)),
     };
     if (box.x2 <= box.x1 || box.y2 <= box.y1) return null;
   }

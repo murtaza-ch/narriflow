@@ -209,11 +209,10 @@ describe("Shuffle beats on a long clip", () => {
   }
   const pieces = build(long);
 
-  test("every cue of a 30-cue clip gets its rack and gold chips; a cue without a key word gets the bonus tile", () => {
+  test("every cue of a 30-cue clip gets gold chips; a cue without a key word gets the bonus tile", () => {
     expect(long.length).toBeGreaterThanOrEqual(24);
     long.forEach((cue, n) => {
       const mine = ofCue(pieces, n);
-      expect(mine.filter((piece) => kind(piece) === "rack"), `cue ${n} rack`).toHaveLength(1);
       const chips = mine.filter((piece) => kind(piece).startsWith("chip"));
       expect(chips.length, `cue ${n} chips`).toBeGreaterThanOrEqual(1);
       expect(chips.length).toBeLessThanOrEqual(8);

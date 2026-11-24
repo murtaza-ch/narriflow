@@ -118,6 +118,20 @@ describe("the tags imply the evaluator's values at every frame (spec 5.4)", () =
 });
 
 describe("a Scene Style target through renderCaptionTrack's writer", () => {
+  test("Pills writes the same moving rounded mask for the plate and its ink on each frame", () => {
+    const demo = sceneDemo("pills");
+    const plate = demo.scene.pieces.find((piece) => piece.id === "pills:0:fill1")!;
+    const ink = demo.scene.pieces.find((piece) => piece.id === "pills:0:w1flood")!;
+    const clips = (piece: Piece) => {
+      const events = eventsOf([piece], demo.canvas);
+      return [633, 667, 700].map((t) => events.find((event) => event.startMs <= t && t < event.endMs)?.text.match(/\\clip\(4,([^)]*)\)/)?.[1]);
+    };
+    const masks = clips(plate);
+    expect(masks.every((mask) => mask?.startsWith("m ") && mask.includes(" b "))).toBe(true);
+    expect(new Set(masks).size).toBe(3);
+    expect(clips(ink)).toEqual(masks);
+  });
+
   test("Orbit's continuous tracking reaches the ASS writer at every export frame", () => {
     for (const fps of [24, 25, 30, 60]) {
       const demo = sceneDemo("orbit", { fps });

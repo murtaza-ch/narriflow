@@ -64,9 +64,8 @@ const LS_L = 0.02;
 const ROW_H = 136;
 const LABEL_ROW = 166;
 const GAP = 26;
-/** Baselines below the row's centre (read off the sample in Chrome). */
+/** The plain text baseline below the row's centre. */
 const PLAIN_BASE = 22;
-const LABEL_BASE = 18;
 const LABEL_H = 170;
 /** Label width beyond its text: 14 + 6 + 5 + 36 on each side, the text's left edge from the label's. */
 const LABEL_EXTRA = 122;
@@ -378,7 +377,8 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
     const cx = left + W / 2;
     const size = FS_L * k;
     const ls = cell.simple ? LS_L : 0;
-    const baseline = cy + LABEL_BASE * k;
+    const { inkTop, inkBottom } = input.measure(cell.text, FACE, size, ls);
+    const inkCentre = (inkTop + inkBottom) / 2;
     const textLeft = left + LABEL_TEXT_LEFT * k;
     obstacles.push({ x1: left, x2: right, y1: top, y2: top + H });
 
@@ -483,7 +483,7 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, stickers: read
       id: `googly:${n}:w${cell.at}`, kind: "text", z: zBase + 7, fromMs: typeStart, toMs: to,
       track: textTrack,
       clip: { ...stepFrames(), y1: [[typeStart, top - 40 * k]], y2: [[typeStart, top + H + 40 * k]] },
-      origin: { dx: cx - textLeft, dy: cy - baseline },
+      origin: { dx: cx - textLeft, dy: inkCentre },
       text: cell.text, face: FACE, sizePx: size, letterSpacingEm: ls, fill: input.colours.primary,
       stroke: { widthPx: STROKE_L * k, colour: INK },
       anchor: "baseline-left", language: cue.language,

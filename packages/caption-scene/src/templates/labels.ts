@@ -1,11 +1,11 @@
 import type { DemoScript } from "../demo";
-import { type Ease, type Frames, EASES, clamp, prog } from "../ease";
+import { type Frames, EASES, clamp, prog } from "../ease";
 import { SCENE_DEFAULT_FPS, exportFrameAtOrBefore, paintedFrameCount, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { type SceneSpace, balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
 import { type Box, type Piece, type ShapePiece, type TextPiece, type Track, evaluatePiece, pieceBounds } from "../scene";
-import { ellipsePath, polygonPath, polylinePath, rectPath } from "../shapes";
+import { polygonPath, polylinePath, rectPath } from "../shapes";
 import { speechLaneSpace, speechWindows } from "./speech-layout";
 
 /**
@@ -24,7 +24,7 @@ import { speechLaneSpace, speechWindows } from "./speech-layout";
  *   by a key-word counter with a seeded 5-6 degree size, and the side a label flies in from alternates by word and cue. The seeded
  *   hash is FNV-1a (never `Math.random`).
  * - Fit: rows were `nowrap` with no fit. A label wider than the safe width shrinks by itself, and the whole block shrinks (rows and
- *   gaps, with room for the tape above and the strip below) when its rows are too tall. A label is as tall as the measured ink needs
+ *   gaps, with room for the tape and rays) when its rows are too tall. A label is as tall as the measured ink needs
  *   when a script is taller than Montserrat. A flight (the sample's 340 px sideways and 150 px down, 16 degrees, 1.2x) is scaled
  *   back for a label whose flight would leave the safe area, so a wide label drops in nearly where it rests.
  * - Real speech: a label first paints at most 90 ms before its word is said and never after it (the sample's first frame is fully
@@ -41,9 +41,8 @@ import { speechLaneSpace, speechWindows } from "./speech-layout";
  *   ink (`readsOn` in the catalogue row).
  * - Cost: the sample's 30 px blurred shadow is a small soft shadow under the hard one.
  * - New recurring beats, in the labels' own language and on every cue: a TAPE scrap (a zig-zag-ended masking-tape strip, pops onto
- *   a top corner of the first or last label of the top row, the side and angle from the hash), a FEED strip (a thin strip of label
- *   stock under the block that feeds out as the words are said, with a key-coloured head) and, on key-word cues, a fan of three
- *   short RAYS bursting from the key label's free top corner as it lands (a no-key cue gets two on its last label). Rays that
+ *   a top corner of the first or last label of the top row, the side and angle from the hash) and a fan of short RAYS bursting
+ *   from the key label's free top corner as it lands (a no-key cue gets two on its last label). Rays that
  *   would touch another label or leave the safe area are dropped.
  */
 
@@ -88,7 +87,7 @@ const EXIT_STAGGER = 20;
 const ROW_MAX = 760;
 /** Room kept left and right of the rows for a row's nudge, the tape and the rays (sample px). */
 const MARGIN_X = 60;
-/** Room above and below the rows for the tape and rays, and the strip and its shadow (sample px). */
+/** Room above and below the rows for the tape, rays and shadows (sample px). */
 const UP = 50;
 const DOWN = 50;
 
@@ -129,7 +128,7 @@ interface CueLayout {
   readonly labels: readonly Label[];
   readonly rows: readonly (readonly Label[])[];
   readonly q: number;
-  /** The rests of every label plus the room for the tape, rays and strip. */
+  /** The rests of every label plus the room for the tape, rays and shadows. */
   readonly box: Box;
   readonly start: number;
   readonly spoken: number;
@@ -295,7 +294,6 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
   const { space } = layout;
   const words = cue.words;
   const n = words.length;
-  const rtl = cueDirection(cue) === "rtl";
   const exit = exitPlan(n, spoken, release, fps);
   const firstFrom = layout.start - lead;
   const pieces: Piece[] = [];
@@ -426,7 +424,6 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
   const fits2 = (from: number, to: number) => to > from && paintedFrameCount(from, to, fps) >= 2;
   const seed = `${number}|${words.map((w) => w.text).join(" ")}`;
   const topRow = rows[0]!;
-  const lastRow = rows[rows.length - 1]!;
 
   // TAPE: a zig-zag-ended strip across a top corner of the first or last label of the top row.
   const tapeAtEnd = unit("tape", seed) < 0.5;
@@ -485,59 +482,6 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
         },
       };
       pieces.push(piece);
-    }
-  }
-
-  // FEED: a strip of label stock under the block that feeds out as the words are said, with a head dot.
-  {
-    const sw = Math.max(...rows.map((row) => row.reduce((sum, l) => sum + l.w, 0) + GAP * q * (row.length - 1)));
-    const sh = 7 * q;
-    const lowest = Math.max(...lastRow.map((l) => restBox(l).y2));
-    const cy = lowest + 24 * q + sh / 2;
-    const cx = space.x(540);
-    const x0 = rtl ? cx + sw / 2 : cx - sw / 2;
-    const dir = rtl ? -1 : 1;
-    const from = layout.start;
-    const to = decoEnd;
-    if (fits2(from, to)) {
-      const grow: [number, number, Ease?][] = [[from, 0.02]];
-      let previousAt = from;
-      let previousValue = 0.02;
-      words.forEach((word, k) => {
-        const begin = Math.max(previousAt + 1, word.startMs);
-        if (begin > previousAt + 1) grow.push([begin, previousValue]);
-        const end = begin + clamp(word.endMs - word.startMs, 90, 220);
-        const value = (k + 1) / n;
-        grow.push([end, value, "out"]);
-        previousAt = end;
-        previousValue = value;
-      });
-      const strip: ShapePiece = {
-        id: `labels:${number}:strip`,
-        kind: "shape",
-        z: number * 100,
-        fromMs: from,
-        toMs: to,
-        path: rectPath(0, 0, sw, sh),
-        origin: { dx: rtl ? sw : 0, dy: sh / 2 },
-        fill: { colour: input.colours.primary },
-        shadows: [{ dx: 0, dy: 4 * q, blur: 0, colour: SHADOW_INK, alpha: 0.34 }],
-        track: { x: [[from, x0]], y: [[from, cy]], sx: grow },
-      };
-      pieces.push(strip);
-      const r = 7 * q;
-      pieces.push({
-        id: `labels:${number}:stripdot`,
-        kind: "shape",
-        z: number * 100 + 1,
-        fromMs: from,
-        toMs: to,
-        path: ellipsePath(r, r, r),
-        origin: { dx: r, dy: r },
-        fill: { colour: input.colours.highlight },
-        shadows: [{ dx: 0, dy: 3 * q, blur: 0, colour: SHADOW_INK, alpha: 0.34 }],
-        track: { x: grow.map(([t, v, e]) => (e ? [t, x0 + dir * sw * v, e] : [t, x0 + dir * sw * v])) as unknown as Frames, y: [[from, cy]] },
-      });
     }
   }
 

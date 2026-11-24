@@ -3,13 +3,12 @@ import { type Frames, EASES, prog } from "../ease";
 import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneProgram } from "../input";
-import { cueDirection, sceneSpace } from "../layout";
+import { sceneSpace } from "../layout";
 import { SCENE_PIECE_BUDGET, type Piece, type TextPiece } from "../scene";
-import { ellipsePath, roundedRectPath } from "../shapes";
 import { layoutSpeechWords, speechWindows } from "./speech-layout";
 
 /** Inkup holds the layout at the heavy weights' widths. Light and medium faces cross-fade
- * into those widths, with italic violet on the key word and a rule on the reading edge. */
+ * into those widths, with italic violet on the key word. */
 export const INKUP_DEMO: DemoScript = {
   lines: [
     "most:b people:b quit:b right:m before:b it:m works:h@560",
@@ -40,7 +39,7 @@ export const inkupProgram: SceneProgram = {
         face: word.role === "hero" ? "Inter Tight ExtraBold Italic" : "Inter Tight ExtraBold",
         spacing: 0,
       }) as const);
-      const { cells, box, unit } = layoutSpeechWords(input, window, { anchor: ANCHOR, column: 840, gap: 23, padding: 52, align: "leading", words });
+      const { cells, unit } = layoutSpeechWords(input, window, { anchor: ANCHOR, column: 840, gap: 23, padding: 52, align: "leading", words });
       const exitAt = Math.max(window.spokenEnd + HOLD, to - 170);
       const exit = paintedFrameCount(exitAt, to, fps) >= 2;
       const leave = (t: number) => exit ? EASES.in(prog(t, exitAt, to - exitAt)) : 0;
@@ -48,7 +47,7 @@ export const inkupProgram: SceneProgram = {
       const dy = (t: number) => unit * (14 * enter(t) - 12 * leave(t));
       const samples = (f: (t: number) => number, a: number, b: number, keys: number[], tolerance: number): Frames =>
         sampleFrames(f, [...keys, from + 130, exitAt], tolerance, { range: [a, b] });
-      let blendBudget = Math.max(0, SCENE_PIECE_BUDGET - 2 * cells.length - 3);
+      let blendBudget = Math.max(0, SCENE_PIECE_BUDGET - 2 * cells.length);
       for (const cell of cells) {
         const word = cue.words[cell.at]!;
         const hero = word.role === "hero";
@@ -92,29 +91,6 @@ export const inkupProgram: SceneProgram = {
         const medium = hero ? "Inter Tight Medium Italic" : "Inter Tight Medium";
         addWeight(light, "light", from, mixAt, (t) => (hero ? 0.78 : 0.7) * (1 - EASES.out(prog(t, change, mixAt - change))));
         addWeight(medium, "mid", change, settled, (t) => (0.2 + 0.8 * EASES.out(prog(t, change, mixAt - change))) * (t >= boldAt ? 1 - rise(t) : 1));
-      }
-      if (paintedFrameCount(from, to, fps) < 2) continue;
-
-      const direction = cueDirection(cue) === "rtl" ? 1 : -1;
-      const x = (direction === 1 ? box.x2 : box.x1) + direction * 32 * unit;
-      const ruleH = box.y2 - box.y1;
-      const growth = Math.min(to, from + 320);
-      const o = samples((t) => 1 - leave(t), from, to, [], 0.01);
-      const finish = samples((t) => (0.08 + 0.92 * EASES.outExpo(prog(t, from, growth - from))) * (1 - leave(t)), from, to, [growth], 0.006);
-      pieces.push({
-        id: `inkup:${index}:rule`, kind: "shape", z: 1, fromMs: from, toMs: to,
-        path: roundedRectPath(0, 0, 6 * unit, ruleH, 3 * unit), fill: { colour: colours.highlight },
-        track: { x: [[from, x]], y: samples((t) => box.y1 + dy(t), from, to, [], 0.16), sy: finish, o },
-      });
-      // A violet cap and nib travel together as the rule writes down the margin.
-      for (let i = 0; i < 2; i++) {
-        const r = (i === 0 ? 3 : 5) * unit;
-        const slide = (t: number) => 0.08 + 0.82 * EASES.outExpo(prog(t, from, growth - from));
-        pieces.push({
-          id: `inkup:${index}:nib${i}`, kind: "shape", z: 2, fromMs: from, toMs: to,
-          path: ellipsePath(r, r, r), origin: { dx: r, dy: r }, fill: { colour: i === 0 ? colours.primary : colours.highlight },
-          track: { x: [[from, x + (3 + direction * (index % 2) * 2) * unit]], y: samples((t) => box.y1 + dy(t) + Math.max(r, ruleH * slide(t) - (i === 0 ? 12 : 0) * unit), from, to, [growth], 0.16), o },
-        });
       }
     }
     return { pieces };

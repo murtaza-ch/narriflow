@@ -5,7 +5,7 @@ import { SCENE_DEFAULT_FPS, exportFrameAtOrBefore, paintedFrameCount, sceneSampl
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { type SceneSpace, balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
-import { type Piece, type ShapePiece, type TextPiece, type Track, SCENE_PERSPECTIVE_PX, mixColour, sceneBoundsAt } from "../scene";
+import { type Piece, type ShapePiece, type TextPiece, type Track, SCENE_PERSPECTIVE_PX, sceneBoundsAt } from "../scene";
 import { roundedRectPath } from "../shapes";
 import { hasTwoPaintedFrames, renderWithReadingHolds, speechLaneSpace, speechWindows } from "./speech-layout";
 
@@ -28,7 +28,7 @@ import { hasTwoPaintedFrames, renderWithReadingHolds, speechLaneSpace, speechWin
  * - Fit. The sample split small words into two rows at most and never scaled a long single word. Rows now come from the
  *   words (balanced wraps of at most 900 px, less on a narrow canvas); a word a little too wide shrinks to fit (down to 0.8);
  *   a word much too wide wraps its tiles onto several rows (the 45-letter word of the long-word demo is five rows of tiles,
- *   not 14 px type); a single tile (a script that is never split) shrinks to fit; and the block, its rack and its chips shrink
+ *   not 14 px type); a single tile (a script that is never split) shrinks to fit; and the block and its chips shrink
  *   as a whole until everything they ever draw is inside the 5 % safe area (twice the size, 1:1 and 16:9 too).
  *   Every key word gets its own scramble (the sample honoured only the first), so a cue may have several, first, middle or last.
  * - Real speech. Entrances are locked to speech: a word's first painted frame is at most 70 ms before it is spoken, never
@@ -48,12 +48,10 @@ import { hasTwoPaintedFrames, renderWithReadingHolds, speechLaneSpace, speechWin
  *   one small soft shadow on each plate's own layer (2 to 3 px sigma, 0.5): no copy, and the blur is of a tile.
  * - Budget: a key tile is two pieces (plate and letter) and a plate shadow; a key word with more tiles than the cue's 150
  *   pieces allow is drawn as flat plates that fall in and turn gold (no scramble).
- * - New recurring beats, in the tiles' own language, on every cue: a RACK (a dark ledge slides out from the centre under the
- *   key row, or the last row of a cue without a key word, as its tiles land), GOLD CHIPS (small square scraps pop off each tile
+ * - Recurring beats: GOLD CHIPS (small square scraps pop off each tile
  *   as it turns gold, up to eight a cue; two off the bonus tile of a cue without a key word) and a BONUS TILE (the last tile
  *   of a cue without a key word turns gold with a pop as it is said). Counts, sides and sizes come from the cue's seeded hash.
- *   A key tile's chips peak under 0.42 of a tile (its row has 66 px of air above); a bonus tile ends its row, so its chips hop low
- *   and outward and never reach the row above (22 px away) or a neighbour.
+ *   Chips rise within the space between rows. A bonus tile ends its row, so its chips hop low and outward.
  */
 
 export const SHUFFLE_DEMO: DemoScript = {
@@ -71,7 +69,8 @@ const FACE = "Montserrat" as const;
 const ANCHOR_LINE = 1290;
 const MAX_W = 900;
 const WORD_GAP = 30;
-const ROW_GAP = 22;
+const ROW_GAP = 18;
+const HERO_ROW_GAP = 40;
 /** Chrome's baseline of a `line-height: 1` Montserrat box as a share of its size: (1 - (0.968 + 0.251)) / 2 + 0.968. */
 const BASELINE = 0.8585;
 
@@ -112,7 +111,6 @@ const MIN_FIT = 0.8;
 const PIECE_LIMIT = 140;
 const K_SMALL = SCENE_PERSPECTIVE_PX / 700;
 const K_BIG = SCENE_PERSPECTIVE_PX / 800;
-const RACK_MS = 260;
 const CHIP_MS = 400;
 const BONUS_MS = 140;
 const MAX_CHIPS = 8;
@@ -233,8 +231,8 @@ interface Layout {
   readonly items: Item[];
   readonly top: number;
   readonly bottom: number;
-  /** The key row (or the last row of a cue without one): where the rack goes. */
-  readonly rack: Row;
+  /** Anchor for the chip marks on short cues. */
+  readonly keyRow: Row;
   /** The shrink of the sample's sizes that fits this cue. */
   readonly k: number;
 }
@@ -258,7 +256,6 @@ interface Ctx {
   readonly tile: string;
   readonly solved: string;
   readonly ink: string;
-  readonly rack: string;
   readonly minMotion: number;
   readonly wordCache: Map<string, { adv: number[]; pen: number[]; ink: readonly [top: number, bottom: number] | null }>;
 }
@@ -358,13 +355,13 @@ function layoutCue(ctx: Ctx, cue: SceneCue, cueNumber: number, S: number, place:
       rows.push({ items: ordered, hero: run[0]!.hero, h: Math.max(...ordered.map((item) => item.h)), width: ordered.reduce((sum, item) => sum + item.width, 0) + WORD_GAP * S * (ordered.length - 1), y: 0 });
     }
   }
-  const heroRows = rows.filter((row) => row.hero).length;
-  const height = rows.reduce((sum, row) => sum + row.h, 0) + ROW_GAP * S * (rows.length - 1) + heroRows * ROW_GAP * 2 * S;
+  const gaps = rows.map((row, i) => i === 0 ? 0 : (row.hero || rows[i - 1]!.hero ? HERO_ROW_GAP : ROW_GAP) * S);
+  const height = rows.reduce((sum, row, i) => sum + row.h + gaps[i]!, 0);
   const cx = ctx.space.x(540);
   let y = place.top ?? (place.bottom === undefined ? ctx.space.y(ANCHOR_LINE) - height / 2 : place.bottom - height);
   const top = y;
-  for (const row of rows) {
-    if (row.hero) y += ROW_GAP * 2 * S;
+  rows.forEach((row, i) => {
+    y += gaps[i]!;
     row.y = y;
     let x = cx - row.width / 2;
     for (const item of row.items) {
@@ -372,14 +369,14 @@ function layoutCue(ctx: Ctx, cue: SceneCue, cueNumber: number, S: number, place:
       item.y = y + (row.h - item.h) / 2;
       x += item.width + WORD_GAP * S;
     }
-    y += row.h + (row.hero ? ROW_GAP * 2.5 : ROW_GAP) * S;
-  }
+    y += row.h;
+  });
   const last = rows.at(-1)!;
   const firstHero = rows.findIndex((row) => row.hero);
   let keyAt = firstHero < 0 ? rows.length - 1 : firstHero;
   while (firstHero >= 0 && rows[keyAt + 1]?.hero) keyAt++;
   const keyRow = rows[keyAt]!;
-  return { rows, items: rows.flatMap((row) => row.items), top, bottom: last.y + last.h + 18 * S, rack: keyRow, k: S / ctx.u };
+  return { rows, items: rows.flatMap((row) => row.items), top, bottom: last.y + last.h + 18 * S, keyRow, k: S / ctx.u };
 }
 
 /** Baseline of a word's text inside its tile: Chrome's for caps, the ink's middle for a tile of another script. */
@@ -433,13 +430,13 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
 
   const shadowOf = (s: number, blur: number) => [{ dx: 0, dy: s, blur, colour: shadow, alpha: 0.5 }];
 
-  // Chips and the rack are collected as the words are drawn.
+  // Collect the chips as the words are drawn.
   interface Chip {
     readonly x: number;
     readonly y: number;
     readonly at: number;
     readonly h: number;
-    /** Off a bonus tile: low hops that stay under the row above (22 px away). */
+    /** Off a bonus tile: low hops that stay under the row above. */
     readonly low?: boolean;
   }
   const chips: Chip[] = [];
@@ -555,6 +552,7 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
     }));
     const keep = Math.max(1, Math.ceil(n / MAX_CHIPS));
     const offset = shuffleHash(`${plan.index}:${wi.at}`) % keep;
+    const hopHeight = item.h * (layout.rows.length > 1 ? 0.4 : 1);
     for (let i = item.a; i < item.b; i++) {
       const tile = item.tiles[i - item.a]!;
       const home = { x: item.x + tile.left, y: item.y };
@@ -573,7 +571,7 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
       const fall = (t: number) => prog(t, fallStart, fd);
       const hop = (t: number) => (settled ? 1 : prog(t, hopStart, hd));
       const move = (t: number) => EASES.inOut(clamp((hop(t) - 0.08) / 0.8));
-      const lift = (t: number) => (settled ? 0 : kf(hop(t), [[0, 0], [0.38, item.h * q.hop, "out"], [0.82, 0, "in"], [0.91, -item.h * 0.06, "out"], [1, 0, "in"]]));
+      const lift = (t: number) => (settled ? 0 : kf(hop(t), [[0, 0], [0.38, hopHeight * q.hop, "out"], [0.82, 0, "in"], [0.91, -hopHeight * 0.06, "out"], [1, 0, "in"]]));
       const swing = (t: number) => (settled ? 0 : kf(hop(t), [[0, 0], [0.4, q.spin, "out"], [0.85, 0, "inOut"]]));
       const pop = (t: number) => Math.sin(Math.PI * prog(t, waveStart, wd)) * -12 * S;
       const out = (t: number) => (exit ? EASES.in(prog(t, ex, exDur)) : 0);
@@ -610,26 +608,6 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
     }
   }
 
-  // Beat: the rack under the key row.
-  const rackRow = layout.rack;
-  const keyWord = cue.words.find((word) => word.role === "hero") ?? cue.words.at(-1)!;
-  const rackEnd = exit ? Math.min(to, Math.ceil(exit.start + exit.dur + exit.stagger * (groups.length - 1))) : to;
-  const rackLead = fromOf(keyWord.startMs);
-  const rackStart = Math.max(rackLead, keyWord.startMs - LEAD + 60);
-  const rackFrom = paintedFrameCount(rackStart, rackEnd, input.fps) >= 2 ? rackStart : rackLead;
-  if (paintedFrameCount(rackFrom, rackEnd, input.fps) >= 2) {
-    const rw = rackRow.width + 16 * S;
-    const rh = 11 * S;
-    const grow = (t: number) => Math.max(0.001, EASES.outExpo(prog(t, rackFrom, RACK_MS)));
-    const shrink = (t: number) => (exit ? 1 - EASES.in(prog(t, exit.start, Math.max(1, rackEnd - exit.start))) : 1);
-    const sx = windowOf(rackFrom, rackEnd, [rackFrom, rackFrom + RACK_MS, exit?.start ?? Number.NaN, rackEnd].filter(Number.isFinite), (t) => Math.max(0.001, grow(t) * shrink(t)), 0.004);
-    pieces.push({
-      id: `shuffle:${plan.index}:rack`, kind: "shape", z: band + 1, fromMs: rackFrom, toMs: rackEnd,
-      path: roundedRectPath(0, 0, rw, rh, rh / 2), fill: { colour: ctx.rack }, origin: { dx: rw / 2, dy: rh / 2 },
-      track: { x: [[rackFrom, ctx.space.x(540)]], y: [[rackFrom, rackRow.y + rackRow.h + 9 * S + rh / 2]], sx },
-    } satisfies ShapePiece);
-  }
-
   // Beat: gold chips off the tiles as they turn gold.
   chips.slice(0, MAX_CHIPS).forEach((chip, n) => {
     const dur = Math.min(CHIP_MS * (0.85 + rng() * 0.3), firstExit - chip.at);
@@ -638,9 +616,8 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
     // A bonus tile ends its row: its chips go outward, never over a neighbour.
     const side = chip.low ? (cueDirection(cue) === "rtl" ? -1 : 1) : (n + (shuffleHash(`${plan.index}`) & 1)) % 2 === 0 ? 1 : -1;
     const [r1, r2, r3] = [rng(), rng(), rng()];
-    // A key tile's chips peak at most 0.42 of the tile (its row has 66 px of air above); a bonus tile's stay under 0.1.
     const dx = side * chip.h * (chip.low ? 0.1 + 0.3 * r1 : 0.25 + 0.5 * r1);
-    const rise = chip.h * (chip.low ? 0.2 : 0.45 + 0.2 * r2);
+    const rise = chip.h * (chip.low ? 0.2 : 0.38 + 0.14 * r2);
     const fall = chip.h * (chip.low ? 0.12 : 0.25 + 0.15 * r3);
     const spin = side * (140 + 120 * rng());
     const from = Math.round(chip.at);
@@ -658,16 +635,21 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
       },
     } satisfies ShapePiece);
   });
-  // Short cues keep two small gold chip marks on the rack when a hop cannot fit.
-  if (!pieces.some(({ id }) => id.startsWith(`shuffle:${plan.index}:chip`)) && paintedFrameCount(rackFrom, firstExit, input.fps) >= 2) {
-    const size = Math.min(8 * S, rackRow.width / 10);
+  // Short cues keep two small gold chip marks when a hop cannot fit.
+  const keyWord = cue.words.find((word) => word.role === "hero") ?? cue.words.at(-1)!;
+  const chipLead = fromOf(keyWord.startMs);
+  const chipStart = Math.max(chipLead, keyWord.startMs - LEAD + 60);
+  const chipFrom = paintedFrameCount(chipStart, firstExit, input.fps) >= 2 ? chipStart : chipLead;
+  if (!pieces.some(({ id }) => id.startsWith(`shuffle:${plan.index}:chip`)) && paintedFrameCount(chipFrom, firstExit, input.fps) >= 2) {
+    const { keyRow } = layout;
+    const size = Math.min(8 * S, keyRow.width / 10);
     const x = ctx.space.x(540);
-    const y = rackRow.y + rackRow.h + 9 * S;
+    const y = keyRow.y + keyRow.h + 9 * S;
     pieces.push({
-      id: `shuffle:${plan.index}:chipmarks`, kind: "shape", z: band + 2, fromMs: rackFrom, toMs: firstExit,
+      id: `shuffle:${plan.index}:chipmarks`, kind: "shape", z: band + 2, fromMs: chipFrom, toMs: firstExit,
       path: [...roundedRectPath(0, 0, size, size, size / 4), ...roundedRectPath(2 * size, 0, size, size, size / 4)],
       fill: { colour: ctx.solved }, origin: { dx: 1.5 * size, dy: 0 },
-      track: { x: [[rackFrom, x]], y: [[rackFrom, y]] },
+      track: { x: [[chipFrom, x]], y: [[chipFrom, y]] },
     });
   }
 
@@ -698,7 +680,7 @@ function buildScene(input: SceneInput): Piece[] {
   const tile = input.colours.primary;
   const ink = input.colours.accent;
   const ctx: Ctx = {
-    input, space, u, maxW: Math.min(MAX_W * u, safeW - 56 * u), tile, solved: input.colours.highlight, ink, rack: mixColour(ink, tile, 0.45),
+    input, space, u, maxW: Math.min(MAX_W * u, safeW - 56 * u), tile, solved: input.colours.highlight, ink,
     minMotion: Math.max(MIN_MOTION, Math.ceil(2000 / sceneSampleRate(fps)) + 1), wordCache: new Map(),
   };
   const windows = speechWindows(input, space.safe, LEAD, HOLD);

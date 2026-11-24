@@ -14,12 +14,10 @@ import { hasTwoPaintedFrames, speechLaneSpace, speechWindows } from "./speech-la
  * line is plain heavy Rubik with a soft dark shadow; the reaction word is pulled out into a neon-tube speech bubble above it, a
  * fat coloured tube with a thin bright core over a glow, drawn on in two wipes (across the top, back along the bottom) with the
  * word typed inside. Three bubble shapes (a wobbly ellipse, a starburst that throws sparks, a pill with a curled tail) cycle by
- * hero counter; a line with no reaction word gets a neon underline that grows with the line.
+ * hero counter.
  *
  * Changes from the sample, and why:
- * - Nothing is cue-indexed. `BUBBLES[ci]`, `NEON_LINE[ci]` and the baked " / " row breaks are gone: the bubble shape and palette
- *   cycle over ellipse / burst / pill by a hero counter (pink from the preset's highlight, fire from its accent, cool), the
- *   underline colour cycles by a counter of cues without a hero, the bubble's side, tilt and offset get a seeded jitter from the
+ * - The bubble shape and palette cycle by hero count. The bubble's side, tilt and offset get a seeded jitter from the
  *   cue's index and text, and plain words wrap evenly into rows that fit the safe area.
  * - Every spoken word shows. The sample's plain line dropped the key word (it only lives in the bubble) and honoured one hero; here
  *   the first run of hero words fills the bubble (one word a line) and any later hero word stays in the line as a plain word. A bubble
@@ -33,15 +31,14 @@ import { hasTwoPaintedFrames, speechLaneSpace, speechWindows } from "./speech-la
  *   ms; the exit (a 150 ms fade and 8 % shrink) waits for the last word's spoken end plus 150 ms and is dropped when it cannot show
  *   two painted frames. Overlapping speakers stack in free space.
  * - Every language. Per-letter typing only for simple scripts and 14 letters or fewer; anything else (Arabic, Devanagari, CJK, a
- *   long word) pops the word in whole. RTL cues mirror the bubble side, tilt and tail, and the underline grows from the right.
+ *   long word) pops the word in whole. RTL cues mirror the bubble side, tilt and tail.
  * - Budget. The glow is one blurred stroke per bubble (two while it draws on), smaller than the sample's, the soft shadow of the
  *   plain words is one blurred layer, and the idle float only runs on holds of 1.5 s or more.
  *
  * Extra recurring beats in the tube's own language:
- *   sparks    short dashes thrown out of every bubble as it closes (the sample threw them only from the starburst), and three from the
- *             end of the underline on cues without a hero;
- *   rings     two small hollow neon rings pop beside the bubble and drift up (beside the underline's trailing end otherwise);
- *   twinkle   a four-point sparkle on the bubble's edge (a light glint running along the underline on cues without a hero).
+ *   sparks    short dashes thrown out of every bubble as it closes;
+ *   rings     two small hollow neon rings pop beside the bubble and drift up;
+ *   twinkle   a four-point sparkle on the bubble's edge.
  */
 export const BUBBLE_DEMO: DemoScript = {
   lines: [
@@ -65,7 +62,6 @@ const BASELINE = 94;
 const TRACKING = -0.01;
 const LABEL_TRACKING = 0.01;
 const LABEL_LINE = 0.98;
-const LABEL_BASE = 0.79;
 const LEAD = 95;
 const WORD_LEAD = 60;
 const WORD_MS = 220;
@@ -198,9 +194,6 @@ interface Cell {
   /** Centre x, canvas px, at the visual position. */
   readonly cx: number;
   readonly w: number;
-  /** Reading-space left and right edges (from the reading-leading side), canvas px. */
-  readonly x0: number;
-  readonly x1: number;
   readonly baseline: number;
 }
 
@@ -209,11 +202,11 @@ interface LabelLine {
   /** The word the line belongs to and its part number (the first part of a word paints first). */
   readonly word: number;
   readonly part: number;
-  readonly letters: readonly { readonly ch: string; readonly x: number; readonly adv: number }[] | null;
+  readonly letters: readonly { readonly ch: string; readonly x: number }[] | null;
   /** Local centre of the line's box and its baseline, relative to the bubble pivot. */
   readonly cx: number;
   readonly baseline: number;
-  readonly w: number;
+  readonly inkCentre: number;
 }
 
 interface BubbleGeo {
@@ -232,23 +225,11 @@ interface BubbleGeo {
   readonly typed: boolean;
 }
 
-interface UnderlineGeo {
-  readonly y: number;
-  readonly lo: number;
-  readonly hi: number;
-  readonly pal: number;
-}
-
 interface Geo {
   readonly rtl: boolean;
-  readonly f: number;
   readonly S: number;
   readonly cells: readonly Cell[];
-  readonly rowsTop: number;
-  readonly rowsBottom: number;
-  readonly cx: number;
   readonly bubble: BubbleGeo | null;
-  readonly underline: UnderlineGeo | null;
   readonly box: Box;
 }
 
@@ -269,12 +250,7 @@ interface Ctx {
   readonly space: Space;
 }
 
-interface Counters {
-  readonly hero: number;
-  readonly plain: number;
-}
-
-function layoutCue(cue: SceneCue, input: SceneInput, space: Space, counters: Counters): Geo | null {
+function layoutCue(cue: SceneCue, input: SceneInput, space: Space, heroCount: number): Geo | null {
   if (cue.words.length === 0) return null;
   const { u, safe } = space;
   const rtl = cueDirection(cue) === "rtl";
@@ -283,7 +259,7 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space, counters: Cou
   while (first >= 0 && cue.words[last + 1]?.role === "hero") last++;
   const heroWords = first >= 0 ? Array.from({ length: last - first + 1 }, (_, k) => first + k) : [];
   const plainIdx = cue.words.map((_, at) => at).filter((at) => !heroWords.includes(at));
-  const kind = KINDS[counters.hero % KINDS.length]!;
+  const kind = KINDS[heroCount % KINDS.length]!;
   const key = cue.words.map((word) => word.text).join(" ");
   const cx = space.x(540);
   const safeW = safe.x2 - safe.x1;
@@ -312,8 +288,7 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space, counters: Cou
       let x = left;
       for (const k of order) {
         const w = widths[k]!;
-        const a = rtl ? left + width - (x + w) : x - left;
-        cells.push({ at: plainIdx[k]!, text: plainTexts[k]!, spacing: spacings[k]!, cx: x + w / 2, w, x0: left + a, x1: left + a + w, baseline: rowsTop + r * rowH + BASELINE * S });
+        cells.push({ at: plainIdx[k]!, text: plainTexts[k]!, spacing: spacings[k]!, cx: x + w / 2, w, baseline: rowsTop + r * rowH + BASELINE * S });
         x += w + gap;
       }
     });
@@ -324,9 +299,8 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space, counters: Cou
     }
 
     let bubble: BubbleGeo | null = null;
-    let underline: UnderlineGeo | null = null;
     if (hasHero) {
-      const label = layoutBubble(cue, input, kind, S, safeW, safeH, heroWords, rtl, key, counters.hero);
+      const label = layoutBubble(cue, input, kind, S, safeW, safeH, heroWords, rtl, key, heroCount);
       const { design: d } = label;
       const bw = d.bbox.x2 - d.bbox.x1;
       const bh = d.bbox.y2 - d.bbox.y1;
@@ -345,16 +319,10 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space, counters: Cou
       void bcx;
       bubble = { ...label, px, py, body: [-bcx, -bcy] };
       boxes.push({ x1: px - hw - padX, x2: px + hw + padX, y1: py - hh - Math.max(PAD * S, 80 * S), y2: py + hh + (rows.length > 0 ? 0 : PAD * S) });
-    } else if (rows.length > 0) {
-      const lo = Math.min(...cells.map((c) => c.x0));
-      const hi = Math.max(...cells.map((c) => c.x1));
-      const pals = [0, 2, 1];
-      underline = { y: rowsBottom + 6 * S, lo, hi, pal: pals[counters.plain % pals.length]! };
-      boxes.push({ x1: (rtl ? 2 * cx - hi : lo) - DECO * S, x2: (rtl ? 2 * cx - lo : hi) + DECO * S, y1: underline.y, y2: underline.y + 70 * S });
     }
     const box = union(boxes);
     if (box.y2 - box.y1 + 74 * S > safeH || box.x2 - box.x1 + 8 * S > safeW) return { wide: false };
-    return { rtl, f, S, cells, rowsTop, rowsBottom, cx, bubble, underline, box };
+    return { rtl, S, cells, bubble, box };
   };
 
   let f = 1;
@@ -388,17 +356,26 @@ function layoutBubble(cue: SceneCue, input: SceneInput, kind: Kind, S: number, s
   function attempt(gg: number) {
     const size = base * gg;
     const lineH = LABEL_LINE * size;
-    const ls = LABEL_TRACKING;
+    const spacing = LABEL_TRACKING * size;
+    const measure = (text: string) => input.measure(text, HERO_FACE, size, LABEL_TRACKING);
+    // Measure the same runs that will paint, including the ink above and below each baseline.
+    const measureLine = (text: string) => {
+      const runs = (typed ? [...text] : [text]).map((ch) => ({ ch, ...measure(ch) }));
+      const width = runs.reduce((sum, run) => sum + run.advance, spacing * (runs.length - 1));
+      const inkTop = Math.min(...runs.map((run) => run.inkTop));
+      const inkBottom = Math.max(...runs.map((run) => run.inkBottom));
+      return { text, letters: typed ? runs : null, width, inkTop, inkBottom };
+    };
     // One sub-word a line, up to three lines; more words wrap evenly (the sample splits only on spaces).
-    const widthOf = (text: string) => input.measure(text, HERO_FACE, size, ls).advance + ls * size;
     let rows: number[][] = subs.map((_, k) => [k]);
-    if (subs.length > 3) rows = balancedRows(subs.map((sub) => widthOf(sub.text)), 0.3 * size, 470 * S * gg);
-    const lines = rows.map((row) => ({ text: row.map((k) => subs[k]!.text).join(" "), first: row[0]! }));
-    const lineW = lines.map((line) => widthOf(line.text));
-    const w = Math.max(...lineW);
-    const h = lines.length * lineH;
+    if (subs.length > 3) rows = balancedRows(subs.map((sub) => measureLine(sub.text).width), 0.3 * size, 470 * S * gg);
+    const lines = rows.map((row) => ({ ...measureLine(row.map((k) => subs[k]!.text).join(" ")), first: row[0]! }));
+    const w = Math.max(...lines.map((line) => line.width));
+    const inkTop = Math.min(...lines.map((line, i) => i * lineH + line.inkTop));
+    const inkBottom = Math.max(...lines.map((line, i) => i * lineH + line.inkBottom));
+    const h = Math.max(lines.length * lineH, inkBottom - inkTop);
     const d = design(kind, S, w, h, rtl);
-    return { size, lineH, lines, lineW, w, h, d };
+    return { size, lineH, lines, inkCentre: (inkTop + inkBottom) / 2, d };
   }
   for (let step = 0; step < 90; step++) {
     out = attempt(g);
@@ -407,32 +384,28 @@ function layoutBubble(cue: SceneCue, input: SceneInput, kind: Kind, S: number, s
     if (bw <= maxBW && bh <= maxBH) break;
     g *= 0.94;
   }
-  const { size, lineH, lines, lineW, h, d } = out!;
+  const { size, lineH, lines, inkCentre, d } = out!;
   const bcx = (d.bbox.x1 + d.bbox.x2) / 2;
   const bcy = (d.bbox.y1 + d.bbox.y2) / 2;
-  // The sample centres the label 6 px above the body centre.
   const centreX = -bcx;
-  const centreY = -bcy - 6 * S;
-  const top = centreY - h / 2;
+  const firstBaseline = -bcy - inkCentre;
   const labelLines: LabelLine[] = [];
   const partOf = new Map<number, number>();
   lines.forEach((line, i) => {
     const sub = subs[line.first]!;
     const part = partOf.get(sub.word) ?? 0;
     partOf.set(sub.word, part + 1);
-    const baseline = top + i * lineH + LABEL_BASE * size;
-    const letters = typed
-      ? (() => {
-          let x = centreX - lineW[i]! / 2;
-          return [...line.text].map((ch) => {
-            const adv = input.measure(ch, HERO_FACE, size, LABEL_TRACKING).advance + LABEL_TRACKING * size;
-            const placed = { ch, x, adv };
-            x += adv;
-            return placed;
-          });
-        })()
-      : null;
-    labelLines.push({ text: line.text, word: sub.word, part, letters, cx: centreX, baseline, w: lineW[i]! });
+    const baseline = firstBaseline + i * lineH;
+    let x = centreX - line.width / 2;
+    const letters = line.letters?.map(({ ch, advance }) => {
+      const placed = { ch, x };
+      x += advance + LABEL_TRACKING * size;
+      return placed;
+    }) ?? null;
+    labelLines.push({
+      text: line.text, word: sub.word, part, letters, cx: centreX, baseline,
+      inkCentre: baseline + (line.inkTop + line.inkBottom) / 2,
+    });
   });
   const jitter = (seeded(key, 11) - 0.5) * 3;
   const tilt = (rtl ? -1 : 1) * KIND_TILT[kind] + jitter;
@@ -458,8 +431,8 @@ const fade = (ex: Exit | null, frames: Frames): Frames => (ex ? [...frames, [ex.
 
 function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, pal: readonly Palette[], ctx: Ctx): Piece[] {
   const { input, frameMs, space } = ctx;
-  const { rtl, S, cells, bubble, underline, cx } = geo;
-  const { dy, from, end, last } = plan;
+  const { S, cells, bubble } = geo;
+  const { dy, from, end } = plan;
   if (end <= from) return [];
   const z = n * 10;
   const pieces: Piece[] = [];
@@ -494,10 +467,6 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, pal: readonly 
   }
 
   if (bubble) pieces.push(...bubblePieces(n, cue, geo, bubble, plan, ex, pal, ctx));
-  else if (underline) pieces.push(...underlinePieces(n, cue, geo, underline, plan, ex, pal, ctx));
-  void last;
-  void rtl;
-  void cx;
 
   const margin = 2 * ctx.u;
   const safe = { x1: space.safe.x1 + margin, y1: space.safe.y1 + margin, x2: space.safe.x2 - margin, y2: space.safe.y2 - margin };
@@ -674,7 +643,7 @@ function bubblePieces(n: number, cue: SceneCue, geo: Geo, bubble: BubbleGeo, pla
       const c = Math.cos((tilt * Math.PI) / 180);
       const sn = Math.sin((tilt * Math.PI) / 180);
       const lx = line.cx;
-      const ly = line.baseline - 0.3 * size;
+      const ly = line.inkCentre;
       const popTo = at + Math.min(240, Math.max(frameMs * 2, e - at - frameMs));
       const spring: Frames = [[at, 0.6], [popTo, 1, "spring"]];
       const sxFrames = ex ? ([...spring, [ex.from, 1], [ex.to, 0.92, "out"]] as Frames) : spring;
@@ -682,7 +651,7 @@ function bubblePieces(n: number, cue: SceneCue, geo: Geo, bubble: BubbleGeo, pla
         id: `bubble:${n}:w${line.word}l${line.part}`, kind: "text", z: z + 6, fromMs: at, toMs: goneAt,
         track: { x: [[at, px + lx * c - ly * sn]], y: [[at, py + lx * sn + ly * c]], sx: sxFrames, sy: sxFrames, rz: [[at, tilt]], ...(ex ? { o: fade(ex, [[at, 1]]) } : {}) },
         text: line.text, face: HERO_FACE, sizePx: size, letterSpacingEm: LABEL_TRACKING, fill: input.colours.primary, anchor: "baseline-center",
-        origin: { dx: 0, dy: -(0.3 * size) }, language: cue.language, shadows,
+        origin: { dx: 0, dy: ly - line.baseline }, language: cue.language, shadows,
       } satisfies TextPiece);
     }
   }
@@ -742,101 +711,6 @@ function flickerValue(t: number, frames: Frames): number {
   return frames.at(-1)![1];
 }
 
-function underlinePieces(n: number, cue: SceneCue, geo: Geo, line: UnderlineGeo, plan: Plan, ex: Exit | null, pals: readonly Palette[], ctx: Ctx): Piece[] {
-  const { input, fps } = ctx;
-  const { S, rtl, cells, cx } = geo;
-  const { dy, from, end } = plan;
-  const palette = pals[line.pal]!;
-  const z = n * 10;
-  const out: Piece[] = [];
-  const goneAt = ex ? ex.to : end;
-  const sorted = [...cells].sort((a, b) => cue.words[a.at]!.startMs - cue.words[b.at]!.startMs);
-  let leftSoFar = Number.POSITIVE_INFINITY;
-  const spans = sorted.map((cell) => {
-    const item = { start: Math.max(from, cue.words[cell.at]!.startMs - WORD_LEAD), x0: cell.x0, x1: cell.x1, prev: Math.min(leftSoFar, cell.x0) };
-    leftSoFar = Math.min(leftSoFar, cell.x0);
-    return item;
-  });
-  const grow = (t: number) => {
-    let lo = spans[0]!.x0;
-    let hi = lo;
-    for (const span of spans) {
-      const e = EASES.outExpo(prog(t, span.start, 240));
-      if (e <= 0) continue;
-      lo = Math.min(lo, lerp(span.prev, span.x0, e));
-      hi = Math.max(hi, lerp(span.x0, span.x1, e));
-    }
-    return { lo, hi };
-  };
-  const at0 = spans[0]!.start;
-  const fromMs = Math.max(from, at0);
-  const edges = [...spans.flatMap((span) => [span.start, span.start + 240]), ex?.from ?? goneAt, goneAt];
-  const visualLo = (t: number) => (rtl ? 2 * cx - grow(t).hi : grow(t).lo);
-  const visualHi = (t: number) => (rtl ? 2 * cx - grow(t).lo : grow(t).hi);
-  const tubeLo = rtl ? 2 * cx - line.hi : line.lo;
-  const tubeHi = rtl ? 2 * cx - line.lo : line.hi;
-  const top = line.y + dy;
-  const W = tubeHi - tubeLo;
-  const frame = (fn: (t: number) => number) => sampled(fn, fromMs, goneAt, edges, 0.4);
-  const clipOf = (inset: number, y1: number, y2: number): Clip => ({ x1: frame((t) => visualLo(t) + inset), x2: frame((t) => Math.max(visualLo(t) + inset, visualHi(t) - inset)), y1: [[fromMs, y1]], y2: [[fromMs, y2]] });
-  const alpha = fade(ex, [[fromMs, 1]]);
-  // The tube's glow flickers once as the last word lands.
-  const lastStart = Math.max(...cue.words.map((word) => word.startMs));
-  const f0 = lastStart + 180;
-  const flick = (t: number) => 0.9 * flickerValue(t, [[f0, 1], [f0 + 40, 0.35], [f0 + 90, 1], [f0 + 140, 0.55], [f0 + 200, 1]]) * (1 - (ex ? EASES.out(prog(t, ex.from, ex.dur)) : 0));
-  const glowO = sampled(flick, fromMs, goneAt, [f0, f0 + 40, f0 + 90, f0 + 140, f0 + 200, ex?.from ?? goneAt, goneAt], 0.03);
-
-  out.push({
-    id: `bubble:${n}:ulg`, kind: "shape", z, fromMs, toMs: goneAt,
-    track: { x: [[fromMs, tubeLo - 16 * S]], y: [[fromMs, top + 6 * S]], o: glowO, blur: [[fromMs, 6 * S]] },
-    clip: clipOf(-16 * S, top - 30 * S, top + 60 * S),
-    path: roundedRectPath(0, 0, W + 32 * S, 18 * S, 9 * S), fill: { colour: palette.tube },
-  });
-  out.push({
-    id: `bubble:${n}:ult`, kind: "shape", z: z + 1, fromMs, toMs: goneAt,
-    track: { x: [[fromMs, tubeLo]], y: [[fromMs, top + 9 * S]], ...(ex ? { o: alpha } : {}) },
-    clip: clipOf(0, top, top + 40 * S),
-    path: roundedRectPath(0, 0, W, 12 * S, 6 * S), fill: { colour: palette.tube },
-  });
-  out.push({
-    id: `bubble:${n}:ulc`, kind: "shape", z: z + 2, fromMs, toMs: goneAt,
-    track: { x: [[fromMs, tubeLo + 5 * S]], y: [[fromMs, top + 12 * S]], ...(ex ? { o: alpha } : {}) },
-    clip: clipOf(5 * S, top, top + 40 * S),
-    path: roundedRectPath(0, 0, Math.max(1, W - 10 * S), 6 * S, 3 * S), fill: { colour: palette.core },
-  });
-
-  // Extras: a glint along the tube, sparks and rings off its trailing end.
-  const dirX = rtl ? -1 : 1;
-  const trailX = rtl ? tubeLo : tubeHi;
-  const midY = top + 15 * S;
-  const lastLand = lastStart + 120;
-  const glintDur = 360;
-  const glintTo = Math.min(goneAt, lastLand + glintDur);
-  if (paintedFrameCount(lastLand, glintTo, fps) >= 4) {
-    const gl = 46 * S;
-    const startX = rtl ? tubeHi - gl / 2 - 6 * S : tubeLo + gl / 2 + 6 * S;
-    const endX = rtl ? tubeLo + gl / 2 + 6 * S : tubeHi - gl / 2 - 6 * S;
-    out.push({
-      id: `bubble:${n}:glint`, kind: "shape", z: z + 3, fromMs: lastLand, toMs: glintTo,
-      track: { x: [[lastLand, startX], [lastLand + glintDur, endX, "inOut"]], y: [[lastLand, midY]], o: [[lastLand, 1], [lastLand + glintDur * 0.7, 1], [lastLand + glintDur, 0, "in"]] },
-      path: roundedRectPath(0, 0, gl, 6 * S, 3 * S), origin: { dx: gl / 2, dy: 3 * S }, fill: { colour: "#FFFFFF" },
-    });
-  }
-  const sparkAt = lastLand + 40;
-  const sparks: Spark[] = [-50, 0, 50].map((deg, i) => ({ cx: trailX, cy: midY, angle: ((rtl ? 180 - deg : deg) * Math.PI) / 180, r0: 6 * S, r1: 54 * S, yScale: 1, tube: i % 2 === 1 }));
-  out.push(...sparkPieces(n, "sp", sparks, sparkAt, 330, goneAt, palette, S, fps, z + 4));
-  for (let i = 0; i < 2; i++) {
-    const at = sparkAt + 60 + i * 110;
-    const to = Math.min(goneAt, at + 640);
-    const r = (8 + 5 * seeded(`${cue.index}u`, 71 + i)) * S;
-    if (paintedFrameCount(at, to, fps) >= 3) {
-      out.push(ringPiece(n, i, trailX + dirX * (24 + 22 * i) * S, midY - (6 + 16 * i) * S, r, at, to, [dirX * 6 * S, -26 * S], palette, S, z + 4));
-    }
-  }
-  void input;
-  return out;
-}
-
 export const bubbleProgram: SceneProgram = {
   build(input) {
     const space = sceneSpace(input, ANCHOR);
@@ -846,17 +720,14 @@ export const bubbleProgram: SceneProgram = {
       { tube: input.colours.accent, core: lighter(input.colours.accent, "#FFE04A", SAMPLE_FIRE) },
       COOL,
     ];
-    // Geometry needs the counters (the bubble shape cycles by hero counter, the underline colour by plain counter).
     let heroCount = 0;
-    let plainCount = 0;
     const pieces: Piece[] = [];
     for (const window of speechWindows(input, space.safe, LEAD, HOLD)) {
       const { cue, index: n, start, spokenEnd, from, to, bounds } = window;
       const lane = speechLaneSpace(space, bounds, ANCHOR);
-      const geo = layoutCue(cue, input, lane, { hero: heroCount, plain: plainCount });
+      const geo = layoutCue(cue, input, lane, heroCount);
       if (!geo) continue;
       if (geo.bubble) heroCount++;
-      else plainCount++;
       const plan: Plan = { dy: 0, from, end: to, first: start, last: spokenEnd, box: geo.box };
       const ctx: Ctx = { input, u: space.u, fps, frameMs: 1000 / sceneSampleRate(fps), space: lane };
       pieces.push(...buildCue(n, cue, geo, plan, pal, ctx));

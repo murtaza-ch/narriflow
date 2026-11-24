@@ -37,6 +37,19 @@ const TEMPLATE_FACES = [
   "Inter Tight Light Italic",
   "Inter Tight Medium Italic",
   "Inter Tight ExtraBold Italic",
+  "Barlow Condensed Medium",
+  "Barlow Condensed Bold",
+  "Barlow Condensed ExtraBold Italic",
+  "Playfair Display Bold",
+  "Playfair Display Bold Italic",
+  "Space Grotesk Bold",
+  "DM Sans Bold",
+  "DM Sans Black",
+  "Manrope Bold",
+  "Manrope ExtraBold",
+  "Space Mono Bold",
+  "Silkscreen Bold",
+  "Bagel Fat One",
 ];
 
 describe("template-only caption faces", () => {

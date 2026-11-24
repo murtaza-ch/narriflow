@@ -32,6 +32,7 @@ import {
   memoMeasure,
   pathToSvg,
   pieceIndexesBetween,
+  roundedClipPath,
   sceneBoundsAt,
   sceneBuildKey,
   sceneInputFromPreset,
@@ -496,7 +497,14 @@ export const CaptionSceneLayers = memo(function CaptionSceneLayers({ built, canv
           continue;
         }
         const transform = sceneTransform(pose, scale);
-        const clip = pose.clip ? sceneClipPath(pose.clip, canvas, scale) : "";
+        let clip = pose.clip ? sceneClipPath(pose.clip, canvas, scale) : "";
+        if (pose.clip?.radius !== undefined) {
+          const path = pathToSvg(roundedClipPath(pose, scale));
+          if (pose.clip.inverse) {
+            const outer = `M0 0H${canvas.width * scale}V${canvas.height * scale}H0Z`;
+            clip = `path(evenodd, "${outer} ${path}")`;
+          } else clip = path ? `path("${path}")` : "inset(50%)";
+        }
         const key = `${transform}|${clip}|${pose.o}|${pose.blur}|${pose.colour}`;
         if (key === handle.written) continue;
         handle.written = key;

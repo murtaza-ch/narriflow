@@ -51,6 +51,22 @@ import { SEVENTIES_DEMO, seventiesProgram } from "./templates/seventies";
 import { THERMAL_DEMO, thermalProgram } from "./templates/thermal";
 import { SLOT_DEMO, slotProgram } from "./templates/slot";
 import { INKUP_DEMO, inkupProgram } from "./templates/inkup";
+import { PRIMER_DEMO, primerProgram } from "./templates/primer";
+import { MANIFESTO_DEMO, manifestoProgram } from "./templates/manifesto";
+import { SWIPE_DEMO, swipeProgram } from "./templates/swipe";
+import { MATCH_DEMO, matchProgram } from "./templates/match";
+import { SCRIBBLE_DEMO, scribbleProgram } from "./templates/scribble";
+import { BARREL_DEMO, barrelProgram } from "./templates/barrel";
+import { PILLS_DEMO, pillsProgram } from "./templates/pills";
+import { PIXEL_DEMO, pixelProgram } from "./templates/pixel";
+import { DIECUT_DEMO, diecutProgram } from "./templates/diecut";
+import { STICKY_DEMO, stickyProgram } from "./templates/sticky";
+import { BRUTE_DEMO, bruteProgram } from "./templates/brute";
+import { MDRN_DEMO, mdrnProgram } from "./templates/mdrn";
+import { CROSSTAPE_DEMO, crosstapeProgram } from "./templates/crosstape";
+import { GUMDROP_DEMO, gumdropProgram } from "./templates/gumdrop";
+import { FLOWING_DEMO, flowingProgram } from "./templates/flowing";
+import { TRACE_DEMO, traceProgram } from "./templates/trace";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -107,6 +123,22 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   thermal: { program: thermalProgram, demo: THERMAL_DEMO },
   slot: { program: slotProgram, demo: SLOT_DEMO },
   inkup: { program: inkupProgram, demo: INKUP_DEMO },
+  primer: { program: primerProgram, demo: PRIMER_DEMO },
+  manifesto: { program: manifestoProgram, demo: MANIFESTO_DEMO },
+  swipe: { program: swipeProgram, demo: SWIPE_DEMO },
+  match: { program: matchProgram, demo: MATCH_DEMO },
+  scribble: { program: scribbleProgram, demo: SCRIBBLE_DEMO },
+  barrel: { program: barrelProgram, demo: BARREL_DEMO },
+  pills: { program: pillsProgram, demo: PILLS_DEMO },
+  pixel: { program: pixelProgram, demo: PIXEL_DEMO },
+  diecut: { program: diecutProgram, demo: DIECUT_DEMO },
+  sticky: { program: stickyProgram, demo: STICKY_DEMO },
+  brute: { program: bruteProgram, demo: BRUTE_DEMO },
+  mdrn: { program: mdrnProgram, demo: MDRN_DEMO },
+  crosstape: { program: crosstapeProgram, demo: CROSSTAPE_DEMO },
+  gumdrop: { program: gumdropProgram, demo: GUMDROP_DEMO },
+  flowing: { program: flowingProgram, demo: FLOWING_DEMO },
+  trace: { program: traceProgram, demo: TRACE_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

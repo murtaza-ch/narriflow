@@ -143,9 +143,6 @@ describe("Labels", () => {
     const pieces = build(urdu);
     const x = (at: number) => evaluatePiece(plate(pieces, 0, at), urdu[0]!.words[at]!.endMs + 200).x;
     expect(x(0)).toBeGreaterThan(x(1));
-    // The feed strip grows from the right edge.
-    const strip = need<ShapePiece>(find(pieces, "labels:0:strip"));
-    expect(strip.origin!.dx).toBeGreaterThan(0);
   });
 
   test("a label wider than the safe width shrinks by itself and lands inside the safe area", () => {
@@ -239,8 +236,6 @@ describe("Labels", () => {
       const group = ofCue(pieces, n);
       const tape = group.find((piece) => piece.id.endsWith(":tape"));
       expect(tape, `cue ${n} tape`).toBeDefined();
-      expect(group.some((piece) => piece.id.endsWith(":strip")), `cue ${n} strip`).toBe(true);
-      expect(group.some((piece) => piece.id.endsWith(":stripdot")), `cue ${n} dot`).toBe(true);
       const rays = group.filter((piece) => piece.id.includes(":ray"));
       if (cue.words.some((w) => w.role === "hero")) expect(rays.length, `cue ${n} rays`).toBeGreaterThanOrEqual(1);
       tapes.push(Math.sign(Math.round(evaluatePiece(tape!, tape!.fromMs + 300).rz)));
@@ -252,18 +247,6 @@ describe("Labels", () => {
     expect(angles.size).toBeGreaterThan(4);
     // Deterministic: the same input builds the same scene.
     expect(JSON.stringify(build(long))).toBe(JSON.stringify(pieces));
-  });
-
-  test("the feed strip follows the speech and ends full", () => {
-    const strip = need<ShapePiece>(find(scene, "labels:1:strip"));
-    const words = cues[1]!.words;
-    const start = evaluatePiece(strip, strip.fromMs + 1).sx;
-    const mid = evaluatePiece(strip, words[1]!.endMs + 20).sx;
-    const end = evaluatePiece(strip, words[2]!.endMs + 20).sx;
-    expect(start).toBeLessThan(0.1);
-    expect(mid).toBeGreaterThan(0.5);
-    expect(mid).toBeLessThan(0.9);
-    expect(end).toBeCloseTo(1, 3);
   });
 
   test("all edge cues and aspect ratios keep every painted frame inside the safe area and the budget", () => {
