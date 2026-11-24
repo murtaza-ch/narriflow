@@ -16,6 +16,9 @@ import { ellipsePath, pathBounds, polygonPath, sparklePath } from "../shapes";
  * Body rows wrap from the measured speech. The oval grows around the visible rows, and fit includes
  * the turned sticker and its hard shadow. Joined scripts type and pop a word at a time, with mirrored
  * RTL layout. The fade waits for speech and yields its window to the next cue. Simultaneous cues stack.
+ *
+ * Real-cue fix (gallery review, 2026-11-25): the sticker sits `BADGE_DROP` under the oval so that its turned die cut (a few degrees of
+ * tilt widen its box by a quarter of its width) never reaches the oval's words; it still tucks over the oval's lower rim.
  */
 export const SEVENTIES_DEMO: DemoScript = {
   lines: [
@@ -39,6 +42,8 @@ const GOLD = "#F4B33D";
 const BODY_FACE = "Shrikhand";
 const HERO_FACE = "DM Serif Display Italic";
 const TRACKING = 0.005;
+/** How far under the oval's centre line the sticker's centre sits, beyond the oval's half height and the sticker's own (sample px). */
+const BADGE_DROP = 64;
 const STICKERS = [
   { kind: "scallop", fill: GOLD, ink: "#8A2412" },
   { kind: "hexagon", fill: "#2E8C80", ink: CREAM },
@@ -151,7 +156,7 @@ function makeLayout(plan: Placement, input: SceneInput, u: number, maxWidth: num
     const edge = w * 0.55 + 16 * u;
     badge = {
       x: clamp(body.length ? x + 120 * u * side : x, space.safe.x1 + edge, space.safe.x2 - edge),
-      y: body.length ? y + oval.h / 2 + h * 0.23 + 42 * u : y,
+      y: body.length ? y + oval.h / 2 + h * 0.23 + BADGE_DROP * u : y,
       w, h, tilt: side * ((variant % 2 === 0 ? -1 : 1) * (4 + 2.5 * seeded(`${seed}:badge`))),
     };
     label = { at: hero, x: -measure.advance / 2 + (cut.kind === "tag" ? h * 0.15 * side : 0), y: -(measure.inkTop + measure.inkBottom) / 2, size };

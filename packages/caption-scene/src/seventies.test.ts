@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { describeSpeechConformance } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
-import { SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
+import { type Box, SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
 import { SEVENTIES_DEMO, seventiesProgram } from "./templates/seventies";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -106,4 +106,38 @@ describe("Seventies stickers", () => {
     expect(pieces.find(({ id }) => id === "seventies:0:badge-scallop")).toMatchObject({ fill: { colour: "#61B0A8" } });
     expect(pieces.find(({ id }) => id === "seventies:0:w1l0")).toMatchObject({ fill: "#3A1C13" });
   });
+});
+
+test("Seventies' die-cut sticker, even turned, stays clear of the words in the oval above it", () => {
+  // Gallery review 2026-11-25: the turned die cut's box reached the oval's last row on every cue with a one-row or two-row oval.
+  const { cues } = demoCues({
+    lines: ["it's:b time:b to:m say:b goodbye:h@420", "all:b of:m them:b are:m unplugged.:h@480", "we:m want:b anyone:b didn't:h@360", "does:b the:m remote:b even:b still:h@360", "just:b tear:b it:m down.:h@380"],
+    options: { lead: 400, gap: 30, cueGap: 120, tail: 500 },
+  });
+  const pieces = build(cues);
+  const core = (box: Box): Box => {
+    const dx = (box.x2 - box.x1) * 0.06;
+    const dy = (box.y2 - box.y1) * 0.18;
+    return { x1: box.x1 + dx, x2: box.x2 - dx, y1: box.y1 + dy, y2: box.y2 - dy };
+  };
+  const meets = (a: Box, b: Box) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
+  let checked = 0;
+  for (const cue of cues) {
+    const own = pieces.filter(({ id }) => id.startsWith(`seventies:${cue.index}:`));
+    const words = own.filter(({ id }) => /^seventies:\d+:w\d+$/.test(id));
+    for (const sticker of own.filter(({ id }) => /:(?:diecut|badge-.+)$/.test(id))) {
+      for (const t of exportFrameTimes(cue.startMs, cue.endMs, 30)) {
+        const box = pieceBounds(sticker, t, fakeMeasure);
+        if (!box) continue;
+        for (const word of words) {
+          if (cue.words[Number(word.id.split(":w")[1])]!.role === "hero") continue;
+          const ink = pieceBounds(word, t, fakeMeasure);
+          if (!ink) continue;
+          checked++;
+          expect(meets(box, core(ink)), `${sticker.id} over ${word.id} at ${t}`).toBe(false);
+        }
+      }
+    }
+  }
+  expect(checked).toBeGreaterThan(100);
 });
