@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { captionSceneMeta, getCaptionPresetById } from "@narriflow/validators";
 import { describeSpeechConformance, fastRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
-import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
+import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import { evaluatePiece, pieceBounds, SCENE_PIECE_BUDGET, type Piece } from "./scene";
 import { buildCaptionScene, captionSceneDemo } from "./registry";
 import { SQUASH_DEMO, squashHash, squashLines, squashPlans } from "./templates/squash";
@@ -176,6 +176,87 @@ describe("Squash", () => {
     const tight = demoCues({ lines: ["go:b@150", "now:b@150"], options: { cueGap: 0, gap: 0 } }).cues;
     const face = piece(build(tight, { fps: 30 }), "squash:0:w0")!;
     expect(evaluatePiece(face, exportFrameAtOrBefore(face.toMs - 1, 30)).sy).toBeGreaterThan(0.9);
+
+    const demo = demoCues(SQUASH_DEMO).cues;
+    const hero = piece(build(demo, { fps: 30 }), "squash:0:w3")!;
+    for (const t of exportFrameTimes(demo[0]!.words[3]!.endMs, hero.toMs, 30)) expect(evaluatePiece(hero, t).sy).toBeGreaterThan(0.95);
+  });
+
+  test("a one-frame cue keeps its full-height word on a static plate", () => {
+    const fps = 24;
+    const { cues } = demoCues({ lines: ["yes:b@110", "no:h@70", "wait:b@100"], options: { lead: 400, gap: 0, cueGap: 0, tail: 450 } });
+    const pieces = build(cues, { fps, colours: { primary: "#FFFFFF", accent: "#0B0B0C", highlight: "#FFE600", shadow: "#000000" } });
+    const word = piece(pieces, "squash:1:w0")!;
+    const plate = piece(pieces, "squash:1:plate")!;
+    expect(exportFrameTimes(word.fromMs, word.toMs, fps)).toEqual([542]);
+    expect(evaluatePiece(word, 542).sy).toBe(1);
+    expect(plate?.kind === "shape" && plate.fill?.colour).toBe("#FFFFFF");
+    expect(evaluatePiece(plate, 542)).toEqual(evaluatePiece(plate, plate.fromMs));
+    const paper = pieceBounds(plate, 542, fakeMeasure)!;
+    const ink = pieceBounds(word, 542, fakeMeasure)!;
+    expect(paper.x1).toBeLessThan(ink.x1);
+    expect(paper.x2).toBeGreaterThan(ink.x2);
+    expect(paper.y1).toBeLessThan(ink.y1);
+    expect(paper.y2).toBeGreaterThan(ink.y2);
+    for (const id of ["tab", "skid0a", "skid0b"]) {
+      expect(piece(pieces, `squash:1:${id}`)).toBeUndefined();
+    }
+  });
+
+  test("a mixed RTL row reveals the whole Latin word by its spoken onset", () => {
+    const fps = 30;
+    const { cues } = demoCues({ lines: ["یہ:b@90 AI:b@80 GPT:b@80 مثال:h@120"], language: "ur", options: { lead: 407, gap: 0, tail: 450 } });
+    const measure: typeof fakeMeasure = (text, face, size, ls) => ({
+      ...fakeMeasure(text, face, size, ls),
+      advance: [...text].reduce((width, c) => width + (c === "I" ? 0.22 : c === "A" || c === " " ? 0.34 : 0.48) * size, 0),
+    });
+    const pieces = build(cues, { fps, measure });
+    const words = cues[0]!.words;
+    const ai = piece(pieces, "squash:0:w1")!;
+    const t = exportFrameAtOrAfter(words[1]!.startMs, fps);
+    expect(t).toBe(500);
+    expect(pieceBounds(ai, t, measure)).toEqual(pieceBounds({ ...ai, clip: undefined }, t, measure));
+    const gptAt = exportFrameAtOrAfter(words[2]!.startMs, fps);
+    expect(evaluatePiece(ai, gptAt).x).toBeLessThan(evaluatePiece(piece(pieces, "squash:0:w2")!, gptAt).x);
+  });
+
+  test("the plate clears a fallback word that stretches taller than the first word of its row", () => {
+    const { cues } = demoCues({ lines: ["یہ:b@90 بہت:b@350"], language: "ur", options: { lead: 400, gap: 0, tail: 450 } });
+    const measure: typeof fakeMeasure = (text, face, size, ls) => ({
+      ...fakeMeasure(text, face, size, ls),
+      inkTop: (text === "بہت" ? -1.1 : -0.5) * size,
+      inkBottom: (text === "یہ" ? 0.65 : 0.1) * size,
+    });
+    const pieces = build(cues, { measure });
+    const plate = piece(pieces, "squash:0:plate")!;
+    const word = piece(pieces, "squash:0:w1")!;
+    for (const t of exportFrameTimes(word.fromMs, cues[0]!.words[1]!.endMs + 150)) {
+      const box = pieceBounds(word, t, measure);
+      if (box) expect(pieceBounds(plate, t, measure)!.y1).toBeLessThan(box.y1);
+    }
+  });
+
+  test("a run of 70 to 120 ms words keeps a tab and a skid beat on each cue", () => {
+    const staccato = ["yes:h@70", "go:b@90", "now:h@100", "we:m@70 can:b@95", "you:b@85 should:m@120 try:h@80"];
+    const lines = Array.from({ length: 40 }, (_, i) => staccato[i % staccato.length]!);
+    for (const fps of [24, 25, 30, 60]) for (const cueGap of [0, 60]) {
+      const { cues } = demoCues({ lines, options: { lead: 407, gap: 0, cueGap, tail: 450 } });
+      const pieces = build(cues, { fps });
+      for (const { index } of cues) {
+        const plate = piece(pieces, `squash:${index}:plate`)!;
+        const frames = exportFrameTimes(plate.fromMs, plate.toMs, fps);
+        for (const id of ["tab", "skid0a", "skid0b"]) {
+          const accent = piece(pieces, `squash:${index}:${id}`);
+          const label = `cue ${index} ${id} @${fps} with gap ${cueGap}`;
+          if (frames.length < 2) {
+            expect(accent, label).toBeUndefined();
+          } else {
+            expect(accent, label).toBeDefined();
+            expect(exportFrameTimes(accent!.fromMs, accent!.toMs, fps).filter((t) => pieceBounds(accent!, t, fakeMeasure)).length, label).toBeGreaterThanOrEqual(2);
+          }
+        }
+      }
+    }
   });
 
   test("no piece paints on a single frame at any frame rate", () => {

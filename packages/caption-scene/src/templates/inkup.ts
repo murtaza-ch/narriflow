@@ -1,11 +1,15 @@
 import type { DemoScript } from "../demo";
+import { type Frames, EASES, prog } from "../ease";
+import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
+import { sampleFrames } from "../frames";
 import type { SceneProgram } from "../input";
-import { placeholderProgram } from "./placeholder";
+import { cueDirection, sceneSpace } from "../layout";
+import { SCENE_PIECE_BUDGET, type Piece, type TextPiece } from "../scene";
+import { ellipsePath, roundedRectPath } from "../shapes";
+import { layoutSpeechWords, speechWindows } from "./speech-layout";
 
-/**
- * Inkup (`samples/templates/m33-inkup.js`): not ported yet; it draws the placeholder line.
- */
-
+/** Inkup holds the layout at the heavy weights' widths. Light and medium faces cross-fade
+ * into those widths, with italic violet on the key word and a rule on the reading edge. */
 export const INKUP_DEMO: DemoScript = {
   lines: [
     "most:b people:b quit:b right:m before:b it:m works:h@560",
@@ -17,4 +21,102 @@ export const INKUP_DEMO: DemoScript = {
   options: { rate: 235, gap: 22, cueGap: 150, tail: 700, lead: 350 },
 };
 
-export const inkupProgram: SceneProgram = placeholderProgram;
+const ANCHOR = 1300;
+const LEAD = 70;
+const HOLD = 150;
+const BODY = 86;
+const WEIGHTED_SCRIPT = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{M}\p{N}\p{P}\s]+$/u;
+
+export const inkupProgram: SceneProgram = {
+  build(input) {
+    const { colours, fps } = input;
+    const { safe } = sceneSpace(input, ANCHOR);
+    const pieces: Piece[] = [];
+    for (const window of speechWindows(input, safe, LEAD, HOLD)) {
+      const { cue, index, from, to } = window;
+      const words = cue.words.map((word) => ({
+        text: word.text,
+        size: BODY * (word.role === "hero" ? 1.16 : 1),
+        face: word.role === "hero" ? "Inter Tight ExtraBold Italic" : "Inter Tight ExtraBold",
+        spacing: 0,
+      }) as const);
+      const { cells, box, unit } = layoutSpeechWords(input, window, { anchor: ANCHOR, column: 840, gap: 23, padding: 52, align: "leading", words });
+      const exitAt = Math.max(window.spokenEnd + HOLD, to - 170);
+      const exit = paintedFrameCount(exitAt, to, fps) >= 2;
+      const leave = (t: number) => exit ? EASES.in(prog(t, exitAt, to - exitAt)) : 0;
+      const enter = (t: number) => 1 - EASES.outExpo(prog(t, from, 130));
+      const dy = (t: number) => unit * (14 * enter(t) - 12 * leave(t));
+      const samples = (f: (t: number) => number, a: number, b: number, keys: number[], tolerance: number): Frames =>
+        sampleFrames(f, [...keys, from + 130, exitAt], tolerance, { range: [a, b] });
+      let blendBudget = Math.max(0, SCENE_PIECE_BUDGET - 2 * cells.length - 3);
+      for (const cell of cells) {
+        const word = cue.words[cell.at]!;
+        const hero = word.role === "hero";
+        const colour = hero ? colours.highlight : colours.primary;
+        // Fallback families can resolve all three requested weights to the same face.
+        const fallbackStroke = WEIGHTED_SCRIPT.test(cell.text) ? 0 : 0.014 * cell.size;
+        const name = `inkup:${index}:w${cell.at}`;
+        const change = Math.max(from, word.startMs - 60);
+        const settled = Math.max(change, Math.min(change + 150, exportFrameAtOrBefore(word.endMs - 1, fps)));
+        const boldAt = Math.min(word.startMs, change + 36);
+        const rise = (t: number) => settled > boldAt ? 0.17 + 0.83 * EASES.out(prog(t, boldAt, settled - boldAt)) : 1;
+        const shared = (a: number, b: number) => ({
+          x: [[a, cell.x]] as Frames,
+          y: samples((t) => cell.baseline + dy(t), a, b, [], 0.16),
+        });
+        const face: TextPiece = {
+          id: name, kind: "text", z: 4, fromMs: boldAt, toMs: to,
+          track: {
+            ...shared(boldAt, to),
+            o: samples((t) => rise(t) * (1 - leave(t)), boldAt, to, [settled], 0.006),
+            ...(hero ? { sx: [[boldAt, 1.05], [Math.min(to, boldAt + 600), 1, "out"]] } : {}),
+          },
+          text: cell.text, face: cell.face, sizePx: cell.size, letterSpacingEm: 0, fill: colour,
+          anchor: "baseline-center", language: cue.language,
+          ...(fallbackStroke ? { stroke: { colour, widthPx: fallbackStroke } } : {}),
+          shadows: [{ dx: 0, dy: hero ? 0 : 3 * unit, blur: (hero ? 9 : 6) * unit, colour: hero ? colours.accent : colours.shadow, alpha: 0.65 }],
+        };
+        pieces.push(face);
+        const mixAt = Math.min(settled, change + 65);
+        const addWeight = (weight: TextPiece["face"], id: string, a: number, b: number, opacity: (t: number) => number) => {
+          if (blendBudget <= 0 || paintedFrameCount(a, b, fps) < 2) return;
+          const width = input.measure(cell.text, weight, cell.size, 0).advance;
+          pieces.push({
+            ...face, id: name + id, face: weight, z: 3, fromMs: a, toMs: b, shadows: undefined,
+            stroke: id === "mid" && fallbackStroke ? { colour, widthPx: fallbackStroke * 0.35 } : undefined,
+            track: { ...shared(a, b), sx: [[a, width > 0 ? cell.width / width : 1]], o: samples(opacity, a, b, [change, mixAt, boldAt], 0.006) },
+          });
+          blendBudget--;
+        };
+        const light = hero ? "Inter Tight Light Italic" : "Inter Tight Light";
+        const medium = hero ? "Inter Tight Medium Italic" : "Inter Tight Medium";
+        addWeight(light, "light", from, mixAt, (t) => (hero ? 0.78 : 0.7) * (1 - EASES.out(prog(t, change, mixAt - change))));
+        addWeight(medium, "mid", change, settled, (t) => (0.2 + 0.8 * EASES.out(prog(t, change, mixAt - change))) * (t >= boldAt ? 1 - rise(t) : 1));
+      }
+      if (paintedFrameCount(from, to, fps) < 2) continue;
+
+      const direction = cueDirection(cue) === "rtl" ? 1 : -1;
+      const x = (direction === 1 ? box.x2 : box.x1) + direction * 32 * unit;
+      const ruleH = box.y2 - box.y1;
+      const growth = Math.min(to, from + 320);
+      const o = samples((t) => 1 - leave(t), from, to, [], 0.01);
+      const finish = samples((t) => (0.08 + 0.92 * EASES.outExpo(prog(t, from, growth - from))) * (1 - leave(t)), from, to, [growth], 0.006);
+      pieces.push({
+        id: `inkup:${index}:rule`, kind: "shape", z: 1, fromMs: from, toMs: to,
+        path: roundedRectPath(0, 0, 6 * unit, ruleH, 3 * unit), fill: { colour: colours.highlight },
+        track: { x: [[from, x]], y: samples((t) => box.y1 + dy(t), from, to, [], 0.16), sy: finish, o },
+      });
+      // A violet cap and nib travel together as the rule writes down the margin.
+      for (let i = 0; i < 2; i++) {
+        const r = (i === 0 ? 3 : 5) * unit;
+        const slide = (t: number) => 0.08 + 0.82 * EASES.outExpo(prog(t, from, growth - from));
+        pieces.push({
+          id: `inkup:${index}:nib${i}`, kind: "shape", z: 2, fromMs: from, toMs: to,
+          path: ellipsePath(r, r, r), origin: { dx: r, dy: r }, fill: { colour: i === 0 ? colours.primary : colours.highlight },
+          track: { x: [[from, x + (3 + direction * (index % 2) * 2) * unit]], y: samples((t) => box.y1 + dy(t) + Math.max(r, ruleH * slide(t) - (i === 0 ? 12 : 0) * unit), from, to, [growth], 0.16), o },
+        });
+      }
+    }
+    return { pieces };
+  },
+};

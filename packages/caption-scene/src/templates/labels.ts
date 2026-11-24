@@ -1,11 +1,12 @@
 import type { DemoScript } from "../demo";
 import { type Ease, type Frames, EASES, clamp, prog } from "../ease";
-import { SCENE_DEFAULT_FPS, exportFrameAtOrAfter, paintedFrameCount, sceneSampleRate } from "../frame-grid";
+import { SCENE_DEFAULT_FPS, exportFrameAtOrBefore, paintedFrameCount, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
-import { balancedRows, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
+import { type SceneSpace, balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
 import { type Box, type Piece, type ShapePiece, type TextPiece, type Track, evaluatePiece, pieceBounds } from "../scene";
 import { ellipsePath, polygonPath, polylinePath, rectPath } from "../shapes";
+import { speechLaneSpace, speechWindows } from "./speech-layout";
 
 /**
  * Labels (`samples/templates/m26-labels.js`, after Motion Array "Titles Typography"): every spoken word is its own tight white
@@ -135,7 +136,7 @@ interface CueLayout {
   readonly lead: number;
   /** The last frame this cue may paint: its own end, or the first painted frame of the cue after it. */
   release: number;
-  readonly obstacles: readonly Box[];
+  readonly space: SceneSpace;
 }
 
 const meets = (a: Box, b: Box) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
@@ -170,8 +171,7 @@ function unionOf(boxes: readonly Box[]): Box {
   };
 }
 
-function layoutCue(cue: SceneCue, number: number, heroCount: number, input: SceneInput, obstacles: readonly Box[]): { labels: Label[]; rows: Label[][]; q: number; box: Box } {
-  const space = sceneSpace(input, ANCHOR_LINE);
+function layoutCue(cue: SceneCue, number: number, heroCount: number, input: SceneInput, space: SceneSpace): { labels: Label[]; rows: Label[][]; q: number; box: Box } {
   const { u, safe } = space;
   const safeW = safe.x2 - safe.x1;
   const safeH = safe.y2 - safe.y1;
@@ -249,16 +249,7 @@ function layoutCue(cue: SceneCue, number: number, heroCount: number, input: Scen
   };
   let box = withRoom(labels.map(restBox));
 
-  // Stack clear of a cue that is still being spoken, then keep the whole block inside the safe height.
   let dy = 0;
-  if (obstacles.some((o) => meets(box, o))) {
-    const gap = 8 * q;
-    const up = Math.min(...obstacles.map((o) => o.y1)) - gap - box.y2;
-    const down = Math.max(...obstacles.map((o) => o.y2)) + gap - box.y1;
-    if (box.y1 + up >= safe.y1) dy = up;
-    else if (box.y2 + down <= safe.y2) dy = down;
-    else dy = Math.abs(safe.y1 - (box.y1 + up)) <= Math.abs(box.y2 + down - safe.y2) ? up : down;
-  }
   if (box.y1 + dy < safe.y1) dy = safe.y1 - box.y1;
   else if (box.y2 + dy > safe.y2) dy = safe.y2 - box.y2;
   if (dy !== 0) {
@@ -301,7 +292,7 @@ function exitPlan(count: number, spoken: number, release: number, fps: number): 
 function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>, input: SceneInput): Piece[] {
   const { cue, number, labels, rows, q, spoken, release, lead } = layout;
   const fps = input.fps ?? SCENE_DEFAULT_FPS;
-  const space = sceneSpace(input, ANCHOR_LINE);
+  const { space } = layout;
   const words = cue.words;
   const n = words.length;
   const rtl = cueDirection(cue) === "rtl";
@@ -328,7 +319,7 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
       x: [[tm.from, l.cx + fx], [tm.from + tm.fly, l.cx, "outExpo"]],
       y: [[tm.from, l.bottom - fy], [tm.from + tm.fly, l.bottom, "outExpo"]],
       rz: [[tm.from, startR], [settleEnd, l.tilt, "spring"]],
-      o: [[tm.from, FADE_FROM], [tm.from + FADE_MS, 1]],
+      o: opacityOf(tm, words[l.at]!.endMs),
     };
     if (l.key) t.sx = [[tm.from, pop], [settleEnd, 1, "spring"]];
     if (e !== null) {
@@ -341,6 +332,10 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
       }
     } else if (l.key) t.sy = t.sx;
     return t;
+  };
+  const opacityOf = (tm: Timing, wordEnd: number): Frames => {
+    const opaqueAt = Math.min(tm.from + FADE_MS, exportFrameAtOrBefore(wordEnd - 1, fps));
+    return opaqueAt > tm.from ? [[tm.from, FADE_FROM], [opaqueAt, 1]] : [[tm.from, 1]];
   };
 
   const plateOf = (l: Label, tm: Timing, to: number, withExit: boolean): ShapePiece => {
@@ -363,6 +358,15 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
     };
   };
 
+  const faceOf = (l: Label, tm: Timing, to: number, withExit: boolean): TextPiece => ({
+    id: `labels:${number}:w${l.at}`, kind: "text",
+    z: number * 100 + (l.key ? 1 : 2 + (l.at % 2)) * 2 + 1,
+    fromMs: tm.from, toMs: to, track: track(l, tm, withExit),
+    text: words[l.at]!.text, face: FACE, sizePx: l.fs, letterSpacingEm: LS, fill: INK,
+    anchor: "baseline-center", origin: { dx: l.cx - l.textCx, dy: l.bottom - l.baseline },
+    language: cue.language,
+  });
+
   // Every label: when it first paints, how long it flies, and how much of the flight fits the safe area (and clear of a cue that
   // is still being spoken).
   const firstWord = Math.min(...words.map((w) => w.startMs));
@@ -378,7 +382,12 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
         const box = pieceBounds(plate, t, input.measure);
         if (!box) continue;
         if (box.x1 < safe.x1 || box.x2 > safe.x2 || box.y1 < safe.y1 || box.y2 > safe.y2) return false;
-        if (layout.obstacles.some((o) => meets(box, o))) return false;
+        for (const earlier of labels) {
+          const timing = timings.get(earlier.at);
+          if (!timing || t >= words[earlier.at]!.endMs || t < words[earlier.at]!.startMs) continue;
+          const face = pieceBounds(faceOf(earlier, timing, release, false), t, input.measure);
+          if (face && meets(box, inflate(face, 1))) return false;
+        }
       }
       return true;
     };
@@ -398,27 +407,18 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
 
   for (const l of labels) {
     const tm = timings.get(l.at)!;
-    const word = words[l.at]!;
     const to = endOf(l.at);
-    pieces.push(plateOf(l, tm, to, true));
-    const dyText = l.bottom - l.baseline;
-    const text: TextPiece = {
-      id: `labels:${number}:w${l.at}`,
-      kind: "text",
-      z: number * 100 + (l.key ? 1 : 2 + (l.at % 2)) * 2 + 1,
-      fromMs: tm.from,
-      toMs: to,
-      track: track(l, tm, true),
-      text: word.text,
-      face: FACE,
-      sizePx: l.fs,
-      letterSpacingEm: LS,
-      fill: INK,
-      anchor: "baseline-center",
-      origin: { dx: l.cx - l.textCx, dy: dyText },
-      language: cue.language,
-    };
-    pieces.push(text);
+    const text = faceOf(l, tm, to, true);
+    if (paintedFrameCount(tm.from, to, fps) >= 2) {
+      pieces.push(plateOf(l, tm, to, true), text);
+    } else {
+      pieces.push({
+        ...text,
+        track: track(l, { ...tm, g: 0 }, false),
+        fill: input.colours.primary,
+        shadows: [{ dx: 0, dy: 2 * l.q, blur: 3 * l.q, colour: SHADOW_INK, alpha: 0.75 }],
+      });
+    }
   }
 
   // ---- Recurring beats ----
@@ -446,9 +446,10 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
     const th = 26 * host.q;
     const z = th / 4;
     const angle = tapeCorner * (30 + 10 * unit("tapeAngle", seed)) + host.tilt * 0.5;
-    const from = Math.round(hostTm.from + hostTm.fly * 0.3);
     const hostEnd = exit ? exitOf(host.at)! : release;
     const to = Math.min(release, hostEnd);
+    const landing = Math.round(hostTm.from + hostTm.fly * 0.3);
+    const from = fits2(landing, to) ? landing : hostTm.from;
     if (fits2(from, to)) {
       const pop = Math.min(150, Math.max(1, Math.floor((to - from) / 2)));
       // The scrap rides the label it is stuck to: its offset from the label's pivot turns and scales with the label's own pose.
@@ -547,7 +548,7 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
     const heroRank = hero ? (heroNumberOf.get(number) ?? 0) : 0;
     const tm = timings.get(target.at)!;
     const others = labels.filter((l) => l.at !== target.at).map((l) => inflate(restBox(l), 5 * q));
-    const avoid = [...others, ...layout.obstacles];
+    const avoid = others;
     const reach = 5 * q + 2;
     const room = { x1: space.safe.x1 + reach, y1: space.safe.y1 + reach, x2: space.safe.x2 - reach, y2: space.safe.y2 - reach };
     const count = hero ? 3 : 2;
@@ -577,7 +578,8 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
       if (!best || rays.length > best.rays.length) best = { side, rays };
       if (rays.length === count) break;
     }
-    const t0 = Math.round(tm.from + tm.fly * 0.35);
+    const landing = Math.round(tm.from + tm.fly * 0.35);
+    const t0 = fits2(landing, decoEnd) ? landing : tm.from;
     const total = 350;
     const avail = decoEnd - t0;
     if (best && best.rays.length > 0 && fits2(t0, t0 + Math.min(total, avail))) {
@@ -608,34 +610,25 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
       });
     }
   }
-  return pieces;
+  return clampToSafeArea(pieces, safe, input.measure);
 }
 
 export const labelsProgram: SceneProgram = {
   build(input) {
-    const fps = input.fps ?? SCENE_DEFAULT_FPS;
     const space = sceneSpace(input, ANCHOR_LINE);
     const layouts: CueLayout[] = [];
     const heroNumberOf = new Map<number, number>();
     let heroCount = 0;
     let heroCues = 0;
-    input.cues.forEach((cue, number) => {
-      if (cue.words.length === 0) return;
-      const start = Math.min(...cue.words.map((w) => w.startMs));
-      const spoken = Math.max(...cue.words.map((w) => w.endMs));
-      const alive = layouts.filter((p) => p.release > start - LEAD);
-      const overlapping = alive.filter((p) => p.spoken > start);
-      let lead = LEAD;
-      for (const p of alive) if (p.spoken <= start) lead = Math.min(lead, Math.max(0, start - p.spoken));
-      const first = exportFrameAtOrAfter(start - lead, fps);
-      for (const p of alive) if (!overlapping.includes(p)) p.release = Math.min(p.release, first);
-      const obstacles = overlapping.map((p) => inflate(p.box, 12 * space.u));
-      const laid = layoutCue(cue, number, heroCount, input, obstacles);
+    for (const window of speechWindows(input, space.safe, LEAD, READ)) {
+      const { cue, index: number, start, spokenEnd, from, to, bounds } = window;
+      const lane = speechLaneSpace(space, bounds, ANCHOR_LINE);
+      const laid = layoutCue(cue, number, heroCount, input, lane);
       const heroes = cue.words.filter((w) => w.role === "hero").length;
       if (heroes > 0) heroNumberOf.set(number, heroCues++);
       heroCount += heroes;
-      layouts.push({ cue, number, labels: laid.labels, rows: laid.rows, q: laid.q, box: laid.box, start, spoken, lead, release: Math.max(cue.endMs, spoken), obstacles });
-    });
+      layouts.push({ cue, number, labels: laid.labels, rows: laid.rows, q: laid.q, box: laid.box, start, spoken: spokenEnd, lead: start - from, release: to, space: lane });
+    }
     return { pieces: layouts.flatMap((layout) => cuePieces(layout, heroNumberOf, input)) };
   },
 };

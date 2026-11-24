@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { demoCues, sceneEdgeDemo } from "./demo";
-import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
+import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount } from "./frame-grid";
 import type { SceneCue, SceneInput, SceneProgram } from "./input";
 import { type Box, type Piece, evaluatePiece, pieceBounds } from "./scene";
 import { fakeMeasure, sceneInput } from "./test-support";
@@ -20,7 +20,7 @@ import { fakeMeasure, sceneInput } from "./test-support";
  *   3. a face is opaque (≥ 0.9) and unclipped on the last frame before its spoken end;
  *   4. after its spoken end it stays readable for 150 ms, or until a later cue first paints;
  *   5. no piece of a later cue ever overlaps a live face of an earlier cue;
- *   6. no piece paints on exactly one frame;
+ *   6. no one-frame motion or decoration. A one-frame word can keep its static backing plate;
  *   7. nothing paints after the last cue's end;
  *   8. overlapping speakers both keep every word through its spoken end, uncovered, also at 2x on 16:9;
  *   9. at twice the sample size on 9:16, 1:1 and 16:9, every painted frame stays in the safe area.
@@ -196,12 +196,22 @@ export function describeSpeechConformance(name: string, program: SceneProgram, o
               }
             }
 
-            // 6. No piece paints on exactly one frame; 7. nothing paints after the last cue ends.
+            // 6. A one-frame word may keep the static plate it needs for contrast. 7. Stay inside the clip.
             const end = run.at(-1)!.endMs;
             for (const piece of pieces) {
               const frames = exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => painted(piece, t));
-              // A face may be a static pose on the one frame its word gets; anything else on one frame is a flash.
-              if (!faceOf(piece)) expect(frames.length, `${piece.id} paints on a single frame (${frames[0]}) ${at}`).not.toBe(1);
+              if (!faceOf(piece) && frames.length === 1) {
+                const t = frames[0]!;
+                const plate = painted(piece, t)!;
+                const staticBacking = piece.kind === "shape" && piece.fill &&
+                  Object.values(piece.track).every((track) => track.every((frame) => frame[1] === track[0]?.[1])) &&
+                  faces.some(({ piece: face, ref }) => {
+                    if (ref.cue !== cueOf(piece) || piece.z >= face.z || paintedFrameCount(face.fromMs, face.toMs, fps) !== 1) return false;
+                    const ink = painted(face, t);
+                    return ink && plate.x1 <= ink.x1 + EPS && plate.x2 >= ink.x2 - EPS && plate.y1 <= ink.y1 + EPS && plate.y2 >= ink.y2 - EPS;
+                  });
+                expect(Boolean(staticBacking), `${piece.id} paints on a single frame (${t}) ${at}`).toBe(true);
+              }
               if (frames.length) expect(frames.at(-1)!, `${piece.id} paints at ${frames.at(-1)}, after the last cue ends at ${end} ${at}`).toBeLessThan(end + 1);
             }
           }

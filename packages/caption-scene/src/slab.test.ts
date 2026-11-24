@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { captionSceneMeta, getCaptionPresetById } from "@narriflow/validators";
+import { captionColourContrast, captionSceneMeta, getCaptionPresetById } from "@narriflow/validators";
 import { describeSpeechConformance, fastRun } from "./conformance-support";
 import { type DemoScript, demoCues, sceneEdgeDemo } from "./demo";
 import { EASES, prog } from "./ease";
 import { exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
-import { type Piece, SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds, sceneBoundsAt } from "./scene";
+import { type Piece, SCENE_PIECE_BUDGET, evaluatePiece, mixColour, pieceBounds, sceneBoundsAt } from "./scene";
 import { fakeMeasure, sceneInput } from "./test-support";
 import { SLAB_DEMO, slabProgram } from "./templates/slab";
 
@@ -174,7 +174,8 @@ describe("Slab", () => {
     expect(evaluatePiece(slab, landing + 250).sx).toBeCloseTo(1, 6);
     expect(evaluatePiece(slab, landing + 70).x).toBe(evaluatePiece(ink, landing + 70).x);
     expect(evaluatePiece(slab, landing + 70).y).toBe(evaluatePiece(flash, landing + 70).y);
-    expect(evaluatePiece(flash, landing).o).toBeCloseTo(0.55, 3);
+    const lit = mixColour(evaluatePiece(slab, landing).colour, "#FFFFFF", evaluatePiece(flash, landing).o);
+    expect(captionColourContrast(lit, evaluatePiece(ink, landing).colour)).toBeGreaterThanOrEqual(3);
     expect(evaluatePiece(flash, landing + 160 - 1).o).toBeLessThan(0.01);
     expect(flash.toMs).toBeLessThanOrEqual(landing + 161);
   });

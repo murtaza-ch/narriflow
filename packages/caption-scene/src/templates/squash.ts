@@ -1,7 +1,7 @@
 import { toCaptionUpperCase } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
-import { exportFrameAtOrAfter, paintedFrameCount, SCENE_DEFAULT_FPS } from "../frame-grid";
+import { exportFrameAtOrAfter, exportFrameAtOrBefore, paintedFrameCount, SCENE_DEFAULT_FPS } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace, type SceneSpace } from "../layout";
@@ -33,9 +33,8 @@ import { ellipsePath, rectPath, roundedRectPath } from "../shapes";
  *   line up at once (the new strip shoves it), but its tall-to-wide squash starts at the later of the next line's first word and
  *   150 ms after its own last word. A cue's first paint is at most 80 ms before its first word and never before the last word of
  *   the cue it replaces has ended (the cue before is cut on that frame, no empty frame in continuous speech); each word's stretch is
- *   compressed to fit its own spoken time (a 100 ms word is whole by its last frame, never fewer than two painted frames). The
- *   plate's exit squash waits until the last word has been spoken and read, shrinks to the time left, and is dropped when it cannot
- *   show two painted frames (a cut). It widens by at most the room the safe area has.
+ *   compressed to fit its own spoken time. A cue that gets only one frame shows a settled word and plate. The plate's exit squash
+ *   starts after the full reading hold and cuts if there is no room for two painted frames. It widens only within the safe area.
  * - Overlapping speakers: a cue that starts while an earlier one is still being spoken stacks above it (below when there is no room
  *   above), scaled to fit; neither covers the other.
  * - Shadow: the sample's two layered box-shadows (a 22 px / 50 px blur and a 4 / 10) are one soft shadow on the plate (10 px down, a
@@ -43,12 +42,12 @@ import { ellipsePath, rectPath, roundedRectPath } from "../shapes";
  *   sigma, 1.25x at 5).
  * - Every language: caps for cased scripts only (the shared caption casing, Turkish dotted I included); words are never split, so
  *   joined and Indic scripts, CJK and emoji work as they are; right-to-left cues order each row right to left and land from the
- *   right.
+ *   right. The reveal window grows to cover each spoken word's position in the visual order, including embedded LTR runs.
  * - New recurring beats in the sample's own flat, stark language, on every cue: a FOLDER TAB sits on the plate's top edge (the key
  *   word's cues get a wide tab in the highlight colour, the others a short one in the text colour; its side and width come from the
  *   cue counters and a seeded hash), pops on landing and stretches again on every push; SKID MARKS (two dashes, two slanted ticks or
  *   three dots, cycled by counter) flick outward under the plate each time a line lands. Neither carries text, both stay inside the
- *   plate's width and the safe area and finish before the exit.
+ *   plate's width and the safe area. Short cues use a static tab and skid marks when there are at least two painted frames.
  */
 
 export const SQUASH_DEMO: DemoScript = {
@@ -88,7 +87,7 @@ const SQUASH_OPEN = 300;
 const MORPH = 260;
 const HOLD = 150;
 const EXIT = 120;
-const MIN_EXIT = 84;
+const MIN_RISE = 84;
 /** Smallest scale a squashed piece is drawn at (libass dislikes 0). */
 const FLOOR_SCALE = 0.02;
 const MIN_RATIO = 0.7;
@@ -98,6 +97,7 @@ const TAB_H = 26;
 const TAB_RESERVE = 34;
 const STACK_GAP = 30;
 const SKID_LIFE = 300;
+const MIN_ACCENT_MOTION = 80;
 /** A clip edge that is open: far past any canvas. */
 const OPEN = 20000;
 const MAX_SKIDS = 3;
@@ -139,15 +139,16 @@ export function squashLines(roles: readonly ("hero" | "body" | "minor")[], ratio
 
 interface LineBox {
   words: number[];
-  hero: boolean;
   text: string;
-  tall: { size: number; widths: number[]; offsets: number[]; right: number[]; w: number; h: number; up: number };
+  tall: { size: number; centres: number[]; bounds: { left: number; right: number }[]; heights: number[]; up: number };
   wide: { size: number; w: number; h: number; up: number };
 }
 
 interface WordTime {
   from: number;
   rise: number;
+  spread: number;
+  stretch: Frames;
 }
 
 interface Item {
@@ -155,6 +156,7 @@ interface Item {
   floor: number;
   h: number;
   w: number;
+  middle: number;
 }
 
 interface Stack {
@@ -221,6 +223,25 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
   const seed = squashHash(`${number}:${cue.words.map((word) => word.text).join(" ")}`);
   const rand = mulberry32(seed);
   const variant = heroCue ? counters.hero++ : counters.plain++;
+  const { from, to } = plan;
+  const staticCue = paintedFrameCount(from, to, fps) <= 1;
+
+  const times: WordTime[] = cue.words.map((word, at) => {
+    const start = at === 0 ? from : Math.max(from, word.startMs - LEAD);
+    const firstFrame = exportFrameAtOrAfter(start, fps);
+    const lastFrame = exportFrameAtOrBefore(Math.ceil(word.endMs) - 1, fps);
+    const rise = Math.min(clamp(word.endMs - 34 - start, MIN_RISE, RISE), Math.max(0, lastFrame - start));
+    const s = rise / RISE;
+    return {
+      from: start,
+      rise,
+      spread: Math.min(word.startMs - start, 260 * s),
+      stretch: staticCue || lastFrame <= firstFrame
+        ? [[start, 1]]
+        : [[start, firstFrame >= word.startMs ? 0.9 : 0.1], [start + rise, 1.07, "out"], [start + 350 * s, 0.98, "inOut"], [start + 440 * s, 1, "inOut"]],
+    };
+  });
+  const stretchOf = (at: number, t: number) => kf(t, times[at]!.stretch);
 
   const tallAt100 = new Map<number, number>();
   const tallWord100 = (at: number) => {
@@ -232,7 +253,7 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
     return w;
   };
 
-  /** One complete layout at size factor `f`: lines, per-word timing, and the stack's state at any time. */
+  /** One complete layout at size factor `f`: the fitted lines and the stack's state at any time. */
   const layout = (f: number, floorBottom: number) => {
     const k = u * f;
     const fitW = Math.min(FIT * k, safeW - 2 * PADX * k - 6 * u);
@@ -245,7 +266,6 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
       const size = sizeOf(words);
       const widths = words.map((at) => (tallWord100(at) * size) / 100);
       const gap = COLUMN_GAP * size;
-      // Visual order left to right, from the shared bidi code for right-to-left rows.
       const order = rowVisualOrder(words.map((at) => upper[at]!), rtl ? "rtl" : "ltr");
       const offsets: number[] = new Array(words.length).fill(0);
       let x = 0;
@@ -253,66 +273,46 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
         offsets[position] = x;
         x += widths[position]! + gap;
       }
-      const right = widths.map((_, i) => widths.slice(0, i + 1).reduce((s, w) => s + w, 0) + gap * i);
+      // A spoken prefix can span a Latin run in an RTL row. Fit its actual visual extent on both sides.
+      const bounds = widths.map((width, i) => ({ left: offsets[i]!, right: offsets[i]! + width }));
+      for (let i = 1; i < bounds.length; i++) {
+        bounds[i]!.left = Math.min(bounds[i - 1]!.left, bounds[i]!.left);
+        bounds[i]!.right = Math.max(bounds[i - 1]!.right, bounds[i]!.right);
+      }
       const text = words.map((at) => upper[at]!).join(" ");
       const wideSize = Math.min(WIDE_MAX * k, (wideFit * 100) / (input.measure(text, WIDE_FACE, 100, WIDE_LS).advance + WIDE_LS * 100));
       const wideW = input.measure(text, WIDE_FACE, wideSize, WIDE_LS).advance + WIDE_LS * wideSize;
-      // A script taller than Anton (a fallback face) needs the box to hold its real ink: the baseline rises and the box grows;
-      // the measured ink bottom then rests on the floor (the plate's padding below it takes what the shaping engine adds).
-      const room = 0;
-      const boxFor = (text: string, face: typeof TALL_FACE | typeof WIDE_FACE, px: number, ls: number, lh: number, base: number) => {
-        const m = input.measure(text, face, px, ls);
-        const up0 = (lh - base) * px;
-        const up = up0 + Math.max(0, m.inkBottom - up0 - room);
-        return { up, h: Math.max(lh * px, up - m.inkTop) };
-      };
-      const tallBoxes = words.map((at) => boxFor(upper[at]!, TALL_FACE, size, TALL_LS, TALL_LH, TALL_BASE));
-      const tallUp = Math.max(...tallBoxes.map((x) => x.up));
-      const tallH = Math.max(...tallBoxes.map((x) => x.h));
-      const wideBox = boxFor(text, WIDE_FACE, wideSize, WIDE_LS, WIDE_LH, WIDE_BASE);
+      // Share a baseline, including any extra descent the fallback face needs above the row floor.
+      const tallInk = words.map((at) => input.measure(upper[at]!, TALL_FACE, size, TALL_LS));
+      const tallUp = Math.max((TALL_LH - TALL_BASE) * size, ...tallInk.map((ink) => ink.inkBottom));
+      const wideInk = input.measure(text, WIDE_FACE, wideSize, WIDE_LS);
+      const wideUp = Math.max((WIDE_LH - WIDE_BASE) * wideSize, wideInk.inkBottom);
       return {
         words: [...words],
-        hero: words.some((at) => cue.words[at]!.role === "hero"),
         text,
-        tall: { size, widths, offsets, right, w: right[right.length - 1]!, h: tallH, up: tallUp },
-        wide: { size: wideSize, w: wideW, h: wideBox.h, up: wideBox.up },
+        tall: {
+          size,
+          centres: widths.map((width, i) => offsets[i]! + width / 2),
+          bounds,
+          heights: tallInk.map((ink) => Math.max(TALL_LH * size, tallUp - ink.inkTop)),
+          up: tallUp,
+        },
+        wide: { size: wideSize, w: wideW, h: Math.max(WIDE_LH * wideSize, wideUp - wideInk.inkTop), up: wideUp },
       };
     });
 
-    // Timing: every word's own stretch, compressed into its spoken time.
-    const times: WordTime[] = cue.words.map((word, at) => {
-      const from = at === 0 ? plan.from : Math.max(plan.from, word.startMs - LEAD);
-      return { from, rise: clamp(word.endMs - 34 - from, MIN_EXIT, RISE) };
-    });
     const lineFrom = lines.map((line) => times[line.words[0]!]!.from);
     // The tall-to-wide squash of a line: after the next line's first word, and 150 ms after its own last word.
     const morphAt = lines.map((line, i) => {
       const next = lines[i + 1];
       if (!next) return Number.POSITIVE_INFINITY;
       const lastEnd = Math.max(...line.words.map((at) => cue.words[at]!.endMs));
-      return Math.max(cue.words[next.words[0]!]!.startMs, lastEnd + HOLD);
+      const start = Math.max(cue.words[next.words[0]!]!.startMs, lastEnd + HOLD);
+      return paintedFrameCount(Math.ceil(start + SQUASH_SHUT), to, fps) >= 2 ? start : Number.POSITIVE_INFINITY;
     });
 
-    const stretchOf = (at: number, t: number) => {
-      const { from, rise } = times[at]!;
-      const s = rise / RISE;
-      return kf(t, [[from, 0.1], [from + rise, 1.07, "out"], [from + (350 * s), 0.98, "inOut"], [from + 440 * s, 1, "inOut"]] as Frames);
-    };
-    const readWidth = (line: LineBox, t: number) => {
-      let w = line.tall.right[0]!;
-      line.words.forEach((at, i) => {
-        if (i > 0) w += (line.tall.right[i]! - line.tall.right[i - 1]!) * EASES.outExpo(prog(t, times[at]!.from, 260 * (times[at]!.rise / RISE)));
-      });
-      return w;
-    };
-    const shiftOf = (line: LineBox, t: number) => {
-      const w = readWidth(line, t);
-      const lo = rtl ? line.tall.w - w : 0;
-      const hi = rtl ? line.tall.w : w;
-      return line.tall.w / 2 - (lo + hi) / 2;
-    };
     const tallSy = (i: number, t: number) => (Number.isFinite(morphAt[i]!) ? 1 - EASES.in(prog(t, morphAt[i]!, SQUASH_SHUT)) : 1);
-    const wideSy = (i: number, t: number) => (Number.isFinite(morphAt[i]!) && t >= morphAt[i]! + SQUASH_SHUT ? EASES.spring(prog(t, morphAt[i]! + SQUASH_SHUT, SQUASH_OPEN)) : 0);
+    const wideSy = (i: number, t: number) => (t >= morphAt[i]! + SQUASH_SHUT ? Math.max(FLOOR_SCALE, EASES.spring(prog(t, morphAt[i]! + SQUASH_SHUT, SQUASH_OPEN))) : 0);
 
     const memo = new Map<number, Stack | null>();
     const stack = (t: number): Stack | null => {
@@ -323,13 +323,37 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
       });
       let result: Stack | null = null;
       if (live.length) {
-        const newest = live[live.length - 1]!;
         const heights: Item[] = live.map((i) => {
           const line = lines[i]!;
-          const tallH = line.tall.h * stretchOf(line.words[0]!, t);
-          if (i === newest) return { line: i, floor: 0, h: tallH, w: readWidth(line, t) };
-          const morph = EASES.inOut(prog(t, morphAt[i]!, MORPH));
-          return { line: i, floor: 0, h: lerp(tallH, line.wide.h, morph), w: lerp(readWidth(line, t), line.wide.w, morph) };
+          let { left, right } = line.tall.bounds[0]!;
+          let tallH = 0;
+          for (let j = 0; j < line.words.length; j++) {
+            const at = line.words[j]!;
+            const timing = times[at]!;
+            if (t < timing.from) continue;
+            tallH = Math.max(tallH, line.tall.heights[j]! * stretchOf(at, t));
+            if (j === 0) continue;
+            const before = line.tall.bounds[j - 1]!;
+            const after = line.tall.bounds[j]!;
+            const spread = EASES.outExpo(prog(t, timing.from, timing.spread));
+            left += (after.left - before.left) * spread;
+            right += (after.right - before.right) * spread;
+          }
+          const tallW = right - left;
+          const morph = morphAt[i]!;
+          const heightMix = EASES.inOut(prog(t, morph, MORPH));
+          // Make room before wider ink opens. Keep the full tall width until a narrower copy takes over.
+          const widthMix = line.wide.w > tallW
+            ? EASES.inOut(prog(t, morph, SQUASH_SHUT))
+            : EASES.inOut(prog(t, morph + SQUASH_SHUT, MORPH - SQUASH_SHUT));
+          const wideScale = wideSy(i, t);
+          return {
+            line: i,
+            floor: 0,
+            middle: (left + right) / 2,
+            h: Math.max(lerp(tallH, line.wide.h, heightMix), tallH * tallSy(i, t), line.wide.h * wideScale),
+            w: lerp(tallW, line.wide.w, widthMix),
+          };
         });
         let floor = floorBottom - PADY * k;
         let top = floor;
@@ -346,7 +370,7 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
       memo.set(t, result);
       return result;
     };
-    return { k, lines, times, lineFrom, morphAt, stretchOf, readWidth, shiftOf, tallSy, wideSy, stack, floorBottom };
+    return { k, lines, lineFrom, morphAt, tallSy, wideSy, stack, floorBottom };
   };
 
   // The region the cue lives in: the sample's floor, or free space beside a cue still being spoken.
@@ -357,7 +381,7 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
       const s = lay.stack(t);
       if (s) h = Math.max(h, lay.floorBottom - s.top);
     }
-    for (const t of [...lay.times.map((w) => w.from + w.rise), ...lay.morphAt.filter(Number.isFinite)]) {
+    for (const t of [...times.map((w) => w.from + w.rise), ...lay.morphAt.filter(Number.isFinite)]) {
       const s = lay.stack(t);
       if (s) h = Math.max(h, lay.floorBottom - s.top);
     }
@@ -388,17 +412,12 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
     region = above.f >= 0.45 || above.f >= below.f ? above : below;
   }
   const { lay } = region;
-  const { k, lines, times, lineFrom, morphAt, stack, floorBottom } = lay;
+  const { k, lines, lineFrom, morphAt, stack, floorBottom } = lay;
   const pb = floorBottom;
-  const { from, to } = plan;
 
   // The plate's exit: squashed into its floor after the last word has been spoken and read.
-  let exitAt = to;
-  if (to - plan.spokenEnd >= MIN_EXIT) {
-    exitAt = Math.max(to - EXIT, plan.spokenEnd + Math.min(HOLD, to - plan.spokenEnd - MIN_EXIT));
-    while (exitAt > plan.spokenEnd && paintedFrameCount(exitAt, to, fps) < 2) exitAt--;
-    if (paintedFrameCount(exitAt, to, fps) < 2) exitAt = to;
-  }
+  const exitStart = Math.max(to - EXIT, plan.spokenEnd + HOLD);
+  const exitAt = exitStart < to && paintedFrameCount(exitStart, to, fps) >= 2 ? exitStart : to;
   let widest = 0;
   for (const t of [...times.map((w) => w.from + w.rise + 450), ...morphAt.filter(Number.isFinite).map((m) => m + 420), plan.spokenEnd]) widest = Math.max(widest, stack(Math.min(t, to))?.width ?? 0);
   for (let t = from; t <= to; t += 24) widest = Math.max(widest, stack(t)?.width ?? 0);
@@ -410,12 +429,11 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
   const gY = (y: (t: number) => number) => (t: number) => pb + (y(t) - pb) * gy(t);
 
   // Every place any window starts or ends: between two of them each track is smooth.
-  const edgeSet = new Set<number>([from, to, exitAt, to]);
-  cue.words.forEach((_, at) => {
-    const { from: f, rise } = times[at]!;
-    const s = rise / RISE;
-    for (const e of [0, rise, 350 * s, 440 * s, 260 * s]) edgeSet.add(f + e);
-  });
+  const edgeSet = new Set<number>([from, to, exitAt]);
+  for (const timing of times) {
+    edgeSet.add(timing.from + timing.spread);
+    for (const [at] of timing.stretch) edgeSet.add(at);
+  }
   morphAt.forEach((m) => {
     if (Number.isFinite(m)) for (const e of [0, SQUASH_SHUT, MORPH, SQUASH_SHUT + SQUASH_OPEN]) edgeSet.add(m + e);
   });
@@ -426,10 +444,9 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
 
   const pieces: Piece[] = [];
   const shape = (id: string, path: ShapePiece["path"], origin: { dx: number; dy: number }, fill: string, z: number, a: number, b: number, track: ShapePiece["track"], shadows?: ShapePiece["shadows"]) => {
-    if (b <= a || paintedFrameCount(a, b, fps) < 2) return null;
+    if (b <= a) return;
     const piece: ShapePiece = { id: `squash:${number}:${id}`, kind: "shape", z, fromMs: a, toMs: b, path, origin, fill: { colour: fill }, track, ...(shadows ? { shadows } : {}) };
     pieces.push(piece);
-    return piece;
   };
 
   // Plate: one rectangle at the largest size the cue needs, scaled about the middle of its floor.
@@ -447,20 +464,21 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
   shape("plate", rectPath(0, 0, plateW, plateH), { dx: plateW / 2, dy: plateH }, plateColour, 1, start, to, {
     x: [[start, cx]],
     y: [[start, pb]],
-    sx: sample((t) => gx(t) * ((stack(t)?.width ?? plateW) / plateW), start, to, scaleTol),
+    sx: sample((t) => gx(t) * ((stack(t)?.width ?? plateW) / plateW), start, to, Math.min(scaleTol, (2 * posTol) / plateW)),
     sy: sample((t) => gy(t) * ((pb - (stack(t)?.top ?? pb)) / plateH), start, to, scaleTol),
   }, [{ dx: 0, dy: 10 * k, blur: 5 * k, colour: input.colours.shadow, alpha: 0.24 }]);
 
   // The words: each one a piece of its own, all through the cue (a squashed old line keeps its pieces until it has shut).
   lines.forEach((line, i) => {
+    const itemAt = (t: number) => stack(t)?.items.find((item) => item.line === i);
+    const floorOf = (t: number) => itemAt(t)?.floor ?? pb;
     const shutAt = Number.isFinite(morphAt[i]!) ? Math.floor(morphAt[i]! + SQUASH_SHUT - 2) : to;
     const tallTo = Math.min(to, shutAt);
     line.words.forEach((at, position) => {
       const { from: wordFrom } = times[at]!;
       const a = Math.max(wordFrom, lineFrom[i]!);
       const tall = line.tall;
-      const centre = (t: number) => cx - tall.w / 2 + lay.shiftOf(line, t) + tall.offsets[position]! + tall.widths[position]! / 2;
-      const floorOf = (t: number) => stack(t)?.items.find((item) => item.line === i)?.floor ?? pb;
+      const centre = (t: number) => cx + tall.centres[position]! - (itemAt(t)?.middle ?? 0);
       const piece: TextPiece = {
         id: `squash:${number}:w${at}`, kind: "text", z: 3, fromMs: a, toMs: Math.max(tallTo, a + 1),
         text: upper[at]!, face: TALL_FACE, sizePx: tall.size, letterSpacingEm: TALL_LS, fill: fg, anchor: "baseline-center", language: cue.language,
@@ -476,7 +494,7 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
           x: sample(gX(centre), a, tallTo, posTol),
           y: sample(gY(floorOf), a, tallTo, posTol),
           sx: exitAt < to ? sample(gx, a, tallTo, scaleTol) : [[a, 1]],
-          sy: sample((t) => Math.max(FLOOR_SCALE, lay.stretchOf(at, t) * lay.tallSy(i, t) * gy(t)), a, tallTo, scaleTol),
+          sy: sample((t) => Math.max(FLOOR_SCALE, stretchOf(at, t) * lay.tallSy(i, t) * gy(t)), a, tallTo, scaleTol),
         },
       };
       pieces.push(piece);
@@ -484,9 +502,7 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
     // The wide copy springs open once the tall one has shut.
     if (Number.isFinite(morphAt[i]!)) {
       const a = Math.ceil(morphAt[i]! + SQUASH_SHUT);
-      const floorOf = (t: number) => stack(t)?.items.find((item) => item.line === i)?.floor ?? pb;
-      if (a < to && paintedFrameCount(a, to, fps) >= 2) {
-        pieces.push({
+      pieces.push({
           id: `squash:${number}:wide${i}`, kind: "text", z: 2, fromMs: a, toMs: to,
           text: line.text, face: WIDE_FACE, sizePx: line.wide.size, letterSpacingEm: WIDE_LS, fill: fg, anchor: "baseline-center", language: cue.language,
           origin: { dx: 0, dy: line.wide.up },
@@ -496,8 +512,7 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
             sx: exitAt < to ? sample(gx, a, to, scaleTol) : [[a, 1]],
             sy: sample((t) => Math.max(FLOOR_SCALE, lay.wideSy(i, t) * gy(t)), a, to, scaleTol),
           },
-        });
-      }
+      });
     }
   });
 
@@ -506,16 +521,18 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
   const tabW = (wideTab ? 130 : 92) * k * [1, 0.82, 1.14][(variant + (seed & 3)) % 3]!;
   const side = ((variant + (seed >>> 3)) % 3) as 0 | 1 | 2;
   const inset = (26 + Math.floor(rand() * 5) * 8) * k;
-  const tabFrom = Math.min(to - 1, from + 120);
+  const animates = (a: number, b: number) => b - a >= MIN_ACCENT_MOTION && paintedFrameCount(a, b, fps) >= 2;
+  const popTab = animates(from + 120, to);
+  const tabFrom = popTab ? from + 120 : from;
   const tabX = (t: number) => {
     const w = stack(t)?.width ?? plateW;
-    const left = cx - w / 2 + inset + tabW / 2;
-    const rightX = cx + w / 2 - inset - tabW / 2;
     if (side === 2) return cx;
-    return (side === 0) !== rtl ? left : rightX;
+    const offset = Math.max(0, (w - tabW) / 2 - inset);
+    return cx + ((side === 0) !== rtl ? -offset : offset);
   };
   const pushTimes = lines.slice(1).map((_, i) => lineFrom[i + 1]!);
   const tabSy = (t: number) => {
+    if (!popTab) return 1;
     const pop = Math.max(FLOOR_SCALE, EASES.spring(prog(t, tabFrom, 280)));
     const pulse = pushTimes.reduce((sum, at) => sum + (t < at ? 0 : 0.3 * (1 - EASES.spring(prog(t, at, 260)))), 0);
     return pop * (1 + pulse);
@@ -523,26 +540,29 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
   for (const e of [tabFrom + 280, ...pushTimes, ...pushTimes.map((at) => at + 260)]) if (e > from && e < to) edgeSet.add(e);
   const edges2 = [...edgeSet].filter((e) => e > from && e < to).sort((a, b) => a - b);
   const sampleTab = (fn: (t: number) => number, tol: number): Frames => sampleFrames(fn, edges2, tol, { range: [tabFrom, Math.max(to, tabFrom + 1)] });
-  shape("tab", rectPath(0, 0, tabW, TAB_H * k), { dx: tabW / 2, dy: TAB_H * k }, wideTab ? input.colours.highlight : fg, 3, tabFrom, to, {
-    x: sampleTab(gX(tabX), posTol),
-    y: sampleTab(gY((t) => (stack(t)?.top ?? pb) + 1 * u), posTol),
-    sx: sampleTab(gx, scaleTol),
-    sy: sampleTab((t) => tabSy(t) * gy(t), scaleTol),
-  });
+  if (!staticCue) {
+    shape("tab", rectPath(0, 0, tabW, TAB_H * k), { dx: tabW / 2, dy: TAB_H * k }, wideTab ? input.colours.highlight : fg, 3, tabFrom, to, {
+      x: sampleTab(gX(tabX), posTol),
+      y: sampleTab(gY((t) => (stack(t)?.top ?? pb) + 1 * u), posTol),
+      sx: sampleTab((t) => gx(t) * Math.min(1, (stack(t)?.width ?? plateW) / tabW), scaleTol),
+      sy: sampleTab((t) => tabSy(t) * gy(t), scaleTol),
+    });
+  }
 
   // Skid marks under the plate each time a line lands.
   const style = (variant + (seed >>> 5)) % 3;
-  let skids = 0;
   lines.forEach((line, i) => {
     if (i >= MAX_SKIDS) return;
-    const first = line.words[0]!;
-    const land = Math.round(times[first]!.from + 0.7 * times[first]!.rise);
+    const timing = times[line.words[0]!]!;
+    const landing = Math.round(timing.from + 0.7 * timing.rise);
+    const slideSkid = animates(landing, Math.min(to, landing + SKID_LIFE));
+    const land = slideSkid ? landing : timing.from;
     const end = Math.min(to, land + SKID_LIFE);
-    if (end - land < 80) return;
+    if (paintedFrameCount(land, end, fps) < 2) return;
     const half = Math.max(48 * k, ((stack(Math.min(to - 1, land + 160))?.width ?? plateW) / 2) * 0.62);
     const travel = 26 * k;
-    const slide = (t: number) => travel * EASES.outExpo(prog(t, land, 260));
-    const fade = (t: number) => 1 - EASES.in(prog(t, land + 110, 190));
+    const slide = (t: number) => (slideSkid ? travel * EASES.outExpo(prog(t, land, 260)) : 0);
+    const fade = (t: number) => (slideSkid ? 1 - EASES.in(prog(t, land + 110, 190)) : 1);
     const specs: { id: string; path: ShapePiece["path"]; origin: { dx: number; dy: number }; dir: -1 | 0 | 1; rz: number; dy: number }[] = [];
     const dashW = (36 + Math.floor(rand() * 3) * 6) * k;
     const dashH = 7 * k;
@@ -555,11 +575,13 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
       }
     }
     for (const spec of specs) {
-      if (skids >= MAX_SKIDS * 3) break;
-      const base = spec.dir === 0 ? 0 : spec.dir * half;
-      const x = (t: number) => cx + base + spec.dir * slide(t) * (style === 2 ? 0.8 : 1);
+      const reach = style === 2 ? 4.5 * k : dashW / 2;
+      const x = (t: number) => {
+        const width = stack(t)?.width ?? plateW;
+        return cx + spec.dir * Math.min(half + slide(t) * (style === 2 ? 0.8 : 1), Math.max(0, width / 2 - reach));
+      };
       const y = () => pb + spec.dy;
-      const piece = shape(spec.id, spec.path, spec.origin, input.colours.highlight, 4, land, end, {
+      shape(spec.id, spec.path, spec.origin, input.colours.highlight, 4, land, end, {
         x: sampleFrames(gX(x), edges2, posTol, { range: [land, end] }),
         y: sampleFrames(gY(y), edges2, posTol, { range: [land, end] }),
         sx: sampleFrames(gx, edges2, scaleTol, { range: [land, end] }),
@@ -567,7 +589,6 @@ function buildCue(input: SceneInput, space: SceneSpace, cue: SceneCue, number: n
         o: sampleFrames(fade, edges2, 0.02, { range: [land, end] }),
         ...(spec.rz ? { rz: [[land, spec.rz]] as Frames } : {}),
       });
-      if (piece) skids++;
     }
   });
 

@@ -1,12 +1,13 @@
 import { captionColourContrast, toCaptionUpperCase } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, prog } from "../ease";
-import { SCENE_DEFAULT_FPS, paintedFrameCount, sceneSampleRate } from "../frame-grid";
+import { SCENE_DEFAULT_FPS, exportFrameAtOrBefore, paintedFrameCount, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
-import type { Box, Clip, Piece, ShapePiece, TextPiece, Track } from "../scene";
+import { type Box, type Clip, type Piece, type ShapePiece, type TextPiece, type Track, mixColour } from "../scene";
 import { rectPath } from "../shapes";
+import { hasTwoPaintedFrames, speechLaneSpace, speechWindows } from "./speech-layout";
 
 /**
  * Slab (`samples/templates/m25-slab.js`): heavy geometric caps, each line riding a white slab that steps on word by word,
@@ -99,6 +100,8 @@ interface Cell {
 
 interface RowGeo {
   readonly top: number;
+  readonly height: number;
+  readonly baseline: number;
   readonly left: number;
   readonly right: number;
   readonly cells: readonly Cell[];
@@ -131,6 +134,7 @@ interface Ctx {
   readonly u: number;
   readonly fps: number;
   readonly frameMs: number;
+  readonly space: Space;
 }
 
 interface Palette {
@@ -151,8 +155,6 @@ const seeded = (text: string, salt: number) => {
   return ((h >>> 0) % 10007) / 10007;
 };
 
-const meets = (a: Box, b: Box) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
-const shifted = (box: Box, dy: number): Box => ({ x1: box.x1, x2: box.x2, y1: box.y1 + dy, y2: box.y2 + dy });
 
 /** The first time in [a, b] at which the non-decreasing `fn` reaches `target`; null when it never does. */
 function reaches(fn: (t: number) => number, target: number, a: number, b: number): number | null {
@@ -179,29 +181,34 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space): Geo | null {
     const text = toCaptionUpperCase(word.text, cue.language);
     return { text, spacing: SIMPLE.test(text) && !PICTO.test(text) ? TRACKING : 0, hero: word.role === "hero" };
   });
-  const cellsAt = (f: number) =>
-    words.map((word) => {
-      const size = FS * u * f;
-      return Math.max(1, input.measure(word.text, FACE, size, word.spacing).advance + word.spacing * size) + 2 * PADX * u * f;
-    });
   const maxW = Math.min((space.safe.x2 - space.safe.x1) / KICK, COLUMN * u);
-  const maxH = space.safe.y2 - space.safe.y1;
+  const maxH = space.safe.y2 - space.safe.y1 - 4 * u;
+  const geometryAt = (unit: number) => {
+    const ink = words.map((word) => input.measure(word.text, FACE, FS * unit, word.spacing));
+    const widths = words.map((word, i) => Math.max(1, ink[i]!.advance + word.spacing * FS * unit) + 2 * PADX * unit);
+    const rows = balancedRows(widths, 0, maxW).map((row) => {
+      const fallback = row.filter((at) => words[at]!.spacing === 0);
+      const above = Math.max(BASELINE * unit, ...fallback.map((at) => -ink[at]!.inkTop + 4 * unit));
+      const below = Math.max((ROW - BASELINE) * unit, ...fallback.map((at) => ink[at]!.inkBottom + 4 * unit));
+      return { row, above, height: above + below };
+    });
+    return { widths, rows, height: rows.reduce((sum, row) => sum + row.height, 0) };
+  };
   let f = 1;
-  let widths = cellsAt(f);
-  let rows = balancedRows(widths, 0, maxW);
+  let layout = geometryAt(u);
   for (let step = 0; step < 80; step++) {
-    const widest = Math.max(...widths);
-    const high = (rows.length * ROW + EXTRA) * u * f;
+    const widest = Math.max(...layout.widths);
+    const high = layout.height + EXTRA * u * f;
     if (widest <= maxW + 0.5 && high <= maxH) break;
-    f *= widest > maxW + 0.5 ? (maxW / widest) * 0.995 : 0.94;
-    widths = cellsAt(f);
-    rows = balancedRows(widths, 0, maxW);
+    f *= Math.min(0.98, maxW / widest, maxH / high);
+    layout = geometryAt(u * f);
   }
-  const rowH = ROW * u * f;
+  const { widths, rows, height } = layout;
   const cx = space.x(540);
-  const blockTop = space.y(ANCHOR) - (rows.length * rowH) / 2;
+  const lowerDecoration = (RULE_GAP + RULE_H + 3) * u * f;
+  const blockTop = clamp(space.y(ANCHOR) - height / 2, space.safe.y1 + 8 * u * f, space.safe.y2 - height - lowerDecoration);
   let top = blockTop;
-  const geoRows = rows.map((row): RowGeo => {
+  const geoRows = rows.map(({ row, above, height: rowH }): RowGeo => {
     const width = row.reduce((sum, at) => sum + widths[at]!, 0);
     const left = cx - width / 2;
     const order = rowVisualOrder(row.map((at) => words[at]!.text), rtl ? "rtl" : "ltr").map((at) => row[at]!);
@@ -212,7 +219,7 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space): Geo | null {
       x += w;
       return cell;
     });
-    const made: RowGeo = { top, left, right: left + width, cells, endMs: Math.max(...row.map((at) => cue.words[at]!.endMs)) };
+    const made: RowGeo = { top, height: rowH, baseline: above, left, right: left + width, cells, endMs: Math.max(...row.map((at) => cue.words[at]!.endMs)) };
     top += rowH;
     return made;
   });
@@ -228,56 +235,31 @@ function layoutCue(cue: SceneCue, input: SceneInput, space: Space): Geo | null {
   return { rtl, f, rows: geoRows, box, kickPad };
 }
 
-/** Stacking, lead and end of every cue (the cue handoff rule), in order. */
-function planCues(cues: readonly SceneCue[], geos: readonly (Geo | null)[], space: Space): (Plan | null)[] {
-  const plans: (Plan | null)[] = [];
-  cues.forEach((cue, n) => {
-    const geo = geos[n];
-    if (!geo) {
-      plans.push(null);
-      return;
-    }
-    const first = Math.min(...cue.words.map((word) => word.startMs));
-    const last = Math.max(...cue.words.map((word) => word.endMs));
-    // A cue leaves at its end, never before its last word is spoken (a cue shared with another speaker ends first).
-    const natural = cue.endMs > last ? cue.endMs : last + HOLD + EXIT_MS;
-    const earlier = plans.flatMap((plan) => (plan ? [plan] : []));
-    // Someone is still speaking when this cue starts: it takes free space under (or over) their block.
-    const talking = earlier.filter((plan) => plan.last > first && plan.end > first);
-    let dy = 0;
-    if (talking.length > 0) {
-      const y1 = Math.min(...talking.map((plan) => plan.box.y1));
-      const y2 = Math.max(...talking.map((plan) => plan.box.y2));
-      const gap = 10 * space.u * geo.f;
-      const below = y2 + gap - geo.box.y1;
-      const above = y1 - gap - geo.box.y2;
-      const spill = (move: number) => Math.max(0, geo.box.y2 + move - space.safe.y2) + Math.max(0, space.safe.y1 - (geo.box.y1 + move));
-      dy = spill(below) <= spill(above) ? below : above;
-    }
-    const box = shifted(geo.box, dy);
-    // The incoming cue gives up lead (never past its spoken start) before the outgoing cue gives up its 150 ms.
-    let from = Math.max(0, first - LEAD);
-    const meeting = earlier.filter((plan) => plan.end > from && meets(plan.box, box));
-    for (const plan of meeting) from = Math.max(from, Math.min(first, plan.last + HOLD));
-    for (const plan of meeting) plan.end = Math.min(plan.end, from);
-    plans.push({ dy, from, end: natural, first, last, box });
-  });
-  return plans;
-}
-
 /** Black ink on a light key colour, white on a dark one. */
 const inkOn = (colour: string) => (captionColourContrast(colour, "#FFFFFF") >= 3 ? "#FFFFFF" : INK);
 
+function flashOpacity(plate: string, ink: string): number {
+  let low = 0;
+  let high = 0.55;
+  if (captionColourContrast(mixColour(plate, "#FFFFFF", high), ink) >= 3) return high;
+  for (let i = 0; i < 8; i++) {
+    const mid = (low + high) / 2;
+    if (captionColourContrast(mixColour(plate, "#FFFFFF", mid), ink) >= 3) low = mid;
+    else high = mid;
+  }
+  return low;
+}
+
 function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palette, ctx: Ctx): Piece[] {
-  const { input, u, fps, frameMs } = ctx;
+  const { input, u, fps, frameMs, space } = ctx;
   const { rtl, f, rows, kickPad } = geo;
   const { dy, from, end, last } = plan;
-  if (paintedFrameCount(from, end, fps) < 2) return [];
-  const rowH = ROW * u * f;
+  if (end <= from) return [];
   const size = FS * u * f;
   const padX = PADX * u * f;
   const z = n * 10;
   const pieces: Piece[] = [];
+  const flashAlpha = flashOpacity(palette.key, palette.keyInk);
   const growsFromLeft = (side: "lead" | "trail") => (side === "lead") !== rtl;
 
   // The exit: every row wipes away, staggered, no earlier than 150 ms after the last spoken word.
@@ -305,6 +287,7 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
 
   rows.forEach((row, ri) => {
     const top = row.top + dy;
+    const rowH = row.height;
     const width = row.right - row.left;
     const mRow = row.cells.some((cell) => cell.hero) ? kickPad : 0;
     const exit = rowExit[ri]!;
@@ -321,9 +304,10 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
       const word = cue.words[cell.at]!;
       const S = word.startMs;
       const dur = Math.max(1, word.endMs - word.startMs);
-      const lead = cell.at === 0 ? S - from : LEAD;
-      const rev0 = S - Math.min(LEAD, Math.max(0, lead));
-      const slabDur = Math.max(0, Math.min(SLAB_MS, S + dur - (frameMs + 6) - rev0));
+      const rev0 = Math.max(from, S - LEAD);
+      const lead = S - rev0;
+      const finish = exportFrameAtOrBefore(S + dur - 1, fps);
+      const slabDur = Math.max(0, Math.min(SLAB_MS, finish - rev0));
       const instant = slabDur < frameMs * 0.9;
       // With no lead the first painted frame already shows a sliver of ink, not an empty clip.
       const p0 = instant ? 1 : lead < 40 ? clamp((padX + 0.25 * (cell.w - 2 * padX)) / cell.w, 0.12, 0.6) : 0;
@@ -348,7 +332,7 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
       const pivotX = cell.x + cell.w / 2;
       const pivotY = top + rowH / 2;
       const textX = cell.x + padX;
-      const baseline = top + BASELINE * u * f;
+      const baseline = top + row.baseline;
 
       // A key slab kicks (105 % and back) as it lands, slab, flash and ink on one pivot.
       const available = (exitCapable ? exitAt(ri) : end) - landing;
@@ -364,15 +348,16 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
         fill: { colour: cell.hero ? palette.key : input.colours.primary },
         ...(cell.hero ? { origin: { dx: pivotX - cell.x, dy: pivotY - slabTop } } : {}),
       };
-      pieces.push(slab);
+      const hasSlab = hasTwoPaintedFrames(slab, input);
+      if (hasSlab) pieces.push(slab);
 
-      if (cell.hero && kickDur > 0) {
+      if (hasSlab && cell.hero && kickDur > 0 && flashAlpha >= 0.04) {
         const flashDur = Math.min(FLASH_MS, kickDur);
         const flashEnd = Math.min(toMs, Math.ceil(landing + flashDur));
         if (paintedFrameCount(landing, flashEnd, fps) >= 2) {
           pieces.push({
             id: `slab:${n}:w${cell.at}f`, kind: "shape", z: z + 3, fromMs: landing, toMs: flashEnd,
-            track: { x: [[landing, pivotX]], y: [[landing, pivotY]], o: [[landing, 0.55], [landing + flashDur, 0, "out"]], ...kick },
+            track: { x: [[landing, pivotX]], y: [[landing, pivotY]], o: [[landing, flashAlpha], [landing + flashDur, 0, "out"]], ...kick },
             clip: clipOf(lo, hi, "lead", () => 1, null, top - 14 * u * f, top + rowH + 14 * u * f, landing, flashEnd, []),
             path: rectPath(0, 0, cell.w, slabH), fill: { colour: "#FFFFFF" },
             origin: { dx: pivotX - cell.x, dy: pivotY - slabTop },
@@ -385,7 +370,8 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
         id: `slab:${n}:w${cell.at}`, kind: "text", z: z + 4, fromMs: rev0, toMs,
         track: cell.hero ? { x: [[rev0, pivotX]], y: [[rev0, pivotY]], ...kick } : { x: [[rev0, textX]], y: [[rev0, baseline]] },
         clip: clipOf(lo, hi, "lead", inkReveal, front, top - 0.4 * rowH, top + 1.4 * rowH, rev0, toMs, edges),
-        text: cell.text, face: FACE, sizePx: size, letterSpacingEm: cell.spacing, fill: cell.hero ? palette.keyInk : INK, anchor: "baseline-left", language: cue.language,
+        text: cell.text, face: FACE, sizePx: size, letterSpacingEm: cell.spacing, fill: hasSlab ? (cell.hero ? palette.keyInk : INK) : input.colours.primary, anchor: "baseline-left", language: cue.language,
+        ...(!hasSlab ? { shadows: [{ dx: 0, dy: 3 * u * f, blur: 3 * u * f, colour: input.colours.shadow, alpha: 0.75 }] } : {}),
         ...(cell.hero ? { origin: { dx: pivotX - textX, dy: pivotY - baseline } } : {}),
       });
 
@@ -461,7 +447,7 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
   const flushRight = variant === 0 ? false : (variant === 1) === rtl;
   const ruleLo = flushRight ? lastRow.right - ruleWidth : lastRow.left;
   const ruleHi = ruleLo + ruleWidth;
-  const ruleTop = lastRow.top + dy + rowH + RULE_GAP * u * f;
+  const ruleTop = lastRow.top + dy + lastRow.height + RULE_GAP * u * f;
   const ruleH = RULE_H * u * f;
   // It lands with the line's last word.
   const lastWordStart = Math.max(...lastRow.cells.map((cell) => cue.words[cell.at]!.startMs));
@@ -488,8 +474,8 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
   const diamond = n % 2 === 1;
   const reach = bulletSize * (diamond ? 1.45 : 1.15);
   const bulletX = rtl ? first.right + BULLET_GAP * u * f + reach / 2 : first.left - BULLET_GAP * u * f - reach / 2;
-  const safe = ctx.input.canvas;
-  const bulletRoom = rtl ? bulletX + reach / 2 <= safe.width * 0.95 : bulletX - reach / 2 >= safe.width * 0.05;
+  const canvas = input.canvas;
+  const bulletRoom = rtl ? bulletX + reach / 2 <= canvas.width * 0.95 : bulletX - reach / 2 >= canvas.width * 0.05;
   const bulletTo = exitCapable ? Math.min(end, Math.ceil(exitAt(0) + exitDur)) : end;
   if (bulletRoom && paintedFrameCount(decoFrom, bulletTo, fps) >= 3) {
     const popDur = Math.min(220, Math.max(frameMs * 2, bulletTo - decoFrom - frameMs * 2));
@@ -499,37 +485,39 @@ function buildCue(n: number, cue: SceneCue, geo: Geo, plan: Plan, palette: Palet
       : [[decoFrom, 0.15], [decoFrom + popDur, 1, "outBack"]];
     pieces.push({
       id: `slab:${n}:bullet`, kind: "shape", z: z + 5, fromMs: decoFrom, toMs: bulletTo,
-      track: { x: [[decoFrom, bulletX]], y: [[decoFrom, first.top + dy + rowH / 2]], sx: scale, sy: scale, rz: [[decoFrom, diamond ? 45 : 0]] },
+      track: { x: [[decoFrom, bulletX]], y: [[decoFrom, first.top + dy + first.height / 2]], sx: scale, sy: scale, rz: [[decoFrom, diamond ? 45 : 0]] },
       path: rectPath(0, 0, bulletSize, bulletSize), origin: { dx: bulletSize / 2, dy: bulletSize / 2 }, fill: { colour: palette.deco },
     });
   }
 
   const margin = 2 * u;
-  return clampToSafeArea(pieces, { x1: input.canvas.width * 0.05 + margin, y1: input.canvas.height * 0.05 + margin, x2: input.canvas.width * 0.95 - margin, y2: input.canvas.height * 0.95 - margin }, input.measure);
+  const safe = { x1: space.safe.x1 + margin, y1: space.safe.y1 + margin, x2: space.safe.x2 - margin, y2: space.safe.y2 - margin };
+  const withinCue = pieces.map((piece) => piece.fromMs < from ? { ...piece, fromMs: from } : piece);
+  return clampToSafeArea(withinCue, safe, input.measure).filter((piece) => /^slab:\d+:w\d+$/.test(piece.id) || hasTwoPaintedFrames(piece, input));
 }
 
 export const slabProgram: SceneProgram = {
   build(input) {
     const space = sceneSpace(input, ANCHOR);
     const fps = input.fps ?? SCENE_DEFAULT_FPS;
-    const ctx: Ctx = { input, u: space.u, fps, frameMs: 1000 / sceneSampleRate(fps) };
-    const geos = input.cues.map((cue) => layoutCue(cue, input, space));
-    const plans = planCues(input.cues, geos, space);
     const keys = [input.colours.highlight, input.colours.accent, MINT, BLUE];
     let heroCount = 0;
     let plainCount = 0;
     const pieces: Piece[] = [];
-    input.cues.forEach((cue, n) => {
-      const geo = geos[n];
-      const plan = plans[n];
-      if (!geo || !plan) return;
+    for (const window of speechWindows(input, space.safe, LEAD, HOLD)) {
+      const { cue, index: n, start, spokenEnd, from, to, bounds } = window;
+      const lane = speechLaneSpace(space, bounds, ANCHOR);
+      const geo = layoutCue(cue, input, lane);
+      if (!geo) continue;
+      const plan: Plan = { dy: 0, from, end: to, first: start, last: spokenEnd, box: geo.box };
+      const ctx: Ctx = { input, u: space.u, fps, frameMs: 1000 / sceneSampleRate(fps), space: lane };
       const hero = cue.words.some((word) => word.role === "hero");
       const key = keys[heroCount % keys.length]!;
       const palette: Palette = { key, keyInk: inkOn(key), deco: hero ? key : keys[(plainCount + 1) % keys.length]! };
       pieces.push(...buildCue(n, cue, geo, plan, palette, ctx));
       if (hero) heroCount++;
       else plainCount++;
-    });
+    }
     return { pieces };
   },
 };

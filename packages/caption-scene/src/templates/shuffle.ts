@@ -1,12 +1,13 @@
 import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, kf, lerp, prog } from "../ease";
-import { SCENE_DEFAULT_FPS, sceneSampleRate } from "../frame-grid";
+import { SCENE_DEFAULT_FPS, exportFrameAtOrBefore, paintedFrameCount, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { type SceneSpace, balancedRows, clampToSafeArea, cueDirection, rowVisualOrder, sceneSpace } from "../layout";
 import { type Piece, type ShapePiece, type TextPiece, type Track, SCENE_PERSPECTIVE_PX, mixColour, sceneBoundsAt } from "../scene";
 import { roundedRectPath } from "../shapes";
+import { hasTwoPaintedFrames, renderWithReadingHolds, speechLaneSpace, speechWindows } from "./speech-layout";
 
 /**
  * Shuffle (`samples/templates/m22-unscramble.js`, after Motion Array "Unscramble Word"): a word game's letter tiles. Spoken
@@ -109,8 +110,6 @@ const MIN_SCALE = 0.36;
 const MIN_FIT = 0.8;
 /** Pieces a cue's key tiles may use (three each: plate, letter and the plate's shadow layer), the rest is left for words and beats. */
 const PIECE_LIMIT = 140;
-/** A cue that starts this long before the one before it has finished is stacked beside it. */
-const OVERLAP_MS = 45;
 const K_SMALL = SCENE_PERSPECTIVE_PX / 700;
 const K_BIG = SCENE_PERSPECTIVE_PX / 800;
 const RACK_MS = 260;
@@ -289,7 +288,7 @@ function wordInfo(ctx: Ctx, cue: SceneCue, cueNumber: number, at: number, name: 
 }
 
 /** The items of a word: one when it fits (shrunk a little if it must), else runs of tiles. */
-function itemsOf(ctx: Ctx, word: WordInfo, S: number): Item[] {
+function itemsOf(ctx: Ctx, word: WordInfo, S: number, compact = false): Item[] {
   const tileW = (i: number, f: number, pad: number) => word.adv[i]! * f + pad;
   const build = (a: number, b: number, kw: number, part: number, parts: number): Item => {
     const f = word.spec.font * S * kw;
@@ -321,7 +320,7 @@ function itemsOf(ctx: Ctx, word: WordInfo, S: number): Item[] {
   const w1 = widest(whole);
   if (w1 <= ctx.maxW) return [whole];
   const shrink = ctx.maxW / w1;
-  if (n === 1 || shrink >= MIN_FIT) return [build(0, n, shrink * 0.995, 0, 1)];
+  if (compact || n === 1 || shrink >= MIN_FIT) return [build(0, n, shrink * 0.995, 0, 1)];
   const widths = word.units.map((_, i) => tileW(i, word.spec.font * S, word.spec.pad * S));
   const rows = balancedRows(widths, word.spec.gap * S, ctx.maxW);
   const starts = [...rows.map((row) => row[0]!), n];
@@ -333,12 +332,16 @@ function itemsOf(ctx: Ctx, word: WordInfo, S: number): Item[] {
 function layoutCue(ctx: Ctx, cue: SceneCue, cueNumber: number, S: number, place: { top?: number; bottom?: number }): Layout {
   const hasHero = cue.words.some((word) => word.role === "hero");
   const rtl = cueDirection(cue) === "rtl";
-  let budget = PIECE_LIMIT - 6 * cue.words.length;
-  const words = cue.words.map((word, at) => {
-    const probe = wordInfo(ctx, cue, cueNumber, at, word.role === "hero" ? "big" : hasHero ? "small" : "lone", false);
-    const loose = probe.hero && probe.letters && probe.units.length > 1 && probe.units.length * 3 <= budget;
-    if (loose) budget -= probe.units.length * 3;
-    return loose ? wordInfo(ctx, cue, cueNumber, at, "big", true) : probe;
+  const flat = cue.words.map((word, at) => wordInfo(ctx, cue, cueNumber, at, word.role === "hero" ? "big" : hasHero ? "small" : "lone", false));
+  const flatCounts = flat.map((word) => itemsOf(ctx, word, S).length);
+  const flatCost = flatCounts.reduce((sum, count) => sum + 3 * count, 0);
+  const compact = flatCost > PIECE_LIMIT;
+  let budget = PIECE_LIMIT - (compact ? 3 * flat.length : flatCost);
+  const words = flat.map((word, at) => {
+    const extra = 3 * (word.units.length - (compact ? 1 : flatCounts[at]!));
+    if (!word.hero || !word.letters || word.units.length < 2 || extra > budget) return word;
+    budget -= extra;
+    return wordInfo(ctx, cue, cueNumber, at, "big", true);
   });
   const runs: WordInfo[][] = [];
   for (const word of words) {
@@ -348,7 +351,7 @@ function layoutCue(ctx: Ctx, cue: SceneCue, cueNumber: number, S: number, place:
   }
   const rows: Row[] = [];
   for (const run of runs) {
-    const items = run.flatMap((word) => itemsOf(ctx, word, S));
+    const items = run.flatMap((word) => itemsOf(ctx, word, S, compact));
     for (const row of balancedRows(items.map((item) => item.width), WORD_GAP * S, ctx.maxW)) {
       const rowItems = row.map((at) => items[at]!);
       const ordered = rowVisualOrder(rowItems.map((item) => item.word.text), rtl ? "rtl" : "ltr").map((at) => rowItems[at]!);
@@ -402,7 +405,7 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
   const { cue, layout } = plan;
   const { input } = ctx;
   const S = ctx.u * layout.k;
-  const band = plan.index * 10;
+  const band = plan.index * 512;
   const to = plan.to;
   const shadow = input.colours.shadow;
   const rng = shuffleRng(cueSeed(cue, plan.index, "beats"));
@@ -477,7 +480,8 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
         path: item.tiles.flatMap((tile, i) => (bonus && i === lastTile ? [] : roundedRectPath(tile.left, 0, tile.w, item.h, item.radius))),
         fill: { colour: ctx.tile }, shadows: shadowOf(5.5 * S, 2 * S), origin: { dx: item.width / 2, dy: 0 }, track,
       };
-      pieces.push(plate);
+      const hasPlate = paintedFrameCount(from, end, input.fps) >= 2;
+      if (hasPlate) pieces.push(plate);
       if (bonus) {
         const tile = item.tiles[lastTile]!;
         const bonusEdges = [...edges, bonusAt, bonusAt + BONUS_MS, gold];
@@ -493,14 +497,20 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
       }
       if (wi.hero) {
         // A flat key word turns gold as it is said.
-        const turned = Math.max(from, s) + 60;
+        const turned = Math.min(Math.max(from, s) + 60, word.endMs - 1);
         plate.track = { ...track, colour: [[from, ctx.tile], [turned, ctx.tile], [turned + 1, ctx.solved]] };
         for (const at of [0.2, 0.5, 0.8]) chips.push({ x: item.x + item.width * at, y: item.y + item.h * 0.1, at: turned + 1, h: item.h });
       }
       pieces.push({
         id: item.parts > 1 ? `${base}l${item.part}` : base, kind: "text", z: band + 4, fromMs: from, toMs: end,
-        text, face: FACE, sizePx: item.f, letterSpacingEm: wi.ls, fill: ctx.ink, anchor: "baseline-left", language: cue.language,
-        origin: { dx: item.width / 2 - item.pad / 2, dy: -baseline }, track,
+        text, face: FACE, sizePx: item.f, letterSpacingEm: wi.ls, fill: hasPlate ? ctx.ink : ctx.tile, anchor: "baseline-left", language: cue.language,
+        origin: { dx: item.width / 2 - item.pad / 2, dy: -baseline },
+        track: !hasPlate
+          ? { x: [[from, pivotX]], y: [[from, item.y]] }
+          : bonus && item.tiles.length === 1
+            ? { ...track, y: windowOf(from, end, [...edges, bonusAt, bonusAt + BONUS_MS], (t) => item.y + drop(t) + popOf(t), 0.15) }
+            : track,
+        ...(!hasPlate ? { shadows: shadowOf(3 * S, 3 * S) } : {}),
       } satisfies TextPiece);
       continue;
     }
@@ -556,7 +566,7 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
       const fallStart = landAt + i * fst;
       const hopStart = settled ? Number.POSITIVE_INFINITY : solveAt + i * ss;
       const waveStart = settled ? fallStart + fd : hopStart + hd * 0.8;
-      const tg = settled ? fallStart + fd : waveStart + wd * 0.35;
+      const tg = Math.min(settled ? fallStart + fd : waveStart + wd * 0.35, exportFrameAtOrBefore(word.endMs - 1, input.fps) - 1);
       const tileFrom = Math.floor(Math.max(from, fallStart));
       const end = endOf(g);
       if (end - tileFrom < 2) continue;
@@ -586,13 +596,13 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
       if (exit) tracks.rx = windowOf(tileFrom, end, edges, (t) => turn(95 * out(t), K_BIG).rx, 0.25);
       const id = `${base}`;
       pieces.push({
-        id: `${id}t${i}`, kind: "shape", z: band + 5, fromMs: tileFrom, toMs: end,
+        id: `${id}t${i}`, kind: "shape", z: band + 5 + i * 2, fromMs: tileFrom, toMs: end,
         path: roundedRectPath(0, 0, tile.w, item.h, item.radius), fill: { colour: ctx.tile },
         shadows: shadowOf(7 * S, 3 * S), origin: { dx: tile.w / 2, dy: item.h / 2 },
         track: { ...tracks, colour: [[tileFrom, ctx.tile], [Math.max(tileFrom + 1, tg), ctx.tile], [Math.max(tileFrom + 2, tg + 1), ctx.solved]] },
       } satisfies ShapePiece);
       pieces.push({
-        id: `${id}l${i}`, kind: "text", z: band + 6, fromMs: tileFrom, toMs: end,
+        id: `${id}l${i}`, kind: "text", z: band + 6 + i * 2, fromMs: tileFrom, toMs: end,
         text: wi.units[i]!, face: FACE, sizePx: item.f, letterSpacingEm: 0, fill: ctx.ink, anchor: "baseline-center", language: cue.language,
         origin: { dx: 0, dy: item.h / 2 - ((item.h - item.f) / 2 + BASELINE * item.f) }, track: tracks,
       } satisfies TextPiece);
@@ -603,9 +613,11 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
   // Beat: the rack under the key row.
   const rackRow = layout.rack;
   const keyWord = cue.words.find((word) => word.role === "hero") ?? cue.words.at(-1)!;
-  const rackFrom = Math.max(fromOf(keyWord.startMs), keyWord.startMs - LEAD + 60);
   const rackEnd = exit ? Math.min(to, Math.ceil(exit.start + exit.dur + exit.stagger * (groups.length - 1))) : to;
-  if (rackEnd - rackFrom >= ctx.minMotion + 2) {
+  const rackLead = fromOf(keyWord.startMs);
+  const rackStart = Math.max(rackLead, keyWord.startMs - LEAD + 60);
+  const rackFrom = paintedFrameCount(rackStart, rackEnd, input.fps) >= 2 ? rackStart : rackLead;
+  if (paintedFrameCount(rackFrom, rackEnd, input.fps) >= 2) {
     const rw = rackRow.width + 16 * S;
     const rh = 11 * S;
     const grow = (t: number) => Math.max(0.001, EASES.outExpo(prog(t, rackFrom, RACK_MS)));
@@ -636,7 +648,7 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
     const p = (t: number) => prog(t, from, until - from);
     const edges = [from, until];
     pieces.push({
-      id: `shuffle:${plan.index}:chip${n}`, kind: "shape", z: band + 8, fromMs: from, toMs: until,
+      id: `shuffle:${plan.index}:chip${n}`, kind: "shape", z: band + 490, fromMs: from, toMs: until,
       path: roundedRectPath(0, 0, size, size, size * 0.22), fill: { colour: n % 2 === 0 ? ctx.solved : ctx.tile }, origin: { dx: size / 2, dy: size / 2 },
       track: {
         x: windowOf(from, until, edges, (t) => chip.x + dx * EASES.out(p(t)), 0.2),
@@ -646,6 +658,18 @@ function cuePieces(ctx: Ctx, plan: Plan): Piece[] {
       },
     } satisfies ShapePiece);
   });
+  // Short cues keep two small gold chip marks on the rack when a hop cannot fit.
+  if (!pieces.some(({ id }) => id.startsWith(`shuffle:${plan.index}:chip`)) && paintedFrameCount(rackFrom, firstExit, input.fps) >= 2) {
+    const size = Math.min(8 * S, rackRow.width / 10);
+    const x = ctx.space.x(540);
+    const y = rackRow.y + rackRow.h + 9 * S;
+    pieces.push({
+      id: `shuffle:${plan.index}:chipmarks`, kind: "shape", z: band + 2, fromMs: rackFrom, toMs: firstExit,
+      path: [...roundedRectPath(0, 0, size, size, size / 4), ...roundedRectPath(2 * size, 0, size, size, size / 4)],
+      fill: { colour: ctx.solved }, origin: { dx: 1.5 * size, dy: 0 },
+      track: { x: [[rackFrom, x]], y: [[rackFrom, y]] },
+    });
+  }
 
   return pieces;
 }
@@ -671,54 +695,33 @@ function buildScene(input: SceneInput): Piece[] {
   const u = space.u;
   const fps = input.fps ?? SCENE_DEFAULT_FPS;
   const safeW = space.safe.x2 - space.safe.x1;
-  const safeH = space.safe.y2 - space.safe.y1;
   const tile = input.colours.primary;
   const ink = input.colours.accent;
   const ctx: Ctx = {
     input, space, u, maxW: Math.min(MAX_W * u, safeW - 56 * u), tile, solved: input.colours.highlight, ink, rack: mixColour(ink, tile, 0.45),
     minMotion: Math.max(MIN_MOTION, Math.ceil(2000 / sceneSampleRate(fps)) + 1), wordCache: new Map(),
   };
-  const plans: Plan[] = [];
-  input.cues.forEach((cue, index) => {
-    if (cue.words.length === 0) return;
-    const start = Math.min(...cue.words.map((word) => word.startMs));
-    const spoken = Math.max(...cue.words.map((word) => word.endMs));
-    let lead = LEAD;
-    const behind: Plan[] = [];
-    const giving: Plan[] = [];
-    for (const p of plans) {
-      if (p.to <= start - LEAD) continue;
-      if (p.spoken - start > OVERLAP_MS) behind.push(p);
-      else giving.push(p);
-    }
-    // The cue before gets its 150 ms of reading when the gap has them; the lead is what is left.
-    for (const p of giving) lead = Math.min(lead, Math.max(0, start - p.spoken - HOLD));
-    const from = start - lead;
-    for (const p of giving) p.to = Math.min(p.to, from);
-    const reach = 14 * u;
-    const gap = 60 * u;
-    // Below the cue still being spoken when it has room for the new block, else above it.
-    const natural = behind.length === 0 ? null : layoutCue(ctx, cue, index, u, {});
-    const below = behind.length === 0 || space.safe.y2 - Math.max(...behind.map((p) => p.layout.bottom)) - gap - reach >= natural!.bottom - natural!.top;
-    const place = behind.length === 0 ? {} : below ? { top: Math.max(...behind.map((p) => p.layout.bottom)) + gap } : { bottom: Math.min(...behind.map((p) => p.layout.top)) - gap };
-    const room = behind.length === 0 ? safeH - 2 * reach : below ? space.safe.y2 - (place.top ?? 0) - reach : (place.bottom ?? 0) - space.safe.y1 - reach;
-    const plan: Plan = { index, cue, start, spoken, from, to: Math.max(cue.endMs, spoken), layout: null as unknown as Layout, place };
-    // Fit by height, then by everything the cue ever draws.
+  const windows = speechWindows(input, space.safe, LEAD, HOLD);
+  return renderWithReadingHolds(windows, input, HOLD, (window) => {
+    const { cue, index, start, spokenEnd, from, to, bounds } = window;
+    const lane = speechLaneSpace(space, bounds, ANCHOR_LINE);
+    const laneCtx = { ...ctx, space: lane };
+    const room = bounds.y2 - bounds.y1 - 28 * u;
+    const place = {};
     let k = 1;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      plan.layout = layoutCue(ctx, cue, index, u * k, place);
-      const height = plan.layout.bottom - plan.layout.top;
-      let shrink = height > room ? room / height : 1;
-      if (shrink === 1) {
-        const size = unionSize(cuePieces(ctx, plan), plan.from, plan.to, input);
-        shrink = Math.min(1, safeW / (size.w + 2), safeH / (size.h + 2), behind.length ? room / (size.h + 2) : 1);
-      }
+    let plan: Plan = { index, cue, start, spoken: spokenEnd, from, to, layout: layoutCue(laneCtx, cue, index, u, place), place };
+    let drawn = cuePieces(laneCtx, plan);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const size = unionSize(drawn, from, to, input);
+      const shrink = Math.min(1, safeW / (size.w + 2), room / (size.h + 2));
       if (shrink >= 0.999) break;
       k *= Math.max(0.3, shrink * 0.98);
+      plan = { ...plan, layout: layoutCue(laneCtx, cue, index, u * k, place) };
+      drawn = cuePieces(laneCtx, plan);
     }
-    plans.push(plan);
+    return clampToSafeArea(drawn, bounds, input.measure).filter((piece) =>
+      /^shuffle:\d+:w\d+(?:l\d+)?$/.test(piece.id) || hasTwoPaintedFrames(piece, input));
   });
-  return plans.flatMap((plan) => clampToSafeArea(cuePieces(ctx, plan), space.safe, input.measure));
 }
 
 export const shuffleProgram: SceneProgram = {
