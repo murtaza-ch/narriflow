@@ -249,6 +249,31 @@ describe("Labels", () => {
     expect(JSON.stringify(build(long))).toBe(JSON.stringify(pieces));
   });
 
+  test("the tape is pinned on a label's outer corner and its painted box never reaches a word's ink", () => {
+    // Real phrasing, 2026-11-25 gallery review: the tilted tape's box met the first word's ink box on most cues.
+    const { cues: real } = demoCues({
+      lines: ["it's:b time:b to:m say:b goodbye:h@420", "the:m remote:b doesn't:h@360 work.:b", "all:b of:m them:b are:m unplugged.:h@480", "is:m it:m dead?:h@380", "oh.:b"],
+      options: { lead: 400, gap: 30, cueGap: 120, tail: 500 },
+    });
+    const pieces = build(real);
+    real.forEach((cue, n) => {
+      const tape = need<ShapePiece>(find(pieces, `labels:${n}:tape`));
+      const words = ofCue(pieces, n).filter((piece): piece is TextPiece => piece.kind === "text");
+      for (const t of exportFrameTimes(cue.startMs, cue.endMs, 30)) {
+        const box = pieceBounds(tape, t, fakeMeasure);
+        if (!box) continue;
+        for (const word of words) {
+          const ink = pieceBounds(word, t, fakeMeasure);
+          if (!ink) continue;
+          const dx = (ink.x2 - ink.x1) * 0.06;
+          const dy = (ink.y2 - ink.y1) * 0.18;
+          const hit = box.x1 + 0.5 < ink.x2 - dx && ink.x1 + dx < box.x2 - 0.5 && box.y1 + 0.5 < ink.y2 - dy && ink.y1 + dy < box.y2 - 0.5;
+          expect(hit, `cue ${n} ${word.text} at ${t}`).toBe(false);
+        }
+      }
+    });
+  });
+
   test("all edge cues and aspect ratios keep every painted frame inside the safe area and the budget", () => {
     for (const kind of SCENE_EDGE_DEMOS) {
       for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {

@@ -81,6 +81,8 @@ const LEAD = 90;
 const FADE_MS = 45;
 const FADE_FROM = 0.35;
 const READ = 150;
+/** Where the tape's centre sits off the host's top corner (sample px, outward and up): pinned on the corner, its painted box clear of the word's ink. */
+const TAPE_OUT = { x: 3, y: -12 } as const;
 const EXIT_MS = 85;
 const EXIT_STAGGER = 20;
 /** The width rows wrap at (sample px): the sample's rows are 520 to 740 px, so a long cue piles into rows instead of one long strip. */
@@ -451,8 +453,8 @@ function cuePieces(layout: CueLayout, heroNumberOf: ReadonlyMap<number, number>,
       const pop = Math.min(150, Math.max(1, Math.floor((to - from) / 2)));
       // The scrap rides the label it is stuck to: its offset from the label's pivot turns and scales with the label's own pose.
       const hostPlate = plateOf(host, hostTm, release, false);
-      const offX = tapeCorner * (host.w / 2 + 2 * host.q);
-      const offY = -host.h + 2 * host.q;
+      const offX = tapeCorner * (host.w / 2 + TAPE_OUT.x * host.q);
+      const offY = -host.h + TAPE_OUT.y * host.q;
       const settled = Math.max(from + pop, hostTm.from + hostTm.settle);
       const popOf = (t: number) => EASES.outBack(prog(t, from, pop));
       const pose = (t: number) => {
