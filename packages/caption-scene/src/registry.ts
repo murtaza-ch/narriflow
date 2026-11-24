@@ -67,6 +67,17 @@ import { CROSSTAPE_DEMO, crosstapeProgram } from "./templates/crosstape";
 import { GUMDROP_DEMO, gumdropProgram } from "./templates/gumdrop";
 import { FLOWING_DEMO, flowingProgram } from "./templates/flowing";
 import { TRACE_DEMO, traceProgram } from "./templates/trace";
+import { SNIPSNAP_DEMO, snipsnapProgram } from "./templates/snipsnap";
+import { ANIME_DEMO, animeProgram } from "./templates/anime";
+import { TUNNEL_DEMO, tunnelProgram } from "./templates/tunnel";
+import { BROADWAY_DEMO, broadwayProgram } from "./templates/broadway";
+import { RIPPLE_DEMO, rippleProgram } from "./templates/ripple";
+import { BENTO_DEMO, bentoProgram } from "./templates/bento";
+import { LIQUID_DEMO, liquidProgram } from "./templates/liquid";
+import { BLINDS_DEMO, blindsProgram } from "./templates/blinds";
+import { RECEIPT_DEMO, receiptProgram } from "./templates/receipt";
+import { CHRONICLE_DEMO, chronicleProgram } from "./templates/chronicle";
+import { COMBO_DEMO, comboProgram } from "./templates/combo";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -139,6 +150,17 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   gumdrop: { program: gumdropProgram, demo: GUMDROP_DEMO },
   flowing: { program: flowingProgram, demo: FLOWING_DEMO },
   trace: { program: traceProgram, demo: TRACE_DEMO },
+  snipsnap: { program: snipsnapProgram, demo: SNIPSNAP_DEMO },
+  anime: { program: animeProgram, demo: ANIME_DEMO },
+  tunnel: { program: tunnelProgram, demo: TUNNEL_DEMO },
+  broadway: { program: broadwayProgram, demo: BROADWAY_DEMO },
+  ripple: { program: rippleProgram, demo: RIPPLE_DEMO },
+  bento: { program: bentoProgram, demo: BENTO_DEMO },
+  liquid: { program: liquidProgram, demo: LIQUID_DEMO },
+  blinds: { program: blindsProgram, demo: BLINDS_DEMO },
+  receipt: { program: receiptProgram, demo: RECEIPT_DEMO },
+  chronicle: { program: chronicleProgram, demo: CHRONICLE_DEMO },
+  combo: { program: comboProgram, demo: COMBO_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

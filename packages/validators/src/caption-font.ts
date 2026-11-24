@@ -102,6 +102,16 @@ export const CAPTION_FONT_FACES = [
   { name: "Space Mono Bold", file: "SpaceMono-Bold.ttf", assName: "Space Mono Bold", weight: 700, style: "normal", ascent: 1.12, descent: 0.361, capHeight: 0.7, templateOnly: true },
   { name: "Silkscreen Bold", file: "Silkscreen-Bold.ttf", assName: "Silkscreen Bold", weight: 700, style: "normal", ascent: 1.0, descent: 0.25, capHeight: 0.625, templateOnly: true },
   { name: "Bagel Fat One", file: "BagelFatOne-Regular.ttf", assName: "Bagel Fat One Regular", weight: 400, style: "normal", ascent: 1.16, descent: 0.288, capHeight: 0.734, templateOnly: true },
+  { name: "Space Mono Regular", file: "SpaceMono-Regular.ttf", assName: "Space Mono Regular", weight: 400, style: "normal", ascent: 1.12, descent: 0.361, capHeight: 0.7, templateOnly: true },
+  { name: "Newsreader Medium", file: "Newsreader-Medium.ttf", assName: "Newsreader Medium", weight: 500, style: "normal", ascent: 1.163, descent: 0.2655, capHeight: 0.67, templateOnly: true },
+  { name: "Newsreader SemiBold", file: "Newsreader-SemiBold.ttf", assName: "Newsreader SemiBold", weight: 600, style: "normal", ascent: 1.163, descent: 0.2655, capHeight: 0.67, templateOnly: true },
+  { name: "Newsreader SemiBold Italic", file: "Newsreader-SemiBoldItalic.ttf", assName: "Newsreader SemiBold Italic", weight: 600, style: "italic", ascent: 1.163, descent: 0.2655, capHeight: 0.67, templateOnly: true },
+  { name: "Plus Jakarta Sans Bold", file: "PlusJakartaSans-Bold.ttf", assName: "Plus Jakarta Sans Bold", weight: 700, style: "normal", ascent: 1.296, descent: 0.356, capHeight: 0.745, templateOnly: true },
+  { name: "Plus Jakarta Sans ExtraBold", file: "PlusJakartaSans-ExtraBold.ttf", assName: "Plus Jakarta Sans ExtraBold", weight: 800, style: "normal", ascent: 1.296, descent: 0.356, capHeight: 0.745, templateOnly: true },
+  { name: "Fredoka SemiBold", file: "Fredoka-SemiBold.ttf", assName: "Fredoka SemiBold", weight: 600, style: "normal", ascent: 0.999, descent: 0.252, capHeight: 0.7, templateOnly: true },
+  { name: "Fredoka Bold", file: "Fredoka-Bold.ttf", assName: "Fredoka Bold", weight: 700, style: "normal", ascent: 0.999, descent: 0.252, capHeight: 0.7, templateOnly: true },
+  { name: "Pixelify Sans Bold", file: "PixelifySans-Bold.ttf", assName: "Pixelify Sans Bold", weight: 700, style: "normal", ascent: 0.922, descent: 0.289, capHeight: 0.7, templateOnly: true },
+  { name: "Londrina Solid Black", file: "LondrinaSolid-Black.ttf", assName: "Londrina Solid Black", weight: 900, style: "normal", ascent: 0.941, descent: 0.215, capHeight: 0.722, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];

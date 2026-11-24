@@ -52,6 +52,17 @@ export const SAMPLE_FILES: Readonly<Record<CaptionSceneName, string>> = {
   gumdrop: "m48-retroserif",
   flowing: "m49-flowing",
   trace: "m50-trace",
+  snipsnap: "m66-snipsnap",
+  anime: "m65-anime",
+  tunnel: "m64-tunnel",
+  broadway: "m63-broadway",
+  ripple: "m62-ripple",
+  bento: "m61-bento",
+  liquid: "m60-glass",
+  blinds: "m59-blinds",
+  receipt: "m58-receipt",
+  chronicle: "m55-chronicle",
+  combo: "m54-combo",
 };
 
 export function studioShot(input: { readonly url: string; readonly output: string; readonly width?: number; readonly height?: number }): void {

@@ -50,6 +50,16 @@ const TEMPLATE_FACES = [
   "Space Mono Bold",
   "Silkscreen Bold",
   "Bagel Fat One",
+  "Space Mono Regular",
+  "Newsreader Medium",
+  "Newsreader SemiBold",
+  "Newsreader SemiBold Italic",
+  "Plus Jakarta Sans Bold",
+  "Plus Jakarta Sans ExtraBold",
+  "Fredoka SemiBold",
+  "Fredoka Bold",
+  "Pixelify Sans Bold",
+  "Londrina Solid Black",
 ];
 
 describe("template-only caption faces", () => {

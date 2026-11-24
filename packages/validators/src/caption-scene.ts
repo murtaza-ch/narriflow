@@ -72,6 +72,17 @@ export const CAPTION_SCENE_NAMES = [
   "gumdrop",
   "flowing",
   "trace",
+  "snipsnap",
+  "anime",
+  "tunnel",
+  "broadway",
+  "ripple",
+  "bento",
+  "liquid",
+  "blinds",
+  "receipt",
+  "chronicle",
+  "combo",
 ] as const;
 
 export type CaptionSceneName = (typeof CAPTION_SCENE_NAMES)[number];
@@ -183,6 +194,17 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
   gumdrop: { name: "Gumdrop", bodyPx: 150, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#FFFBEF", highlight: "#FFD21E", accent: "#101012" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Bagel Fat One", backdrop: "bright" },
   flowing: { name: "Flowing", bodyPx: 62, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#D6FF3A", accent: "#1A1AE6" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
   trace: { name: "Trace", bodyPx: 150, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFFFFF", accent: "#0A0A0C" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: null }, fontName: "Barlow Condensed ExtraBold Italic", backdrop: "busy" },
+  snipsnap: { name: "Snip Snap", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Londrina Solid Black", backdrop: "busy" },
+  anime: { name: "Anime", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Pixelify Sans Bold", backdrop: "busy" },
+  tunnel: { name: "Tunnel", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Bricolage Grotesque", backdrop: "dark" },
+  broadway: { name: "Broadway", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Bebas Neue", backdrop: "busy" },
+  ripple: { name: "Ripple", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Fredoka Bold", backdrop: "dark" },
+  bento: { name: "Bento", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Plus Jakarta Sans ExtraBold", backdrop: "busy" },
+  liquid: { name: "Liquid", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter", backdrop: "dark" },
+  blinds: { name: "Blinds", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Anton", backdrop: "busy" },
+  receipt: { name: "Receipt", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Space Mono Bold", backdrop: "bright" },
+  chronicle: { name: "Chronicle", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Newsreader SemiBold", backdrop: "dark" },
+  combo: { name: "Combo", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Chakra Petch", backdrop: "busy" },
   reveal: { name: "Reveal", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
 };
 

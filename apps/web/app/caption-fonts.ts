@@ -1047,6 +1047,156 @@ const captionBagelFatOne = localFont({
   ],
 });
 
+const captionSpaceMonoRegular = localFont({
+  src: "../../../packages/caption-fonts/fonts/SpaceMono-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-space-mono-regular",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "112%" },
+    { prop: "descent-override", value: "36.1%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionNewsreaderMedium = localFont({
+  src: "../../../packages/caption-fonts/fonts/Newsreader-Medium.ttf",
+  weight: "500",
+  style: "normal",
+  variable: "--font-caption-newsreader-medium",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "116.3%" },
+    { prop: "descent-override", value: "26.55%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionNewsreaderSemiBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Newsreader-SemiBold.ttf",
+  weight: "600",
+  style: "normal",
+  variable: "--font-caption-newsreader-semibold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "116.3%" },
+    { prop: "descent-override", value: "26.55%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionNewsreaderSemiBoldItalic = localFont({
+  src: "../../../packages/caption-fonts/fonts/Newsreader-SemiBoldItalic.ttf",
+  weight: "600",
+  style: "italic",
+  variable: "--font-caption-newsreader-semibold-italic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "116.3%" },
+    { prop: "descent-override", value: "26.55%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPlusJakartaSansBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/PlusJakartaSans-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-plus-jakarta-sans-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "129.6%" },
+    { prop: "descent-override", value: "35.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPlusJakartaSansExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/PlusJakartaSans-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-plus-jakarta-sans-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "129.6%" },
+    { prop: "descent-override", value: "35.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionFredokaSemiBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Fredoka-SemiBold.ttf",
+  weight: "600",
+  style: "normal",
+  variable: "--font-caption-fredoka-semibold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "99.9%" },
+    { prop: "descent-override", value: "25.2%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionFredokaBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Fredoka-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-fredoka-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "99.9%" },
+    { prop: "descent-override", value: "25.2%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPixelifySansBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/PixelifySans-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-pixelify-sans-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "92.2%" },
+    { prop: "descent-override", value: "28.9%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionLondrinaSolidBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/LondrinaSolid-Black.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-londrina-solid-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "94.1%" },
+    { prop: "descent-override", value: "21.5%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 /** CSS variable classes for <html>; each variable holds one caption face's family. */
 export const captionFontVariables = [
   captionAnton.variable,
@@ -1118,4 +1268,14 @@ export const captionFontVariables = [
   captionSpaceMonoBold.variable,
   captionSilkscreenBold.variable,
   captionBagelFatOne.variable,
+  captionSpaceMonoRegular.variable,
+  captionNewsreaderMedium.variable,
+  captionNewsreaderSemiBold.variable,
+  captionNewsreaderSemiBoldItalic.variable,
+  captionPlusJakartaSansBold.variable,
+  captionPlusJakartaSansExtraBold.variable,
+  captionFredokaSemiBold.variable,
+  captionFredokaBold.variable,
+  captionPixelifySansBold.variable,
+  captionLondrinaSolidBlack.variable,
 ].join(" ");
