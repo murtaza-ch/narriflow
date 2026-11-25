@@ -1,11 +1,13 @@
 import type { DemoScript } from "../demo";
 import { EASES, kf, lerp, prog } from "../ease";
-import { paintedFrameCount } from "../frame-grid";
+import { SCENE_DEFAULT_FPS, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
-import type { SceneCue } from "../input";
-import type { Frames, Piece, ShapePiece, TextPiece } from "../scene";
+import type { SceneCue, SceneInput, SceneProgram } from "../input";
+import { cueDirection, sceneSpace } from "../layout";
+import type { Frames, Measure, Piece, ShapePiece, TextPiece } from "../scene";
 import { ellipsePath, polygonPath } from "../shapes";
 import { caps, galleryScene, rowsOf } from "./gallery-layout";
+import { speechLaneSpace, speechWindows } from "./speech-layout";
 
 /**
  * Combo (`samples/templates/m54-combo.js`): an arcade HUD driven by the speaker's delivery. Chunky Chakra Petch caps with a
@@ -65,20 +67,20 @@ const BAR_GAP = 8;
 const BAR_MARGIN = 0.32 * S;
 const SKEW = Math.tan((24 * Math.PI) / 180);
 const COUNTER_SIZE = 148;
-const COUNTER_BASELINE = 1075;
+/** The badge's slot: this far above the anchor line (sample px), the sample's 1110 less a little so a three-row block clears it. */
+const COUNTER_RISE = 245;
 const BREAK = 260;
-const SLIDE = 300;
 const LEAD_NEXT = 40;
 
 interface RunWord {
   readonly n: number;
   readonly last: boolean;
   readonly breakAt: number;
+  /** -1 for a run that starts in a right-to-left cue: the badge keeps one side for the whole run. */
+  readonly side: number;
 }
 
 const runCache = new WeakMap<readonly SceneCue[], Map<string, RunWord>>();
-/** Where each cue's counter rests, so the next cue of the same run slides from there instead of jumping. */
-const restCache = new WeakMap<readonly SceneCue[], Map<number, number>>();
 
 /** A word that ends a sentence (. ? ! and the Hindi, Arabic and CJK stops, closing quotes allowed after it). */
 const SENTENCE_END = /[.!?।؟。！？…]["'”’)\]]*$/u;
@@ -87,10 +89,10 @@ const SENTENCE_END = /[.!?।؟。！？…]["'”’)\]]*$/u;
 function runsOf(cues: readonly SceneCue[]): Map<string, RunWord> {
   const cached = runCache.get(cues);
   if (cached) return cached;
-  const bySpeaker = new Map<number | null, { key: string; start: number; end: number; ends: boolean }[]>();
+  const bySpeaker = new Map<number | null, { key: string; start: number; end: number; ends: boolean; side: number }[]>();
   cues.forEach((cue, ci) => {
     const list = bySpeaker.get(cue.speaker) ?? [];
-    for (const [wi, word] of cue.words.entries()) list.push({ key: `${ci}:${wi}`, start: word.startMs, end: word.endMs, ends: SENTENCE_END.test(word.text.trim()) });
+    for (const [wi, word] of cue.words.entries()) list.push({ key: `${ci}:${wi}`, start: word.startMs, end: word.endMs, ends: SENTENCE_END.test(word.text.trim()), side: cueDirection(cue) === "rtl" ? -1 : 1 });
     bySpeaker.set(cue.speaker, list);
   });
   const runs = new Map<string, RunWord>();
@@ -98,7 +100,7 @@ function runsOf(cues: readonly SceneCue[]): Map<string, RunWord> {
     list.sort((a, b) => a.start - b.start);
     let run: typeof list = [];
     const flush = () => {
-      for (const [at, word] of run.entries()) runs.set(word.key, { n: at + 1, last: at === run.length - 1, breakAt: run.at(-1)!.end });
+      for (const [at, word] of run.entries()) runs.set(word.key, { n: at + 1, last: at === run.length - 1, breakAt: run.at(-1)!.end, side: run[0]!.side });
       run = [];
     };
     for (const word of list) {
@@ -134,7 +136,7 @@ interface Unit {
   readonly size: number;
 }
 
-export const comboProgram = galleryScene("combo", 1320, (ctx) => {
+export const comboCues = galleryScene("combo", 1320, (ctx) => {
   const { cue, index, to } = ctx.window;
   const { safe } = ctx.space;
   const c = ctx.input.colours;
@@ -157,10 +159,20 @@ export const comboProgram = galleryScene("combo", 1320, (ctx) => {
       units.push({ word: at, part: 0, parts: 1, text, size: normal });
       return;
     }
+    // Pieces of equal measured width, not equal letter counts (a run of M and a run of I need different letter counts).
     const parts = Math.min(letters.length, Math.ceil(floor / fitSize(text)));
-    const chunks = Array.from({ length: parts }, (_, k) => letters.slice(Math.round((k * letters.length) / parts), Math.round(((k + 1) * letters.length) / parts)).join(""));
+    const advances = letters.map((letter) => advance100(letter));
+    const total = advances.reduce((sum, advance) => sum + advance, 0);
+    const cuts = [0];
+    let run = 0;
+    advances.forEach((advance, i) => {
+      if (cuts.length < parts && run + advance / 2 >= (cuts.length * total) / parts && i > cuts.at(-1)!) cuts.push(i);
+      run += advance;
+    });
+    cuts.push(letters.length);
+    const chunks = cuts.slice(0, -1).map((cut, k) => letters.slice(cut, cuts[k + 1]).join(""));
     const size = Math.min(normal, Math.max(floor, Math.min(...chunks.map(fitSize))));
-    for (const [part, chunk] of chunks.entries()) units.push({ word: at, part, parts, text: chunk, size });
+    for (const [part, chunk] of chunks.entries()) units.push({ word: at, part, parts: chunks.length, text: chunk, size });
   });
   const groups: number[][] = [];
   units.forEach((unit, at) => {
@@ -186,7 +198,10 @@ export const comboProgram = galleryScene("combo", 1320, (ctx) => {
   const barH = BAR_HEIGHT * u;
   const barMargin = BAR_MARGIN * u;
   const total = rowHeight.reduce((sum, h) => sum + h, 0) + gapAfter.slice(0, -1).reduce((sum, g) => sum + g, 0) + barMargin + barH;
-  const blockTop = ctx.space.y(1320) - total / 2;
+  // The badge has one fixed slot above the block; a block too tall for the room under it moves down instead of the badge moving up.
+  const u0 = badgeUnit(Math.min(ctx.input.canvas.width, ctx.input.canvas.height) / 1080, safe.y1, safe.y2);
+  const slotBottom = counterBaseline(ctx.space.y(1320), safe.y1, u0) + (6 + 34) * u0 + 1.5 * counterLowest(ctx.input.measure, u0);
+  const blockTop = Math.max(ctx.space.y(1320) - total / 2, slotBottom);
   const baselines: number[] = [];
   let y = blockTop;
   rows.forEach((_, r) => {
@@ -406,75 +421,104 @@ export const comboProgram = galleryScene("combo", 1320, (ctx) => {
     });
   }
 
-  pieces.push(...counterPieces());
   return pieces;
+});
 
-  /** The combo counter: the count of each word of this cue's run, held until the next count, then the break. */
-  function counterPieces(): Piece[] {
-    const runs = runsOf(ctx.input.cues);
-    const spans = cue.words.map((_, wi) => {
-      const info = runs.get(`${index}:${wi}`)!;
-      const next = enters[wi + 1]?.from;
-      return { ...info, wi, from: enters[wi]!.from, end: info.last ? Math.min(to, info.breakAt + BREAK, next ?? Number.POSITIVE_INFINITY) : next ?? to };
-    });
+/** The badge's baseline for an anchor line at `anchorY` (inside the lane that starts at `top`): fixed above the anchor, whatever the cue below it looks like. */
+function counterBaseline(anchorY: number, top: number, u0: number): number {
+  return Math.max(anchorY - COUNTER_RISE * u0, top + (0.7 * COUNTER_SIZE + 4) * u0);
+}
+
+/** The badge's unit: the canvas's, less when the lane the cue lives in (two speakers) is too short to hold it above a block. */
+function badgeUnit(u0: number, top: number, bottom: number): number {
+  return u0 * Math.min(1, (bottom - top) / (700 * u0));
+}
+
+function counterLowest(measure: Measure, u0: number): number {
+  return Math.max(0, measure("×0", FACE, COUNTER_SIZE * u0, 0).inkBottom);
+}
+
+const FACE_ID = /^combo:(\d+):w(\d+)(?:l\d+)?$/;
+/** The lead and reading hold `galleryScene` uses to cut its windows. */
+const LEAD = 80;
+const HOLD = 150;
+
+/**
+ * The combo badge, drawn after the cues so that a cue's fit (its scale or its shift into the safe area) can never move it.
+ * It has one slot, in canvas terms (the anchor line, the canvas and the sample's offset, never the user's size scale or a
+ * cue's fit), so a count that follows another never jumps, whatever the blocks around it look like. A block too tall for
+ * the room below the slot is moved down by the cue (see `blockTop`).
+ */
+function comboCounters(input: SceneInput, pieces: readonly Piece[]): Piece[] {
+  const fps = input.fps ?? SCENE_DEFAULT_FPS;
+  const canvasUnit = Math.min(input.canvas.width, input.canvas.height) / 1080;
+  const base = sceneSpace(input, 1320);
+  const times = new Map<string, { from: number; to: number }>();
+  for (const piece of pieces) {
+    const match = FACE_ID.exec(piece.id);
+    if (!match) continue;
+    const key = `${match[1]}:${match[2]}`;
+    const known = times.get(key);
+    times.set(key, { from: Math.min(known?.from ?? Number.POSITIVE_INFINITY, piece.fromMs), to: Math.max(known?.to ?? 0, piece.toMs) });
+  }
+  const runs = runsOf(input.cues);
+  const out: Piece[] = [];
+  for (const window of speechWindows(input, base.safe, LEAD, HOLD)) {
+    const { cue, index } = window;
+    const space = speechLaneSpace(base, window.bounds, 1320);
+    const { safe } = space;
+    const words = cue.words.map((_, wi) => ({ wi, info: runs.get(`${index}:${wi}`)!, ...times.get(`${index}:${wi}`)! })).filter((word) => word.info && word.from !== undefined);
+    if (!words.length) continue;
+    const to = Math.max(...words.map((word) => word.to));
+    const spans = words.map((word, at) => ({
+      ...word.info, wi: word.wi, from: word.from,
+      end: word.info.last ? Math.min(to, word.info.breakAt + BREAK, words[at + 1]?.from ?? Number.POSITIVE_INFINITY) : words[at + 1]?.from ?? to,
+    }));
     // A count that would paint on a single frame is folded into the one before it (or skipped at the start).
     const kept: typeof spans = [];
     for (const span of spans) {
-      if (paintedFrameCount(span.from, span.end, ctx.fps) < 2 && !span.last) {
+      if (paintedFrameCount(span.from, span.end, fps) < 2 && !span.last) {
         const previous = kept.at(-1);
         if (previous && !previous.last) previous.end = span.end;
         continue;
       }
       kept.push({ ...span });
     }
-    // The badge keeps one size cap (a wide count is set smaller) and one anchor: the sample's place above the block, raised
-    // for a tall block, and slid there from where the run's previous cue left it.
-    const widthCap = 215 * u;
-    const sizeFor = (text: string) => {
-      const base = COUNTER_SIZE * u;
-      return base * Math.min(1, widthCap / Math.max(1, ctx.input.measure(text, FACE, base, 0).advance));
-    };
-    const lowest = Math.max(0, ctx.input.measure("×0", FACE, COUNTER_SIZE * u, 0).inkBottom);
-    const baseline = Math.min(ctx.space.y(COUNTER_BASELINE), blockTop - 34 * u - 1.5 * lowest);
-    const rests = restCache.get(ctx.input.cues) ?? new Map<number, number>();
-    restCache.set(ctx.input.cues, rests);
-    rests.set(index, baseline);
-    let previousCue = index - 1;
-    while (previousCue >= 0 && (ctx.input.cues[previousCue]!.speaker !== cue.speaker || ctx.input.cues[previousCue]!.words.length === 0)) previousCue--;
-    const startsRun = (runs.get(`${index}:0`)?.n ?? 1) <= 1;
-    const from = !startsRun && previousCue >= 0 ? rests.get(previousCue) : undefined;
-    const slideFrom = kept[0]?.from ?? cueFrom;
-    // Only a downward slide is eased: a counter that must rise clears a taller block at once rather than cross its words.
-    const slides = from !== undefined && from < baseline;
-    const slide = (t: number) => (slides ? lerp(from!, baseline, EASES.inOut(prog(t, slideFrom, SLIDE))) : baseline);
-    const cx = ctx.space.x(540);
+    const u0 = badgeUnit(canvasUnit, safe.y1, safe.y2);
+    const baseline = counterBaseline(space.y(1320), safe.y1, u0);
+    const anchorX = (input.anchor.xPct / 100) * input.canvas.width;
+    const side = kept[0]?.side ?? 1;
     // The counter turns up to 14 degrees about its right end: its corner swings out by about 0.3 em.
-    const right = Math.min(ctx.space.x(1000), safe.x2 - (8 + 0.32 * COUNTER_SIZE) * u);
-    const pivotX = side > 0 ? right : 2 * cx - right;
-    const out: Piece[] = [];
+    const right = Math.min(anchorX + (1000 - 540) * u0, safe.x2 - (8 + 0.32 * COUNTER_SIZE) * u0);
+    const pivotX = side > 0 ? right : 2 * anchorX - right;
+    const sizeFor = (text: string) => {
+      const size = COUNTER_SIZE * u0;
+      return size * Math.min(1, (215 * u0) / Math.max(1, input.measure(text, FACE, size, 0).advance));
+    };
     for (const span of kept) {
       const text = `×${Math.min(99, span.n)}`;
       const size = sizeFor(text);
-      const m = ctx.input.measure(text, FACE, size, 0);
+      const m = input.measure(text, FACE, size, 0);
       const mid = (m.inkTop + m.inkBottom) / 2;
       const pop = Math.min(110, span.end - span.from);
-      const animate = paintedFrameCount(span.from, span.from + pop, ctx.fps) >= 2;
+      const animate = paintedFrameCount(span.from, span.from + pop, fps) >= 2;
       const breakDur = span.last ? Math.min(BREAK, span.end - span.breakAt) : 0;
-      const breaks = span.last && paintedFrameCount(span.breakAt, span.breakAt + breakDur, ctx.fps) >= 2;
+      const breaks = span.last && paintedFrameCount(span.breakAt, span.breakAt + breakDur, fps) >= 2;
       const kick = span.n >= 10 ? 0.25 : 0.5;
       const popAt = (t: number) => (animate ? 1 - EASES.out(prog(t, span.from, pop)) : 0);
       const brokeAt = (t: number) => (breaks ? prog(t, span.breakAt, breakDur) : 0);
-      const edges = [span.from, span.from + pop, span.breakAt, span.breakAt + breakDur, slideFrom, slideFrom + SLIDE];
+      const edges = [span.from, span.from + pop, span.breakAt, span.breakAt + breakDur];
       const frames = (fn: (t: number) => number, error: number) => sampleFrames(fn, edges, error, { range: [span.from, span.end], simplify: true });
       const scale = frames((t) => 1 + kick * popAt(t), 0.01);
+      const id = `combo:${index}`;
       const piece: TextPiece = {
-        id: `${ctx.id}:count${span.wi}`, kind: "text", z: 7, fromMs: span.from, toMs: span.end, text, face: FACE, sizePx: size, letterSpacingEm: 0,
-        fill: span.n >= 10 ? HOT : c.highlight, anchor: "baseline-center", language: cue.language,
-        stroke: { colour: ink, widthPx: 0.045 * size },
-        shadows: [{ dx: 0, dy: 6 * u, blur: 0, colour: ink, alpha: 0.85 }],
+        id: `${id}:count${span.wi}`, kind: "text", z: 7, fromMs: span.from, toMs: span.end, text, face: FACE, sizePx: size, letterSpacingEm: 0,
+        fill: span.n >= 10 ? HOT : input.colours.highlight, anchor: "baseline-center", language: cue.language,
+        stroke: { colour: input.colours.accent, widthPx: 0.045 * size },
+        shadows: [{ dx: 0, dy: 6 * u0, blur: 0, colour: input.colours.accent, alpha: 0.85 }],
         origin: { dx: (side * m.advance) / 2, dy: mid },
         track: {
-          x: [[span.from, pivotX]], y: frames((t) => slide(t) + mid + brokeAt(t) * 0.4 * S * 1.2 * u, 0.2),
+          x: [[span.from, pivotX]], y: frames((t) => baseline + mid + brokeAt(t) * 0.4 * S * 1.2 * u0, 0.2),
           sx: scale, sy: scale, skx: [[span.from, -14]],
           rz: frames((t) => side * (8 + 6 * popAt(t) + 22 * EASES.in(brokeAt(t))), 0.2),
           o: frames((t) => 1 - EASES.in(brokeAt(t)), 0.01),
@@ -487,16 +531,52 @@ export const comboProgram = galleryScene("combo", 1320, (ctx) => {
         const centre = pivotX - (side * m.advance) / 2;
         const grow = Math.max(1, Math.min(1.4, (centre - safe.x1 - 4) / (0.55 * size), (safe.x2 - 4 - centre) / (0.55 * size)));
         const ring: ShapePiece = {
-          ...ctx.shape(`pulse${span.wi}`, span.from, ellipsePath(0, 0, 0.5 * size), {
-            x: [[span.from, centre]], y: frames((t) => slide(t) + mid, 0.2),
+          id: `${id}:pulse${span.wi}`, kind: "shape", z: 1, fromMs: span.from, toMs: span.from + dur, path: ellipsePath(0, 0, 0.5 * size),
+          stroke: { colour: HOT, widthPx: 0.05 * size },
+          track: {
+            x: [[span.from, centre]], y: [[span.from, baseline + mid]],
             sx: [[span.from, 0.7], [span.from + dur, grow, "out"]], sy: [[span.from, 0.7], [span.from + dur, grow, "out"]],
             o: [[span.from, 1], [span.from + dur, 0, "in"]],
-          }),
-          z: 1, toMs: span.from + dur, stroke: { colour: HOT, widthPx: 0.05 * size },
+          },
         };
         out.push(ring);
       }
     }
-    return out;
   }
-});
+  return out;
+}
+
+/** Cues on screen together (two speakers) read alike: the larger lane is drawn again at the smaller lane's body size. */
+function sharedSize(input: SceneInput, scene: readonly Piece[]): Piece[] {
+  const base = sceneSpace(input, 1320);
+  const windows = speechWindows(input, base.safe, LEAD, HOLD);
+  const bodyOf = (index: number) => {
+    const cue = input.cues[index]!;
+    const sizes = scene.flatMap((piece) => {
+      const match = FACE_ID.exec(piece.id);
+      return match && Number(match[1]) === index && piece.kind === "text" && cue.words[Number(match[2])]?.role !== "hero" ? [piece.sizePx] : [];
+    });
+    return sizes.length ? Math.min(...sizes) : undefined;
+  };
+  const overlap = (a: (typeof windows)[number], b: (typeof windows)[number]) => a.from < b.to && b.from < a.to;
+  let result = [...scene];
+  for (const window of windows) {
+    const mine = bodyOf(window.index);
+    if (mine === undefined) continue;
+    const peers = windows.filter((other) => other !== window && other.lane !== window.lane && overlap(window, other));
+    const target = Math.min(mine, ...peers.map((other) => bodyOf(other.index) ?? Number.POSITIVE_INFINITY));
+    if (target >= mine * 0.98) continue;
+    const factor = target / mine;
+    const redraw = comboCues.build({ ...input, scale: input.scale * factor }).pieces;
+    const prefix = `combo:${window.index}:`;
+    result = [...result.filter((piece) => !piece.id.startsWith(prefix)), ...redraw.filter((piece) => piece.id.startsWith(prefix))];
+  }
+  return result;
+}
+
+export const comboProgram: SceneProgram = {
+  build(input) {
+    const cues = sharedSize(input, comboCues.build(input).pieces);
+    return { pieces: [...cues, ...comboCounters(input, cues)] };
+  },
+};

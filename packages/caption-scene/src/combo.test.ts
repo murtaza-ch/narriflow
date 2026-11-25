@@ -190,13 +190,18 @@ describe("Combo counter stays put and stays small", () => {
     expect(input.cues.length).toBe(3);
   });
 
-  test("after a tall block the counter slides down to its place over several frames instead of jumping", () => {
-    const { cues, pieces } = build(["go:b hard:h@300 now:b real:h@300", "then:b stop:b"], { lead: 400, gap: 0, cueGap: 0, tail: 600 });
-    const at = (t: number) => pieces.flatMap((piece) => (piece.kind === "text" && /:count\d+$/.test(piece.id) && evaluatePiece(piece, t).visible ? [evaluatePiece(piece, t).y] : []));
-    const frames = exportFrameTimes(cues[0]!.words[0]!.startMs, cues[1]!.words.at(-1)!.endMs, 30).map((t) => at(t)[0]!);
-    const steps = frames.slice(1).map((y, i) => Math.abs(y - frames[i]!));
-    expect(Math.max(...steps)).toBeLessThan(40);
-    expect(Math.max(...frames) - Math.min(...frames)).toBeGreaterThan(20);
+  test("the badge keeps one slot for the whole run and the block moves down for it, never the other way round", () => {
+    const { cues, input, pieces } = build(["go:b hard:h@300 now:b real:h@300", "then:b stop:b", "all:b of:m them:b are:m unplugged:h@480"], { lead: 400, gap: 0, cueGap: 0, tail: 600 });
+    const counts = pieces.filter((piece): piece is TextPiece => piece.kind === "text" && /:count\d+$/.test(piece.id));
+    expect(new Set(counts.map((piece) => piece.track.x?.[0]?.[1])).size).toBe(1);
+    const ys = counts.map((piece) => evaluatePiece(piece, piece.fromMs).y - piece.origin!.dy);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(1);
+    // The tallest block starts under the badge.
+    const slot = Math.max(...counts.map((piece) => pieceBounds(piece, piece.fromMs + 200, input.measure)?.y2 ?? 0));
+    for (const cue of cues) {
+      const top = Math.min(...pieces.filter((piece) => new RegExp(`^combo:${cue.index}:w\\d+$`).test(piece.id)).map((piece) => pieceBounds(piece, cue.endMs - 200, input.measure)?.y1 ?? Number.POSITIVE_INFINITY));
+      expect(top, `cue ${cue.index} block top`).toBeGreaterThan(slot - 8);
+    }
   });
 
   test("a sentence end restarts the count", () => {
@@ -230,5 +235,38 @@ describe("Combo keeps its beats on fast cues", () => {
       expect(shine.size, `shine at ${fps} fps`).toBeGreaterThanOrEqual(fps >= 30 ? 14 : 10);
       expect(shards.size, `shards at ${fps} fps`).toBeGreaterThanOrEqual(fps >= 30 ? 6 : 4);
     }
+  });
+});
+
+describe("Combo review re-check", () => {
+  test("the badge keeps one place whatever a cue's fit does to its block", () => {
+    const { pieces } = build(["so:m it:b is:b", "pneumonoultramicroscopicsilicovolcanoconiosis:h@600", "and:b then:b", "accidentally:b open:b them:b"], { lead: 400, gap: 0, cueGap: 0, tail: 600 });
+    const counts = pieces.filter((piece): piece is TextPiece => piece.kind === "text" && /:count\d+$/.test(piece.id));
+    expect(counts.length).toBeGreaterThan(6);
+    expect(new Set(counts.map((piece) => Math.round(piece.track.x![0]![1]))).size).toBe(1);
+    expect(new Set(counts.map((piece) => Math.round(evaluatePiece(piece, piece.fromMs).y - piece.origin!.dy))).size).toBe(1);
+  });
+
+  test("a long word is broken into pieces of equal measured width, not equal letter counts", () => {
+    const wide = (text: string, size: number, spacing: number) => ({
+      advance: [...text].reduce((sum, letter) => sum + (letter === "M" ? 1.0 : 0.3) * size + spacing * size, 0),
+      inkTop: -0.72 * size, inkBottom: 0.2 * size, ascent: 1.1 * size, descent: 0.3 * size,
+    });
+    const { cues } = demoCues({ lines: [`${"M".repeat(20)}${"I".repeat(20)}:b`], options: { lead: 400, gap: 30, cueGap: 120, tail: 600 } });
+    const input = sceneInput(cues, { fps: 30, measure: (text, _face, size, spacing) => wide(text, size, spacing), anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+    const parts = comboProgram.build(input).pieces.filter((piece): piece is TextPiece => piece.kind === "text" && /^combo:0:w0l\d+$/.test(piece.id));
+    expect(parts.length).toBeGreaterThan(1);
+    const widths = parts.map((piece) => wide(piece.text, piece.sizePx, 0).advance);
+    expect(Math.max(...widths) / Math.min(...widths)).toBeLessThan(1.35);
+    expect(Math.min(...parts.map((piece) => piece.sizePx))).toBeGreaterThanOrEqual(56);
+  });
+
+  test("two speakers on screen together read at one size", () => {
+    const { cues } = demoCues({ lines: ["go:b hard:h@300 now:b real:h@300", "yes:b ok:b"], options: { lead: 400, gap: 0, cueGap: 0, tail: 600 } });
+    const run = cues.map((cue, i) => ({ ...cue, speaker: i, startMs: cue.startMs + (i ? 500 - cues[1]!.startMs + cues[0]!.startMs : 0), endMs: cue.endMs + (i ? 500 - cues[1]!.startMs + cues[0]!.startMs : 0), words: cue.words.map((word) => ({ ...word, startMs: word.startMs + (i ? 500 - cues[1]!.startMs + cues[0]!.startMs : 0), endMs: word.endMs + (i ? 500 - cues[1]!.startMs + cues[0]!.startMs : 0) })) }));
+    const input = sceneInput(run, { fps: 30, scale: 2, canvas: { width: 1920, height: 1080 }, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+    const pieces = comboProgram.build(input).pieces;
+    const body = (cue: number) => Math.min(...pieces.flatMap((piece) => (piece.kind === "text" && new RegExp(`^combo:${cue}:w\\d+$`).test(piece.id) && run[cue]!.words[Number(piece.id.split(":w")[1])]!.role !== "hero" ? [piece.sizePx] : [])));
+    expect(Math.abs(body(0) - body(1)) / Math.min(body(0), body(1))).toBeLessThan(0.05);
   });
 });
