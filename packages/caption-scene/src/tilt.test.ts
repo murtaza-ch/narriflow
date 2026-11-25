@@ -88,7 +88,7 @@ describe("tilt", () => {
     for (const p of pieces.filter((q) => /d\d$/.test(q.id))) expect(p.z).toBeLessThan(lowestFace);
   });
 
-  test("the sunburst is ten rays at 70 %, centred on the key word's measured box, gone 180 ms after it peaks", () => {
+  test("the sunburst is ten rays at 85 %, centred on the key word's measured box, fading out within 520 ms of the word", () => {
     expect(tiltRaysPath(10, 10, 100, 70).filter((c) => c[0] === "M").length).toBe(10);
     const { cues, pieces } = build(["this:m is:m the:b changer:h@640", "no:b one:b tells:h@560 you:m"]);
     for (const cue of cues) {
@@ -103,8 +103,8 @@ describe("tilt", () => {
       expect(Math.abs(pose.x - (hero.x1 + hero.x2) / 2)).toBeLessThan(60);
       expect(Math.abs(pose.y - (hero.y1 + hero.y2) / 2)).toBeLessThan(60);
       const peak = Math.max(...exportFrameTimes(burst.fromMs, burst.toMs, 60).map((x) => evaluatePiece(burst, x).o));
-      expect(peak).toBeCloseTo(0.7, 2);
-      expect(burst.toMs).toBeLessThanOrEqual(cue.words[heroIx]!.startMs + 380 + 1);
+      expect(peak).toBeCloseTo(0.85, 2);
+      expect(burst.toMs).toBeLessThanOrEqual(cue.words[heroIx]!.startMs + 520 + 1);
       expect(burst.fromMs).toBeGreaterThanOrEqual(cue.words[heroIx]!.startMs - 40 - 1);
       expect(burst.z).toBeLessThan(Math.min(...pieces.filter((p) => /d\d$/.test(p.id)).map((p) => p.z)));
       expect(burst.clip).toBeDefined();
@@ -338,5 +338,24 @@ describe("tilt review fixes", () => {
     expect(dashes).toBeGreaterThanOrEqual(Math.ceil(run.length * 0.7));
     const burst = pieces.find((p) => p.id === "tilt:0:burst")!;
     expect(evaluatePiece(burst, burst.fromMs).sx).toBe(1);
+  });
+
+  test("on 16:9 a larger caption size keeps two rows and never gets smaller type than the default size", () => {
+    const canvas = { width: 1920, height: 1080 };
+    const { cues } = demoCues({ lines: ["यह:b बहुत:h@700 अच्छा:b है:m", "the:m remote:b doesn't:h@360 work.:b"], options: { lead: 400, gap: 40, cueGap: 140, tail: 800 } });
+    const at = (scale: number) => tiltProgram.build(sceneInput(cues, { fps: 30, colours, anchor, canvas, scale })).pieces;
+    for (const cue of cues) {
+      const heroIndex = cue.words.findIndex((w) => w.role === "hero");
+      const sizes = [1, 2].map((scale) => {
+        const own = faces(at(scale), cue.index);
+        const t = cue.words.at(-1)!.endMs - 20;
+        const ys = own.map((p) => evaluatePiece(p, t).y).sort((x, y) => x - y);
+        const rows = ys.filter((y, k) => k === 0 || y - ys[k - 1]! > 140).length;
+        const hero = own.find((p) => p.id.startsWith(`tilt:${cue.index}:w${heroIndex}`));
+        return { rows, hero: hero && hero.kind === "text" ? hero.sizePx : 0 };
+      });
+      expect(sizes[1]!.rows, `cue ${cue.index} at 2x`).toBeLessThanOrEqual(2);
+      expect(sizes[1]!.hero, `cue ${cue.index}`).toBeGreaterThanOrEqual(sizes[0]!.hero * 0.95);
+    }
   });
 });

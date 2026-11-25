@@ -27,19 +27,24 @@ import type { SpeechCell } from "./speech-layout";
  *   about the horizontal, a 1800 px camera, so a word's scale stays within about 4 %), the block is turned a few degrees
  *   (cycled by cue), and the swing angle is capped so a wide word's near edge never grows more than 11 %. A projection that
  *   would put two words in contact is dropped for that cue.
- * - **Depth once, behind everything.** The sample's seven slate copies and two ink underlays are three offset copies (an ink
- *   rim at full depth, slate far and slate mid, whose borders bridge the steps) under the face: 0.12 em deep (0.074 em right,
- *   0.12 em down), every copy of every word below every face. Navy keyline 0.06 em, as the sample's. The sample's CSS group
+ * - **Depth once, behind everything.** The sample's seven slate copies and two ink underlays are two offset copies (an ink
+ *   rim at full depth and one slate copy at 0.75 of it, whose border bridges to the keyline) under the face, drawn once per
+ *   shaped word or wrapped row, never per letter: 0.12 em deep (0.074 em right, 0.12 em down), every copy of every word below
+ *   every face. Navy keyline 0.06 em, as the sample's. The sample's CSS group
  *   drop-shadow is dropped (it is invisible on the footage this style sits on).
  * - **A burst that sits on the word.** The sample's burst was placed by the key word's measured y only, so an off-centre key
  *   word got a centred burst, and it crowded the word it explained. Ten rays (not fourteen) are centred on the key word's
- *   measured box, at 70 % opacity under the faces, grow in over 160 ms and fade in 180 ms, and are cut to the caption band
- *   instead of shrinking the words. A cue with no key word gets a lighter eight-ray burst on its last word.
+ *   measured box, at 85 % opacity under the faces, with the sample's green edge as one offset copy, grow in over 160 ms, hold
+ *   to 300 ms after the word and fade by 520 ms (never past the cue's own end), and are cut to the caption band instead of
+ *   shrinking the words. A cue with no key word gets a lighter eight-ray burst on its last word. A cue too short for that shows
+ *   the burst (and the dashes) at once, full size, fading over the painted frames it has.
  * - **Rows and words follow speech.** The sample's rows were baked into " / " breaks and its words' sizes picked by role.
  *   Rows come from the roles (words before the key word, the key word on its own row, the words after), a lone word on a row
  *   is 1.25 x (1.15 x for a key word), long words get a row of their own and break across rows at a readable size, the key
- *   word fits the column before anything else shrinks, and the whole block is fitted to the caption band (two rows at most are
- *   kept by the 16:9 fit). Rows are restacked by their ink, keyline and depth so they never touch.
+ *   word fits the column before anything else shrinks, and the whole block is fitted to the caption band. A landscape frame
+ *   puts the cue on one row, or the best two consecutive rows scaled together to the wider column, before the roles' rows, so
+ *   a larger caption size never ends up with smaller type. Words are 0.4 em apart (key words) so keylines, depth and the
+ *   swing's overshoot never join. Rows are restacked by their ink, keyline and depth so they never touch.
  * - **Real speech.** Words paint on their spoken start (the sample started them up to 80 ms early); the sunburst's pre-roll
  *   (40 ms) is decoration; the exit (a 160 ms turn-away, shrink and fade) only runs when two painted frames fit after the
  *   reading hold, and nothing waits on the previous cue.
@@ -78,13 +83,14 @@ const GAP = 52;
 const SPACING = 0.012;
 const SKEW = -9;
 const EDGE_EM = 0.06;
-const RIM_EM = 0.027;
+const RIM_EM = 0.018;
 /** One slate copy: 0.75 of the depth down, its border (0.045 em) bridging from the keyline to the rim. */
 const SLATE_AT = 0.75;
-const SLATE_BORD_EM = 0.045;
+const SLATE_BORD_EM = 0.04;
 const DEPTH_EM = 0.12;
 const DEPTH_X = 0.62;
 const INK = "#11112B";
+const RAYS_EDGE = "#12B76A";
 const SLATE_NEAR = "#A8B7CC";
 const SLATE_FAR = "#5E6F89";
 const VIOLET = "#B18CFF";
@@ -106,7 +112,7 @@ const MAX_LETTERS = 12;
 const BAND_ABOVE = 430;
 const BAND_BELOW = 380;
 const RAY_COUNT = 10;
-const RAY_ALPHA = 0.7;
+const RAY_ALPHA = 0.85;
 
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}]+$/u;
 const rad = (degrees: number) => (degrees * Math.PI) / 180;
@@ -189,6 +195,9 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   // A landscape frame has the width for two rows: the column widens before anything shrinks.
   const wide = space.canvas.width > space.canvas.height;
   const column = wide ? Math.min(WIDE_COLUMN, ((bounds.x2 - bounds.x1) / space.u) * 0.8) : COLUMN;
+  // The widest a single word may be before it is fitted or broken: on a landscape frame a word wider than the column still
+  // goes on a row of its own and the rows are scaled together (see `wideRows`), so it is not fitted alone first.
+  const fitColumn = wide ? column / 0.45 : column;
 
   // Sizes. The key words share one size, as large as the column allows; a long body word shrinks before it is cut.
   const at100 = (text: string) => input.measure(text, FACE, 100 * space.u, SPACING).advance / space.u;
@@ -196,7 +205,7 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   // Adjacent words keep room for both keylines, the depth and the swing's overshoot: key words are 0.3 em apart at least.
   const heroGapEm = 0.4;
   const heroWidth = hero.reduce((sum, at) => sum + at100(texts[at]!), 0) + 100 * heroGapEm * Math.max(0, hero.length - 1);
-  const heroRoom = column * 0.97;
+  const heroRoom = fitColumn * 0.97;
   const heroCap = laned ? Math.min(heroCapNatural, (0.3 * (bounds.y2 - bounds.y1)) / space.u) : heroCapNatural;
   let heroSize = heroed ? clamp((heroRoom * 100) / Math.max(1, heroWidth), Math.min(HERO_MIN, heroCap), heroCap) : 0;
   const bodyBase = laned ? Math.min(BODY, heroCap * 0.62) : BODY;
@@ -206,14 +215,14 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
     const single = lone(lead) && lead[0] === at ? LONE_BODY : lone(tail) && tail[0] === at ? LONE_BODY : 1;
     return (cue.words[at]!.role === "minor" ? minorBase : bodyBase) * single;
   };
-  const bodyFit = (at: number) => clamp((column * 0.97 * 100) / Math.max(1, at100(texts[at]!)), BODY_FLOOR * (bodyBase / BODY), naturalOf(at));
+  const bodyFit = (at: number) => clamp((fitColumn * 0.97 * 100) / Math.max(1, at100(texts[at]!)), BODY_FLOOR * (bodyBase / BODY), naturalOf(at));
   let wideScale = 1;
   const sizeOf = (at: number) => (hero.includes(at) ? heroSize : bodyFit(at)) * wideScale;
 
   // A word wider than the column at its smallest readable size breaks across rows, a row per piece.
   const chunkAt = (text: string, size: number): string[] => {
-    if (!SPLITTABLE.test(text) || (at100(text) * size) / 100 <= column * 0.97) return [text];
-    const room = (column * 0.9 * 100) / size;
+    if (!SPLITTABLE.test(text) || (at100(text) * size) / 100 <= fitColumn * 0.97) return [text];
+    const room = (fitColumn * 0.9 * 100) / size;
     const split = (limit: number) => {
       const out: string[] = [];
       let row = "";
@@ -240,13 +249,13 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   const chunks = cue.words.map((_, at) => chunkAt(texts[at]!, hero.length === 1 && hero[0] === at ? Math.max(sizeOf(at), Math.min(HERO_MIN, heroCap)) : sizeOf(at)));
   if (heroed && hero.length === 1 && chunks[hero[0]!]!.length > 1) {
     const widest = Math.max(...chunks[hero[0]!]!.map(at100));
-    heroSize = clamp((column * 0.9 * 100) / widest, Math.min(HERO_MIN, heroCap), heroCap);
+    heroSize = clamp((fitColumn * 0.9 * 100) / widest, Math.min(HERO_MIN, heroCap), heroCap);
   }
 
   const gapPx = hero.length > 1 ? Math.max(GAP, heroGapEm * heroSize) : GAP;
   const flat: { word: number; part: number; text: string }[] = [];
   const indexes = chunks.map((list, word) => list.map((text, part) => flat.push({ word, part, text }) - 1));
-  const isLong = (at: number) => (at100(texts[at]!) * sizeOf(at)) / 100 > 0.62 * column;
+  const isLong = (at: number) => (at100(texts[at]!) * sizeOf(at)) / 100 > 0.62 * fitColumn;
   const groupsOf = (list: number[]) => {
     const out: number[][] = [];
     let row: number[] = [];
@@ -278,9 +287,10 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
         best = [asCells(a), asCells(b)];
       }
     }
-    // Two rows a little too wide are scaled to the column (down to 72 %) before the roles' three rows are used.
+    // Two rows too wide for the column are scaled to it (the band fit shrinks them further if the frame needs) rather than
+    // given up for the roles' rows: a larger caption size never ends up with smaller type.
     const need = (column * 0.97) / bestWidth;
-    if (!best || need < 0.72) return null;
+    if (!best || need < 0.3) return null;
     wideScale = Math.min(1, need);
     return best;
   };
@@ -291,7 +301,7 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
     ctx.layout({
       column,
       padding: 30,
-      gap: gapPx * f,
+      gap: gapPx * f * wideScale,
       groups,
       words: flat.map((item) => ({ text: item.text, size: sizeOf(item.word) * f, face: FACE, spacing: SPACING })),
     });
@@ -532,11 +542,11 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
     const minLife = (2 * 1000) / fps + 2;
     const b0 = Math.max(ctx.window.from, targetWord.startMs - 40);
     const count = heroed ? RAY_COUNT : 8;
-    const reach = Math.min((heroed ? 1.35 : 1.15) * targetSize, Math.max(0.9 * targetSize, 0.5 * (band.y2 - band.y1)));
+    const reach = Math.min((heroed ? 1.42 : 1.2) * targetSize, Math.max(0.9 * targetSize, 0.5 * (band.y2 - band.y1)));
     const alpha = heroed ? RAY_ALPHA : 0.5;
     const path = tiltRaysPath(count, 0.4 * targetSize, reach, reach * 0.72);
-    const fadeTo = Math.min(lifeEnd, targetWord.startMs + (heroed ? 380 : 300));
-    const fadeFrom = Math.max(b0 + 90, Math.min(targetWord.startMs + (heroed ? 200 : 120), fadeTo - 70));
+    const fadeTo = Math.min(lifeEnd, targetWord.startMs + (heroed ? 520 : 360));
+    const fadeFrom = Math.max(b0 + 90, Math.min(targetWord.startMs + (heroed ? 300 : 160), fadeTo - 70));
     const full = fadeTo > fadeFrom + 20 && fadeTo - b0 >= 270;
     const end = full ? fadeTo : Math.min(lifeEnd, b0 + 270);
     if (end - b0 >= minLife) {
@@ -547,7 +557,8 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
             y: [[b0, targetAt.y]],
             sx: [[b0, 0.35], [grow, 1.05, "outExpo"]],
             sy: [[b0, 0.35], [grow, 1.05, "outExpo"]],
-            rz: [[b0, -14 * side], [fadeTo, 6 * side]],
+            // The turn runs with the growth only: a fixed pose lets libass reuse the bitmap while the rays fade.
+            rz: [[b0, -14 * side], [grow, 2 * side, "outExpo"]],
             o: [[b0, 0], [Math.min(b0 + 70, fadeFrom), alpha, "out"], [fadeFrom, alpha], [fadeTo, 0, "in"]],
           }
         : { x: [[b0, targetAt.x]], y: [[b0, targetAt.y]], sx: [[b0, 1]], sy: [[b0, 1]], rz: [[b0, -4 * side]], o: [[b0, alpha], [end, 0, "in"]] }, colours.highlight);
@@ -555,6 +566,8 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
         ...shape,
         toMs: end,
         clip: rectClip(b0, { x1: inside.x1, x2: inside.x2, y1: Math.max(inside.y1, band.y1), y2: Math.min(inside.y2, band.y2) }),
+        // The sample's green edge: one offset copy of the rays, down and right.
+        shadows: [{ dx: 0.04 * reach, dy: 0.04 * reach, blur: 0, colour: RAYS_EDGE, alpha: 1 }],
       });
     }
   }
