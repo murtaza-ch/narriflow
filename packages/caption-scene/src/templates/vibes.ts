@@ -561,7 +561,32 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
   }
 
   // ---- Accents, in free space. ----
-  const wordBoxes = placed.map((p) => p.box);
+  // Each word's box is the one it covers during its entrance, not only at rest: tilted 7 degrees either side of its rest
+  // angle, at the pop's peak scale, and 14 px low (the rise), all about its pivot.
+  const swept = (p: Placed): Box => {
+    const peak = p.kind === "caps" ? 1.06 : 1.04;
+    const pivotY = p.baseline + p.c;
+    let local: Box;
+    if (p.kind === "caps") {
+      local = p.box;
+    } else {
+      const o = OUTLINE_EM * p.size;
+      const d = DEPTH_EM * p.size;
+      local = { x1: p.cx - p.w / 2 - o, x2: p.cx + p.w / 2 + o + d, y1: p.baseline + p.inkTop - o, y2: p.baseline + p.inkBottom + o + d };
+    }
+    const boxes = (p.kind === "caps" ? [0] : [p.tilt - 7, p.tilt, p.tilt + 7]).map((degrees): Box => {
+      const corners = [[local.x1, local.y1], [local.x2, local.y1], [local.x2, local.y2], [local.x1, local.y2]].map(([x, y]) => {
+        const [rx, ry] = rotate((x! - p.cx) * peak, (y! - pivotY) * peak, degrees);
+        return [p.cx + rx, pivotY + ry] as const;
+      });
+      return {
+        x1: Math.min(...corners.map((c) => c[0])), x2: Math.max(...corners.map((c) => c[0])),
+        y1: Math.min(...corners.map((c) => c[1])), y2: Math.max(...corners.map((c) => c[1])) + 14,
+      };
+    });
+    return union([p.box, ...boxes]);
+  };
+  const wordBoxes = placed.map(swept);
   const taken: Box[] = [];
   const free = (box: Box) =>
     box.x1 >= area.x1 && box.x2 <= area.x2 && box.y1 >= area.y1 && box.y2 <= area.y2 &&
@@ -589,7 +614,9 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
   // Which edge the pastel shape takes (the sample's `side`, mirrored for right-to-left cues).
   const lean = (flip ? -1 : 1) * side;
   const stamp = (id: string, at: number, path: PathCmd[], x: number, y: number, track: Track, fill?: string): ShapePiece => {
-    const shape = ctx.shape(id, at, path, { x: [[at, X(x)]], y: [[at, Y(y)]], o: opacity(at), ...track }, fill);
+    // Paths are drawn in sample px; a piece's path is in canvas px, so they scale with the cue (as the text does).
+    const scaled = path.map((cmd): PathCmd => (cmd[0] === "Z" ? cmd : cmd[0] === "C" ? ["C", cmd[1] * u, cmd[2] * u, cmd[3] * u, cmd[4] * u, cmd[5] * u, cmd[6] * u] : [cmd[0], cmd[1] * u, cmd[2] * u]));
+    const shape = ctx.shape(id, at, scaled, { x: [[at, X(x)]], y: [[at, Y(y)]], o: opacity(at), ...track }, fill);
     return shape;
   };
   type Point = readonly [number, number, number, number];
@@ -684,9 +711,13 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
           ["M", Math.cos(a) * 30 * k, -Math.sin(a) * 30 * k] as const,
           ["L", Math.cos(a) * (30 + lens[i]!) * k, -Math.sin(a) * (30 + lens[i]!) * k] as const,
         ]);
+        // Centred on its own box, so the grow-in shrinks toward the middle of the claimed spot, never toward the key word.
         const bb = pathBounds(path);
+        const mx = (bb.x1 + bb.x2) / 2;
+        const my = (bb.y1 + bb.y2) / 2;
+        const centred = path.map((cmd): PathCmd => (cmd[0] === "M" || cmd[0] === "L" ? [cmd[0], cmd[1] - mx, cmd[2] - my] : cmd));
         const grow = ramp(at, 240, 0.35);
-        const rays = stamp("rays", at, path, fit.spot.x - (bb.x1 + bb.x2) / 2, fit.spot.y - (bb.y1 + bb.y2) / 2, { sx: grow, sy: grow }, undefined);
+        const rays = stamp("rays", at, centred, fit.spot.x, fit.spot.y, { sx: grow, sy: grow }, undefined);
         pieces.push({ ...rays, z: 7, stroke: { widthPx: 15 * k * u, colour: ink } });
       }
     }

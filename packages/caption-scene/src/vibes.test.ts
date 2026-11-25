@@ -339,4 +339,33 @@ describe("vibes", () => {
       expect(captionColourContrast(hero.fill, hero.stroke.colour), `${primary} on ${accent}`).toBeGreaterThanOrEqual(3);
     }
   });
+
+  test("accents clear the box a word covers during its entrance pop (tilt, scale and rise), not only its resting box", () => {
+    const scenes: { lines: string[]; canvas: { width: number; height: number }; scale: number; stagger?: number }[] = [
+      { lines: ["A> inconsequential:b@200 unbelievable:h@700 hypercommunication:h@900 disproportionately:b@300", "B> the:b@130 short:h@150 one:b@170"], canvas: { width: 1920, height: 1080 }, scale: 2, stagger: 1100 },
+      { lines: LINES, canvas: { width: 1080, height: 1920 }, scale: 1 },
+      { lines: ["so:m the:m real:b reason:b most:b people:h@520 never:b get:b there:m"], canvas: { width: 1920, height: 1080 }, scale: 1 },
+    ];
+    for (const scene of scenes) {
+      const { cues } = demoCues({ lines: scene.lines, options: { lead: 400, gap: 0, cueGap: scene.stagger ? 300 : 140, tail: 900 } });
+      const run = scene.stagger && cues[1] ? [cues[0]!, { ...cues[1], startMs: scene.stagger, endMs: cues[1].endMs + scene.stagger - cues[1].startMs, words: cues[1].words.map((w) => ({ ...w, startMs: w.startMs + scene.stagger! - cues[1]!.startMs, endMs: w.endMs + scene.stagger! - cues[1]!.startMs })) }] : cues;
+      const pieces = vibesProgram.build(sceneInput(run, { fps: 30, colours, scale: scene.scale, canvas: scene.canvas })).pieces;
+      for (const cue of run) {
+        const words = faces(pieces, cue.index);
+        const accents = pieces.filter((p) => p.id.startsWith(`vibes:${cue.index}:`) && !wordRe(cue.index).test(p.id) && !/sweep$|pill$|blob$/.test(p.id));
+        for (const t of exportFrameTimes(cue.startMs, cue.endMs + 300, 30)) {
+          for (const accent of accents) {
+            const a = pieceBounds(accent, t, fakeMeasure);
+            if (!a) continue;
+            for (const word of words) {
+              const b = pieceBounds(word, t, fakeMeasure);
+              if (!b) continue;
+              const reach = word.kind === "text" ? Math.max(0, ...(word.shadows ?? []).map((sh) => sh.dx)) : 0;
+              expect(meets(a, { ...b, x2: b.x2 + reach, y2: b.y2 + reach }), `${accent.id} touches ${word.id} at ${t}`).toBe(false);
+            }
+          }
+        }
+      }
+    }
+  });
 });
