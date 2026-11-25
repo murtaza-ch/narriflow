@@ -14,7 +14,7 @@
  * Writes `.scratch/motion-captions/out/triptych/<scene>-<t>.png` and prints one JSON line per time.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp, { type OverlayOptions } from "sharp";
@@ -76,11 +76,15 @@ export const SAMPLE_FILES: Readonly<Record<CaptionSceneName, string>> = {
 
 export function studioShot(input: { readonly url: string; readonly output: string; readonly width?: number; readonly height?: number }): void {
   const profile = mkdtempSync(join(tmpdir(), "scene-studio-"));
+  rmSync(input.output, { force: true });
   const run = spawnSync(CHROME, [
     "--headless=new", "--disable-gpu", "--hide-scrollbars", `--user-data-dir=${profile}`, "--force-device-scale-factor=1",
     `--window-size=${input.width ?? 1080},${input.height ?? 1920}`, "--virtual-time-budget=20000", `--screenshot=${input.output}`, input.url,
-  ], { encoding: "utf8" });
-  if (run.status !== 0) throw new Error(`chrome failed: ${run.stderr}`);
+  ], { encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL" });
+  rmSync(profile, { recursive: true, force: true });
+  // Under load headless Chrome can hang in teardown after it has written the screenshot; the file is what counts.
+  const wrote = existsSync(input.output) && statSync(input.output).size > 0;
+  if (!wrote) throw new Error(`chrome failed (status ${run.status}, signal ${run.signal}): ${run.stderr}`);
 }
 
 async function decode(path: string): Promise<RawFrame> {
