@@ -112,13 +112,17 @@ describe("tunnel", () => {
       const top = ay - (430 * canvas.height) / 1920;
       const bottom = ay + (360 * canvas.height) / 1920;
       expect(pieces.length).toBe(4);
-      const t = cues[0]!.endMs - 100;
-      for (const piece of pieces) {
-        const box = pieceBounds(piece, t, fakeMeasure)!;
-        expect(box.y1, `${piece.id} ${canvas.width}x${canvas.height}`).toBeGreaterThanOrEqual(top - 1);
-        expect(box.y2, `${piece.id} ${canvas.width}x${canvas.height}`).toBeLessThanOrEqual(bottom + 1);
-        if (piece.kind === "text") expect(piece.sizePx).toBeGreaterThan(24);
+      const spokenEnd = Math.max(...cues[0]!.words.map((word) => word.endMs));
+      // Every painted frame from the first word to the end of the reading hold, not only the rest pose: the stack slides sideways only.
+      for (const t of exportFrameTimes(cues[0]!.startMs - 100, spokenEnd + 140, 30)) {
+        for (const piece of pieces) {
+          const box = pieceBounds(piece, t, fakeMeasure);
+          if (!box) continue;
+          expect(box.y1, `${piece.id} ${canvas.width}x${canvas.height} at ${t}`).toBeGreaterThanOrEqual(top - 1);
+          expect(box.y2, `${piece.id} ${canvas.width}x${canvas.height} at ${t}`).toBeLessThanOrEqual(bottom + 1);
+        }
       }
+      for (const piece of pieces) if (piece.kind === "text") expect(piece.sizePx).toBeGreaterThan(24);
     }
   });
 
@@ -160,5 +164,48 @@ describe("tunnel", () => {
     const { brand } = CAPTION_SCENES.tunnel;
     expect(brand.primary?.readsOn?.length).toBeGreaterThan(0);
     expect(brand.secondary?.readsOn?.length).toBeGreaterThan(0);
+  });
+
+  test("a late row arrives inside the band on a wide canvas, not pushed down by the stack's earlier centring", () => {
+    const { cues } = demoCues({ lines: ["deeper:h@640 every:b day:b"], options: { lead: 400, tail: 900 } });
+    const canvas = { width: 1920, height: 1080 };
+    const pieces = tunnelProgram.build(sceneInput(cues, { fps: 30, canvas, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } })).pieces.filter((piece) => /^tunnel:0:w\d$/.test(piece.id));
+    const ay = (1290 / 1920) * canvas.height;
+    for (const t of exportFrameTimes(cues[0]!.startMs - 100, cues[0]!.endMs - 400, 60)) {
+      for (const piece of pieces) {
+        const box = pieceBounds(piece, t, fakeMeasure);
+        if (box) expect(box.y2, `${piece.id} at ${t}`).toBeLessThanOrEqual(ay + (360 * canvas.height) / 1920 + 1);
+      }
+    }
+  });
+
+  test("the exit is a visible zoom: a block that has room grows by a clear margin while still half opaque", () => {
+    const { cues, pieces } = build(["that's:m how:m you:m win:h@620"], { lead: 400, tail: 900, cueGap: 700 });
+    const word = pieces.find((piece) => piece.id === "tunnel:0:w3")!;
+    const rest = evaluatePiece(word, cues[0]!.endMs - 400).sx;
+    let best = 0;
+    for (const t of exportFrameTimes(cues[0]!.endMs - 300, word.toMs, 60)) {
+      const pose = evaluatePiece(word, t);
+      if (pose.o >= 0.4) best = Math.max(best, pose.sx / rest);
+    }
+    expect(best).toBeGreaterThan(1.08);
+  });
+
+  test("decomposed (NFD) text is split like composed text", () => {
+    const word = "Donaudampfschifffahrtsgesellschaftskapitän";
+    const count = (text: string) => build([`it's:m ${text}:h@900 hard:b`]).pieces.filter((piece) => /^tunnel:0:w1l\d$/.test(piece.id)).length;
+    expect(count(word.normalize("NFC"))).toBeGreaterThanOrEqual(2);
+    expect(count(word.normalize("NFD"))).toBe(count(word.normalize("NFC")));
+  });
+
+  test("the key word's bounce never reaches the row above, Devanagari included", () => {
+    const { cues, pieces } = build(["display:b digest:b नहीं:h@500"]);
+    const a = pieces.find((piece) => piece.id === "tunnel:0:w1")!;
+    const b = pieces.find((piece) => piece.id === "tunnel:0:w2")!;
+    for (const t of exportFrameTimes(cues[0]!.startMs, cues[0]!.endMs, 60)) {
+      const boxA = pieceBounds(a, t, fakeMeasure);
+      const boxB = pieceBounds(b, t, fakeMeasure);
+      if (boxA && boxB && evaluatePiece(a, t).o > 0.9 && evaluatePiece(b, t).o > 0.5) expect(boxB.y1 + 0.5, `at ${t}`).toBeGreaterThanOrEqual(boxA.y2);
+    }
   });
 });

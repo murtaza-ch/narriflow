@@ -50,7 +50,7 @@ const MAX_ROW = 760;
 const HERO_ROW = 860;
 const SLIDE = 300;
 const WORD_LEAD = 70;
-const ZOOM_MAX = 1.28;
+const ZOOM_MAX = 1.4;
 
 function hash(text: string): number {
   let h = 2166136261;
@@ -61,7 +61,10 @@ function hash(text: string): number {
 /** A deterministic 0..1 from a cue key and a salt. */
 const rand = (key: number, salt: number) => hash(`${key}:${salt}`) / 4294967296;
 
-const SIMPLE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{N}\p{P}\p{S}]+$/u;
+// \p{M} keeps decomposed (NFD) Latin and Cyrillic text splittable; Devanagari and other complex scripts are excluded by their letters.
+const SIMPLE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{N}\p{P}\p{S}\p{M}]+$/u;
+/** The key word's landing overshoot (the spring peaks at 1.074x). */
+const HERO_OVERSHOOT = 1.08;
 /** A word that would have to shrink below this size (sample px, about two thirds of the body size) breaks over several rows instead. */
 const MIN_SIZE = 70;
 /** Bricolage's baseline sits this far below the middle of its 1 em line box (the face's ascent and descent, never a renderer's metrics). */
@@ -142,31 +145,42 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
       return [cell.at, { top: m.inkTop, bottom: m.inkBottom, mid: (m.inkTop + m.inkBottom) / 2, lift: BASELINE_BELOW_CENTRE * cell.size }] as const;
     }));
     // How far a row's ink reaches above and below its centre line (never less than half its size, as the sample's 1 em box).
-    const reach = rows.map((row, r) => ({
-      up: Math.max(rowSize[r]! / 2, ...row.map((cell) => -(metricAt.get(cell.at)!.lift + metricAt.get(cell.at)!.top))),
-      down: Math.max(rowSize[r]! / 2, ...row.map((cell) => metricAt.get(cell.at)!.lift + metricAt.get(cell.at)!.bottom)),
-    }));
-    // The visible stack once word k has appeared, centred on (0, 0): pivot offsets of every unit spoken so far.
+    // A key word is counted at its landing overshoot, scaled about its ink centre, so a bounce never reaches the next row.
+    const reach = rows.map((row, r) => {
+      const edges = row.map((cell) => {
+        const m = metricAt.get(cell.at)!;
+        const s = cue.words[units[cell.at]!.word]!.role === "hero" ? HERO_OVERSHOOT : 1;
+        return { top: m.lift + m.mid + (m.top - m.mid) * s, bottom: m.lift + m.mid + (m.bottom - m.mid) * s };
+      });
+      return { up: Math.max(rowSize[r]! / 2, ...edges.map((edge) => -edge.top)), down: Math.max(rowSize[r]! / 2, ...edges.map((edge) => edge.bottom)) };
+    });
+    // Rows keep their final heights from the moment they appear: only a row's own words re-centre sideways. The whole stack
+    // therefore sits inside the caption band at every frame of every slide, and a new row never starts below it.
+    const stackHeight = reach.reduce((sum, edge) => sum + edge.up + edge.down, 0) + pitch * (rows.length - 1);
+    const rowCentre: number[] = [];
+    let rowTop = -stackHeight / 2;
+    rows.forEach((_, r) => {
+      rowCentre.push(rowTop + reach[r]!.up);
+      rowTop += reach[r]!.up + reach[r]!.down + pitch;
+    });
+    // The visible stack once word k has appeared, centred sideways on 0: pivot offsets of every unit spoken so far.
     const target = cue.words.map((_, k) => {
       const out = new Map<number, { x: number; y: number }>();
-      const shown = rows.map((row) => row.filter((cell) => units[cell.at]!.word <= k)).map((row, r) => ({ row, r })).filter(({ row }) => row.length > 0);
-      const height = shown.reduce((sum, { r }) => sum + reach[r]!.up + reach[r]!.down, 0) + pitch * (shown.length - 1);
-      let top = -height / 2;
-      for (const { row, r } of shown) {
-        const centre = top + reach[r]!.up;
+      rows.forEach((full, r) => {
+        const row = full.filter((cell) => units[cell.at]!.word <= k);
+        if (row.length === 0) return;
         const total = row.reduce((sum, cell) => sum + cell.width, 0) + gapPx * (row.length - 1);
         let x = -total / 2;
         for (const cell of row) {
           const m = metricAt.get(cell.at)!;
-          out.set(cell.at, { x: x + cell.width / 2, y: centre + m.lift + m.mid });
+          out.set(cell.at, { x: x + cell.width / 2, y: rowCentre[r]! + m.lift + m.mid });
           x += cell.width + gapPx;
         }
-        top += reach[r]!.up + reach[r]!.down + pitch;
-      }
+      });
       return out;
     });
     const blockW = Math.max(...rows.map((row) => row.reduce((sum, cell) => sum + cell.width, 0) + gapPx * (row.length - 1)));
-    const blockH = reach.reduce((sum, r) => sum + r.up + r.down, 0) + pitch * (rows.length - 1);
+    const blockH = stackHeight;
     return { units, cells, px, rows, cellAt, rowOfUnit, rowSize, gapPx, metricAt, target, blockW, blockH };
   };
 
@@ -183,8 +197,8 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
   const final = target[cue.words.length - 1]!;
   const cx = clamp(ctx.space.x(540), safe.x1 + margin + blockW / 2, Math.max(safe.x1 + margin + blockW / 2, safe.x2 - margin - blockW / 2));
   const cy = clamp(anchorY, bandTop + blockH / 2, Math.max(bandTop + blockH / 2, bandBottom - blockH / 2));
-  // The exit zoom grows about the block centre: as far as the safe width and the room left inside the band allow.
-  const zoom = clamp(Math.min((safe.x2 - safe.x1 - 2 * margin) / blockW, (bandBottom - cy) / (blockH / 2), (cy - bandTop) / (blockH / 2)) * 0.985, 1, ZOOM_MAX);
+  // The exit zoom grows about the block centre, as far as the safe area allows: nothing else is on screen while the cue leaves.
+  const zoom = clamp(Math.min((safe.x2 - safe.x1 - 2 * margin) / blockW, (safe.y2 - margin - cy) / (blockH / 2), (cy - safe.y1 - margin) / (blockH / 2)) * 0.985, 1, ZOOM_MAX);
 
   // When each word appears, and where it slides from. Everything already shown slides by one displacement, and a word that
   // arrives starts that same displacement away from its final place, so words never move relative to one another within a
@@ -232,7 +246,7 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
   const arrive = (t: number) => EASES.outExpo(prog(t, arriveAt, arriveFor));
   const exitFor = Math.max(1, to - ctx.exitAt);
   const leave = (t: number) => (ctx.exit ? prog(t, ctx.exitAt, exitFor) : 0);
-  const depth = (t: number) => lerp(0.3, 1, arrive(t)) * (1 + (zoom - 1) * leave(t) ** 2);
+  const depth = (t: number) => lerp(0.3, 1, arrive(t)) * (1 + (zoom - 1) * EASES.out(leave(t)));
   const fade = (t: number) => 1 - leave(t) ** 1.4;
 
   const pieces: Piece[] = [];
