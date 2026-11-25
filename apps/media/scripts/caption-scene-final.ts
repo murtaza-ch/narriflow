@@ -76,6 +76,7 @@ export const MOMENTS: Record<string, number[]> = {
   liquid: [480, 1200, 1900, 2250, 3000],
   chronicle: [700, 1500, 2700, 5200, 8900],
   snipsnap: [450, 800, 1100, 1750, 2600],
+  anime: [440, 850, 1300, 2300, 3300],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
