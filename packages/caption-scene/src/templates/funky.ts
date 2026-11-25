@@ -98,9 +98,11 @@ const COLUMN = 900;
 const PAD = 12;
 /** A word that would shrink below this share of its size to fit the column is broken across rows instead. */
 const MIN_FIT = 0.62;
-const INK_GAP = 0.09;
+/** Clear ink between two letters beyond their outlines (cap heights). */
+const PAIR_MARGIN = 0.03;
 const WORD_GAP = 0.3;
-const ROW_GAP = 0.05;
+/** Clear painted space between two rows (cap heights of the smaller), beyond everything that moves. */
+const ROW_CLEAR = 0.06;
 const OUTLINE_EM = 0.04;
 const SHADOW_EM = 0.075;
 const ROW_TILT = 1.6;
@@ -224,6 +226,8 @@ interface Row {
   /** The row's largest cap height as drawn, and as drawn relative to the size it would ideally have (a key word's ideal is body size). */
   cap: number;
   size: number;
+  /** How far the row's tilt carries its ends above and below its middle. */
+  reach: number;
   /** The painted ink box (outline and shadow included) at rest. */
   box: Box;
 }
@@ -308,10 +312,14 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
         glyphs.push({ text: ch, face, px, adv: (m.advance * px) / 100, top: (m.inkTop * px) / 100, bottom: (m.inkBottom * px) / 100, lsb: lsb * px, rsb: rsb * px, swatch });
       });
     }
+    // The gap between two letters' ink holds both outlines, a margin and what their own turns close at the top or bottom of the
+    // pair (half a cap times the difference of the turns' sines), so no face or outline reaches a neighbour's face at any size.
+    const turnOf = (i: number) => (whole ? 0 : rad(rand(seed, i * 5 + 2) * LETTER_TILT));
     const x: number[] = [0];
     glyphs.slice(1).forEach((glyph, i) => {
       const before = glyphs[i]!;
-      x.push(x[i]! + before.adv + INK_GAP * cap - before.rsb - glyph.lsb);
+      const gap = (2 * OUTLINE_EM + PAIR_MARGIN + 0.5 * Math.abs(Math.sin(turnOf(i + 1)) - Math.sin(turnOf(i)))) * cap;
+      x.push(x[i]! + before.adv + gap - before.rsb - glyph.lsb);
     });
     return { at, glyphs, x, cap, whole, hero, seed, scale: 1 };
   });
@@ -406,21 +414,30 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
   /** The rows at block fit `f`: a row is drawn at size `f`, or smaller when it would be wider than `limit`; rows stack by ink, outline and shadow. */
   const arrange = (rowUnits: readonly Unit[][], limit: number, f: number) => {
     let cursor = 0;
-    const rows: Row[] = rowUnits.map((units, r) => {
+    const rows: Row[] = [];
+    for (const [r, units] of rowUnits.entries()) {
+      const previous = rows[r - 1];
       const wide = rowWidth(units);
       const scale = Math.min(f, limit / Math.max(1, wide));
       const glyphs = units.flatMap((unit) => unit.word.glyphs.slice(unit.from, unit.to).map((glyph) => ({ glyph, own: unit.word.scale, cap: unit.word.cap })));
       const capMax = Math.max(...glyphs.map(({ cap, own }) => cap * own)) * scale;
-      const above = Math.max(...glyphs.map(({ glyph, own }) => -glyph.top * own * scale), capMax) + OUTLINE_EM * capMax + 0.04 * capMax;
-      const below = Math.max(0, ...glyphs.map(({ glyph, own }) => glyph.bottom * own * scale)) + OUTLINE_EM * capMax + 1.2 * SHADOW_EM * capMax + 0.04 * capMax;
-      if (r > 0) cursor += ROW_GAP * capMax;
+      // Ink, outline, shadow and the letters' own drop and turn: what a row paints above and below its baseline.
+      const excursion = (LETTER_DROP + 0.04) * capMax;
+      const above = Math.max(...glyphs.map(({ glyph, own }) => -glyph.top * own * scale), capMax) + OUTLINE_EM * capMax + excursion;
+      const below = Math.max(0, ...glyphs.map(({ glyph, own }) => glyph.bottom * own * scale)) + OUTLINE_EM * capMax + 1.2 * SHADOW_EM * capMax + excursion;
+      const tilt = ((r + index) % 2 === 1 ? 1 : -1) * ROW_TILT;
+      const reach = Math.abs(Math.sin(rad(tilt))) * ((wide * scale) / 2);
+      // Between two rows: their tilts' reach (the ends of neighbouring rows lean towards each other), the lower row's hop, and a
+      // visible gap. The first row's reach is room at the top.
+      const hopLift = units.some((unit) => unit.word.hero) ? 0.09 : 0.12;
+      if (previous) cursor += ROW_CLEAR * Math.min(previous.cap, capMax) + previous.reach + reach + hopLift * capMax;
+      else cursor += reach;
       const baseline = cursor + above;
       cursor = baseline + below;
-      const tilt = ((r + index) % 2 === 1 ? 1 : -1) * ROW_TILT;
-      const ideal = Math.min(capMax / scale, BODY_CAP * u);
-      return { units, scale, baseline, above, below, tilt, cap: capMax, size: Math.min(1, capMax / ideal), box: { x1: 0, x2: 0, y1: 0, y2: 0 } };
-    });
-    return { rows, height: cursor };
+      const row: Row = { units, scale, baseline, above, below, tilt, cap: capMax, size: Math.min(1, capMax / Math.min(capMax / scale, BODY_CAP * u)), reach, box: { x1: 0, x2: 0, y1: 0, y2: 0 } };
+      rows.push(row);
+    }
+    return { rows, height: cursor + (rows[rows.length - 1]?.reach ?? 0) };
   };
   const room = bounds.y2 - bounds.y1 - 2 * PAD * u;
   /** The largest block fit at which these rows fit the band's height (the height only falls as the fit does). */
@@ -525,7 +542,7 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
       pen += unit.width * k + gap;
     }
     // The painted box of the row, with the tilt and the tumble's reach.
-    const reach = Math.abs(Math.sin(turn)) * (wide / 2) + 0.06 * capRow;
+    const reach = row.reach + 0.06 * capRow;
     row.box = { x1: middle - wide / 2 - outline - 0.04 * capRow, x2: middle + wide / 2 + outline + shadow + 0.04 * capRow, y1: baseline - row.above - reach, y2: baseline + row.below + reach };
   }
   const block: Box = {

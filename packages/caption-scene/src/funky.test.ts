@@ -43,6 +43,12 @@ const rowsOfLetters = (letters: TextPiece[], t: number): TextPiece[][] => {
   }
   return rows;
 };
+/** Cue texts as real speech reads them: key words of every width, short and long, the ones the review frames showed. */
+const SPEECH = [
+  "of:m them:m are:m unplugged.:h@900", "anyone:m to:m accidentally:h@1000", "episodes:h@800", "wouldn't:h@500 have:m done:b", "any:m other:m audience:h@700",
+  "a:m little:b graduation.:h@800", "out:m for:m waveform:h@700", "and:m the:m new:b episodes,:h@800", "to:m the:m waveform:b studio.:h@600",
+  "so:b the:m real:b reason:h@700 most:b people:b never:b get:b there:b", "missing:b features:h@700", "whole:b gorgeous:h@800 display:b",
+];
 const LINES = ["this:m is:m so:b funky:h@720", "keep:b it:m simple:b", "good:b vibes:h@660", "do:m what:b you:m love:h@680", "easy:b come:b go:h@600"];
 
 describe("funky", () => {
@@ -258,17 +264,17 @@ describe("funky", () => {
     }
   });
 
-  test("16:9 packs a cue into the fewest rows that keep the size: two rows for the short cues, three for nine words, nothing below 60 % of its size", () => {
+  test("16:9 packs a cue into the fewest rows that keep the size: two rows for the short cues, four for nine words, nothing below 60 % of its size", () => {
     const wide = { width: 1920, height: 1080 };
     for (const scale of [1, 2]) {
       const canvas = wide;
-      for (const [line, most] of [["easy:b come:b go:h@600", 2], ["do:m what:b you:m love:h@680", 2], ["so:b the:m real:b reason:h@700 most:b people:b never:b get:b there:b", scale === 1 ? 3 : 4]] as const) {
+      for (const [line, most] of [["easy:b come:b go:h@600", 2], ["do:m what:b you:m love:h@680", 2], ["so:b the:m real:b reason:h@700 most:b people:b never:b get:b there:b", 4]] as const) {
         const cues = demoCues({ lines: [line], options: { lead: 400, gap: 30, cueGap: 140, tail: 900 } }).cues;
         const pieces = funkyProgram.build(sceneInput(cues, { fps: 30, colours, canvas, scale, measure: capMeasure })).pieces;
         const letters = faces(pieces, 0);
         const rows = rowsOfLetters(letters, cues[0]!.endMs - 300);
         expect(rows.length, `${line} at ${canvas.width}x${canvas.height}`).toBeLessThanOrEqual(most);
-        for (const letter of letters) expect(letter.sizePx * captionFontFace(letter.face).capHeight).toBeGreaterThanOrEqual(0.6 * 0.8 * 142 * 0.74 * scale - 0.5);
+        for (const letter of letters) expect(letter.sizePx * captionFontFace(letter.face).capHeight).toBeGreaterThanOrEqual(0.6 * 0.8 * 142 * 0.74 - 0.5);
       }
     }
   });
@@ -293,6 +299,92 @@ describe("funky", () => {
         if (shown) lifted++;
       }
       expect(lifted, `${lifted} of ${cues.length} cues hop at ${fps} fps`).toBeGreaterThanOrEqual(Math.ceil(cues.length * 0.7));
+    }
+  });
+
+  test("rows keep clear of each other: no row's painted box (face, outline and offset shadow) meets the next row's on any painted frame, 9:16 and 16:9", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      for (const scale of [1, 2]) {
+        const cues = demoCues({ lines: SPEECH, options: { lead: 400, gap: 30, cueGap: 140, tail: 900 } }).cues;
+        const pieces = funkyProgram.build(sceneInput(cues, { fps: 30, colours, canvas, scale, measure: capMeasure })).pieces;
+        for (const cue of cues) {
+          const letters = faces(pieces, cue.index);
+          const rest = cue.endMs - 300;
+          const rows = rowsOfLetters(letters, rest);
+          if (rows.length < 2) continue;
+          const settled = Math.max(...letters.map((letter) => letter.fromMs)) + 200;
+          for (const t of exportFrameTimes(settled, letters[0]!.toMs, 30)) {
+            const boxes = rows.map((row) => {
+              const painted = row.flatMap((letter) => {
+                const box = pieceBounds(letter, t, capMeasure);
+                if (!box) return [];
+                const reachX = Math.max(...(letter.shadows ?? []).map((shadow) => shadow.dx));
+                const reachY = Math.max(...(letter.shadows ?? []).map((shadow) => shadow.dy));
+                return [{ x1: box.x1, y1: box.y1, x2: box.x2 + reachX, y2: box.y2 + reachY }];
+              });
+              if (painted.length === 0) return null;
+              return { x1: Math.min(...painted.map((b) => b.x1)), y1: Math.min(...painted.map((b) => b.y1)), x2: Math.max(...painted.map((b) => b.x2)), y2: Math.max(...painted.map((b) => b.y2)) };
+            });
+            for (let i = 1; i < boxes.length; i++) {
+              if (boxes[i - 1] && boxes[i]) expect(meets(boxes[i - 1]!, boxes[i]!), `cue ${cue.index} rows ${i - 1} and ${i} meet at ${t} (${canvas.width}x${canvas.height}, ${scale}x)`).toBe(false);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("no letter's face or outline covers a neighbour's face: each face (ink box, turned as drawn) stays clear of the next letter's outline, at 9:16 and 16:9, key words and all", () => {
+    const corners = (piece: TextPiece, t: number, grow = 0): [number, number][] => {
+      const info = captionFontFace(piece.face);
+      const run = shapeCaptionRun(captionFontFilePath(info.file), piece.text);
+      const cluster = run.clusters[0]!;
+      const pose = evaluatePiece(piece, t);
+      const size = piece.sizePx * pose.sx;
+      const cap = info.capHeight * size;
+      const left = (cluster.inkLeftEm ?? 0) * size - (run.advanceEm * size) / 2 - grow;
+      const right = (cluster.inkRightEm ?? 0) * size - (run.advanceEm * size) / 2 + grow;
+      const angle = (pose.rz * Math.PI) / 180;
+      return ([[left, -cap / 2 - grow], [right, -cap / 2 - grow], [right, cap / 2 + grow], [left, cap / 2 + grow]] as const).map(([x, y]) => [pose.x + x * Math.cos(angle) - y * Math.sin(angle), pose.y + x * Math.sin(angle) + y * Math.cos(angle)] as [number, number]);
+    };
+    const apart = (a: [number, number][], b: [number, number][]) => {
+      for (const shape of [a, b]) {
+        for (let i = 0; i < 4; i++) {
+          const [x1, y1] = shape[i]!;
+          const [x2, y2] = shape[(i + 1) % 4]!;
+          const axis = [y1 - y2, x2 - x1] as const;
+          const project = (points: [number, number][]) => points.map(([x, y]) => x * axis[0] + y * axis[1]);
+          const pa = project(a);
+          const pb = project(b);
+          if (Math.max(...pa) < Math.min(...pb) || Math.max(...pb) < Math.min(...pa)) return true;
+        }
+      }
+      return false;
+    };
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      const cues = demoCues({ lines: SPEECH, options: { lead: 400, gap: 30, cueGap: 140, tail: 900 } }).cues;
+      const pieces = funkyProgram.build(sceneInput(cues, { fps: 30, colours, canvas, measure: capMeasure })).pieces;
+      let pairs = 0;
+      for (const cue of cues) {
+        const rest = cue.endMs - 300;
+        const letters = faces(pieces, cue.index).filter((piece) => /l\d+$/.test(piece.id));
+        const byWord = new Map<string, TextPiece[]>();
+        for (const letter of letters) byWord.set(letter.id.replace(/l\d+$/, ""), [...(byWord.get(letter.id.replace(/l\d+$/, "")) ?? []), letter]);
+        for (const word of byWord.values()) {
+          word.sort((a, b) => Number(a.id.split("l")[1]) - Number(b.id.split("l")[1]));
+          for (let i = 1; i < word.length; i++) {
+            // Letters of one row only: a broken word's rows are apart already.
+            const [a, b] = [word[i - 1]!, word[i]!];
+            if (Math.abs(evaluatePiece(a, rest).y - evaluatePiece(b, rest).y) > 0.5 * a.sizePx * captionFontFace(a.face).capHeight) continue;
+            pairs++;
+            // Each face stays clear of the other's outline, so neither stroke paints over a face.
+            const outline = (piece: TextPiece) => piece.stroke!.widthPx * evaluatePiece(piece, rest).sx;
+            expect(apart(corners(a, rest), corners(b, rest, outline(b))), `${b.id}'s outline reaches ${a.id}'s face (${canvas.width}x${canvas.height})`).toBe(true);
+            expect(apart(corners(a, rest, outline(a)), corners(b, rest)), `${a.id}'s outline reaches ${b.id}'s face (${canvas.width}x${canvas.height})`).toBe(true);
+          }
+        }
+      }
+      expect(pairs).toBeGreaterThan(100);
     }
   });
 
