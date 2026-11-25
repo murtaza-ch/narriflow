@@ -21,6 +21,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "combo",
   "tunnel",
   "chronicle",
+  "broadway",
   "ripple",
   "liquid",
   "snipsnap",
