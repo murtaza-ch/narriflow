@@ -35,6 +35,7 @@ const STYLES: readonly CaptionSceneName[] = [
   // Gallery 6.
   "rainbow",
   "glint",
+  "funky",
 ];
 
 const LINES = [
