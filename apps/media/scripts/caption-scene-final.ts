@@ -75,6 +75,7 @@ export const MOMENTS: Record<string, number[]> = {
   tunnel: [450, 1100, 2500, 2700, 4400, 6700],
   liquid: [480, 1200, 1900, 2250, 3000],
   chronicle: [700, 1500, 2700, 5200, 8900],
+  snipsnap: [450, 800, 1100, 1750, 2600],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;

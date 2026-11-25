@@ -22,6 +22,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "tunnel",
   "chronicle",
   "liquid",
+  "snipsnap",
 ];
 
 const LINES = [
