@@ -3,7 +3,7 @@ import { EASES, type Frames, kf, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import { balancedRows, cueDirection, rowVisualOrder, rowWidth } from "../layout";
 import { type PathCmd, type Piece, type ShapePiece, mixColour } from "../scene";
-import { roundedRectPath, sparklePath } from "../shapes";
+import { arcPath, polylinePath, roundedRectPath, sparklePath } from "../shapes";
 import { galleryScene } from "./gallery-layout";
 import type { SpeechCell } from "./speech-layout";
 
@@ -16,24 +16,27 @@ import type { SpeechCell } from "./speech-layout";
  * Changes from the sample, and why:
  * - Glass body. A deep navy body (0.70 alpha, so white text keeps at least 7:1 even over a white frame), an ice-white
  *   tapered highlight along the top edge, a faint blue reflection along the bottom edge and a hairline rim. The
- *   soft drop shadow and the key word's glow are stacks of unblurred translucent capsules (a blur costs every frame).
+ *   soft drop shadow is one faint offset capsule and the key word's glow one larger translucent capsule (a blur costs
+ *   every frame).
  * - The pill still grows word by word and re-centres, but every glass layer is the final capsule under a rounded clip
  *   of its own height that opens with each landed word, so the ends stay round at every width (a path cannot animate
- *   its width in libass). The backing is there on the first painted word; only its contour moves: it lands as a
- *   liquid droplet (a touch tall and narrow, then it springs into a wide capsule).
+ *   its width in libass). The backing is there on the first painted word and reaches every later word's slot by that
+ *   word's first painted frame; only its contour moves: it lands as a liquid droplet (a touch tall and narrow, then it
+ *   springs into a wide capsule). The rim is not clipped but drawn against that same moving contour (two end caps and
+ *   two straight runs), so nothing pops onto an edge as the pill widens.
  * - The key word's thumb is a solid-tinted capsule (the highlight colour darkened until the text on it reaches 4.5:1)
- *   with its own dome, specular lens and bright rim. It slides in from the previous word like an iOS segmented thumb,
+ *   with a bright rim and two narrow low-alpha highlights (no broad dome: its edge cut across the face). It slides in from the previous word like an iOS segmented thumb,
  *   stretching as it travels, and snaps into its slot.
  * - Words land with a short chromatic split (cyan and pink copies that close up) and a focus pull (blur to sharp).
- * - Recurring beats on every cue: a light sweep that rides inside the opening capsule when a row's last word lands
+ * - Recurring beats on every cue: a light sweep that rides inside the opening capsule (scaled with its morph) when a row's last word lands
  *   (and again as an idle shimmer on long holds), a sparkle glint on the rim that follows the capsule's ends, and an
  *   exit that squashes the capsule flat like a drop.
  * - No cue-indexed tables: rows are balanced from the words and capped by the safe width, the key slot grows with its
  *   word, row height grows for tall scripts, RTL rows mirror, joined scripts stay whole, and a Latin word wider than a
  *   row breaks into readable pieces on their own rows instead of shrinking.
  * - Brand colours: the text colour must read on the two composited fills it sits on, the body glass over a white frame
- *   (#545967) and the key thumb over that body (#355284), both listed in `readsOn` (the shared 3:1 guard); a colour that
- *   passes but is still under 4.5:1 against them is drawn white.
+ *   (#545967) and the key thumb over that body (#355284), both listed in `readsOn` (the shared 3:1 guard). A colour that
+ *   passes is painted as given; the thumb's tint darkens until that text reads on it.
  */
 
 export const LIQUID_DEMO: DemoScript = {
@@ -99,24 +102,6 @@ const lens = (L: number, t: number): PathCmd[] => [
   ["M", -L, 0], ["C", -L * 0.55, -t * 0.12, L * 0.55, -t * 0.12, L, 0], ["C", L * 0.55, t, -L * 0.55, t, -L, 0], ["Z"],
 ];
 
-const K = 0.5522847498307936;
-
-/** The upper half of a capsule inset by `m`, with a soft downward-bowing lower edge (the key word's upper reflection). */
-function dome(W: number, H: number, m: number): PathCmd[] {
-  const r = H / 2;
-  const r2 = r - m;
-  const xl = -W / 2 + r;
-  const xr = W / 2 - r;
-  return [
-    ["M", xl - r2, 0],
-    ["C", xl - r2, -K * r2, xl - K * r2, -r2, xl, -r2],
-    ["L", xr, -r2],
-    ["C", xr + K * r2, -r2, xr + r2, -K * r2, xr + r2, 0],
-    ["C", xr + r2 * 0.5, H * 0.14, xl - r2 * 0.5, H * 0.14, xl - r2, 0],
-    ["Z"],
-  ];
-}
-
 const capsule = (W: number, H: number, inset = 0) => roundedRectPath(-W / 2 + inset, -H / 2 + inset, W - 2 * inset, H - 2 * inset, (H - 2 * inset) / 2);
 
 /** One drawn run: a whole word, or one piece of a Latin word too long for a row. */
@@ -147,8 +132,8 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
   const direction = cueDirection(cue);
   const out = (t: number) => (exit ? EASES.in(prog(t, exitAt, to - exitAt)) : 0);
 
-  // Text reads on the composited glass; a brand colour under 4.5:1 falls back to white.
-  const text = contrast(c.primary, BODY_WORST) >= 4.5 ? c.primary : "#FFFFFF";
+  // An accepted brand colour (the shared 3:1 guard against the fills in `readsOn`) is painted as given.
+  const text = c.primary;
   // The thumb's tint is the highlight darkened until the text on it (the thumb over the body over the lightest ground)
   // reaches 4.5:1. `readsOn` lists the same two composited fills for the default highlight.
   let darkness = 0.5;
@@ -244,11 +229,14 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
       const p = placed[i]!;
       return (ctx.rtl ? cx + W / 2 - (p.cx - p.slot / 2) : p.cx + p.slot / 2 - (cx - W / 2)) + PADX * u;
     }).map((value, k, all) => Math.max(value, ...all.slice(0, k)));
-    const starts = row.map((i) => Math.max(capStart, startOf(i) - 110));
-    const widthFn = (t: number) => extents.reduce((sum, extent, k) => k === 0 ? extent : sum + (extent - extents[k - 1]!) * EASES.outBack(prog(t, starts[k]!, 280)), 0);
+    // The backing reaches each run's slot by that run's first painted frame: the growth ends there and starts up to 110 ms before.
+    const lands = row.map((i) => ctx.enter(cue.words[items[i]!.at]!, 320, 60).from);
+    const starts = lands.map((land) => Math.max(capStart, land - 110));
+    const spans = lands.map((land, k) => Math.max(1, land - starts[k]!));
+    const widthFn = (t: number) => Math.min(W, extents.reduce((sum, extent, k) => k === 0 ? extent : sum + (extent - extents[k - 1]!) * EASES.outBack(prog(t, starts[k]!, spans[k]!)), 0));
     // The row is centred on what has landed, so it eases outward as the capsule widens (the sample's re-centring).
     const shiftFn = (t: number) => ((W - widthFn(t)) / 2) * (ctx.rtl ? -1 : 1);
-    const growEdges = [...starts, ...starts.map((at) => at + 280)];
+    const growEdges = [...starts, ...starts.map((at, k) => at + spans[k]!)];
     const track = [...edges, ...growEdges];
     rowMotion.set(row[0]!, { shift: shiftFn, edges: [capStart, ...growEdges] });
     const pose = {
@@ -270,31 +258,51 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
       y2: [[capStart, H / 2]] as Frames,
       radius: r,
     };
-    // The revealed contour on the canvas, for the pieces that ride inside it (the sweep and the glint).
+    // The revealed contour on the canvas, scaled by the capsule's own morph, for everything that rides it (shadow, rim,
+    // sweep and glint) so none of them can drift off the pill's edge.
     const reveal = (t: number) => {
       const w = widthFn(t);
-      const left = cx + shiftFn(t) + (ctx.rtl ? W / 2 - w : -W / 2);
-      return { left, right: left + w, w };
+      const scale = sxFn(t);
+      const pivot = cx + shiftFn(t);
+      const left = pivot + (ctx.rtl ? W / 2 - w : -W / 2) * scale;
+      return { left, right: left + w * scale, w: w * scale };
     };
-    // The soft shadow is two unblurred translucent capsules that widen with the pill.
-    const shadowTrack = (drop: number) => ({
-      x: sampleFrames((t) => {
-        const { left, w } = reveal(t);
-        return cx + (left + w / 2 - cx) * sxFn(t);
-      }, track, 0.2, { range: [capStart, to], simplify: true }),
-      y: [[capStart, cy + drop]] as Frames,
-      sx: sampleFrames((t) => sxFn(t) * widthFn(t) / W, track, 0.004, { range: [capStart, to], simplify: true }),
+    const frames = (fn: (t: number) => number, tolerance = 0.35) => sampleFrames(fn, track, tolerance, { range: [capStart, to], simplify: true });
+    // One faint offset capsule is the shadow; it widens with the pill.
+    const shadow = {
+      x: frames((t) => { const { left, right } = reveal(t); return (left + right) / 2; }),
+      y: [[capStart, cy + 8 * u]] as Frames,
+      sx: frames((t) => reveal(t).w / W, 0.004),
       sy: pose.sy,
       o: pose.o,
-    });
+    };
     const lensL = W / 2 - r * 0.85;
     pieces.push(
-      shape(id("shadowb"), capStart, capsule(W, H), shadowTrack(13 * u), { z: 0, fill: { colour: "#000000", alpha: 0.1 } }),
-      shape(id("shadowa"), capStart, capsule(W, H), shadowTrack(6 * u), { z: 0, fill: { colour: "#000000", alpha: 0.14 } }),
+      shape(id("shadow"), capStart, capsule(W, H), shadow, { z: 0, fill: { colour: "#000000", alpha: 0.13 } }),
       shape(id("smoke"), capStart, capsule(W, H), pose, { z: 1, clip, fill: { colour: SMOKE, alpha: BODY_ALPHA } }),
       shape(id("spec"), capStart, move(lens(lensL, 15 * u), 0, -H / 2 + 4 * u), pose, { z: 3, clip, fill: { colour: ICE, alpha: 0.48 } }),
       shape(id("under"), capStart, move(lens(lensL * 0.9, -12 * u), 0, H / 2 - 3 * u), pose, { z: 3, clip, fill: { colour: BLUE, alpha: 0.18 } }),
-      shape(id("rim"), capStart, capsule(W, H, 1 * u), pose, { z: 3, clip, stroke: { widthPx: 1.6 * u, colour: "#FFFFFF", alpha: 0.3 } }),
+    );
+    // The rim is drawn against the same moving contour instead of being clipped: two end caps that ride the leading and
+    // trailing edges and two straight runs between them, so nothing pops onto an edge when the pill widens.
+    const rr = r - 1 * u;
+    const rim = { widthPx: 1.6 * u, colour: "#FFFFFF", alpha: 0.3 };
+    const capTrack = (leading: boolean) => ({
+      x: frames((t) => { const { left, right } = reveal(t); return (leading !== ctx.rtl ? left + r * sxFn(t) : right - r * sxFn(t)); }),
+      y: [[capStart, cy]] as Frames, sx: pose.sx, sy: pose.sy, o: pose.o,
+    });
+    const runTrack = (dir: -1 | 1) => ({
+      x: frames((t) => { const { left, right } = reveal(t); return (left + right) / 2; }),
+      y: frames((t) => cy + dir * rr * syFn(t)),
+      // The run is drawn at the final length and scaled down, so its stroke reach (counted in local px) stays small.
+      sx: frames((t) => Math.max(0.001, reveal(t).w - 2 * r * sxFn(t)) / W, 0.002),
+      o: pose.o,
+    });
+    pieces.push(
+      shape(id("rimlead"), capStart, ctx.rtl ? arcPath(0, 0, rr, -90, 90) : arcPath(0, 0, rr, 90, 270), capTrack(true), { z: 3, stroke: rim }),
+      shape(id("rimtrail"), capStart, ctx.rtl ? arcPath(0, 0, rr, 90, 270) : arcPath(0, 0, rr, -90, 90), capTrack(false), { z: 3, stroke: rim }),
+      shape(id("rimtop"), capStart, polylinePath([[-W / 2, 0], [W / 2, 0]]), runTrack(-1), { z: 3, stroke: rim }),
+      shape(id("rimbottom"), capStart, polylinePath([[-W / 2, 0], [W / 2, 0]]), runTrack(1), { z: 3, stroke: rim }),
     );
 
     // Light sweep: rides inside the opening capsule once the row's last word has landed, then an idle shimmer on long holds.
@@ -315,7 +323,8 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
         return ctx.rtl ? right + sweepW - p * (w + 2 * sweepW) : left - sweepW + p * (w + 2 * sweepW);
       };
       const local = (pick: "left" | "right") => sampleFrames((t) => reveal(t)[pick] - xs(t), sweepEdges, 0.3, { range: [at, at + dur], simplify: true });
-      const sweepClip = { x1: local("left"), x2: local("right"), y1: [[at, -H / 2]] as Frames, y2: [[at, H / 2]] as Frames, radius: r };
+      const rows = (sign: -1 | 1) => sampleFrames((t) => (sign * H * syFn(t)) / 2, sweepEdges, 0.3, { range: [at, at + dur], simplify: true });
+      const sweepClip = { x1: local("left"), x2: local("right"), y1: rows(-1), y2: rows(1), radius: r * syFn(at) };
       pieces.push(shape(`${id("sweep")}-${k}`, at, band, { x: sampleFrames(xs, sweepEdges, 0.3, { range: [at, at + dur], simplify: true }), y: [[at, cy]], o: [[at, 1]] },
         { z: 3, toMs: at + dur, clip: sweepClip, fill: { colour: "#FFFFFF", alpha: k === 0 ? 0.16 : 0.1 } }));
     });
@@ -402,11 +411,10 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
     };
     const tag = (suffix: string) => `thumb${suffix}${index}`;
     pieces.push(
-      shape(tag("glowb"), ts, capsule(tw + 20 * u, th + 20 * u), pose, { z: 4, fill: { colour: c.highlight, alpha: 0.09 } }),
-      shape(tag("glowa"), ts, capsule(tw + 9 * u, th + 9 * u), pose, { z: 4, fill: { colour: c.highlight, alpha: 0.16 } }),
+      shape(tag("glow"), ts, capsule(tw + 12 * u, th + 12 * u), pose, { z: 4, fill: { colour: c.highlight, alpha: 0.13 } }),
       shape(tag("fill"), ts, capsule(tw, th), pose, { z: 4, fill: { colour: tint, alpha: THUMB_ALPHA } }),
-      shape(tag("dome"), ts, dome(tw, th, 3 * u), pose, { z: 4, fill: { colour: "#FFFFFF", alpha: 0.16 } }),
-      shape(tag("spec"), ts, move(lens(tw / 2 - th * 0.45, 7 * u), 0, -th / 2 + 6 * u), pose, { z: 4, fill: { colour: "#FFFFFF", alpha: 0.6 } }),
+      shape(tag("spec"), ts, move(lens(tw / 2 - th * 0.45, 8 * u), 0, -th / 2 + 5 * u), pose, { z: 4, fill: { colour: "#FFFFFF", alpha: 0.34 } }),
+      shape(tag("under"), ts, move(lens(tw / 2 - th * 0.5, -6 * u), 0, th / 2 - 4 * u), pose, { z: 4, fill: { colour: bright, alpha: 0.24 } }),
       shape(tag("rim"), ts, capsule(tw, th, 1 * u), pose, { z: 4, stroke: { widthPx: 2.4 * u, colour: bright, alpha: 0.95 } }),
     );
   });

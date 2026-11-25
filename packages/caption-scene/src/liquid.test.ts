@@ -20,7 +20,7 @@ describe("liquid recurring beats", () => {
     const { cues, pieces } = build(["the:m new:b update:b feels:b like:m glass:h@900", "every:b edge:b catches:b light:b", "just:m clear:b", "simple:h@900"]);
     for (const cue of cues) {
       const own = pieces.filter((piece) => piece.id.startsWith(`liquid:${cue.index}:`));
-      for (const name of ["smoke", "spec", "under", "rim", "sweep", "glint"]) {
+      for (const name of ["smoke", "spec", "under", "rimtop", "sweep", "glint"]) {
         expect(own.some((piece) => piece.id.startsWith(`liquid:${cue.index}:${name}`)), `cue ${cue.index} has no ${name}`).toBe(true);
       }
     }
@@ -67,23 +67,57 @@ describe("liquid layout", () => {
 });
 
 describe("liquid review fixes", () => {
-  test("the glass backing is in place and covers the word on its first painted frame, on tight handoffs", () => {
+  test("the glass backing is in place and reaches every word's box by that word's first painted frame, on tight handoffs", () => {
     for (const [name, make] of [["ordinary", fastRun], ["staccato", staccatoRun]] as const) {
       for (const gap of [0, 60]) {
         const cues = make(gap);
         const pieces = liquidProgram.build(sceneInput(cues, { fps: 30 })).pieces;
         for (const cue of cues) {
-          const face = pieces.find((piece) => piece.id === `liquid:${cue.index}:w0`)!;
-          const t = exportFrameTimes(face.fromMs, face.toMs, 30).find((frame) => pieceBounds(face, frame, fakeMeasure))!;
-          const smoke = pieces.find((piece) => piece.id === `liquid:${cue.index}:smoke0`)!;
-          const where = `${name} gap ${gap} cue ${cue.index} at ${t}`;
-          expect(evaluatePiece(smoke, t).o, where).toBeGreaterThanOrEqual(0.8);
-          const backing = pieceBounds(smoke, t, fakeMeasure)!;
-          const ink = pieceBounds(face, t, fakeMeasure)!;
-          expect(backing, where).not.toBeNull();
-          expect(backing.x1, where).toBeLessThanOrEqual(ink.x1 + 0.5);
-          expect(backing.x2, where).toBeGreaterThanOrEqual(ink.x2 - 0.5);
+          const backings = pieces.filter((piece) => piece.id.startsWith(`liquid:${cue.index}:smoke`));
+          for (const [at] of cue.words.entries()) {
+            const face = pieces.find((piece) => piece.id === `liquid:${cue.index}:w${at}`)!;
+            const t = exportFrameTimes(face.fromMs, face.toMs, 30).find((frame) => pieceBounds(face, frame, fakeMeasure))!;
+            const ink = pieceBounds(face, t, fakeMeasure)!;
+            const where = `${name} gap ${gap} cue ${cue.index} word ${at} at ${t}`;
+            const row = backings.find((piece) => {
+              const box = pieceBounds(piece, t, fakeMeasure);
+              return box && box.y1 <= (ink.y1 + ink.y2) / 2 && box.y2 >= (ink.y1 + ink.y2) / 2;
+            })!;
+            expect(row, where).toBeDefined();
+            expect(evaluatePiece(row, t).o, where).toBeGreaterThanOrEqual(0.8);
+            const backing = pieceBounds(row, t, fakeMeasure)!;
+            expect(backing.x1, where).toBeLessThanOrEqual(ink.x1 + 0.5);
+            expect(backing.x2, where).toBeGreaterThanOrEqual(ink.x2 - 0.5);
+          }
         }
+      }
+    }
+  });
+
+  test("the rim rides the moving contour: its trailing cap sits on the backing's right edge on every frame of the growth", () => {
+    const { cues, pieces } = build(["the:m new:b update:b feels:b like:m glass:h@900"]);
+    const lead = pieces.find((piece) => piece.id === "liquid:0:rimtrail0")!;
+    const body = pieces.find((piece) => piece.id === "liquid:0:smoke0")!;
+    for (const t of exportFrameTimes(cues[0]!.startMs, cues[0]!.endMs - 400, 30)) {
+      const cap = pieceBounds(lead, t, fakeMeasure);
+      const box = pieceBounds(body, t, fakeMeasure);
+      if (!cap || !box) continue;
+      expect(Math.abs(cap.x2 - box.x2), `rim cap off the edge at ${t}`).toBeLessThan(3);
+    }
+  });
+
+  test("the sweep stays inside the pill it crosses", () => {
+    const { cues, pieces } = build(["the:m new:b update:b feels:b like:m glass:h@900", "every:b edge:b catches:b light:b"]);
+    for (const cue of cues) {
+      const body = pieces.find((piece) => piece.id === `liquid:${cue.index}:smoke0`)!;
+      const sweep = pieces.find((piece) => piece.id.startsWith(`liquid:${cue.index}:sweep0`));
+      if (!sweep) continue;
+      for (const t of exportFrameTimes(sweep.fromMs, sweep.toMs, 30)) {
+        const box = pieceBounds(sweep, t, fakeMeasure);
+        const pill = pieceBounds(body, t, fakeMeasure);
+        if (!box || !pill) continue;
+        expect(box.x1, `sweep left of the pill at ${t}`).toBeGreaterThanOrEqual(pill.x1 - 1);
+        expect(box.x2, `sweep right of the pill at ${t}`).toBeLessThanOrEqual(pill.x2 + 1);
       }
     }
   });
@@ -101,8 +135,8 @@ describe("liquid review fixes", () => {
   const lum = (hex: string) => 0.2126 * channel(hex, 0) + 0.7152 * channel(hex, 1) + 0.0722 * channel(hex, 2);
   const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
 
-  test("a brand text colour that cannot reach 4.5:1 on the glass falls back to white", () => {
-    expect(textFill("#707070").text).toBe("#FFFFFF");
+  test("a brand text colour the shared guard accepts is painted as given", () => {
+    expect(textFill("#B0B0B0").text).toBe("#B0B0B0");
     expect(textFill("#F2F2F2").text).toBe("#F2F2F2");
     expect(captionSceneMeta("liquid").brand.primary?.readsOn).toEqual(["#545967", "#355284"]);
   });
@@ -110,6 +144,7 @@ describe("liquid review fixes", () => {
   test("the brand guard refuses a text colour that cannot read on the glass it sits on, and takes one that can", () => {
     const preset = { primaryColor: "#FFFFFF", highlightColor: "#5E9BFF", accentColor: "#FF8BD0" };
     expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#707070", secondaryColor: "#E6F7FF" })).toEqual({ highlightColor: "#E6F7FF" });
+    expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#B0B0B0", secondaryColor: "#E6F7FF" })).toEqual({ primaryColor: "#B0B0B0", highlightColor: "#E6F7FF" });
     expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#F0F0F0", secondaryColor: "#FFE600" })).toEqual({ primaryColor: "#F0F0F0", highlightColor: "#FFE600" });
   });
 
