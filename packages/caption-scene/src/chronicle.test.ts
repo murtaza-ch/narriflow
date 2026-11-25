@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { captionSceneMeta, getCaptionPresetById } from "@narriflow/validators";
+import { applyBrandColorsToScene, captionSceneMeta, getCaptionPresetById } from "@narriflow/validators";
 import { describeSpeechConformance } from "./conformance-support";
 import { type DemoScript, demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
@@ -37,22 +37,22 @@ describe("Chronicle", () => {
     expect(getCaptionPresetById("chronicle")!.preset).toMatchObject({ scene: "chronicle", wordsPerCue: 4 });
     const meta = captionSceneMeta("chronicle");
     expect(meta).toMatchObject({ bodyPx: 72, anchorLineY: 1370, wordsPerCue: 4, fontName: "Newsreader Medium", colours: { primary: "#F4F1EA", highlight: "#F2C14E" } });
-    expect(meta.brand.secondary).toEqual({ slot: "highlightColor" });
+    expect(meta.brand).toEqual({ primary: { slot: "primaryColor", readsOn: ["#101010"] }, secondary: { slot: "highlightColor", readsOn: ["#101010"] } });
   });
 
   test("a year is four digits of any script, 1500 to 2099, with punctuation and a decade s around it", () => {
     for (const [text, year] of [
       ["1969", "1969"], ["1969,", "1969"], ["(1969)", "1969"], ["\"1969.\"", "1969"], ["—1969—", "1969"], ["1990s", "1990s"], ["1990's", "1990s"], ["1500", "1500"], ["2099", "2099"],
-      ["१९६९", "1969"], ["١٩٦٩", "1969"], ["۱۹۶۹،", "1969"], ["১৯৬৯", "1969"], ["１９６９", "1969"],
+      ["१९६९", "1969"], ["١٩٦٩", "1969"], ["۱۹۶۹،", "1969"], ["১৯৬৯", "1969"], ["１９６９", "1969"], ["១៩៦៩", "1969"], ["༡༩༦༩", "1969"], ["𝟏𝟗𝟔𝟗", "1969"],
     ] as const) expect(chronicleYear(text), text).toBe(year);
-    for (const text of ["1499", "2100", "12", "19690", "1,969", "1.969", "$1969", "1969%", "19a9", "abcd", "nineteen", "", "-", "'69", "१९६", "2024x"]) {
+    for (const text of ["1499", "2100", "12", "19690", "1,969", "1.969", "$1969", "1969%", "19a9", "abcd", "nineteen", "", "-", "'69", "१९६", "2024x", "-1969", "+1969", "\u22121969", "-1969-"]) {
       expect(chronicleYear(text), text).toBeNull();
     }
   });
 
   test("a question ends in a question mark of any script, with ?! and closing quotes after it", () => {
-    for (const text of ["stop?", "why?!", "\"really?\"", "(huh?)", "?", "क्या?", "ماذا؟", "何？", "τι;", "¿qué pasa?"]) expect(asksQuestion(text), text).toBe(true);
-    for (const text of ["stop.", "¿qué", "what", "a?b", "stop!", "", "…"]) expect(asksQuestion(text), text).toBe(false);
+    for (const text of ["stop?", "why?!", "\"really?\"", "(huh?)", "?", "क्या?", "ماذا؟", "何？", "τι\u037E", "何\uFE56", "¿qué pasa?", "なに\u2047", "ምንድን\u1367"]) expect(asksQuestion(text), text).toBe(true);
+    for (const text of ["stop.", "¿qué", "what", "a?b", "stop!", "", "…", "stop;"]) expect(asksQuestion(text), text).toBe(false);
   });
 
   test("the year rises digit by digit out of a window at the numeral's baseline, above the text and inside the safe area", () => {
@@ -226,7 +226,7 @@ describe("Chronicle", () => {
     for (const t of exportFrameTimes(400, 2600, 30)) {
       const boxes = [first, second, [mark]].map((group) => group.flatMap((piece) => shown(piece, t) ?? []));
       const live = boxes.filter((b) => b.length > 0).map(union);
-      for (const [i, a] of live.entries()) for (const b of live.slice(i + 1)) expect(meets(a, b) && false, `numerals overlap at ${t}`).toBe(false);
+      for (const [i, a] of live.entries()) for (const b of live.slice(i + 1)) expect(meets(a, b), `numerals overlap at ${t}`).toBe(false);
     }
   });
 
@@ -260,6 +260,87 @@ describe("Chronicle", () => {
           expect(box, `${face.id} (${kind})`).not.toBeNull();
           expect(box.x1).toBeGreaterThanOrEqual(0.05 * 1080 - 1);
           expect(box.x2).toBeLessThanOrEqual(0.95 * 1080 + 1);
+        }
+      }
+    }
+  });
+
+
+  test("brand colours that vanish on dark footage are refused, readable ones are taken", () => {
+    const preset = { primaryColor: "#F4F1EA", highlightColor: "#F2C14E" };
+    expect(applyBrandColorsToScene("chronicle", preset, { primaryColor: "#000000", secondaryColor: "#000000" })).toEqual({});
+    expect(applyBrandColorsToScene("chronicle", preset, { primaryColor: "#1A1A2E", secondaryColor: "#202020" })).toEqual({});
+    expect(applyBrandColorsToScene("chronicle", preset, { primaryColor: "#FFFFFF", secondaryColor: "#FF6B6B" })).toEqual({ primaryColor: "#FFFFFF", highlightColor: "#FF6B6B" });
+  });
+
+  test("a year spoken fast is compressed to the time it has, whole before it leaves, or left out; never shown half risen", () => {
+    for (const fps of [24, 30, 60]) {
+      for (const end of [420, 480, 560, 700, 900, 1200, 1700]) {
+        const run = [cue([word("1969", 300, 400), word("now", 400, 560), word("we", 560, 900), word("know", 900, 1500)], "en", end)];
+        const digits = digitsOf(build(run, { fps }).pieces, 0);
+        if (digits.length === 0) continue;
+        expect(digits.length, `cue ending ${end} at ${fps} fps`).toBe(4);
+        const risen = Math.max(...digits.map((digit) => digit.track.y!.at(-1)![0]));
+        const leaves = Math.min(...digits.map((digit) => digit.toMs));
+        // Every digit has risen, with a moment to read the year, before any of it fades.
+        expect(risen + 100, `cue ending ${end} at ${fps} fps`).toBeLessThanOrEqual(leaves + 1);
+        for (const digit of digits) expect(shown(digit, risen + 20), `${digit.id} (cue ending ${end})`).not.toBeNull();
+      }
+    }
+    // A cue that leaves before the year could finish rising draws none of it.
+    expect(digitsOf(build([cue([word("1969", 300, 400), word("now", 400, 440)], "en", 460)]).pieces, 0)).toEqual([]);
+  });
+
+  test("two speakers at once get lanes of the same height above the timeline, at about the same readable size", () => {
+    const first = cue([word("from", 400, 700), word("1969", 700, 1000), word("one", 1000, 1300), word("question?", 1300, 1900, "hero")]);
+    const second = { ...cue([word("I", 400, 600), word("spoke", 600, 900), word("in", 900, 1100), word("1972", 1100, 1700, "hero")]), speaker: 1 };
+    for (const [canvas, scale] of [[{ width: 1920, height: 1080 }, 2], [{ width: 1920, height: 1080 }, 1], [{ width: 1080, height: 1920 }, 1], [{ width: 1080, height: 1080 }, 2]] as const) {
+      const { pieces } = build([first, second], { canvas, scale });
+      const size = (index: number) => Math.min(...pieces.filter((piece): piece is TextPiece => piece.kind === "text" && new RegExp(`^chronicle:${index}:w\\d+$`).test(piece.id)).map((piece) => piece.sizePx));
+      const ratio = size(0) / size(1);
+      expect(ratio, `${canvas.width}x${canvas.height} x${scale}: ${size(0)} vs ${size(1)}`).toBeGreaterThan(0.7);
+      expect(ratio).toBeLessThan(1.45);
+      const unit = (Math.min(canvas.width, canvas.height) / 1080) * scale;
+      expect(Math.min(size(0), size(1))).toBeGreaterThan(24 * unit);
+      // Above the strip: no word reaches the playhead's cap.
+      const capTop = pieceBounds(pieces.find((piece) => piece.id === "chronicle:tl:cap")!, 1000, fakeMeasure)!.y1;
+      for (const piece of pieces.filter((p) => /:w\d+$/.test(p.id) && !isTimeline(p))) {
+        for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+          const box = shown(piece, t);
+          if (box) expect(box.y2, `${piece.id} at ${t}`).toBeLessThanOrEqual(capTop);
+        }
+      }
+    }
+  });
+
+  test("a clip of one short cue still shows the timeline and its ring", () => {
+    for (const fps of [24, 30, 60]) {
+      const { pieces } = build([cue([word("go", 300, 400)], "en", 600)], { fps });
+      const line = pieces.find((piece) => piece.id === "chronicle:tl:line")!;
+      const peak = Math.max(...exportFrameTimes(line.fromMs, line.toMs, fps).map((t) => evaluatePiece(line, t).o));
+      expect(peak, `baseline peak at ${fps} fps`).toBeGreaterThan(0.5);
+      expect(pieces.some((piece) => piece.id === "chronicle:tl:ring0"), `ring at ${fps} fps`).toBe(true);
+      expect(pieces.some((piece) => piece.id === "chronicle:tl:playhead")).toBe(true);
+    }
+  });
+
+  test("no timeline piece covers a readable word, with ink as tall as Devanagari's, at any size and shape", () => {
+    // Tall ink above and below the baseline, as a Devanagari word has, and wider than the stand-in's 0.55 em.
+    const tall = (text: string, _face: string, sizePx: number, letterSpacingEm: number) => ({
+      advance: [...text].length * (0.6 + letterSpacingEm) * sizePx, inkTop: -0.95 * sizePx, inkBottom: 0.36 * sizePx, ascent: 1.2 * sizePx, descent: 0.4 * sizePx,
+    });
+    const run = demoCues({ lines: ["so:m here:b is:m the:m thing:h@300", "1969:b and:m stop?:h@500", "nobody:b tells:b you:m this:b very:b much:b today:h", "ok:m go:h@200"], options: { cueGap: 0, rate: 220 } }).cues;
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+      for (const scale of [0.7, 1, 2]) {
+        const { pieces } = build(run, { canvas, scale, measure: tall });
+        const painted = (piece: Piece, t: number) => {
+          const pose = evaluatePiece(piece, t);
+          return pose.visible && pose.o > 0.15 ? pieceBounds(piece, t, tall) : null;
+        };
+        for (const t of exportFrameTimes(run[0]!.startMs - 100, run.at(-1)!.endMs, 30)) {
+          const strip = pieces.filter(isTimeline).flatMap((piece) => painted(piece, t) ?? []);
+          const text = pieces.filter((piece) => /:w\d+$/.test(piece.id)).flatMap((piece) => painted(piece, t) ?? []);
+          for (const a of strip) for (const b of text) expect(meets(a, b), `the strip covers a word at ${t}, ${canvas.width}x${canvas.height} x${scale}`).toBe(false);
         }
       }
     }

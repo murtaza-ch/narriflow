@@ -3,11 +3,10 @@ import { type Ease, clamp, EASES, lerp, prog } from "../ease";
 import { exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount, SCENE_DEFAULT_FPS } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneInput, SceneProgram } from "../input";
-import { balancedRows, rowVisualOrder, rowWidth, sceneSpace } from "../layout";
-import { type Box, type ColourFrames, type Frames, type Piece, type TextPiece, pieceBounds } from "../scene";
+import { balancedRows, cueDirection, rowVisualOrder, rowWidth, sceneSpace, shiftPiece } from "../layout";
+import { type Box, type ColourFrames, type Frames, type Piece, type TextPiece, pieceBounds, sceneBoundsAt } from "../scene";
 import { ellipsePath, polygonPath, rectPath } from "../shapes";
-import { galleryScene } from "./gallery-layout";
-import { hasTwoPaintedFrames, type SpeechCell } from "./speech-layout";
+import { hasTwoPaintedFrames, renderWithReadingHolds, type SpeechCell, type SpeechWindow, speechWindows } from "./speech-layout";
 
 /**
  * Chronicle (`samples/templates/m55-chronicle.js`): the transcript as a timeline. A tick for every spoken word of the
@@ -64,42 +63,57 @@ const ASK_SIZE = Math.round(BODY * 4.4);
 const BODY_FACE = "Newsreader Medium";
 const HERO_FACE = "Newsreader SemiBold Italic";
 const NUMERAL_FACE = "DM Serif Display";
-const LEAD = 60;
+/** A word starts to appear this long before it is said. */
+const WORD_LEAD = 60;
+/** A cue's window opens this long before its first word, and an outgoing cue is held this long after its last. */
+const WINDOW_LEAD = 80;
+const HOLD = 150;
+const MIN_RISE = 84;
+const REST_MS = 100;
 const LINGER_MS = 1500;
 const LINGER_FADE = 300;
 const MIN_NUMERAL = 0.4;
 
 // ─── Reading the speech ──────────────────────────────────────────────────────
 
-/** First code point of each script's 0-9 (ASCII, Arabic-Indic, Persian/Urdu, Devanagari, Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam, Thai, Lao, Myanmar, fullwidth). */
-const DIGIT_ZEROS = [0x30, 0x660, 0x6f0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66, 0xe50, 0xed0, 0x1040, 0xff10];
-
-function asciiDigit(char: string): string | null {
+/** The value of a decimal digit of any script (`\p{Nd}`), or null. Digits come in runs of ten; the mathematical ones in one long run. */
+function decimalValue(char: string): string | null {
   const code = char.codePointAt(0)!;
-  for (const zero of DIGIT_ZEROS) if (code >= zero && code < zero + 10) return String(code - zero);
-  return null;
+  if (code >= 0x30 && code <= 0x39) return String(code - 0x30);
+  if (!/^\p{Nd}$/u.test(char)) return null;
+  if (code >= 0x1d7ce && code <= 0x1d7ff) return String((code - 0x1d7ce) % 10);
+  let back = 0;
+  while (back < 9 && /^\p{Nd}$/u.test(String.fromCodePoint(code - back - 1))) back++;
+  return String(back);
 }
 
-/** What may stand around a spoken year: spaces, quotes, brackets, dashes, stops and commas of any script, never a sign that changes what the number is (`%`, `$`, `#`). */
-const AROUND = /^[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Pd}\s.,;:!?…。，、،؛؟"'`]+|[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Pd}\s.,;:!?…。，、،؛؟"'`]+$/gu;
+/**
+ * What may stand around a spoken year: spaces, quotes, brackets, dashes, stops and commas of any script. A leading hyphen,
+ * minus or plus is not one (`-1969` is a number, not a year), nor is any sign that changes what the number is (`%`, `$`, `#`).
+ */
+const STOPS = "\\s.,;:!?\\u2026\\u3002\\uFF0C\\u3001\\u060C\\u061B\\u061F\"'`";
+const AROUND = new RegExp(`^[\\p{Ps}\\p{Pe}\\p{Pi}\\p{Pf}\\u2013\\u2014\\u2015${STOPS}]+|[\\p{Ps}\\p{Pe}\\p{Pi}\\p{Pf}\\p{Pd}${STOPS}]+$`, "gu");
 
 /**
  * The year a spoken word names, as the digits to draw, or null. Four decimal digits of any script (1500 to 2099), an
- * optional decade `s`, any punctuation around them: `1969`, `"1969,"`, `(1969)`, `1990s`, `1990's`, `१९६९`.
+ * optional decade `s`, any punctuation around them: `1969`, `"1969,"`, `(1969)`, `1990s`, `1990's`, `१९६९`, `១៩៦៩`.
  */
 export function chronicleYear(text: string): string | null {
   const core = text.replace(AROUND, "");
-  const decade = /['’]?s$/i.exec(core);
-  const digits = [...(decade ? core.slice(0, decade.index) : core)].map(asciiDigit);
+  const decade = /['\u2019]?s$/i.exec(core);
+  const digits = [...(decade ? core.slice(0, decade.index) : core)].map(decimalValue);
   if (digits.length !== 4 || digits.some((digit) => digit === null)) return null;
   const year = Number(digits.join(""));
   return year >= 1500 && year <= 2099 ? `${year}${decade ? "s" : ""}` : null;
 }
 
-/** Whether a spoken word ends in a question mark of any script (`?`, `？`, `؟`, `⸮`, the Greek one), `?!` and closing quotes included. */
+/** A question mark of any script: `?`, fullwidth, small and double forms, Arabic, Greek, Ethiopic and the reversed one. */
+const QUESTION_MARK = /[?\uFF1F\uFE56\u061F\u2E2E\u037E\u1367\u2047-\u2049]/u;
+
+/** Whether a spoken word ends in a question mark of any script, `?!` and closing quotes included. */
 export function asksQuestion(text: string): boolean {
   const ending = /[\p{P}\p{S}]+$/u.exec(text);
-  return ending !== null && /[?？؟⸮;]/.test(ending[0]);
+  return ending !== null && QUESTION_MARK.test(ending[0]);
 }
 
 interface Feature {
@@ -132,6 +146,8 @@ interface Geometry {
   readonly baseY: number;
   /** The baseline of a cue's last caption row. */
   readonly textBaseline: number;
+  /** The lowest a caption may reach: the strip's playhead cap, with room for a descender. */
+  readonly textBottom: number;
   readonly from: number;
   readonly to: number;
 }
@@ -150,6 +166,7 @@ function geometry(input: SceneInput): Geometry {
     speed: SPEED * u,
     baseY,
     textBaseline: baseY - (LINE_Y - ANCHOR + 8) * u,
+    textBottom: baseY - (LINE_Y - ANCHOR + 8) * u + 26 * u,
     from: Math.max(0, Math.min(...words.map((word) => word.startMs)) - 100),
     to: Math.max(...input.cues.map((cue) => Math.max(cue.endMs, ...cue.words.map((word) => word.endMs)))),
   };
@@ -164,9 +181,10 @@ function timeline(input: SceneInput, geo: Geometry): Piece[] {
   const { u, left, right, playX, speed, baseY, from: tlFrom, to: tlTo } = geo;
   const c = input.colours;
   const edge = 60 * u;
-  /** The strip fades in with the first cue and out with the last. */
-  const strip = (t: number) => prog(t, tlFrom, 200) * (1 - prog(t, tlTo - 200, 200));
-  const stripEdges = [tlFrom, tlFrom + 200, tlTo - 200, tlTo];
+  /** The strip fades in with the first cue and out with the last: 200 ms each, a third of the clip each when it is shorter. */
+  const fadeMs = Math.min(200, (tlTo - tlFrom) / 3);
+  const strip = (t: number) => Math.min(prog(t, tlFrom, fadeMs), 1 - prog(t, tlTo - fadeMs, fadeMs));
+  const stripEdges = [tlFrom, tlFrom + fadeMs, tlTo - fadeMs, tlTo];
   const pieces: Piece[] = [];
 
   /** A piece that travels from the strip's right end to its left, `span` ms long, passing the playhead at `startMs`. */
@@ -260,11 +278,12 @@ function timeline(input: SceneInput, geo: Geometry): Piece[] {
 
     // Beat 2: a ring pings from the playhead when the cue starts, and larger and amber when a key word does.
     const ping = (id: string, at: number, radius: number, colour: string, alpha: number) => {
-      if (at < tlFrom || at + 360 > tlTo + 200) return;
-      const to = Math.min(at + 360, tlTo);
+      // The ring runs 360 ms, or whatever is left of a short clip.
+      const dur = Math.min(360, tlTo - at);
+      if (at < tlFrom || dur < MIN_RISE) return;
       pieces.push({
-        id: `chronicle:tl:${id}`, kind: "shape", z: 3, fromMs: at, toMs: to, path: ellipsePath(0, 0, radius), stroke: { widthPx: 3 * u, colour },
-        track: { x: [[at, playX]], y: [[at, baseY]], sx: [[at, 0.2], [at + 360, 1, "out"]], sy: [[at, 0.2], [at + 360, 1, "out"]], o: [[at, alpha], [at + 360, 0, "in"]] },
+        id: `chronicle:tl:${id}`, kind: "shape", z: 3, fromMs: at, toMs: at + dur, path: ellipsePath(0, 0, radius), stroke: { widthPx: 3 * u, colour },
+        track: { x: [[at, playX]], y: [[at, baseY]], sx: [[at, 0.2], [at + dur, 1, "out"]], sy: [[at, 0.2], [at + dur, 1, "out"]], o: [[at, alpha], [at + dur, 0, "in"]] },
       });
     };
     ping(`ring${cue.index}`, first.startMs, 30 * u, c.primary, 0.7);
@@ -280,12 +299,90 @@ function timeline(input: SceneInput, geo: Geometry): Piece[] {
 const rowGap = 0.14 * BODY;
 const wordGap = 0.26 * BODY;
 
+/** What a cue draws with: its window, the (possibly shrunk) input, and the timing every cue shares. */
+interface CueContext {
+  readonly input: SceneInput;
+  readonly window: SpeechWindow;
+  readonly id: string;
+  readonly rtl: boolean;
+  readonly side: number;
+  readonly fps: number;
+  readonly exitAt: number;
+  readonly exit: boolean;
+  readonly u: number;
+  face(cell: SpeechCell, from: number, fill: string, track: TextPiece["track"]): TextPiece;
+}
+
+/** Every piece's ink over the cue's whole window, at the export frames and wherever a track changes. */
+function inkBounds(pieces: readonly Piece[], window: SpeechWindow, input: SceneInput, fps: number): Box {
+  const times = new Set(exportFrameTimes(window.from, window.to, fps));
+  for (let t = window.from; t < window.to; t += 16) times.add(t);
+  for (const piece of pieces) {
+    times.add(piece.fromMs);
+    times.add(piece.toMs - 0.001);
+    for (const track of Object.values(piece.track)) {
+      if (!track) continue;
+      for (const [at] of track) if (at >= window.from && at < window.to) times.add(at);
+    }
+  }
+  let box: Box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const t of times) {
+    const at = sceneBoundsAt(pieces, t, input.measure);
+    if (at) box = { x1: Math.min(box.x1, at.x1), y1: Math.min(box.y1, at.y1), x2: Math.max(box.x2, at.x2), y2: Math.max(box.y2, at.y2) };
+  }
+  return box;
+}
+
+/**
+ * The shared cue timing of every Scene Style (`speech-layout.ts`: windows, lanes for overlapping speakers, reading holds),
+ * with the lanes cut from the area above the timeline instead of the whole safe area, so a second speaker's lane is as
+ * tall as the first's and neither runs into the strip.
+ */
+function captionScene(input: SceneInput, geo: Geometry, draw: (ctx: CueContext) => Piece[]): Piece[] {
+  const space = sceneSpace(input, ANCHOR);
+  const fps = input.fps ?? SCENE_DEFAULT_FPS;
+  const region: Box = { ...space.safe, y2: Math.max(space.safe.y1 + 2, Math.min(space.safe.y2, geo.textBottom)) };
+  const windows = speechWindows(input, region, WINDOW_LEAD, HOLD);
+  return renderWithReadingHolds(windows, input, HOLD, (window) => {
+    const { cue, index, to, bounds } = window;
+    const id = `chronicle:${index}`;
+    const rtl = cueDirection(cue) === "rtl";
+    const exitAt = Math.max(window.spokenEnd + HOLD, to - 160);
+    const exit = paintedFrameCount(exitAt, to, fps) >= 2;
+    const drawAt = (scale: number) => {
+      const scaled = { ...input, scale };
+      return draw({
+        input: scaled, window, id, rtl, side: rtl ? -1 : 1, fps, exitAt, exit, u: sceneSpace(scaled, ANCHOR).u,
+        face: (cell, from, fill, track) => ({
+          id: `${id}:w${cell.at}`, kind: "text", z: 6, fromMs: from, toMs: to, text: cell.text, face: cell.face, sizePx: cell.size, letterSpacingEm: cell.spacing, fill,
+          anchor: "baseline-center", language: cue.language, track: { x: [[from, cell.x]], y: [[from, cell.baseline]], ...track },
+        }),
+      });
+    };
+    // The cue fits its lane by its own layout; this is the safety net the other styles have: shrink, then shift.
+    const safe = { x1: bounds.x1 + 3, x2: bounds.x2 - 3, y1: bounds.y1 + 3, y2: bounds.y2 - 3 };
+    let scale = input.scale;
+    let drawn = drawAt(scale);
+    let ink = inkBounds(drawn, window, input, fps);
+    for (let tries = 0; tries < 8; tries++) {
+      const fit = Math.min(1, (safe.x2 - safe.x1) / Math.max(1, ink.x2 - ink.x1), (safe.y2 - safe.y1) / Math.max(1, ink.y2 - ink.y1));
+      if (fit >= 1) break;
+      scale *= Math.min(fit * 0.98, 0.9);
+      drawn = drawAt(scale);
+      ink = inkBounds(drawn, window, input, fps);
+    }
+    const dx = Math.min(Math.max(0, safe.x1 - ink.x1), safe.x2 - ink.x2);
+    const dy = Math.min(Math.max(0, safe.y1 - ink.y1), safe.y2 - ink.y2);
+    const faceId = new RegExp(`^${id}:w\\d+$`);
+    return drawn.map((piece) => shiftPiece(piece, dx, dy)).filter((piece) => faceId.test(piece.id) || hasTwoPaintedFrames(piece, input));
+  });
+}
+
 function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap<number, number>): readonly Piece[] {
-  return galleryScene("chronicle", ANCHOR, (ctx) => {
+  return captionScene(input, geo, (ctx) => {
     const { cue, index, to, from: windowFrom, bounds } = ctx.window;
     const c = ctx.input.colours;
-    const { fps, side } = ctx;
-    const u = ctx.space.u;
+    const { fps, side, u } = ctx;
     const direction = ctx.rtl ? "rtl" : "ltr";
     const colLeft = Math.max(geo.left, bounds.x1 + 4);
     const colRight = Math.min(geo.right, bounds.x2 - 4);
@@ -342,7 +439,7 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
     // Words: fade up out of a small blur at the spoken start.
     for (const cell of block.cells) {
       const word = cue.words[cell.at]!;
-      const begin = word.startMs - LEAD;
+      const begin = word.startMs - WORD_LEAD;
       const from = Math.max(windowFrom, begin);
       const last = exportFrameAtOrBefore(word.endMs - 1, fps);
       const dur = Math.max(1, Math.min(120, last - begin));
@@ -371,13 +468,13 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
       const sized = ctx.input.measure(feature.text, NUMERAL_FACE, size, 0);
       const baseline = inkBottom - sized.inkBottom;
       const left = ctx.rtl ? colLeft + numeralStrokes + swing * size : colRight - numeralStrokes - swing * size - sized.advance;
-      const start = Math.max(windowFrom, word.startMs - LEAD);
+      const start = Math.max(windowFrom, word.startMs - WORD_LEAD);
       const next = features[k + 1];
-      const nextStart = next ? Math.max(windowFrom, cue.words[next.at]!.startMs - LEAD) : Infinity;
+      const nextStart = next ? Math.max(windowFrom, cue.words[next.at]!.startMs - WORD_LEAD) : Infinity;
       const lingerEnd = feature.kind === "year" && !next ? linger.get(index) : undefined;
       const end = Math.min(lingerEnd ?? to, nextStart);
       const lingering = lingerEnd !== undefined && lingerEnd > to && end === lingerEnd;
-      const fadeStart = lingering ? end - LINGER_FADE : end === to ? exitAt : end - 140;
+      const fadeStart = lingering ? end - LINGER_FADE : end === to ? (ctx.exit ? exitAt : end) : end - 140;
       const finish = (o: [number, number, Ease?][]) => {
         if (ctx.exit || end !== to) {
           const start = Math.max(fadeStart, o.at(-1)![0] + 1);
@@ -388,39 +485,48 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
       if (feature.kind === "ask") {
         // The mark turns up from the lower left of its box (the sample's 30 % / 90 % origin) and settles upright.
         const at = start;
-        if (paintedFrameCount(at, end, fps) < 2) return;
+        // It settles in 320 ms, or in what is left before it leaves less a moment to read; a cue too short for that goes without it.
+        const rise = Math.min(320, fadeStart - at - REST_MS);
+        if (rise < MIN_RISE) return;
         const origin = { dx: -0.2 * sized.advance * side, dy: 0.05 * size };
         pieces.push({
           id: `${ctx.id}:ask${k}`, kind: "text", z: 4, fromMs: at, toMs: end, text: "?", face: NUMERAL_FACE, sizePx: size, letterSpacingEm: 0,
           fill: c.primary, fillAlpha: 0, stroke: { widthPx: numeralStrokes, colour: c.primary }, anchor: "baseline-center", language: cue.language, origin,
           track: {
             x: [[at, left + sized.advance / 2 + origin.dx]],
-            y: [[at, baseline + origin.dy + 40 * un], [at + 320, baseline + origin.dy, "out"]],
-            rz: [[at, 12 * side], [at + 320, 0, "out"]],
-            o: finish([[at, 0], [at + 320, 0.9, "out"]]),
+            y: [[at, baseline + origin.dy + 40 * un], [at + rise, baseline + origin.dy, "out"]],
+            rz: [[at, 12 * side], [at + rise, 0, "out"]],
+            o: finish([[at, 0], [at + rise, 0.9, "out"]]),
           },
         });
         return;
       }
-      // Digit i rises from behind the numeral's baseline at 50 i ms and 1 em of travel, in a window that hides it until then.
-      [...feature.text].forEach((digit, i) => {
+      // Digit i rises from behind the numeral's baseline 50 i ms after the first, 300 ms and 1 em of travel each, in a window that
+      // hides it until then. A short cue compresses the whole rise to the time it has (a partial year is never left on screen), and
+      // one with no room to read the finished year goes without the numeral.
+      const digits = [...feature.text];
+      const full = (digits.length - 1) * 50 + 300;
+      const squeeze = Math.min(1, (fadeStart - start - REST_MS) / full);
+      const stagger = 50 * squeeze;
+      const rise = 300 * squeeze;
+      if (rise < MIN_RISE) return;
+      digits.forEach((digit, i) => {
         const prefix = feature.text.slice(0, i);
         const x0 = prefix ? ctx.input.measure(prefix, NUMERAL_FACE, size, 0).advance : 0;
         const w = ctx.input.measure(digit, NUMERAL_FACE, size, 0).advance;
-        const at = start + i * 50;
-        if (paintedFrameCount(at, end, fps) < 2) return;
+        const at = start + i * stagger;
         const cx = left + x0 + w / 2;
         const o = finish([[at, 1]]);
         pieces.push({
           id: `${ctx.id}:num${k}d${i}`, kind: "text", z: 4, fromMs: at, toMs: end, text: digit, face: NUMERAL_FACE, sizePx: size, letterSpacingEm: 0,
           fill: c.primary, fillAlpha: 0, stroke: { widthPx: numeralStrokes, colour: c.primary, alpha: 0.92 }, anchor: "baseline-center", language: cue.language,
-          track: { x: [[at, cx]], y: [[at, baseline + size], [at + 300, baseline, "out"]], o },
+          track: { x: [[at, cx]], y: [[at, baseline + size], [at + rise, baseline, "out"]], o },
           clip: { x1: [[at, cx - w / 2 - 2 * numeralStrokes]], x2: [[at, cx + w / 2 + 2 * numeralStrokes]], y1: [[at, baseline - size]], y2: [[at, baseline + 0.04 * size]] },
         });
       });
     });
     return pieces;
-  }).build(input).pieces;
+  });
 }
 
 /** Cue of a piece, or NaN for the timeline's. */
@@ -441,7 +547,7 @@ function lingers(pieces: readonly Piece[], input: SceneInput): Map<number, numbe
   const out = new Map<number, number>();
   for (const [index, digits] of years) {
     const to = Math.max(...digits.map((piece) => piece.toMs));
-    const settled = Math.max(...digits.map((piece) => piece.fromMs)) + 320;
+    const settled = Math.max(...digits.map((piece) => piece.track.y?.at(-1)?.[0] ?? piece.fromMs));
     if (settled >= to) continue;
     const boxes = digits.flatMap((piece) => pieceBounds(piece, settled, input.measure) ?? []);
     if (boxes.length === 0) continue;
