@@ -3,7 +3,7 @@ import { EASES, type Frames, clamp, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import { SAFE_INSET, balancedRows } from "../layout";
-import type { ColourFrames, PathCmd, Piece, TextPiece } from "../scene";
+import type { PathCmd, Piece, TextPiece, Track } from "../scene";
 import { ellipsePath, roundedRectPath, sparklePath } from "../shapes";
 import { galleryScene, rowsOf } from "./gallery-layout";
 
@@ -19,17 +19,29 @@ import { galleryScene, rowsOf } from "./gallery-layout";
  *   area shrinks, as a whole, like every style.
  * - **Bulbs and frame never touch a word.** The ring sits in the frame band, outside the sample's 80 px of padding; row
  *   heights come from the measured ink (Devanagari is taller than Latin caps), so the sign grows for them as well.
- * - **Bulbs are individual, stable pieces.** The sample re-spaces the ring from the live panel size every frame, so bulbs hop
- *   along it when the count changes. Here each bulb keeps its place on the ring and appears (scale and fade) as the growing
- *   frame reaches it; the corner bulbs ride the frame. The ring is at most 28 bulbs; the chase runs over the final ring's order.
- *   A bulb is a dim brass dot that lights cream with a soft halo disc (no blur), 1 of every 3 is dark, as in the sample.
+ * - **The ring is cheap and stays on the rim.** The sample re-spaces the ring from the live panel size every frame, so bulbs hop
+ *   along it when the count changes. Here a ring is laid out for each size the sign has (corner bulbs, even spacing, at most 24
+ *   bulbs) and drawn as a few strips per side (dark brass dots, and cream cores with their halo as a border, one set per third of
+ *   the chase; 1 of every 3 is dark, as in the sample). While the sign grows, the old ring stretches with it and the new one
+ *   fades in once the frame has nearly arrived, so bulbs never sit on a word. A ring drawn as sign-sized pieces, or as a piece
+ *   per bulb, cost over 1.5x Headline; this one is the cheap shape.
+ * - **The sign leads the words (review).** It starts growing 160 ms before the word that needs the room is first painted (the
+ *   slide is shortened to arrive by then), words open and shut with the sign, a word that arrives is pinned to the row it joins,
+ *   and a word's largest pop stays 0.6 padding inside the plate: the plate holds every word's whole ink on every painted frame.
+ * - **Long CJK text wraps (review).** Han, kana and Hangul runs break between characters at valid line breaks (never a row that
+ *   starts with a closing mark or ends with an opening one) before any shrink, like Latin words that are too long.
+ * - **Short windows get still beats (review).** A cue window under 240 ms (a 70 ms word at a zero gap) draws its sweep and glint
+ *   as still poses on every frame; a window under 134 ms draws the glint still.
+ * - **The sweeps keep the plate dark enough (review).** Both are fixed colours at low alpha (white 0.14, gold 0.16), so the lightest
+ *   the plate gets under a word stays inside the 3:1 bar the brand `readsOn` entries read against.
  * - **Hero pop stays on the plate.** The sample's 1.3x start would run past the frame for a wide key word; it starts as large
  *   as the plate and the safe area allow (at most 1.3x). The panel's own spring overshoot is trimmed to about 4%.
  * - **The exit waits for the speech.** It starts once the last word has been readable for 150 ms and is the sample's 190 ms
  *   shut-off, shortened when the next cue is sooner (a hard cut when there is no room). The sample's frozen dim bulbs are gone:
  *   bulbs fade out with the sign.
- * - **Cheap shadows.** The frame's two box-shadows are dropped (the near-black frame stands out on its own and a blurred copy of the
- *   whole sign costs every frame); the words' glow is one blurred shadow.
+ * - **Cheap sign.** The frame's two box-shadows are dropped (the near-black frame stands out on its own), the frame is four rim
+ *   strips with a 21 px corner (libass pays for a piece by its whole bitmap, so one sign-sized rectangle behind the plate costs
+ *   a lot), the plate's gold line is four thin rules, and only the key word glows (one blurred shadow).
  * - Extra recurring beats, none on a word: (1) a soft light sweep that crosses the plate under the words as the sign opens, and
  *   again in gold when the key word lands; (2) a pair of glints on diagonal frame corners when the last word arrives; (3) on
  *   key-word cues, short gold rays burst from the frame while the bulbs flash. Corners, angles and lengths come from a hash of
@@ -58,11 +70,18 @@ const PAD_Y = 30;
 const MIN_PANEL_W = 330;
 const BULB_PITCH = 60;
 const BULB_R = 9;
-const MAX_BULBS = 28;
+const MAX_BULBS = 24;
 const STEP_MS = 90;
+/** The longest a slide (the sign growing, the words re-centring) takes; it is shortened to reach 99 % by the time the word that needs the room is first painted. */
 const SLIDE = 320;
 const WORD_LEAD = 70;
-const SIMPLE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{N}\p{P}\p{S}]+$/u;
+/** Scripts a word may be broken inside without breaking its shaping: cased scripts and the no-space CJK scripts. */
+const SIMPLE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{S}]+$/u;
+/** CJK line breaking: a row never starts with a closing mark or the prolonged-sound mark, nor ends with an opening one. */
+const NO_START = /^[\p{Pe}\p{Pf}\p{Po}\u30FC\u3005\u309D\u309E]/u;
+const NO_END = /^[\p{Ps}\p{Pi}]$/u;
+/** The sign starts to grow this long before the word that needs the room is first painted. */
+const GROW_LEAD = 160;
 /** A word that would have to shrink below this size (sample px, about half the body size) breaks over several rows instead. */
 const MIN_SIZE = 70;
 const FLASH = [0, 110, 190, 300, 380, 490, 560] as const;
@@ -88,13 +107,6 @@ interface Unit {
   readonly w100: number;
   /** Sample px, fitted to its row. */
   readonly size: number;
-}
-
-interface Bulb {
-  readonly kind: "corner" | "top" | "bottom" | "left" | "right";
-  /** Corner: sign of x and y. Top and bottom: x from the centre. Sides: distance down from the inner top edge. */
-  readonly a: number;
-  readonly b: number;
 }
 
 export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
@@ -124,11 +136,18 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
       const floor = Math.min(natural, MIN_SIZE);
       const fitted = (rowMax / Math.max(1, width100[wi]!)) * 100;
       const parts = clusters.length > 1 && fitted < floor ? Math.min(clusters.length, Math.ceil((floor * width100[wi]!) / (100 * rowMax))) : 1;
-      const per = Math.ceil(clusters.length / parts);
-      return Array.from({ length: Math.ceil(clusters.length / per) }, (_, part) => {
-        const text = parts === 1 ? word.text : clusters.slice(part * per, (part + 1) * per).join("");
-        const w100 = parts === 1 ? width100[wi]! : measure(text, FACE, 100, SPACING).advance;
-        return { word: wi, part, parts: Math.ceil(clusters.length / per), text, w100, size: Math.min(natural, (rowMax / Math.max(1, w100)) * 100) };
+      // Equal pieces, each cut moved on until it respects the line-breaking rules above.
+      const cuts = [0];
+      for (let p = 1; p < parts; p++) {
+        let cut = Math.max(cuts.at(-1)! + 1, Math.round((p * clusters.length) / parts));
+        while (cut < clusters.length - 1 && (NO_START.test(clusters[cut]!) || NO_END.test(clusters[cut - 1]!))) cut++;
+        if (cut < clusters.length) cuts.push(cut);
+      }
+      cuts.push(clusters.length);
+      const pieces = cuts.slice(0, -1).map((from, at) => (parts === 1 ? word.text : clusters.slice(from, cuts[at + 1]).join(""))).filter((text) => text.length > 0);
+      return pieces.map((text, part) => {
+        const w100 = pieces.length === 1 ? width100[wi]! : measure(text, FACE, 100, SPACING).advance;
+        return { word: wi, part, parts: pieces.length, text, w100, size: Math.min(natural, (rowMax / Math.max(1, w100)) * 100) };
       });
     });
     const widths = units.map((unit) => (unit.w100 * unit.size) / 100);
@@ -208,6 +227,11 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
   // other (nothing arriving overlaps a readable word). Each slide starts from where the unit actually is.
   const enters = cue.words.map((word) => ctx.enter(word, word.role === "hero" ? 420 : 260, WORD_LEAD));
   const steps = enters.map((enter) => enter.from);
+  // The sign leads the words: it starts growing GROW_LEAD ms before the word that needs the room is first painted, so the
+  // plate already holds the word's whole ink (and a row it pushes aside has already moved) on that first frame.
+  const grow: number[] = [];
+  for (const [k, at] of steps.entries()) grow.push(k === 0 ? at : Math.max(at - GROW_LEAD, grow[k - 1]!));
+  const slide = steps.map((at, k) => (k === 0 ? SLIDE : clamp((at - grow[k]!) / 0.7, 100, SLIDE)));
   const startPos: Map<number, { x: number; y: number }>[] = [];
   const startSize: { pw: number; ph: number }[] = [];
   cue.words.forEach((_, k) => {
@@ -215,7 +239,7 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
     const old: number[] = [];
     if (k === 0) startSize.push({ pw: target[0]!.pw, ph: target[0]!.ph });
     else {
-      const e = EASES.outExpo(prog(steps[k]!, steps[k - 1]!, SLIDE));
+      const e = EASES.outExpo(prog(grow[k]!, grow[k - 1]!, slide[k - 1]!));
       for (const [i] of target[k - 1]!.pos) {
         const before = startPos[k - 1]!.get(i)!;
         const was = target[k - 1]!.pos.get(i)!;
@@ -241,12 +265,12 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
   });
   const stepAt = (t: number) => {
     let k = 0;
-    for (let s = 0; s < steps.length; s++) if (t >= steps[s]!) k = s;
+    for (let s = 0; s < grow.length; s++) if (t >= grow[s]!) k = s;
     return k;
   };
   const position = (i: number, t: number) => {
     const k = Math.max(units[i]!.word, stepAt(t));
-    const e = EASES.outExpo(prog(t, steps[k]!, SLIDE));
+    const e = EASES.outExpo(prog(t, grow[k]!, slide[k]!));
     const from = startPos[k]!.get(i)!;
     const at = target[k]!.pos.get(i)!;
     return { x: lerp(from.x, at.x, e), y: lerp(from.y, at.y, e) };
@@ -265,7 +289,7 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
   };
   const size = memo((t: number) => {
     const k = stepAt(t);
-    const e = EASES.outExpo(prog(t, steps[k]!, SLIDE));
+    const e = EASES.outExpo(prog(t, grow[k]!, slide[k]!));
     return { pw: lerp(startSize[k]!.pw, target[k]!.pw, e), ph: lerp(startSize[k]!.ph, target[k]!.ph, e) };
   });
 
@@ -285,8 +309,8 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
     const spring = EASES.spring(open(t));
     return lerp(popFrom, 1, spring <= 1 ? spring : 1 + (spring - 1) * 0.35) * (1 - 0.1 * leave(t));
   });
-  const alive = (t: number) => lerp(aliveFrom, 1, clamp(open(t) * 4)) * (1 - leave(t));
-  const edges = [panelFrom, panelFrom + openFor, ...steps, ...steps.map((s) => s + SLIDE), ctx.exitAt, to];
+  const alive = (t: number) => lerp(aliveFrom, 1, clamp((t - panelFrom) / 45)) * (1 - leave(t));
+  const edges = [panelFrom, panelFrom + openFor, ...grow, ...grow.map((s, k) => s + slide[k]!), ctx.exitAt, to];
   const frames = (fn: (t: number) => number, tolerance: number, a = panelFrom, b = to, extra: number[] = []) =>
     sampleFrames(fn, [...edges, ...extra], tolerance, { range: [a, Math.max(b, a + 1)], simplify: true });
   const exitBound = ctx.exit ? ctx.exitAt : to;
@@ -298,118 +322,167 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
   const hold = (value: number): Frames => [[panelFrom, value]];
 
   // The sign: frame and plate grow with the words.
-  const frame = ctx.shape("sign", panelFrom, roundedRectPath(-pwF / 2, -phF / 2, pwF, phF, 40 * u), {
-    x: hold(cx), y: hold(cy),
-    sx: frames((t) => (popScale(t) * size(t).pw) / pwF, 0.003), sy: frames((t) => (popScale(t) * size(t).ph) / phF, 0.003),
-    o: frames(alive, 0.004),
-  }, FRAME);
-  pieces.push({ ...frame, z: 1 });
+  // The brass-black frame is four rim pieces, not one big rounded rectangle behind the plate: libass pays for a piece by its whole
+  // bitmap, and a sign-sized rectangle is the dearest thing on screen. The strips run a little under the plate so no seam shows.
+  const lap = 2 * u;
+  const radius = Math.min(40 * u, frameW);
+  const rim = (name: string, horizontal: boolean, towards: number) => {
+    const thick = frameW + lap;
+    const length = horizontal ? pwF : phF - 2 * frameW + 2 * lap;
+    const path = horizontal
+      ? roundedRectPath(-length / 2, -thick / 2, length, thick, towards < 0 ? [radius, radius, 0, 0] : [0, 0, radius, radius])
+      : roundedRectPath(-thick / 2, -length / 2, thick, length, 0);
+    const place = (t: number) => {
+      const { pw, ph } = size(t);
+      return ((horizontal ? ph : pw) / 2 - thick / 2) * towards;
+    };
+    const stretch = (t: number) => {
+      const { pw, ph } = size(t);
+      return (popScale(t) * (horizontal ? pw : ph - 2 * frameW + 2 * lap)) / length;
+    };
+    const shape = ctx.shape(name, panelFrom, path, {
+      x: horizontal ? hold(cx) : frames((t) => cx + popScale(t) * place(t), 0.15),
+      y: horizontal ? frames((t) => cy + popScale(t) * place(t), 0.15) : hold(cy),
+      sx: horizontal ? frames(stretch, 0.003) : frames(popScale, 0.003),
+      sy: horizontal ? frames(popScale, 0.003) : frames(stretch, 0.003),
+      o: frames(alive, 0.004),
+    }, FRAME);
+    pieces.push({ ...shape, z: 1 });
+  };
+  rim("sign-top", true, -1);
+  rim("sign-bottom", true, 1);
+  rim("sign-left", false, -1);
+  rim("sign-right", false, 1);
   const plate = ctx.shape("plate", panelFrom, roundedRectPath(-innerW / 2, -innerH / 2, innerW, innerH, 14 * u), {
     x: hold(cx), y: hold(cy),
     sx: frames((t) => (popScale(t) * (size(t).pw - inset)) / innerW, 0.003), sy: frames((t) => (popScale(t) * (size(t).ph - inset)) / innerH, 0.003),
     o: frames(alive, 0.004),
   }, PLATE);
-  pieces.push({ ...plate, z: 2, stroke: { widthPx: 3 * u, colour: RULE } });
-
-  // The bulb ring, laid out for the final sign: corner bulbs ride the frame, the others keep their place and appear as it reaches them.
-  const m = frameW / 2;
-  const inW = pwF - 2 * m;
-  const inH = phF - 2 * m;
-  let pitch = BULB_PITCH * u;
-  let nTop = 0;
-  let nSide = 0;
-  for (let tries = 0; tries < 12; tries++) {
-    nTop = Math.max(0, Math.round(inW / pitch) - 1);
-    nSide = Math.max(0, Math.round(inH / pitch) - 1);
-    if (4 + 2 * nTop + 2 * nSide <= MAX_BULBS) break;
-    pitch *= 1.12;
-  }
-  const spanTop = inW / (nTop + 1);
-  const spanSide = inH / (nSide + 1);
-  const ring: Bulb[] = [{ kind: "corner", a: -1, b: -1 }];
-  for (let j = 1; j <= nTop; j++) ring.push({ kind: "top", a: -inW / 2 + spanTop * j, b: 0 });
-  ring.push({ kind: "corner", a: 1, b: -1 });
-  for (let j = 1; j <= nSide; j++) ring.push({ kind: "right", a: spanSide * j, b: 0 });
-  ring.push({ kind: "corner", a: 1, b: 1 });
-  for (let j = nTop; j >= 1; j--) ring.push({ kind: "bottom", a: -inW / 2 + spanTop * j, b: 0 });
-  ring.push({ kind: "corner", a: -1, b: 1 });
-  for (let j = nSide; j >= 1; j--) ring.push({ kind: "left", a: spanSide * j, b: 0 });
-  const bulbAt = (bulb: Bulb, t: number) => {
-    const { pw, ph } = size(t);
-    const hw = pw / 2 - m;
-    const hh = ph / 2 - m;
-    let x = 0;
-    let y = 0;
-    let room = 1;
-    switch (bulb.kind) {
-      case "corner": x = bulb.a * hw; y = bulb.b * hh; break;
-      case "top": x = bulb.a; y = -hh; room = (hw - Math.abs(bulb.a)) / spanTop; break;
-      case "bottom": x = bulb.a; y = hh; room = (hw - Math.abs(bulb.a)) / spanTop; break;
-      case "right": x = hw; y = -hh + bulb.a; room = (2 * hh - bulb.a) / spanSide; break;
-      case "left": x = -hw; y = -hh + bulb.a; room = (2 * hh - bulb.a) / spanSide; break;
-    }
-    const shown = clamp((room - 0.45) / 0.3);
-    const pop = popScale(t);
-    return { x: cx + x * pop, y: cy + y * pop, s: Math.max(0.02, shown * pop) };
+  pieces.push({ ...plate, z: 2 });
+  // The gold line round the plate is four thin rules (a stroke on the plate would double its bitmap, the biggest on screen).
+  const rule = 3 * u;
+  const ruleSide = (name: string, horizontal: boolean, towards: number) => {
+    const length = (horizontal ? innerW : innerH) - 2 * rule;
+    const path = roundedRectPath(horizontal ? -length / 2 : -rule / 2, horizontal ? -rule / 2 : -length / 2, horizontal ? length : rule, horizontal ? rule : length, rule / 2);
+    const place = (t: number) => {
+      const { pw, ph } = size(t);
+      return (horizontal ? (ph - inset) / 2 : (pw - inset) / 2) * towards - (rule / 2) * towards;
+    };
+    const stretch = (t: number) => (popScale(t) * ((horizontal ? size(t).pw : size(t).ph) - inset - 2 * rule)) / length;
+    const shape = ctx.shape(name, panelFrom, path, {
+      x: horizontal ? hold(cx) : frames((t) => cx + popScale(t) * place(t), 0.15),
+      y: horizontal ? frames((t) => cy + popScale(t) * place(t), 0.15) : hold(cy),
+      sx: horizontal ? frames(stretch, 0.003) : frames(popScale, 0.003),
+      sy: horizontal ? frames(popScale, 0.003) : frames(stretch, 0.003),
+      o: frames(alive, 0.004),
+    }, RULE);
+    pieces.push({ ...shape, z: 3 });
   };
+  ruleSide("rule-top", true, -1);
+  ruleSide("rule-bottom", true, 1);
+  ruleSide("rule-left", false, -1);
+  ruleSide("rule-right", false, 1);
+
+  // The bulb ring. Between two growth steps the sign has one size, and its ring is drawn as a few strips: per side of the sign, the
+  // dark brass dots and, for each third of the ring (they share one chase), the cream cores with their halo as a border, so a ring
+  // costs a few dozen small bitmaps per frame, never one sign-sized one. When the sign grows to a new size a ring for that size takes over from the old
+  // one in a short cross-fade, after the frame has nearly reached it. Corner bulbs, spacing and the count of at most 24 follow the
+  // sample's ring (a bulb at every corner, evenly spaced along each side), laid out on the sign's size.
+  const m = frameW / 2;
+  const ringAt = (pw: number, ph: number) => {
+    const inW = pw - 2 * m;
+    const inH = ph - 2 * m;
+    let pitch = BULB_PITCH * u;
+    let nTop = 0;
+    let nSide = 0;
+    for (let tries = 0; tries < 12; tries++) {
+      nTop = Math.max(0, Math.round(inW / pitch) - 1);
+      nSide = Math.max(0, Math.round(inH / pitch) - 1);
+      if (4 + 2 * nTop + 2 * nSide <= MAX_BULBS) break;
+      pitch *= 1.12;
+    }
+    // Each bulb knows the side of the sign it sits on (a corner belongs to the side it starts): a ring piece is drawn per side, so
+    // its bitmap is a thin strip, not the whole sign.
+    const pts: { x: number; y: number; side: number }[] = [{ x: -inW / 2, y: -inH / 2, side: 0 }];
+    for (let j = 1; j <= nTop; j++) pts.push({ x: -inW / 2 + (inW * j) / (nTop + 1), y: -inH / 2, side: 0 });
+    pts.push({ x: inW / 2, y: -inH / 2, side: 1 });
+    for (let j = 1; j <= nSide; j++) pts.push({ x: inW / 2, y: -inH / 2 + (inH * j) / (nSide + 1), side: 1 });
+    pts.push({ x: inW / 2, y: inH / 2, side: 2 });
+    for (let j = nTop; j >= 1; j--) pts.push({ x: -inW / 2 + (inW * j) / (nTop + 1), y: inH / 2, side: 2 });
+    pts.push({ x: -inW / 2, y: inH / 2, side: 3 });
+    for (let j = nSide; j >= 1; j--) pts.push({ x: -inW / 2, y: -inH / 2 + (inH * j) / (nSide + 1), side: 3 });
+    return pts;
+  };
+  const layouts: { pw: number; ph: number; at: number }[] = [];
+  target.forEach((layout, k) => {
+    const previous = layouts.at(-1);
+    if (previous && Math.abs(previous.pw - layout.pw) < 0.5 && Math.abs(previous.ph - layout.ph) < 0.5) return;
+    layouts.push({ pw: layout.pw, ph: layout.ph, at: k === 0 ? panelFrom : Math.max(grow[k]! + 50, (previous?.at ?? panelFrom) + 100) });
+  });
 
   // Chase: every bulb is lit for two steps of three, bright head then a half tail; the key word flashes the whole ring.
   const chaseFrom = panelFrom;
   // The sample flashes from 50 ms before the key word, its words enter 70 ms before.
   const flashAt = hasHero ? enters[heroAt]!.from + 20 : Number.POSITIVE_INFINITY;
-  const level = (t: number, i: number) => {
+  const level = (t: number, third: number) => {
     if (hasHero && t >= flashAt && t < flashAt + FLASH[6]) return (t - flashAt) % 190 < 110 ? 2 : 0;
-    const r = (((Math.floor((t - chaseFrom) / STEP_MS) - i) % 3) + 3) % 3;
+    const r = (((Math.floor((t - chaseFrom) / STEP_MS) - third) % 3) + 3) % 3;
     return r === 0 ? 2 : r === 1 ? 1 : 0;
   };
   const changes: number[] = [];
-  for (let p = 1; chaseFrom + p * STEP_MS < exitBound; p++) changes.push(chaseFrom + p * STEP_MS);
-  if (hasHero) for (const at of FLASH) if (flashAt + at > chaseFrom && flashAt + at < exitBound) changes.push(flashAt + at);
+  for (let p = 1; chaseFrom + p * STEP_MS < exitBound; p++) changes.push(Math.round(chaseFrom + p * STEP_MS));
+  if (hasHero) for (const at of FLASH) if (flashAt + at > chaseFrom && flashAt + at < exitBound) changes.push(Math.round(flashAt + at));
   changes.sort((a, b) => a - b);
-  const haloAlpha = [0, 0.7, 1] as const;
-  const key = hash(`${index}:${cue.words.map((word) => word.text).join(" ")}`);
-  // Every bulb is sampled on one shared grid of times (dense where the sign opens, grows or shuts, so it follows the same curves),
-  // so a ring of bulbs adds a handful of distinct keyframe times to the cue, not a handful per bulb.
-  const GROW = [0.03, 0.06, 0.1, 0.15, 0.2, 0.27, 0.35, 0.45, 0.6, 0.8, 1] as const;
-  const gridTimes = new Set<number>([panelFrom, to]);
-  for (let n = 0; n <= 12; n++) gridTimes.add(panelFrom + (openFor * n) / 12);
-  for (const at of steps) for (const p of GROW) gridTimes.add(at + SLIDE * p);
-  if (ctx.exit) for (let n = 0; n <= 6; n++) gridTimes.add(ctx.exitAt + (exitFor * n) / 6);
-  const gridAt = [...gridTimes].map((t) => Math.round(t * 10) / 10).filter((t) => t >= panelFrom && t <= to).sort((a, b) => a - b).filter((t, i, all) => i === 0 || t > all[i - 1]!);
-  const grid = (fn: (t: number) => number): Frames => {
-    const values = gridAt.map((t) => fn(t));
-    const kept: [number, number][] = [];
-    values.forEach((value, i) => {
-      const same = (j: number) => values[j] !== undefined && Math.abs(values[j]! - value) < 1e-3;
-      if (i > 0 && i < values.length - 1 && same(i - 1) && same(i + 1)) return;
-      kept.push([gridAt[i]!, value]);
+  /** A track that is smooth except for the chase's jumps: each stretch between two jumps is sampled on its own. */
+  const stepped = (fn: (t: number) => number, a: number, b: number, extra: number[]): Frames => {
+    const cuts = [Math.round(a), ...changes.filter((t) => t > a + 1 && t < b - 1), Math.round(b)];
+    const out: [number, number][] = [];
+    cuts.slice(0, -1).forEach((lo, i) => {
+      const hi = cuts[i + 1]!;
+      const last = i === cuts.length - 2;
+      const end = last ? hi : hi - 1;
+      const sub = end > lo ? sampleFrames(fn, extra, 0.004, { range: [lo, end], simplify: true }) : [[lo, fn(lo)] as const];
+      for (const frame of sub) out.push([frame[0], frame[1]]);
+      // A constant stretch comes back as one frame: hold it to the end, so the next stretch's first frame is a step, not a ramp.
+      const tail = out.at(-1)!;
+      if (tail[0] < end) out.push([end, tail[1]]);
     });
-    return kept;
+    return out;
   };
-  const fader: Frames = ctx.exit ? [[panelFrom, 1], [ctx.exitAt, 1], [to, 0, "in"]] : [[panelFrom, 1]];
-  ring.forEach((bulb, i) => {
-    const x = grid((t) => bulbAt(bulb, t).x);
-    const y = grid((t) => bulbAt(bulb, t).y);
-    const s = grid((t) => bulbAt(bulb, t).s);
-    let lastAt = chaseFrom;
-    let value = level(chaseFrom, i);
-    const colour: [number, string][] = [[chaseFrom, value > 0 ? c.accent : BULB_OFF]];
-    const halo: [number, number][] = [[chaseFrom, haloAlpha[value]!]];
-    for (const at of changes) {
-      const next = level(at + 0.001, i);
-      const whole = Math.round(at);
-      if (next === value || whole <= lastAt + 1) continue;
-      colour.push([whole, value > 0 ? c.accent : BULB_OFF], [whole + 1, next > 0 ? c.accent : BULB_OFF]);
-      halo.push([whole, haloAlpha[value]!], [whole + 1, haloAlpha[next]!]);
-      value = next;
-      lastAt = whole + 1;
+  const key = hash(`${index}:${cue.words.map((word) => word.text).join(" ")}`);
+    const discs = (points: readonly { x: number; y: number }[], radius: number): PathCmd[] => points.flatMap(({ x, y }) => ellipsePath(x, y, radius));
+  layouts.forEach((layout, at) => {
+    const next = layouts[at + 1];
+    const from = layout.at;
+    const until = next ? Math.min(to, Math.round(next.at + 51)) : to;
+    if (until <= from) return;
+    const fadeIn = (t: number) => clamp((t - from) / (at === 0 ? 60 : 70));
+    const fadeOut = (t: number) => (next ? 1 - clamp((t - (next.at - 30)) / 80) : 1);
+    const window = (t: number) => fadeIn(t) * fadeOut(t) * (1 - leave(t));
+    const around = [from, from + 70, ...(next ? [next.at - 30, next.at + 50] : []), panelFrom + openFor, ctx.exitAt, ...grow, ...grow.map((g, k) => g + slide[k]!)];
+    const ring = ringAt(layout.pw, layout.ph);
+    const track = (o: Frames): Track => ({
+      x: [[from, cx]], y: [[from, cy]],
+      // The ring follows the sign while it grows (its dots stretch a little for a moment), so it stays on the rim and off the words.
+      sx: sampleFrames((t) => (popScale(t) * size(t).pw) / layout.pw, around, 0.003, { range: [from, until], simplify: true }),
+      sy: sampleFrames((t) => (popScale(t) * size(t).ph) / layout.ph, around, 0.003, { range: [from, until], simplify: true }),
+      o,
+    });
+    const piece = (id: string, path: PathCmd[], fill: string, alpha: number, z: number, o: Frames, halo = false) => {
+      const shape = ctx.shape(id, from, path, track(o), fill);
+      // A lit bulb's halo is the border of its cream disc (one piece, not two): a soft amber ring about as wide as the bulb.
+      pieces.push({ ...shape, z, toMs: until, bleed: true, fill: { colour: fill, alpha }, ...(halo ? { stroke: { widthPx: BULB_R * u * 1.1, colour: GLOW, alpha: 0.34 } } : {}) });
+    };
+    for (let side = 0; side < 4; side++) {
+      const onSide = ring.map((point, i) => ({ ...point, i })).filter((point) => point.side === side);
+      if (onSide.length === 0) continue;
+      piece(`dark${at}-${side}`, discs(onSide, BULB_R * u), BULB_OFF, 1, 4, sampleFrames(window, around, 0.004, { range: [from, until], simplify: true }));
+      for (let third = 0; third < 3; third++) {
+        const mine = onSide.filter((point) => point.i % 3 === third);
+        if (mine.length === 0) continue;
+        piece(`core${at}-${side}${third}`, discs(mine, BULB_R * u), c.accent, 1, 5, stepped((t) => (level(t, third) > 0 ? 1 : 0) * window(t), from, until, around), true);
+      }
     }
-    const core = ctx.shape(`bulb${i}`, panelFrom, ellipsePath(0, 0, BULB_R * u), { x, y, sx: s, sy: s, o: ctx.exit ? fader : hold(1), colour: colour as ColourFrames }, BULB_OFF);
-    // Bulbs always sit inside the frame, which is what bounds the sign: leave them out of the per-frame bounds scans (cost).
-    pieces.push({ ...core, z: 4, bleed: true });
-    const haloFrames: Frames = ctx.exit ? [...halo, [Math.max(ctx.exitAt, lastAt + 1), haloAlpha[value]!], [to, 0, "in"]] : halo;
-    const glow = ctx.shape(`glow${i}`, panelFrom, ellipsePath(0, 0, BULB_R * u * 2.3), { x, y, sx: s, sy: s, o: haloFrames }, GLOW);
-    pieces.push({ ...glow, z: 3, bleed: true, fill: { colour: GLOW, alpha: 0.32 } });
   });
 
   // Words (a broken word is one piece per part, `w<word>l<part>`).
@@ -426,37 +499,46 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
     const halfW = cell.width / 2;
     const halfH = (cell.inkBottom - cell.inkTop) / 2;
     const room1 = Math.min(
-      (target[unit.word]!.pw / 2 - 1.2 * frameW - Math.abs(here.x)) / halfW,
+      (target[unit.word]!.pw / 2 - (FRAME_W + 0.6 * PAD_X) * u - Math.abs(here.x)) / halfW,
       Math.min(safe.x2 - margin - (cx + here.x), cx + here.x - safe.x1 - margin) / halfW,
-      (target[unit.word]!.ph / 2 - 1.2 * frameW - Math.abs(here.y)) / Math.max(1, halfH),
+      (target[unit.word]!.ph / 2 - (FRAME_W + 0.6 * PAD_Y) * u - Math.abs(here.y)) / Math.max(1, halfH),
     );
     const start = clamp(room1 * 0.995, 1, hero ? 1.3 : 1.12);
     const pop = (t: number) => prog(t, from, popFor);
-    const scale = (t: number) => lerp(start, 1, hero ? EASES.spring(pop(t)) : EASES.outExpo(pop(t))) * (1 - 0.1 * leave(t));
+    // Words open and shut with the sign (position and size), so the plate holds them while it pops.
+    const scale = (t: number) => lerp(start, 1, hero ? EASES.spring(pop(t)) : EASES.outExpo(pop(t))) * popScale(t);
     const opacity = (t: number) => lerp(0.1, 1, clamp(prog(t, from, ramp))) * (1 - leave(t));
-    const wordEdges = [from, from + ramp, from + popFor, ...steps, ...steps.map((s) => s + SLIDE), ctx.exitAt, to];
+    const wordEdges = [from, from + ramp, from + popFor, ...grow, ...grow.map((s, k) => s + slide[k]!), ctx.exitAt, to];
     const sample = (fn: (t: number) => number, tolerance: number) => sampleFrames(fn, wordEdges, tolerance, { range: [from, Math.max(to, from + 1)], simplify: true });
     const s = sample(scale, 0.002);
     const piece = ctx.face(cell, from, hero ? c.highlight : c.primary, {
-      x: sample((t) => cx + position(at, t).x, 0.15), y: sample((t) => cy + position(at, t).y, 0.15), sx: s, sy: s, o: sample(opacity, 0.004),
+      x: sample((t) => cx + position(at, t).x * popScale(t), 0.15), y: sample((t) => cy + position(at, t).y * popScale(t), 0.15), sx: s, sy: s, o: sample(opacity, 0.004),
     });
     piece.id = `${ctx.id}:w${unit.word}${unit.parts > 1 ? `l${unit.part}` : ""}`;
     piece.origin = { dx: 0, dy: mid.get(at)! };
-    piece.shadows = [{ dx: 0, dy: 0, blur: 9 * u, colour: GLOW, alpha: hero ? 0.7 : 0.45 }];
+    // Only the key word glows (a blurred copy of every word is the dearest thing on screen after the sign itself).
+    if (hero) piece.shadows = [{ dx: 0, dy: 0, blur: 9 * u, colour: GLOW, alpha: 0.7 }];
     pieces.push(piece);
   }
 
+  // A window too short for the moving beats (a 70 ms cue at a zero gap) gets a compact pose: the same piece, still, painted on every frame.
+  const compact = exitBound - panelFrom < 240;
+
   // Beat 1, every cue: a soft sweep of light crosses the plate under the words as the sign opens, and in gold when the key word lands.
-  const sweep = (name: string, at: number, length: number, colour: string, alpha: number) => {
+  // Both colours are fixed: the lightest the plate gets under a word stays below the 3:1 bar the brand guard reads against.
+  const sweep = (name: string, wanted: number, length: number, colour: string, alpha: number) => {
+    const at = compact ? panelFrom : wanted;
     const dur = Math.min(length, exitBound - at);
-    if (dur < 67) return;
+    if (dur < 33) return;
+    const still = compact || dur < 134;
     const half = innerH / 2 + 4 * u;
     const lean = 26 * u;
     const path: PathCmd[] = [["M", -34 * u + lean, -half], ["L", 34 * u + lean, -half], ["L", 34 * u - lean, half], ["L", -34 * u - lean, half], ["Z"]];
     const span = (fn: (t: number) => number, tolerance: number) =>
-      sampleFrames(fn, [at, at + dur, ...steps, ...steps.map((s) => s + SLIDE)], tolerance, { range: [at, at + dur], simplify: true });
+      sampleFrames(fn, [at, at + dur, ...grow, ...grow.map((s, k) => s + slide[k]!)], tolerance, { range: [at, at + dur], simplify: true });
+    const across = (t: number) => (still ? 0.15 : lerp(-1, 1, EASES.out(prog(t, at, dur))));
     const shape = ctx.shape(name, at, path, {
-      x: span((t) => cx + lerp(-1, 1, EASES.out(prog(t, at, dur))) * (size(t).pw / 2 + 40 * u), 0.2), y: hold(cy),
+      x: span((t) => cx + across(t) * (size(t).pw / 2 + (still ? 0 : 40 * u)), 0.2), y: hold(cy),
     }, colour);
     pieces.push({
       ...shape, z: 3, fromMs: at, toMs: Math.min(to, at + dur + 1), fill: { colour, alpha },
@@ -467,14 +549,15 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
       },
     });
   };
-  sweep("sweep0", first.from + 40, 440, "#FFFFFF", 0.16);
-  if (hasHero) sweep("sweep1", enters[heroAt]!.from + 20, 400, c.highlight, 0.22);
+  sweep("sweep0", first.from + 40, 440, "#FFFFFF", 0.14);
+  if (hasHero) sweep("sweep1", enters[heroAt]!.from + 20, 400, "#FFD060", 0.16);
 
   // Beat 2, every cue: a pair of glints on diagonal corners of the frame when the last word has arrived.
-  // Fast speech: the glints land by the cue's end at the latest, as a compact pose.
-  const glintAt = Math.min(steps[steps.length - 1]! + 60, Math.max(panelFrom + 33, exitBound - 134));
+  // Fast speech: they land by the cue's end at the latest, and in a window under 134 ms they are drawn still.
+  const wanted = steps[steps.length - 1]! + 60;
+  const glintAt = Math.max(panelFrom, Math.min(wanted, exitBound - Math.min(134, exitBound - panelFrom)));
   const glintLife = Math.min(420, exitBound - glintAt);
-  if (glintLife >= 67) {
+  if (glintLife >= 33) {
     const corner = key % 4;
     [corner, (corner + 2) % 4].forEach((which, n) => {
       const sx = which === 0 || which === 3 ? -1 : 1;
@@ -482,13 +565,14 @@ export const broadwayProgram = galleryScene("broadway", 1290, (ctx) => {
       const radius = (n === 0 ? 26 : 18) * u;
       const at = glintAt + n * 90;
       const life = Math.min(glintLife, exitBound - at);
-      if (life < 67) return;
+      if (life < 33) return;
       const gx = clamp(cx + sx * (pwF / 2 + 8 * u), safe.x1 + radius * 1.5 + margin, safe.x2 - radius * 1.5 - margin);
       const gy = clamp(cy + sy * (phF / 2 + 8 * u), safe.y1 + radius * 1.5 + margin, safe.y2 - radius * 1.5 - margin);
+      const still = life < 134;
+      const grows: Frames = still ? [[at, 1]] : [[at, 0], [at + life * 0.3, 1, "outBack"], [at + life, 0, "in"]];
       const shape = ctx.shape(`glint${n}`, at, sparklePath(radius), {
-        x: hold(gx), y: [[at, gy]],
-        sx: [[at, 0], [at + life * 0.3, 1, "outBack"], [at + life, 0, "in"]], sy: [[at, 0], [at + life * 0.3, 1, "outBack"], [at + life, 0, "in"]],
-        rz: [[at, -30 * sx], [at + life, 60 * sx]], o: [[at, 1]],
+        x: hold(gx), y: [[at, gy]], sx: grows, sy: grows,
+        rz: still ? [[at, 0]] : [[at, -30 * sx], [at + life, 60 * sx]], o: [[at, 1]],
       }, c.accent);
       pieces.push({ ...shape, z: 8, toMs: Math.min(to, at + life + 1) });
     });
