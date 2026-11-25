@@ -197,4 +197,36 @@ describe("ripple review fixes", () => {
       }
     }
   });
+
+  test("a word entering after the key word never rises through a ring", () => {
+    const { cues, pieces } = build(["go:m@100 wave:h@400 playing:b@500"]);
+    const faces = pieces.filter((piece) => piece.kind === "text" && piece.id.startsWith("ripple:0:w2"));
+    const rings = pieces.filter((piece) => piece.id.startsWith("ripple:0:ring"));
+    expect(faces.length).toBeGreaterThan(0);
+    expect(rings.length).toBeGreaterThan(0);
+    for (const t of exportFrameTimes(0, cues[0]!.endMs + 200, 30)) {
+      for (const face of faces) {
+        const word = pieceBounds(face, t, fakeMeasure);
+        if (!word) continue;
+        for (const ring of rings) {
+          const box = pieceBounds(ring, t, fakeMeasure);
+          if (box) expect(box.y1, `ring over ${face.id} at ${t}`).toBeGreaterThanOrEqual(word.y2 - 1);
+        }
+      }
+    }
+  });
+
+  test("a long word in decomposed (NFD) form still breaks across rows at a readable size", () => {
+    const word = "Donaudampfschifffahrtsgesellschaftskapitänskajütenschlüssel";
+    for (const form of ["NFC", "NFD"] as const) {
+      const text = word.normalize(form);
+      const { pieces } = build([`${text}:h@900`]);
+      const parts = pieces.filter((piece) => /^ripple:0:w0l\d$/.test(piece.id));
+      expect(parts.length, form).toBeGreaterThanOrEqual(2);
+      expect(parts.map((piece) => (piece.kind === "text" ? piece.text : "")).join(""), form).toBe(text);
+      for (const piece of parts) expect(piece.kind === "text" && piece.sizePx, form).toBeGreaterThanOrEqual(90);
+      // No row begins with a combining mark: a base letter never parts from its marks.
+      for (const piece of parts) expect(piece.kind === "text" && /^\p{M}/u.test(piece.text), form).toBe(false);
+    }
+  });
 });

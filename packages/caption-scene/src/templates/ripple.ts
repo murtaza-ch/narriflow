@@ -1,3 +1,4 @@
+import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import type { DemoScript } from "../demo";
 import { clamp, EASES, prog } from "../ease";
 import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
@@ -79,7 +80,7 @@ const hash = (text: string) => {
 };
 
 /** Words the face can draw letter by letter, and so can be broken across rows when one is wider than the column. */
-const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}]+$/u;
+const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{M}\p{N}\p{P}]+$/u;
 
 /** The caption band of the sample (y 860..1650 of 1920, moving with the anchor), above and below the anchor line. */
 const BAND_ABOVE = 1290 - 860;
@@ -125,7 +126,8 @@ export const rippleProgram = galleryScene("ripple", 1290, (ctx) => {
     const room = (COLUMN * 0.97 * 100) / size;
     const out: string[] = [];
     let row = "";
-    for (const ch of text) {
+    // Break between grapheme clusters, so a base letter never parts from its combining marks (NFD text).
+    for (const ch of captionTextClusters(text)) {
       if (row && at100(row + ch) > room) {
         out.push(row);
         row = "";
@@ -199,7 +201,9 @@ export const rippleProgram = galleryScene("ripple", 1290, (ctx) => {
     const radius = Math.max(40 * unit, Math.min(Math.max((rowRight - rowLeft) * 0.72, 150 * unit), cx - bounds.x1 - 8 - 5 * unit, bounds.x2 - cx - 8 - 5 * unit));
     let flatness = Math.min(radius * 0.15, 0.2 * rowSize);
     const dip = 0.2 * Math.max(...lastRow.map((cell) => ampOf(cell, unit)));
-    const cy = Math.min(bottom + rowInk + dip + 6 * unit + flatness, bounds.y2 - 8 - 5 * unit - flatness);
+    // A word rises in from below its row and every word drops on its exit: the ring clears that whole path, not only the settled ink.
+    const travel = Math.max(lastRow.some((cell) => kindOf(cell.word) !== "hero") ? RISE_PX * unit : 0, exit ? DROP_PX * unit : 0);
+    const cy = Math.min(bottom + rowInk + dip + travel + 6 * unit + flatness, bounds.y2 - 8 - 5 * unit - flatness);
     flatness = Math.max(2, Math.min(flatness, bounds.y2 - 8 - 5 * unit - (bottom + rowInk)));
 
     let y1 = Number.POSITIVE_INFINITY;
