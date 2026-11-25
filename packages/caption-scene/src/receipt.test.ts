@@ -84,9 +84,15 @@ describe("receipt: the band", () => {
     const tears = pieces.filter((p) => p.id.includes(":tear"));
     expect(tears.length).toBeGreaterThan(0);
     expect(tears.every((p) => p.bleed === true)).toBe(true);
-    const last = demo().at(-1)!;
-    const spokenEnd = Math.max(...last.words.map((w) => w.endMs));
-    expect(Math.min(...tears.filter((p) => p.id.startsWith(`receipt:${last.index}:`) || true).map((p) => p.fromMs))).toBeGreaterThanOrEqual(spokenEnd + 150 - 1);
+    for (const tear of tears) {
+      const said = demo().filter((cue) => cue.startMs <= tear.fromMs).at(-1)!;
+      expect(tear.fromMs).toBeGreaterThanOrEqual(Math.max(...said.words.map((w) => w.endMs)) + 150 - 1);
+    }
+    // The first full strip is torn off in the 280 ms gap before the next cue, and the next strip starts after it.
+    const firstTear = tears.find((p) => p.id.startsWith("receipt:0:"));
+    expect(firstTear).toBeDefined();
+    const nextFirstPaint = Math.min(...pieces.filter((p) => !p.id.includes(":tear") && p.id.startsWith("receipt:3:")).map((p) => p.fromMs));
+    expect(Math.max(...tears.filter((p) => p.id.startsWith("receipt:0:")).map((p) => p.toMs))).toBeLessThanOrEqual(nextFirstPaint);
     const dense = demoCues({ lines: ["one:b two:b three:b four:h@300 five:b", "six:b seven:b eight:b nine:b ten:h@300"], options: { cueGap: 0, lead: 400 } }).cues;
     const none = build(dense).filter((p) => p.id.includes(":tear") && p.fromMs < dense[1]!.startMs);
     expect(none.length).toBe(0);
@@ -100,6 +106,56 @@ describe("receipt: the band", () => {
       const t = face.fromMs;
       expect(evaluatePiece(paper, t + 34).sy).toBeGreaterThan(0.5);
     }
+  });
+});
+
+describe("receipt: review fixes", () => {
+  const long = "internationalizations";
+  const cue = (index: number, start: number, words: string[], duration: number): SceneCue => ({
+    index, startMs: start, endMs: start + words.length * duration, speaker: 0, language: "en",
+    words: words.map((text, i) => ({ text, startMs: start + i * duration, endMs: start + (i + 1) * duration, role: "body" as const, key: null })),
+  });
+
+  test("a one-frame cue between two full strips still has its paper (a static plate under the ink)", () => {
+    const cues = [cue(0, 245, Array(9).fill(long), 80), cue(1, 965, ["no"], 70), cue(2, 1035, Array(9).fill(long), 80)];
+    for (const fps of [24, 25, 30]) {
+      const pieces = build(cues, { fps });
+      const word = pieces.find((p) => p.id === "receipt:1:w0")!;
+      for (const t of [965, 1000, 1034]) {
+        const ink = pieceBounds(word, t, fakeMeasure);
+        if (!ink) continue;
+        const plates = pieces.filter((p) => p.id.startsWith("receipt:1:") && p.kind === "shape" && /paper$/.test(p.id));
+        const covered = plates.some((p) => {
+          const box = pieceBounds(p, t, fakeMeasure);
+          return box && box.x1 <= ink.x1 && box.x2 >= ink.x2 && box.y1 <= ink.y1 && box.y2 >= ink.y2;
+        });
+        expect(covered, `${fps} fps at ${t}`).toBe(true);
+      }
+    }
+  });
+
+  test("the total rule sits below the measured ink and the row holds it", () => {
+    const hero = demoCues({ lines: ["so:m महसूस:h@500 it:m"], options: { lead: 400, tail: 900 }, language: "hi" }).cues;
+    const pieces = build(hero, { measure: (text: string, face: never, size: number, ls: number) => ({ ...fakeMeasure(text, face, size, ls), inkBottom: 0.45 * size }) });
+    const face = pieces.find((p) => p.id === "receipt:0:w1") as TextPiece;
+    const bar = pieces.find((p) => p.id === "receipt:0:bar1") as ShapePiece;
+    const t = 1500;
+    const ink = pieceBounds(face, t, (text, f, size, ls) => ({ ...fakeMeasure(text, f, size, ls), inkBottom: 0.45 * size }))!;
+    const rule = evaluatePiece(bar, t);
+    expect(rule.y).toBeGreaterThan(ink.y2);
+  });
+
+  test("a key word that just fits between its stars keeps them", () => {
+    const cues = demoCues({ lines: ["so:m extraordinarily:h@500"], options: { lead: 400, tail: 900 } }).cues;
+    const pieces = build(cues, { measure: (text: string, face: never, size: number, ls: number) => fakeMeasure(text, face, size, ls) });
+    expect(pieces.some((p) => p.id.includes("star"))).toBe(true);
+  });
+
+  test("a brand colour the shared 3:1 rule accepts is painted as given", () => {
+    const pieces = build(demo(), { colours: { primary: "#888888", highlight: "#B0301C", accent: "#FFFFFF", shadow: "#000000" } });
+    for (const face of faces(pieces)) expect(face.fill).toBe("#888888");
+    const star = pieces.find((p) => p.id.includes("star")) as ShapePiece;
+    expect(star.fill?.colour).toBe("#B0301C");
   });
 });
 

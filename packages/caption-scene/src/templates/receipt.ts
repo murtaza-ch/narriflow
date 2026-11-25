@@ -1,4 +1,4 @@
-import { captionColourContrast, toCaptionUpperCase } from "@narriflow/validators";
+import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast, toCaptionUpperCase } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, kf, prog } from "../ease";
 import { exportFrameAtOrBefore, paintedFrameCount, SCENE_DEFAULT_FPS } from "../frame-grid";
@@ -85,6 +85,8 @@ const WINDOW_LEAD = 100;
 const HOLD = 150;
 const LINGER = 1400;
 const BREAK_GAP = 1100;
+/** How soon before its first word a strip that follows a torn-off one starts. */
+const SUCCESSOR_LEAD = 60;
 const PREFER_BREAK_FILL = 0.6;
 const PREFER_BREAK_GAP = 300;
 /** The baseline's distance below a row's top, em: Space Mono's metrics in a 1.36 line box. */
@@ -126,6 +128,8 @@ interface Block {
   readonly stars?: { readonly size: number; readonly reach: number };
   /** The key word's whole advance (its total rule's length). */
   readonly textWidth?: number;
+  /** Where its total rule starts, from the block's top: below the measured ink, the room is part of the row. */
+  readonly barRel?: number;
 }
 
 interface CueLayout {
@@ -200,7 +204,13 @@ function makeBlock(env: Env, kind: "row" | "hero", cells: Omit<Cell, "baseline">
   h += up + down;
   baseline += up;
   void env;
-  return { kind, y: 0, h, cells: cells.map((cell) => ({ ...cell, baseline })), ...extra };
+  let barRel: number | undefined;
+  if (hero && extra.textWidth !== undefined && cells.length === 1) {
+    // The double rule sits under the ink the face really draws (Devanagari vowel marks hang below the baseline), and the row grows to hold it.
+    barRel = Math.max(baseline + 0.22 * size, baseline + bottom + 3 * uu);
+    h = Math.max(h, barRel + 9 * uu + margin);
+  }
+  return { kind, y: 0, h, cells: cells.map((cell) => ({ ...cell, baseline })), ...extra, ...(barRel !== undefined ? { barRel } : {}) };
 }
 
 /** The row's cells centred on the paper's line, in the order the viewer reads them. */
@@ -251,8 +261,8 @@ function planBlocks(env: Env, win: SpeechWindow, inner: number, uu: number): Blo
     const text = heroText(win, at);
     const per100 = adv(env, text, 100) / 100;
     const starred = Math.min(HERO_MAX, (inner / uu - 2 * STAR_GAP) / (per100 + 2 * STAR));
-    if (starred >= HERO_MIN) {
-      const size = starred * uu;
+    if (starred >= HERO_MIN - 1e-6) {
+      const size = Math.max(starred, HERO_MIN) * uu;
       const width = adv(env, text, size);
       const star = STAR * size;
       const m = env.input.measure(text, FACE, size, 0);
@@ -351,7 +361,8 @@ interface Timed {
   readonly ruleGrowth: Map<number, Growth>;
 }
 
-function timeStrip(env: Env, layout: StripLayout, lead0: number): Timed {
+/** `still`: the strip paints on one frame only, so its paper is whole at once and its words print at once (a static plate under the ink). */
+function timeStrip(env: Env, layout: StripLayout, lead0: number, still: boolean): Timed {
   const growths: Growth[] = [];
   const wipes = new Map<string, { from: number; end: number }>();
   const blockGrowth = new Map<string, Growth>();
@@ -365,13 +376,13 @@ function timeStrip(env: Env, layout: StripLayout, lead0: number): Timed {
         const from = Math.max(lead0, word.startMs - WIPE_LEAD);
         const last = exportFrameAtOrBefore(word.endMs - 1, env.fps);
         // A word that cannot start its wipe before its onset, or has no two frames to wipe in, prints at once.
-        const end = from >= word.startMs || paintedFrameCount(from, last, env.fps) < 2 ? from : Math.max(from, Math.min(from + WIPE, last));
+        const end = still || from >= word.startMs || paintedFrameCount(from, last, env.fps) < 2 ? from : Math.max(from, Math.min(from + WIPE, last));
         wipes.set(`${k}:${b}:${c}`, { from, end });
         firstStart = Math.min(firstStart, word.startMs);
       });
-      const start = Math.max(lead0, firstStart - PRINT_LEAD);
+      const start = still ? lead0 : Math.max(lead0, firstStart - PRINT_LEAD);
       // The paper is in place by the block's first spoken word, so ink never prints on bare video.
-      const dur = Math.max(0, Math.min(GROW, firstStart - start));
+      const dur = still ? 0 : Math.max(0, Math.min(GROW, firstStart - start));
       const growth = { start, dur, h: block.h };
       blockGrowth.set(`${k}:${b}`, growth);
       growths.push(growth);
@@ -405,15 +416,27 @@ const offset = (frames: Frames, by: number): Frames => frames.map(([at, value]) 
 interface StripPlan {
   readonly wins: SpeechWindow[];
   readonly lane: Lane;
+  /** Set when a fresh strip follows in the lane and there is room to tear this one off first: where this strip ends, and where the next one starts. */
+  endAt?: number;
+  leadAt?: number;
 }
 
+const DEFAULT_STAR = "#E8452B";
+
+/**
+ * Ink is drawn on the paper, stars on the paper and on the thermal flash behind a row; the flash is the paper warmed by the sample's red
+ * (not by the brand's stars, so it is a constant the brand map can list in `readsOn`). A colour the shared 3:1 rule accepts is painted as
+ * given; only one that fails it (a preset colour set by hand) falls back to near-black or white.
+ */
 function palette(input: SceneInput) {
   const paper = input.colours.accent;
-  const readable = captionColourContrast(input.colours.primary, paper) >= 4.5;
+  const band = mixColour(paper, DEFAULT_STAR, 0.16);
+  const onPaper = (colour: string) => captionColourContrast(colour, paper) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
+  const onFlash = (colour: string) => onPaper(colour) && captionColourContrast(colour, band) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
   const dark = "#17171C";
-  const ink = readable ? input.colours.primary : captionColourContrast(dark, paper) >= captionColourContrast("#FFFFFF", paper) ? dark : "#FFFFFF";
-  const star = [input.colours.highlight, "#E8452B", ink].find((colour) => captionColourContrast(colour, paper) >= 3) ?? ink;
-  return { paper, ink, star, rule: mixColour(paper, ink, 0.45), band: mixColour(paper, star, 0.16) };
+  const ink = [input.colours.primary, dark, "#FFFFFF"].find(onPaper) ?? (captionColourContrast(dark, paper) >= captionColourContrast("#FFFFFF", paper) ? dark : "#FFFFFF");
+  const star = [input.colours.highlight, DEFAULT_STAR, ink].find(onFlash) ?? ink;
+  return { paper, ink, star, rule: mixColour(paper, ink, 0.45), band };
 }
 
 export const receiptProgram: SceneProgram = {
@@ -448,6 +471,23 @@ export const receiptProgram: SceneProgram = {
       }
     }
 
+    // A strip followed by another in its lane is torn off if the gap holds the reading hold and two painted frames of tear:
+    // the fresh paper then starts later than its usual lead (never past its first word) so the two never share the band.
+    const lastInLane = new Map<number, StripPlan>();
+    for (const plan of strips) {
+      const before = lastInLane.get(plan.wins[0]!.lane);
+      lastInLane.set(plan.wins[0]!.lane, plan);
+      const tail = before?.wins.at(-1);
+      if (!before || !tail || tail.bounds.y1 !== plan.wins[0]!.bounds.y1 || tail.bounds.y2 !== plan.wins[0]!.bounds.y2) continue;
+      const startNext = plan.wins[0]!.start;
+      const natural = Math.min(Math.max(tail.cue.endMs, tail.spokenEnd), tail.spokenEnd + LINGER);
+      const cut = Math.min(natural, startNext - SUCCESSOR_LEAD);
+      const earliest = tail.spokenEnd + HOLD;
+      if (cut < earliest || paintedFrameCount(Math.max(earliest, cut - TEAR_MS), cut, fps) < 2) continue;
+      before.endAt = cut;
+      plan.leadAt = Math.max(startNext - PRINT_LEAD, cut);
+    }
+
     const pieces: Piece[] = [];
     for (const plan of strips) {
       const layout = fitStrip(env, plan.lane, plan.wins, true)!;
@@ -466,17 +506,18 @@ function buildStrip(env: Env, plan: StripPlan, layout: StripLayout, ruleBase: nu
   const owner = first.index;
   const lim = limits(plan.lane, uu);
   const cx = Math.min(plan.lane.bounds.x2 - pw / 2, Math.max(plan.lane.bounds.x1 + pw / 2, env.space.x(540)));
-  const lead0 = Math.max(first.from, first.cue.words[0]!.startMs - PRINT_LEAD);
-  const timed = timeStrip(env, layout, lead0);
+  const lead0 = plan.leadAt ?? Math.max(first.from, first.start - PRINT_LEAD);
   const total = layout.height;
   const rtl = cueDirection(last.cue) === "rtl";
   const side = rtl ? -1 : 1;
 
-  const end = Math.max(lead0 + 1, Math.min(last.to, last.spokenEnd + LINGER));
+  const end = Math.max(lead0 + 1, plan.endAt ?? Math.min(last.to, last.spokenEnd + LINGER));
   const earliest = last.spokenEnd + HOLD;
   const tearStart = Math.max(earliest, end - TEAR_MS);
   const tears = end > earliest && paintedFrameCount(tearStart, end, fps) >= 2;
   const liveEnd = tears ? tearStart : end;
+  const still = paintedFrameCount(lead0, liveEnd, fps) < 2;
+  const timed = timeStrip(env, layout, lead0, still);
 
   const H = (t: number) => heightAt(timed.growths, t);
   const topAt = (t: number) => Math.min(lim.topRest, lim.bottomMax - ZH * uu - H(t));
@@ -507,10 +548,8 @@ function buildStrip(env: Env, plan: StripPlan, layout: StripLayout, ruleBase: nu
   const yTrack = (from: number, to: number, rel: number): Frames => offset(slice(topFrames, from, to), rel);
 
   // Paper: shadows underneath everything (so a join never darkens the paper), then the paper itself.
-  const shadows = [
-    { dx: 0, dy: 14 * uu, blur: 9 * uu, colour: "#462D14", alpha: 0.3 },
-    { dx: 0, dy: 2 * uu, blur: 1.5 * uu, colour: "#281E14", alpha: 0.28 },
-  ];
+  // One soft shadow from the body only (a blurred copy is what a frame pays for, and a sliding strip re-rasterises it every frame).
+  const shadows = [{ dx: 0, dy: 12 * uu, blur: 6 * uu, colour: "#462D14", alpha: 0.32 }];
   const teeth = Math.max(2, Math.round(pw / (ZT * uu)));
   const tooth = pw / teeth;
   const zig = (down: boolean): PathCmd[] => {
@@ -529,13 +568,13 @@ function buildStrip(env: Env, plan: StripPlan, layout: StripLayout, ruleBase: nu
   const paper = (name: string, z: number, path: PathCmd[], track: ShapePiece["track"], shade: ShapePiece["shadows"] | null): ShapePiece => ({
     id: id(owner, name), kind: "shape", z, fromMs: lead0, toMs: liveEnd, path, fill: { colour: env.paper }, track, ...(shade ? { shadows: shade } : {}),
   });
-  // Blurred copies are what a frame pays for: the body casts both shadows, the torn bottom only the soft one (the top edge's
-  // shadow would fall under the paper).
   add(paper("shadow", 1, body, paperTracks.body, shadows));
-  add(paper("shadowb", 1, zig(true), paperTracks.bottom, shadows.slice(0, 1)));
   add(paper("paper", 2, body, paperTracks.body, null));
-  add(paper("zt", 2, zig(false), paperTracks.top, null));
-  add(paper("zb", 2, zig(true), paperTracks.bottom, null));
+  // A strip that paints on a single frame is a static plate under its ink: no torn ends to draw.
+  if (!still) {
+    add(paper("zt", 2, zig(false), paperTracks.top, null));
+    add(paper("zb", 2, zig(true), paperTracks.bottom, null));
+  }
 
   const strokeW = 0.75 * uu;
   layout.cues.forEach((cl, k) => {
@@ -635,7 +674,7 @@ function buildStrip(env: Env, plan: StripPlan, layout: StripLayout, ruleBase: nu
         const from = Math.max(lead0, word.startMs);
         const to = liveEnd;
         if (to > from) {
-          const baseline = block.y + cell.baseline + 0.22 * cell.size;
+          const baseline = block.y + (block.barRel ?? cell.baseline + 0.22 * cell.size);
           const path = [...rectPath(rtl ? -w : 0, 0, w, 4 * uu), ...rectPath(rtl ? -w : 0, 7 * uu, w, 2 * uu)];
           const grow = Math.min(from + 260, to);
           add({
@@ -649,7 +688,8 @@ function buildStrip(env: Env, plan: StripPlan, layout: StripLayout, ruleBase: nu
 
   // The tear: every strip piece again as a flying copy, rotated about the strip's top centre and flung to the side.
   const result: Piece[] = [];
-  const kept = out.filter((piece) => piece.kind === "text" || hasTwoPaintedFrames(piece, input));
+  const plate = (piece: Piece) => piece.id === id(owner, "paper") || piece.id === id(owner, "shadow");
+  const kept = out.filter((piece) => piece.kind === "text" || plate(piece) || hasTwoPaintedFrames(piece, input));
   result.push(...kept);
   if (tears) {
     const px = cx;
