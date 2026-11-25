@@ -32,12 +32,12 @@ const reach = (copy: Piece, face: Piece, at: number) => {
 };
 
 describe("rainbow", () => {
-  test("the key word has six bands of one copy, a support word three, and every band's colour is the sample's", () => {
+  test("the key word has six bands of one copy, a support word two, and every band's colour is the sample's", () => {
     const { pieces } = build(["start:b before:b you're:m ready:h@700"]);
     const hero = bands(pieces, 0, 3);
     expect(new Set(hero.map((p) => p.id.match(/band(\d)/)![1])).size).toBe(6);
     expect(hero).toHaveLength(6);
-    expect(bands(pieces, 0, 0)).toHaveLength(3);
+    expect(bands(pieces, 0, 0)).toHaveLength(2);
     expect(new Set(hero.map((p) => p.fill))).toEqual(new Set(["#FF6B93", "#FFA03C", "#FFD83B", "#4FDB97", "#43B5FF", "#9B79FF"]));
   });
 
@@ -214,5 +214,70 @@ describe("rainbow review items", () => {
       const end = Math.max(...faces(pieces, cue).map((p) => p.toMs));
       expect(Math.max(...own.map((p) => p.toMs))).toBeLessThanOrEqual(end);
     }
+  });
+});
+
+describe("rainbow review 2", () => {
+  const exitOf = (pieces: Piece[], cue: number) => {
+    const face = faces(pieces, cue)[0]!;
+    return face.track.o && face.track.o.length > 2 ? face.track.o[1]![0] : face.toMs;
+  };
+
+  test("every glint burst ends before its cue's exit and inside its window, with or without a gap", () => {
+    for (const lines of [["start:b before:b you're:m ready:h@700", "keep:b it:m simple:b", "to:m go:b@120 now:h@150", "ok:b@130"], ["so:m time:h@200 to:m go:b@90"]]) {
+      const { cues, pieces } = build(lines);
+      for (const cue of cues) {
+        const end = exitOf(pieces, cue.index);
+        const own = pieces.filter((p) => p.id.startsWith(`rainbow:${cue.index}:glint`));
+        expect(own.length).toBeGreaterThan(0);
+        for (const glint of own) {
+          expect(glint.toMs, `${glint.id} runs past the exit at ${end}`).toBeLessThanOrEqual(end);
+          expect(exportFrameTimes(glint.fromMs, glint.toMs, 30).length).toBeGreaterThanOrEqual(2);
+        }
+      }
+    }
+  });
+
+  test("a long hold keeps glinting every 1.5 s until its exit", () => {
+    const { cues, pieces } = build(["hold:h@7000"]);
+    const glints = pieces.filter((p) => p.id.startsWith("rainbow:0:glint"));
+    expect(glints.length).toBeGreaterThanOrEqual(4);
+    const starts = glints.map((p) => p.fromMs).sort((a, b) => a - b);
+    for (let i = 1; i < starts.length; i++) expect(starts[i]! - starts[i - 1]!).toBe(1500);
+    expect(Math.max(...glints.map((p) => p.toMs))).toBeLessThanOrEqual(exitOf(pieces, 0));
+    expect(cues[0]!.endMs).toBeGreaterThan(7000);
+  });
+
+  test("the 120 px cap holds through the pop's overshoot, on every 60 fps frame", () => {
+    const { cues, pieces } = build(["so:b it's:b okay:h@700"]);
+    const face = faces(pieces).find((p) => p.id.endsWith(":w2"))!;
+    const start = cues[0]!.words[2]!.startMs;
+    let widest = 0;
+    for (const copy of bands(pieces, 0, 2)) for (const t of exportFrameTimes(start, cues[0]!.endMs, 60)) widest = Math.max(widest, reach(copy, face, t).length);
+    expect(widest).toBeLessThanOrEqual(120.01);
+    expect(widest).toBeGreaterThan(60);
+  });
+
+  test("landscape fits an ordinary cue in two rows, and the rainbow stops short of the row below", () => {
+    const canvas = { width: 1920, height: 1080 };
+    const { cues, pieces } = build(["before:b ready:h@700 now:b"], null, { canvas });
+    const at = cues[0]!.endMs - 300;
+    const y = (word: number) => evaluatePiece(faces(pieces).find((p) => p.id.endsWith(`:w${word}`))!, at).y;
+    const x = (word: number) => evaluatePiece(faces(pieces).find((p) => p.id.endsWith(`:w${word}`))!, at).x;
+    // BEFORE and ready share the first row (side by side), NOW is the second.
+    expect(Math.abs(y(0) - y(1))).toBeLessThan(120);
+    expect(Math.abs(x(0) - x(1))).toBeGreaterThan(200);
+    expect(y(2) - Math.max(y(0), y(1))).toBeGreaterThan(100);
+    // The first row's rainbow stops short of the middle of the row below.
+    const ready = faces(pieces).find((p) => p.id.endsWith(":w1"))!;
+    const far = Math.max(...bands(pieces, 0, 1).map((p) => evaluatePiece(p, at).y - evaluatePiece(ready, at).y));
+    expect(far).toBeLessThan(y(2) - y(1));
+  });
+
+  test("a long word takes two rows when a two-row split fits the column, not three", () => {
+    const { pieces } = build(["gewässerschutzbeauftragter:b@900"]);
+    expect(faces(pieces).length).toBe(2);
+    const wide = faces(pieces).map((p) => fakeMeasure(p.text, p.face, p.sizePx, p.letterSpacingEm).advance);
+    for (const width of wide) expect(width).toBeLessThanOrEqual(830);
   });
 });

@@ -20,11 +20,13 @@ import type { SpeechCell } from "./speech-layout";
  *   first, every face after, so a rainbow never crosses ink. The key word's rainbow is drawn over the support words' so the
  *   key word wins the cue.
  * - **Depth is capped and unequal.** The key word keeps the six bands at 38 degrees but at most 120 px deep (the sample's 195 px
- *   crowded the row below and the top of the next word); support words take 32-48 px (a quarter of their size) and three of the
- *   bands (pink, yellow, blue), so three identical long trails no longer fight the hero. A band is one copy, on the key word
+ *   crowded the row below and the top of the next word); support words take 32-48 px (a quarter of their size) and two of the
+ *   bands (pink and blue, bridged to the same outer depth), so three identical long trails no longer fight the hero. A band is one copy, on the key word
  *   and on a support word alike, each with a border that bridges the gap to the next band, so the run reads solid at a fraction
  *   of the sample's 30 copies (two copies per key-word band read a little smoother and cost a third more libass time: over the
  *   1.5x Headline budget).
+ * - **No group shadow.** The sample's drop-shadow under the whole run is dropped: a blurred rear copy was an event per frame and
+ *   cost about a tenth of the style's render time, and the violet edge already separates the faces from footage.
  * - **Depth is cut before text shrinks.** The block (faces plus rainbow) is measured at the real fitted size; when it does not
  *   fit the caption band, the depth shortens first (down to a third), and only then does the shared fit scale the text. A long
  *   key word gets its own line; a word wider than the column at its size floor (110 px script, 96 px caps) breaks into the fewest
@@ -83,8 +85,8 @@ const EDGE_EM = 0.055;
 const DIR_DEG = 38;
 const DIR = { x: Math.cos((DIR_DEG * Math.PI) / 180), y: Math.sin((DIR_DEG * Math.PI) / 180) };
 const BANDS = ["#FF6B93", "#FFA03C", "#FFD83B", "#4FDB97", "#43B5FF", "#9B79FF"] as const;
-/** A support word's short run keeps three of the six (pink, yellow, blue): the key word's six, drawn twice over, are the hero. */
-const SUPPORT_BANDS = [0, 2, 4] as const;
+/** A support word's short run keeps two of the six (pink and blue) at the full support depth: the key word keeps all six. */
+const SUPPORT_BANDS = [0, 4] as const;
 const ACCENT_COLOURS = ["#FF6B93", "#FFD83B", "#43B5FF", "#4FDB97", "#FFA03C"] as const;
 const HERO_DEPTH = 120;
 const SUPPORT_DEPTH: readonly [number, number] = [32, 48];
@@ -93,6 +95,7 @@ const POP_MS = 110;
 const BAND_STAGGER = 10;
 const ROW_TILT = [-2.4, 1.6, -1.2] as const;
 const REPEAT_MS = 1500;
+const SWEEP_MS = 330;
 const ACCENT_PX = [52, 44] as const;
 
 const hash = (text: string) => {
@@ -156,30 +159,51 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
   const faceOf = (at: number): TextPiece["face"] => (isHero(at) ? SCRIPT_FACE : CAPS_FACE);
   const spacingOf = (at: number) => (isHero(at) || !SPLITTABLE.test(cue.words[at]!.text) ? 0 : 0.01);
   const at100 = (text: string, face: TextPiece["face"], spacing: number) => ctx.input.measure(text, face, 100 * u, spacing).advance / u;
+  // The face column: the sample's 820 px in portrait; a landscape frame has the width to keep ordinary cues in two rows, so the
+  // column grows to what the band leaves after the rainbow's reach (never past 1400 px, where a line stops being a caption).
+  const column = clamp((bounds.x2 - bounds.x1) / u - 2 * PADDING - HERO_DEPTH, COLUMN, 1400);
 
   // Sizes: the key words share one size (as large as the column allows), every other word is the sample's size unless it
   // would not fit the column, and then it shrinks to a readable floor and breaks across rows below that.
   const heroWidth = hero.reduce((sum, at) => sum + at100(shown(at), SCRIPT_FACE, 0), 0) + (GAP * 0.9 * Math.max(0, hero.length - 1) * 100) / HERO;
-  const heroSize = heroed ? clamp((COLUMN * 100) / Math.max(1, heroWidth), HERO_MIN, HERO) : 0;
+  const heroSize = heroed ? clamp((column * 100) / Math.max(1, heroWidth), HERO_MIN, HERO) : 0;
   // A lone ordinary word (the sample's "have fun" one-liners) grows a quarter, as the sample grows a word alone on its row.
   const naturalOf = (at: number) => (isHero(at) ? heroSize : cue.words.length === 1 ? BODY * 1.25 : cue.words[at]!.role === "minor" ? MINOR : BODY);
   // A word wider than the column at its floor size breaks into the fewest rows that fit, cut where the measured widths balance
   // (UNBELIEVABLE is two rows, never UNBELI / EVABL / E). Fragments are separate rows: no space is ever put between them.
   const chunkAt = (text: string, face: TextPiece["face"], spacing: number, size: number): string[] => {
     const wide = (at100(text, face, spacing) * size) / 100;
-    if (!SPLITTABLE.test(text) || wide <= COLUMN * 1.01) return [text];
+    if (!SPLITTABLE.test(text) || wide <= column * 1.01) return [text];
     const chars = [...text];
-    const prefix = (n: number) => (at100(chars.slice(0, n).join(""), face, spacing) * size) / 100;
-    for (let rows = Math.max(2, Math.ceil(wide / (COLUMN * 0.97))); rows <= Math.min(chars.length, 8); rows++) {
-      const cuts = [0];
-      for (let k = 1; k < rows; k++) {
-        let best = cuts[k - 1]! + 1;
-        for (let n = best; n <= chars.length - (rows - k); n++) if (Math.abs(prefix(n) - (wide * k) / rows) < Math.abs(prefix(best) - (wide * k) / rows)) best = n;
-        cuts.push(best);
+    const room = column * 1.01;
+    const prefix = Array.from({ length: chars.length + 1 }, (_, n) => (at100(chars.slice(0, n).join(""), face, spacing) * size) / 100);
+    const widthOfPart = (from: number, to: number) => (at100(chars.slice(from, to).join(""), face, spacing) * size) / 100;
+    const split = (cuts: number[]) => cuts.slice(1).map((end, k) => chars.slice(cuts[k], end).join(""));
+    // Fewest rows first, from two upward (never an estimate from the total width): for two rows every breakpoint is tried and the
+    // one that leaves the narrower row narrowest wins; more rows are cut where the measured prefix widths balance.
+    for (let rows = 2; rows <= Math.min(chars.length, 8); rows++) {
+      let cuts: number[] | null = null;
+      if (rows === 2) {
+        let best = Number.POSITIVE_INFINITY;
+        for (let n = 1; n < chars.length; n++) {
+          const worst = Math.max(widthOfPart(0, n), widthOfPart(n, chars.length));
+          if (worst < best) {
+            best = worst;
+            cuts = [0, n, chars.length];
+          }
+        }
+      } else {
+        cuts = [0];
+        for (let k = 1; k < rows; k++) {
+          let best = cuts[k - 1]! + 1;
+          for (let n = best; n <= chars.length - (rows - k); n++) if (Math.abs(prefix[n]! - (wide * k) / rows) < Math.abs(prefix[best]! - (wide * k) / rows)) best = n;
+          cuts.push(best);
+        }
+        cuts.push(chars.length);
       }
-      cuts.push(chars.length);
-      const parts = cuts.slice(1).map((end, k) => chars.slice(cuts[k], end).join(""));
-      if (parts.every((part) => (at100(part, face, spacing) * size) / 100 <= COLUMN * 1.01)) return parts;
+      if (!cuts) continue;
+      const parts = split(cuts);
+      if (parts.every((part) => (at100(part, face, spacing) * size) / 100 <= room)) return parts;
     }
     return chars.map((ch) => ch);
   };
@@ -191,7 +215,7 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
     const spacing = spacingOf(at);
     const natural = naturalOf(at);
     const floor = isHero(at) ? HERO_MIN : BODY_MIN;
-    const fit = (COLUMN * 100) / Math.max(1, at100(text, face, spacing));
+    const fit = (column * 100) / Math.max(1, at100(text, face, spacing));
     const size = Math.max(Math.min(natural, fit), Math.min(natural, floor));
     for (const [part, piece] of chunkAt(text, face, spacing, size).entries()) {
       indexes[at]!.push(items.push({ word: at, part, text: piece, hero: isHero(at), size, face, spacing }) - 1);
@@ -203,7 +227,7 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
   // else the key word takes its own line (a long script word never has to share). A broken word is a row per piece.
   const widthOf = (list: readonly number[]) =>
     list.reduce((sum, at) => sum + indexes[at]!.reduce((s, i) => s + (at100(items[i]!.text, items[i]!.face, items[i]!.spacing) * items[i]!.size) / 100, 0), 0) + GAP * Math.max(0, list.length - 1);
-  const fits = (list: readonly number[]) => list.every((at) => !chunked(at)) && widthOf(list) <= COLUMN;
+  const fits = (list: readonly number[]) => list.every((at) => !chunked(at)) && widthOf(list) <= column;
   const flow = (list: readonly number[]): number[][] => {
     const out: number[][] = [];
     let row: number[] = [];
@@ -227,7 +251,7 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
   const groups = wordGroups.flatMap(flow);
 
   const { cells: laid } = ctx.layout({
-    column: COLUMN,
+    column,
     padding: PADDING,
     gap: GAP,
     groups,
@@ -240,10 +264,20 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
   const itemOf = (cell: SpeechCell) => items[cell.at]!;
 
   // The rainbow behind a face of this size, px at the rest pose, cut by `factor` when the block does not fit.
-  const depthOf = (cell: SpeechCell, factor: number) => {
+  const naturalDepth = (cell: SpeechCell) => {
     const item = itemOf(cell);
-    return (item.hero ? Math.min(HERO_DEPTH * u, cell.size * 0.48) : clamp(cell.size * 0.28, SUPPORT_DEPTH[0] * u, SUPPORT_DEPTH[1] * u)) * factor;
+    const wanted = item.hero ? Math.min(HERO_DEPTH * u, cell.size * 0.48) : clamp(cell.size * 0.28, SUPPORT_DEPTH[0] * u, SUPPORT_DEPTH[1] * u);
+    // The drop stops short of the next row's words: a rainbow may run behind a row below, but not crowd it, so it ends within a
+    // third of that row's height under its top (never less than half its natural depth).
+    const next = rows[(rowOf.get(cell) ?? 0) + 1];
+    if (!next) return wanted;
+    const nextTop = Math.min(...next.map((other) => other.baseline + other.inkTop));
+    const nextHeight = Math.max(...next.map((other) => other.inkBottom - other.inkTop));
+    const room = nextTop + 0.33 * nextHeight - (cell.baseline + cell.inkBottom);
+    return Math.max(0.5 * wanted, Math.min(wanted, room / DIR.y));
   };
+  const depthByWord = new Map<number, number>(laid.map((cell) => [cell.at, naturalDepth(cell)]));
+  const depthOf = (cell: SpeechCell, factor: number) => depthByWord.get(cell.at)! * factor;
   const edgeOf = (cell: SpeechCell) => cell.size * EDGE_EM;
   const faceBox = (cell: SpeechCell, dy = 0): Box => ({
     x1: cell.x - cell.width / 2 - edgeOf(cell), x2: cell.x + cell.width / 2 + edgeOf(cell),
@@ -340,26 +374,25 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
     const copies = item.hero ? HERO_COPIES : 1;
     const bandIds: readonly number[] = item.hero ? BANDS.map((_, b) => b) : SUPPORT_BANDS;
     const steps = bandIds.length * copies;
-    const bord = Math.max(2.4 * u, (depth / steps) * 0.55);
+    const bord = Math.max(2.4 * u, (depth / steps) * 0.5);
     const stagger = motion ? Math.min(BAND_STAGGER, span / 12) : 0;
     for (let n = bandIds.length - 1; n >= 0; n--) {
       const b = bandIds[n]!;
       const unroll = (t: number) => (motion ? EASES.outExpo(clamp((t - from - n * stagger) / Math.max(1, span - (bandIds.length - 1) * stagger))) : 1);
       for (let k = copies - 1; k >= 0; k--) {
         const fraction = (n * copies + k + 1) / steps;
-        const reach = (t: number) => fraction * depth * unroll(t) * (1 - out(t));
+        // The pop scales the offset with the face, but never past the rest depth: the 120 px cap holds after the overshoot.
+        const reach = (t: number) => fraction * depth * unroll(t) * (1 - out(t)) * Math.min(1, scale(t));
         const copyId = `${ctx.id}:w${item.word}${item.part ? `l${item.part}` : ""}band${b}c${k}`;
         const piece: TextPiece = {
           ...base, id: copyId, z: item.hero ? 3 : 2, fill: BANDS[b]!, stroke: { colour: BANDS[b]!, widthPx: bord }, origin,
           track: {
             ...base.track,
-            x: frames((t) => px + dirX * reach(t) * scale(t), [], 0.6),
-            y: frames((t) => py + rise(t) + DIR.y * reach(t) * scale(t), [], 0.6),
+            x: frames((t) => px + dirX * reach(t), [], 0.6),
+            y: frames((t) => py + rise(t) + DIR.y * reach(t), [], 0.6),
             sx: scaleFrames, sy: scaleFrames, rz: rzFrames,
           },
         };
-        // One soft shadow under the key word's run (the outermost copy's, low and short); a blur costs per frame, so support words take none.
-        if (n === bandIds.length - 1 && k === copies - 1 && item.word === markAt) piece.shadows = [{ dx: 0, dy: 11 * u, blur: 4 * u, colour: edgeColour, alpha: 0.3 }];
         pieces.push(piece);
       }
     }
@@ -375,28 +408,33 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
     }
   }
 
-  // The glint: a small white sparkle running along the upper edge of the key word's rainbow, as it lands and every 1.5 s of a hold.
+  // The glint: a small white sparkle running along the upper edge of the key word's rainbow as it lands, again every 1.5 s of the
+  // hold, for as long as the hold lasts. Every burst lives inside the cue's own window (its exit starts at `exitAt`), is a sweep when
+  // the frames left inside that window allow one and a static pose when only two or three do, and is left out under two frames.
+  const limit = Math.min(to, exitAt);
   for (const glint of glints) {
     const { cell } = glint;
     const startX = cell.x + side * (cell.width / 2 - 0.1 * cell.size);
     const startY = cell.baseline + cell.inkTop - edgeOf(cell) * 0.2;
     const runPx = glint.depth * 0.95;
-    for (let burst = 0; burst < 3; burst++) {
+    const r = clamp(cell.size * 0.1, 14 * u, 24 * u);
+    for (let burst = 0; burst < 12; burst++) {
       let t0 = glint.from + 150 + burst * REPEAT_MS;
-      // A cue too short for the glint's usual start gets it at once, as a compact pose, so it still paints on ordinary speech.
-      if (burst === 0 && paintedFrameCount(t0, Math.min(exitAt, t0 + 330), fps) < 3) t0 = glint.from;
-      const t1 = Math.min(burst === 0 ? exitAt : to, t0 + 330);
-      if (burst > 0 && t0 + 330 > exitAt) break;
-      if (paintedFrameCount(t0, t1, fps) < 2) continue;
-      const compact = paintedFrameCount(t0, t1, fps) < 4;
-      const r = clamp(cell.size * 0.1, 14 * u, 24 * u);
+      if (burst > 0 && t0 + SWEEP_MS > limit) break;
+      // A first burst too late for even a static pose in this window goes on the first painted frame instead, so it still paints.
+      if (burst === 0 && paintedFrameCount(t0, Math.min(limit, t0 + SWEEP_MS), fps) < 4) t0 = glint.from;
+      const t1 = Math.min(limit, t0 + SWEEP_MS);
+      const frames = paintedFrameCount(t0, t1, fps);
+      if (frames < 2) continue;
+      const sweep = frames >= 4;
+      const grow: Frames = sweep ? [[t0, 0.2], [(t0 + t1) / 2, 1, "out"], [t1, 0.2, "in"]] : [[t0, 1]];
       const track = {
-        x: [[t0, startX], [t1, startX + dirX * runPx, "inOut"]] as Frames,
-        y: [[t0, startY], [t1, startY + DIR.y * runPx, "inOut"]] as Frames,
-        sx: compact ? ([[t0, 1]] as Frames) : ([[t0, 0.2], [(t0 + t1) / 2, 1, "out"], [t1, 0.2, "in"]] as Frames),
-        sy: compact ? ([[t0, 1]] as Frames) : ([[t0, 0.2], [(t0 + t1) / 2, 1, "out"], [t1, 0.2, "in"]] as Frames),
-        rz: [[t0, 0], [t1, 90]] as Frames,
-        o: [[t0, compact ? 1 : 0], [t0 + 40, 1], [t1 - 60, 1], [t1, 0, "in"]] as Frames,
+        x: [[t0, sweep ? startX : startX + dirX * runPx * 0.5], ...(sweep ? ([[t1, startX + dirX * runPx, "inOut"]] as const) : [])] as Frames,
+        y: [[t0, sweep ? startY : startY + DIR.y * runPx * 0.5], ...(sweep ? ([[t1, startY + DIR.y * runPx, "inOut"]] as const) : [])] as Frames,
+        sx: grow,
+        sy: grow,
+        rz: sweep ? ([[t0, 0], [t1, 90]] as Frames) : ([[t0, 45]] as Frames),
+        o: sweep ? ([[t0, 0], [t0 + 40, 1], [t1 - 60, 1], [t1, 0, "in"]] as Frames) : ([[t0, 1]] as Frames),
       };
       pieces.push({ ...ctx.shape(`glint${burst}`, t0, sparklePath(r), track, "#FFFFFF"), toMs: t1, z: 4 });
     }
