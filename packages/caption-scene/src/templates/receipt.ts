@@ -30,12 +30,13 @@ import { hasTwoPaintedFrames, speechLaneSpace, type SpeechWindow, speechWindows 
  *   video while the paper is still growing, and the paper's growth is shortened to finish with the first word's wipe when
  *   speech is fast (a 70 ms word is still whole by its last frame).
  * - The tear-off needs room: it runs in the gap after the last word has had its 150 ms reading hold (compressed to what the
- *   gap holds, at least two painted frames); when the next strip starts at once there is no tear and the strip is cut at the
+ *   gap holds, and at least four painted frames or it is a clean cut); when the next strip starts at once there is no tear and the strip is cut at the
  *   handoff, never covered. Tear pieces are separate `bleed` copies, so the selection box and the safe-area checks follow the
  *   strip, not the flight.
  * - Right-to-left cues mirror (rows in visual order, rule and bars draw from the right, the strip flies off to the left).
- * - Colours: the paper is the preset's accent slot, ink and stars the primary and highlight slots; ink that does not read
- *   (4.5:1) on the paper falls back to near-black or white, stars to the sample's red (3:1).
+ * - Colours: the paper is the preset's accent slot, ink and stars the primary and highlight slots; the shared 3:1 rule
+ *   (`CAPTION_SCENE_BRAND_MIN_CONTRAST`) is checked on the paper and on the thermal flash behind a row. A colour that passes is
+ *   painted as given; ink that fails falls back to near-black or white, stars to the sample's red.
  * - Space Mono has no Devanagari, Arabic or CJK: those words go through the glyph-coverage fallback face, measured as drawn,
  *   and rows and paper height follow their real ink.
  * - Extra recurring beats (the sample has none): a double "total" rule that draws in under every key word; a warm thermal
@@ -86,7 +87,9 @@ const HOLD = 150;
 const LINGER = 1400;
 const BREAK_GAP = 1100;
 /** How soon before its first word a strip that follows a torn-off one starts. */
-const SUCCESSOR_LEAD = 60;
+const SUCCESSOR_LEAD = 30;
+/** A tear that cannot paint this many frames does not read as motion (two or three frames jump a third of the band): the strip is cut cleanly instead. */
+const MIN_TEAR_FRAMES = 4;
 const PREFER_BREAK_FILL = 0.6;
 const PREFER_BREAK_GAP = 300;
 /** The baseline's distance below a row's top, em: Space Mono's metrics in a 1.36 line box. */
@@ -170,6 +173,9 @@ function graphemes(text: string): string[] {
 }
 
 /** A word wider than `max` as pieces that each fit it. */
+/** Scripts whose letters stand alone, so a word too long for the paper may be cut between clusters. */
+const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{M}]+$/u;
+
 function breakWord(env: Env, text: string, size: number, max: number): string[] {
   const parts: string[] = [];
   let current = "";
@@ -235,6 +241,8 @@ function runBlocks(env: Env, win: SpeechWindow, ats: readonly number[], size: nu
     const text = hero ? heroText(win, at) : win.cue.words[at]!.text;
     const width = adv(env, text, size);
     if (width <= inner) return [{ at, part: 0, parts: 1, text, width }];
+    // Joined scripts (Arabic, Devanagari, ...) are never cut: the strip shrinks until the whole word fits.
+    if (!SPLITTABLE.test(text)) return [{ at, part: 0, parts: 1, text, width }];
     const parts = breakWord(env, text, size, inner);
     return parts.map((part, index) => ({ at, part: index, parts: parts.length, text: part, width: adv(env, part, size) }));
   });
@@ -296,6 +304,18 @@ function neededInner(env: Env, win: SpeechWindow, uu: number): number {
   return need;
 }
 
+/** The paper width the cue's joined-script words need at body size: they are never cut, so it is a floor on the strip's scale. */
+function joinedInner(env: Env, win: SpeechWindow, uu: number): number {
+  const solo = win.cue.words.length <= 2 && !win.cue.words.some((word) => word.role === "hero");
+  const bodySize = (solo ? SOLO : BODY) * uu;
+  let need = 0;
+  win.cue.words.forEach((word, at) => {
+    const text = word.role === "hero" ? heroText(win, at) : word.text;
+    if (!SPLITTABLE.test(text)) need = Math.max(need, adv(env, text, word.role === "hero" ? BODY * uu : bodySize));
+  });
+  return need;
+}
+
 interface Limits {
   readonly bottomMax: number;
   readonly topRest: number;
@@ -334,12 +354,21 @@ function fitStrip(env: Env, lane: Lane, wins: readonly SpeechWindow[], shrink: b
     const uu = env.space.u * k;
     const lim = limits(lane, uu);
     const need = Math.max(...wins.map((win) => neededInner(env, win, uu)));
+    if (Math.max(...wins.map((win) => joinedInner(env, win, uu))) > lim.maxInner + 1e-6) {
+      if (!shrink) return null;
+      continue;
+    }
     const want = Math.min(lim.maxInner, Math.max(INNER0 * uu, need));
     for (const inner of new Set([want, lim.maxInner])) {
       last = layoutStrip(env, wins, inner, uu);
       if (last.height <= lim.hMax) return last;
     }
     if (!shrink) return null;
+  }
+  // Nothing fitted down to the floor (a joined word wider than the band at the smallest scale): lay it out there anyway.
+  if (!last) {
+    const uu = env.space.u * 0.3;
+    last = layoutStrip(env, wins, limits(lane, uu).maxInner, uu);
   }
   return last;
 }
@@ -434,7 +463,7 @@ function palette(input: SceneInput) {
   const onPaper = (colour: string) => captionColourContrast(colour, paper) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
   const onFlash = (colour: string) => onPaper(colour) && captionColourContrast(colour, band) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
   const dark = "#17171C";
-  const ink = [input.colours.primary, dark, "#FFFFFF"].find(onPaper) ?? (captionColourContrast(dark, paper) >= captionColourContrast("#FFFFFF", paper) ? dark : "#FFFFFF");
+  const ink = [input.colours.primary, dark, "#FFFFFF"].find(onFlash) ?? (captionColourContrast(dark, paper) >= captionColourContrast("#FFFFFF", paper) ? dark : "#FFFFFF");
   const star = [input.colours.highlight, DEFAULT_STAR, ink].find(onFlash) ?? ink;
   return { paper, ink, star, rule: mixColour(paper, ink, 0.45), band };
 }
@@ -483,9 +512,24 @@ export const receiptProgram: SceneProgram = {
       const natural = Math.min(Math.max(tail.cue.endMs, tail.spokenEnd), tail.spokenEnd + LINGER);
       const cut = Math.min(natural, startNext - SUCCESSOR_LEAD);
       const earliest = tail.spokenEnd + HOLD;
-      if (cut < earliest || paintedFrameCount(Math.max(earliest, cut - TEAR_MS), cut, fps) < 2) continue;
+      if (cut < earliest || paintedFrameCount(Math.max(earliest, cut - TEAR_MS), cut, fps) < MIN_TEAR_FRAMES) continue;
       before.endAt = cut;
       plan.leadAt = Math.max(startNext - PRINT_LEAD, cut);
+    }
+
+    // A strip never outlives the paper of a later strip in another lane whose band it overlaps: it ends (torn only if the shortened
+    // gap still holds the reading hold and two painted frames, else cut) where that paper starts printing.
+    const leadOf = (plan: StripPlan) => plan.leadAt ?? Math.max(plan.wins[0]!.from, plan.wins[0]!.start - PRINT_LEAD);
+    const meets = (a: SpeechWindow["bounds"], b: SpeechWindow["bounds"]) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
+    for (const plan of strips) {
+      const tail = plan.wins.at(-1)!;
+      let cap = plan.endAt ?? Math.min(tail.to, tail.spokenEnd + LINGER);
+      for (const other of strips) {
+        if (other === plan || other.wins[0]!.start <= plan.wins[0]!.start || !plan.wins.some((win) => meets(win.bounds, other.wins[0]!.bounds))) continue;
+        const at = leadOf(other);
+        if (at > tail.spokenEnd && at < cap) cap = at;
+      }
+      plan.endAt = cap;
     }
 
     const pieces: Piece[] = [];
@@ -514,7 +558,7 @@ function buildStrip(env: Env, plan: StripPlan, layout: StripLayout, ruleBase: nu
   const end = Math.max(lead0 + 1, plan.endAt ?? Math.min(last.to, last.spokenEnd + LINGER));
   const earliest = last.spokenEnd + HOLD;
   const tearStart = Math.max(earliest, end - TEAR_MS);
-  const tears = end > earliest && paintedFrameCount(tearStart, end, fps) >= 2;
+  const tears = end > earliest && paintedFrameCount(tearStart, end, fps) >= MIN_TEAR_FRAMES;
   const liveEnd = tears ? tearStart : end;
   const still = paintedFrameCount(lead0, liveEnd, fps) < 2;
   const timed = timeStrip(env, layout, lead0, still);

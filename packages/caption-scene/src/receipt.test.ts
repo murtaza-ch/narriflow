@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { describeSpeechConformance } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import type { SceneCue } from "./input";
+import { paintedFrameCount } from "./frame-grid";
 import { evaluatePiece, type Piece, pieceBounds, type ShapePiece, type TextPiece } from "./scene";
 import { RECEIPT_DEMO, receiptProgram } from "./templates/receipt";
 import { fakeMeasure, sceneInput } from "./test-support";
@@ -88,11 +89,10 @@ describe("receipt: the band", () => {
       const said = demo().filter((cue) => cue.startMs <= tear.fromMs).at(-1)!;
       expect(tear.fromMs).toBeGreaterThanOrEqual(Math.max(...said.words.map((w) => w.endMs)) + 150 - 1);
     }
-    // The first full strip is torn off in the 280 ms gap before the next cue, and the next strip starts after it.
-    const firstTear = tears.find((p) => p.id.startsWith("receipt:0:"));
-    expect(firstTear).toBeDefined();
+    // The first full strip's 280 ms handoff gap cannot hold a four-frame tear: it is cut cleanly, and the next strip starts after it.
+    const firstEnd = Math.max(...pieces.filter((p) => !p.id.includes(":tear") && p.id.startsWith("receipt:0:")).map((p) => p.toMs));
     const nextFirstPaint = Math.min(...pieces.filter((p) => !p.id.includes(":tear") && p.id.startsWith("receipt:3:")).map((p) => p.fromMs));
-    expect(Math.max(...tears.filter((p) => p.id.startsWith("receipt:0:")).map((p) => p.toMs))).toBeLessThanOrEqual(nextFirstPaint);
+    expect(firstEnd).toBeLessThanOrEqual(nextFirstPaint + 1);
     const dense = demoCues({ lines: ["one:b two:b three:b four:h@300 five:b", "six:b seven:b eight:b nine:b ten:h@300"], options: { cueGap: 0, lead: 400 } }).cues;
     const none = build(dense).filter((p) => p.id.includes(":tear") && p.fromMs < dense[1]!.startMs);
     expect(none.length).toBe(0);
@@ -152,10 +152,44 @@ describe("receipt: review fixes", () => {
   });
 
   test("a brand colour the shared 3:1 rule accepts is painted as given", () => {
-    const pieces = build(demo(), { colours: { primary: "#888888", highlight: "#B0301C", accent: "#FFFFFF", shadow: "#000000" } });
-    for (const face of faces(pieces)) expect(face.fill).toBe("#888888");
+    const pieces = build(demo(), { colours: { primary: "#767676", highlight: "#B0301C", accent: "#FFFFFF", shadow: "#000000" } });
+    for (const face of faces(pieces)) expect(face.fill).toBe("#767676");
     const star = pieces.find((p) => p.id.includes("star")) as ShapePiece;
     expect(star.fill?.colour).toBe("#B0301C");
+  });
+});
+
+describe("receipt: handoffs, flash, joined scripts", () => {
+  const word = (text: string, startMs: number, endMs: number) => ({ text, startMs, endMs, role: "hero" as const, key: String(startMs) });
+  const solo = (index: number, speaker: number, startMs: number, endMs: number, text: string, wordEnd: number): SceneCue => ({ index, startMs, endMs, speaker, language: "en", words: [word(text, startMs, wordEnd)] });
+
+  test("a tear never overlaps the paper of a later strip in another lane", () => {
+    const cues = [solo(0, 0, 400, 500, "upper", 850), solo(1, 1, 500, 1130, "outgoing", 900), solo(2, 0, 1130, 2100, "incoming", 2000)];
+    const pieces = build(cues);
+    const tears = pieces.filter((p) => p.id.includes(":tear") && p.id.startsWith("receipt:1:"));
+    const incoming = pieces.find((p) => p.id === "receipt:2:paper")!;
+    for (const tear of tears) expect(tear.toMs).toBeLessThanOrEqual(incoming.fromMs);
+    for (const piece of pieces.filter((p) => p.id.startsWith("receipt:1:"))) expect(piece.toMs).toBeLessThanOrEqual(incoming.fromMs);
+  });
+
+  test("every tear paints at least three frames, else the strip is cut cleanly", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const tear of build(demo(), { fps }).filter((p) => p.id.includes(":tear"))) expect(paintedFrameCount(tear.fromMs, tear.toMs, fps), `${fps} fps ${tear.id}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  test("text that reads on the paper but not on the thermal flash falls back", () => {
+    const pieces = build(demo(), { colours: { primary: "#949494", highlight: "#E8452B", accent: "#FFFFFF", shadow: "#000000" } });
+    for (const face of faces(pieces)) expect(face.fill).not.toBe("#949494");
+  });
+
+  test("a joined-script key word is shrunk whole, never split into rows", () => {
+    const token = "متعلقہ".repeat(11);
+    const cues = [{ ...solo(0, 0, 400, 1500, token, 1200), language: "ur" }];
+    const pieces = build(cues);
+    const rows = faces(pieces).filter((p) => p.id.startsWith("receipt:0:"));
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.id).toBe("receipt:0:w0");
   });
 });
 
