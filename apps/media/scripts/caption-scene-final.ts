@@ -80,6 +80,7 @@ export const MOMENTS: Record<string, number[]> = {
   ripple: [1100, 1400, 2800, 5400, 6950, 8350],
   snipsnap: [450, 800, 1100, 1750, 2600],
   anime: [440, 850, 1300, 2300, 3300],
+  bento: [450, 800, 1700, 2900, 4300, 6800],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
