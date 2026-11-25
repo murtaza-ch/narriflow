@@ -14,28 +14,30 @@ import type { SpeechCell } from "./speech-layout";
  * the glass is a few layered translucent bands and not one of them is blurred.
  *
  * Changes from the sample, and why:
- * - Glass body. A deep navy body (0.70 alpha, so white text keeps at least 7:1 even over a white frame), an ice-white
- *   tapered highlight along the top edge, a faint blue reflection along the bottom edge and a hairline rim. The
- *   soft drop shadow is one faint offset capsule and the key word's glow one larger translucent capsule (a blur costs
- *   every frame).
+ * - Glass body. A lighter, cooler navy body at 0.55 alpha (it reads as glass over footage, not as a dense plate), an
+ *   ice-white tapered highlight along the top edge, a faint blue reflection along the bottom edge and a hairline rim.
+ *   Readability comes from a thin dark halo around every glyph, not from fill density. The soft drop shadow is one faint
+ *   offset capsule under the same rounded clip as the body (so its corners follow the pill), and the key word's glow is
+ *   one larger translucent capsule (a blur costs every frame).
  * - The pill still grows word by word and re-centres, but every glass layer is the final capsule under a rounded clip
  *   of its own height that opens with each landed word, so the ends stay round at every width (a path cannot animate
  *   its width in libass). The backing is there on the first painted word and reaches every later word's slot by that
  *   word's first painted frame; only its contour moves: it lands as a liquid droplet (a touch tall and narrow, then it
  *   springs into a wide capsule). The rim is not clipped but drawn against that same moving contour (two end caps and
  *   two straight runs), so nothing pops onto an edge as the pill widens.
- * - The key word's thumb is a solid-tinted capsule (the highlight colour darkened until the text on it reaches 4.5:1)
+ * - The key word's thumb is translucent tinted glass at 0.7 alpha (the highlight lightened and desaturated, darkened only
+ *   until the text on it reaches 4:1)
  *   with a bright rim and two narrow low-alpha highlights (no broad dome: its edge cut across the face). It slides in from the previous word like an iOS segmented thumb,
  *   stretching as it travels, and snaps into its slot.
  * - Words land with a short chromatic split (cyan and pink copies that close up) and a focus pull (blur to sharp).
  * - Recurring beats on every cue: a light sweep that rides inside the opening capsule (scaled with its morph) when a row's last word lands
- *   (and again as an idle shimmer on long holds), a sparkle glint on the rim that follows the capsule's ends, and an
+ *   (tapered: three stacked bands of falling alpha, and again as an idle shimmer on long holds), a sparkle glint on the rim that follows the capsule's ends, and an
  *   exit that squashes the capsule flat like a drop.
  * - No cue-indexed tables: rows are balanced from the words and capped by the safe width, the key slot grows with its
  *   word, row height grows for tall scripts, RTL rows mirror, joined scripts stay whole, and a Latin word wider than a
  *   row breaks into readable pieces on their own rows instead of shrinking.
  * - Brand colours: the text colour must read on the two composited fills it sits on, the body glass over a white frame
- *   (#545967) and the key thumb over that body (#355284), both listed in `readsOn` (the shared 3:1 guard). A colour that
+ *   (#7F8594) and the key thumb over that body (#5D7BB1), both listed in `readsOn` (the shared 3:1 guard). A colour that
  *   passes is painted as given; the thumb's tint darkens until that text reads on it.
  */
 
@@ -61,9 +63,11 @@ const ROW_GAP = 16;
 const SPACING = -0.02;
 // Inter's baseline sits this far below the middle of its line box (cap height centred in the pill).
 const BASELINE_BELOW_CENTRE = 0.364;
-const SMOKE = "#0B1226";
-const BODY_ALPHA = 0.7;
-const THUMB_ALPHA = 0.9;
+const SMOKE = "#16223D";
+const BODY_ALPHA = 0.55;
+const THUMB_ALPHA = 0.7;
+/** The dark edge that keeps a glyph readable on the light, translucent glass. */
+const HALO = "#0B1226";
 const ICE = "#EAF4FF";
 const BLUE = "#7FB0FF";
 const COOL = "#4FD8FF";
@@ -134,13 +138,14 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
 
   // An accepted brand colour (the shared 3:1 guard against the fills in `readsOn`) is painted as given.
   const text = c.primary;
-  // The thumb's tint is the highlight darkened until the text on it (the thumb over the body over the lightest ground)
-  // reaches 4.5:1. `readsOn` lists the same two composited fills for the default highlight.
-  let darkness = 0.5;
-  let tint = mixColour(c.highlight, "#05070F", darkness);
-  while (darkness < 0.94 && contrast(text, mixColour(BODY_WORST, tint, THUMB_ALPHA)) < 4.5) {
+  // The thumb is translucent tinted glass: the highlight lightened and desaturated, then darkened only until the text on it
+  // (the thumb over the body over the lightest ground) reaches 4:1. `readsOn` lists the same two composited fills for
+  // the default highlight.
+  let darkness = 0;
+  let tint = mixColour(c.highlight, "#6F86B5", 0.3);
+  while (darkness < 0.94 && contrast(text, mixColour(BODY_WORST, tint, THUMB_ALPHA)) < 4) {
     darkness += 0.06;
-    tint = mixColour(c.highlight, "#05070F", darkness);
+    tint = mixColour(mixColour(c.highlight, "#6F86B5", 0.3), "#0A1530", darkness);
   }
   const bright = mixColour(c.highlight, "#FFFFFF", 0.55);
 
@@ -268,17 +273,10 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
       return { left, right: left + w * scale, w: w * scale };
     };
     const frames = (fn: (t: number) => number, tolerance = 0.35) => sampleFrames(fn, track, tolerance, { range: [capStart, to], simplify: true });
-    // One faint offset capsule is the shadow; it widens with the pill.
-    const shadow = {
-      x: frames((t) => { const { left, right } = reveal(t); return (left + right) / 2; }),
-      y: [[capStart, cy + 8 * u]] as Frames,
-      sx: frames((t) => reveal(t).w / W, 0.004),
-      sy: pose.sy,
-      o: pose.o,
-    };
     const lensL = W / 2 - r * 0.85;
     pieces.push(
-      shape(id("shadow"), capStart, capsule(W, H), shadow, { z: 0, fill: { colour: "#000000", alpha: 0.13 } }),
+      // One faint offset capsule is the shadow, under the same rounded clip as the body so its corners follow the pill.
+      shape(id("shadow"), capStart, capsule(W, H), { ...pose, y: [[capStart, cy + 8 * u]] as Frames }, { z: 0, clip, fill: { colour: "#000000", alpha: 0.13 } }),
       shape(id("smoke"), capStart, capsule(W, H), pose, { z: 1, clip, fill: { colour: SMOKE, alpha: BODY_ALPHA } }),
       shape(id("spec"), capStart, move(lens(lensL, 15 * u), 0, -H / 2 + 4 * u), pose, { z: 3, clip, fill: { colour: ICE, alpha: 0.48 } }),
       shape(id("under"), capStart, move(lens(lensL * 0.9, -12 * u), 0, H / 2 - 3 * u), pose, { z: 3, clip, fill: { colour: BLUE, alpha: 0.18 } }),
@@ -308,7 +306,9 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
     // Light sweep: rides inside the opening capsule once the row's last word has landed, then an idle shimmer on long holds.
     const sweepW = H * 0.32;
     const lean = H * 0.35;
-    const band: PathCmd[] = [["M", -sweepW / 2 + lean, -H / 2], ["L", sweepW / 2 + lean, -H / 2], ["L", sweepW / 2 - lean, H / 2], ["L", -sweepW / 2 - lean, H / 2], ["Z"]];
+    const bandOf = (width: number): PathCmd[] => [["M", -width / 2 + lean, -H / 2], ["L", width / 2 + lean, -H / 2], ["L", width / 2 - lean, H / 2], ["L", -width / 2 - lean, H / 2], ["Z"]];
+    // Stacked bands, widest and faintest first, so the sweep fades out at its edges instead of ending in a hard bar.
+    const bands = [{ name: "a", width: sweepW * 2.2, alpha: 0.05 }, { name: "b", width: sweepW * 1.35, alpha: 0.07 }, { name: "c", width: sweepW * 0.55, alpha: 0.1 }];
     const limit = exit ? exitAt : to;
     const settle = capStart + 300;
     const first = Math.max(Math.min(Math.max(rowLast + 260, settle), limit - 560), settle);
@@ -325,8 +325,11 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
       const local = (pick: "left" | "right") => sampleFrames((t) => reveal(t)[pick] - xs(t), sweepEdges, 0.3, { range: [at, at + dur], simplify: true });
       const rows = (sign: -1 | 1) => sampleFrames((t) => (sign * H * syFn(t)) / 2, sweepEdges, 0.3, { range: [at, at + dur], simplify: true });
       const sweepClip = { x1: local("left"), x2: local("right"), y1: rows(-1), y2: rows(1), radius: r * syFn(at) };
-      pieces.push(shape(`${id("sweep")}-${k}`, at, band, { x: sampleFrames(xs, sweepEdges, 0.3, { range: [at, at + dur], simplify: true }), y: [[at, cy]], o: [[at, 1]] },
-        { z: 3, toMs: at + dur, clip: sweepClip, fill: { colour: "#FFFFFF", alpha: k === 0 ? 0.16 : 0.1 } }));
+      const sweepX = sampleFrames(xs, sweepEdges, 0.3, { range: [at, at + dur], simplify: true });
+      for (const band of bands) {
+        pieces.push(shape(`${id("sweep")}-${k}${band.name}`, at, bandOf(band.width), { x: sweepX, y: [[at, cy]], o: [[at, 1]] },
+          { z: 3, toMs: at + dur, clip: sweepClip, fill: { colour: "#FFFFFF", alpha: band.alpha * (k === 0 ? 1.3 : 0.8) } }));
+      }
     });
 
     // A glint on the top rim, riding the capsule's moving end.
@@ -376,7 +379,7 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
       o: withExit(oFrames, 1, 0),
     };
     const face = ctx.face(cell, en.from, text, track);
-    pieces.push({ ...face, id: `${ctx.id}:${name}`, z: 6 });
+    pieces.push({ ...face, id: `${ctx.id}:${name}`, z: 6, stroke: { widthPx: 2.2 * u, colour: HALO, alpha: 0.55 } });
 
     if (en.motion) {
       const d = (p.hero ? 4.6 : 3.2) * u;
@@ -410,12 +413,19 @@ export const liquidProgram = galleryScene("liquid", 1290, (ctx) => {
       o: withExit([[ts, 0.7], [ts + 60, 1]], 1, 0),
     };
     const tag = (suffix: string) => `thumb${suffix}${index}`;
+    // While the thumb travels across the words before its slot, its bright rim, highlights and glow step back so none of
+    // them sits as a light line under settled letters; they come up as it snaps into place.
+    const settling = (t: number) => 0.12 + 0.88 * EASES.inOut(prog(t, ts + 0.5 * D, 0.5 * D));
+    const quiet = {
+      ...pose,
+      o: sampleFrames((t) => kf(t, pose.o) * settling(t), [ts, ts + 0.5 * D, ts + D, exitAt, to], 0.01, { range: [ts, to], simplify: true }),
+    };
     pieces.push(
-      shape(tag("glow"), ts, capsule(tw + 12 * u, th + 12 * u), pose, { z: 4, fill: { colour: c.highlight, alpha: 0.13 } }),
+      shape(tag("glow"), ts, capsule(tw + 12 * u, th + 12 * u), quiet, { z: 4, fill: { colour: c.highlight, alpha: 0.13 } }),
       shape(tag("fill"), ts, capsule(tw, th), pose, { z: 4, fill: { colour: tint, alpha: THUMB_ALPHA } }),
-      shape(tag("spec"), ts, move(lens(tw / 2 - th * 0.45, 8 * u), 0, -th / 2 + 5 * u), pose, { z: 4, fill: { colour: "#FFFFFF", alpha: 0.34 } }),
-      shape(tag("under"), ts, move(lens(tw / 2 - th * 0.5, -6 * u), 0, th / 2 - 4 * u), pose, { z: 4, fill: { colour: bright, alpha: 0.24 } }),
-      shape(tag("rim"), ts, capsule(tw, th, 1 * u), pose, { z: 4, stroke: { widthPx: 2.4 * u, colour: bright, alpha: 0.95 } }),
+      shape(tag("spec"), ts, move(lens(tw / 2 - th * 0.45, 8 * u), 0, -th / 2 + 5 * u), quiet, { z: 4, fill: { colour: "#FFFFFF", alpha: 0.34 } }),
+      shape(tag("under"), ts, move(lens(tw / 2 - th * 0.5, -6 * u), 0, th / 2 - 4 * u), quiet, { z: 4, fill: { colour: bright, alpha: 0.24 } }),
+      shape(tag("rim"), ts, capsule(tw, th, 1 * u), quiet, { z: 4, stroke: { widthPx: 2.2 * u, colour: bright, alpha: 0.9 } }),
     );
   });
   return pieces;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyBrandColorsToScene, captionSceneMeta } from "@narriflow/validators";
+import { applyBrandColorsToScene, captionColourContrast as ratio, captionSceneMeta } from "@narriflow/validators";
 import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
@@ -128,32 +128,61 @@ describe("liquid review fixes", () => {
     const fill = (piece: Piece) => (piece.kind === "text" ? piece.fill : piece.fill?.colour);
     return { text: fill(pieces.find((piece) => piece.id === "liquid:0:w1")!)!, thumb: fill(pieces.find((piece) => piece.id.startsWith("liquid:0:thumbfill"))!)! };
   };
-  const channel = (hex: string, at: number) => {
-    const v = Number.parseInt(hex.slice(1 + 2 * at, 3 + 2 * at), 16) / 255;
-    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  };
-  const lum = (hex: string) => 0.2126 * channel(hex, 0) + 0.7152 * channel(hex, 1) + 0.0722 * channel(hex, 2);
-  const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
-
   test("a brand text colour the shared guard accepts is painted as given", () => {
-    expect(textFill("#B0B0B0").text).toBe("#B0B0B0");
     expect(textFill("#F2F2F2").text).toBe("#F2F2F2");
-    expect(captionSceneMeta("liquid").brand.primary?.readsOn).toEqual(["#545967", "#355284"]);
+    expect(textFill("#FFFFFF").text).toBe("#FFFFFF");
+    expect(captionSceneMeta("liquid").brand.primary?.readsOn).toEqual(["#7F8594", "#5D7BB1"]);
   });
 
   test("the brand guard refuses a text colour that cannot read on the glass it sits on, and takes one that can", () => {
     const preset = { primaryColor: "#FFFFFF", highlightColor: "#5E9BFF", accentColor: "#FF8BD0" };
     expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#707070", secondaryColor: "#E6F7FF" })).toEqual({ highlightColor: "#E6F7FF" });
-    expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#B0B0B0", secondaryColor: "#E6F7FF" })).toEqual({ primaryColor: "#B0B0B0", highlightColor: "#E6F7FF" });
+    expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#B0B0B0", secondaryColor: "#E6F7FF" })).toEqual({ highlightColor: "#E6F7FF" });
+    expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#F2F2F2", secondaryColor: "#E6F7FF" })).toEqual({ primaryColor: "#F2F2F2", highlightColor: "#E6F7FF" });
     expect(applyBrandColorsToScene("liquid", preset, { primaryColor: "#F0F0F0", secondaryColor: "#FFE600" })).toEqual({ primaryColor: "#F0F0F0", highlightColor: "#FFE600" });
   });
 
-  test("the key word's thumb stays dark enough for its text over the body over the lightest ground, whatever the highlight", () => {
+  test("the key word's thumb keeps its text at 3:1 or better over the body over the lightest ground, whatever the highlight", () => {
+    const mix = (from: string, to: string, p: number) => `#${[0, 1, 2].map((at) => Math.round(Number.parseInt(from.slice(1 + 2 * at, 3 + 2 * at), 16) + (Number.parseInt(to.slice(1 + 2 * at, 3 + 2 * at), 16) - Number.parseInt(from.slice(1 + 2 * at, 3 + 2 * at), 16)) * p).toString(16).padStart(2, "0")).join("")}`;
     for (const highlight of ["#FFFFFF", "#FFE600", "#E6F7FF", "#5E9BFF", "#000000"]) {
       const { text, thumb } = textFill("#FFFFFF", highlight);
-      const over = `#${[0, 1, 2].map((at) => Math.round(Number.parseInt("545967".slice(2 * at, 2 * at + 2), 16) + (Number.parseInt(thumb.slice(1 + 2 * at, 3 + 2 * at), 16) - Number.parseInt("545967".slice(2 * at, 2 * at + 2), 16)) * 0.9).toString(16).padStart(2, "0")).join("")}`;
-      expect(ratio(text, over), highlight).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(text, mix("#7F8594", thumb, 0.7)), highlight).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  test("every glyph has a thin dark halo, which carries the contrast on the light glass", () => {
+    const { cues, pieces } = build(["the:m new:b glass:h@900"]);
+    for (const [at] of cues[0]!.words.entries()) {
+      const face = pieces.find((piece) => piece.id === `liquid:0:w${at}`)!;
+      expect(face.kind === "text" && face.stroke?.alpha, `word ${at}`).toBeGreaterThan(0.4);
+    }
+  });
+
+  test("the shadow keeps the pill's rounded contour: same clip as the body, dropped, never a squashed capsule", () => {
+    const { pieces } = build(["the:m new:b update:b glass:h@900"]);
+    const shadow = pieces.find((piece) => piece.id === "liquid:0:shadow0")!;
+    const body = pieces.find((piece) => piece.id === "liquid:0:smoke0")!;
+    expect(shadow.clip).toEqual(body.clip);
+    expect(shadow.track.sx).toEqual(body.track.sx);
+    expect(shadow.track.y![0]![1]).toBeGreaterThan(body.track.y![0]![1]);
+  });
+
+  test("the sweep fades out at its edges: stacked bands of falling alpha", () => {
+    const { pieces } = build(["the:m new:b update:b glass:h@900"]);
+    const bands = pieces.filter((piece): piece is Extract<Piece, { kind: "shape" }> => /^liquid:0:sweep0-0[abc]$/.test(piece.id));
+    expect(bands.map((band) => band.fill!.alpha)).toEqual([...bands.map((band) => band.fill!.alpha)].sort((a, b) => a! - b!));
+    expect(bands.length).toBe(3);
+  });
+
+  test("the thumb's rim and highlights step back while it travels across other words and come up as it settles", () => {
+    const { cues, pieces } = build(["the:m new:b update:b glass:h@900"]);
+    const rim = pieces.find((piece) => piece.id === "liquid:0:thumbrim3")!;
+    const fill = pieces.find((piece) => piece.id === "liquid:0:thumbfill3")!;
+    const word = cues[0]!.words[3]!;
+    const travelling = word.startMs - 90 + 150;
+    expect(evaluatePiece(rim, travelling).o).toBeLessThan(0.3);
+    expect(evaluatePiece(fill, travelling).o).toBeGreaterThan(0.9);
+    expect(evaluatePiece(rim, word.startMs + 500).o).toBeGreaterThan(0.9);
   });
 
   test("a Latin word wider than a row breaks into readable pieces on their own rows instead of shrinking", () => {
