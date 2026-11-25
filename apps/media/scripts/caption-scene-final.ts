@@ -71,6 +71,7 @@ export const MOMENTS: Record<string, number[]> = {
   gumdrop: [480, 1500, 1900, 2360],
   flowing: [450, 960, 1940, 2970],
   trace: [430, 1270, 1640, 1850],
+  tunnel: [450, 1100, 2500, 2700, 4400, 6700],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;

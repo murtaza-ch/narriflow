@@ -17,6 +17,8 @@ const STYLES: readonly CaptionSceneName[] = [
   // Gallery 4.
   "primer", "manifesto", "swipe", "match", "scribble", "barrel", "pills", "pixel", "diecut", "sticky", "brute", "mdrn",
   "crosstape", "gumdrop", "flowing", "trace",
+  // Gallery 5.
+  "tunnel",
 ];
 
 const LINES = [
