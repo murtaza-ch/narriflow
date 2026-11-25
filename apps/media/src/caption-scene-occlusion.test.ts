@@ -35,6 +35,7 @@ const STYLES: readonly CaptionSceneName[] = [
 ];
 
 const LINES = [
+  "vibes",
   "it's:b time:b to:m say:b goodbye:h@420",
   "does:b the:m remote:b even:b still:h@360",
   "the:m remote:b doesn't:h@360 work.:b",
