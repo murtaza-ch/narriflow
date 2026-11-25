@@ -73,6 +73,7 @@ export const MOMENTS: Record<string, number[]> = {
   flowing: [450, 960, 1940, 2970],
   trace: [430, 1270, 1640, 1850],
   tunnel: [450, 1100, 2500, 2700, 4400, 6700],
+  liquid: [480, 1200, 1900, 2250, 3000],
   chronicle: [700, 1500, 2700, 5200, 8900],
 };
 
