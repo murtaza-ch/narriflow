@@ -24,6 +24,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "ripple",
   "liquid",
   "snipsnap",
+  "receipt",
   "anime",
 ];
 
