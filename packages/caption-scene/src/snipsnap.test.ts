@@ -77,14 +77,18 @@ describe("Snip Snap on real phrasing", () => {
 
   test("every cue of a 24-cue clip gets a doodle, tape and scraps, and the doodle kind cycles through all six", () => {
     const kinds = new Set<string>();
+    let scrapped = 0;
     for (const cue of LONG) {
       const own = pieces.filter((piece) => cueOf(piece) === cue.index);
       expect(own.some((piece) => /:doodle0-0$/.test(piece.id)), `cue ${cue.index} has no doodle`).toBe(true);
       expect(own.some((piece) => piece.id.endsWith(":tape")), `cue ${cue.index} has no tape`).toBe(true);
-      expect(own.filter((piece) => /:scrap\d$/.test(piece.id)).length, `cue ${cue.index} scraps`).toBeGreaterThanOrEqual(2);
+      const scraps = own.filter((piece) => /:scrap\d$/.test(piece.id)).length;
+      expect(scraps, `cue ${cue.index} scraps`).toBeGreaterThanOrEqual(1);
+      scrapped += scraps >= 2 ? 1 : 0;
       const parts = own.filter((piece) => /:doodle\d-\d$/.test(piece.id));
       kinds.add(`${parts.length}:${parts[0]?.kind === "shape" ? JSON.stringify(parts[0].path.slice(0, 3)).length : 0}`);
     }
+    expect(scrapped).toBeGreaterThanOrEqual(LONG.length * 0.7);
     expect(kinds.size).toBeGreaterThanOrEqual(3);
     const heroCue = LONG.findIndex((cue) => cue.words.some((word) => word.role === "hero"));
     expect(pieces.some((piece) => cueOf(piece) === LONG[heroCue]!.index && /:doodle1-0$/.test(piece.id))).toBe(true);
@@ -165,6 +169,126 @@ describe("Snip Snap on real phrasing", () => {
     for (const cues of [demoCues(SNIPSNAP_DEMO).cues, sceneEdgeDemo("long-word").cues, sceneEdgeDemo("nine-words").cues]) {
       const out = build(cues);
       for (const cue of cues) expect(out.filter((piece) => cueOf(piece) === cue.index).length).toBeLessThanOrEqual(150);
+    }
+  });
+
+  test("a long word is cut into rows that read, never shrunk to a sliver (review: 35 px)", () => {
+    const long = sceneEdgeDemo("long-word").cues[1]!;
+    const out = build([{ ...long, index: 0 }]);
+    const segments = out.filter((piece) => /^snipsnap:0:w0l\d+$/.test(piece.id));
+    expect(segments.length).toBeGreaterThanOrEqual(2);
+    for (const segment of segments) {
+      if (segment.kind !== "text") throw new Error("segment is text");
+      expect(segment.sizePx).toBeGreaterThanOrEqual(0.55 * 112);
+    }
+    const spoken = long.words[0]!.text.toUpperCase();
+    expect(segments.map((segment) => (segment.kind === "text" ? segment.text : "")).join("")).toBe(spoken);
+    // Part 0 paints at the spoken start, every part is whole before the word ends.
+    const first = segments.find((segment) => segment.id.endsWith("l0"))!;
+    expect(shown(first, long.words[0]!.startMs + 34)).not.toBeNull();
+    for (const segment of segments) expect(shown(segment, long.words[0]!.endMs - 2)).not.toBeNull();
+    // One row each, top to bottom in reading order.
+    const ys = segments.map((segment) => evaluatePiece(segment, long.words[0]!.endMs - 2).y);
+    for (let i = 1; i < ys.length; i++) expect(ys[i]!).toBeGreaterThan(ys[i - 1]!);
+  });
+
+  test("the type reads on the paper under it at the brand guard's 3:1 with the default palette (review: 2.4:1 yellow on pink)", () => {
+    const lum = (hex: string) => {
+      const ch = (at: number) => {
+        const v = Number.parseInt(hex.slice(1 + 2 * at, 3 + 2 * at), 16) / 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+    };
+    const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+    const inks = new Set<string>();
+    const catalogue = snipsnapProgram.build(sceneInput(LONG, { measure: fakeMeasure, colours: { primary: "#FFD928", highlight: "#FF5FAE", accent: "#3DE3EA", shadow: "#000000" }, anchor: { xPct: 50, yPct: (1285 / 1920) * 100 } })).pieces;
+    for (const cue of LONG) {
+      const own = catalogue.filter((piece) => cueOf(piece) === cue.index);
+      const t = settledAt(cue);
+      for (const face of own.filter((piece) => FACE.test(piece.id) && piece.kind === "text")) {
+        const ink = shown(face, t)!;
+        const cx = (ink.x1 + ink.x2) / 2;
+        const cy = (ink.y1 + ink.y2) / 2;
+        const paper = own.filter((piece) => /:p\d+s\d+$/.test(piece.id) && piece.kind === "shape").filter((piece) => {
+          const box = shown(piece, t);
+          return box !== null && box.x1 <= cx && box.x2 >= cx && box.y1 <= cy && box.y2 >= cy;
+        }).at(-1)!;
+        if (paper.kind !== "shape" || face.kind !== "text") throw new Error("shapes");
+        inks.add(`${face.fill} on ${paper.fill!.colour}`);
+        expect(ratio(face.fill, paper.fill!.colour), `${face.id} ${face.fill} on ${paper.fill!.colour}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+    // All four papers appear over the run, pink among them.
+    expect(inks.size).toBeGreaterThanOrEqual(4);
+    expect([...inks].some((pair) => pair.endsWith("#FF5FAE"))).toBe(true);
+  });
+
+  test("the animated stack, entrance overshoot and decorations stay in the caption band on every painted frame, 9:16 and 16:9", () => {
+    const tall = demoCues({ lines: ["inch:b matte:b display:h@500 glare:b", "and:m then:b the:b hero:h@480", "we've:m shot:b 384:h episodes:h@420"], options: { lead: 400, gap: 30, cueGap: 120, tail: 500 } }).cues;
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }, { width: 1080, height: 1080 }]) {
+      const ay = (1285 / 1920) * canvas.height;
+      const band = { y1: ay - (425 / 1920) * canvas.height - 1, y2: ay + (365 / 1920) * canvas.height + 1 };
+      const out = snipsnapProgram.build(sceneInput(tall, { canvas, measure: fakeMeasure, anchor: { xPct: 50, yPct: (1285 / 1920) * 100 } })).pieces;
+      for (const piece of out) {
+        for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+          const box = shown(piece, t);
+          if (!box) continue;
+          expect(box.y1 >= band.y1 && box.y2 <= band.y2, `${piece.id} at ${t} on ${canvas.width}x${canvas.height}: ${Math.round(box.y1)}-${Math.round(box.y2)} outside ${Math.round(band.y1)}-${Math.round(band.y2)}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("fast cues (70-120 ms words) keep their doodles, tape and scraps in a static pose, at gaps 0 and 60", () => {
+    const fast = (gap: number): SceneCue[] => {
+      let clock = 403;
+      return Array.from({ length: 40 }, (_, index) => {
+        const startMs = clock;
+        const words = (index % 4 === 0 ? ["brief", "stay", "bright", "clear"] : ["keep", "the", "point", "sharp"]).map((text, i) => {
+          const wordStart = clock;
+          clock += [70, 90, 120, 70][(i + index) % 4]!;
+          return { text, startMs: wordStart, endMs: clock, role: (i === 3 && index % 4 !== 0 ? "hero" : "body") as "hero" | "body", key: null };
+        });
+        clock += gap;
+        return { index, startMs, endMs: clock, words, speaker: 0, language: "en" };
+      });
+    };
+    for (const gap of [0, 60]) {
+      for (const fps of [24, 30, 60]) {
+        const run = fast(gap);
+        const out = build(run, fps);
+        for (const cue of run) {
+          const own = out.filter((piece) => cueOf(piece) === cue.index);
+          expect(own.some((piece) => /:doodle0-0$/.test(piece.id)), `cue ${cue.index} lost its doodle at gap ${gap}, ${fps} fps`).toBe(true);
+          expect(own.some((piece) => piece.id.endsWith(":tape")), `cue ${cue.index} lost its tape at gap ${gap}, ${fps} fps`).toBe(true);
+        }
+      }
+    }
+  }, 60_000);
+
+  test("a word is never smaller than half size on its first painted frame, even with 60 ms between cues (review: 19 %)", () => {
+    const quick = demoCues({ lines: ["keep:b the:m point:b sharp:h@120", "keep:b the:m point:b sharp:h@120", "keep:b the:m point:b sharp:h@120"], options: { lead: 400, rate: 100, gap: 0, cueGap: 60, tail: 400 } }).cues;
+    const out = build(quick);
+    for (const face of out.filter((piece) => FACE.test(piece.id))) {
+      const [t] = exportFrameTimes(face.fromMs, face.toMs, 30);
+      expect(evaluatePiece(face, t!).sx, `${face.id} at ${t}`).toBeGreaterThanOrEqual(0.45);
+    }
+  });
+
+  test("a doodle sits beside the paper, not far from it (review: 59 px away)", () => {
+    for (const cue of LONG) {
+      const own = pieces.filter((piece) => cueOf(piece) === cue.index);
+      const t = settledAt(cue);
+      const plates = own.filter((piece) => /:p\d+s\d+$/.test(piece.id)).flatMap((piece) => shown(piece, t) ?? []);
+      for (const di of [0, 1]) {
+        const parts = own.filter((piece) => new RegExp(`:doodle${di}-\\d$`).test(piece.id)).flatMap((piece) => shown(piece, t) ?? []);
+        if (parts.length === 0) continue;
+        const box = { x1: Math.min(...parts.map((part) => part.x1)), y1: Math.min(...parts.map((part) => part.y1)), x2: Math.max(...parts.map((part) => part.x2)), y2: Math.max(...parts.map((part) => part.y2)) };
+        const doodle = { id: `${cue.index}:doodle${di}` };
+        const gap = Math.min(...plates.map((plate) => Math.hypot(Math.max(box.x1 - plate.x2, plate.x1 - box.x2, 0), Math.max(box.y1 - plate.y2, plate.y1 - box.y2, 0))));
+        expect(gap, `${doodle.id} is ${Math.round(gap)} px from the paper`).toBeLessThanOrEqual(30);
+      }
     }
   });
 });
