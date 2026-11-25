@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { describeSpeechConformance, fastRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
+import { captionColourContrast } from "@narriflow/validators";
 import { type Box, type Piece, SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds } from "./scene";
 import { horizonProgram, horizonSparklePath } from "./templates/horizon";
 import { fakeMeasure, sceneInput } from "./test-support";
@@ -36,7 +37,7 @@ describe("horizon", () => {
     }
   });
 
-  test("the key word is a banded chrome: the word's own pale edge with a two-step extrusion under six clipped colour bands cut from its cap height", () => {
+  test("the key word is a banded chrome: the word's own pale edge with its extrusion under six clipped colour bands cut from its cap height", () => {
     const { pieces } = build(["so:m future:h@900"]);
     const face = pieces.find((p) => p.id === "horizon:0:w1")!;
     if (face.kind !== "text") throw new Error("text");
@@ -46,7 +47,7 @@ describe("horizon", () => {
     // The bands tile the cap height without a gap: each starts where the one above ended.
     const cuts = bands.map((band) => [band.clip!.y1[0]![1], band.clip!.y2[0]![1]] as const);
     for (let k = 1; k < cuts.length; k++) expect(cuts[k]![0]).toBeCloseTo(cuts[k - 1]![1], 3);
-    expect(face.shadows?.length).toBe(2);
+    expect(face.shadows?.length).toBe(1);
     expect(face.stroke!.widthPx).toBeGreaterThan(0.02 * face.sizePx);
   });
 
@@ -109,7 +110,7 @@ describe("horizon", () => {
     expect(height(frames.at(-4)!)).toBeGreaterThan(500);
   });
 
-  test("palettes cycle by a per-cue counter, hero cues and plain cues each with their own", () => {
+  test("the palette steps on each pause and cycles by a counter, never by cue index", () => {
     const { pieces } = build(["a:h@500", "b:h@500", "c:h@500", "d:h@500", "plain one", "plain two", "plain three"]);
     const edge = (cue: number) => {
       const piece = pieces.find((p) => p.id === `horizon:${cue}:rim0`)!;
@@ -117,10 +118,88 @@ describe("horizon", () => {
     };
     expect(new Set([0, 1, 2].map(edge)).size).toBe(3);
     expect(edge(3)).toBe(edge(0));
-    expect(new Set([4, 5, 6].map(edge)).size).toBe(3);
-    // Plain cues walk the palettes the other way round: 2, 1, 0.
-    expect(edge(4)).toBe(edge(2));
+    expect(edge(4)).toBe(edge(1));
     expect(edge(6)).toBe(edge(0));
+  });
+
+  test("back-to-back cues keep one palette and a pause takes the next, so fast speech does not strobe", () => {
+    const rimOf = (pieces: readonly Piece[], cue: number) => {
+      const piece = pieces.find((p) => p.id === `horizon:${cue}:rim0`)!;
+      return piece.kind === "shape" ? piece.stroke!.colour : "";
+    };
+    for (const gap of [0, 60, 120]) {
+      const { cues, pieces } = build(["so:m here:b is:h@300", "the:m thing:b", "nobody:b tells:b you", "this:h@300", "ok"], null, 30, {}, gap);
+      expect(new Set(cues.map((cue) => rimOf(pieces, cue.index))).size, `gap ${gap}`).toBe(1);
+    }
+    const { cues, pieces } = build(["so:m here:b is:h@300", "the:m thing:b", "nobody:b tells:b you"], null, 30, {}, 160);
+    expect(new Set(cues.map((cue) => rimOf(pieces, cue.index))).size).toBe(3);
+    // A pause after a run starts a new palette; the run itself stays whole.
+    const mixed = demoCues({ lines: ["one:b two:b", "three:b four:b", "five:b six:b"], options: { lead: 400, gap: 40, cueGap: 0, tail: 800 } }).cues;
+    const shifted = [mixed[0]!, mixed[1]!, { ...mixed[2]!, startMs: mixed[2]!.startMs + 400, endMs: mixed[2]!.endMs + 400, words: mixed[2]!.words.map((w) => ({ ...w, startMs: w.startMs + 400, endMs: w.endMs + 400 })) }];
+    const out = horizonProgram.build(sceneInput(shifted, { fps: 30, colours, anchor })).pieces;
+    expect(rimOf(out, 0)).toBe(rimOf(out, 1));
+    expect(rimOf(out, 2)).not.toBe(rimOf(out, 1));
+  });
+
+  test("a grey or deep-pink brand that only fails 3:1 against the plate as drawn (90 % over footage) falls back to the default face", () => {
+    for (const grey of ["#636363", "#686868", "#696969", "#C2185B"]) {
+      const { pieces } = build(["no:b brakes:b"], null, 30, { colours: { ...colours, primary: grey, highlight: grey, accent: grey } });
+      const face = pieces.find((p) => p.id === "horizon:0:w0")!;
+      expect(face.kind === "text" && face.fill, grey).toBe("#F7EEFF");
+      const rim = pieces.find((p) => p.id === "horizon:0:rim0")!;
+      expect(rim.kind === "shape" && rim.stroke!.colour, grey).not.toBe(grey);
+    }
+  });
+
+  test("a plain word's glow never sits on its own face colour: near-white face and near-white highlight keep a glow that shows", () => {
+    const { pieces } = build(["no:b brakes:b"], null, 30, { colours: { ...colours, primary: "#FFFFFF", highlight: "#FFF4FF" } });
+    const glow = pieces.find((p) => p.id === "horizon:0:w0g")!;
+    expect(glow.kind === "text" && glow.fill).not.toBe("#FFF4FF");
+    expect(glow.kind === "text" && captionColourContrast("#FFFFFF", glow.fill)).toBeGreaterThanOrEqual(1.5);
+  });
+
+  test("labels stay at 42 px or more in portrait while the key word gives the height, and the key word stays at 111 px or more", () => {
+    const { cues, pieces } = build([
+      "our:b whole:b team:m week:b episode:h@900",
+      "this:m is:m the:b longest:b episode:h@900",
+      "welcome:b back:b to:m channel:b everyone:h@900",
+      "everyone:h@900 thanks:b for:m watching:b",
+      "inch:b display:h@700 glare:b",
+      "so:m unbelievable:h@900 right:b",
+    ]);
+    for (const cue of cues) {
+      const sizes = faces(pieces, cue.index).flatMap((p) => (p.kind === "text" ? [{ face: p.face, size: p.sizePx }] : []));
+      for (const { face, size } of sizes) {
+        if (face === "Orbitron Black") expect(size, `cue ${cue.index} label`).toBeGreaterThanOrEqual(0.9 * 46 - 0.01);
+        else expect(size, `cue ${cue.index} key word`).toBeGreaterThanOrEqual(111 - 0.01);
+      }
+    }
+  });
+
+  test("on a tight hand-off the plate re-opens from most of the way over its first painted frames instead of cutting to full, and never blinks shut", () => {
+    const { cues, pieces } = build(["no:b brakes:b no:b", "limits:b no:b regrets:b"], null, 30, {}, 0);
+    const plate = pieces.find((p) => p.id === "horizon:1:plate")!;
+    const frames = exportFrameTimes(cues[1]!.words[0]!.startMs, cues[1]!.words.at(-1)!.endMs + 150, 30);
+    const open = (t: number) => {
+      const clip = evaluatePiece(plate, t).clip!;
+      return (clip.y2 - clip.y1) / 568;
+    };
+    expect(open(plate.fromMs)).toBeGreaterThan(0.6);
+    expect(open(plate.fromMs)).toBeLessThan(0.8);
+    expect(open(frames[3]!)).toBeCloseTo(1, 3);
+    for (const t of frames) expect(pieceBounds(plate, t, fakeMeasure)).not.toBeNull();
+    expect(open(frames[1]!)).toBeGreaterThan(open(frames[0]!));
+  });
+
+  test("a plain cue's rule starts on the first word of the row it underlines, not before it is spoken", () => {
+    const { cues, pieces } = build(["no:b brakes:b no:b limits:b no:b regrets:b"]);
+    const rule = pieces.find((p) => p.id === "horizon:0:rule")!;
+    expect(rule).toBeDefined();
+    // Three rows of two words: the last row starts on the fifth word.
+    expect(rule.fromMs).toBeGreaterThanOrEqual(cues[0]!.words[4]!.startMs);
+    const hero = build(["press:b start:h@900"]);
+    const heroRule = hero.pieces.find((p) => p.id === "horizon:0:rule")!;
+    expect(heroRule.fromMs).toBeGreaterThanOrEqual(hero.cues[0]!.words[1]!.startMs);
   });
 
   test("a long key word breaks into the fewest balanced rows at a readable size, with no stray letter", () => {

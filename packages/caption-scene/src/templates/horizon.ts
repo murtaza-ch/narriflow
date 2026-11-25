@@ -3,6 +3,7 @@ import type { DemoScript } from "../demo";
 import { clamp, type Ease, type Frames } from "../ease";
 import { exportFrameAfter, exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
+import type { SceneCue } from "../input";
 import { rowVisualOrder } from "../layout";
 import { type Clip, mixColour, type PathCmd, type Piece, type Shadow, type TextPiece, type Track } from "../scene";
 import { polygonPath } from "../shapes";
@@ -101,14 +102,22 @@ const MINOR = 0.86;
 const BADGE_SHARE = 0.33;
 
 const INK = "#13072E";
+/** What the 90 % plate really is over light footage: brand colours are checked against this, not the opaque ink. */
+const PLATE = mixColour(INK, "#FFFFFF", 0.1);
 const DEEP = "#2B0F63";
 const THEMES = [
   { bands: ["#F1FBFF", "#82D5FF", "#4A8CFF", "#1B1263", "#FF5BD3", "#FF9A52"], edge: "#A5F5FF", glow: "#FF3FD0", top: "#7DF3FF", bot: "#FF86E4", bars: "#FF4FD8" },
   { bands: ["#FFF5B5", "#FFD23C", "#FF8A22", "#3A0E3C", "#FF3B5E", "#B5176E"], edge: "#FFC46B", glow: "#FF4A1F", top: "#FFE18C", bot: "#FF8F66", bars: "#FF6B2C" },
   { bands: ["#FFFFFF", "#CBA8FF", "#8B5CFF", "#1C0C50", "#FF5CCF", "#FF92DA"], edge: "#D8BCFF", glow: "#7B3CFF", top: "#7DF3FF", bot: "#FF8AE0", bars: "#9B6BFF" },
 ] as const;
-/** Hero cues walk the palettes in this order, plain cues in the other (the sample's demo shows palettes 0, 1 on its hero cues and 2, 1 on its plain ones). */
-const THEME_ORDER = { hero: [0, 1, 2], plain: [2, 1, 0] } as const;
+/** The palettes in the order a clip walks them; one step each time the speech pauses long enough to read as a new beat. */
+const THEME_ORDER = [0, 2, 1] as const;
+/** A cue that starts this long after the previous speech ended takes the next palette; back-to-back cues keep one colour. */
+const PAUSE_MS = 150;
+const LABEL_FLOOR = 0.9 * 46;
+const HERO_FLOOR = 111;
+/** A plate that re-opens on a tight hand-off starts this open and settles over its first painted frames. */
+const SETTLE_FROM = 0.72;
 /** Where each hard band of the chrome ends, as a share of the cap height (the sample's 33 / 44 / 55 / 58 / 74 % of the line box, on the caps). */
 const BAND_CUTS = [0.3, 0.42, 0.54, 0.585, 0.78] as const;
 
@@ -162,15 +171,37 @@ interface Group {
   readonly chunks: readonly string[] | null;
 }
 
+const paletteMemo = new WeakMap<readonly SceneCue[], number[]>();
+/** The palette each cue takes: one step on the first cue and on every cue that starts after a pause, none on back-to-back speech. */
+function paletteSteps(cues: readonly SceneCue[]): number[] {
+  const known = paletteMemo.get(cues);
+  if (known) return known;
+  const steps: number[] = [];
+  let n = 0;
+  let previousEnd = Number.NEGATIVE_INFINITY;
+  cues.forEach((cue, at) => {
+    if (cue.words.length === 0) {
+      steps[at] = Math.max(0, n - 1);
+      return;
+    }
+    const start = Math.min(...cue.words.map((word) => word.startMs));
+    if (n === 0 || start - previousEnd >= PAUSE_MS) n++;
+    steps[at] = n - 1;
+    previousEnd = Math.max(previousEnd, ...cue.words.map((word) => word.endMs));
+  });
+  paletteMemo.set(cues, steps);
+  return steps;
+}
+
 export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
   const { cue, index, to, bounds, from: cueFrom } = ctx.window;
   const { exit, exitAt, fps, side, input, space } = ctx;
   const pieces: Piece[] = [];
   const direction = ctx.rtl ? "rtl" : "ltr";
 
-  // Colours: each is checked against the navy plate it is drawn on and falls back to the style default.
+  // Colours: each is checked against the plate as it is drawn (navy at 90 % over the footage) and falls back to the style default.
   const defaults = captionSceneMeta("horizon").colours;
-  const keep = (colour: string, fallback: string) => (captionColourContrast(colour, INK) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? colour : fallback);
+  const keep = (colour: string, fallback: string) => (captionColourContrast(colour, PLATE) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? colour : fallback);
   const pale = keep(input.colours.primary, defaults.primary);
   const neon = keep(input.colours.highlight, defaults.highlight);
   const cyan = keep(input.colours.accent, defaults.accent);
@@ -186,17 +217,17 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
   const plainList = heroed ? [] : cue.words.map((_, at) => at);
   const texts = cue.words.map((word) => caps(word, cue));
 
-  // Counters: hero cues and plain cues cycle their own palette.
-  const earlier = input.cues.slice(0, index).filter((other) => other.words.length > 0);
-  const count = earlier.filter((other) => other.words.some((word) => word.role === "hero") === heroed).length;
-  const order = heroed ? THEME_ORDER.hero : THEME_ORDER.plain;
-  const base = THEMES[order[count % order.length]!]!;
+  // The palette steps on a pause, so a run of back-to-back cues stays one colour and the colour changes on a real beat.
+  const base = THEMES[THEME_ORDER[paletteSteps(input.cues)[index]! % THEME_ORDER.length]!]!;
   const custom = neon !== defaults.highlight;
   const th = {
     ...base,
     top: base.top === "#7DF3FF" ? cyan : base.top,
     ...(custom ? { glow: neon, bars: neon, bot: mixColour(neon, "#FFFFFF", 0.35), edge: mixColour(neon, "#FFFFFF", 0.6) } : {}),
   };
+
+  // A glow that vanishes into the face (a near-white face and a near-white highlight) falls back to a palette glow that does not.
+  const plainGlow = [th.glow, base.glow, "#7B3CFF", DEEP].find((glow) => captionColourContrast(pale, glow) >= 1.5) ?? DEEP;
 
   // The badge: the sample's, at its natural size, capped at a third of a landscape or square frame's height.
   const u = space.u;
@@ -389,8 +420,41 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
       bottom = cursor;
       let changed = false;
       if (total > CONTENT_H + 0.5) {
-        const f = (CONTENT_H / total) * 0.985;
-        for (let at = 0; at < sizes.length; at++) sizes[at] = sizes[at]! * f;
+        // The height comes from the key word and plain rows first (the key word never below 111 px), then from the labels (never
+        // below 0.9 of their size), and only then from everything at once.
+        const floorOf = (row: Row) => (row.kind === "label" ? LABEL_FLOOR : row.kind === "hero" ? HERO_FLOOR : PLAIN_MIN);
+        const labelRows = rows.map((row, at) => (row.kind === "label" ? at : -1)).filter((at) => at >= 0);
+        const labelH = labelRows.reduce((sum, at) => sum + dims[at]!.above + dims[at]!.below, 0);
+        const labelGaps = rows.reduce((sum, row, at) => sum + (at > 0 && (row.kind === "label" || rows[at - 1]!.kind === "label") ? gaps[at]! : 0), 0);
+        const fixedH = labelH + labelGaps;
+        const scalableH = total - fixedH;
+        let shrunk = false;
+        const room = CONTENT_H - fixedH;
+        if (scalableH > 0 && room > 0) {
+          const f = (room / scalableH) * 0.985;
+          rows.forEach((row, at) => {
+            if (row.kind === "label") return;
+            const target = Math.max(floorOf(row), sizes[at]! * f);
+            if (target < sizes[at]! - 0.01) {
+              sizes[at] = target;
+              shrunk = true;
+            }
+          });
+        }
+        if (!shrunk && labelH > 0) {
+          const g = Math.max(0, (labelH - (total - CONTENT_H)) / labelH) * 0.985;
+          for (const at of labelRows) {
+            const target = Math.max(LABEL_FLOOR, sizes[at]! * g);
+            if (target < sizes[at]! - 0.01) {
+              sizes[at] = target;
+              shrunk = true;
+            }
+          }
+        }
+        if (!shrunk) {
+          const f = (CONTENT_H / total) * 0.985;
+          for (let at = 0; at < sizes.length; at++) sizes[at] = sizes[at]! * f;
+        }
         changed = true;
       } else {
         rows.forEach((_, at) => {
@@ -523,7 +587,6 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
       const tone = th.bands;
       const stack: Shadow[] = [
         { dx: 0.0267 * px, dy: 0.068 * px, blur: 0, colour: DEEP, alpha: 1 },
-        { dx: 0.0133 * px, dy: 0.034 * px, blur: 0, colour: DEEP, alpha: 1 },
       ];
       pieces.push(make("g", th.glow, 4, null, { stroke: { widthPx: 0.045 * px, colour: th.glow } }, { blur: [[t0, 0.045 * px]], o: holdAt(0.85) }));
       // The word's own piece is the pale neon edge with the extrusion under it; the six chrome bands are clipped copies over it.
@@ -540,7 +603,7 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
       }
     } else if (item.kind === "plain") {
       const s = px / 104;
-      pieces.push(make("g", th.glow, 4, null, { stroke: { widthPx: 0.048 * px, colour: th.glow } }, { blur: [[t0, 7 * s]], o: holdAt(0.8) }));
+      pieces.push(make("g", plainGlow, 4, null, { stroke: { widthPx: 0.048 * px, colour: plainGlow } }, { blur: [[t0, 7 * s]], o: holdAt(0.8) }));
       pieces.push(make("", pale, 6, null, { shadows: [{ dx: -4 * s, dy: 0, blur: 0, colour: cyan, alpha: 1 }, { dx: 4 * s, dy: 0, blur: 0, colour: neon, alpha: 1 }] }));
     } else {
       const fill = solved.rows[item.row]!.tone === "lead" ? th.top : th.bot;
@@ -551,7 +614,11 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
 
   // The badge: pieces behind every word, cut by one aperture so the words are never clipped by it.
   const hh = (HALF_H + 34) * b;
-  const openFrames: [number, number, Ease?][] = powerOn ? [[cueFrom, 0], [T1, 0], [T1 + OPEN_MS, 1, "out"]] : [[cueFrom, 1]];
+  // A tight hand-off keeps its plate and re-opens it from most of the way over the first painted frames (nothing blinks shut).
+  const settle = exportFrameTimes(cueFrom, bandHold, fps);
+  const openFrames: [number, number, Ease?][] = powerOn
+    ? [[cueFrom, 0], [T1, 0], [T1 + OPEN_MS, 1, "out"]]
+    : settle.length >= 4 ? [[cueFrom, SETTLE_FROM], [settle[2]!, 1, "out"]] : [[cueFrom, 1]];
   if (exit) {
     const lastOpen = openFrames[openFrames.length - 1]![0];
     const shut = Math.max(exportFrameAtOrBefore(to - 1, fps), Math.max(collapseFrom, lastOpen + 1) + 1);
@@ -566,10 +633,18 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
   const polygon = (points: readonly (readonly [number, number])[]) => polygonPath(points.map(([x, y]) => [x * b, y * b] as const));
   // libass blends the whole bounding box of every event on every frame, so each outline is four edge segments (two slanted
   // sides, the top and the bottom, joined by round caps) instead of one 880 x 500 ring.
+  // A slanted side's bounding box is mostly empty, so it is cut into four short pieces (a quarter of the area); the round caps join them.
   const edges = (points: readonly (readonly [number, number])[]) =>
-    points.map((point, at) => {
+    points.flatMap((point, at) => {
       const next = points[(at + 1) % points.length]!;
-      return [["M", point[0] * b, point[1] * b], ["L", next[0] * b, next[1] * b]] as PathCmd[];
+      const slanted = point[0] !== next[0] && point[1] !== next[1];
+      const parts = slanted ? 4 : 1;
+      return Array.from({ length: parts }, (_, part) => {
+        const a = part / parts;
+        const z = (part + 1) / parts;
+        const at2 = (t: number): [number, number] => [(point[0] + (next[0] - point[0]) * t) * b, (point[1] + (next[1] - point[1]) * t) * b];
+        return [["M", ...at2(a)], ["L", ...at2(z)]] as PathCmd[];
+      });
     });
   const ring = (tag: string, points: readonly (readonly [number, number])[], z: number, width: number, colour: string, halfW: number, track: { o?: Frames; blur?: Frames } = {}, from = cueFrom, until = to) => {
     edges(points).forEach((path, at) => {
@@ -656,7 +731,9 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
     if (ruleY + 2 * b < limit) {
       const items = placed.filter((item) => item.kind === mainKind);
       const half = Math.min(usable(mainBottom + 5) / 2 - 20, Math.max(...items.map((item) => Math.abs(item.x - cx) + item.width / 2)) / b);
-      const a = Math.max(cueFrom, heroed ? onsets[heroList[0]!]! : onset);
+      // It starts when the first word of the row it underlines is spoken, never under an empty row.
+      const firstWord = heroed ? heroList[0]! : Math.min(...placed.filter((item) => item.row === lastMain).map((item) => item.run.word));
+      const a = Math.max(cueFrom, onsets[firstWord]!);
       const end = Math.min(bandHold, a + 130);
       if (half > 40 && paintedFrameCount(a, bandHold, fps) >= 3) {
         const rule = ctx.shape("rule", a, rectPath(-half * b, -1.5 * b, half * b, 1.5 * b), {
