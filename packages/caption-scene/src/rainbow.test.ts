@@ -281,3 +281,37 @@ describe("rainbow review 2", () => {
     for (const width of wide) expect(width).toBeLessThanOrEqual(830);
   });
 });
+
+describe("rainbow split words grow to the column", () => {
+  // The test measurer is a flat 0.55 em a character: 26 letters fit a 1400 px landscape column in one row at the floor, so
+  // the landscape case takes a longer word.
+  const WORDS = { landscape: "gewässerschutzbeauftragtenverordnung", portrait: "gewässerschutzbeauftragter" } as const;
+  const split = (canvas: { width: number; height: number }, word: string) => {
+    const { pieces } = build([`${word}:b@900`], null, { canvas });
+    return faces(pieces).sort((a, b) => a.id.localeCompare(b.id));
+  };
+  const widest = (parts: TextPiece[]) => Math.max(...parts.map((p) => fakeMeasure(p.text, p.face, p.sizePx, p.letterSpacingEm).advance));
+
+  test("at 16:9 two fragments grow past the 96 px floor toward the nominal size and fill the wider column", () => {
+    const parts = split({ width: 1920, height: 1080 }, WORDS.landscape);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]!.sizePx).toBeGreaterThan(120);
+    expect(parts[0]!.sizePx).toBeLessThanOrEqual(150.01);
+    expect(widest(parts)).toBeLessThanOrEqual(1400);
+    expect(widest(parts)).toBeGreaterThan(1200);
+  });
+
+  test("at 9:16 the fragments grow only as far as the 820 px column allows", () => {
+    const parts = split({ width: 1080, height: 1920 }, WORDS.portrait);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]!.sizePx).toBeGreaterThanOrEqual(96);
+    expect(widest(parts)).toBeLessThanOrEqual(830);
+    expect(widest(parts)).toBeGreaterThan(740);
+  });
+
+  test("the fragments of a word share one size, so both rows read as one word", () => {
+    for (const [canvas, word] of [[{ width: 1920, height: 1080 }, WORDS.landscape], [{ width: 1080, height: 1920 }, WORDS.portrait]] as const) {
+      expect(new Set(split(canvas, word).map((p) => Math.round(p.sizePx))).size).toBe(1);
+    }
+  });
+});

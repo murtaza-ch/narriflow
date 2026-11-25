@@ -216,9 +216,14 @@ export const rainbowProgram = galleryScene("rainbow", 1290, (ctx) => {
     const natural = naturalOf(at);
     const floor = isHero(at) ? HERO_MIN : BODY_MIN;
     const fit = (column * 100) / Math.max(1, at100(text, face, spacing));
-    const size = Math.max(Math.min(natural, fit), Math.min(natural, floor));
-    for (const [part, piece] of chunkAt(text, face, spacing, size).entries()) {
-      indexes[at]!.push(items.push({ word: at, part, text: piece, hero: isHero(at), size, face, spacing }) - 1);
+    const floored = Math.max(Math.min(natural, fit), Math.min(natural, floor));
+    const parts = chunkAt(text, face, spacing, floored);
+    // A split word was cut at its size floor; the column may have room to spare (a landscape frame), so the size is re-fitted
+    // to make the widest fragment fill the column, never past the word's nominal size. Widths scale with size, so the cuts hold.
+    const widest = Math.max(...parts.map((part) => (at100(part, face, spacing) * floored) / 100));
+    const size = parts.length > 1 ? Math.min(natural, (floored * column * 0.99) / Math.max(1, widest)) : floored;
+    for (const [part, piece] of parts.entries()) {
+      indexes[at]!.push(items.push({ word: at, part, text: piece, hero: isHero(at), size: Math.max(floored, size), face, spacing }) - 1);
     }
   });
   const chunked = (at: number) => indexes[at]!.length > 1;
