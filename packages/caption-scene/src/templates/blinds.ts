@@ -30,8 +30,12 @@ import type { SpeechCell } from "./speech-layout";
  *   end plus 150 ms; the close takes whatever time the next cue leaves and is a cut when it leaves less than three frames.
  * - **The face is one piece.** The word's readable face is a single piece from its first frame: its clip is the first slat while
  *   the others open, the whole word afterwards and the first slat again as the blinds close (the sample's tail where the last 12 %
- *   of a slat is finished at once is kept). The other five slats are pieces of their own that end the frame the word is open, so
- *   no slat is ever drawn over a readable word.
+ *   of a slat is finished at once is kept). The other five slats are one piece each (opening and closing in one, with an empty
+ *   clip in between), so no slat is ever drawn over a readable word and a nine-word cue costs 111 of its 150 pieces and shadow layers.
+ * - **Shared lanes and the band.** Two overlapping speakers scale to a share of their lane, so both captions come out alike; the
+ *   whole block is fitted into the sample's caption band (y 860..1650 around the anchor, at the natural size), so a long word broken
+ *   over several rows never fills the frame. Rows keep room beside them for the jambs. A broken word is cut between whole letters
+ *   (graphemes), never between a letter and its combining mark.
  * - **Colours go through the brand map.** Body words are the primary colour, the key word the highlight, the outline the accent
  *   (the guard checks both against it).
  * - **Shadow.** The sample's 0.05 em / 0.16 em soft shadow is one blurred copy (sigma 0.08 em) per slat; the stroke is half the
@@ -66,7 +70,14 @@ const SOLO = 330;
 const HERO = 250;
 const COLUMN = 900;
 const HERO_COLUMN = 820;
-const WORD_COLUMN = 880;
+const WORD_COLUMN = 860;
+/** Room kept beside the widest row for the jambs, sample px. */
+const JAMB_ROOM = 46;
+/** The caption band of the sample (y 860..1650 of 1920, moving with the anchor). */
+const BAND_ABOVE = ANCHOR - 860;
+const BAND_BELOW = 1650 - ANCHOR;
+/** A typical tall block (a lead row or two, the key row, a tail row), sample px: a shared lane scales sizes to fit it. */
+const LANE_BLOCK = 843;
 const GAP = 42;
 const PAD = 6;
 const TRACKING = 0.012;
@@ -111,9 +122,12 @@ interface Unit {
 const sampled = (fn: (t: number) => number, from: number, to: number, edges: readonly number[]): Frames =>
   to - from < 1 ? [[from, fn(from)]] : sampleFrames(fn, edges, 0.25, { range: [from, to], wholeMs: true });
 
-/** The pieces of a word broken into `n` runs of equal length (code points). */
+const SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const graphemes = (text: string): string[] => [...SEGMENTER.segment(text)].map((part) => part.segment);
+
+/** The pieces of a word broken into `n` runs of equal length, never between a letter and its combining marks. */
 function breakInto(text: string, n: number): string[] {
-  const letters = [...text];
+  const letters = graphemes(text);
   const size = Math.ceil(letters.length / n);
   return Array.from({ length: Math.ceil(letters.length / size) }, (_, at) => letters.slice(at * size, (at + 1) * size).join(""));
 }
@@ -125,71 +139,101 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
   const u = space.u;
   const hasHero = cue.words.some((word) => word.role === "hero");
   const solo = cue.words.length === 1;
-  const body = hasHero ? BODY : NO_HERO;
   const accent = input.colours.accent;
   const heroColour = input.colours.highlight;
   const bodyColour = input.colours.primary;
+  const bounds = window.bounds;
 
-  // Units: runs of key words and of the other words; a word too wide for its run is shrunk alone, or broken at a readable size.
+  // Two speakers share the height: sizes scale to a share of the lane, not to their own rows, so both captions come out alike.
+  const laned = bounds.y2 - bounds.y1 < 0.75 * 0.9 * space.canvas.height;
+  const lane = laned ? Math.min(1, (bounds.y2 - bounds.y1) / (u * LANE_BLOCK)) : 1;
+  // The caption band: the sample's, at the user's position but not at the user's size (a larger size shrinks to fit it).
+  const natural = u / input.scale;
+  const anchorY = space.y(ANCHOR);
+  const band = { y1: Math.max(bounds.y1 + 3, anchorY - BAND_ABOVE * natural), y2: Math.min(bounds.y2 - 3, anchorY + BAND_BELOW * natural) };
+
   const adv = (text: string, size: number, spacing: number) => input.measure(text, FACE, size * u, spacing).advance / u;
-  const units: Unit[] = [];
-  const groups: number[][] = [];
   const texts = cue.words.map((word) => caps(word, cue));
-  let run: number[] = [];
-  const flush = () => {
-    if (run.length === 0) return;
-    const hero = cue.words[run[0]!]!.role === "hero";
-    const nominal = solo ? SOLO : hero ? HERO : body;
-    const spacing = (at: number) => (SIMPLE.test(texts[at]!) && !PICTO.test(texts[at]!) ? TRACKING : 0);
-    let size = nominal;
-    if (hero && !solo) {
-      const total = run.reduce((sum, at) => sum + adv(texts[at]!, nominal, spacing(at)), 0) + GAP * (run.length - 1);
-      size = clamp(nominal * Math.min(1, HERO_COLUMN / total), Math.max(0.62 * nominal, 100), nominal);
-    }
-    let group: number[] = [];
-    for (const at of run) {
-      const text = texts[at]!;
-      const track = spacing(at);
-      const wide = adv(text, size, track);
-      const floor = Math.max(0.5 * nominal, 80);
-      let wordSize = size * Math.min(1, WORD_COLUMN / wide);
-      if (wordSize < floor && SIMPLE.test(text) && [...text].length > 3) {
-        let n = Math.max(2, Math.ceil((wide * floor) / (size * WORD_COLUMN)));
-        let parts = breakInto(text, n);
-        for (let tries = 0; tries < 12; tries++) {
-          const widest = Math.max(...parts.map((part) => adv(part, size, track)));
-          wordSize = size * Math.min(1, WORD_COLUMN / widest);
-          if (wordSize >= floor || n >= [...text].length) break;
-          parts = breakInto(text, ++n);
-        }
-        if (group.length) groups.push(group);
-        group = [];
-        parts.forEach((part, p) => {
-          groups.push([units.length]);
-          units.push({ word: at, part: p, parts: parts.length, text: part, size: wordSize, nominal, hero, spacing: track });
-        });
-        continue;
-      }
-      group.push(units.length);
-      units.push({ word: at, part: null, parts: 1, text, size: wordSize, nominal, hero, spacing: track });
-    }
-    if (group.length) groups.push(group);
-    run = [];
-  };
-  cue.words.forEach((word, at) => {
-    if (run.length && (cue.words[run[0]!]!.role === "hero") !== (word.role === "hero")) flush();
-    run.push(at);
-  });
-  flush();
+  const spacingOf = (at: number) => (SIMPLE.test(texts[at]!) && !PICTO.test(texts[at]!) ? TRACKING : 0);
 
-  const layout = ctx.layout({
-    column: COLUMN, gap: GAP, padding: 14, groups,
-    words: units.map((unit) => ({ text: unit.text, size: unit.size, face: FACE, spacing: unit.spacing })),
-  });
-  // The engine centres the rows' boxes, which keep 0.27 em under the last baseline; the sample centres the ink, so the block moves down by half of that.
-  const lastSize = Math.max(...layout.cells.filter((cell) => cell.baseline === Math.max(...layout.cells.map((c) => c.baseline))).map((cell) => cell.size));
-  const down = 0.135 * lastSize;
-  const cells = layout.cells.map((cell) => ({ ...cell, baseline: cell.baseline + down }));
+  /** The cue's rows at fit factor `f`: runs of key words and of the other words; a word too wide for its run is shrunk alone, or broken at a readable size. */
+  const arrange = (f: number) => {
+    const sc = lane * f;
+    const body = (hasHero ? BODY : NO_HERO) * sc;
+    const units: Unit[] = [];
+    const groups: number[][] = [];
+    let run: number[] = [];
+    const flush = () => {
+      if (run.length === 0) return;
+      const hero = cue.words[run[0]!]!.role === "hero";
+      const nominal = solo ? SOLO * sc : hero ? HERO * sc : body;
+      let size = nominal;
+      if (hero && !solo) {
+        const total = run.reduce((sum, at) => sum + adv(texts[at]!, nominal, spacingOf(at)), 0) + GAP * (run.length - 1);
+        size = clamp(nominal * Math.min(1, HERO_COLUMN / total), Math.max(0.62 * nominal, 100 * sc), nominal);
+      }
+      let group: number[] = [];
+      for (const at of run) {
+        const text = texts[at]!;
+        const track = spacingOf(at);
+        const wide = adv(text, size, track);
+        const floor = Math.max(0.5 * nominal, 80 * sc);
+        let wordSize = size * Math.min(1, WORD_COLUMN / wide);
+        if (wordSize < floor && SIMPLE.test(text) && graphemes(text).length > 3) {
+          let n = Math.max(2, Math.ceil((wide * floor) / (size * WORD_COLUMN)));
+          let parts = breakInto(text, n);
+          for (let tries = 0; tries < 12; tries++) {
+            const widest = Math.max(...parts.map((part) => adv(part, size, track)));
+            wordSize = size * Math.min(1, WORD_COLUMN / widest);
+            if (wordSize >= floor || n >= graphemes(text).length) break;
+            parts = breakInto(text, ++n);
+          }
+          if (group.length) groups.push(group);
+          group = [];
+          parts.forEach((part, p) => {
+            groups.push([units.length]);
+            units.push({ word: at, part: p, parts: parts.length, text: part, size: wordSize, nominal, hero, spacing: track });
+          });
+          continue;
+        }
+        group.push(units.length);
+        units.push({ word: at, part: null, parts: 1, text, size: wordSize, nominal, hero, spacing: track });
+      }
+      if (group.length) groups.push(group);
+      run = [];
+    };
+    cue.words.forEach((word, at) => {
+      if (run.length && (cue.words[run[0]!]!.role === "hero") !== (word.role === "hero")) flush();
+      run.push(at);
+    });
+    flush();
+    const laidOut = ctx.layout({
+      column: COLUMN, gap: GAP, padding: 14 + JAMB_ROOM, groups,
+      words: units.map((unit) => ({ text: unit.text, size: unit.size, face: FACE, spacing: unit.spacing })),
+    });
+    // The engine centres the rows' boxes, which keep 0.27 em under the last baseline; the sample centres the ink, so the block moves down by half of that.
+    const lowest = Math.max(...laidOut.cells.map((cell) => cell.baseline));
+    const lastSize = Math.max(...laidOut.cells.filter((cell) => cell.baseline === lowest).map((cell) => cell.size));
+    const moved = laidOut.cells.map((cell) => ({ ...cell, baseline: cell.baseline + 0.135 * lastSize }));
+    // What the cue draws vertically: the ink of every row and the rule under the last.
+    const top = Math.min(...moved.map((cell) => cell.baseline + Math.min(cell.inkTop, -0.86 * cell.size)));
+    const bottom = Math.max(...moved.map((cell) => cell.baseline + Math.max(cell.inkBottom, 0))) + 0.17 * lastSize;
+    return { units, cells: moved, top, bottom };
+  };
+
+  // Fit the block into the caption band: shrink it when it is too tall (a long word broken over five rows), shift it when it only sits off-centre.
+  let fit = 1;
+  let arranged = arrange(fit);
+  for (let tries = 0; tries < 8; tries++) {
+    const height = arranged.bottom - arranged.top;
+    const room = band.y2 - band.y1;
+    if (height <= room + 0.5) break;
+    fit *= Math.min(0.95, (0.98 * room) / height);
+    arranged = arrange(fit);
+  }
+  const dy = arranged.top < band.y1 ? band.y1 - arranged.top : arranged.bottom > band.y2 ? band.y2 - arranged.bottom : 0;
+  const units = arranged.units;
+  const cells = arranged.cells.map((cell) => ({ ...cell, baseline: cell.baseline + dy }));
   const byUnit = new Map<number, SpeechCell>(cells.map((cell) => [cell.at, cell]));
   const rows = rowsOf(cells);
 
@@ -305,18 +349,29 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
     };
     pieces.push(piece("", from, faceEnd, clipOf(faceSide(0), faceSide(1), from), colourFrames()));
 
-    // The other five slats: their own pieces, only while the word opens and closes.
+    // The other five slats: one piece each that opens the word, holds an empty clip while the plain face is on, and closes it
+    // (a piece costs its shadow layer too, and a cue may draw 150 of them).
     for (let i = 1; i < SLATS; i++) {
-      const side = (which: 0 | 1, t0: number, t1: number, edges: readonly number[]) => sampled((t) => range(i, pvOf(i, t))[which], t0, t1, edges);
-      if (animated) {
-        const start = Math.floor(slatStart(i));
-        pieces.push(piece(`s${i}`, start, doneAt, clipOf(side(0, start, doneAt, edgesIn), side(1, start, doneAt, edgesIn), start)));
-      }
-      if (close) {
-        const start = unitExit(at);
-        const stop = goneAt(i);
-        if (stop > start) pieces.push(piece(`x${i}`, start, stop, clipOf(side(0, start, stop, edgesOut), side(1, start, stop, edgesOut), start)));
-      }
+      const start = animated ? Math.floor(slatStart(i)) : closeFrom;
+      const stop = close ? goneAt(i) : doneAt;
+      if (!animated && !close) continue;
+      if (stop <= start) continue;
+      const empty = (): [number, number][] => [];
+      const side = (which: 0 | 1): Frames => {
+        const frames: [number, number][] = empty();
+        const pick = (t: number) => range(i, pvOf(i, t))[which];
+        if (animated) frames.push(...sampled(pick, start, Math.max(start, doneAt - 1), edgesIn).map(([t, v]) => [t, v] as [number, number]));
+        if (animated && close) {
+          frames.push([Math.max(frames.at(-1)![0] + 1, doneAt), 0]);
+          if (closeFrom - 1 > frames.at(-1)![0]) frames.push([closeFrom - 1, 0]);
+        }
+        if (close) {
+          const from2 = Math.max(frames.length ? frames.at(-1)![0] + 1 : start, closeFrom);
+          frames.push(...sampled(pick, from2, stop, edgesOut).map(([t, v]) => [t, v] as [number, number]));
+        }
+        return frames;
+      };
+      pieces.push(piece(`s${i}`, start, stop, clipOf(side(0), side(1), start)));
     }
   });
 
@@ -361,6 +416,7 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
   const keySize = Math.max(...keyRow.map((cell) => cell.size));
   const jambW = Math.max(3, 0.05 * keySize);
   const jambGap = 0.12 * keySize + PAD * u;
+  const tightGap = 0.04 * keySize + 0.5 * PAD * u;
   const tall = (hasHero ? ordinal : ordinal + 1) % 2 === 0;
   const jambH = (keyBox.y2 - keyBox.y1) * (tall ? 0.96 : 0.6);
   const jambY = (keyBox.y1 + keyBox.y2) / 2;
@@ -374,8 +430,12 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
   ];
   const wanted = sides.filter(({ side }) => jambVariant === 0 || (jambVariant === 1) === (side * (rtl ? -1 : 1) < 0));
   if (jambEnd - jambFrom > frame) {
-    wanted.forEach(({ x }, at) => {
-      if (x - jambW / 2 < window.bounds.x1 + margin || x + jambW / 2 > window.bounds.x2 - margin) return;
+    wanted.forEach(({ side, x: roomy }, at) => {
+      // Beside the row at the usual gap, or at a tight one when the safe area leaves less room.
+      const tight = side < 0 ? keyBox.x1 - tightGap - jambW / 2 : keyBox.x2 + tightGap + jambW / 2;
+      const fits = (x: number) => x - jambW / 2 >= bounds.x1 + margin && x + jambW / 2 <= bounds.x2 - margin;
+      const x = fits(roomy) ? roomy : tight;
+      if (!fits(x)) return;
       const pop = Math.min(220, (close ? exitAt : to) - jambFrom);
       const animated = pop >= MIN_FRAMES * frame;
       const sy: [number, number, ("outBack" | "in")?][] = animated ? [[jambFrom, 0.05], [jambFrom + pop, 1, "outBack"]] : [[jambFrom, 1]];

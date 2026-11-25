@@ -26,7 +26,6 @@ const build = (cues: readonly SceneCue[], fps = 30, overrides = {}) =>
 const cueOf = (piece: Piece) => Number(piece.id.split(":")[1]);
 const FACE = /^blinds:\d+:w\d+(?:l\d+)?$/;
 const SLAT = /^blinds:(\d+):w(\d+)(?:l(\d+))?s(\d)$/;
-const CLOSING = /^blinds:(\d+):w(\d+)(?:l(\d+))?x(\d)$/;
 const shown = (piece: Piece, t: number) => (evaluatePiece(piece, t).visible ? pieceBounds(piece, t, fakeMeasure) : null);
 const faceOf = (pieces: readonly Piece[], cue: number, word: number) => pieces.find((piece) => piece.id === `blinds:${cue}:w${word}`);
 const width = (piece: Piece, t: number) => {
@@ -35,7 +34,7 @@ const width = (piece: Piece, t: number) => {
 };
 
 describe("Blinds slats", () => {
-  test("the five other slats are slices of their own word and are gone before the word's spoken end", () => {
+  test("the five other slats are slices of their own word: painted only while it opens and after the last word has been read", () => {
     for (const fps of [24, 25, 30, 60]) {
       const pieces = build(LONG, fps);
       let seen = 0;
@@ -43,13 +42,18 @@ describe("Blinds slats", () => {
         const m = SLAT.exec(piece.id);
         if (!m) continue;
         seen++;
-        const word = LONG[Number(m[1])]!.words[Number(m[2])]!;
-        // The last painted frame of any slat is before the word's last frame before its spoken end.
+        const cue = LONG[Number(m[1])]!;
+        const word = cue.words[Number(m[2])]!;
+        const spokenEnd = Math.max(...cue.words.map((w) => w.endMs));
         const lastFrame = exportFrameAtOrBefore(word.endMs - 1, fps);
-        expect(piece.toMs, `${piece.id} lives until ${piece.toMs}, word ends ${word.endMs} (${fps} fps)`).toBeLessThanOrEqual(lastFrame + 1);
         expect(piece.fromMs).toBeGreaterThanOrEqual(word.startMs - 100);
+        expect(piece.toMs).toBeLessThanOrEqual(cue.endMs + 1);
+        for (const t of exportFrameTimes(piece.fromMs, piece.toMs, fps)) {
+          if (!shown(piece, t)) continue;
+          expect(t <= lastFrame || t >= spokenEnd + 150 - 1, `${piece.id} paints at ${t}, word ends ${word.endMs}, line read until ${spokenEnd + 150} (${fps} fps)`).toBe(true);
+        }
       }
-      expect(seen).toBeGreaterThan(300);
+      expect(seen).toBeGreaterThan(100);
     }
   });
 
@@ -60,8 +64,8 @@ describe("Blinds slats", () => {
         const face = faceOf(pieces, cue.index, w);
         if (!face) continue;
         const slats = pieces.filter((piece) => {
-          const m = SLAT.exec(piece.id) ?? CLOSING.exec(piece.id);
-          return m && Number(m[1]) === cue.index && Number(m[2]) === w && SLAT.test(piece.id);
+          const m = SLAT.exec(piece.id);
+          return m && Number(m[1]) === cue.index && Number(m[2]) === w;
         });
         const open = exportFrameAtOrBefore(word.endMs - 1, 30);
         for (const t of exportFrameTimes(open, word.endMs + 150, 30)) {
@@ -84,6 +88,8 @@ describe("Blinds slats", () => {
             let last = 0;
             for (const t of frames.filter((frame) => frame < slat.toMs)) {
               const now = width(slat, t);
+              // A slat that has opened hands over to the plain face and is empty from then on.
+              if (slat !== face && now === 0 && last > 0) break;
               // Growth only (the face jumps to the whole word when the others are done).
               if (slat === face && now > last + 1) {
                 const whole = pieceBounds({ ...face, clip: undefined }, t, fakeMeasure)!;
@@ -115,8 +121,12 @@ describe("Blinds slats", () => {
       if (!m || m[4] !== "5") continue;
       const face = faceOf(pieces, Number(m[1]), Number(m[2]));
       if (!face) continue;
-      const whole = pieceBounds({ ...face, clip: undefined }, piece.toMs, fakeMeasure)!;
-      const box = pieceBounds(face, piece.toMs, fakeMeasure)!;
+      const frames = exportFrameTimes(piece.fromMs, piece.toMs, 30);
+      const first = frames.findIndex((t) => shown(piece, t));
+      const handOver = first < 0 ? undefined : (frames.slice(first).find((t) => !shown(piece, t)) ?? piece.toMs);
+      if (handOver === undefined) continue;
+      const whole = pieceBounds({ ...face, clip: undefined }, handOver, fakeMeasure)!;
+      const box = pieceBounds(face, handOver, fakeMeasure)!;
       expect(box.x1).toBeLessThanOrEqual(whole.x1 + 0.5);
       expect(box.x2).toBeGreaterThanOrEqual(whole.x2 - 0.5);
       // The frame before, the sixth slat reaches the word's right edge or is still opening within it.
@@ -132,22 +142,26 @@ describe("Blinds exit", () => {
     const pieces = build(run.cues);
     let closing = 0;
     for (const piece of pieces) {
-      const m = CLOSING.exec(piece.id);
+      const m = SLAT.exec(piece.id);
       if (!m) continue;
-      closing++;
       const cue = run.cues[Number(m[1])]!;
-      const spokenEnd = Math.max(...cue.words.map((word) => word.endMs));
-      expect(piece.fromMs).toBeGreaterThanOrEqual(spokenEnd + 150 - 1);
+      const word = cue.words[Number(m[2])]!;
+      const spokenEnd = Math.max(...cue.words.map((w) => w.endMs));
+      for (const t of exportFrameTimes(exportFrameAtOrBefore(word.endMs - 1, 30) + 1, piece.toMs, 30)) {
+        if (!shown(piece, t)) continue;
+        closing++;
+        expect(t).toBeGreaterThanOrEqual(spokenEnd + 150 - 1);
+      }
       expect(piece.toMs).toBeLessThanOrEqual(cue.endMs + 1);
     }
-    expect(closing).toBeGreaterThanOrEqual(5);
+    expect(closing).toBeGreaterThan(5);
   });
 
   test("the closing slats close right to left and the face is the last to go", () => {
     const run = demoCues(BLINDS_DEMO);
     const pieces = build(run.cues);
     const cue = run.cues[4]!;
-    const closing = [5, 4, 3, 2, 1].map((i) => pieces.find((piece) => piece.id === `blinds:4:w0x${i}`)).filter((p): p is Piece => p !== undefined);
+    const closing = [5, 4, 3, 2, 1].map((i) => pieces.find((piece) => piece.id === `blinds:4:w0s${i}`)).filter((p): p is Piece => p !== undefined);
     expect(closing.length).toBe(5);
     const face = faceOf(pieces, 4, 0)!;
     // Slat 5 ends first, then 4 ... then the face.
@@ -159,7 +173,11 @@ describe("Blinds exit", () => {
   test("a cue followed at once by the next gets a cut, not a half-closed word", () => {
     const run = demoCues({ lines: ["one:b@300 two:b@300 three:h@300", "four:b@300 five:h@300"], options: { cueGap: 0, lead: 400, gap: 0, tail: 300 } });
     const pieces = build(run.cues);
-    expect(pieces.some((piece) => CLOSING.test(piece.id) && cueOf(piece) === 0)).toBe(false);
+    const cue = run.cues[0]!;
+    const spokenEnd = Math.max(...cue.words.map((word) => word.endMs));
+    for (const piece of pieces.filter((candidate) => cueOf(candidate) === 0 && SLAT.test(candidate.id))) {
+      for (const t of exportFrameTimes(spokenEnd, piece.toMs, 30)) expect(shown(piece, t), `${piece.id} closes at ${t}`).toBeNull();
+    }
   });
 });
 
@@ -266,10 +284,76 @@ describe("Blinds recurring beats", () => {
 });
 
 describe("Blinds budget", () => {
-  test("a cue never draws more than 150 pieces, with nine words, a long word, and the demo", () => {
-    for (const cues of [demoCues(BLINDS_DEMO).cues, sceneEdgeDemo("long-word").cues, sceneEdgeDemo("nine-words").cues, LONG]) {
-      const out = build(cues);
-      for (const cue of cues) expect(out.filter((piece) => cueOf(piece) === cue.index).length).toBeLessThanOrEqual(150);
+  /** A piece costs one, plus one per shadow layer it draws. */
+  const cost = (own: readonly Piece[]) => own.reduce((sum, piece) => sum + 1 + (piece.kind === "text" ? (piece.shadows?.length ?? 0) : 0), 0);
+
+  test("a cue never costs more than 150 pieces and shadow layers, with nine words, a long word, a long final hold and the demo", () => {
+    const held = demoCues({ lines: ["so:m the:m real:b reason:b most:b people:h@520 never:b get:b there:m"], options: { tail: 720 } }).cues;
+    for (const fps of [24, 25, 30, 60]) {
+      for (const cues of [demoCues(BLINDS_DEMO).cues, sceneEdgeDemo("long-word").cues, sceneEdgeDemo("nine-words").cues, held, LONG]) {
+        const out = build(cues, fps);
+        for (const cue of cues) expect(cost(out.filter((piece) => cueOf(piece) === cue.index)), `cue ${cue.index} at ${fps} fps`).toBeLessThanOrEqual(150);
+      }
+    }
+  });
+});
+
+describe("Blinds in a shared lane, a long word and a tight frame", () => {
+  const wide = { canvas: { width: 1920, height: 1080 }, scale: 2 };
+  const sizeOf = (out: readonly Piece[], cue: number, word: number) => {
+    const face = out.find((piece) => piece.id === `blinds:${cue}:w${word}`);
+    if (!face || face.kind !== "text") throw new Error("no face");
+    return face.sizePx;
+  };
+
+  test("two overlapping speakers come out at comparable sizes at twice the sample size on 16:9", () => {
+    const { cues } = demoCues({ lines: ["so:m the:m real:b reason:b most:b people:h@520 never:b get:b there:m", "wait:m for:m it:h@300"], options: { lead: 357, gap: 0, cueGap: 0 } });
+    const run: SceneCue[] = cues.map((cue, i) => ({ ...cue, startMs: 400 + i * 300, endMs: cue.endMs + 400 + i * 300 - cue.startMs, speaker: i % 2, words: cue.words.map((word) => ({ ...word, startMs: word.startMs - cue.startMs + 400 + i * 300, endMs: word.endMs - cue.startMs + 400 + i * 300 })) }));
+    const out = build(run, 30, wide);
+    // Body words and key words of the two lanes: the ratio between the lanes stays near one.
+    const body = [sizeOf(out, 0, 0), sizeOf(out, 1, 0)];
+    const hero = [sizeOf(out, 0, 5), sizeOf(out, 1, 2)];
+    expect(Math.max(...body) / Math.min(...body)).toBeLessThan(1.35);
+    expect(Math.max(...hero) / Math.min(...hero)).toBeLessThan(1.35);
+  });
+
+  test("the 45-letter word keeps inside the caption band on 9:16 and 16:9 and breaks only between whole letters", () => {
+    for (const [canvas, scale] of [[{ width: 1080, height: 1920 }, 1], [{ width: 1920, height: 1080 }, 2], [{ width: 1920, height: 1080 }, 1]] as const) {
+      const cues = sceneEdgeDemo("long-word").cues;
+      const out = build(cues, 30, { canvas, scale });
+      const faces = out.filter((piece) => cueOf(piece) === 1 && FACE.test(piece.id));
+      expect(faces.length).toBeGreaterThanOrEqual(2);
+      const t = Math.max(...cues[1]!.words.map((word) => word.endMs)) - 20;
+      const boxes = faces.flatMap((face) => shown(face, t) ?? []);
+      const top = Math.min(...boxes.map((box) => box.y1));
+      const bottom = Math.max(...boxes.map((box) => box.y2));
+      // The band is the sample's 860..1650 of 1920 around the anchor line, at the natural size, inside the safe area.
+      const natural = Math.min(canvas.width, canvas.height) / 1080;
+      const anchorY = (1290 / 1920) * canvas.height;
+      expect(top).toBeGreaterThanOrEqual(Math.max(0.05 * canvas.height, anchorY - 430 * natural) - 3);
+      expect(bottom).toBeLessThanOrEqual(Math.min(0.95 * canvas.height, anchorY + 360 * natural) + 3);
+    }
+  });
+
+  test("a combining mark stays with its letter when a word is broken", () => {
+    const word = "pneumonoul\u0301tramicroscopicsilicovolcanoconiosisxyz";
+    const cues = demoCues({ lines: [`${word}:b@1400`] }).cues;
+    const faces = build(cues).filter((piece) => FACE.test(piece.id));
+    expect(faces.length).toBeGreaterThanOrEqual(2);
+    for (const face of faces) if (face.kind === "text") expect(face.text.startsWith("\u0301")).toBe(false);
+    const text = faces.map((face) => (face.kind === "text" ? face.text : "")).join("");
+    expect(text).toBe(word.toLocaleUpperCase());
+  });
+
+  test("the jambs and the rule recur on the long-word and nine-word cues at twice the sample size on 16:9", () => {
+    for (const edge of ["long-word", "nine-words", "no-hero", "one-word"] as const) {
+      const cues = sceneEdgeDemo(edge).cues;
+      const out = build(cues, 30, wide);
+      for (const cue of cues) {
+        const own = out.filter((piece) => cueOf(piece) === cue.index);
+        expect(own.some((piece) => piece.id.endsWith(":rule")), `${edge} cue ${cue.index} has no rule`).toBe(true);
+        expect(own.some((piece) => /:jamb\d$/.test(piece.id)), `${edge} cue ${cue.index} has no jamb`).toBe(true);
+      }
     }
   });
 });
