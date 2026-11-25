@@ -33,6 +33,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "pixelpop",
   "tilt",
   // Gallery 6.
+  "rainbow",
   "glint",
 ];
 
