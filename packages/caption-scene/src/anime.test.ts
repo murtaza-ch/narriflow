@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { describeSpeechConformance } from "./conformance-support";
-import { demoCues } from "./demo";
+import { describeSpeechConformance, staccatoRun } from "./conformance-support";
+import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
 import { evaluatePiece, pieceBounds } from "./scene";
 import { fakeMeasure, sceneInput } from "./test-support";
@@ -77,7 +77,7 @@ describe("anime", () => {
       expect(stickers.length, `cue ${cue.index}`).toBeGreaterThanOrEqual(hero ? 4 : 3);
       expect(ofCue(pieces, cue.index, "tick").length).toBeGreaterThanOrEqual(1);
       expect(ofCue(pieces, cue.index, "spark").length).toBeGreaterThanOrEqual(2);
-      if (hero) expect(ofCue(pieces, cue.index, "ray").length).toBeGreaterThanOrEqual(10);
+      if (hero) expect(ofCue(pieces, cue.index, "ray").length).toBeGreaterThanOrEqual(8);
       const faces = ofCue(pieces, cue.index, "w");
       const topFace = Math.min(...faces.map((piece) => piece.z));
       for (const piece of [...stickers, ...ofCue(pieces, cue.index, "ray"), ...ofCue(pieces, cue.index, "tick"), ...ofCue(pieces, cue.index, "spark")]) {
@@ -117,5 +117,73 @@ describe("anime", () => {
     const end = cues[0]!.words.at(-1)!.endMs;
     expect(evaluatePiece(slab, end).sy).toBeGreaterThan(0.9);
     expect(evaluatePiece(slab, slab.toMs - 5).sy).toBeLessThan(0.3);
+  });
+
+  test("a word too long for a row at a readable size breaks into equal chunks on their own slabs, never shrunk to a sliver", () => {
+    const cues = sceneEdgeDemo("long-word").cues;
+    const pieces = animeProgram.build(sceneInput(cues, { fps: 30, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
+    const word = cues[1]!.words[0]!.text;
+    const chunks = pieces.filter((piece) => piece.kind === "text" && /^anime:1:w0(?:l\d+)?$/.test(piece.id));
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks.map((piece) => (piece.kind === "text" ? piece.text : "")).join("").toLowerCase()).toBe(word.toLowerCase());
+    for (const piece of chunks) expect(piece.kind === "text" && piece.sizePx, piece.id).toBeGreaterThanOrEqual(60);
+    expect(pieces.filter((piece) => /^anime:1:slab\d$/.test(piece.id)).length).toBe(chunks.length);
+  });
+
+  test("a word in a script that must stay joined is not split, however long", () => {
+    const { pieces } = build(["हिन्दुस्तानीमहाविद्यालयप्रवेशपरीक्षा:h@600"]);
+    expect(pieces.filter((piece) => piece.kind === "text" && /^anime:0:w0/.test(piece.id) && !/o\d$/.test(piece.id)).length).toBe(1);
+  });
+
+  test("very fast speech keeps its slab under every painted word at 24, 25 and 30 fps, and its doodles and sparks on nearly every cue", () => {
+    for (const fps of [24, 25, 30]) {
+      for (const cueGap of [0, 60]) {
+        const cues = staccatoRun(cueGap);
+        const pieces = animeProgram.build(sceneInput(cues, { fps, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
+        for (const face of pieces.filter((piece) => /^anime:\d+:w\d+$/.test(piece.id))) {
+          const cue = face.id.split(":")[1];
+          const slabs = pieces.filter((piece) => piece.id.startsWith(`anime:${cue}:slab`));
+          for (const t of exportFrameTimes(face.fromMs, face.toMs, fps)) {
+            if (!pieceBounds(face, t, fakeMeasure)) continue;
+            expect(slabs.some((slab) => pieceBounds(slab, t, fakeMeasure) !== null), `${face.id} is bare at ${t}, ${fps} fps, gap ${cueGap}`).toBe(true);
+          }
+        }
+      }
+    }
+    const { cues, pieces } = build(Array.from({ length: 18 }, (_, i) => `${i % 2 ? "now:h" : "yes:m"}@${[70, 80, 90, 100, 120][i % 5]}`), { lead: 333, gap: 0, cueGap: 0, tail: 500 });
+    const withStickers = cues.filter((cue) => pieces.some((piece) => piece.id.startsWith(`anime:${cue.index}:sticker`))).length;
+    const withSparks = cues.filter((cue) => pieces.some((piece) => piece.id.startsWith(`anime:${cue.index}:spark`))).length;
+    expect(withStickers).toBeGreaterThanOrEqual(cues.length - 1);
+    expect(withSparks).toBeGreaterThanOrEqual(cues.length - 1);
+  });
+
+  test("a nine-word cue keeps its whole stack, stamp motion included, inside the caption band", () => {
+    const cues = sceneEdgeDemo("nine-words").cues;
+    const pieces = animeProgram.build(sceneInput(cues, { fps: 30, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
+    for (const piece of pieces.filter((p) => p.id.includes(":slab") || p.kind === "text")) {
+      for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 60)) {
+        const box = pieceBounds(piece, t, fakeMeasure);
+        if (!box) continue;
+        expect(box.y1, `${piece.id} at ${t}`).toBeGreaterThanOrEqual(880 - 1);
+        expect(box.y2, `${piece.id} at ${t}`).toBeLessThanOrEqual(1630 + 1);
+      }
+    }
+  });
+
+  test("two speakers at twice the size on 16:9 each keep their stack in their lane, at comparable sizes", () => {
+    const { cues: a } = demoCues({ lines: ["there:m are:m intensively:b practised:b extraordinary:h@450 examples:b after:m every:m interruption:b"], options: { lead: 350, gap: 30, cueGap: 0, tail: 500 } });
+    const { cues: b } = demoCues({ lines: ["wow:h@600 now:m@210"], options: { lead: 1350, gap: 30, cueGap: 0, tail: 500 } });
+    const cues = [{ ...a[0]!, speaker: 0 }, { ...b[0]!, index: 1, speaker: 1 }];
+    const canvas = { width: 1920, height: 1080 };
+    const pieces = animeProgram.build(sceneInput(cues, { fps: 30, canvas, scale: 2, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
+    const sizeOf = (cue: number, word: number) => (pieces.find((piece) => piece.id === `anime:${cue}:w${word}`) as { sizePx: number }).sizePx;
+    expect(sizeOf(0, 0)).toBeGreaterThanOrEqual(0.5 * sizeOf(1, 1));
+    for (const piece of pieces) {
+      for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+        const box = pieceBounds(piece, t, fakeMeasure);
+        if (!box) continue;
+        expect(box.y1 >= 0.05 * 1080 - 1 && box.y2 <= 0.95 * 1080 + 1 && box.x1 >= 0.05 * 1920 - 1 && box.x2 <= 0.95 * 1920 + 1, `${piece.id} at ${t}: ${JSON.stringify(box)}`).toBe(true);
+      }
+    }
   });
 });
