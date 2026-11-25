@@ -151,7 +151,8 @@ describe("ripple review fixes", () => {
   test("two speakers' identical key words come out at comparable sizes", () => {
     const a = demoCues({ lines: ["extraordinary:b@300 responsibilities:b@300 really:h@1900 interdisciplinary:b@500 internationally:b@1100"] }).cues[0]!;
     const b = demoCues({ lines: ["really:h@2100"], options: { lead: 1200, tail: 500 } }).cues[0]!;
-    const cues: SceneCue[] = [a, { ...b, index: 1 }];
+    // Two speakers: the second cue is speaker 1 (one speaker's overlapping cues share one lane).
+    const cues: SceneCue[] = [{ ...a, speaker: 0 }, { ...b, index: 1, speaker: 1 }];
     const canvas = { width: 1920, height: 1080 };
     const pieces = rippleProgram.build(sceneInput(cues, { fps: 30, colours, anchor, scale: 2, canvas })).pieces;
     const size = (cue: number, word: number) => {

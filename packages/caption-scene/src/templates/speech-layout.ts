@@ -15,7 +15,11 @@ export interface SpeechWindow {
 }
 
 /** Fit simultaneous lines into distinct vertical lanes. A following line in the same lane
- * may use whatever lead remains after the previous line has had time to read. */
+ * may use whatever lead remains after the previous line has had time to read. Only different
+ * speakers are simultaneous: one speaker cannot talk over themselves, so a cue that starts before
+ * the same speaker's previous cue has ended (transcript word times overlap by tens of ms) continues
+ * in that speaker's lane and cuts the previous cue at its onset, instead of splitting one sentence
+ * into two lanes. */
 export function speechWindows(input: SceneInput, safe: Box, lead: number, hold: number): SpeechWindow[] {
   const windows: SpeechWindow[] = [];
   let group: SpeechWindow[] = [];
@@ -41,7 +45,8 @@ export function speechWindows(input: SceneInput, safe: Box, lead: number, hold: 
       laneEnds = [];
       groupEnd = -Infinity;
     }
-    const free = laneEnds.findIndex((end) => end <= start);
+    const own = laneEnds.findIndex((_, at) => lastInLane[at]?.cue.speaker === cue.speaker);
+    const free = own >= 0 ? own : laneEnds.findIndex((end) => end <= start);
     const lane = free < 0 ? laneEnds.length : free;
     laneEnds[lane] = spokenEnd;
     groupEnd = Math.max(groupEnd, spokenEnd);
@@ -108,7 +113,7 @@ export function renderWithReadingHolds(
     const live = (pieces: readonly Piece[]) => pieces.filter((piece) => piece.fromMs < desired && piece.toMs > w.to);
     const others = drawn.flatMap((pieces, i) => i === at ? [] : live(pieces));
     if (!others.length) continue;
-    const following = drawn.flatMap((pieces, i) => i !== at && windows[i]!.start >= w.spokenEnd ? live(pieces) : []);
+    const following = drawn.flatMap((pieces, i) => i !== at && (windows[i]!.start >= w.spokenEnd || windows[i]!.lane === w.lane) ? live(pieces) : []);
     const rtl = cueDirection(w.cue) === "rtl";
     const readsFirst = (held: Box, next: Box) =>
       held.y2 <= next.y1 || (held.y1 < next.y2 && held.y2 > next.y1 && (rtl ? held.x1 >= next.x2 : held.x2 <= next.x1));
