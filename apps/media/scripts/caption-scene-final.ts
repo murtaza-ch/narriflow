@@ -89,6 +89,7 @@ export const MOMENTS: Record<string, number[]> = {
   glint: [450, 1250, 1500, 2750, 3650, 5100, 5700, 6300],
   vibes: [520, 1050, 1500, 2300, 3100, 4500],
   funky: [450, 1000, 1500, 2300, 3300, 4208],
+  marquee: [520, 1050, 1350, 2408, 3758, 4500],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;

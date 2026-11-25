@@ -36,6 +36,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "rainbow",
   "glint",
   "funky",
+  "marquee",
 ];
 
 const LINES = [
