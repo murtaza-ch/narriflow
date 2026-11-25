@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeSpeechConformance } from "./conformance-support";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
@@ -111,6 +111,39 @@ describe("Blinds slats", () => {
         }
       }
     }
+  });
+
+  test("a word is whole one frame before its spoken end: no slat is still opening a moment before it, and nothing sits on its ink", () => {
+    const meets = (a: { x1: number; x2: number; y1: number; y2: number }, b: { x1: number; x2: number; y1: number; y2: number }) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
+    let checked = 0;
+    for (const fps of [24, 25, 30, 60]) {
+      const frame = 1000 / fps;
+      for (const run of [fastRun(0), fastRun(60), staccatoRun(0), staccatoRun(60)]) {
+        const pieces = build(run, fps);
+        for (const cue of run) {
+          const own = pieces.filter((piece) => cueOf(piece) === cue.index);
+          for (const [w, word] of cue.words.entries()) {
+            const face = faceOf(pieces, cue.index, w);
+            const t = exportFrameAtOrBefore(word.endMs - 1 - frame, fps);
+            if (!face || t < face.fromMs) continue;
+            checked++;
+            const whole = pieceBounds({ ...face, clip: undefined }, t, fakeMeasure)!;
+            const box = shown(face, t);
+            expect(box && box.x1 <= whole.x1 + 0.5 && box.x2 >= whole.x2 - 0.5, `${face.id} is not whole at ${t}, ${word.endMs - t} ms before its end (${fps} fps)`).toBe(true);
+            for (const slat of own.filter((piece) => SLAT.test(piece.id) && piece.id.startsWith(`${face.id}s`))) expect(shown(slat, t), `${slat.id} still paints at ${t} (${fps} fps)`).toBeNull();
+          }
+          // The rule and the jambs are clear of every word of the cue at that moment.
+          const last = cue.words.at(-1)!;
+          const t = exportFrameAtOrBefore(last.endMs - 1 - frame, fps);
+          const ink = own.filter((piece) => FACE.test(piece.id)).flatMap((piece) => shown(piece, t) ?? []);
+          for (const deco of own.filter((piece) => /:(rule|jamb\d)$/.test(piece.id))) {
+            const at = shown(deco, t);
+            if (at) for (const box of ink) expect(meets(at, box), `${deco.id} on a word at ${t} (${fps} fps)`).toBe(false);
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(400);
   });
 
   test("the hand over from slats to the plain face is invisible: the face's clip is the whole word the frame the slats end", () => {

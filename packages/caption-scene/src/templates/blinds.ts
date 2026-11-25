@@ -1,6 +1,6 @@
 import type { DemoScript } from "../demo";
 import { EASES, type Frames, clamp, prog } from "../ease";
-import { sceneSampleRate } from "../frame-grid";
+import { exportFrameAtOrBefore, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneProgram } from "../input";
 import type { Clip, Piece, ShapePiece, TextPiece } from "../scene";
@@ -24,7 +24,7 @@ import type { SpeechCell } from "./speech-layout";
  *   split: a slat is a clip, so every script opens the same way, mirrored for right-to-left cues (slats open right to left and
  *   close left to right).
  * - **Real speech.** The reveal is locked to the word: it starts 60 ms before the word (never earlier than the cue's window gives)
- *   and is finished by its last frame before the spoken end, the stagger squeezed with it (a word too short for two painted
+ *   and is finished one frame before the spoken end, the stagger squeezed with it (a word too short for two painted
  *   frames of every slat is drawn open at once). The slats are only ever slices of their own word and live until the word is
  *   open, at which point the sixth slat hands over to the plain copy in one frame. Nothing closes before the last word's spoken
  *   end plus 150 ms; the close takes whatever time the next cue leaves and is a cut when it leaves less than three frames.
@@ -269,7 +269,8 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
     const enter = ctx.enter(word, FULL_MS, LEAD);
     const offset = unit.part === null || unit.parts < 2 ? 0 : Math.round(((enter.settled - enter.from) * 0.4 * unit.part) / unit.parts);
     const from = Math.min(enter.settled, enter.from + offset);
-    const settled = enter.settled;
+    // The word is whole one frame before its spoken end, not on the last frame before it: whoever looks a moment before the end sees all of it.
+    const settled = Math.max(from, Math.min(enter.settled, exportFrameAtOrBefore(word.endMs - 1 - frame, fps)));
     const W = settled - from;
     const animated = W >= MIN_FRAMES * frame;
     reveals.push({ from, settled, animated });
