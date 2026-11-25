@@ -33,11 +33,24 @@ describe("glint", () => {
   });
 
   test("rows alternate yellow and pink and the key word's row is pink", () => {
-    const { pieces } = build(["stop:b scrolling:b and:m listen:h@600", "it's:m free:b and:m easy:b"]);
-    const colourOf = (id: string) => evaluatePiece(pieces.find((piece) => piece.id === id)!, 99999).colour;
-    expect(colourOf("glint:0:w0")).toBe("#FFD320");
-    expect(colourOf("glint:0:w3l0")).toBe("#FF2F8B");
-    expect(colourOf("glint:1:w0")).toBe("#FFD320");
+    const { cues, pieces } = build(["stop:b scrolling:b and:m listen:h@600", "it's:m free:b and:m easy:b"]);
+    for (const cue of cues) {
+      const at = cue.words.at(-1)!.startMs + 200;
+      const rowsOf = cue.words.map((_, w) => {
+        const face = pieces.find((piece) => new RegExp(`^glint:${cue.index}:w${w}(l0)?$`).test(piece.id))!;
+        const box = pieceBounds(face, at, fakeMeasure)!;
+        return { colour: evaluatePiece(face, at).colour, y: (box.y1 + box.y2) / 2, h: box.y2 - box.y1 };
+      });
+      // Words on the same row share a colour; a new row (its centre below the last one's bottom) takes the other.
+      for (let w = 1; w < rowsOf.length; w++) {
+        const prev = rowsOf[w - 1]!;
+        const now = rowsOf[w]!;
+        if (now.y > prev.y + 0.6 * prev.h) expect(now.colour, `cue ${cue.index} word ${w}`).not.toBe(prev.colour);
+        else expect(now.colour, `cue ${cue.index} word ${w}`).toBe(prev.colour);
+      }
+    }
+    const hero = pieces.find((piece) => piece.id === "glint:0:w3l0")!;
+    expect(evaluatePiece(hero, cues[0]!.words[3]!.startMs + 200).colour).toBe("#FF2F8B");
   });
 
   test("the bounce is one short overshoot: 88% to 105% to 100% inside 115 ms", () => {
@@ -51,15 +64,21 @@ describe("glint", () => {
     expect(scales.indexOf(Math.max(...scales))).toBeLessThan(scales.length - 1);
   });
 
-  test("the key word's letters all appear within 45 ms of its first, at small alternating resting angles", () => {
+  test("a key word is whole on its first painted frame: every letter is there at the word's start, at small alternating resting angles", () => {
     const { cues, pieces } = build(["just:b start:b today:h@600"]);
     const letters = faceOf(/^glint:0:w2l\d$/, pieces);
     expect(letters).toHaveLength(5);
-    const starts = letters.map((piece) => piece.fromMs);
-    expect(starts[0]).toBeGreaterThanOrEqual(cues[0]!.words[2]!.startMs);
-    expect(Math.max(...starts) - Math.min(...starts)).toBeLessThanOrEqual(45);
+    const start = cues[0]!.words[2]!.startMs;
+    for (const letter of letters) {
+      expect(letter.fromMs).toBeGreaterThanOrEqual(start);
+      expect(letter.fromMs).toBe(letters[0]!.fromMs);
+      expect(evaluatePiece(letter, letter.fromMs).o).toBe(1);
+    }
     const angles = letters.map((piece) => evaluatePiece(piece, piece.toMs - 300).rz);
     expect(new Set(angles.map((a) => Math.round(a * 10))).size).toBeGreaterThan(2);
+    // The letters' bounces are staggered inside the word, so they do not move as one block.
+    const scales = letters.map((piece) => evaluatePiece(piece, piece.fromMs + 60).sx);
+    expect(new Set(scales.map((v) => v.toFixed(3))).size).toBeGreaterThan(1);
   });
 
   test("a short key word's letters finish inside its own time, a 13-letter key word and a Hindi word land whole", () => {
@@ -146,15 +165,24 @@ describe("glint", () => {
   });
 
   test("rows keep their painted depth off the next row's lettering", () => {
-    const { pieces } = build(["stop:b scrolling:b and:m listen:h@600"]);
-    const rest = 2000;
-    const bottom = (id: string) => pieceBounds(pieces.find((piece) => piece.id === id)!, rest, fakeMeasure)!;
-    const faces = pieces.filter((piece) => /^glint:0:w\dl?\d?$/.test(piece.id));
-    const first = faces.filter((piece) => /^glint:0:w[01]$/.test(piece.id));
-    const second = faces.filter((piece) => /^glint:0:w[23]/.test(piece.id));
-    const lowest = Math.max(...first.map((piece) => bottom(`${piece.id}b`).y2 - 0.07 * (piece.kind === "text" ? piece.sizePx : 0)));
-    const top = Math.min(...second.map((piece) => bottom(piece.id).y1));
-    expect(lowest).toBeLessThanOrEqual(top + 30);
+    const { cues, pieces } = build(["stop:b scrolling:b and:m listen:h@600", "does:b the:m remote:b even:b still:h@360"]);
+    for (const cue of cues) {
+      const rest = cue.words.at(-1)!.startMs + 200;
+      const boxOf = (w: number, suffix = "") =>
+        pieces
+          .filter((piece) => new RegExp(`^glint:${cue.index}:w${w}(l\\d+)?${suffix}$`).test(piece.id))
+          .map((piece) => ({ box: pieceBounds(piece, rest, fakeMeasure)!, size: piece.kind === "text" ? piece.sizePx : 0 }));
+      for (let w = 0; w + 1 < cue.words.length; w++) {
+        const here = boxOf(w);
+        const next = boxOf(w + 1);
+        const hereBottom = Math.max(...here.map((item) => item.box.y2));
+        const hereCentre = (Math.min(...here.map((item) => item.box.y1)) + hereBottom) / 2;
+        const nextTop = Math.min(...next.map((item) => item.box.y1));
+        if (nextTop < hereCentre) continue; // the same row
+        const depthBottom = Math.max(...boxOf(w, "b").concat(boxOf(w, "e")).map((item) => item.box.y2 - 0.07 * item.size));
+        expect(depthBottom, `cue ${cue.index} word ${w}`).toBeLessThanOrEqual(nextTop + 30);
+      }
+    }
   });
 
   test("a word wider than the column breaks across rows at a readable size", () => {
@@ -187,6 +215,83 @@ describe("glint", () => {
         expect(piece.toMs).toBeLessThanOrEqual(cue.words.at(-1)!.endMs + 200);
       }
     }
+  });
+
+  test("the light pass is a thin strip along the top edge of the face, not a fill, and every cue has one even when it is short", () => {
+    const { cues, pieces } = build(["just:b start:b today:h@600", "no:h@120 way:b", "ok:m fine:h@160"], { cueGap: 60, gap: 20, tail: 0 });
+    for (const cue of cues) {
+      const sheens = pieces.filter((piece) => new RegExp(`^glint:${cue.index}:w\\d(l\\d+)?h\\d*$`).test(piece.id));
+      expect(sheens.length, `cue ${cue.index}`).toBeGreaterThan(0);
+    }
+    const sheen = pieces.find((piece) => piece.id === "glint:0:w0h")!;
+    const face = pieces.find((piece) => piece.id === "glint:0:w0")!;
+    const faceBox = pieceBounds(face, sheen.fromMs + 120, fakeMeasure)!;
+    for (let t = sheen.fromMs; t < sheen.toMs; t += 20) {
+      const clip = evaluatePiece(sheen, t).clip!;
+      expect(clip.y2 - clip.y1, `t ${t}`).toBeLessThan(0.55 * (faceBox.y2 - faceBox.y1));
+      expect(clip.y1, `t ${t}`).toBeLessThan(faceBox.y1 + 0.35 * (faceBox.y2 - faceBox.y1));
+    }
+  });
+
+  test("twinkles are 18-28 px across, and none is alive in the cue's exit", () => {
+    const { cues, pieces } = build(["so:m here:b is:h@500 it:b", "no:h@400 way:b"]);
+    const cueEnd = Math.max(...pieces.filter((piece) => piece.id.startsWith("glint:0:w")).map((piece) => piece.toMs));
+    const twinkles = pieces.filter((piece) => piece.id.startsWith("glint:0:tw"));
+    expect(twinkles.length).toBeGreaterThanOrEqual(2);
+    for (const piece of twinkles) {
+      // Tip to tip plus the outline: the bounds helper returns the turned box and adds a miter spike at every point, neither is drawn.
+      const at = piece.fromMs + 0.35 * 300;
+      const box = pieceBounds({ ...piece, stroke: undefined }, at, fakeMeasure)!;
+      const turn = (evaluatePiece(piece, at).rz * Math.PI) / 180;
+      const across = (box.x2 - box.x1) / (Math.abs(Math.cos(turn)) + Math.abs(Math.sin(turn))) + (piece.stroke?.widthPx ?? 0);
+      expect(across).toBeGreaterThanOrEqual(18);
+      expect(across).toBeLessThanOrEqual(28);
+      expect(piece.toMs).toBeLessThanOrEqual(cueEnd - 60);
+    }
+    expect(cues.length).toBe(2);
+  });
+
+  test("a colour the scene receives that cannot read against the dark outline falls back to the style's own", () => {
+    const { cues } = demoCues({ lines: ["stop:b scrolling:b and:m listen:h@600"], options: { lead: 400, gap: 30, cueGap: 140, tail: 800 } });
+    const run = (own: Partial<typeof colours>) => glintProgram.build(sceneInput(cues, { fps: 30, colours: { ...colours, ...own } })).pieces;
+    const faceColours = (pieces: ReturnType<typeof run>) => new Set(pieces.filter((piece) => /^glint:0:w\d(l\d+)?$/.test(piece.id)).map((piece) => evaluatePiece(piece, piece.fromMs + 300).colour));
+    expect([...faceColours(run({ primary: "#1A0F26", highlight: "#241033" }))].sort()).toEqual(["#FF2F8B", "#FFD320"]);
+    expect([...faceColours(run({ primary: "#3CE0FF", highlight: "#FFA500" }))].sort()).toEqual(["#3CE0FF", "#FFA500"]);
+    const sheens = (pieces: ReturnType<typeof run>) => pieces.filter((piece) => /^glint:0:w\d(l\d+)?h\d*$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece.fill : ""));
+    expect(new Set(sheens(run({ accent: "#0B0614" })))).toEqual(new Set(["#FFFFFF"]));
+  });
+
+  test("ordinary phrases pack into three rows or fewer, portrait and landscape, before they stack four", () => {
+    const lines = ["stop:b scrolling:b and:m listen:h@600", "does:b the:m remote:b even:b still:h@360", "it's:m free:b and:m easy:b", "we:m can:m move:h@300"];
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      const { cues } = demoCues({ lines, options: { lead: 400, gap: 30, cueGap: 140, tail: 800 } });
+      const pieces = glintProgram.build(sceneInput(cues, { fps: 30, colours, canvas })).pieces;
+      for (const cue of cues) {
+        const at = cue.words.at(-1)!.startMs + 200;
+        const centres = cue.words
+          .map((_, w) => pieces.find((piece) => new RegExp(`^glint:${cue.index}:w${w}(l0)?$`).test(piece.id))!)
+          .map((piece) => {
+            const box = pieceBounds(piece, at, fakeMeasure)!;
+            return { y: (box.y1 + box.y2) / 2, h: box.y2 - box.y1 };
+          });
+        const sorted = [...centres].sort((a, b) => a.y - b.y);
+        let rows = 1;
+        for (let k = 1; k < sorted.length; k++) if (sorted[k]!.y > sorted[k - 1]!.y + 0.6 * sorted[k - 1]!.h) rows++;
+        expect(rows, `${canvas.width}x${canvas.height} cue ${cue.index}`).toBeLessThanOrEqual(3);
+      }
+    }
+  });
+
+  test("a long word breaks into even rows at the fitted size, not the floor, and keeps its letters in order with no space", () => {
+    const word = "contemporaneousness";
+    const { pieces } = build([`${word}:h@900`]);
+    const parts = pieces.filter((piece) => /^glint:0:w0l\d$/.test(piece.id));
+    const text = parts.map((piece) => (piece.kind === "text" ? piece.text : ""));
+    expect(text.join("")).toBe(word.toUpperCase());
+    expect(text.some((part) => /\s/.test(part))).toBe(false);
+    const sizes = new Set(parts.map((piece) => (piece.kind === "text" ? piece.sizePx : 0)));
+    expect(sizes.size).toBe(1);
+    expect([...sizes][0]!).toBeGreaterThan(142 * 0.82 + 8);
   });
 
   test("a cue stays inside the safe area at twice the size, portrait and landscape, and under the piece budget", () => {
