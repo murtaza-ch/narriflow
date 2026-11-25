@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { describeSpeechConformance, fastRun } from "./conformance-support";
+import { captionColourContrast } from "@narriflow/validators";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
 import { type Box, type Piece, SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds } from "./scene";
@@ -72,13 +73,13 @@ describe("tilt", () => {
     expect(new Set(fills).size).toBe(4);
   });
 
-  test("depth is two slate copies and an ink rim, 0.12 em deep, every copy below every face", () => {
+  test("depth is one slate copy over an ink rim, 0.12 em deep, every copy below every face", () => {
     const { pieces } = build(["keep:b it:m loud:b", "wait:h@600"]);
     const face = pieces.find((p) => p.id === "tilt:0:w0")!;
     if (face.kind !== "text") throw new Error("face is text");
-    const copies = ["d1", "d2", "d3"].map((k) => pieces.find((p) => p.id === `tilt:0:w0${k}`)!);
+    const copies = ["d2", "d3"].map((k) => pieces.find((p) => p.id === `tilt:0:w0${k}`)!);
     for (const copy of copies) expect(copy.z).toBeLessThan(face.z);
-    const deepest = copies[2]!;
+    const deepest = copies[1]!;
     expect((-(deepest.origin?.dy ?? 0) + (face.origin?.dy ?? 0)) / face.sizePx).toBeCloseTo(0.12, 3);
     expect(deepest.kind === "text" && deepest.fill).toBe("#11112B");
     expect(face.stroke!.colour).toBe("#11112B");
@@ -258,5 +259,84 @@ describe("tilt on fast ordinary speech and awkward input", () => {
     const last = faces(pieces, 0).at(-1)!;
     expect(faces(pieces, 1)[0]!.fromMs).toBe(next);
     expect(last.toMs).toBeGreaterThanOrEqual(cues[0]!.words.at(-1)!.endMs + 100);
+  });
+});
+
+describe("tilt review fixes", () => {
+  test("depth is drawn once per shaped word or wrapped row, and letters only draw coloured faces", () => {
+    const { pieces } = build(["so:m changer:h@640"]);
+    const own = pieces.filter((p) => p.id.startsWith("tilt:0:w1"));
+    expect(own.filter((p) => /^tilt:0:w1l\d$/.test(p.id)).length).toBe(7);
+    expect(own.filter((p) => /d\d$/.test(p.id)).length).toBe(2);
+    const wide = build(["unbelievablyextraordinaryhero:h@900"]);
+    const depth = wide.pieces.filter((p) => /d\d$/.test(p.id)).length;
+    const fragments = new Set(wide.pieces.filter((p) => /c\d+d\d$/.test(p.id)).map((p) => p.id.replace(/d\d$/, ""))).size;
+    expect(depth).toBe(2 * fragments);
+  });
+
+  test("a long hero is decided before wrapping: 45 letters are fragments with one fill and one swing, inside the piece budget", () => {
+    const word = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    const { cues, pieces } = build([`${word}:h@900`]);
+    const own = pieces.filter((p) => p.id.startsWith("tilt:0:"));
+    expect(own.length).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
+    const faceRefs = own.filter((p) => /^tilt:0:w0l\d+$/.test(p.id));
+    expect(faceRefs.length).toBeLessThanOrEqual(5);
+    const t = cues[0]!.words[0]!.startMs + 70;
+    expect(new Set(faceRefs.map((p) => evaluatePiece(p, t + 400).colour)).size).toBe(1);
+    expect(new Set(faceRefs.map((p) => evaluatePiece(p, t).ry.toFixed(3))).size).toBe(1);
+  });
+
+  test("a brand pair whose blend would dip under 3:1 on the keyline switches hard, and every rendered colour keeps 3:1", () => {
+    const { cues } = demoCues({ lines: ["so:m changer:h@640"], options: { lead: 400 } });
+    const pieces = tiltProgram.build(sceneInput(cues, { fps: 30, anchor, colours: { primary: "#C70000", highlight: "#007300", accent: "#FF5CB6", shadow: "#000000" } })).pieces;
+    const letters = pieces.filter((p) => /^tilt:0:w1l\d$/.test(p.id));
+    const start = cues[0]!.words[1]!.startMs;
+    for (const letter of letters) {
+      for (let t = start; t <= start + 200; t += 8) {
+        expect(captionColourContrast(evaluatePiece(letter, t).colour, "#11112B"), `${letter.id} at ${t}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  test("a landscape frame keeps ordinary cues to two rows before anything shrinks", () => {
+    const canvas = { width: 1920, height: 1080 };
+    const { cues } = demoCues({ lines: ["go:b hit:h@400 it:m", "यह:b बहुत:h@700 अच्छा:b है:m", "the:m remote:b doesn't:h@360 work.:b"], options: { lead: 400, gap: 40, cueGap: 140, tail: 800 } });
+    const pieces = tiltProgram.build(sceneInput(cues, { fps: 30, colours, anchor, canvas })).pieces;
+    for (const cue of cues) {
+      const own = faces(pieces, cue.index);
+      const t = cue.words.at(-1)!.endMs - 20;
+      const ys = own.map((p) => evaluatePiece(p, t).y).sort((x, y) => x - y);
+      const rows = ys.filter((y, k) => k === 0 || y - ys[k - 1]! > 140).length;
+      expect(rows, `cue ${cue.index}`).toBeLessThanOrEqual(2);
+    }
+  });
+
+  test("adjacent key words keep their keylines and depth apart through the whole swing", () => {
+    const { cues, pieces } = build(["so:m nine:h@600 lakh:h@600"]);
+    const both = faces(pieces, 0);
+    const a = both.filter((p) => /^tilt:0:w1(l\d+)?$/.test(p.id)).at(-1)!;
+    const b = both.find((p) => p.id === "tilt:0:w2" || p.id === "tilt:0:w2l0")!;
+    const start = cues[0]!.words[1]!.startMs;
+    const size = a.kind === "text" ? a.sizePx : 0;
+    for (const t of exportFrameTimes(start, cues[0]!.words[2]!.endMs, 60)) {
+      const boxA = pieceBounds(a, t, fakeMeasure);
+      const boxB = pieceBounds(b, t, fakeMeasure);
+      if (!boxA || !boxB) continue;
+      // The boxes already hold each keyline; between them still fit the depth (0.074 em) and both ink rims (0.027 em each).
+      expect(boxB.x1 - boxA.x2, `at ${t}`).toBeGreaterThanOrEqual(0.15 * size);
+    }
+  });
+
+  test("on 70-120 ms words with no gap the burst, dashes and sparkles still paint on two frames, in a compact pose", () => {
+    const run = staccatoRun(0).filter((cue) => cue.words.length >= 1);
+    const pieces = tiltProgram.build(sceneInput(run, { fps: 30, colours, anchor })).pieces;
+    const painted = (cue: number, kind: string) =>
+      pieces.some((p) => p.id.startsWith(`tilt:${cue}:${kind}`) && exportFrameTimes(p.fromMs, p.toMs, 30).filter((t) => pieceBounds(p, t, fakeMeasure)).length >= 2);
+    const bursts = run.filter((cue) => painted(cue.index, "burst")).length;
+    const dashes = run.filter((cue) => painted(cue.index, "dash")).length;
+    expect(bursts).toBeGreaterThanOrEqual(Math.ceil(run.length * 0.7));
+    expect(dashes).toBeGreaterThanOrEqual(Math.ceil(run.length * 0.7));
+    const burst = pieces.find((p) => p.id === "tilt:0:burst")!;
+    expect(evaluatePiece(burst, burst.fromMs).sx).toBe(1);
   });
 });

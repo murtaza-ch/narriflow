@@ -73,18 +73,20 @@ const BODY_FLOOR = 84;
 const LONE_BODY = 1.25;
 const LONE_HERO = 1.15;
 const COLUMN = 780;
-const GAP = 36;
+const WIDE_COLUMN = 1500;
+const GAP = 52;
 const SPACING = 0.012;
 const SKEW = -9;
 const EDGE_EM = 0.06;
 const RIM_EM = 0.027;
-const SLATE_EM = 0.032;
+/** One slate copy: 0.75 of the depth down, its border (0.045 em) bridging from the keyline to the rim. */
+const SLATE_AT = 0.75;
+const SLATE_BORD_EM = 0.045;
 const DEPTH_EM = 0.12;
 const DEPTH_X = 0.62;
 const INK = "#11112B";
 const SLATE_NEAR = "#A8B7CC";
 const SLATE_FAR = "#5E6F89";
-const RAYS_EDGE = "#12B76A";
 const VIOLET = "#B18CFF";
 const DEFAULT_PRIMARY = "#F4172B";
 const DEFAULT_HIGHLIGHT = "#FFD21F";
@@ -162,7 +164,7 @@ interface Item {
 
 export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   const { cue, to, bounds, index } = ctx.window;
-  const { exit, exitAt, side, input, space } = ctx;
+  const { exit, exitAt, fps, side, input, space } = ctx;
   const pieces: Piece[] = [];
   // Brand guard: each colour is checked against the navy keyline it is actually drawn on, and falls back to the default palette.
   const keep = (colour: string, fallback: string) => (captionColourContrast(colour, INK) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? colour : fallback);
@@ -184,13 +186,17 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   const anchorY = space.y(1290);
   const band = { y1: Math.max(bounds.y1 + 3, anchorY - BAND_ABOVE * natural), y2: Math.min(bounds.y2 - 3, anchorY + BAND_BELOW * natural) };
   const laned = bounds.y2 - bounds.y1 < 0.75 * 0.9 * space.canvas.height;
+  // A landscape frame has the width for two rows: the column widens before anything shrinks.
+  const wide = space.canvas.width > space.canvas.height;
+  const column = wide ? Math.min(WIDE_COLUMN, ((bounds.x2 - bounds.x1) / space.u) * 0.8) : COLUMN;
 
   // Sizes. The key words share one size, as large as the column allows; a long body word shrinks before it is cut.
   const at100 = (text: string) => input.measure(text, FACE, 100 * space.u, SPACING).advance / space.u;
-  const gapPx = GAP;
-  const heroWidth = hero.reduce((sum, at) => sum + at100(texts[at]!), 0);
-  const heroRoom = COLUMN * 0.97 - gapPx * Math.max(0, hero.length - 1);
   const heroCapNatural = HERO_MAX * (hero.length === 1 ? LONE_HERO : 1);
+  // Adjacent words keep room for both keylines, the depth and the swing's overshoot: key words are 0.3 em apart at least.
+  const heroGapEm = 0.4;
+  const heroWidth = hero.reduce((sum, at) => sum + at100(texts[at]!), 0) + 100 * heroGapEm * Math.max(0, hero.length - 1);
+  const heroRoom = column * 0.97;
   const heroCap = laned ? Math.min(heroCapNatural, (0.3 * (bounds.y2 - bounds.y1)) / space.u) : heroCapNatural;
   let heroSize = heroed ? clamp((heroRoom * 100) / Math.max(1, heroWidth), Math.min(HERO_MIN, heroCap), heroCap) : 0;
   const bodyBase = laned ? Math.min(BODY, heroCap * 0.62) : BODY;
@@ -200,13 +206,14 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
     const single = lone(lead) && lead[0] === at ? LONE_BODY : lone(tail) && tail[0] === at ? LONE_BODY : 1;
     return (cue.words[at]!.role === "minor" ? minorBase : bodyBase) * single;
   };
-  const bodyFit = (at: number) => clamp((COLUMN * 0.97 * 100) / Math.max(1, at100(texts[at]!)), BODY_FLOOR * (bodyBase / BODY), naturalOf(at));
-  const sizeOf = (at: number) => (hero.includes(at) ? heroSize : bodyFit(at));
+  const bodyFit = (at: number) => clamp((column * 0.97 * 100) / Math.max(1, at100(texts[at]!)), BODY_FLOOR * (bodyBase / BODY), naturalOf(at));
+  let wideScale = 1;
+  const sizeOf = (at: number) => (hero.includes(at) ? heroSize : bodyFit(at)) * wideScale;
 
   // A word wider than the column at its smallest readable size breaks across rows, a row per piece.
   const chunkAt = (text: string, size: number): string[] => {
-    if (!SPLITTABLE.test(text) || (at100(text) * size) / 100 <= COLUMN * 0.97) return [text];
-    const room = (COLUMN * 0.9 * 100) / size;
+    if (!SPLITTABLE.test(text) || (at100(text) * size) / 100 <= column * 0.97) return [text];
+    const room = (column * 0.9 * 100) / size;
     const split = (limit: number) => {
       const out: string[] = [];
       let row = "";
@@ -233,12 +240,13 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   const chunks = cue.words.map((_, at) => chunkAt(texts[at]!, hero.length === 1 && hero[0] === at ? Math.max(sizeOf(at), Math.min(HERO_MIN, heroCap)) : sizeOf(at)));
   if (heroed && hero.length === 1 && chunks[hero[0]!]!.length > 1) {
     const widest = Math.max(...chunks[hero[0]!]!.map(at100));
-    heroSize = clamp((COLUMN * 0.9 * 100) / widest, Math.min(HERO_MIN, heroCap), heroCap);
+    heroSize = clamp((column * 0.9 * 100) / widest, Math.min(HERO_MIN, heroCap), heroCap);
   }
 
+  const gapPx = hero.length > 1 ? Math.max(GAP, heroGapEm * heroSize) : GAP;
   const flat: { word: number; part: number; text: string }[] = [];
   const indexes = chunks.map((list, word) => list.map((text, part) => flat.push({ word, part, text }) - 1));
-  const isLong = (at: number) => (at100(texts[at]!) * sizeOf(at)) / 100 > 0.62 * COLUMN;
+  const isLong = (at: number) => (at100(texts[at]!) * sizeOf(at)) / 100 > 0.62 * column;
   const groupsOf = (list: number[]) => {
     const out: number[][] = [];
     let row: number[] = [];
@@ -252,12 +260,36 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
     if (row.length > 0) out.push(row);
     return out;
   };
-  const groups = [...groupsOf(lead), ...groupsOf(hero), ...groupsOf(tail)];
+  // Landscape: the whole cue on one row when it fits, else the best two consecutive rows, before the roles' three.
+  const wideRows = (): number[][] | null => {
+    if (!wide || chunks.some((list) => list.length > 1)) return null;
+    const all = cue.words.map((_, at) => at);
+    const rowWidth = (list: readonly number[]) => list.reduce((sum, at) => sum + (at100(texts[at]!) * sizeOf(at)) / 100, 0) + gapPx * (list.length - 1);
+    const asCells = (list: readonly number[]) => list.map((at) => indexes[at]![0]!);
+    if (rowWidth(all) <= column * 0.97) return [asCells(all)];
+    let best: number[][] | null = null;
+    let bestWidth = Number.POSITIVE_INFINITY;
+    for (let cut = 1; cut < all.length; cut++) {
+      const a = all.slice(0, cut);
+      const b = all.slice(cut);
+      const widest = Math.max(rowWidth(a), rowWidth(b));
+      if (widest < bestWidth) {
+        bestWidth = widest;
+        best = [asCells(a), asCells(b)];
+      }
+    }
+    // Two rows a little too wide are scaled to the column (down to 72 %) before the roles' three rows are used.
+    const need = (column * 0.97) / bestWidth;
+    if (!best || need < 0.72) return null;
+    wideScale = Math.min(1, need);
+    return best;
+  };
+  const groups = wideRows() ?? [...groupsOf(lead), ...groupsOf(hero), ...groupsOf(tail)];
   const blockTilt = TILTS[index % TILTS.length]!;
 
   const laidAt = (f: number) =>
     ctx.layout({
-      column: COLUMN,
+      column,
       padding: 30,
       gap: gapPx * f,
       groups,
@@ -377,7 +409,15 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   const heroFace = (k: number) => fills[(k + index) % fills.length]!;
 
   // How many faces each word draws, so the ids are `w3` for a whole word and `w3l0 ...` for pieces.
-  const parts = items.map((item) => (hero.includes(item.word) && item.cell.text.length > 0 ? letterCells(item.cell, input, MAX_LETTERS) : [item.cell]));
+  // Per-letter colours are decided from the whole word before any wrapping: a long or shaped word swings whole, a wrapped
+  // fragment gets one fill and the same swing as its other fragments.
+  const lettered = (word: number) => hero.includes(word) && SPLITTABLE.test(texts[word]!) && [...texts[word]!].length <= MAX_LETTERS;
+  const parts = items.map((item) => (lettered(item.word) ? letterCells(item.cell, input, MAX_LETTERS) : [item.cell]));
+  const swingOf = new Map<number, number>();
+  for (const item of items) {
+    const angle = Math.min(SWING_FROM, (Math.asin(Math.min(1, (SWING_CAP * PERSPECTIVE) / Math.max(1, item.cell.width / 2))) * 180) / Math.PI);
+    swingOf.set(item.word, Math.min(swingOf.get(item.word) ?? SWING_FROM, angle));
+  }
   const faceCount = new Map<number, number>();
   items.forEach((item, at) => {
     faceCount.set(item.word, (faceCount.get(item.word) ?? 0) + parts[at]!.length);
@@ -393,9 +433,8 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
     const isHero = hero.includes(item.word);
     const { from: t0, settled, motion } = timed(item.word);
     const size = cell.size;
-    // The swing angle is capped so the near edge of a wide word grows no more than 11 %.
-    const half = Math.max(1, cell.width / 2);
-    const swing = Math.min(SWING_FROM, (Math.asin(Math.min(1, (SWING_CAP * PERSPECTIVE) / half)) * 180) / Math.PI);
+    // The swing angle is capped so the near edge of a wide word grows no more than 11 %, and shared by a word's fragments.
+    const swing = swingOf.get(item.word)!;
     const p1 = t0 + 0.6 * (settled - t0);
     const lift = isHero ? 22 * u : 0;
     const endHold = exit ? exitAt : to;
@@ -424,6 +463,26 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
       skx: [[t0, SKEW]],
     };
 
+    // The three depth layers are drawn once per shaped word or wrapped row, behind every face; letters only draw coloured faces.
+    const slateMid = mixColour(SLATE_NEAR, SLATE_FAR, 0.5);
+    const depthId = `${ctx.id}:w${item.word}${chunks[item.word]!.length > 1 ? `c${item.part}` : ""}`;
+    const layers = [
+      { id: "d3", z: 3, depth: 1, fill: INK, bord: (EDGE_EM + RIM_EM) * size, colour: INK },
+      { id: "d2", z: 4, depth: SLATE_AT, fill: slateMid, bord: SLATE_BORD_EM * size, colour: slateMid },
+    ] as const;
+    for (const layer of layers) {
+      const whole = ctx.face(cell, t0, layer.fill, { ...base });
+      const copy: TextPiece = {
+        ...whole,
+        id: `${depthId}${layer.id}`,
+        z: layer.z,
+        letterSpacingEm: SPACING,
+        stroke: { widthPx: layer.bord, colour: layer.colour },
+        origin: { dx: -DEPTH_EM * DEPTH_X * size * layer.depth, dy: item.centre - DEPTH_EM * size * layer.depth },
+      };
+      pieces.push(copy);
+    }
+
     parts[at]!.forEach((piece) => {
       const multi = faceCount.get(item.word)! > 1;
       const number = running.get(item.word) ?? 0;
@@ -436,7 +495,9 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
         // The lettering rolls across the word in 45 ms: each letter flips from the body red to its own fill.
         const step = letters > 1 ? 45 / (letters - 1) : 0;
         const start = Math.min(t0 + number * step, settled);
-        track.colour = number === 0 || fill === body ? [[t0, fill]] : [[t0, body], [start, body], [Math.min(start + 50, Math.max(start + 1, settled)), fill, "out"]];
+        // A blend between two colours that dips under 3:1 on the keyline is a hard switch on the letter's own beat instead.
+        const blends = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].every((k) => captionColourContrast(mixColour(body, fill, k), INK) >= CAPTION_SCENE_BRAND_MIN_CONTRAST);
+        track.colour = number === 0 || fill === body ? [[t0, fill]] : blends ? [[t0, body], [start, body], [Math.min(start + 50, Math.max(start + 1, settled)), fill, "out"]] : [[t0, body], [start, body], [start + 0.001, fill]];
       }
       const origin = { dx: cell.x - piece.x, dy: item.centre };
       const face: TextPiece = {
@@ -446,24 +507,6 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
         letterSpacingEm: SPACING,
         stroke: { widthPx: EDGE_EM * size, colour: INK },
       };
-      const slateMid = mixColour(SLATE_NEAR, SLATE_FAR, 0.4);
-      const layers = [
-        { id: "d3", z: 3, depth: 1, fill: INK, bord: (EDGE_EM + RIM_EM) * size, colour: INK },
-        { id: "d2", z: 4, depth: 1, fill: SLATE_FAR, bord: SLATE_EM * size, colour: SLATE_FAR },
-        { id: "d1", z: 5, depth: 0.5, fill: slateMid, bord: SLATE_EM * size, colour: slateMid },
-      ] as const;
-      for (const layer of layers) {
-        const copy: TextPiece = {
-          ...face,
-          id: `${id}${layer.id}`,
-          z: layer.z,
-          fill: layer.fill,
-          stroke: { widthPx: layer.bord, colour: layer.colour },
-          origin: { dx: origin.dx - DEPTH_EM * DEPTH_X * size * layer.depth, dy: origin.dy - DEPTH_EM * size * layer.depth },
-          track: { ...base },
-        };
-        pieces.push(copy);
-      }
       pieces.push(face);
     });
   });
@@ -483,30 +526,35 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
   const targetAt = { x: (targetBox.x1 + targetBox.x2) / 2, y: (targetBox.y1 + targetBox.y2) / 2 };
   const lifeEnd = exit ? exitAt : to;
 
-  // Sunburst: grows behind the key word, fades in 180 ms, cut to the caption band.
+  // Sunburst: grows behind the key word, fades in 180 ms, cut to the caption band. A cue too short for that shows it at once,
+  // full size, fading over the painted frames it has.
   {
+    const minLife = (2 * 1000) / fps + 2;
     const b0 = Math.max(ctx.window.from, targetWord.startMs - 40);
+    const count = heroed ? RAY_COUNT : 8;
+    const reach = Math.min((heroed ? 1.35 : 1.15) * targetSize, Math.max(0.9 * targetSize, 0.5 * (band.y2 - band.y1)));
+    const alpha = heroed ? RAY_ALPHA : 0.5;
+    const path = tiltRaysPath(count, 0.4 * targetSize, reach, reach * 0.72);
     const fadeTo = Math.min(lifeEnd, targetWord.startMs + (heroed ? 380 : 300));
     const fadeFrom = Math.max(b0 + 90, Math.min(targetWord.startMs + (heroed ? 200 : 120), fadeTo - 70));
-    if (fadeTo > fadeFrom + 20) {
-      const count = heroed ? RAY_COUNT : 8;
-      const radius = (heroed ? 1.5 : 1.25) * targetSize;
-      const alpha = heroed ? RAY_ALPHA : 0.5;
-      const path = tiltRaysPath(count, 0.4 * targetSize, radius, radius * 0.72);
+    const full = fadeTo > fadeFrom + 20 && fadeTo - b0 >= 270;
+    const end = full ? fadeTo : Math.min(lifeEnd, b0 + 270);
+    if (end - b0 >= minLife) {
       const grow = Math.min(b0 + 160, fadeFrom);
-      const shape = ctx.shape("burst", b0, path, {
-        x: [[b0, targetAt.x]],
-        y: [[b0, targetAt.y]],
-        sx: [[b0, 0.35], [grow, 1.05, "outExpo"]],
-        sy: [[b0, 0.35], [grow, 1.05, "outExpo"]],
-        rz: [[b0, -14 * side], [fadeTo, 6 * side]],
-        o: [[b0, 0], [Math.min(b0 + 70, fadeFrom), alpha, "out"], [fadeFrom, alpha], [fadeTo, 0, "in"]],
-      }, colours.highlight);
+      const shape = ctx.shape("burst", b0, path, full
+        ? {
+            x: [[b0, targetAt.x]],
+            y: [[b0, targetAt.y]],
+            sx: [[b0, 0.35], [grow, 1.05, "outExpo"]],
+            sy: [[b0, 0.35], [grow, 1.05, "outExpo"]],
+            rz: [[b0, -14 * side], [fadeTo, 6 * side]],
+            o: [[b0, 0], [Math.min(b0 + 70, fadeFrom), alpha, "out"], [fadeFrom, alpha], [fadeTo, 0, "in"]],
+          }
+        : { x: [[b0, targetAt.x]], y: [[b0, targetAt.y]], sx: [[b0, 1]], sy: [[b0, 1]], rz: [[b0, -4 * side]], o: [[b0, alpha], [end, 0, "in"]] }, colours.highlight);
       pieces.push({
         ...shape,
-        toMs: fadeTo,
+        toMs: end,
         clip: rectClip(b0, { x1: inside.x1, x2: inside.x2, y1: Math.max(inside.y1, band.y1), y2: Math.min(inside.y2, band.y2) }),
-        shadows: [{ dx: 0.06 * radius * 0.25, dy: 0.06 * radius * 0.25, blur: 0, colour: RAYS_EDGE, alpha: 1 }],
       });
     }
   }
@@ -541,7 +589,7 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
       // A short cue shows the star at once, full size; a longer one grows it and twinkles it for the whole hold.
       const compact = lifeEnd - t0 < 200;
       const grow: [number, number, ("outBack" | "inOut")?][] = compact ? [[t0, 1]] : [[t0, 0.05], [t0 + 160, 1, "outBack"]];
-      for (let n = 1, at = t0 + 160 + 260; !compact && at < lifeEnd - 80 && n < 9; n++, at += 260) grow.push([at, n % 2 ? 0.64 : 1, "inOut"]);
+      for (let n = 1, at = t0 + 160 + 360; !compact && at < lifeEnd - 80 && n < 6; n++, at += 360) grow.push([at, n % 2 ? 0.64 : 1, "inOut"]);
       const shape = ctx.shape(`spark${si}`, t0, tiltStarPath(radius), {
         x: [[t0, placed.x]],
         y: [[t0, placed.y]],
@@ -574,17 +622,19 @@ export const tiltProgram = galleryScene("tilt", 1290, (ctx) => {
       if (!free(around)) continue;
       taken.push(around);
       const end = Math.min(t0 + 380, lifeEnd);
-      if (end - t0 < 150) break;
+      if (end - t0 < (2 * 1000) / fps + 2) break;
+      // A cue too short for the flick shows the dashes at once, full size, and fades them over the frames it has.
+      const compact = end - t0 < 150;
       dashes.forEach((dash, k) => {
-        const at = t0 + k * 25;
-        const pop: Frames = [[at, 0.2], [Math.min(at + 110, end - 1), 1, "outBack"]];
+        const at = compact ? t0 : t0 + k * 25;
+        const pop: Frames = compact ? [[at, 1]] : [[at, 0.2], [Math.min(at + 110, end - 1), 1, "outBack"]];
         const shape = ctx.shape(`dash${k}`, at, roundedRectPath(-len / 2, -thick / 2, len, thick, thick / 2), {
           x: [[at, dash.x]],
           y: [[at, dash.y]],
           rz: [[at, dash.rot]],
           sx: pop,
           sy: pop,
-          o: [[at, 1], [Math.min(at + 200, end - 1), 1], [end, 0, "in"]],
+          o: compact ? [[at, 1], [end, 0, "in"]] : [[at, 1], [Math.min(at + 200, end - 1), 1], [end, 0, "in"]],
         }, colours.highlight);
         pieces.push({ ...shape, z: 7, toMs: end, stroke: { widthPx: 2.5 * u, colour: INK } });
       });
