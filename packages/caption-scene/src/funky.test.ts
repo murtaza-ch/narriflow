@@ -221,7 +221,7 @@ describe("funky", () => {
     const counts = rowsOfLetters(letters, t).map((row) => row.length);
     expect(counts.length).toBeGreaterThanOrEqual(2);
     expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(6);
-    for (const letter of letters) expect(letter.sizePx * captionFontFace(letter.face).capHeight).toBeGreaterThanOrEqual(0.55 * 185);
+    for (const letter of letters) expect(letter.sizePx * captionFontFace(letter.face).capHeight).toBeGreaterThanOrEqual(0.6 * 142 * 0.74);
   });
 
   test("a long word takes the fewest rows whose real breakpoints keep the size floor, at 16:9 too, with the real glyph widths", () => {
@@ -241,6 +241,58 @@ describe("funky", () => {
           expect(Math.max(...box.map((b) => b.x2)) - Math.min(...box.map((b) => b.x1)), `${word} row wider than the column`).toBeLessThanOrEqual(canvas.width * 0.9);
         }
       }
+    }
+  });
+
+  test("a common key word that is wide at its own size shrinks to fit and stays one row; only a word below 62 % of body size breaks", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      for (const word of ["episodes", "unbelievable", "wouldn't", "features", "audience", "unplugged.", "accidentally", "waveform"]) {
+        const cues = demoCues({ lines: [`so:b ${word}:h@1100`], options: { lead: 400, gap: 30, cueGap: 140, tail: 900 } }).cues;
+        const pieces = funkyProgram.build(sceneInput(cues, { fps: 30, colours, canvas, measure: capMeasure })).pieces;
+        const key = faces(pieces, 0).filter((piece) => piece.id.startsWith("funky:0:w1"));
+        const t = cues[0]!.endMs - 400;
+        expect(rowsOfLetters(key, t).length, `${word} at ${canvas.width}x${canvas.height}`).toBe(1);
+        // Shrunk at most to 62 % of the body size.
+        for (const letter of key) expect(letter.sizePx * captionFontFace(letter.face).capHeight).toBeGreaterThanOrEqual(0.62 * 142 * 0.74 - 0.5);
+      }
+    }
+  });
+
+  test("16:9 packs a cue into the fewest rows that keep the size: two rows for the short cues, three for nine words, nothing below 60 % of its size", () => {
+    const wide = { width: 1920, height: 1080 };
+    for (const scale of [1, 2]) {
+      const canvas = wide;
+      for (const [line, most] of [["easy:b come:b go:h@600", 2], ["do:m what:b you:m love:h@680", 2], ["so:b the:m real:b reason:h@700 most:b people:b never:b get:b there:b", scale === 1 ? 3 : 4]] as const) {
+        const cues = demoCues({ lines: [line], options: { lead: 400, gap: 30, cueGap: 140, tail: 900 } }).cues;
+        const pieces = funkyProgram.build(sceneInput(cues, { fps: 30, colours, canvas, scale, measure: capMeasure })).pieces;
+        const letters = faces(pieces, 0);
+        const rows = rowsOfLetters(letters, cues[0]!.endMs - 300);
+        expect(rows.length, `${line} at ${canvas.width}x${canvas.height}`).toBeLessThanOrEqual(most);
+        for (const letter of letters) expect(letter.sizePx * captionFontFace(letter.face).capHeight).toBeGreaterThanOrEqual(0.6 * 0.8 * 142 * 0.74 * scale - 0.5);
+      }
+    }
+  });
+
+  test("the hop shows on ordinary fast speech: after its word settles, on three painted frames at least, on most short cues", () => {
+    const lines = [
+      "it's:m time:h@240", "to:m say:b goodbye:h@260", "does:b the:m remote:b even:b still:h@230", "work:h@200", "the:m remote:b doesn't:h@220 work:b@160",
+      "is:m it:b dead:h@240", "the:m battery:h@260", "it's:m been:b that:b long:h@200", "just:b tear:b it:m down:h@240", "who:b cares:h@200",
+      "that's:b fine:h@220", "the:m next:b tenant:h@240", "we:m will:b catch:b you:m guys:h@180", "you:m see:b these:h@180", "break:h@140",
+    ];
+    for (const fps of [30, 60]) {
+      const { cues, pieces } = build(lines, { fps, cueGap: 40, gap: 20 });
+      let lifted = 0;
+      for (const cue of cues) {
+        const letters = faces(pieces, cue.index);
+        const shown = letters.some((piece) => {
+          const o = piece.track.o;
+          const end = o && o.length > 2 ? o[1]![0] : piece.toMs;
+          const ys = exportFrameTimes(piece.fromMs + 190, end, fps).map((t) => evaluatePiece(piece, t).y);
+          return ys.some((y, i) => i > 0 && Math.abs(y - ys[i - 1]!) > 2);
+        });
+        if (shown) lifted++;
+      }
+      expect(lifted, `${lifted} of ${cues.length} cues hop at ${fps} fps`).toBeGreaterThanOrEqual(Math.ceil(cues.length * 0.7));
     }
   });
 

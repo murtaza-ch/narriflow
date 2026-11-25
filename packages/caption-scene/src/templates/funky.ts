@@ -221,6 +221,9 @@ interface Row {
   above: number;
   below: number;
   tilt: number;
+  /** The row's largest cap height as drawn, and as drawn relative to the size it would ideally have (a key word's ideal is body size). */
+  cap: number;
+  size: number;
   /** The painted ink box (outline and shadow included) at rest. */
   box: Box;
 }
@@ -321,17 +324,22 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
     return { word, part, parts, from, to, width: word.x[to - 1]! + last.adv - last.rsb - left, left };
   };
 
-  // ---- rows: roles give the groups; a long word is broken across rows, the fewest that keep the size floor ---------------
-  const column = Math.min(COLUMN * u, bounds.x2 - bounds.x1 - 2 * PAD * u);
+  // ---- rows: roles give the groups; a long word is broken across rows only below the size floor -----------------------------
+  const lane = bounds.x2 - bounds.x1 - 2 * PAD * u;
+  const column = Math.min(COLUMN * u, lane);
   const wordGap = WORD_GAP * BODY_CAP * u;
-  const chunksOf = (word: Word): Unit[] => {
+  /** The share of its own size a word may shrink to before it is broken across rows: 62 % of the body size, whatever the word's. */
+  const floorOf = (word: Word) => (word.hero ? (MIN_FIT * BODY_CAP) / HERO_CAP : MIN_FIT);
+  /** A word as row units for rows rendered at most `limit` wide: one unit, or the fewest pieces that keep the floor. */
+  const chunksOf = (word: Word, limit: number): Unit[] => {
     const whole = unitOf(word, 0, 1, 0, word.glyphs.length);
     if (word.whole) {
-      word.scale = Math.min(1, column / Math.max(1, whole.width));
+      word.scale = Math.min(1, limit / Math.max(1, whole.width));
       return [whole];
     }
-    if (whole.width * MIN_FIT <= column) return [whole];
+    if (whole.width * floorOf(word) <= limit) return [whole];
     const n = word.glyphs.length;
+    const floor = floorOf(word);
     const span = (from: number, to: number) => unitOf(word, 0, 1, from, to).width;
     // The fewest rows that really fit: for each row count, the narrowest real breakpoints (the least sum of squared widths among
     // the splits whose every row keeps the size floor), never a count estimated from the total width.
@@ -343,7 +351,7 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
         for (let i = k; i <= n; i++) {
           for (let j = k - 1; j < i; j++) {
             const w = span(j, i);
-            if (w * MIN_FIT > column && i - j > 1) continue;
+            if (w * floor > limit && i - j > 1) continue;
             const cost = best[k - 1]![j]! + w * w;
             if (cost < best[k]![i]!) {
               best[k]![i] = cost;
@@ -368,35 +376,39 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
     }
     return split(n) ?? [whole];
   };
-  const unitsOf = words.map(chunksOf);
   const groups = (heroed ? [lead, heroAt, tail] : [cue.words.map((_, at) => at)]).filter((list) => list.length > 0);
-  const rowUnits: Unit[][] = [];
-  for (const group of groups) {
-    let run: Unit[] = [];
-    const flush = () => {
-      if (run.length === 0) return;
-      const widths = run.map((unit) => unit.width * unit.word.scale);
-      for (const row of balancedRows(widths, wordGap, column)) rowUnits.push(row.map((at) => run[at]!));
-      run = [];
-    };
-    for (const at of group) {
-      const list = unitsOf[at]!;
-      if (list.length > 1) {
-        flush();
-        for (const unit of list) rowUnits.push([unit]);
-      } else run.push(list[0]!);
+  /** The rows for a render limit `limit` (a row is drawn at most that wide), packed nominally `pack` wide. */
+  const packRows = (limit: number, pack: number): Unit[][] => {
+    const unitsOf = words.map((word) => chunksOf(word, limit));
+    const rowUnits: Unit[][] = [];
+    for (const group of groups) {
+      let run: Unit[] = [];
+      const flush = () => {
+        if (run.length === 0) return;
+        const widths = run.map((unit) => unit.width * unit.word.scale);
+        for (const row of balancedRows(widths, wordGap, pack)) rowUnits.push(row.map((at) => run[at]!));
+        run = [];
+      };
+      for (const at of group) {
+        const list = unitsOf[at]!;
+        if (list.length > 1) {
+          flush();
+          for (const unit of list) rowUnits.push([unit]);
+        } else run.push(list[0]!);
+      }
+      flush();
     }
-    flush();
-  }
+    return rowUnits;
+  };
   const rowWidth = (units: readonly Unit[]) => units.reduce((sum, unit) => sum + unit.width * unit.word.scale, 0) + wordGap * Math.max(0, units.length - 1);
   const direction = ctx.rtl ? "rtl" : "ltr";
 
-  /** The rows at block fit `f`: every row fits the column by itself, then rows stack by ink, outline and shadow. */
-  const arrange = (f: number) => {
+  /** The rows at block fit `f`: a row is drawn at size `f`, or smaller when it would be wider than `limit`; rows stack by ink, outline and shadow. */
+  const arrange = (rowUnits: readonly Unit[][], limit: number, f: number) => {
     let cursor = 0;
     const rows: Row[] = rowUnits.map((units, r) => {
       const wide = rowWidth(units);
-      const scale = f * Math.min(1, column / Math.max(1, wide));
+      const scale = Math.min(f, limit / Math.max(1, wide));
       const glyphs = units.flatMap((unit) => unit.word.glyphs.slice(unit.from, unit.to).map((glyph) => ({ glyph, own: unit.word.scale, cap: unit.word.cap })));
       const capMax = Math.max(...glyphs.map(({ cap, own }) => cap * own)) * scale;
       const above = Math.max(...glyphs.map(({ glyph, own }) => -glyph.top * own * scale), capMax) + OUTLINE_EM * capMax + 0.04 * capMax;
@@ -405,17 +417,69 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
       const baseline = cursor + above;
       cursor = baseline + below;
       const tilt = ((r + index) % 2 === 1 ? 1 : -1) * ROW_TILT;
-      return { units, scale, baseline, above, below, tilt, box: { x1: 0, x2: 0, y1: 0, y2: 0 } };
+      const ideal = Math.min(capMax / scale, BODY_CAP * u);
+      return { units, scale, baseline, above, below, tilt, cap: capMax, size: Math.min(1, capMax / ideal), box: { x1: 0, x2: 0, y1: 0, y2: 0 } };
     });
     return { rows, height: cursor };
   };
   const room = bounds.y2 - bounds.y1 - 2 * PAD * u;
-  let fit = 1;
-  let arranged = arrange(fit);
-  for (let tries = 0; tries < 16 && arranged.height > room; tries++) {
-    fit *= Math.min(0.94, (0.98 * room) / arranged.height);
-    arranged = arrange(fit);
+  /** The largest block fit at which these rows fit the band's height (the height only falls as the fit does). */
+  const fitOf = (rowUnits: readonly Unit[][], limit: number): number => {
+    if (arrange(rowUnits, limit, 1).height <= room) return 1;
+    let lo = 0.05;
+    let hi = 1;
+    for (let step = 0; step < 14; step++) {
+      const mid = (lo + hi) / 2;
+      if (arrange(rowUnits, limit, mid).height <= room) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
+  // Rows are chosen once the block's shrink is known: the column first, then wider rows up to the whole lane (16:9 has room for
+  // them), each repacked for the size it ends up at, three times.
+  interface Candidate {
+    readonly limit: number;
+    readonly rowUnits: Unit[][];
+    readonly fit: number;
+    /** The smallest row's drawn size against its ideal (1 is full size). */
+    readonly size: number;
   }
+  const limits = [column];
+  // Rows stay 80 px (at 1080) inside the lane: the outline, shadow, tilt and tumble reach past a row's ink.
+  const widest = Math.max(column, lane - 80 * u);
+  for (let k = 1; column * (1 + 0.2 * k) < widest - 1; k++) limits.push(column * (1 + 0.2 * k));
+  if (widest > column + 1) limits.push(widest);
+  const candidateOf = (limit: number, rowUnits: Unit[][]): Candidate => {
+    const fit = fitOf(rowUnits, limit);
+    return { limit, rowUnits, fit, size: Math.min(...arrange(rowUnits, limit, fit).rows.map((row) => row.size)) };
+  };
+  const candidates: Candidate[] = [];
+  for (const limit of limits) {
+    // Rows packed for the full size, then for 85, 70 and 60 % of it (each drawn at most `limit` wide: wider packs draw smaller).
+    for (const share of [1, 0.85, 0.7, 0.6]) {
+      const rowUnits = packRows(limit, limit / share);
+      candidates.push(candidateOf(limit, rowUnits));
+    }
+    // A cue too tall for the band is packed again for the size it ends up at.
+    let pack = limit;
+    for (let pass = 0; pass < 3; pass++) {
+      const candidate = candidateOf(limit, packRows(limit, pack));
+      candidates.push(candidate);
+      if (candidate.fit >= 1) break;
+      pack = Math.min(limit / candidate.fit, limit / 0.35);
+    }
+  }
+  // Portrait keeps the size: within 8 % of the largest. A landscape band is short and wide, so there fewer rows beat size down to
+  // 60 % of full: two or three rows before four, at a size that still reads.
+  const landscape = space.canvas.width > space.canvas.height;
+  const bestSize = Math.max(...candidates.map((candidate) => candidate.size));
+  const keepSize = landscape ? Math.min(bestSize, 0.6) : bestSize * 0.92;
+  const chosen = candidates
+    .filter((candidate) => candidate.size >= keepSize)
+    .sort((a, b) => a.rowUnits.length - b.rowUnits.length || b.size - a.size || a.limit - b.limit)[0]!;
+  // Packing set the whole words' own fits as it went: set them again for the rows kept.
+  for (const word of words) chunksOf(word, chosen.limit);
+  const arranged = arrange(chosen.rowUnits, chosen.limit, chosen.fit);
   const { rows } = arranged;
   const targetY = space.y(1290);
   const top = Math.min(bounds.y2 - PAD * u - arranged.height, Math.max(bounds.y1 + PAD * u, targetY - arranged.height / 2));
@@ -492,22 +556,32 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
     return { from, settled, motion, name, stagger: scatter ? Math.min(45, (settled - from) * 0.24) : 0, scatter };
   });
 
-  // The hop beat: a hop across the key word's letters (the last word's on a cue without one), repeated on a long hold.
-  const hopWords = heroed ? heroAt : [cue.words.length - 1];
-  const hopStarts = new Map<number, { starts: number[]; duration: number; step: number }>();
+  // The hop beat: a hop across the key word's letters (the last word's on a cue without one), repeated on a long hold. It starts
+  // as the word settles and shrinks to the frames the cue has left: three painted frames at least, 90 to 130 ms, the per-letter step
+  // taking what is left over. A last word that is not a key word is body size, so it lifts higher to show at phone size.
+  // When the cue ends too soon after that word settles, the latest earlier word that has three painted frames after its own settle hops.
+  const roomAfterSettle = (at: number) => gridTimes.filter((t) => t >= motions[at]!.settled).length >= 3;
+  const primary = heroed ? heroAt : [cue.words.length - 1];
+  const spare = primary.some(roomAfterSettle) ? undefined : [...cue.words.keys()].reverse().find(roomAfterSettle);
+  const hopWords = spare === undefined ? primary : [spare];
+  const hopStarts = new Map<number, { starts: number[]; duration: number; step: number; lift: number }>();
   for (const at of hopWords) {
     const word = words[at]!;
     const n = word.glyphs.length;
-    const first = startFor(motions[at]!.settled + 140, 4);
+    const first = startFor(motions[at]!.settled, 3);
     if (first === null) continue;
-    const duration = 130;
-    const avail = bandHold - first - 40;
-    if (avail < 100) continue;
-    const step = n > 1 ? Math.min(28, Math.max(0, (avail - Math.min(duration, avail)) / (n - 1))) : 0;
-    const span = Math.min(duration, avail) + step * (n - 1);
+    const avail = bandHold - first;
+    let step = n > 1 ? Math.min(28, Math.max(0, (avail - 90) / (n - 1))) : 0;
+    let duration = Math.min(130, avail - step * (n - 1));
+    if (paintedFrameCount(first, first + duration, fps) < 3) {
+      step = 0;
+      duration = avail;
+    }
+    if (duration <= 0 || paintedFrameCount(first, first + duration, fps) < 3) continue;
+    const span = duration + step * (n - 1);
     const starts = [first];
     for (let next = first + 1300; next + span + 60 < bandHold && starts.length < 3; next += 1300) starts.push(next);
-    hopStarts.set(at, { starts, duration: Math.min(duration, avail), step });
+    hopStarts.set(at, { starts, duration, step, lift: heroAt.includes(at) ? 0.09 : 0.12 });
   }
 
   const faceCount = (word: Word) => word.glyphs.length;
@@ -554,7 +628,7 @@ export const funkyProgram = galleryScene("funky", 1290, (ctx) => {
       if (hopping) {
         for (const at of hopping.starts) {
           const p = prog(t, at + item.index * hopping.step, hopping.duration);
-          if (p > 0 && p < 1) y -= 0.09 * item.cap * Math.sin(Math.PI * p);
+          if (p > 0 && p < 1) y -= hopping.lift * item.cap * Math.sin(Math.PI * p);
         }
       }
       if (exit && t > exitAt) {
