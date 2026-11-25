@@ -1,0 +1,169 @@
+import { describe, expect, test } from "bun:test";
+import { describeSpeechConformance } from "./conformance-support";
+import { demoCues, sceneEdgeDemo } from "./demo";
+import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
+import { type Box, type Piece, evaluatePiece, pieceBounds } from "./scene";
+import { pixelpopProgram } from "./templates/pixelpop";
+import { fakeMeasure, sceneInput } from "./test-support";
+
+describeSpeechConformance("pixelpop", pixelpopProgram, { anchorLineY: 1290 });
+
+const colours = { primary: "#FFFFFF", highlight: "#FFEF3A", accent: "#2BE4FF", shadow: "#000000" };
+const build = (lines: string[], opts: { gap?: number; cueGap?: number; language?: string; fps?: number } = {}) => {
+  const { cues } = demoCues({ lines, language: opts.language, options: { lead: 400, gap: opts.gap ?? 30, cueGap: opts.cueGap ?? 140, tail: 800 } });
+  return { cues, pieces: pixelpopProgram.build(sceneInput(cues, { fps: opts.fps ?? 30, colours })).pieces };
+};
+const wordRe = (cue: number) => new RegExp(`^pixelpop:${cue}:w\\d+(?:l\\d+)?$`);
+const faces = (pieces: Piece[], cue: number) => pieces.filter((piece) => wordRe(cue).test(piece.id));
+const meets = (a: Box, b: Box) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
+
+describe("pixelpop", () => {
+  test("ink starts at the word's onset, never before it", () => {
+    const { cues, pieces } = build(["level:b up:b skills:h@640"]);
+    for (const word of cues[0]!.words) {
+      const face = pieces.find((piece) => piece.id === `pixelpop:0:w${cues[0]!.words.indexOf(word)}`)!;
+      expect(face.fromMs).toBeGreaterThanOrEqual(word.startMs - 1);
+      expect(pieceBounds(face, exportFrameAtOrAfter(word.startMs, 30), fakeMeasure)).not.toBeNull();
+    }
+  });
+
+  test("a word builds in three stair steps, each row a step behind, and is whole within 70 ms", () => {
+    const { cues, pieces } = build(["level:b up:b skills:h@640"], { fps: 60 });
+    const start = cues[0]!.words[2]!.startMs;
+    const rowIds = ["pixelpop:0:w2", "pixelpop:0:w2row1", "pixelpop:0:w2row2"];
+    const reach = (id: string, t: number) => {
+      const piece = pieces.find((p) => p.id === id)!;
+      const pose = evaluatePiece(piece, t);
+      return pose.visible && pose.clip ? Math.max(0, pose.clip.x2 - pose.clip.x1) : 0;
+    };
+    const base = pieces.find((p) => p.id === "pixelpop:0:w2")!;
+    const full = evaluatePiece(base, start + 400).clip!;
+    const share = (id: string, t: number) => reach(id, t) / (full.x2 - full.x1);
+    const first = exportFrameAtOrAfter(start, 60);
+    // Three distinct steps on the top row, the lower rows lagging.
+    const steps = new Set(exportFrameTimes(first, first + 70, 60).map((t) => share(rowIds[0]!, t).toFixed(2)));
+    expect(steps.size).toBeGreaterThanOrEqual(3);
+    const t = first + 16;
+    expect(share(rowIds[2]!, t)).toBeLessThanOrEqual(share(rowIds[1]!, t));
+    expect(share(rowIds[1]!, t)).toBeLessThanOrEqual(share(rowIds[0]!, t));
+    expect(share(rowIds[0]!, first + 80)).toBeCloseTo(1, 1);
+    expect(share("pixelpop:0:w2", first + 80)).toBeCloseTo(1, 1);
+  });
+
+  test("the key word is three colour bands over one extrusion stack, cut from its face ink", () => {
+    const { pieces } = build(["level:b up:b skills:h@640"]);
+    const hero = pieces.find((p) => p.id === "pixelpop:0:w2")!;
+    expect(hero.kind === "text" && hero.fill).toBe("#FF3DAE");
+    expect(hero.kind === "text" && hero.shadows?.length).toBe(5);
+    const top = pieces.find((p) => p.id === "pixelpop:0:w2row0")!;
+    const mid = pieces.find((p) => p.id === "pixelpop:0:w2row1")!;
+    expect(top.kind === "text" && top.fill).toBe("#2BE4FF");
+    expect(mid.kind === "text" && mid.fill).toBe("#FFEF3A");
+    expect(top.kind === "text" && top.shadows).toBeUndefined();
+    const t = hero.fromMs + 500;
+    const ink = pieceBounds({ ...hero, clip: undefined }, t, fakeMeasure)!;
+    const a = evaluatePiece(top, t).clip!;
+    const b = evaluatePiece(mid, t).clip!;
+    expect(b.y1).toBeCloseTo(a.y2, 3);
+    expect((a.y2 - ink.y1) / (ink.y2 - ink.y1)).toBeCloseTo(0.44, 1);
+    // Grid steps: the stack's layers are whole 4 to 6 px cells apart.
+    const offsets = (hero.kind === "text" ? hero.shadows! : []).map((s) => s.dx);
+    for (let i = 1; i < offsets.length; i++) expect(offsets[i - 1]! - offsets[i]!).toBeCloseTo(offsets[0]! - offsets[1]!, 5);
+    expect(offsets[offsets.length - 2]! - offsets[offsets.length - 1]!).toBeGreaterThanOrEqual(4);
+    expect(offsets[offsets.length - 2]! - offsets[offsets.length - 1]!).toBeLessThanOrEqual(6.01);
+  });
+
+  test("the exit never starts before the last word has been read, and the cue is not cut mid-word on a short gap", () => {
+    const { cues, pieces } = build(["level:b up:b skills:h@640", "press:b start:h@560"], { cueGap: 60 });
+    const cue = cues[0]!;
+    const last = pieces.find((p) => p.id === "pixelpop:0:w2")!;
+    const lastFrame = exportFrameAtOrBefore(cue.words[2]!.endMs + 150, 30);
+    const times = exportFrameTimes(cue.words[2]!.startMs + 120, Math.min(lastFrame + 1, last.toMs), 30);
+    expect(times.length).toBeGreaterThan(3);
+    for (const t of times) {
+      const clip = evaluatePiece(last, t).clip!;
+      const whole = pieceBounds({ ...last, clip: undefined }, t, fakeMeasure)!;
+      expect(clip.x2).toBeGreaterThanOrEqual(whole.x2);
+    }
+  });
+
+  test("decorations sit in free space: none touches any word's ink or extrusion, on every cue", () => {
+    const { cues, pieces } = build(["level:b up:b skills:h@640", "press:b start:h@560", "just:b hit:b record:b", "you:m got:m this:h@520", "new:b high:b score:h@600"]);
+    for (const cue of cues) {
+      const words = faces(pieces, cue.index);
+      const decorations = pieces.filter((p) => p.id.startsWith(`pixelpop:${cue.index}:`) && !wordRe(cue.index).test(p.id) && !/:w\d+(?:l\d+)?row/.test(p.id));
+      expect(decorations.length).toBeGreaterThan(0);
+      for (const t of exportFrameTimes(cue.startMs, cue.endMs, 30)) {
+        const ink = words.flatMap((word) => {
+          const box = pieceBounds(word, t, fakeMeasure);
+          if (!box) return [];
+          const dep = word.kind === "text" ? Math.max(0, ...(word.shadows ?? []).map((s) => s.dx)) : 0;
+          return [{ ...box, x2: box.x2 + dep, y2: box.y2 + dep }];
+        });
+        for (const decoration of decorations) {
+          const box = pieceBounds(decoration, t, fakeMeasure);
+          if (box) for (const other of ink) expect(meets(box, other), `${decoration.id} touches a word at ${t}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("every cue carries the icon, the twinkle and the progress cells, and the icon cycles", () => {
+    const { cues, pieces } = build(["level:b up:b skills:h@640", "press:b start:h@560", "just:b hit:b record:b", "you:m got:m this:h@520", "new:b high:b score:h@600"]);
+    for (const cue of cues) {
+      for (const part of ["icon", "spark", "bar0"]) expect(pieces.some((p) => p.id === `pixelpop:${cue.index}:${part}`), `${part} on cue ${cue.index}`).toBe(true);
+    }
+    const shapeOf = (cue: number) => JSON.stringify((pieces.find((p) => p.id === `pixelpop:${cue}:icon`) as { path: unknown }).path);
+    expect(new Set([0, 1, 3, 4].map(shapeOf)).size).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a word too long for the column breaks across rows at a readable size", () => {
+    const word = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    const { cues, pieces } = build([`${word}:h@900`]);
+    const parts = pieces.filter((p) => /^pixelpop:0:w0l\d$/.test(p.id));
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.map((p) => (p.kind === "text" ? p.text : "")).join("")).toBe(word.toUpperCase());
+    for (const piece of parts) expect(piece.kind === "text" && piece.sizePx).toBeGreaterThanOrEqual(70);
+    const ys = new Set(parts.map((p) => Math.round(evaluatePiece(p, cues[0]!.endMs - 300).y)));
+    expect(ys.size).toBe(parts.length);
+  });
+
+  test("Devanagari stays one whole piece per word; Urdu builds right to left", () => {
+    const hindi = build(["यह:b बहुत:h@700"], { language: "hi" });
+    expect(hindi.pieces.filter((p) => /^pixelpop:0:w\d+l\d$/.test(p.id))).toHaveLength(0);
+    const urdu = build(["یہ:b بہت:h@700"], { language: "ur" });
+    const base = urdu.pieces.find((p) => p.id === "pixelpop:0:w1")!;
+    const early = evaluatePiece(base, base.fromMs + 1).clip!;
+    const done = evaluatePiece(base, base.fromMs + 500).clip!;
+    expect(early.x2).toBeCloseTo(done.x2, 3);
+    expect(early.x1).toBeGreaterThan(done.x1);
+  });
+
+  test("stays inside the safe area at twice the size on every frame shape", () => {
+    for (const edge of ["urdu", "nine-words", "long-word", "no-hero"] as const) {
+      for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+        const { cues } = sceneEdgeDemo(edge);
+        const pieces = pixelpopProgram.build(sceneInput(cues, { fps: 30, colours, scale: 2, canvas })).pieces;
+        for (const piece of pieces) {
+          for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+            const box = pieceBounds(piece, t, fakeMeasure);
+            if (!box) continue;
+            expect(box.x1).toBeGreaterThanOrEqual(0.05 * canvas.width - 1);
+            expect(box.x2).toBeLessThanOrEqual(0.95 * canvas.width + 1);
+            expect(box.y1).toBeGreaterThanOrEqual(0.05 * canvas.height - 1);
+            expect(box.y2).toBeLessThanOrEqual(0.95 * canvas.height + 1);
+          }
+        }
+      }
+    }
+  });
+
+  test("the piece count of a cue stays inside the budget", () => {
+    const { cues, pieces } = build(["so:m here:b is:m the:m thing:h@300", "nobody:b tells:b you:m this"]);
+    for (const cue of cues) {
+      const own = pieces.filter((p) => p.id.startsWith(`pixelpop:${cue.index}:`));
+      const events = own.reduce((sum, p) => sum + 1 + (p.kind === "text" ? (p.shadows?.length ?? 0) : (p.shadows?.length ?? 0)), 0);
+      expect(events).toBeLessThanOrEqual(150);
+    }
+  });
+});
