@@ -86,9 +86,9 @@ export const MOMENTS: Record<string, number[]> = {
   pixelpop: [560, 900, 1200, 1500, 2300, 3150, 4300, 5500],
   tilt: [520, 1350, 1700, 2800, 3750, 5200],
   glint: [450, 1250, 1500, 2750, 3650, 5100, 5700, 6300],
+  vibes: [520, 1050, 1500, 2300, 3100, 4500],
 };
 
-  vibes: [520, 1050, 1500, 2300, 3100, 4500],
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
 mkdirSync(join(out, "triptych"), { recursive: true });
 const maeFile = join(out, "mae.json");
