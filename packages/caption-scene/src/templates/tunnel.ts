@@ -1,5 +1,5 @@
 import type { DemoScript } from "../demo";
-import { EASES, clamp, lerp, prog } from "../ease";
+import { EASES, type Frames, clamp, lerp, prog } from "../ease";
 import { sampleFrames } from "../frames";
 import type { Piece, PathCmd, TextPiece } from "../scene";
 import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
@@ -63,8 +63,12 @@ const rand = (key: number, salt: number) => hash(`${key}:${salt}`) / 4294967296;
 
 // \p{M} keeps decomposed (NFD) Latin and Cyrillic text splittable; Devanagari and other complex scripts are excluded by their letters.
 const SIMPLE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{N}\p{P}\p{S}\p{M}]+$/u;
-/** The key word's landing overshoot (the spring peaks at 1.074x). */
-const HERO_OVERSHOOT = 1.08;
+/** The key word's true landing peak: its scale is lerp(0.45, 1, spring), and the spring overshoots once. */
+const HERO_OVERSHOOT = (() => {
+  let peak = 1;
+  for (let i = 0; i <= 1000; i++) peak = Math.max(peak, EASES.spring(i / 1000));
+  return lerp(0.45, 1, peak) + 0.002;
+})();
 /** A word that would have to shrink below this size (sample px, about two thirds of the body size) breaks over several rows instead. */
 const MIN_SIZE = 70;
 /** Bricolage's baseline sits this far below the middle of its 1 em line box (the face's ascent and descent, never a renderer's metrics). */
@@ -93,6 +97,9 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
   const bandTop = Math.max(safe.y1 + margin, anchorY - (430 * ctx.space.canvas.height) / 1920);
   const bandBottom = Math.min(safe.y2 - margin, anchorY + (360 * ctx.space.canvas.height) / 1920);
   const width100 = cue.words.map((word) => measure(word.text, FACE, 100, SPACING).advance);
+  // When each word appears (the stack's slides are timed by these).
+  const enters = cue.words.map((word, at) => ctx.enter(word, word.role === "hero" ? 420 : at === 0 ? 600 : 260, WORD_LEAD));
+  const steps = enters.map((enter) => enter.from);
 
   /** The whole layout at text scale `f` (1 = the sample's sizes): units, rows, every visible stack and the block's size. */
   const plan = (f: number) => {
@@ -154,15 +161,37 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
       });
       return { up: Math.max(rowSize[r]! / 2, ...edges.map((edge) => -edge.top)), down: Math.max(rowSize[r]! / 2, ...edges.map((edge) => edge.bottom)) };
     });
-    // Rows keep their final heights from the moment they appear: only a row's own words re-centre sideways. The whole stack
-    // therefore sits inside the caption band at every frame of every slide, and a new row never starts below it.
-    const stackHeight = reach.reduce((sum, edge) => sum + edge.up + edge.down, 0) + pitch * (rows.length - 1);
-    const rowCentre: number[] = [];
-    let rowTop = -stackHeight / 2;
+    // Rows stack top to bottom in word order. The visible rows re-centre on the anchor as rows arrive, but each stack's top is
+    // clamped so that this cue's own rows (and the next row that joins them) stay inside the caption band: a row never
+    // starts, or slides, below it, and nothing depends on the previous cue.
+    const rowTopRel: number[] = [];
+    let stackHeight = -pitch;
     rows.forEach((_, r) => {
-      rowCentre.push(rowTop + reach[r]!.up);
-      rowTop += reach[r]!.up + reach[r]!.down + pitch;
+      rowTopRel.push(stackHeight + pitch);
+      stackHeight += pitch + reach[r]!.up + reach[r]!.down;
     });
+    const last = cue.words.length - 1;
+    const heightAt = cue.words.map((_, k) => {
+      const shown = rows.filter((row) => row.some((cell) => units[cell.at]!.word <= k)).length;
+      return shown === 0 ? 0 : rowTopRel[shown - 1]! + reach[shown - 1]!.up + reach[shown - 1]!.down;
+    });
+    const lowest = bandTop - anchorY;
+    const bottom = bandBottom - anchorY;
+    // Walk the slides in order. A stack's top is the centred one, held high enough that the next row, which appears where
+    // the slide has got to by then, still ends inside the band: solve that against the slide's actual progress.
+    const tops: number[] = [];
+    let startTop = 0;
+    cue.words.forEach((_, k) => {
+      const next = heightAt[Math.min(k + 1, last)]!;
+      const e = k < last ? EASES.outExpo(prog(steps[k + 1]!, steps[k]!, SLIDE)) : 1;
+      const begin = k === 0 ? -heightAt[0]! / 2 : startTop;
+      const limit = e > 0.05 ? (bottom - next - (1 - e) * begin) / e : bottom - next;
+      const top = clamp(-heightAt[k]! / 2, lowest, Math.max(lowest, k === 0 ? Math.min(limit, bottom - next) : limit));
+      tops.push(top);
+      startTop = lerp(k === 0 ? top : startTop, top, e);
+    });
+    // The final stack's centre, relative to the anchor line: every position below is relative to it.
+    const centreRel = tops[last]! + stackHeight / 2;
     // The visible stack once word k has appeared, centred sideways on 0: pivot offsets of every unit spoken so far.
     const target = cue.words.map((_, k) => {
       const out = new Map<number, { x: number; y: number }>();
@@ -173,7 +202,7 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
         let x = -total / 2;
         for (const cell of row) {
           const m = metricAt.get(cell.at)!;
-          out.set(cell.at, { x: x + cell.width / 2, y: rowCentre[r]! + m.lift + m.mid });
+          out.set(cell.at, { x: x + cell.width / 2, y: tops[k]! - centreRel + rowTopRel[r]! + reach[r]!.up + m.lift + m.mid });
           x += cell.width + gapPx;
         }
       });
@@ -181,7 +210,7 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
     });
     const blockW = Math.max(...rows.map((row) => row.reduce((sum, cell) => sum + cell.width, 0) + gapPx * (row.length - 1)));
     const blockH = stackHeight;
-    return { units, cells, px, rows, cellAt, rowOfUnit, rowSize, gapPx, metricAt, target, blockW, blockH };
+    return { units, cells, px, rows, cellAt, rowOfUnit, rowSize, gapPx, metricAt, target, blockW, blockH, cy: anchorY + centreRel };
   };
 
   // Fit the stack to the caption band (with the key word's 7 % landing overshoot): a tall cue shrinks as a whole and, with
@@ -192,19 +221,16 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
     fit *= Math.max(0.3, ((bandBottom - bandTop) / (P.blockH * 1.06)) * 0.985);
     P = plan(fit);
   }
-  const { units, rows, cellAt, rowOfUnit, rowSize, gapPx, metricAt, target, blockW, blockH } = P;
+  const { units, rows, cellAt, rowOfUnit, rowSize, gapPx, metricAt, target, blockW, blockH, cy } = P;
   const u = P.px * fit;
   const final = target[cue.words.length - 1]!;
   const cx = clamp(ctx.space.x(540), safe.x1 + margin + blockW / 2, Math.max(safe.x1 + margin + blockW / 2, safe.x2 - margin - blockW / 2));
-  const cy = clamp(anchorY, bandTop + blockH / 2, Math.max(bandTop + blockH / 2, bandBottom - blockH / 2));
   // The exit zoom grows about the block centre, as far as the safe area allows: nothing else is on screen while the cue leaves.
   const zoom = clamp(Math.min((safe.x2 - safe.x1 - 2 * margin) / blockW, (safe.y2 - margin - cy) / (blockH / 2), (cy - safe.y1 - margin) / (blockH / 2)) * 0.985, 1, ZOOM_MAX);
 
   // When each word appears, and where it slides from. Everything already shown slides by one displacement, and a word that
   // arrives starts that same displacement away from its final place, so words never move relative to one another within a
   // row: nothing arriving overlaps a word already readable. Each slide starts from where the word actually is.
-  const enters = cue.words.map((word, at) => ctx.enter(word, word.role === "hero" ? 420 : at === 0 ? 600 : 260, WORD_LEAD));
-  const steps = enters.map((enter) => enter.from);
   const startPos: Map<number, { x: number; y: number }>[] = [];
   cue.words.forEach((_, k) => {
     const out = new Map<number, { x: number; y: number }>();
@@ -267,9 +293,9 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
     const frames = (fn: (t: number) => number, tolerance: number) => sampleFrames(fn, edges, tolerance, { range: [from, Math.max(to, from + 1)], simplify: true });
     const x = (t: number) => cx + position(at, t).x * depth(t);
     const y = (t: number) => cy + position(at, t).y * depth(t);
-    const scale = frames(scaleOf, 0.002);
+    const scale = frames(scaleOf, 0.006);
     const piece = ctx.face(cell, from, hero ? c.highlight : c.primary, {
-      x: frames(x, 0.15), y: frames(y, 0.15), sx: scale, sy: scale, o: frames(opacity, 0.004), blur: frames(blur, 0.05),
+      x: frames(x, 0.5), y: frames(y, 0.5), sx: scale, sy: scale, o: frames(opacity, 0.02), blur: frames(blur, 0.25),
     });
     piece.id = `${ctx.id}:w${unit.word}${unit.parts > 1 ? `l${unit.part}` : ""}`;
     piece.origin = { dx: 0, dy: m.mid };
@@ -281,7 +307,7 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
   const key = hash(`${index}:${cue.words.map((word) => word.text).join(" ")}`);
   const streakFrom = first.from;
   const streakFor = Math.min(380, to - streakFrom);
-  const count = 12 + (key & 3);
+  const count = 10 + (key & 1);
   const offset = (rand(key, 1) * Math.PI * 2) / count;
   for (let j = 0; j < count; j++) {
     const angle = offset + (j + (rand(key, 10 + j) - 0.5) * 0.5) * ((Math.PI * 2) / count);
@@ -300,14 +326,13 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
     const thick = (3.2 + rand(key, 90 + j) * 2) * u;
     const lime = hasHero && j % 4 === 3;
     const path: PathCmd[] = [["M", 0, thick * 0.4], ["L", length, 0], ["L", length, thick], ["L", 0, thick * 0.6], ["Z"]];
-    const fn = (g: (p: number) => number) => (t: number) => g(prog(t, streakFrom, streakFor));
-    const stops = [streakFrom, streakFrom + streakFor * 0.2, streakFrom + streakFor * 0.6, streakFrom + streakFor];
-    const sample = (g: (p: number) => number, tolerance: number) => sampleFrames(fn(g), stops, tolerance, { range: [streakFrom, streakFrom + streakFor], simplify: true });
-    const radius = (p: number) => r0 + travel * p ** 1.7;
+    // Few keyframes with named eases: a streak is the cheapest piece of the cue to draw and to evaluate.
+    const end = streakFrom + streakFor;
     const shape = ctx.shape(`streak${j}`, streakFrom, path, {
-      x: sample((p) => cx + dx * radius(p), 0.2), y: sample((p) => cy + dy * radius(p), 0.2),
-      sx: sample((p) => 0.3 + 0.7 * EASES.out(clamp(p * 1.6)), 0.004), sy: [[streakFrom, 1]], rz: [[streakFrom, (angle * 180) / Math.PI]],
-      o: sample((p) => EASES.out(clamp(p / 0.2)) * (1 - EASES.in(clamp((p - 0.45) / 0.55))), 0.004),
+      x: [[streakFrom, cx + dx * r0], [end, cx + dx * (r0 + travel), "in"]],
+      y: [[streakFrom, cy + dy * r0], [end, cy + dy * (r0 + travel), "in"]],
+      sx: [[streakFrom, 0.3], [streakFrom + streakFor * 0.6, 1, "out"], [end, 1]], sy: [[streakFrom, 1]], rz: [[streakFrom, (angle * 180) / Math.PI]],
+      o: [[streakFrom, 0], [streakFrom + streakFor * 0.2, 1, "out"], [streakFrom + streakFor * 0.45, 1], [end, 0, "in"]],
     }, lime ? c.highlight : c.accent);
     pieces.push({ ...shape, toMs: streakFrom + streakFor, origin: { dx: 0, dy: thick / 2 }, fill: { colour: lime ? c.highlight : c.accent, alpha: 0.55 } });
   }
@@ -328,15 +353,16 @@ export const tunnelProgram = galleryScene("tunnel", 1290, (ctx) => {
   const thick = Math.max(4 * u, dashSize * 0.03);
   const dash = (id: string, x: number, y: number, length: number, side: number, along: "x" | "y", travel: number, delay: number) => {
     const path: PathCmd[] = [["M", 0, 0], ["L", length, 0], ["L", length, thick], ["L", 0, thick], ["Z"]];
-    const stops = [dashFrom, dashFrom + dashFor * 0.35, dashFrom + dashFor];
-    const sample = (g: (p: number) => number, tolerance: number) =>
-      sampleFrames((t) => g(prog(t, dashFrom, dashFor)), stops, tolerance, { range: [dashFrom, dashFrom + dashFor], simplify: true });
-    const q = (p: number) => clamp((p - delay) / (1 - delay));
-    const move = sample((p) => (along === "x" ? x : y) + side * travel * EASES.out(q(p)), 0.2);
+    const end = dashFrom + dashFor;
+    const start = dashFrom + delay * dashFor;
+    const span = end - start;
+    const held = (value: number): Frames => (start > dashFrom ? [[dashFrom, value], [start, value]] : [[dashFrom, value]]);
+    const origin = along === "x" ? x : y;
+    const move: Frames = [...held(origin), [end, origin + side * travel, "out"]];
     const shape = ctx.shape(id, dashFrom, path, {
       x: along === "x" ? move : [[dashFrom, x]], y: along === "y" ? move : [[dashFrom, y]],
-      sx: sample((p) => 0.25 + 0.75 * EASES.out(clamp(q(p) * 1.5)), 0.004),
-      o: sample((p) => EASES.out(clamp(q(p) / 0.15)) * (1 - EASES.in(clamp((q(p) - 0.4) / 0.6))), 0.004),
+      sx: [...held(0.25), [start + span * 0.6, 1, "out"], [end, 1]],
+      o: [...held(0), [start + span * 0.15, 1, "out"], [start + span * 0.4, 1], [end, 0, "in"]],
     }, colour);
     pieces.push({ ...shape, toMs: dashFrom + dashFor, fill: { colour, alpha: hasHero ? 0.95 : 0.6 }, origin: { dx: side > 0 || along === "y" ? 0 : length, dy: thick / 2 } });
   };

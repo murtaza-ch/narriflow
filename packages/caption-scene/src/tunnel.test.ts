@@ -208,4 +208,36 @@ describe("tunnel", () => {
       if (boxA && boxB && evaluatePiece(a, t).o > 0.9 && evaluatePiece(b, t).o > 0.5) expect(boxB.y1 + 0.5, `at ${t}`).toBeGreaterThanOrEqual(boxA.y2);
     }
   });
+
+  test("rows re-centre on the anchor as rows arrive: a lone first word sits near the anchor and moves up when the next row joins", () => {
+    // A tall cue on 9:16: the first word is alone for a while and must not hang at its final height far above the anchor.
+    const tall = demoCues({ lines: ["inch:b@500 matte:h@500 display:b@500 glare:b@500"], options: { lead: 400, tail: 900 } });
+    const ay = (1290 / 1920) * 1920;
+    const alone = tunnelProgram.build(sceneInput(tall.cues, { fps: 30, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } })).pieces.find((piece) => piece.id === "tunnel:0:w0")!;
+    const box = pieceBounds(alone, tall.cues[0]!.words[0]!.endMs - 60, fakeMeasure)!;
+    expect(Math.abs((box.y1 + box.y2) / 2 - ay)).toBeLessThan(150);
+    // A two-row cue: the lead row rests lower while alone and slides up when the key word arrives.
+    const { cues, pieces } = build(["right:m before:m the:m breakthrough:h@720"]);
+    const lead = pieces.find((piece) => piece.id === "tunnel:0:w0")!;
+    const early = evaluatePiece(lead, cues[0]!.words[2]!.endMs - 20).y;
+    const late = evaluatePiece(lead, cues[0]!.endMs - 300).y;
+    expect(early - late).toBeGreaterThan(20);
+  });
+
+  test("fast speech keeps a tall stack inside the band on every frame", () => {
+    const { cues } = demoCues({ lines: ["inch:b@150 matte:h@150 display:b@150 glare:b@150"], options: { lead: 400, tail: 900, gap: 0 } });
+    const canvas = { width: 1920, height: 1080 };
+    const pieces = tunnelProgram.build(sceneInput(cues, { fps: 30, canvas, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } })).pieces.filter((piece) => /^tunnel:0:w\d$/.test(piece.id));
+    const ay = (1290 / 1920) * canvas.height;
+    // Until the reading hold ends: the exit zoom may leave the band, the stack never does before it.
+    const holdEnd = Math.max(...cues[0]!.words.map((word) => word.endMs)) + 140;
+    for (const t of exportFrameTimes(cues[0]!.startMs - 100, holdEnd, 30)) {
+      for (const piece of pieces) {
+        const box = pieceBounds(piece, t, fakeMeasure);
+        if (!box) continue;
+        expect(box.y1, `${piece.id} at ${t}`).toBeGreaterThanOrEqual(ay - (430 * canvas.height) / 1920 - 6);
+        expect(box.y2, `${piece.id} at ${t}`).toBeLessThanOrEqual(ay + (360 * canvas.height) / 1920 + 6);
+      }
+    }
+  });
 });
