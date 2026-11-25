@@ -34,19 +34,49 @@ test("Flowing's chip types out with the speech: a sliver at the first word, then
   expect(width(cue.words[1]!.startMs - 60)).toBeLessThan(width(cue.words[1]!.startMs + 400));
 });
 
-test("Flowing keeps the words before and after the key word in one chip in spoken order", () => {
+const boxAt = (pieces: ReturnType<typeof build>["pieces"], input: ReturnType<typeof build>["input"], id: string, t: number) =>
+  pieceBounds(pieces.find((piece) => piece.id === `flowing:0:${id}`)!, t, input.measure)!;
+
+test("Flowing reads in spoken order top to bottom: lead chip, key word alone, tail chip", () => {
   const { cues, input, pieces } = build(["the:m remote:b doesn't:h@900 work.:b"]);
-  const cue = cues[0]!;
-  const t = cue.endMs - 250;
-  const box = (id: string) => pieceBounds(pieces.find((piece) => piece.id === `flowing:0:${id}`)!, t, input.measure)!;
-  const [the, remote, hero, work] = ["w0", "w1", "w2l0", "w3"].map(box);
-  // Key word on top; the three others share one row below it, left to right in speech order.
-  expect(hero!.y2).toBeLessThanOrEqual(the!.y1);
+  const t = cues[0]!.endMs - 250;
+  const [the, remote, hero, work] = ["w0", "w1", "w2l0", "w3"].map((id) => boxAt(pieces, input, id, t));
+  // The words before the key word share one row above it, left to right.
   expect(Math.abs(the!.y2 - remote!.y2)).toBeLessThan(20);
-  expect(Math.abs(remote!.y2 - work!.y2)).toBeLessThan(20);
   expect(the!.x2).toBeLessThan(remote!.x1);
-  expect(remote!.x2).toBeLessThan(work!.x1);
+  expect(Math.max(the!.y2, remote!.y2)).toBeLessThanOrEqual(hero!.y1);
+  // The key word sits alone, and the words after it come below it.
+  expect(hero!.y2).toBeLessThanOrEqual(work!.y1);
+  // One chip per ordinary run: lead above, tail below.
+  expect(pieces.filter((piece) => /^flowing:0:chip\d+$/.test(piece.id))).toHaveLength(2);
+});
+
+test("Flowing puts a key word spoken first on top, with the rest of the cue in one chip below", () => {
+  const { cues, input, pieces } = build(["stop:h@900 the:m clock:b now:b"]);
+  const t = cues[0]!.endMs - 250;
+  const hero = boxAt(pieces, input, "w0l0", t);
+  const rest = ["w1", "w2", "w3"].map((id) => boxAt(pieces, input, id, t));
+  expect(hero.y2).toBeLessThanOrEqual(Math.min(...rest.map((box) => box.y1)));
+  for (const [i, box] of rest.entries()) {
+    expect(Math.abs(box.y2 - rest[0]!.y2)).toBeLessThan(20);
+    if (i) expect(rest[i - 1]!.x2).toBeLessThan(box.x1);
+  }
   expect(pieces.filter((piece) => /^flowing:0:chip\d+$/.test(piece.id))).toHaveLength(1);
+});
+
+test("Flowing alternates chip and key rows when a cue has two key words, and keeps a keyless cue in one chip", () => {
+  const two = build(["so:m ship:h@900 it:m now:h@900"]);
+  const t = two.cues[0]!.endMs - 250;
+  const ys = [
+    boxAt(two.pieces, two.input, "w0", t),
+    boxAt(two.pieces, two.input, "w1l0", t),
+    boxAt(two.pieces, two.input, "w2", t),
+    boxAt(two.pieces, two.input, "w3l0", t),
+  ].map((box) => box.y1);
+  expect(ys).toEqual([...ys].sort((a, b) => a - b));
+  expect(new Set(ys).size).toBe(4);
+  const none = build(["the:m best:b ideas:b look:b"]);
+  expect(none.pieces.filter((piece) => /^flowing:0:chip\d+$/.test(piece.id))).toHaveLength(1);
 });
 
 test("Flowing's chip words enter on their baseline, with no vertical offset", () => {

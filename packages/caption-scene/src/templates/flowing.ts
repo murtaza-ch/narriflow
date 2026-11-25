@@ -11,13 +11,17 @@ export const FLOWING_DEMO: DemoScript = {
 export const flowingProgram = galleryScene("flowing", 1290, (ctx) => {
   const { cue } = ctx.window;
   const c = ctx.input.colours;
-  const heroes = cue.words.flatMap((word, at) => word.role === "hero" ? [at] : []);
-  // Key words sit on top, each alone. Every other word, before or after a key word, goes in one
-  // chip in spoken order, so the chips read left to right, top to bottom.
-  const chipWords = cue.words.flatMap((word, at) => word.role === "hero" ? [] : [at]);
+  // Rows follow the speech, top to bottom: each run of ordinary words is one chip, each key word
+  // sits alone on its own row between the chips, so a cue never reads out of spoken order.
+  const groups: number[][] = [];
+  for (const [at, word] of cue.words.entries()) {
+    const last = groups.at(-1);
+    if (last && word.role !== "hero" && cue.words[last[0]!]!.role !== "hero") last.push(at);
+    else groups.push([at]);
+  }
   const { cells, unit: u } = ctx.layout({
     column: 840, gap: 22, padding: 58, align: "leading",
-    groups: [...heroes.map((at) => [at]), ...(chipWords.length ? [chipWords] : [])],
+    groups,
     words: cue.words.map((word) => {
       if (word.role !== "hero") return { text: word.text, face: "Inter Tight SemiBold", size: 62, spacing: -0.012 };
       const text = toCaptionLowerCase(word.text, cue.language);
