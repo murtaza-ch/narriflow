@@ -323,6 +323,78 @@ describe("Chronicle", () => {
     }
   });
 
+  test("the caption and its strip follow the caption position, at the top, the default and the bottom, on tall and wide canvases", () => {
+    const run = [
+      cue([word("go", 300, 700)], "en", 1000),
+      cue([word("in", 1000, 1200), word("1969", 1200, 1700), word("why?", 1700, 2300, "hero")], "en", 2600),
+    ];
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }, { width: 1080, height: 1080 }]) {
+      for (const scale of [1, 2]) {
+        for (const yPct of [0, 12, ANCHOR_Y, 90, 100]) {
+          const { pieces } = build(run, { canvas, scale, anchor: { xPct: 50, yPct } });
+          const where = `${canvas.width}x${canvas.height} x${scale} at ${yPct}%`;
+          const safe = { x1: 0.05 * canvas.width - 1, y1: 0.05 * canvas.height - 1, x2: 0.95 * canvas.width + 1, y2: 0.95 * canvas.height + 1 };
+          // Every word paints, readable, and inside the safe area.
+          for (const [at, c] of run.entries()) {
+            for (const [w, spoken] of c.words.entries()) {
+              const face = pieces.find((piece) => piece.id === `chronicle:${at}:w${w}`);
+              expect(face, `${where}: word ${spoken.text}`).toBeDefined();
+              const box = shown(face!, spoken.endMs - 20);
+              expect(box, `${where}: ${spoken.text} is not painted`).not.toBeNull();
+              expect(box!.x1).toBeGreaterThanOrEqual(safe.x1);
+              expect(box!.x2).toBeLessThanOrEqual(safe.x2);
+              expect(box!.y1, `${where}: ${spoken.text} above the safe area`).toBeGreaterThanOrEqual(safe.y1);
+              expect(box!.y2, `${where}: ${spoken.text} below the safe area`).toBeLessThanOrEqual(safe.y2);
+              // A real caption size, not a sliver pushed against an edge.
+              expect(face!.kind === "text" ? face!.sizePx : 0, `${where}: ${spoken.text} size`).toBeGreaterThan(20 * ((Math.min(canvas.width, canvas.height) / 1080) * scale));
+            }
+          }
+          // The strip is inside the safe area and below the words, wherever they are.
+          const capTop = pieceBounds(pieces.find((piece) => piece.id === "chronicle:tl:cap")!, 1000, fakeMeasure)!;
+          expect(capTop.y2, where).toBeLessThanOrEqual(safe.y2);
+          for (const piece of pieces.filter(isTimeline)) {
+            for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+              const box = shown(piece, t);
+              if (box) {
+                expect(box.y2, `${piece.id} at ${t}, ${where}`).toBeLessThanOrEqual(safe.y2);
+                expect(box.y1, `${piece.id} at ${t}, ${where}`).toBeGreaterThanOrEqual(safe.y1);
+              }
+            }
+          }
+          for (const t of exportFrameTimes(300, 2600, 30)) {
+            const text = pieces.filter((piece) => /:w\d+$/.test(piece.id)).flatMap((piece) => shown(piece, t) ?? []);
+            const strip = pieces.filter(isTimeline).flatMap((piece) => shown(piece, t) ?? []);
+            for (const a of strip) for (const b of text) expect(meets(a, b), `strip meets a word at ${t}, ${where}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  test("a rise counts only the frames it shows: the frame it starts hidden on is not motion", () => {
+    // 24 fps, `why?` at 310-390 ms and a cut at 459: the mark would have two painted motion frames, so it is left out.
+    const run = [cue([word("why?", 310, 390)], "en", 459), cue([word("next", 459, 700)], "en", 900)];
+    expect(build(run, { fps: 24 }).pieces.filter((piece) => cueOf(piece) === 0 && /:ask/.test(piece.id))).toEqual([]);
+    // Whenever a numeral is drawn, its motion shows on at least three frames after the one it starts on.
+    for (const fps of [24, 25, 30, 60]) {
+      for (const end of [440, 460, 500, 560, 640, 760, 900]) {
+        for (const text of ["1969", "why?"]) {
+          const parts = build([cue([word(text, 310, 390), word("so", 390, 430)], "en", end), cue([word("next", end, end + 300)], "en", end + 600)], { fps }).pieces.filter((piece) => cueOf(piece) === 0 && /:(?:num|ask)\d/.test(piece.id));
+          for (const piece of parts) {
+            const risen = piece.track.y!.at(-1)![0];
+            expect(exportFrameTimes(piece.fromMs, risen, fps).filter((t) => t > piece.fromMs).length, `${piece.id} (${text} ending ${end}, ${fps} fps)`).toBeGreaterThanOrEqual(3);
+          }
+        }
+      }
+    }
+  });
+
+  test("a word that is both a year and a question shows the year", () => {
+    const { pieces } = build([cue([word("１９６９？", 300, 1200)], "ja", 1600)]);
+    expect(digitsOf(pieces, 0).map((digit) => digit.text).join("")).toBe("1969");
+    expect(pieces.some((piece) => /:ask/.test(piece.id))).toBe(false);
+  });
+
   test("two speakers at once get lanes of the same height above the timeline, at about the same readable size", () => {
     const first = cue([word("from", 400, 700), word("1969", 700, 1000), word("one", 1000, 1300), word("question?", 1300, 1900, "hero")]);
     const second = { ...cue([word("I", 400, 600), word("spoke", 600, 900), word("in", 900, 1100), word("1972", 1100, 1700, "hero")]), speaker: 1 };

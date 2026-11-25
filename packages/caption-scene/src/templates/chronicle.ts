@@ -128,7 +128,8 @@ function cueFeatures(words: readonly { readonly text: string }[]): Feature[] {
   words.forEach((word, at) => {
     const year = chronicleYear(word.text);
     if (year) features.push({ kind: "year", at, text: year });
-    if (asksQuestion(word.text)) features.push({ kind: "ask", at, text: "?" });
+    // A word that is both (`１９６９？`) shows its year: the two share an onset, and the mark would replace it.
+    else if (asksQuestion(word.text)) features.push({ kind: "ask", at, text: "?" });
   });
   return features;
 }
@@ -142,7 +143,8 @@ function risePlan(start: number, fadeStart: number, full: number, move: number, 
   const rest = Math.max(3, Math.ceil((REST_MS * fps) / 1000));
   for (let scale = Math.min(1, (fadeStart - start) / full); scale >= 0.2; scale -= 0.02) {
     const risen = start + full * scale;
-    if (exportFrameTimes(start, start + move * scale, fps).length >= 3 && exportFrameTimes(risen, fadeStart, fps).length >= rest) return scale;
+    // Only frames after the first are motion that shows: the numeral starts hidden (clipped, or at no opacity).
+    if (exportFrameTimes(start, start + move * scale, fps).filter((t) => t > start).length >= 3 && exportFrameTimes(risen, fadeStart, fps).length >= rest) return scale;
   }
   return null;
 }
@@ -172,7 +174,9 @@ function geometry(input: SceneInput): Geometry {
   const left = Math.max(space.x(X0), safe.x1);
   const right = Math.min(space.x(X1), safe.x2);
   // A ring pings 60 px under the baseline: keep it inside the safe area on a short canvas.
-  const baseY = Math.min(space.y(LINE_Y), safe.y2 - 64 * u);
+  // The strip follows the caption's position: a caption moved to the top takes the strip with it, and a caption moved to the bottom
+  // keeps the strip inside the safe area. Either way the caption keeps 110 px of room above its last baseline.
+  const baseY = Math.max(Math.min(space.y(LINE_Y), safe.y2 - 64 * u), safe.y1 + (LINE_Y - ANCHOR + 8 + 110) * u);
   const words = input.cues.flatMap((cue) => cue.words);
   return {
     u, left, right,
@@ -315,7 +319,9 @@ const wordGap = 0.26 * BODY;
 
 function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap<number, number>): readonly Piece[] {
   // The lanes are cut from the area above the strip, so a second speaker's lane is as tall as the first's and neither runs into it.
-  const region: Box = { ...sceneSpace(input, ANCHOR).safe, y2: geo.textBottom };
+  const { safe } = sceneSpace(input, ANCHOR);
+  // Where the strip would leave no room at all (a canvas too short for both), the captions keep the whole safe area.
+  const region: Box = geo.textBottom - safe.y1 >= 60 * geo.u ? { ...safe, y2: Math.min(safe.y2, geo.textBottom) } : safe;
   return galleryScene("chronicle", ANCHOR, (ctx) => {
     const { cue, index, to, from: windowFrom, bounds } = ctx.window;
     const c = ctx.input.colours;
