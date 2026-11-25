@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
 import { describeSpeechConformance } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
-import { type Box, type Piece, evaluatePiece, pieceBounds } from "./scene";
+import { type Box, type Measure, type Piece, evaluatePiece, pieceBounds } from "./scene";
 import { BENTO_DEMO, bentoProgram } from "./templates/bento";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -74,7 +75,7 @@ describe("Bento on real phrasing", () => {
       return box.x2 - box.x1;
     };
     // "the remote" shares a card: it holds one word at first and both once the second is said.
-    expect(widthAt(first.endMs - 10)).toBeLessThan(widthAt(cue.words[1]!.endMs + 20) - 20);
+    expect(widthAt(first.startMs + 20)).toBeLessThan(widthAt(cue.words[1]!.endMs + 20) - 20);
   });
 
   test("the decorations (chip, ring, badges) never sit on a word and come back on every cue", () => {
@@ -115,15 +116,13 @@ describe("Bento on real phrasing", () => {
     expect(all.size).toBeGreaterThanOrEqual(5);
   });
 
-  test("ink reads on every card, even when a brand colour is dark or pale", () => {
+  test("ink reads (the shared 3:1) on every card, even when a brand colour is dark or pale", () => {
     for (const brand of ["#0A0A0A", "#F8F8F8", "#7A7A7A", "#3B5BFF"]) {
       const out = build(demoCues(BENTO_DEMO).cues, { colours: { primary: brand, highlight: brand, accent: brand, shadow: "#000000" } });
       for (const face of out.filter((piece) => FACE.test(piece.id) && piece.kind === "text")) {
         if (face.kind !== "text") continue;
         const card = out.find((piece) => piece.id === `bento:${cueOf(face)}:card0`);
         expect(card).toBeDefined();
-        const lum = (hex: string) => [0, 1, 2].map((at) => { const v = Number.parseInt(hex.slice(1 + 2 * at, 3 + 2 * at), 16) / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i]!, 0);
-        const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
         // The card this word sits on is the one whose box holds it at rest.
         const t = Math.max(...demoCues(BENTO_DEMO).cues[cueOf(face)]!.words.map((word) => word.endMs)) - 20;
         const fb = shown(face, t)!;
@@ -132,7 +131,7 @@ describe("Bento on real phrasing", () => {
           return box && box.x1 <= fb.x1 + 1 && box.x2 >= fb.x2 - 1 && box.y1 <= fb.y1 + 1 && box.y2 >= fb.y2 - 1;
         });
         if (!holder || holder.kind !== "shape") continue;
-        expect(ratio(face.fill, holder.fill!.colour), `${face.id} on brand ${brand}`).toBeGreaterThanOrEqual(4.5);
+        expect(captionColourContrast(face.fill, holder.fill!.colour), `${face.id} on brand ${brand}`).toBeGreaterThanOrEqual(CAPTION_SCENE_BRAND_MIN_CONTRAST);
       }
     }
   });
@@ -194,5 +193,103 @@ describe("Bento edge cases", () => {
       expect(sorted[i]!.x, "later words sit left of earlier ones in a row").toBeLessThan(sorted[i - 1]!.x);
     }
     expect(pairs).toBeGreaterThan(0);
+  });
+});
+
+/** Plus Jakarta Sans is about 0.47 em a character with the template's tracking; ink 0.72 em up, 0.2 em down. */
+const jakarta: Measure = (text, _face, sizePx) => ({ advance: [...text].length * 0.47 * sizePx, inkTop: -0.72 * sizePx, inkBottom: 0.2 * sizePx, ascent: 1.04 * sizePx, descent: 0.22 * sizePx });
+
+describe("Bento review fixes", () => {
+  const mk = (texts: string[], start: number, index: number, speaker: number | null, language = "en"): SceneCue => {
+    const words = texts.map((text, i) => ({ text, startMs: start + i * 120, endMs: start + i * 120 + 100, role: (i === texts.length - 1 ? "hero" : i === 0 ? "body" : "minor") as "hero" | "body" | "minor" }));
+    return { index, speaker, language, words, startMs: start, endMs: words.at(-1)!.endMs + 500 };
+  };
+
+  test("a compact cue keeps the sample's two-row grid when its cards fit at readable sizes", () => {
+    const cues = demoCues(BENTO_DEMO).cues;
+    const out = bentoProgram.build(sceneInput(cues, { fps: 30, measure: jakarta, anchor: { xPct: 50, yPct: (1290 / 1920) * 100 } })).pieces;
+    for (const cue of [cues[0]!, cues[1]!, cues[3]!]) {
+      const t = settledAt(cue);
+      const rows = new Set(out.filter((piece) => cueOf(piece) === cue.index && /:card\d+$/.test(piece.id)).flatMap((piece) => {
+        const box = pieceBounds(piece, t, jakarta);
+        return box ? [Math.round((box.y1 + box.y2) / 2 / 40)] : [];
+      }));
+      expect(rows.size, `cue ${cue.index} is not two rows`).toBe(2);
+    }
+    // The squeeze stays readable: no word is set below 0.75 of the size its card asked for.
+    const sizes = out.filter((piece): piece is Extract<Piece, { kind: "text" }> => piece.kind === "text" && FACE.test(piece.id)).map((piece) => piece.sizePx);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(0.74 * 72 * 0.999);
+  });
+
+  test("every word is backed by its tile on every painted frame, entrances included, at gaps 0 and 60", () => {
+    for (const gap of [0, 60]) {
+      const lines = ["right:m before:m it:m works:h", "most:m people:b quit:b right:m before:m it:m", "it's:b time:b to:m say:b goodbye:h"].map((line) => line.split(" ").map((token) => `${token}@100`).join(" "));
+      const { cues } = demoCues({ lines, options: { lead: 400, gap: 0, cueGap: gap, tail: 400 } });
+      for (const offset of [0, 7, 23]) {
+        const run = cues.map((cue) => ({ ...cue, startMs: cue.startMs + offset, endMs: cue.endMs + offset, words: cue.words.map((word) => ({ ...word, startMs: word.startMs + offset, endMs: word.endMs + offset })) }));
+        const out = build(run);
+        for (const cue of run) {
+          const own = out.filter((piece) => cueOf(piece) === cue.index);
+          const cards = own.filter((piece) => /:card\d+$/.test(piece.id));
+          for (const t of exportFrameTimes(cue.startMs - 100, cue.endMs, 30)) {
+            for (const face of own.filter((piece) => FACE.test(piece.id))) {
+              const pose = evaluatePiece(face, t);
+              const box = shown(face, t);
+              if (!box || pose.o < 0.2) continue;
+              const backed = cards.some((card) => {
+                const tile = shown(card, t);
+                return tile && tile.x1 <= box.x1 + 1.5 && tile.x2 >= box.x2 - 1.5 && tile.y1 <= box.y1 + 1.5 && tile.y2 >= box.y2 - 1.5;
+              });
+              expect(backed, `${face.id} sticks out of its tile at ${t} (gap ${gap}, offset ${offset})`).toBe(true);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("overlapping speakers at 2x on 16:9 keep both lanes readable: the long word breaks instead of the type collapsing", () => {
+    const long = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    const run = [mk(["extraordinary", "understanding", "occasionally", "direction", "in", "clear", "detail", "at", "once"], 400, 0, 0), mk(["ہمارا", "انتخاب", "سے", "یہ", "ہے", long], 680, 1, 1, "ur")];
+    const out = build(run, { canvas: { width: 1920, height: 1080 }, scale: 2 });
+    const sizeOf = (cue: number) => Math.min(...out.filter((piece): piece is Extract<Piece, { kind: "text" }> => piece.kind === "text" && FACE.test(piece.id) && cueOf(piece) === cue).map((piece) => piece.sizePx));
+    // Each lane is half the 16:9 height; its type spends the lane's width first (the old build collapsed the Urdu lane to 28 px).
+    expect(sizeOf(0)).toBeGreaterThan(44);
+    expect(sizeOf(1)).toBeGreaterThan(44);
+    expect(Math.max(sizeOf(0), sizeOf(1)) / Math.min(sizeOf(0), sizeOf(1)), "the lanes are comparable").toBeLessThan(2.2);
+  });
+
+  test("combining accents never separate from their letter when a long word is broken", () => {
+    const word = "pneumonoultramicroscopicsilicovolcanoconiosis".normalize("NFD").replace(/o/g, "o\u0301");
+    const cues = demoCues({ lines: [`${word}:h@900`], options: { lead: 400, gap: 0, cueGap: 0, tail: 400 } }).cues;
+    const out = build(cues).filter((piece): piece is Extract<Piece, { kind: "text" }> => piece.kind === "text" && FACE.test(piece.id));
+    expect(out.length).toBeGreaterThan(1);
+    for (const piece of out) {
+      expect(piece.text, `${piece.id} starts with a combining mark`).not.toMatch(/^\p{M}/u);
+      expect(piece.sizePx).toBeGreaterThanOrEqual(0.7 * 172 * 0.999);
+    }
+    expect(out.map((piece) => piece.text).join("").normalize("NFD")).toBe(word.normalize("NFD"));
+  });
+
+  test("badges cycle through dot, plus and check across two-card cues, and a one-card cue still has a second beat", () => {
+    const lines = Array.from({ length: 40 }, () => "so:m here:b is:m the:m thing:h@300");
+    const { cues } = demoCues({ lines: lines.map((line) => line.replace("so:m here:b is:m the:m thing:h@300", "build:b it:h@300")), options: { lead: 400, gap: 30, cueGap: 120, tail: 400 } });
+    const out = build(cues);
+    const kinds = new Set(cues.map((cue) => out.filter((piece) => cueOf(piece) === cue.index && /:badgeglyph/.test(piece.id)).length));
+    expect(kinds, "dot, plus and check all appear").toEqual(new Set([0, 1, 2]));
+    const single = demoCues({ lines: ["oh.:b@300", "wow:h@300"], options: { lead: 400, gap: 30, cueGap: 200, tail: 400 } }).cues;
+    const oneCard = build(single);
+    for (const cue of single) {
+      const own = oneCard.filter((piece) => cueOf(piece) === cue.index);
+      expect(own.some((piece) => /:ring\d/.test(piece.id)), `cue ${cue.index} has no ring`).toBe(true);
+      expect(own.some((piece) => /:badge\d/.test(piece.id)), `cue ${cue.index} has no second beat`).toBe(true);
+    }
+  });
+
+  test("a grey brand colour that passes the shared 3:1 guard keeps white ink", () => {
+    const out = build(demoCues(BENTO_DEMO).cues, { colours: { primary: "#F4F0E7", highlight: "#939393", accent: "#1A1D25", shadow: "#000000" } });
+    const heroFaces = out.filter((piece): piece is Extract<Piece, { kind: "text" }> => piece.kind === "text" && /:w3$/.test(piece.id) && cueOf(piece) === 0);
+    expect(heroFaces.length).toBeGreaterThan(0);
+    for (const piece of heroFaces) expect(piece.fill).toBe("#FFFFFF");
   });
 });

@@ -1,7 +1,9 @@
 import type { DemoScript } from "../demo";
 import { EASES, clamp, lerp, prog } from "../ease";
+import { paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
-import { balancedRows, rowVisualOrder } from "../layout";
+import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
+import { balancedRows, rowVisualOrder, rowWidth } from "../layout";
 import type { Frames, PathCmd, Piece, Track } from "../scene";
 import { ellipsePath, polylinePath, roundedRectPath } from "../shapes";
 import { galleryScene } from "./gallery-layout";
@@ -79,23 +81,15 @@ const SAGE = { bg: "#CBDCCB", fg: "#14241A" };
 const SKY = { bg: "#D2DFF1", fg: "#112340" };
 const SAND = { bg: "#E7D6BC", fg: "#2B1D0B" };
 
-const luminance = (hex: string) => {
-  const channel = (at: number) => {
-    const v = Number.parseInt(hex.slice(1 + 2 * at, 3 + 2 * at), 16) / 255;
-    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  };
-  return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
-};
-const contrast = (a: string, b: string) => {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
-  return (hi + 0.05) / (lo + 0.05);
-};
-/** The sample's ink for the fill when it reads at 4.5:1, else the other of dark and white, else black. */
+/** The sample's ink for the fill when it passes the shared brand guard (3:1), else whichever of dark and white reads better. */
 const inkOn = (fill: string, preferred: string = DARK) =>
-  [preferred, preferred === DARK ? WHITE : DARK, "#000000"].find((ink) => contrast(fill, ink) >= 4.5) ?? (contrast(fill, WHITE) >= contrast(fill, "#000000") ? WHITE : "#000000");
+  captionColourContrast(fill, preferred) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? preferred : captionColourContrast(fill, WHITE) >= captionColourContrast(fill, DARK) ? WHITE : DARK;
 
 /** Scripts whose words may be cut into lines: letters that stand alone. Joined and syllabic scripts are never cut. */
-const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}]+$/u;
+const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}\p{M}]+$/u;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** Rows may squeeze their type by at most this to hold one more card (the sample scales a wide row down together). */
+const SQUEEZE = 0.75;
 
 interface Seg {
   /** The spoken word this text belongs to; a broken word has several segments with the same `at`. */
@@ -118,6 +112,8 @@ interface Card {
   readonly segs: readonly Seg[];
   readonly width: number;
   readonly height: number;
+  /** Fitted down or broken for a long word: never squeezed with its row. */
+  readonly fixed: boolean;
   /** Canvas centre of the card before the camera moves. */
   cx: number;
   cy: number;
@@ -137,6 +133,8 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
   const { cue, index, to } = ctx.window;
   const { input, space, side, exit, exitAt } = ctx;
   let u = space.u;
+  /** The grid may use the whole lane width (not only the sample's 900) once the stack is too tall for its lane. */
+  let wide = false;
   const c = input.colours;
   const direction = ctx.rtl ? "rtl" : "ltr";
   const texts = cue.words.map((word) => word.text);
@@ -144,7 +142,8 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
   const arrange = (u: number) => {
     const gap = GAP * u;
     // The grid leaves room each side for the focus ring and the chip, which reach past the cards.
-    const gridMax = Math.min(GRID * u, space.safe.x2 - space.safe.x1 - 100 * u);
+    const laneW = space.safe.x2 - space.safe.x1 - 100 * u;
+    const gridMax = wide ? laneW : Math.min(GRID * u, laneW);
     const measure = (text: string, face: typeof FACE_BODY | typeof FACE_HERO, size: number) => input.measure(text, face, size, SPACING);
 
     // ---- cards: a key word alone, the words around it closing after each body word -------------------------------------------
@@ -189,18 +188,18 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
       const at = ids[0]!;
       const word = texts[at]!;
       const fit = gridMax / (first.text + 2 * PAD_X * nominal);
-      if (fit >= SHRINK_FLOOR || !SPLITTABLE.test(word)) return [singleLine(ids, hero, nominal * fit, face)];
-      const letters = [...word];
+      if (fit >= SHRINK_FLOOR || !SPLITTABLE.test(word)) return [singleLine(ids, hero, nominal * fit, face, true)];
+      const letters = [...graphemes.segment(word)].map((part) => part.segment);
       for (let lines = 2; lines <= 8; lines++) {
         const chunks = Array.from({ length: lines }, (_, k) => letters.slice(Math.round((k * letters.length) / lines), Math.round(((k + 1) * letters.length) / lines)).join(""));
         const widest = Math.max(...chunks.map((chunk) => measure(chunk, face, nominal).advance));
         const f = Math.min(1, gridMax / (widest + 2 * PAD_X * nominal));
         if (f >= SHRINK_FLOOR || lines === 8) return [stacked(at, hero, nominal * f, face, chunks)];
       }
-      return [singleLine(ids, hero, nominal * fit, face)];
+      return [singleLine(ids, hero, nominal * fit, face, true)];
     };
 
-    const singleLine = (ids: readonly number[], hero: boolean, size: number, face: typeof FACE_BODY | typeof FACE_HERO): Card => {
+    const singleLine = (ids: readonly number[], hero: boolean, size: number, face: typeof FACE_BODY | typeof FACE_HERO, fixed = false): Card => {
       const ms = ids.map((at) => measure(texts[at]!, face, size));
       const wordGap = WORD_GAP * size;
       const textW = ms.reduce((sum, m) => sum + m.advance, 0) + wordGap * (ids.length - 1);
@@ -216,7 +215,7 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
         segs.push({ at: ids[k]!, text: texts[ids[k]!]!, part: null, width: m.advance, inkTop: m.inkTop, inkBottom: m.inkBottom, cx: x + m.advance / 2, baseline });
         x += m.advance + wordGap;
       }
-      return { ids, hero, size, segs, width, height, cx: 0, cy: 0 };
+      return { ids, hero, size, segs, width, height, fixed, cx: 0, cy: 0 };
     };
 
     const stacked = (at: number, hero: boolean, size: number, face: typeof FACE_BODY | typeof FACE_HERO, chunks: readonly string[]): Card => {
@@ -228,7 +227,7 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
         at, text, part, width: ms[part]!.advance, inkTop: ms[part]!.inkTop, inkBottom: ms[part]!.inkBottom, cx: 0,
         baseline: -height / 2 + PAD_Y * size + (part + 0.5) * lineH + 0.38 * size,
       }));
-      return { ids: [at], hero, size, segs, width, height, cx: 0, cy: 0 };
+      return { ids: [at], hero, size, segs, width, height, fixed: true, cx: 0, cy: 0 };
     };
 
     const cards = groups.flatMap((ids) => {
@@ -237,7 +236,29 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
     });
 
     // ---- rows: cards packed evenly, each row centred, cards centred in their row -------------------------------------------------
-    const rows = balancedRows(cards.map((card) => card.width), gap, gridMax);
+    // A row that one more card would overfill may squeeze its type together (down to SQUEEZE, as the sample does) rather than
+    // push that card onto a row of its own, so a short cue keeps the sample's two-row grid. Cards fitted down for a long word keep their size.
+    const widths = cards.map((card) => card.width);
+    /** The factor the type of `row` needs to fit the grid (1 when it fits), or 0 when it cannot be squeezed. */
+    const squeezeOf = (row: readonly number[]) => {
+      if (rowWidth(widths, row, gap) <= gridMax) return 1;
+      if (row.some((k) => cards[k]!.fixed)) return 0;
+      const f = (gridMax - gap * (row.length - 1)) / row.reduce((sum, k) => sum + widths[k]!, 0);
+      return f >= SQUEEZE ? f : 0;
+    };
+    let rows = balancedRows(widths, gap, gridMax);
+    if (rows.length > 1) {
+      const dense = balancedRows(widths, gap, gridMax / SQUEEZE);
+      if (dense.length < rows.length && dense.every((row) => squeezeOf(row) > 0)) rows = dense;
+    }
+    for (const row of rows) {
+      const f = squeezeOf(row);
+      if (f >= 1 || f === 0) continue;
+      for (const k of row) {
+        const card = cards[k]!;
+        cards[k] = singleLine(card.ids, card.hero, card.size * f, card.hero ? FACE_HERO : FACE_BODY);
+      }
+    }
     const rowH = rows.map((row) => Math.max(...row.map((k) => cards[k]!.height)));
     const total = rowH.reduce((sum, h) => sum + h, 0) + gap * (rows.length - 1);
     let top = space.y(ANCHOR) - total / 2;
@@ -256,12 +277,29 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
     });
     return { cards, total, gap };
   };
-  // A key word, 2x size or a tall script can make the stack taller than the safe area: lay it out smaller (never cut a card) until it fits.
+  // A key word, 2x size or a tall script can make the stack taller than the safe area: find the largest size that fits (the lane's
+  // width is spent first: rows hold more cards and a long word breaks into fewer lines as the type gets smaller).
   const safeH = space.safe.y2 - space.safe.y1;
+  const fits = (laid: { total: number }) => laid.total <= safeH * 0.9;
   let laid = arrange(u);
-  for (let tries = 0; tries < 8 && laid.total > safeH * 0.9; tries++) {
-    u *= Math.min(0.95, (safeH * 0.9) / laid.total);
+  if (!fits(laid)) {
+    wide = true;
     laid = arrange(u);
+  }
+  if (!fits(laid)) {
+    let lo = 0.15;
+    let hi = 1;
+    let best = arrange(space.u * lo);
+    for (let tries = 0; tries < 9; tries++) {
+      const mid = (lo + hi) / 2;
+      const attempt = arrange(space.u * mid);
+      if (fits(attempt)) {
+        lo = mid;
+        best = attempt;
+      } else hi = mid;
+    }
+    laid = best;
+    u = space.u * lo;
   }
   const { cards, gap } = laid;
 
@@ -310,7 +348,7 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
   if (badged.size === 0 && others.length > 0) badged.add(others[0]!);
   const tones = [
     { bg: c.primary, fg: inkOn(c.primary) },
-    { bg: c.accent, fg: inkOn(c.accent) },
+    { bg: c.accent, fg: inkOn(c.accent, WHITE) },
     SAGE,
     SKY,
     SAND,
@@ -348,8 +386,10 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
       let l = spans[0]![0];
       let r = spans[0]![1];
       for (let step = 1; step < spans.length; step++) {
+        // The tile has widened to back the word by the time the word first paints (never after).
         const g = grows[card.ids[step]!]!;
-        const e = g.motion ? EASES.outExpo(prog(t, g.from, g.settled - g.from)) : t >= g.from ? 1 : 0;
+        const done = Math.min(g.settled, entries[card.ids[step]!]!.from);
+        const e = paintedFrameCount(g.from, done, ctx.fps) >= 2 ? EASES.outExpo(prog(t, g.from, done - g.from)) : t >= g.from ? 1 : 0;
         l = lerp(l, spans[step]![0], e);
         r = lerp(r, spans[step]![1], e);
       }
@@ -376,7 +416,10 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
       const entry = entries[seg.at]!;
       const dur = entry.motion ? entry.settled - entry.from : 0;
       const wp = (t: number) => (dur > 0 ? prog(t, entry.from, dur) : 1);
-      const lift = (t: number) => (1 - EASES.outExpo(wp(t))) * 22 * u;
+      // The word rises into place, but never further than the tile has room below its ink, so it is backed on every frame.
+      const room = Math.max(0, card.height / 2 - (seg.baseline + seg.inkBottom) - 1.5 * u);
+      const rise = Math.min(22 * u, room);
+      const lift = (t: number) => (1 - EASES.outExpo(wp(t))) * rise;
       const wordScale = (t: number) => (entry.hero ? lerp(0.86, 1, EASES.spring(wp(t))) : 1);
       const ink = (seg.inkTop + seg.inkBottom) / 2;
       const start = Math.max(from, entry.from);
@@ -421,28 +464,9 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
       });
     }
 
-    // Extra beat 1: a white focus ring pulses out from the key card as it lands.
-    if (k === keyCard) {
-      const onset = Math.max(from, cue.words[card.ids[0]!]!.startMs);
-      const length = Math.min(440, to - onset);
-      const grow = 28 * u;
-      const rp = (t: number) => prog(t, onset, length);
-      const ringEdges = [onset, onset + length];
-      const ringBase = 8 * u;
-      const rw = card.width + 2 * ringBase;
-      const rh = card.height + 2 * ringBase;
-      const ringTrack: Track = {
-        x: bake((t) => X(t), 0.15, onset, ringEdges), y: bake((t) => Y(t), 0.15, onset, ringEdges),
-        sx: bake((t) => scale(t) * lerp(1, (rw + 2 * grow) / rw, EASES.outExpo(rp(t))), 0.003, onset, ringEdges),
-        sy: bake((t) => scale(t) * lerp(1, (rh + 2 * grow) / rh, EASES.outExpo(rp(t))), 0.003, onset, ringEdges),
-        o: bake((t) => 0.9 * (1 - EASES.out(rp(t))) * alpha(t), 0.004, onset, ringEdges),
-      };
-      if (length >= 67) {
-        pieces.push({ ...ctx.shape(`ring${card.ids[0]}`, onset, roundedRectPath(-rw / 2, -rh / 2, rw, rh, radius + ringBase), ringTrack), z: 4, toMs: onset + length, stroke: { widthPx: 5 * u, colour: c.primary } });
-      }
-    } else if (badged.has(k)) {
-      // Extra beat 2: a round badge pinned to the leading top corner of every second other card; dot, plus and check take turns.
-      const kind = counter + k;
+    // Extra beat 2: a round badge pinned to the leading top corner; dot, plus and check take turns by cue.
+    const addBadge = () => {
+      const kind = index + 2 * k + Math.floor(index / 3);
       const r = clamp(card.size * 0.26, 14 * u, 22 * u);
       const onset = Math.max(from, Math.min(cue.words[card.ids[0]!]!.startMs + 120, to - 100));
       const badgeMs = Math.min(340, Math.max(67, (to - onset) * 0.75));
@@ -463,6 +487,32 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
         const piece = ctx.shape(`badgeglyph${owner}-${g}`, onset, part.path, track);
         pieces.push(part.fill ? { ...piece, z: 10, fill: { colour: c.highlight } } : { ...piece, z: 10, stroke: { widthPx: part.stroke!, colour: c.highlight } });
       });
+    
+    };
+
+    // Extra beat 1: a white focus ring pulses out from the key card as it lands.
+    if (k === keyCard) {
+      const onset = Math.max(from, cue.words[card.ids[0]!]!.startMs);
+      const length = Math.min(440, to - onset);
+      const grow = 28 * u;
+      const rp = (t: number) => prog(t, onset, length);
+      const ringEdges = [onset, onset + length];
+      const ringBase = 8 * u;
+      const rw = card.width + 2 * ringBase;
+      const rh = card.height + 2 * ringBase;
+      const ringTrack: Track = {
+        x: bake((t) => X(t), 0.15, onset, ringEdges), y: bake((t) => Y(t), 0.15, onset, ringEdges),
+        sx: bake((t) => scale(t) * lerp(1, (rw + 2 * grow) / rw, EASES.outExpo(rp(t))), 0.003, onset, ringEdges),
+        sy: bake((t) => scale(t) * lerp(1, (rh + 2 * grow) / rh, EASES.outExpo(rp(t))), 0.003, onset, ringEdges),
+        o: bake((t) => 0.9 * (1 - EASES.out(rp(t))) * alpha(t), 0.004, onset, ringEdges),
+      };
+      if (length >= 67) {
+        pieces.push({ ...ctx.shape(`ring${card.ids[0]}`, onset, roundedRectPath(-rw / 2, -rh / 2, rw, rh, radius + ringBase), ringTrack), z: 4, toMs: onset + length, stroke: { widthPx: 5 * u, colour: c.primary } });
+      }
+      // A cue with no other card gives its key card the badge as well, so every cue has a second beat.
+      if (others.length === 0) addBadge();
+    } else if (badged.has(k)) {
+      addBadge();
     }
   });
 
