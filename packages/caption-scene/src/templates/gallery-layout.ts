@@ -78,13 +78,17 @@ interface GalleryContext {
   drift(from: number, rest: number, offset: number, settled: number, exitOffset?: number): Frames;
 }
 
-/** `region` is the box the cues' lanes are cut from; a style with a fixed strip at one edge keeps its captions clear of it (default: the safe area). */
-export function galleryScene(name: string, anchor: number, draw: (ctx: GalleryContext) => Piece[], region?: Box): SceneProgram {
+/**
+ * `region` is the box the cues' lanes are cut from; a style with a fixed strip at one edge keeps its captions clear of it (default: the safe area).
+ * `lead` is how long before its first word a cue's window opens (default 80 ms); a style that first paints on the spoken onset passes 0,
+ * so the cue before it keeps the whole time up to that onset for its exit.
+ */
+export function galleryScene(name: string, anchor: number, draw: (ctx: GalleryContext) => Piece[], region?: Box, lead: number = LEAD): SceneProgram {
   return {
     build(input) {
       const space = sceneSpace(input, anchor);
       const fps = input.fps ?? SCENE_DEFAULT_FPS;
-      const windows = speechWindows(input, region ?? space.safe, LEAD, HOLD);
+      const windows = speechWindows(input, region ?? space.safe, lead, HOLD);
       const pieces = renderWithReadingHolds(windows, input, HOLD, (window) => {
         const { cue, index, to, bounds } = window;
         const id = `${name}:${index}`;
