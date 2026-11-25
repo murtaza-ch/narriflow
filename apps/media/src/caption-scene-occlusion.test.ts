@@ -20,6 +20,7 @@ const STYLES: readonly CaptionSceneName[] = [
   // Gallery 5.
   "combo",
   "tunnel",
+  "chronicle",
 ];
 
 const LINES = [
