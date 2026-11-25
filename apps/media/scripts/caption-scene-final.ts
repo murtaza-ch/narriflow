@@ -84,6 +84,7 @@ export const MOMENTS: Record<string, number[]> = {
   blinds: [450, 560, 1620, 1820, 2300, 6950],
   halftone: [450, 1000, 1400, 2400, 4450, 5600],
   pixelpop: [560, 900, 1200, 1500, 2300, 3150, 4300, 5500],
+  tilt: [520, 1350, 1700, 2800, 3750, 5200],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
