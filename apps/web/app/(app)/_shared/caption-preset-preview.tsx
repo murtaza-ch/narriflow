@@ -150,6 +150,7 @@ export function CaptionPresetPreview({
   captionTopPct: number;
   boost: number;
   imageSizes: string;
+  backdropFocusYPct?: number;
 }) {
   return (
     <CaptionSamplePreview
@@ -168,6 +169,7 @@ export function CaptionSamplePreview({
   captionTopPct,
   boost,
   imageSizes,
+  backdropFocusYPct = 30,
   children,
 }: {
   preset: CaptionPreset;
@@ -176,6 +178,8 @@ export function CaptionSamplePreview({
   captionTopPct: number;
   boost: number;
   imageSizes: string;
+  /** Vertical crop position of the backdrop; cards wider than the 9:16 frame pick which band of it shows. */
+  backdropFocusYPct?: number;
   /** Overlays drawn above the caption, such as a logo. */
   children?: ReactNode;
 }) {
@@ -212,7 +216,7 @@ export function CaptionSamplePreview({
         alt=""
         fill
         sizes={imageSizes}
-        style={{ objectFit: "cover", objectPosition: "50% 30%" }}
+        style={{ objectFit: "cover", objectPosition: `50% ${backdropFocusYPct}%` }}
       />
       <Box position="absolute" inset="0" bg="linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.35) 100%)" />
       {dynamic && width > 0 && height > 0 && (

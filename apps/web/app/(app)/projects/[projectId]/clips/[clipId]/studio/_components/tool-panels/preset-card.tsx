@@ -33,8 +33,9 @@ export function PresetCard({
       <Box position="relative" borderRadius="8px" overflow="hidden">
         <CaptionPresetPreview
           namedPreset={namedPreset}
-          aspectRatio="4 / 3"
-          captionTopPct={58}
+          aspectRatio="4 / 5"
+          backdropFocusYPct={10}
+          captionTopPct={66}
           boost={1.55}
           imageSizes="150px"
         />
