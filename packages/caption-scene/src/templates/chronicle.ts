@@ -1,12 +1,13 @@
 import type { DemoScript } from "../demo";
 import { type Ease, clamp, EASES, lerp, prog } from "../ease";
-import { exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount, SCENE_DEFAULT_FPS } from "../frame-grid";
+import { exportFrameAtOrBefore, exportFrameTimes, SCENE_DEFAULT_FPS } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneInput, SceneProgram } from "../input";
-import { balancedRows, cueDirection, rowVisualOrder, rowWidth, sceneSpace, shiftPiece } from "../layout";
-import { type Box, type ColourFrames, type Frames, type Piece, type TextPiece, pieceBounds, sceneBoundsAt } from "../scene";
+import { balancedRows, rowVisualOrder, rowWidth, sceneSpace } from "../layout";
+import { type Box, type ColourFrames, type Frames, type Piece, type TextPiece, pieceBounds } from "../scene";
 import { ellipsePath, polygonPath, rectPath } from "../shapes";
-import { hasTwoPaintedFrames, renderWithReadingHolds, type SpeechCell, type SpeechWindow, speechWindows } from "./speech-layout";
+import { galleryScene } from "./gallery-layout";
+import { hasTwoPaintedFrames, type SpeechCell } from "./speech-layout";
 
 /**
  * Chronicle (`samples/templates/m55-chronicle.js`): the transcript as a timeline. A tick for every spoken word of the
@@ -65,9 +66,6 @@ const HERO_FACE = "Newsreader SemiBold Italic";
 const NUMERAL_FACE = "DM Serif Display";
 /** A word starts to appear this long before it is said. */
 const WORD_LEAD = 60;
-/** A cue's window opens this long before its first word, and an outgoing cue is held this long after its last. */
-const WINDOW_LEAD = 80;
-const HOLD = 150;
 const MIN_RISE = 84;
 const REST_MS = 100;
 const LINGER_MS = 1500;
@@ -76,22 +74,24 @@ const MIN_NUMERAL = 0.4;
 
 // ─── Reading the speech ──────────────────────────────────────────────────────
 
-/** The value of a decimal digit of any script (`\p{Nd}`), or null. Digits come in runs of ten; the mathematical ones in one long run. */
+/**
+ * The value of a decimal digit of any script (`\p{Nd}`), or null. Unicode lays digits out in runs of exactly ten, so a digit's value is its
+ * distance from the start of its run, mod 10 (runs of different scripts can touch, and the mathematical digits are five in a row).
+ */
 function decimalValue(char: string): string | null {
   const code = char.codePointAt(0)!;
   if (code >= 0x30 && code <= 0x39) return String(code - 0x30);
   if (!/^\p{Nd}$/u.test(char)) return null;
-  if (code >= 0x1d7ce && code <= 0x1d7ff) return String((code - 0x1d7ce) % 10);
   let back = 0;
-  while (back < 9 && /^\p{Nd}$/u.test(String.fromCodePoint(code - back - 1))) back++;
-  return String(back);
+  while (back < 64 && /^\p{Nd}$/u.test(String.fromCodePoint(code - back - 1))) back++;
+  return String(back % 10);
 }
 
 /**
  * What may stand around a spoken year: spaces, quotes, brackets, dashes, stops and commas of any script. A leading hyphen,
  * minus or plus is not one (`-1969` is a number, not a year), nor is any sign that changes what the number is (`%`, `$`, `#`).
  */
-const STOPS = "\\s.,;:!?\\u2026\\u3002\\uFF0C\\u3001\\u060C\\u061B\\u061F\"'`";
+const STOPS = "\\s.,;:!?\\u2026\\u3002\\uFF0C\\u3001\\u060C\\u061B\\u061F\\uFF01\\uFF1F\\uFF0E\\uFF1A\\uFF1B\\uFE56\\uFE57\\u2E2E\\u037E\\u1367\\u2047-\\u2049\"'`";
 const AROUND = new RegExp(`^[\\p{Ps}\\p{Pe}\\p{Pi}\\p{Pf}\\u2013\\u2014\\u2015${STOPS}]+|[\\p{Ps}\\p{Pe}\\p{Pi}\\p{Pf}\\p{Pd}${STOPS}]+$`, "gu");
 
 /**
@@ -131,6 +131,20 @@ function cueFeatures(words: readonly { readonly text: string }[]): Feature[] {
     if (asksQuestion(word.text)) features.push({ kind: "ask", at, text: "?" });
   });
   return features;
+}
+
+/**
+ * How much of a rise of `full` ms (whose single move takes `move` ms) fits between `start` and `fadeStart` on the export grid: the largest scale
+ * up to 1 that spans at least three frames and leaves at least 100 ms of frames (never fewer than three) settled before the fade; null when
+ * no scale does and the numeral is left out. Counting frames, not ms: at 24 fps 100 ms is two and a half frames.
+ */
+function risePlan(start: number, fadeStart: number, full: number, move: number, fps: number): number | null {
+  const rest = Math.max(3, Math.ceil((REST_MS * fps) / 1000));
+  for (let scale = Math.min(1, (fadeStart - start) / full); scale >= 0.2; scale -= 0.02) {
+    const risen = start + full * scale;
+    if (exportFrameTimes(start, start + move * scale, fps).length >= 3 && exportFrameTimes(risen, fadeStart, fps).length >= rest) return scale;
+  }
+  return null;
 }
 
 // ─── The strip ───────────────────────────────────────────────────────────────
@@ -299,90 +313,14 @@ function timeline(input: SceneInput, geo: Geometry): Piece[] {
 const rowGap = 0.14 * BODY;
 const wordGap = 0.26 * BODY;
 
-/** What a cue draws with: its window, the (possibly shrunk) input, and the timing every cue shares. */
-interface CueContext {
-  readonly input: SceneInput;
-  readonly window: SpeechWindow;
-  readonly id: string;
-  readonly rtl: boolean;
-  readonly side: number;
-  readonly fps: number;
-  readonly exitAt: number;
-  readonly exit: boolean;
-  readonly u: number;
-  face(cell: SpeechCell, from: number, fill: string, track: TextPiece["track"]): TextPiece;
-}
-
-/** Every piece's ink over the cue's whole window, at the export frames and wherever a track changes. */
-function inkBounds(pieces: readonly Piece[], window: SpeechWindow, input: SceneInput, fps: number): Box {
-  const times = new Set(exportFrameTimes(window.from, window.to, fps));
-  for (let t = window.from; t < window.to; t += 16) times.add(t);
-  for (const piece of pieces) {
-    times.add(piece.fromMs);
-    times.add(piece.toMs - 0.001);
-    for (const track of Object.values(piece.track)) {
-      if (!track) continue;
-      for (const [at] of track) if (at >= window.from && at < window.to) times.add(at);
-    }
-  }
-  let box: Box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
-  for (const t of times) {
-    const at = sceneBoundsAt(pieces, t, input.measure);
-    if (at) box = { x1: Math.min(box.x1, at.x1), y1: Math.min(box.y1, at.y1), x2: Math.max(box.x2, at.x2), y2: Math.max(box.y2, at.y2) };
-  }
-  return box;
-}
-
-/**
- * The shared cue timing of every Scene Style (`speech-layout.ts`: windows, lanes for overlapping speakers, reading holds),
- * with the lanes cut from the area above the timeline instead of the whole safe area, so a second speaker's lane is as
- * tall as the first's and neither runs into the strip.
- */
-function captionScene(input: SceneInput, geo: Geometry, draw: (ctx: CueContext) => Piece[]): Piece[] {
-  const space = sceneSpace(input, ANCHOR);
-  const fps = input.fps ?? SCENE_DEFAULT_FPS;
-  const region: Box = { ...space.safe, y2: Math.max(space.safe.y1 + 2, Math.min(space.safe.y2, geo.textBottom)) };
-  const windows = speechWindows(input, region, WINDOW_LEAD, HOLD);
-  return renderWithReadingHolds(windows, input, HOLD, (window) => {
-    const { cue, index, to, bounds } = window;
-    const id = `chronicle:${index}`;
-    const rtl = cueDirection(cue) === "rtl";
-    const exitAt = Math.max(window.spokenEnd + HOLD, to - 160);
-    const exit = paintedFrameCount(exitAt, to, fps) >= 2;
-    const drawAt = (scale: number) => {
-      const scaled = { ...input, scale };
-      return draw({
-        input: scaled, window, id, rtl, side: rtl ? -1 : 1, fps, exitAt, exit, u: sceneSpace(scaled, ANCHOR).u,
-        face: (cell, from, fill, track) => ({
-          id: `${id}:w${cell.at}`, kind: "text", z: 6, fromMs: from, toMs: to, text: cell.text, face: cell.face, sizePx: cell.size, letterSpacingEm: cell.spacing, fill,
-          anchor: "baseline-center", language: cue.language, track: { x: [[from, cell.x]], y: [[from, cell.baseline]], ...track },
-        }),
-      });
-    };
-    // The cue fits its lane by its own layout; this is the safety net the other styles have: shrink, then shift.
-    const safe = { x1: bounds.x1 + 3, x2: bounds.x2 - 3, y1: bounds.y1 + 3, y2: bounds.y2 - 3 };
-    let scale = input.scale;
-    let drawn = drawAt(scale);
-    let ink = inkBounds(drawn, window, input, fps);
-    for (let tries = 0; tries < 8; tries++) {
-      const fit = Math.min(1, (safe.x2 - safe.x1) / Math.max(1, ink.x2 - ink.x1), (safe.y2 - safe.y1) / Math.max(1, ink.y2 - ink.y1));
-      if (fit >= 1) break;
-      scale *= Math.min(fit * 0.98, 0.9);
-      drawn = drawAt(scale);
-      ink = inkBounds(drawn, window, input, fps);
-    }
-    const dx = Math.min(Math.max(0, safe.x1 - ink.x1), safe.x2 - ink.x2);
-    const dy = Math.min(Math.max(0, safe.y1 - ink.y1), safe.y2 - ink.y2);
-    const faceId = new RegExp(`^${id}:w\\d+$`);
-    return drawn.map((piece) => shiftPiece(piece, dx, dy)).filter((piece) => faceId.test(piece.id) || hasTwoPaintedFrames(piece, input));
-  });
-}
-
 function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap<number, number>): readonly Piece[] {
-  return captionScene(input, geo, (ctx) => {
+  // The lanes are cut from the area above the strip, so a second speaker's lane is as tall as the first's and neither runs into it.
+  const region: Box = { ...sceneSpace(input, ANCHOR).safe, y2: geo.textBottom };
+  return galleryScene("chronicle", ANCHOR, (ctx) => {
     const { cue, index, to, from: windowFrom, bounds } = ctx.window;
     const c = ctx.input.colours;
-    const { fps, side, u } = ctx;
+    const { fps, side } = ctx;
+    const u = ctx.space.u;
     const direction = ctx.rtl ? "rtl" : "ltr";
     const colLeft = Math.max(geo.left, bounds.x1 + 4);
     const colRight = Math.min(geo.right, bounds.x2 - 4);
@@ -474,7 +412,9 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
       const lingerEnd = feature.kind === "year" && !next ? linger.get(index) : undefined;
       const end = Math.min(lingerEnd ?? to, nextStart);
       const lingering = lingerEnd !== undefined && lingerEnd > to && end === lingerEnd;
-      const fadeStart = lingering ? end - LINGER_FADE : end === to ? (ctx.exit ? exitAt : end) : end - 140;
+      // Whether the numeral shows, and how fast it rises, is decided by the fade it has without a linger; a linger only holds it longer.
+      const plannedFade = lingering || end === to ? (ctx.exit ? exitAt : to) : end - 140;
+      const fadeStart = lingering ? Math.max(end - LINGER_FADE, plannedFade) : end === to ? (ctx.exit ? exitAt : end) : end - 140;
       const finish = (o: [number, number, Ease?][]) => {
         if (ctx.exit || end !== to) {
           const start = Math.max(fadeStart, o.at(-1)![0] + 1);
@@ -486,8 +426,9 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
         // The mark turns up from the lower left of its box (the sample's 30 % / 90 % origin) and settles upright.
         const at = start;
         // It settles in 320 ms, or in what is left before it leaves less a moment to read; a cue too short for that goes without it.
-        const rise = Math.min(320, fadeStart - at - REST_MS);
-        if (rise < MIN_RISE) return;
+        const scale = risePlan(at, plannedFade, 320, 320, fps);
+        if (scale === null) return;
+        const rise = 320 * scale;
         const origin = { dx: -0.2 * sized.advance * side, dy: 0.05 * size };
         pieces.push({
           id: `${ctx.id}:ask${k}`, kind: "text", z: 4, fromMs: at, toMs: end, text: "?", face: NUMERAL_FACE, sizePx: size, letterSpacingEm: 0,
@@ -505,11 +446,10 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
       // hides it until then. A short cue compresses the whole rise to the time it has (a partial year is never left on screen), and
       // one with no room to read the finished year goes without the numeral.
       const digits = [...feature.text];
-      const full = (digits.length - 1) * 50 + 300;
-      const squeeze = Math.min(1, (fadeStart - start - REST_MS) / full);
+      const squeeze = risePlan(start, plannedFade, (digits.length - 1) * 50 + 300, 300, fps);
+      if (squeeze === null) return;
       const stagger = 50 * squeeze;
       const rise = 300 * squeeze;
-      if (rise < MIN_RISE) return;
       digits.forEach((digit, i) => {
         const prefix = feature.text.slice(0, i);
         const x0 = prefix ? ctx.input.measure(prefix, NUMERAL_FACE, size, 0).advance : 0;
@@ -526,7 +466,7 @@ function chronicleCaptions(input: SceneInput, geo: Geometry, linger: ReadonlyMap
       });
     });
     return pieces;
-  });
+  }, region).build(input).pieces;
 }
 
 /** Cue of a piece, or NaN for the timeline's. */

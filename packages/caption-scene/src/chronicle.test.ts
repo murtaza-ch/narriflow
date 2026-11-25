@@ -43,7 +43,7 @@ describe("Chronicle", () => {
   test("a year is four digits of any script, 1500 to 2099, with punctuation and a decade s around it", () => {
     for (const [text, year] of [
       ["1969", "1969"], ["1969,", "1969"], ["(1969)", "1969"], ["\"1969.\"", "1969"], ["—1969—", "1969"], ["1990s", "1990s"], ["1990's", "1990s"], ["1500", "1500"], ["2099", "2099"],
-      ["१९६९", "1969"], ["١٩٦٩", "1969"], ["۱۹۶۹،", "1969"], ["১৯৬৯", "1969"], ["１９６９", "1969"], ["១៩៦៩", "1969"], ["༡༩༦༩", "1969"], ["𝟏𝟗𝟔𝟗", "1969"],
+      ["१९६९", "1969"], ["١٩٦٩", "1969"], ["۱۹۶۹،", "1969"], ["১৯৬৯", "1969"], ["１９６９", "1969"], ["១៩៦៩", "1969"], ["༡༩༦༩", "1969"], ["𝟏𝟗𝟔𝟗", "1969"], ["\u{116DB}\u{116E3}\u{116E0}\u{116E3}", "1969"], ["\u{116D1}\u{116D9}\u{116D6}\u{116D9}", "1969"], ["１９６９？", "1969"], ["2000\u2047", "2000"], ["1969؟", "1969"],
     ] as const) expect(chronicleYear(text), text).toBe(year);
     for (const text of ["1499", "2100", "12", "19690", "1,969", "1.969", "$1969", "1969%", "19a9", "abcd", "nineteen", "", "-", "'69", "१९६", "2024x", "-1969", "+1969", "\u22121969", "-1969-"]) {
       expect(chronicleYear(text), text).toBeNull();
@@ -289,6 +289,38 @@ describe("Chronicle", () => {
     }
     // A cue that leaves before the year could finish rising draws none of it.
     expect(digitsOf(build([cue([word("1969", 300, 400), word("now", 400, 440)], "en", 460)]).pieces, 0)).toEqual([]);
+  });
+
+  test("a year or question mark gets its settled frames on the export grid at every frame rate, or is left out", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      const rest = Math.max(3, Math.ceil(0.1 * fps));
+      for (const end of [440, 500, 560, 600, 660, 760, 900, 1200]) {
+        for (const text of ["1969", "why?"]) {
+          const run = [cue([word(text, 300, 400), word("now", 400, 440), word("so", 440, 480)], "en", end), cue([word("next", end, end + 300)], "en", end + 600)];
+          const { pieces } = build(run, { fps });
+          const parts = pieces.filter((piece) => cueOf(piece) === 0 && /:(?:num|ask)\d/.test(piece.id));
+          if (parts.length === 0) continue;
+          expect(parts.length, `${text} ending ${end} at ${fps} fps`).toBe(text === "1969" ? 4 : 1);
+          const risen = Math.max(...parts.map((piece) => piece.track.y!.at(-1)![0]));
+          // The fade starts at the second to last opacity frame; a cut with no fade ends at the piece's end.
+          const fade = Math.min(...parts.map((piece) => (piece.track.o!.length > 2 ? piece.track.o!.at(-2)![0] : piece.toMs)));
+          expect(exportFrameTimes(risen, fade, fps).length, `${text} ending ${end} at ${fps} fps: settled frames`).toBeGreaterThanOrEqual(rest);
+          expect(exportFrameTimes(Math.min(...parts.map((piece) => piece.fromMs)), Math.min(...parts.map((piece) => piece.track.y![1]![0])), fps).length).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
+
+  test("a clip that goes on after a year never loses the year: lingering only holds a numeral that already fit", () => {
+    for (const fps of [24, 30, 60]) {
+      const counts: number[] = [];
+      for (const end of [600, 660, 690, 698, 699, 700, 701, 720, 800, 1200, 2400]) {
+        const run = [cue([word("1969", 300, 450)], "en", 600), cue([word("now", 600, 675)], "en", end)];
+        counts.push(digitsOf(build(run, { fps }).pieces, 0).length);
+      }
+      expect(new Set(counts), `${fps} fps: ${counts.join(",")}`).toEqual(new Set([counts[0]]));
+      expect(counts[0]).toBe(4);
+    }
   });
 
   test("two speakers at once get lanes of the same height above the timeline, at about the same readable size", () => {

@@ -78,12 +78,13 @@ interface GalleryContext {
   drift(from: number, rest: number, offset: number, settled: number, exitOffset?: number): Frames;
 }
 
-export function galleryScene(name: string, anchor: number, draw: (ctx: GalleryContext) => Piece[]): SceneProgram {
+/** `region` is the box the cues' lanes are cut from; a style with a fixed strip at one edge keeps its captions clear of it (default: the safe area). */
+export function galleryScene(name: string, anchor: number, draw: (ctx: GalleryContext) => Piece[], region?: Box): SceneProgram {
   return {
     build(input) {
       const space = sceneSpace(input, anchor);
       const fps = input.fps ?? SCENE_DEFAULT_FPS;
-      const windows = speechWindows(input, space.safe, LEAD, HOLD);
+      const windows = speechWindows(input, region ?? space.safe, LEAD, HOLD);
       const pieces = renderWithReadingHolds(windows, input, HOLD, (window) => {
         const { cue, index, to, bounds } = window;
         const id = `${name}:${index}`;
