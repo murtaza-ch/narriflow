@@ -1,7 +1,7 @@
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { clamp, type Frames } from "../ease";
-import { exportFrameTimes, paintedFrameCount } from "../frame-grid";
+import { exportFrameAtOrAfter, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { balancedRows, rowsFromRoles, rowVisualOrder } from "../layout";
 import { type Box, mixColour, type PathCmd, type Piece, pieceBounds, type ShapePiece, type TextPiece, type Track } from "../scene";
 import { ellipsePath, pathBounds, polylinePath, roundedRectPath, sparklePath } from "../shapes";
@@ -88,7 +88,10 @@ const HOT = "#FF4FA3";
 const VIOLET = "#8B6CF2";
 const GLOW = "#3C1446";
 const DEFAULT_PAPER = "#FFFFFF";
+const DEFAULT_INK = "#17111F";
 const DEFAULT_PASTEL = "#FFA9D2";
+
+const SIDE_GAP = 44;
 
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}]+$/u;
 
@@ -156,11 +159,11 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
   const { cue, index, to, from: cueFrom, bounds } = ctx.window;
   const { exitAt, fps, side, space, rtl } = ctx;
   const c = ctx.input.colours;
-  // The pairs that are really drawn must read at 3:1: paper against the ink (outline, pill text) and the pastel against it
-  // (disc, sweep). A brand colour that fails keeps the style's own.
-  const ink = c.accent;
-  const paper = captionColourContrast(c.primary, ink) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? c.primary : DEFAULT_PAPER;
-  const pastel = captionColourContrast(c.highlight, ink) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? c.highlight : DEFAULT_PASTEL;
+  // The pairs that are really drawn must read at 3:1: paper against the ink (outline, pill text), and below the pastel against
+  // the ink (disc, sweep) once the odd-cue blend is applied. The first pair that reads wins: the brand's own, then each
+  // default in turn (an all-white palette falls back to the style's white on ink).
+  const reads = (a: string, b: string) => captionColourContrast(a, b) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
+  const [paper, ink] = ([[c.primary, c.accent], [c.primary, DEFAULT_INK], [DEFAULT_PAPER, c.accent]] as const).find(([a, b]) => reads(a, b)) ?? ([DEFAULT_PAPER, DEFAULT_INK] as const);
   const u = space.u;
   const ox = space.x(540);
   const oy = space.y(1290);
@@ -175,7 +178,7 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
   const earlier = ctx.input.cues.slice(0, index).filter((other) => other.words.length > 0);
   const count = earlier.filter((other) => other.words.some((word) => word.role === "hero") === heroed).length;
   const flip = count % 2 === 1;
-  const pastelNow = count % 2 === 0 ? pastel : mixColour(pastel, PINK_ALT, 0.6);
+  const pastelNow = [count % 2 === 0 ? c.highlight : mixColour(c.highlight, PINK_ALT, 0.6), c.highlight, DEFAULT_PASTEL].find((colour) => reads(colour, ink)) ?? DEFAULT_PASTEL;
   const seed = hash(`${index}:${cue.words.map((word) => word.text).join(" ")}`);
 
   // ---- Measuring, in sample px (the layout is in a block centred on the anchor). ----
@@ -185,109 +188,53 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
   };
   const spacingOf = (text: string) => (SPLITTABLE.test(text) ? TRACKING : 0);
   const advance = (text: string, face: Item["face"], size: number, spacing: number) => measure(text, face, size, spacing).advance;
-  /** A word too wide for its column at 62 % of its size is cut into the fewest rows that meet that floor, split at even widths. */
+  /**
+   * A word too wide for its column at 62 % of its size is cut into the fewest rows whose parts all fit the column at that
+   * floor, then the widest part is made as narrow as that many rows allow. (Estimating the rows from the total width alone
+   * can leave every two-row split just over the column.)
+   */
   const breakInto = (text: string, face: Item["face"], size: number, spacing: number, column: number): string[] => {
     const total = advance(text, face, size, spacing);
     if (!SPLITTABLE.test(text) || total * MIN_FIT <= column) return [text];
     const chars = [...text];
-    const rows = Math.max(2, Math.ceil((total * MIN_FIT) / column));
-    const out: string[] = [];
-    let start = 0;
-    for (let r = 1; r < rows; r++) {
-      const target = (total * r) / rows;
-      let best = start + 1;
-      let distance = Number.POSITIVE_INFINITY;
-      for (let i = start + 1; i < chars.length - (rows - r); i++) {
-        const d = Math.abs(advance(chars.slice(0, i).join(""), face, size, spacing) - target);
-        if (d < distance) {
-          best = i;
-          distance = d;
+    const parts = (limit: number): string[] => {
+      const out: string[] = [];
+      let row = "";
+      for (const ch of chars) {
+        if (row && advance(row + ch, face, size, spacing) > limit) {
+          out.push(row);
+          row = "";
         }
+        row += ch;
       }
-      out.push(chars.slice(start, best).join(""));
-      start = best;
+      if (row) out.push(row);
+      return out;
+    };
+    const widest = column / MIN_FIT;
+    const rows = Math.max(2, parts(widest).length);
+    let low = total / rows;
+    let high = widest;
+    let best = parts(widest);
+    for (let step = 0; step < 14; step++) {
+      const mid = (low + high) / 2;
+      const split = parts(mid);
+      if (split.length <= rows) {
+        best = split;
+        high = mid;
+      } else low = mid;
     }
-    out.push(chars.slice(start).join(""));
-    return out;
+    return best;
   };
 
   const pillWord = heroed ? (tail.length > 0 ? tail.at(-1)! : lead.at(-1)!) : -1;
   const kindOf = (at: number): Kind => (!heroed ? "script" : hero.includes(at) ? "hero" : "caps");
   // Scripts without case draw small beside tracked Latin caps in the fallback face, so they get a larger nominal size.
   const nominalOf = (kind: Kind, text = "") => (kind === "hero" ? HERO_FS : kind === "script" ? WORD_FS : SPLITTABLE.test(text) ? CAPS_FS : CAPS_FS * 1.3);
-  const columnOf = (kind: Kind, at: number) => (kind === "hero" ? HERO_COLUMN : kind === "script" ? COLUMN : COLUMN - (at === pillWord ? 2 * PILL_PX : 0) - 2 * CAPS_STROKE);
   const textOf = (at: number, kind: Kind) => (kind === "caps" ? caps(cue.words[at]!, cue) : cue.words[at]!.text);
-
-  interface Chunked {
-    readonly word: number;
-    readonly texts: string[];
-    readonly kind: Kind;
-  }
-  const chunked: Chunked[] = cue.words.map((_, at) => {
-    const kind = kindOf(at);
-    const face = kind === "caps" ? CAPS_FACE : SCRIPT;
-    const spacing = kind === "caps" ? spacingOf(textOf(at, kind)) : 0;
-    return { word: at, kind, texts: breakInto(textOf(at, kind), face, nominalOf(kind, textOf(at, kind)), spacing, columnOf(kind, at)) };
-  });
-  // Hero words share one size and script words share one (the largest every piece fits at); caps are fitted word by word.
-  const fitted = (kind: Kind, text: string, at: number) => {
-    const face = kind === "caps" ? CAPS_FACE : SCRIPT;
-    const nominal = nominalOf(kind, text);
-    return Math.min(nominal, (nominal * columnOf(kind, at)) / Math.max(1, advance(text, face, nominal, kind === "caps" ? spacingOf(text) : 0)));
-  };
-  const sizeOfKind = (kind: "hero" | "script") => Math.min(nominalOf(kind), ...chunked.filter((entry) => entry.kind === kind).flatMap((entry) => entry.texts.map((text) => fitted(kind, text, entry.word))));
-  const sizes = { hero: sizeOfKind("hero"), script: sizeOfKind("script") } as const;
-
-  const items: Item[] = [];
-  const flatOf: number[][] = chunked.map((entry) =>
-    entry.texts.map((text, part) => {
-      const kind = entry.kind;
-      const face = kind === "caps" ? CAPS_FACE : SCRIPT;
-      return items.push({ word: entry.word, part, parts: entry.texts.length, text, kind, face, size: kind === "caps" ? fitted(kind, text, entry.word) : sizes[kind], spacing: kind === "caps" ? spacingOf(text) : 0 }) - 1;
-    }),
-  );
-  const groupOf = (list: readonly number[]) => list.flatMap((at) => flatOf[at]!);
-
-  // ---- Rows. ----
-  const widthOf = (item: Item, pill: boolean) => {
-    const w = advance(item.text, item.face, item.size, item.spacing);
-    return item.kind === "caps" ? w + (pill ? 2 * PILL_PX : 2 * CAPS_STROKE) : w;
-  };
-  const isPill = (flat: number) => items[flat]!.kind === "caps" && flatOf[pillWord]?.at(-1) === flat;
-  const capsRows = (group: readonly number[]) => {
-    if (group.length === 0) return [];
-    const widths = group.map((flat) => widthOf(items[flat]!, isPill(flat)));
-    return balancedRows(widths, CAPS_GAP, COLUMN).map((row) => row.map((at) => group[at]!));
-  };
-  const scriptRows = (group: readonly number[], kind: Kind): number[][] => {
-    if (group.length === 0) return [];
-    const gap = kind === "hero" ? 0.24 * sizes.hero : SCRIPT_GAP;
-    const column = kind === "hero" ? HERO_COLUMN : COLUMN;
-    const widths = group.map((flat) => widthOf(items[flat]!, false));
-    let rows: number[][];
-    if (kind === "script" && group.length >= 2) {
-      // The sample's two rows, halved; more rows only when a half does not fit.
-      const half = Math.ceil(group.length / 2);
-      rows = [group.slice(0, half), group.slice(half)].map((row) => row.map((flat) => group.indexOf(flat)));
-      const fits = rows.every((row) => row.reduce((sum, at) => sum + widths[at]!, 0) + gap * Math.max(0, row.length - 1) <= column);
-      if (!fits) rows = balancedRows(widths, gap, column);
-    } else rows = balancedRows(widths, gap, column);
-    return rows.map((row) => row.map((at) => group[at]!));
-  };
-  const rowSpecs: { kind: Kind; flats: number[]; gap: number }[] = [];
-  const addRows = (rows: number[][], kind: Kind) => {
-    for (const row of rows) {
-      const order = rowVisualOrder(row.map((flat) => items[flat]!.text), direction);
-      rowSpecs.push({ kind, flats: order.map((at) => row[at]!), gap: kind === "caps" ? CAPS_GAP : kind === "hero" ? 0.24 * sizes.hero : SCRIPT_GAP });
-    }
-  };
-  if (heroed) {
-    addRows(capsRows(groupOf(lead)), "caps");
-    addRows(scriptRows(groupOf(hero), "hero"), "hero");
-    addRows(capsRows(groupOf(tail)), "caps");
-  } else {
-    addRows(scriptRows(groupOf(cue.words.map((_, at) => at)), "script"), "script");
-  }
+  const toLocal = (box: Box): Box => ({ x1: (box.x1 - ox) / u, x2: (box.x2 - ox) / u, y1: (box.y1 - oy) / u, y2: (box.y2 - oy) / u });
+  const area = toLocal({ x1: bounds.x1 + 4, y1: bounds.y1 + 4, x2: bounds.x2 - 4, y2: bounds.y2 - 4 });
+  const availW = area.x2 - area.x1;
+  const availH = area.y2 - area.y1;
 
   // ---- Tilt, extents and stacking. ----
   const tiltOf = (item: Item, row: number) => {
@@ -310,48 +257,159 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
     /** The painted box relative to the baseline centre (x) and baseline (y). */
     readonly rel: Box;
   }
-  const metricOf = (flat: number, row: number): Metric => {
-    const item = items[flat]!;
-    const m = measure(item.text, item.face, item.size, item.spacing);
-    const centre = (m.inkTop + m.inkBottom) / 2;
-    const pill = isPill(flat);
-    const tilt = tiltOf(item, row);
-    let rel: Box;
-    if (item.kind === "caps") {
-      if (pill) {
-        const pw = m.advance + 2 * PILL_PX;
-        const ph = m.inkBottom - m.inkTop + 2 * PILL_PY;
-        rel = { x1: -pw / 2, x2: pw / 2, y1: centre - ph / 2, y2: centre + ph / 2 };
-      } else rel = { x1: -m.advance / 2 - CAPS_STROKE, x2: m.advance / 2 + CAPS_STROKE, y1: m.inkTop - CAPS_STROKE, y2: m.inkBottom + CAPS_STROKE };
-    } else {
-      const o = OUTLINE_EM * item.size;
-      const d = DEPTH_EM * item.size;
-      const local: Box = { x1: -m.advance / 2 - o, x2: m.advance / 2 + o + d, y1: m.inkTop - o, y2: m.inkBottom + o + d };
-      const corners = [[local.x1, local.y1], [local.x2, local.y1], [local.x2, local.y2], [local.x1, local.y2]].map(([x, y]) => {
-        const [rx, ry] = rotate(x!, y! - centre, tilt);
-        return [rx, ry + centre] as const;
-      });
-      rel = { x1: Math.min(...corners.map((p) => p[0])), x2: Math.max(...corners.map((p) => p[0])), y1: Math.min(...corners.map((p) => p[1])), y2: Math.max(...corners.map((p) => p[1])) };
-    }
-    return { w: m.advance, inkTop: m.inkTop, inkBottom: m.inkBottom, c: centre, tilt, pill, rel };
-  };
 
-  const placed: Placed[] = [];
-  {
+  interface Plan {
+    readonly items: readonly Item[];
+    readonly flatOf: readonly (readonly number[])[];
+    readonly placed: Placed[];
+    readonly block: Box;
+    /** The scale (at most 1) at which the block fits the lane. */
+    readonly fit: number;
+  }
+
+  /** The cue laid out in one column (support rows above and below the key word), or with the support rows in a lane beside it. */
+  const plan = (beside: boolean): Plan => {
+    const supportColumn = beside ? clamp(0.34 * availW, 240, COLUMN) : COLUMN;
+    const heroColumn = beside ? Math.max(HERO_COLUMN, availW - supportColumn - SIDE_GAP) : HERO_COLUMN;
+    const columnOf = (kind: Kind, at: number) =>
+      kind === "hero" ? heroColumn : kind === "script" ? COLUMN : supportColumn - (at === pillWord ? 2 * PILL_PX : 0) - 2 * CAPS_STROKE;
+    interface Chunked {
+      readonly word: number;
+      readonly texts: string[];
+      readonly kind: Kind;
+    }
+    const chunked: Chunked[] = cue.words.map((_, at) => {
+      const kind = kindOf(at);
+      const face = kind === "caps" ? CAPS_FACE : SCRIPT;
+      const spacing = kind === "caps" ? spacingOf(textOf(at, kind)) : 0;
+      return { word: at, kind, texts: breakInto(textOf(at, kind), face, nominalOf(kind, textOf(at, kind)), spacing, columnOf(kind, at)) };
+    });
+    // Hero words share one size and script words share one (the largest every piece fits at); caps are fitted word by word.
+    const fitted = (kind: Kind, text: string, at: number) => {
+      const face = kind === "caps" ? CAPS_FACE : SCRIPT;
+      const nominal = nominalOf(kind, text);
+      return Math.min(nominal, (nominal * columnOf(kind, at)) / Math.max(1, advance(text, face, nominal, kind === "caps" ? spacingOf(text) : 0)));
+    };
+    const sizeOfKind = (kind: "hero" | "script") => Math.min(nominalOf(kind), ...chunked.filter((entry) => entry.kind === kind).flatMap((entry) => entry.texts.map((text) => fitted(kind, text, entry.word))));
+    const sizes = { hero: sizeOfKind("hero"), script: sizeOfKind("script") };
+    // Pack fewer rows first: key words that would wrap onto two rows share one when that costs under 30 % of their size.
+    const heroTexts = hero.flatMap((at) => chunked[at]!.texts);
+    if (heroTexts.length >= 2 && chunked.every((entry) => entry.kind !== "hero" || entry.texts.length === 1)) {
+      const total = heroTexts.reduce((sum, text) => sum + advance(text, SCRIPT, sizes.hero, 0), 0) + 0.24 * sizes.hero * (heroTexts.length - 1);
+      if (total > heroColumn && heroColumn / total >= 0.7) sizes.hero *= (heroColumn / total) * 0.995;
+    }
+
+    const items: Item[] = [];
+    const flatOf: number[][] = chunked.map((entry) =>
+      entry.texts.map((text, part) => {
+        const kind = entry.kind;
+        const face = kind === "caps" ? CAPS_FACE : SCRIPT;
+        return items.push({ word: entry.word, part, parts: entry.texts.length, text, kind, face, size: kind === "caps" ? fitted(kind, text, entry.word) : sizes[kind], spacing: kind === "caps" ? spacingOf(text) : 0 }) - 1;
+      }),
+    );
+    const groupOf = (list: readonly number[]) => list.flatMap((at) => flatOf[at]!);
+
+    // Rows.
+    const widthOf = (item: Item, pill: boolean) => {
+      const w = advance(item.text, item.face, item.size, item.spacing);
+      return item.kind === "caps" ? w + (pill ? 2 * PILL_PX : 2 * CAPS_STROKE) : w;
+    };
+    const isPill = (flat: number) => items[flat]!.kind === "caps" && flatOf[pillWord]?.at(-1) === flat;
+    const capsRows = (group: readonly number[]) => {
+      if (group.length === 0) return [];
+      const widths = group.map((flat) => widthOf(items[flat]!, isPill(flat)));
+      return balancedRows(widths, CAPS_GAP, supportColumn).map((row) => row.map((at) => group[at]!));
+    };
+    const scriptRows = (group: readonly number[], kind: Kind): number[][] => {
+      if (group.length === 0) return [];
+      const gap = kind === "hero" ? 0.24 * sizes.hero : SCRIPT_GAP;
+      const column = kind === "hero" ? heroColumn : COLUMN;
+      const widths = group.map((flat) => widthOf(items[flat]!, false));
+      let rows: number[][];
+      if (kind === "script" && group.length >= 2) {
+        // The sample's two rows, halved; more rows only when a half does not fit.
+        const half = Math.ceil(group.length / 2);
+        rows = [group.slice(0, half), group.slice(half)].map((row) => row.map((flat) => group.indexOf(flat)));
+        const fits = rows.every((row) => row.reduce((sum, at) => sum + widths[at]!, 0) + gap * Math.max(0, row.length - 1) <= column);
+        if (!fits) rows = balancedRows(widths, gap, column);
+      } else rows = balancedRows(widths, gap, column);
+      return rows.map((row) => row.map((at) => group[at]!));
+    };
+    const rowSpecs: { kind: Kind; flats: number[]; gap: number; lane: number }[] = [];
+    const addRows = (rows: number[][], kind: Kind) => {
+      for (const row of rows) {
+        const order = rowVisualOrder(row.map((flat) => items[flat]!.text), direction);
+        rowSpecs.push({ kind, flats: order.map((at) => row[at]!), gap: kind === "caps" ? CAPS_GAP : kind === "hero" ? 0.24 * sizes.hero : SCRIPT_GAP, lane: beside && kind === "caps" ? 1 : 0 });
+      }
+    };
+    if (heroed && beside) {
+      addRows(capsRows([...groupOf(lead), ...groupOf(tail)]), "caps");
+      addRows(scriptRows(groupOf(hero), "hero"), "hero");
+    } else if (heroed) {
+      addRows(capsRows(groupOf(lead)), "caps");
+      addRows(scriptRows(groupOf(hero), "hero"), "hero");
+      addRows(capsRows(groupOf(tail)), "caps");
+    } else {
+      addRows(scriptRows(groupOf(cue.words.map((_, at) => at)), "script"), "script");
+    }
+
+    const metricOf = (flat: number, row: number): Metric => {
+      const item = items[flat]!;
+      const m = measure(item.text, item.face, item.size, item.spacing);
+      const centre = (m.inkTop + m.inkBottom) / 2;
+      const pill = isPill(flat);
+      const tilt = tiltOf(item, row);
+      let rel: Box;
+      if (item.kind === "caps") {
+        if (pill) {
+          const pw = m.advance + 2 * PILL_PX;
+          const ph = m.inkBottom - m.inkTop + 2 * PILL_PY;
+          rel = { x1: -pw / 2, x2: pw / 2, y1: centre - ph / 2, y2: centre + ph / 2 };
+        } else rel = { x1: -m.advance / 2 - CAPS_STROKE, x2: m.advance / 2 + CAPS_STROKE, y1: m.inkTop - CAPS_STROKE, y2: m.inkBottom + CAPS_STROKE };
+      } else {
+        const o = OUTLINE_EM * item.size;
+        const d = DEPTH_EM * item.size;
+        const local: Box = { x1: -m.advance / 2 - o, x2: m.advance / 2 + o + d, y1: m.inkTop - o, y2: m.inkBottom + o + d };
+        const corners = [[local.x1, local.y1], [local.x2, local.y1], [local.x2, local.y2], [local.x1, local.y2]].map(([x, y]) => {
+          const [rx, ry] = rotate(x!, y! - centre, tilt);
+          return [rx, ry + centre] as const;
+        });
+        rel = { x1: Math.min(...corners.map((p) => p[0])), x2: Math.max(...corners.map((p) => p[0])), y1: Math.min(...corners.map((p) => p[1])), y2: Math.max(...corners.map((p) => p[1])) };
+      }
+      return { w: m.advance, inkTop: m.inkTop, inkBottom: m.inkBottom, c: centre, tilt, pill, rel };
+    };
+
+    // Stacking: each lane is its own column of rows, centred vertically on the anchor line (the sample's translateY(-50%)).
     const metrics = rowSpecs.map((row, r) => row.flats.map((flat) => metricOf(flat, r)));
-    const stacked: { top: number; bottom: number }[] = [];
-    let cursor = 0;
-    rowSpecs.forEach((row, r) => {
+    const cursors = [0, 0];
+    const lastKind: (Kind | null)[] = [null, null];
+    const laneWidth = [0, 0];
+    const rowsOut = rowSpecs.map((row, r) => {
       const top = Math.min(...metrics[r]!.map((m) => m.rel.y1));
       const bottom = Math.max(...metrics[r]!.map((m) => m.rel.y2));
-      if (r > 0) cursor += rowSpecs[r - 1]!.kind === "caps" && row.kind === "caps" ? 6 : rowSpecs[r - 1]!.kind === "caps" || row.kind === "caps" ? 10 : 6;
-      const baseline = cursor - top;
-      stacked.push({ top: baseline + top, bottom: baseline + bottom });
-      cursor = baseline + bottom;
-      // The row's items, centred.
+      const previous = lastKind[row.lane];
+      if (previous) cursors[row.lane]! += previous === "caps" && row.kind === "caps" ? 6 : previous === "caps" || row.kind === "caps" ? 10 : 6;
+      const baseline = cursors[row.lane]! - top;
+      cursors[row.lane] = baseline + bottom;
+      lastKind[row.lane] = row.kind;
       const widths = metrics[r]!.map((m, k) => (items[row.flats[k]!]!.kind === "caps" ? Math.max(m.w + (m.pill ? 2 * PILL_PX : 2 * CAPS_STROKE), m.rel.x2 - m.rel.x1) : m.w));
       const total = widths.reduce((sum, w) => sum + w, 0) + row.gap * Math.max(0, row.flats.length - 1);
-      let x = -total / 2;
+      laneWidth[row.lane] = Math.max(laneWidth[row.lane]!, total);
+      return { baseline, widths, total };
+    });
+    // Lane centres: one lane on the axis; two lanes side by side, the support lane first in reading direction.
+    const centres = beside ? (() => {
+      const total = laneWidth[0]! + SIDE_GAP + laneWidth[1]!;
+      const supportFirst = !rtl;
+      const heroX = supportFirst ? -total / 2 + laneWidth[1]! + SIDE_GAP + laneWidth[0]! / 2 : -total / 2 + laneWidth[0]! / 2;
+      const supportX = supportFirst ? -total / 2 + laneWidth[1]! / 2 : -total / 2 + laneWidth[0]! + SIDE_GAP + laneWidth[1]! / 2;
+      return [heroX, supportX];
+    })() : [0, 0];
+    const placed: Placed[] = [];
+    rowSpecs.forEach((row, r) => {
+      const { baseline: base, widths, total } = rowsOut[r]!;
+      const baseline = base - cursors[row.lane]! / 2;
+      let x = centres[row.lane]! - total / 2;
       row.flats.forEach((flat, k) => {
         const m = metrics[r]![k]!;
         const item = items[flat]!;
@@ -363,17 +421,17 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
         x += widths[k]! + row.gap;
       });
     });
-    // The block is centred vertically on the anchor line, as the sample's translateY(-50%) does.
-    const shift = -cursor / 2;
-    for (let k = 0; k < placed.length; k++) {
-      const p = placed[k]!;
-      placed[k] = { ...p, baseline: p.baseline + shift, box: { ...p.box, y1: p.box.y1 + shift, y2: p.box.y2 + shift } };
-    }
+    const block = union(placed.map((p) => p.box));
+    return { items, flatOf, placed, block, fit: Math.min(1, availH / Math.max(1, block.y2 - block.y1), availW / Math.max(1, block.x2 - block.x1)) };
+  };
+  let chosen = plan(false);
+  // A wide lane that would shrink a stacked caption takes the support words beside the key word instead, when that fits better.
+  if (heroed && chosen.fit < 0.9 && availW >= 1.15 * availH) {
+    const alongside = plan(true);
+    if (alongside.fit > chosen.fit * 1.12) chosen = alongside;
   }
-  const block = union(placed.map((p) => p.box));
+  const { placed, block } = chosen;
   // Into the lane (the framework scales the cue down when it is taller or wider than the lane).
-  const toLocal = (box: Box): Box => ({ x1: (box.x1 - ox) / u, x2: (box.x2 - ox) / u, y1: (box.y1 - oy) / u, y2: (box.y2 - oy) / u });
-  const area = toLocal({ x1: bounds.x1 + 4, y1: bounds.y1 + 4, x2: bounds.x2 - 4, y2: bounds.y2 - 4 });
   const dyIn = block.y1 < area.y1 ? area.y1 - block.y1 : block.y2 > area.y2 ? area.y2 - block.y2 : 0;
   const dxIn = block.x1 < area.x1 ? area.x1 - block.x1 : block.x2 > area.x2 ? area.x2 - block.x2 : 0;
   for (let k = 0; k < placed.length; k++) {
@@ -462,30 +520,39 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
     pieces.push(face);
     if (p.kind === "hero" && p.part === 0 && heroItems[0] === p) heroFrom = from;
 
-    // The highlight wipe: a pastel copy of the script sweeps across the finished word, then is gone. It is planned on the
-    // export frame grid: the band already covers the word's start on the first painted frame and its tail on the last, and a
-    // wipe that cannot paint two frames is left out (the sticker is complete without it).
+    // The highlight wipe: a pastel copy of the script sweeps across the finished word, then is gone. It is anchored to the
+    // first painted frame (not the raw timestamp, which is partway through that frame) and planned on the export grid: the
+    // band already covers a third of the word on the first frame and at least two frames show 18 % or more of it. A wipe
+    // that cannot do that inside the 110 ms cap is left out (the sticker is complete without it). The pastel copy carries a
+    // thin ink keyline, so a light highlight never merges with the white outline.
     const left = px - (p.w / 2 + OUTLINE_EM * p.size) * u;
     const right = px + (p.w / 2 + (OUTLINE_EM + DEPTH_EM) * p.size) * u;
-    const band = 0.45 * (right - left);
+    const band = 0.5 * (right - left);
     const tall = (p.inkBottom - p.inkTop + 60) * u;
+    const t0 = exportFrameAtOrAfter(from, fps);
     const sweepAt = (end: number): TextPiece => {
-      const head0 = 0.12 * (right - left);
+      const head0 = 0.32 * (right - left);
       const clip = rtl
-        ? { x1: [[from, right - head0], [end, left - band, "out" as const]] as Frames, x2: [[from, right - head0 + band], [end, left, "out" as const]] as Frames }
-        : { x1: [[from, left + head0 - band], [end, right, "out" as const]] as Frames, x2: [[from, left + head0], [end, right + band, "out" as const]] as Frames };
+        ? { x1: [[t0, right - head0], [end, left - band, "out" as const]] as Frames, x2: [[t0, right - head0 + band], [end, left, "out" as const]] as Frames }
+        : { x1: [[t0, left + head0 - band], [end, right, "out" as const]] as Frames, x2: [[t0, left + head0], [end, right + band, "out" as const]] as Frames };
       return {
-        ...face, id: `${wid}sweep`, z: 7, fromMs: from, toMs: end, fill: pastelNow, stroke: undefined, shadows: undefined,
-        track: { ...track, o: [[from, 1]] },
-        clip: { ...clip, y1: [[from, py - tall]], y2: [[from, py + tall]] },
+        ...face, id: `${wid}sweep`, z: 7, fromMs: t0, toMs: end, fill: pastelNow, stroke: { widthPx: 0.025 * p.size * u, colour: ink }, shadows: undefined,
+        track: { ...track, o: [[t0, 1]] },
+        clip: { ...clip, y1: [[t0, py - tall]], y2: [[t0, py + tall]] },
       } as TextPiece;
     };
     const wipe = clamp(Math.round((word.endMs - word.startMs) * 0.6), 66, 110);
     if (motion) {
-      for (const length of [wipe, wipe + 34, 110]) {
-        const end = Math.min(from + length, hold);
+      const whole = pieceBounds({ ...sweepAt(t0 + 110), clip: undefined }, t0, ctx.input.measure);
+      for (const length of [...new Set([wipe, 100, 110])].sort((a, b) => a - b)) {
+        const end = Math.min(t0 + length, hold);
+        if (end <= t0) continue;
         const sweep = sweepAt(end);
-        if (exportFrameTimes(from, end, fps).filter((t) => pieceBounds(sweep, t, ctx.input.measure)).length >= 2) {
+        const shown = exportFrameTimes(t0, end, fps).filter((t) => {
+          const box = pieceBounds(sweep, t, ctx.input.measure);
+          return box !== null && whole !== null && box.x2 - box.x1 >= 0.18 * (whole.x2 - whole.x1);
+        });
+        if (shown.length >= 2) {
           pieces.push(sweep);
           break;
         }
@@ -525,10 +592,41 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
     const shape = ctx.shape(id, at, path, { x: [[at, X(x)]], y: [[at, Y(y)]], o: opacity(at), ...track }, fill);
     return shape;
   };
-  const scaled = (at: number, to0: number, peak: number, dur: number): { sx: Frames; sy: Frames } => {
+  type Point = readonly [number, number, number, number];
+  const blockBox = union(placed.map((p) => p.box));
+  /** Spots all round the block, outside it, as a last resort when the usual places are taken. */
+  const ring = (w: number, h: number): Point[] => {
+    const g = CLEAR + 4;
+    const mx = (blockBox.x1 + blockBox.x2) / 2;
+    const my = (blockBox.y1 + blockBox.y2) / 2;
+    return [
+      [blockBox.x1 - w / 2 - g, blockBox.y1 + h / 2, -1, -0.2], [blockBox.x2 + w / 2 + g, blockBox.y1 + h / 2, 1, -0.2],
+      [blockBox.x1 - w / 2 - g, blockBox.y2 - h / 2, -1, 0.2], [blockBox.x2 + w / 2 + g, blockBox.y2 - h / 2, 1, 0.2],
+      [mx, blockBox.y1 - h / 2 - g, 0.4, -1], [mx, blockBox.y2 + h / 2 + g, 0.4, 1],
+      [blockBox.x1 - w / 2 - g, my, -1, 0], [blockBox.x2 + w / 2 + g, my, 1, 0],
+    ];
+  };
+  /** The largest of three sizes that finds a free spot (the usual places first, then all round the block). */
+  const claimFit = (make: (k: number) => { w: number; h: number; points: readonly Point[] }): { k: number; spot: { x: number; y: number } } | null => {
+    for (const k of [1, 0.8, 0.65]) {
+      const spec = make(k);
+      const spot = claim(spec.w, spec.h, [...spec.points, ...ring(spec.w, spec.h)]);
+      if (spot) return { k, spot };
+    }
+    return null;
+  };
+  /** The first start at or after the beat that still leaves two painted frames before the exit, else null (no room for the accent). */
+  const slot = (desired: number): number | null => {
+    for (const t of [desired, beat + 60, beat + 30, beat]) {
+      const at = settle(t);
+      if (paintedFrameCount(at, hold, fps) >= 2) return at;
+    }
+    return null;
+  };
+  /** A grow-in on the frames there are (bounce from four painted frames, monotone from two, else the rest pose). */
+  const ramp = (at: number, dur: number, start: number, peak = 1): Frames => {
     const run = Math.max(1, Math.min(dur, hold - at - 1));
-    const frames = pop(at, at + run, to0, peak);
-    return { sx: frames, sy: frames };
+    return pop(at, at + run, start, peak);
   };
 
   // 1. The pastel disc or flower, behind the words (as in the sample).
@@ -539,82 +637,92 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
     let by = anchorBox.y1 + 0.62 * anchorH;
     bx = clamp(bx, area.x1 + R, Math.max(area.x1 + R, area.x2 - R));
     by = clamp(by, area.y1 + R, Math.max(area.y1 + R, area.y2 - R));
-    const at = settle(beat - 50);
-    if (paintedFrameCount(at, hold, fps) >= 3 && area.x2 - area.x1 >= 2 * R && area.y2 - area.y1 >= 2 * R) {
+    const at = slot(beat - 50);
+    if (at !== null && area.x2 - area.x1 >= 2 * R && area.y2 - area.y1 >= 2 * R) {
       const flower = count % 2 === 1;
       const path: PathCmd[] = flower
         ? [...Array.from({ length: 6 }, (_, k) => ellipsePath(Math.cos((k * Math.PI) / 3) * 0.62 * R, Math.sin((k * Math.PI) / 3) * 0.62 * R, 0.46 * R)).flat(), ...ellipsePath(0, 0, 0.62 * R)]
         : ellipsePath(0, 0, R);
       const popMs = Math.max(1, Math.min(160, hold - at - 1));
-      const motion = paintedFrameCount(at, at + popMs, fps) >= 3;
-      const turn: Frames = motion ? [[at, -20], [at + popMs, 0, "out"]] : [[at, 0]];
-      const grow = scaled(at, 0.4, 1.08, 160);
-      const blob = stamp("blob", at, path, bx, by, { rz: turn, ...grow }, pastelNow);
+      const turn: Frames = paintedFrameCount(at, at + popMs, fps) >= 3 ? [[at, -20], [at + popMs, 0, "out"]] : [[at, 0]];
+      const grow = ramp(at, 160, 0.4, 1.08);
+      const blob = stamp("blob", at, path, bx, by, { rz: turn, sx: grow, sy: grow }, pastelNow);
       pieces.push({ ...blob, z: 1 });
     }
   }
 
   // 2. The sunburst (even cues) or the swirl (odd cues), on the far side from the disc, outside the key word's box.
   {
-    const at = settle(beat + 60);
+    const at = slot(beat + 60);
     const edgeX = lean > 0 ? anchorBox.x2 : anchorBox.x1;
     const away = lean > 0 ? 1 : -1;
     // The sunburst needs the most room; a cue with none takes the swirl instead, so the beat still comes back.
     let burst = false;
-    if (!flip && heroed) {
+    if (at !== null && !flip && heroed) {
       const angles = (away > 0 ? [28, 58, 88] : [152, 122, 92]).map((deg) => (deg * Math.PI) / 180);
       const lens = [70, 92, 66];
-      const path: PathCmd[] = angles.flatMap((a, k) => [
-        ["M", Math.cos(a) * 30, -Math.sin(a) * 30] as const,
-        ["L", Math.cos(a) * (30 + lens[k]!), -Math.sin(a) * (30 + lens[k]!)] as const,
-      ]);
-      const bb = pathBounds(path);
-      const w = bb.x2 - bb.x1 + 30;
-      const h = bb.y2 - bb.y1 + 30;
-      const mid = { x: (bb.x1 + bb.x2) / 2, y: (bb.y1 + bb.y2) / 2 };
-      // Centre of the burst, as a point in the key word's top corner pushed outward along the fan.
-      const spot = claim(w, h, [
-        [edgeX + away * (w / 2 + 6), anchorBox.y1 + h / 2 - 4, away * 0.7, -0.7],
-        [anchorBox.x1 + (anchorBox.x2 - anchorBox.x1) * 0.5, anchorBox.y1 - h / 2 - 4, away, -0.4],
-      ]);
-      burst = spot !== null;
-      if (spot && paintedFrameCount(at, hold, fps) >= 3) {
-        const run = Math.max(1, Math.min(240, hold - at - 1));
-        const grow: Frames = paintedFrameCount(at, at + run, fps) >= 3 ? [[at, 0.35], [at + run, 1, "outExpo"]] : [[at, 1]];
-        const rays = stamp("rays", at, path, spot.x - mid.x, spot.y - mid.y, { sx: grow, sy: grow }, undefined);
-        pieces.push({ ...rays, z: 7, stroke: { widthPx: 15 * u, colour: ink } });
+      const fit = claimFit((k) => {
+        const path: PathCmd[] = angles.flatMap((a, i) => [
+          ["M", Math.cos(a) * 30 * k, -Math.sin(a) * 30 * k] as const,
+          ["L", Math.cos(a) * (30 + lens[i]!) * k, -Math.sin(a) * (30 + lens[i]!) * k] as const,
+        ]);
+        const bb = pathBounds(path);
+        const w = bb.x2 - bb.x1 + 30 * k;
+        const h = bb.y2 - bb.y1 + 30 * k;
+        return {
+          w, h, path, mid: { x: (bb.x1 + bb.x2) / 2, y: (bb.y1 + bb.y2) / 2 },
+          points: [
+            [edgeX + away * (w / 2 + 6), anchorBox.y1 + h / 2 - 4, away * 0.7, -0.7],
+            [anchorBox.x1 + (anchorBox.x2 - anchorBox.x1) * 0.5, anchorBox.y1 - h / 2 - 4, away, -0.4],
+          ] as Point[],
+        };
+      });
+      if (fit) {
+        burst = true;
+        const k = fit.k;
+        const path: PathCmd[] = angles.flatMap((a, i) => [
+          ["M", Math.cos(a) * 30 * k, -Math.sin(a) * 30 * k] as const,
+          ["L", Math.cos(a) * (30 + lens[i]!) * k, -Math.sin(a) * (30 + lens[i]!) * k] as const,
+        ]);
+        const bb = pathBounds(path);
+        const grow = ramp(at, 240, 0.35);
+        const rays = stamp("rays", at, path, fit.spot.x - (bb.x1 + bb.x2) / 2, fit.spot.y - (bb.y1 + bb.y2) / 2, { sx: grow, sy: grow }, undefined);
+        pieces.push({ ...rays, z: 7, stroke: { widthPx: 15 * k * u, colour: ink } });
       }
     }
-    if (!burst) {
-      const R = 29;
-      const path = spiralPath(R, 2.25);
-      const size = 2 * R + 12;
+    if (at !== null && !burst) {
       const hot = (count >> 1) % 2 === 0 ? VIOLET : HOT;
-      const spot = claim(size, size, heroed
-        ? [
-          [anchorBox.x1 + away * -1 * 0 + (lean > 0 ? (anchorBox.x2 - anchorBox.x1) * 0.2 : (anchorBox.x2 - anchorBox.x1) * 0.8), anchorBox.y1 - size / 2 - 2, away, -0.5],
-          [edgeX + away * (size / 2 + 6), anchorBox.y1 + 0.2 * anchorH, away, -0.3],
-        ]
-        : [[edgeX + away * (size / 2 + 6), anchorBox.y1 + 0.3 * anchorH, away, -0.3], [anchorBox.x1 + 0.5 * (anchorBox.x2 - anchorBox.x1), anchorBox.y1 - size / 2 - 2, away, -0.5]]);
-      if (spot && paintedFrameCount(at, hold, fps) >= 3) {
+      const fit = claimFit((k) => {
+        const size = 2 * 29 * k + 12 * k;
+        return {
+          w: size, h: size,
+          points: (heroed
+            ? [
+              [anchorBox.x1 + (lean > 0 ? (anchorBox.x2 - anchorBox.x1) * 0.2 : (anchorBox.x2 - anchorBox.x1) * 0.8), anchorBox.y1 - size / 2 - 2, away, -0.5],
+              [edgeX + away * (size / 2 + 6), anchorBox.y1 + 0.2 * anchorH, away, -0.3],
+            ]
+            : [[edgeX + away * (size / 2 + 6), anchorBox.y1 + 0.3 * anchorH, away, -0.3], [anchorBox.x1 + 0.5 * (anchorBox.x2 - anchorBox.x1), anchorBox.y1 - size / 2 - 2, away, -0.5]]) as Point[],
+        };
+      });
+      if (fit) {
         const run = Math.max(1, Math.min(300, hold - at - 1));
         const turn: Frames = paintedFrameCount(at, at + run, fps) >= 3 ? [[at, 160 * away], [at + run, 0, "out"]] : [[at, 0]];
-        const grow = pop(at, at + run, 0.4, 1.1);
-        const swirl = stamp("swirl", at, path, spot.x, spot.y, { rz: turn, sx: grow, sy: grow }, undefined);
-        pieces.push({ ...swirl, z: 7, stroke: { widthPx: 6 * u, colour: hot } });
+        const grow = ramp(at, 300, 0.4, 1.1);
+        const swirl = stamp("swirl", at, spiralPath(29 * fit.k, 2.25), fit.spot.x, fit.spot.y, { rz: turn, sx: grow, sy: grow }, undefined);
+        pieces.push({ ...swirl, z: 7, stroke: { widthPx: 6 * fit.k * u, colour: hot } });
       }
     }
   }
 
-  // 3. Two four-point sparkles that pop, then twinkle again every 1.1 s of a long hold.
+  // 3. Two four-point sparkles that pop, then twinkle (the first time soon after they land, again every 1.1 s of a long hold).
   {
-    const sparks: { r: number; fill: string; line: string; at: number; spin: number }[] = [
-      { r: 22, fill: paper, line: ink, at: settle((heroed ? beat : lastStart) + 100), spin: 14 },
-      { r: 15, fill: ink, line: paper, at: settle((heroed ? beat : lastStart) + 160), spin: -10 },
+    const sparks = [
+      { r: 22, fill: paper, line: ink, at: slot((heroed ? beat : lastStart) + 100), spin: 14 },
+      { r: 15, fill: ink, line: paper, at: slot((heroed ? beat : lastStart) + 160), spin: -10 },
     ];
     const rowEnd = placed.at(-1)!;
     const around = heroed ? anchorBox : union(placed.map((p) => p.box));
-    const spots: (readonly (readonly [number, number, number, number])[])[] = [
+    const spots: Point[][] = [
       [
         [lean > 0 ? around.x2 + 30 : around.x1 - 30, around.y1 + 0.7 * (around.y2 - around.y1), lean, 0.2],
         [lean > 0 ? around.x1 - 30 : around.x2 + 30, around.y1 + 0.7 * (around.y2 - around.y1), -lean, 0.2],
@@ -627,39 +735,63 @@ export const vibesProgram = galleryScene("vibes", 1290, (ctx) => {
       ],
     ];
     sparks.forEach((spark, k) => {
-      const size = spark.r * 2 + 8;
-      const spot = claim(size, size, spots[k]!);
-      if (!spot || paintedFrameCount(spark.at, hold, fps) < 3) return;
-      const run = Math.max(1, Math.min(200, hold - spark.at - 1));
-      const motion = paintedFrameCount(spark.at, spark.at + run, fps) >= 3;
-      const entry = paintedFrameCount(spark.at, spark.at + run, fps);
-      const scale: [number, number, ("out" | "inOut" | "spring")?][] = !motion ? [[spark.at, 1]] : entry >= 4 ? [[spark.at, 0.3], [spark.at + run, 1, "spring"]] : [[spark.at, 0.5], [spark.at + run, 1, "out"]];
-      let t = spark.at + run + 700 + k * 300;
-      for (let burst = 0; burst < 3 && t + 260 < hold - 40; burst++, t += 1100) scale.push([t, 1], [t + 110, 1.18, "out"], [t + 260, 1, "inOut"]);
-      const turn: Frames = motion ? [[spark.at, spark.spin], [spark.at + run, -0.4 * spark.spin, "out"]] : [[spark.at, 0]];
-      const piece = stamp(`spark${k}`, spark.at, sparkle(spark.r), spot.x, spot.y, { rz: turn, sx: scale, sy: scale }, spark.fill);
+      if (spark.at === null) return;
+      const at = spark.at;
+      const fit = claimFit((scale) => {
+        const r = Math.max(15, spark.r * scale);
+        return { w: r * 2 + 8, h: r * 2 + 8, points: spots[k]!, r };
+      });
+      if (!fit) return;
+      const r = Math.max(15, spark.r * fit.k);
+      const run = Math.max(1, Math.min(200, hold - at - 1));
+      const entry = paintedFrameCount(at, at + run, fps);
+      const scale: [number, number, ("out" | "inOut" | "spring")?][] = entry < 2 ? [[at, 1]] : entry >= 4 ? [[at, 0.3], [at + run, 1, "spring"]] : [[at, 0.5], [at + run, 1, "out"]];
+      // The first twinkle comes soon after the sparkle lands: a full one (260 ms) when the hold has room, a compact one
+      // (133 ms, three frames at 24 fps and up) when it has less; long holds twinkle again every 1.1 s.
+      const settled = at + run + 60 + k * 100;
+      const room = hold - 40 - settled;
+      if (room >= 300) {
+        for (let t = settled, burst = 0; burst < 3 && t + 260 < hold - 40; burst++, t += 1100) scale.push([t, 1], [t + 110, 1.18, "out"], [t + 260, 1, "inOut"]);
+      } else if (room >= 140 && entry >= 2) scale.push([settled, 1], [settled + 66, 1.15, "out"], [settled + 133, 1, "inOut"]);
+      const turn: Frames = entry >= 3 ? [[at, spark.spin], [at + run, -0.4 * spark.spin, "out"]] : [[at, 0]];
+      const piece = stamp(`spark${k}`, at, sparkle(r), fit.spot.x, fit.spot.y, { rz: turn, sx: scale, sy: scale }, spark.fill);
       pieces.push({ ...piece, z: 7, stroke: { widthPx: 3 * u, colour: spark.line } });
     });
   }
 
-  // 4. A trail of three tiny pastel dots with an ink keyline, popping one after another beside the sparkles.
+  // 4. A trail of three tiny pastel dots with an ink keyline: popping one after another when there is room, else all at once.
   {
-    const at = settle((heroed ? beat : lastStart) + 220);
+    const at = slot((heroed ? beat : lastStart) + 220);
     const radii = [8, 6, 4.5] as const;
-    const path: PathCmd[] = radii.flatMap((r, k) => ellipsePath(k * 22, -k * 7, r));
-    const w = 2 * 22 + 20;
-    const h = 14 + 20;
-    const spot = claim(w, h, [
-      [lean > 0 ? anchorBox.x1 - w / 2 - 10 : anchorBox.x2 + w / 2 + 10, anchorBox.y2 - 0.25 * anchorH, -lean, 0.3],
-      [(anchorBox.x1 + anchorBox.x2) / 2 - lean * 0.2 * (anchorBox.x2 - anchorBox.x1), anchorBox.y2 + h / 2 + 4, lean, 0.4],
-      [lean > 0 ? anchorBox.x2 + w / 2 + 10 : anchorBox.x1 - w / 2 - 10, anchorBox.y2 - 0.1 * anchorH, lean, 0.3],
-    ]);
-    if (spot && paintedFrameCount(at, hold, fps) >= 3) {
-      const run = Math.max(1, Math.min(160, hold - at - 1));
-      const grow = pop(at, at + run, 0.3, 1.15);
-      const bb = pathBounds(path);
-      const dots = stamp("dots", at, path, spot.x - (bb.x1 + bb.x2) / 2, spot.y - (bb.y1 + bb.y2) / 2, { sx: grow, sy: grow }, pastelNow);
-      pieces.push({ ...dots, z: 7, stroke: { widthPx: 2.5 * u, colour: ink } });
+    const fit = at === null ? null : claimFit((k) => {
+      const w = 66 * k + 6;
+      const h = 30 * k + 6;
+      return {
+        w, h,
+        points: [
+          [lean > 0 ? anchorBox.x1 - w / 2 - 10 : anchorBox.x2 + w / 2 + 10, anchorBox.y2 - 0.25 * anchorH, -lean, 0.3],
+          [(anchorBox.x1 + anchorBox.x2) / 2 - lean * 0.2 * (anchorBox.x2 - anchorBox.x1), anchorBox.y2 + h / 2 + 4, lean, 0.4],
+          [lean > 0 ? anchorBox.x2 + w / 2 + 10 : anchorBox.x1 - w / 2 - 10, anchorBox.y2 - 0.1 * anchorH, lean, 0.3],
+        ] as Point[],
+      };
+    });
+    if (fit && at !== null) {
+      const k = fit.k;
+      const centres = radii.map((r, i) => [(i - 1) * 22 * k, -(i - 1) * 7 * k, r * k] as const);
+      // Staggered (60 ms apart) when a second dot still has three frames left; otherwise one static trail.
+      const staggered = paintedFrameCount(at + 120, hold, fps) >= 3;
+      if (staggered) {
+        centres.forEach(([dx, dy, r], i) => {
+          const start = at + i * 60;
+          if (paintedFrameCount(start, hold, fps) < 2) return;
+          const grow = ramp(start, 140, 0.3, 1.15);
+          const dot = stamp(i === 0 ? "dots" : `dots${i}`, start, ellipsePath(0, 0, r), fit.spot.x + dx, fit.spot.y + dy, { sx: grow, sy: grow }, pastelNow);
+          pieces.push({ ...dot, z: 7, stroke: { widthPx: 2.5 * k * u, colour: ink } });
+        });
+      } else {
+        const trail = stamp("dots", at, centres.flatMap(([dx, dy, r]) => ellipsePath(dx, dy, r)), fit.spot.x, fit.spot.y, {}, pastelNow);
+        pieces.push({ ...trail, z: 7, stroke: { widthPx: 2.5 * k * u, colour: ink } });
+      }
     }
   }
   return pieces;
