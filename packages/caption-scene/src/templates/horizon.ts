@@ -53,8 +53,8 @@ import type { SpeechCell } from "./speech-layout";
  *   drawn on and falls back to the style default when it fails 3:1 (the catalogue row's `readsOn` keeps brand colours off the
  *   same pair).
  * - Extra recurring beats, in the style's own language, on every cue: a thin scan bar sweeps down the plate when it has opened (and
- *   again every 1.8 s of a long hold); the skyline breathes as a travelling wave of three bar groups; a neon rule draws out from
- *   the middle under the words when there is room; the sparkles twinkle all hold.
+ *   again every 1.8 s of a long hold); the skyline breathes as a travelling wave of three bar groups; the sparkles twinkle all hold.
+ *   No rule is drawn under the words (owner, 2026-11-26).
  */
 
 export const HORIZON_DEMO: DemoScript = {
@@ -717,32 +717,6 @@ export const horizonProgram = galleryScene("horizon", 1290, (ctx) => {
         o: [[a, 0], [a + ms * 0.2, 0.55, "out"], [a + ms * 0.8, 0.55], [end, 0]],
       }, th.top);
       pieces.push({ ...scan, z: 3, toMs: end, clip: aperture(HALF_TOP) });
-    }
-  }
-
-  // A neon rule draws out from the middle under the key word (under the last row of a plain cue), when the plate has room.
-  {
-    const mainKind: Kind = heroed ? "hero" : "plain";
-    const mainRows = solved.rows.flatMap((row, at) => (row.kind === mainKind ? [at] : []));
-    const lastMain = mainRows[mainRows.length - 1]!;
-    const mainBottom = solved.baselines[lastMain]! + rowDims(solved.rows[lastMain]!, solved.sizes[lastMain]!).below;
-    const ruleY = cy + (mainBottom + 5) * b;
-    const limit = cy + (HALF_H - INNER_INSET_Y - 56) * b;
-    if (ruleY + 2 * b < limit) {
-      const items = placed.filter((item) => item.kind === mainKind);
-      const half = Math.min(usable(mainBottom + 5) / 2 - 20, Math.max(...items.map((item) => Math.abs(item.x - cx) + item.width / 2)) / b);
-      // It starts when the first word of the row it underlines is spoken, never under an empty row.
-      const firstWord = heroed ? heroList[0]! : Math.min(...placed.filter((item) => item.row === lastMain).map((item) => item.run.word));
-      const a = Math.max(cueFrom, onsets[firstWord]!);
-      const end = Math.min(bandHold, a + 130);
-      if (half > 40 && paintedFrameCount(a, bandHold, fps) >= 3) {
-        const rule = ctx.shape("rule", a, rectPath(-half * b, -1.5 * b, half * b, 1.5 * b), {
-          x: [[a, cx]],
-          y: [[a, ruleY]],
-          sx: end - a >= 34 ? [[a, 0.05], [end, 1, "outExpo"]] : [[a, 1]],
-        }, th.edge);
-        pieces.push({ ...rule, z: 3 });
-      }
     }
   }
 

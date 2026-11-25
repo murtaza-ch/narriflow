@@ -51,11 +51,11 @@ describe("horizon", () => {
     expect(face.stroke!.widthPx).toBeGreaterThan(0.02 * face.sizePx);
   });
 
-  test("the badge, its rim, bars, scan and rule all sit behind every word, and no word is ever clipped by the aperture", () => {
+  test("the badge, its rim, bars and scan all sit behind every word, and no word is ever clipped by the aperture", () => {
     const { cues, pieces } = build(["future:h@900 is:m loading:b", "no:b brakes:b no:b limits:b no:b regrets"]);
     for (const cue of cues) {
       const lowestFace = Math.min(...faces(pieces, cue.index).map((p) => p.z));
-      for (const tag of ["plate", "rimglow", "inner", "bars", "scan", "rule", "flash", "line"]) {
+      for (const tag of ["plate", "rimglow", "inner", "bars", "scan", "flash", "line"]) {
         for (const piece of own(pieces, cue.index, tag)) expect(piece.z, piece.id).toBeLessThan(lowestFace);
       }
       for (const face of faces(pieces, cue.index)) expect(face.clip).toBeUndefined();
@@ -191,15 +191,10 @@ describe("horizon", () => {
     expect(open(frames[1]!)).toBeGreaterThan(open(frames[0]!));
   });
 
-  test("a plain cue's rule starts on the first word of the row it underlines, not before it is spoken", () => {
-    const { cues, pieces } = build(["no:b brakes:b no:b limits:b no:b regrets:b"]);
-    const rule = pieces.find((p) => p.id === "horizon:0:rule")!;
-    expect(rule).toBeDefined();
-    // Three rows of two words: the last row starts on the fifth word.
-    expect(rule.fromMs).toBeGreaterThanOrEqual(cues[0]!.words[4]!.startMs);
-    const hero = build(["press:b start:h@900"]);
-    const heroRule = hero.pieces.find((p) => p.id === "horizon:0:rule")!;
-    expect(heroRule.fromMs).toBeGreaterThanOrEqual(hero.cues[0]!.words[1]!.startMs);
+  test("no rule is drawn under the words (owner, 2026-11-26)", () => {
+    for (const line of ["no:b brakes:b no:b limits:b no:b regrets:b", "press:b start:h@900"]) {
+      expect(build([line]).pieces.some((p) => /:rule$/.test(p.id))).toBe(false);
+    }
   });
 
   test("a long key word breaks into the fewest balanced rows at a readable size, with no stray letter", () => {
@@ -234,12 +229,12 @@ describe("horizon", () => {
     expect(ys.size).toBeGreaterThanOrEqual(2);
   });
 
-  test("the scan bar, the skyline wave, the rule and the sparkles recur on ordinary fast speech, not only on long holds", () => {
+  test("the scan bar, the skyline wave and the sparkles recur on ordinary fast speech, not only on long holds", () => {
     const run = fastRun(60);
     const pieces = horizonProgram.build(sceneInput(run, { fps: 30, colours, anchor })).pieces;
     const shown = (cue: number, tag: string) =>
       own(pieces, cue, tag).some((p) => exportFrameTimes(p.fromMs, p.toMs, 30).filter((t) => pieceBounds(p, t, fakeMeasure)).length >= 2);
-    for (const tag of ["bars", "spark", "rule"]) {
+    for (const tag of ["bars", "spark"]) {
       expect(run.filter((cue) => shown(cue.index, tag)).length, tag).toBeGreaterThanOrEqual(Math.floor(run.length * 0.85));
     }
     expect(run.filter((cue) => shown(cue.index, "scan")).length, "scan").toBeGreaterThanOrEqual(Math.floor(run.length * 0.5));
