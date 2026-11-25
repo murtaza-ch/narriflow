@@ -1,9 +1,10 @@
+import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { clamp, type Frames } from "../ease";
-import { paintedFrameCount } from "../frame-grid";
+import { exportFrameAfter, exportFrameAtOrAfter, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import type { SceneWord } from "../input";
 import { rowsFromRoles } from "../layout";
-import type { Box, PathCmd, Piece, Shadow, TextPiece } from "../scene";
+import { type Box, type PathCmd, type Piece, SCENE_PIECE_BUDGET, type Shadow, type TextPiece } from "../scene";
 import { caps, galleryScene, rowBounds, rowsOf } from "./gallery-layout";
 import type { SpeechCell } from "./speech-layout";
 
@@ -74,6 +75,7 @@ const PADDING = 48;
 const CLEAR = 16;
 /** A word shrinking below this share of its size to fit the column is broken across rows instead. */
 const MIN_FIT = 0.62;
+/** The build takes four of these (64 ms) when the frame rate allows. */
 const STEP_MS = 16;
 const CUTS = [0.44, 0.6] as const;
 const PINK = "#FF3DAE";
@@ -82,6 +84,9 @@ const DEEP = "#2514A8";
 const INK = "#14093F";
 /** The extrusion, far to near. */
 const STACK: readonly (readonly string[])[] = [[PINK, "#2BE4FF", "#2BE4FF", INK], [DEEP, BLUE, BLUE, PINK, INK]];
+
+/** What the decorations of one cue draw at most (icon with its stack, cells, twinkle, three progress pieces with shadows). */
+const DECORATION_BUDGET = 20;
 
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}]+$/u;
 
@@ -139,7 +144,12 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
   const { cue, index, to, from: cueFrom, bounds } = ctx.window;
   const { exit, exitAt, fps, side, space } = ctx;
   const c = ctx.input.colours;
-  const yellow = c.highlight;
+  // The pair that is really drawn: the face and the yellow band sit inside the navy outline, so each keeps 3:1 against it or
+  // falls back to the style default (the catalogue `readsOn` keeps brand colours off the same pair).
+  const defaults = captionSceneMeta("pixelpop").colours;
+  const keep = (colour: string, fallback: string) => (captionColourContrast(colour, INK) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? colour : fallback);
+  const faceColour = keep(c.primary, defaults.primary);
+  const yellow = keep(c.highlight, defaults.highlight);
   const cyan = c.accent;
   const pieces: Piece[] = [];
   const u = space.u;
@@ -152,18 +162,25 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
   const advance = (text: string, size: number) => ctx.input.measure(text, FACE, size * u, SPACING).advance;
   const nominal = (word: SceneWord) => (word.role === "hero" ? HERO : word.role === "minor" ? MINOR : BODY);
   const fit = (text: string, size: number) => Math.min(size, (size * room) / Math.max(1, advance(text, size)));
+  /** The fewest rows that keep every piece at 62 % of its size or more, cut where the measured widths come out even. */
   const chunkOf = (text: string, size: number): string[] => {
-    if (!SPLITTABLE.test(text) || advance(text, size) * MIN_FIT <= room) return [text];
+    const width = advance(text, size);
+    if (!SPLITTABLE.test(text) || width * MIN_FIT <= room) return [text];
+    const letters = [...text];
+    const rowsNeeded = Math.min(letters.length, Math.ceil((width * MIN_FIT) / room));
+    const prefix = letters.map((_, at) => advance(letters.slice(0, at + 1).join(""), size));
     const out: string[] = [];
-    let row = "";
-    for (const ch of text) {
-      if (row && advance(row + ch, size) > room * 0.97) {
-        out.push(row);
-        row = "";
+    let start = 0;
+    for (let row = 1; row < rowsNeeded; row++) {
+      const target = (width * row) / rowsNeeded;
+      let cut = start + 1;
+      for (let at = start + 1; at <= letters.length - (rowsNeeded - row); at++) {
+        if (Math.abs(prefix[at - 1]! - target) < Math.abs(prefix[cut - 1]! - target)) cut = at;
       }
-      row += ch;
+      out.push(letters.slice(start, cut).join(""));
+      start = cut;
     }
-    if (row) out.push(row);
+    out.push(letters.slice(start).join(""));
     return out;
   };
   interface Item {
@@ -180,6 +197,12 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
   const groupOf = (list: readonly number[]) => list.flatMap((at) => flatOf[at]!);
   const groups = heroed ? [lead, hero, tail].filter((list) => list.length > 0).map(groupOf) : [groupOf(cue.words.map((_, at) => at))];
   const sizes = items.map((item) => fit(item.text, nominal(cue.words[item.word]!)));
+  // The rows of a broken word share one size, the smallest any of them needs.
+  for (const list of flatOf) {
+    if (list.length < 2) continue;
+    const common = Math.min(...list.map((at) => sizes[at]!));
+    for (const at of list) sizes[at] = common;
+  }
   const arrange = () => ctx.layout({ column: COLUMN, padding: PADDING, gap: GAP, groups, words: items.map((item, at) => ({ text: item.text, size: sizes[at]!, face: FACE, spacing: SPACING })) });
   let laid = arrange();
   // A word alone on its row is drawn larger, as the sample did.
@@ -201,6 +224,8 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
     readonly item: Item;
     readonly dep: number;
     readonly cell: number;
+    /** The navy outline around the whole silhouette, behind all three colour bands. */
+    readonly outline: number;
     readonly stack: readonly string[];
     readonly heroWord: boolean;
   }
@@ -209,15 +234,19 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
     const heroWord = cue.words[items[cell.at]!.word]!.role === "hero";
     const stack = STACK[heroWord ? 1 : 0]!;
     const px = clamp(Math.round((cell.size / unit) * 0.04), 4, 6) * unit;
-    return { heroWord, stack, cell: px, dep: stack.length * px };
+    return { heroWord, stack, cell: px, outline: 0.5 * px, dep: stack.length * px };
   };
-  const lastDep = Math.max(...rows0.at(-1)!.map((cell) => depOf(cell).dep));
+  const reachOf = (cell: SpeechCell) => depOf(cell).dep + depOf(cell).outline;
+  const lastDep = Math.max(...rows0.at(-1)!.map(reachOf));
   const placed: Placed[] = rows0.flatMap((row) => {
-    const shift = -Math.max(...row.map((cell) => depOf(cell).dep)) / 2;
+    const shift = -Math.max(...row.map(reachOf)) / 2;
     return row.map((cell): Placed => ({ ...cell, x: cell.x + shift, baseline: cell.baseline - lastDep / 2, item: items[cell.at]!, ...depOf(cell) }));
   });
   const rows = rowsOf(placed) as Placed[][];
-  const inked = (cell: Placed): Box => ({ x1: cell.x - cell.width / 2, x2: cell.x + cell.width / 2 + cell.dep, y1: cell.baseline + cell.inkTop, y2: cell.baseline + cell.inkBottom + cell.dep });
+  const inked = (cell: Placed): Box => ({
+    x1: cell.x - cell.width / 2 - cell.outline, x2: cell.x + cell.width / 2 + cell.dep + cell.outline,
+    y1: cell.baseline + cell.inkTop - cell.outline, y2: cell.baseline + cell.inkBottom + cell.dep + cell.outline,
+  });
   const painted = placed.map(inked);
   const block: Box = {
     x1: Math.min(...painted.map((box) => box.x1)), x2: Math.max(...painted.map((box) => box.x2)),
@@ -257,44 +286,54 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
   // The faces.
   /** The whole block's stepped exit: the share of each row still drawn, in thirds over the time left. */
   const exits: [number, number][] = exit ? [[exitAt + (to - exitAt) / 3, 2 / 3], [exitAt + (2 * (to - exitAt)) / 3, 1 / 3]] : [];
-  const lastSpoken = Math.max(...cue.words.map((word) => word.startMs));
   let heroSettled = cueFrom;
   let heroFrom = cueFrom;
   let heroFirst = true;
+  // Every layer of a shadow stack is a draw: a cue whose staged build plus decorations would pass the piece budget (a long word
+  // broken into many rows) shows its words complete at once instead.
+  const stagedCost = placed.reduce((sum, cell) => sum + (cell.heroWord ? 8 + 12 : 5 + 10), 0);
+  const stagingFits = stagedCost + DECORATION_BUDGET <= SCENE_PIECE_BUDGET;
   for (const cell of placed) {
     const word = cue.words[cell.item.word]!;
     const wid = cell.item.parts > 1 ? `${ctx.id}:w${cell.item.word}l${cell.item.part}` : `${ctx.id}:w${cell.item.word}`;
-    const { from, settled, motion } = ctx.enter(word, 4 * STEP_MS, 0);
-    const step = motion ? Math.min(STEP_MS, (settled - from) / 4) : 0;
+    // About 64 ms, or the time of three painted frames when the frame rate is low (a stair needs two before the complete one);
+    // `enter` still ends it on the word's last painted frame when the word is short.
+    const onset = ctx.enter(word, 0, 0).from;
+    const third = exportFrameTimes(onset, onset + 200, fps)[2];
+    const { from, settled } = ctx.enter(word, third === undefined ? 4 * STEP_MS : Math.max(4 * STEP_MS, Math.min(110, third - onset)), 0);
+    // The build is planned on the export frame grid: `stairFrames` painted frames before the complete one (`tc`). With fewer
+    // than two the whole word is simply there; a temporary piece lives through the complete frame and one more, so it
+    // paints on two frames and the shared visibility filter keeps it.
+    const tc = exportFrameAtOrAfter(settled, fps);
+    const frames = exportFrameTimes(from, tc + 1, fps);
+    const stairFrames = frames.length - 1;
+    const staged = stagingFits && stairFrames >= 2 && frames[frames.length - 1] === tc;
+    const tempEnd = Math.min(to, exportFrameAfter(tc, fps) + 1);
     const row = rows.find((r) => r.includes(cell))!;
     const ink = rowBounds(row);
     const top = ink.y1;
     const bottom = ink.y2;
     const cut = [top + CUTS[0] * (bottom - top), top + CUTS[1] * (bottom - top)] as const;
-    const pad = 6 * u;
+    const pad = Math.max(6 * u, cell.outline + 2 * u);
     const left = cell.x - cell.width / 2 - pad;
     const reach = cell.width + cell.dep + 2 * pad;
     const right = left + reach;
     const bandTop = top - pad;
     const bandBottom = bottom + cell.dep + pad;
-    const fullAt = motion ? from + 4 * step : from;
-    // x extent of a row at a share of its width: the reveal runs with the reading direction.
-    const edge = (share: number) => (side > 0 ? left + share * reach : right - share * reach);
-    const reveal = (r: number): [number, number][] => {
-      if (!motion) return [[from, 1]];
-      const points: [number, number][] = r > 0 ? [[from, 0]] : [];
-      for (let j = 0; j < 3; j++) points.push([from + (r + j) * step, (j + 1) / 3]);
-      return points;
+    // The edge of a wipe at a share of the width, snapped to the 4 to 6 px cell grid; the reveal runs with the reading direction.
+    const edge = (share: number) => {
+      const w = share >= 1 ? reach : share <= 0 ? 0 : Math.max(cell.cell, Math.round((share * reach) / cell.cell) * cell.cell);
+      return side > 0 ? left + w : right - w;
     };
+    const reveal = (r: number): [number, number][] =>
+      staged ? frames.map((t, f) => [t, f >= stairFrames ? 1 : clamp((f - r + 1) / (stairFrames - 1))] as [number, number]) : [[from, 1]];
     const track = (r: number, permanent: boolean): { x1: Frames; x2: Frames } => {
-      const points = [...reveal(r), ...(permanent ? [[Math.max(fullAt, from), 1] as [number, number]] : []), ...(permanent ? exits : [])];
-      const shares = stairs(points);
-      const at = (value: number) => edge(value);
-      if (side > 0) return { x1: [[from, left]], x2: shares.map(([t, v]) => [t, at(v)] as const) };
-      return { x1: shares.map(([t, v]) => [t, at(v)] as const), x2: [[from, right]] };
+      const shares = stairs([...reveal(r), ...(permanent ? exits : [])]);
+      if (side > 0) return { x1: [[from, left]], x2: shares.map(([t, v]) => [t, edge(v)] as const) };
+      return { x1: shares.map(([t, v]) => [t, edge(v)] as const), x2: [[from, right]] };
     };
     const shadows: Shadow[] = cell.stack.map((colour, k) => ({ dx: (cell.stack.length - k) * cell.cell, dy: (cell.stack.length - k) * cell.cell, blur: 0, colour, alpha: 1 }));
-    const body = cell.heroWord ? PINK : c.primary;
+    const body = cell.heroWord ? PINK : faceColour;
     const make = (suffix: string, fill: string, y1: Frames, y2: Frames, r: number, permanent: boolean, depth: boolean, end?: number): TextPiece => {
       const t = track(r, permanent);
       return {
@@ -302,38 +341,50 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
         id: `${wid}${suffix}`,
         z: suffix === "" || suffix === "row1d" ? 6 : 7,
         ...(end !== undefined ? { toMs: end } : {}),
-        ...(depth ? { shadows } : {}),
+        ...(depth ? { shadows, stroke: { widthPx: cell.outline, colour: INK } } : {}),
         clip: { x1: t.x1, x2: t.x2, y1, y2 },
       };
     };
-    const whole: Frames = [[from, bandBottom]];
-    // The face: the top row first, widening to the whole word at the end of the build; the rows below arrive as their own
+    // The face: the top row first, widening to the whole word on the complete frame; the rows below arrive as their own
     // copies, so the picture is the sample's stair and the face piece is whole and readable by the last painted frame.
-    const baseBottom: Frames = motion && step > 0 ? stairs([[from, cut[0]], [fullAt, bandBottom]]) : whole;
+    const baseBottom: Frames = staged ? stairs([[frames[0]!, cut[0]], [tc, bandBottom]]) : [[from, bandBottom]];
     pieces.push(make("", body, [[from, bandTop]], baseBottom, 0, true, true));
     if (cell.heroWord) {
       pieces.push(make("row0", cyan, [[from, bandTop]], [[from, cut[0]]], 0, true, false));
       pieces.push(make("row1", yellow, [[from, cut[0]]], [[from, cut[1]]], 1, true, false));
-      if (motion && step > 0) {
-        pieces.push(make("row1d", body, [[from, cut[0]]], [[from, cut[1]]], 1, false, true, fullAt + 2));
-        pieces.push(make("row2", body, [[from, cut[1]]], [[from, bandBottom]], 2, false, true, fullAt + 2));
+      if (staged) {
+        pieces.push(make("row1d", body, [[from, cut[0]]], [[from, cut[1]]], 1, false, true, tempEnd));
+        pieces.push(make("row2", body, [[from, cut[1]]], [[from, bandBottom]], 2, false, true, tempEnd));
       }
       if (heroFirst) {
         heroFirst = false;
         heroFrom = from;
-        heroSettled = Math.max(settled, fullAt);
+        heroSettled = tc;
       }
-    } else if (motion && step > 0) {
-      pieces.push(make("row1", body, [[from, cut[0]]], [[from, cut[1]]], 1, false, true, fullAt + 2));
-      pieces.push(make("row2", body, [[from, cut[1]]], [[from, bandBottom]], 2, false, true, fullAt + 2));
+    } else if (staged) {
+      pieces.push(make("row1", body, [[from, cut[0]]], [[from, cut[1]]], 1, false, true, tempEnd));
+      pieces.push(make("row2", body, [[from, cut[1]]], [[from, bandBottom]], 2, false, true, tempEnd));
     }
   }
 
-  // Decorations, in free space. The key word's start (or the last word's) is their beat.
+  // Decorations, in free space, scheduled against the painted frames the cue really has: a beat takes its preferred start
+  // when it fits, an earlier one when the cue is short, and a compact static pose when only two frames are left.
   const beat = heroed ? heroFrom : cue.words[Math.max(0, cue.words.length - 2)]!.startMs;
   const bandHold = exit ? exitAt : to;
+  const gridTimes = exportFrameTimes(cueFrom, bandHold, fps);
+  const startFor = (preferred: number, need: number): number | null => {
+    if (gridTimes.length < need) return null;
+    return Math.max(cueFrom, Math.min(preferred, gridTimes[gridTimes.length - need]!));
+  };
   const stepsOut = (from: number): readonly (readonly [number, number])[] =>
-    exit ? [[exitAt, 1], [exitAt + (to - exitAt) / 3, 0.75], [exitAt + (2 * (to - exitAt)) / 3, 0.45]].map(([at, v]) => [Math.max(at!, from), v!] as const) : [];
+    exit ? [[exitAt + (to - exitAt) / 3, 0.75], [exitAt + (2 * (to - exitAt)) / 3, 0.45]].map(([at, v]) => [Math.max(at!, from + 1), v!] as const) : [];
+  /** More places to look when the preferred ones are taken: beside, above and below every row. */
+  const elsewhere = (w: number, h: number): (readonly [number, number])[] =>
+    rows.flatMap((row) => {
+      const box = rowBox(row);
+      const middle = box.y1 + (box.y2 - box.y1 - h) / 2;
+      return [[box.x1 - clear - w, middle], [box.x2 + clear, middle], [box.x1 - clear - w, box.y1], [box.x2 + clear, box.y1]] as const;
+    }).concat([above(w, h, 0), above(w, h, 0.5), above(w, h, 1), below(w, 0), below(w, 0.5), below(w, 1)]);
 
   // 1. The icon: the largest cell that fits beside the key word's row (above or below the block as a last resort).
   const names = heroed ? HERO_ICONS : PLAIN_ICONS;
@@ -341,84 +392,91 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
   const map = BITMAPS[icon];
   const cols = map[0]!.length + 3;
   const lines = map.length + 3;
-  const iconAt = Math.max(cueFrom, beat + 130);
-  let iconBox: Box | null = null;
-  let cellPx = 0;
-  for (const size of [12, 11, 10, 9, 8, 7, 6, 5, 4]) {
-    const px = size * u;
-    const w = cols * px * 1.12;
-    const h = lines * px * 1.12;
-    if (paintedFrameCount(iconAt, bandHold, fps) < 3) break;
-    iconBox = claim(w, h, [
-      beside(anchorBox, w, !flip), beside(anchorBox, w, flip), beside(rowBox(rows[0]!), w, !flip), beside(rowBox(rows.at(-1)!), w, flip),
-      above(w, h, flip ? 1 : 0), below(w, flip ? 0 : 1),
-    ]);
+  const iconAt = startFor(beat + 130, 2);
+  if (iconAt !== null) {
+    let iconBox: Box | null = null;
+    let cellPx = 0;
+    for (const size of [12, 11, 10, 9, 8, 7, 6, 5, 4]) {
+      const px = size * u;
+      const w = cols * px * 1.12;
+      const h = lines * px * 1.12;
+      iconBox = claim(w, h, [
+        beside(anchorBox, w, !flip), beside(anchorBox, w, flip), beside(rowBox(rows[0]!), w, !flip), beside(rowBox(rows.at(-1)!), w, flip),
+        above(w, h, flip ? 1 : 0), below(w, flip ? 0 : 1), ...elsewhere(w, h),
+      ]);
+      if (iconBox) {
+        cellPx = px;
+        break;
+      }
+    }
     if (iconBox) {
-      cellPx = px;
-      break;
+      const px = cellPx;
+      const cx = iconBox.x1 + 0.06 * cols * px + (map[0]!.length * px) / 2;
+      const cy = iconBox.y1 + 0.06 * lines * px + (map.length * px) / 2;
+      const pop = paintedFrameCount(iconAt, iconAt + 180, fps) >= 5 && iconAt + 200 < bandHold;
+      const scale: (readonly [number, number])[] = [...(pop ? [[iconAt, 0.5], [iconAt + 55, 0.9], [iconAt + 110, 1.15], [iconAt + 165, 1]] as [number, number][] : [[iconAt, 1]] as [number, number][]), ...stepsOut(iconAt + 170)];
+      const bobs: [number, number][] = [[iconAt, 0]];
+      for (let k = 1; iconAt + 500 + k * 420 < bandHold - 120 && k < 12; k++) bobs.push([iconAt + 500 + k * 420, k % 2 === 1 ? -px : 0]);
+      const track = { x: [[iconAt, cx]] as Frames, y: stairs(bobs).map(([at, v]) => [at, cy + v] as const) as Frames, sx: stairs(scale), sy: stairs(scale), o: [[iconAt, 1]] as Frames };
+      const third = map.length / 3;
+      const bands = [Math.round(third), Math.round(2 * third)];
+      const body = ctx.shape("icon", iconAt, bitmapPath(map, 0, map.length, px), track, PINK);
+      pieces.push({ ...body, z: 7, shadows: [DEEP, BLUE, PINK].map((colour, k) => ({ dx: (3 - k) * px, dy: (3 - k) * px, blur: 0, colour, alpha: 1 })) });
+      pieces.push({ ...ctx.shape("iconA", iconAt, bitmapPath(map, 0, bands[0]!, px), track, cyan), z: 8 });
+      pieces.push({ ...ctx.shape("iconB", iconAt, bitmapPath(map, bands[0]!, bands[1]!, px), track, yellow), z: 8 });
     }
   }
-  if (iconBox) {
-    const px = cellPx;
-    const cx = iconBox.x1 + 0.06 * cols * px + (map[0]!.length * px) / 2;
-    const cy = iconBox.y1 + 0.06 * lines * px + (map.length * px) / 2;
-    const pop = paintedFrameCount(iconAt, iconAt + 180, fps) >= 4 && iconAt + 200 < bandHold;
-    const scale: (readonly [number, number])[] = [...(pop ? [[iconAt, 0.5], [iconAt + 55, 0.9], [iconAt + 110, 1.15], [iconAt + 165, 1]] as [number, number][] : [[iconAt, 1]] as [number, number][]), ...stepsOut(iconAt + 170)];
-    const bobs: [number, number][] = [[iconAt, 0]];
-    for (let k = 1; iconAt + 500 + k * 420 < bandHold - 120 && k < 12; k++) bobs.push([iconAt + 500 + k * 420, k % 2 === 1 ? -px : 0]);
-    const track = { x: [[iconAt, cx]] as Frames, y: stairs(bobs).map(([at, v]) => [at, cy + v] as const) as Frames, sx: stairs(scale), sy: stairs(scale), o: [[iconAt, 1]] as Frames };
-    const third = map.length / 3;
-    const bands = [Math.round(third), Math.round(2 * third)];
-    const body = ctx.shape("icon", iconAt, bitmapPath(map, 0, map.length, px), track, PINK);
-    pieces.push({ ...body, z: 7, shadows: [DEEP, BLUE, PINK].map((colour, k) => ({ dx: (3 - k) * px, dy: (3 - k) * px, blur: 0, colour, alpha: 1 })) });
-    pieces.push({ ...ctx.shape("iconA", iconAt, bitmapPath(map, 0, bands[0]!, px), track, cyan), z: 8 });
-    pieces.push({ ...ctx.shape("iconB", iconAt, bitmapPath(map, bands[0]!, bands[1]!, px), track, yellow), z: 8 });
-  }
 
-  // 2. Cells shed from the end of the key word's row, beside it, falling in whole steps.
+  // 2. Cells shed from the end of the key word's row, beside it, falling in whole steps (a short cue holds them still).
   {
     const sz = clamp(Math.round(((heroRow[0]?.size ?? BODY) / unit) * 0.075), 6, 12) * u;
     const offsets = [[0, 0], [1.5, 1.6], [2.8, 0.4], [3.6, 2.4]] as const;
     const fall = 0.9 * sz;
     const w = 3.6 * sz + sz;
     const h = 2.4 * sz + sz + 3 * fall;
-    const born = Math.max(cueFrom, heroed ? heroSettled : lastSpoken + 40);
     const life = 260;
-    if (paintedFrameCount(born, Math.min(bandHold, born + life), fps) >= 3) {
+    const falls = startFor(heroed ? heroSettled : beat, 5);
+    const born = falls ?? startFor(heroed ? heroSettled : beat, 2);
+    if (born !== null) {
       const first = heroRow[side > 0 ? heroRow.length - 1 : 0]!;
       const ends = rowBox([first]);
-      const spot = claim(w, h, [beside(ends, w, side < 0, 0), beside(ends, w, side < 0, 0.3), beside(anchorBox, w, flip, 0), above(w, h, flip ? 0 : 1)]);
+      const spot = claim(w, h, [beside(ends, w, side < 0, 0), beside(ends, w, side < 0, 0.3), beside(anchorBox, w, flip, 0), above(w, h, flip ? 0 : 1), ...elsewhere(w, h)]);
       if (spot) {
         const shapePath = offsets.flatMap(([ox, oy]) => rect(ox! * sz, oy! * sz, ox! * sz + sz, oy! * sz + sz));
-        const colour = [cyan, yellow, PINK, c.primary][(count + (heroed ? 0 : 2)) % 4]!;
-        const end = Math.min(bandHold, born + life);
-        const piece = ctx.shape("cells", born, shapePath, {
-          x: [[born, spot.x1]], y: stairs([0, 1, 2, 3].map((k) => [born + (k * life) / 4, spot.y1 + k * fall] as const)), o: [[born, 1]],
-        }, colour);
-        pieces.push({ ...piece, z: 7, toMs: end });
+        const colour = [cyan, yellow, PINK, faceColour][(count + (heroed ? 0 : 2)) % 4]!;
+        const end = Math.min(bandHold, born + (falls === null ? 2 * 34 : life));
+        const drops = falls === null ? [[born, spot.y1]] as const : ([0, 1, 2, 3].map((k) => [born + (k * life) / 4, spot.y1 + k * fall] as const));
+        const piece = ctx.shape("cells", born, shapePath, { x: [[born, spot.x1]], y: stairs(drops), o: [[born, 1]] }, colour);
+        pieces.push({ ...piece, z: 7, toMs: Math.max(end, exportFrameAfter(born, fps) + 1) });
       }
     }
   }
 
-  // 3. A pixel twinkle: a plus of nine cells that grows, shrinks and grows again, at a free corner of the block.
+  // 3. A pixel twinkle: a plus of nine cells that grows, shrinks and grows again at a free corner of the block, again every
+  // 1.5 s of a long hold. It ends at its last burst, so the exit never brings it back; a cue too short for a burst holds
+  // the plus still.
   {
     const px = clamp(Math.round(((heroRow[0]?.size ?? BODY) / unit) * 0.055), 6, 11) * u;
     const span = 5 * px * 1.5;
-    const at0 = Math.max(cueFrom, beat + 220);
-    if (paintedFrameCount(at0, bandHold, fps) >= 3) {
-      const spot = claim(span, span, [above(span, span, flip ? 0 : 1), above(span, span, flip ? 1 : 0), beside(anchorBox, span, flip, 0), beside(anchorBox, span, !flip, 0), below(span, flip ? 1 : 0)]);
+    const animated = startFor(beat + 220, 12);
+    const at0 = animated ?? startFor(beat + 220, 2);
+    if (at0 !== null) {
+      const spot = claim(span, span, [above(span, span, flip ? 0 : 1), above(span, span, flip ? 1 : 0), beside(anchorBox, span, flip, 0), beside(anchorBox, span, !flip, 0), below(span, flip ? 1 : 0), ...elsewhere(span, span)]);
       if (spot) {
         const plus = [...rect(-2.5 * px, -0.5 * px, 2.5 * px, 0.5 * px), ...rect(-0.5 * px, -2.5 * px, 0.5 * px, -0.5 * px), ...rect(-0.5 * px, 0.5 * px, 0.5 * px, 2.5 * px)];
         const points: [number, number][] = [];
-        for (let burst = 0; burst < 3 && at0 + burst * 1500 + 360 < bandHold; burst++) {
-          const t = at0 + burst * 1500;
-          points.push([t, 0.4], [t + 90, 1], [t + 180, 0.6], [t + 270, 1], [t + 360, 0.01]);
+        let last = at0;
+        if (animated !== null) {
+          for (let burst = 0; burst < 3 && at0 + burst * 1500 + 360 <= bandHold; burst++) {
+            const t = at0 + burst * 1500;
+            points.push([t, 0.4], [t + 90, 1], [t + 180, 0.6], [t + 270, 1], [t + 360, 0.01]);
+            last = t + 360;
+          }
         }
-        if (points.length > 0) {
-          const scale = stairs([...points, ...stepsOut(at0)]);
-          const piece = ctx.shape("spark", at0, plus, { x: [[at0, spot.x1 + span / 2]], y: [[at0, spot.y1 + span / 2]], sx: scale, sy: scale, o: [[at0, 1]] }, c.primary);
-          pieces.push({ ...piece, z: 7, shadows: [{ dx: px, dy: px, blur: 0, colour: PINK, alpha: 1 }] });
-        }
+        const still = points.length === 0;
+        const scale = still ? stairs([[at0, 1], ...stepsOut(at0)]) : stairs(points);
+        const piece = ctx.shape("spark", at0, plus, { x: [[at0, spot.x1 + span / 2]], y: [[at0, spot.y1 + span / 2]], sx: scale, sy: scale, o: [[at0, 1]] }, faceColour);
+        pieces.push({ ...piece, z: 7, ...(still ? {} : { toMs: last }), shadows: [{ dx: px, dy: px, blur: 0, colour: PINK, alpha: 1 }] });
       }
     }
   }
@@ -428,10 +486,10 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
     const n = 6;
     const px = clamp(Math.round(((heroRow[0]?.size ?? BODY) / unit) * 0.05), 6, 10) * u;
     const w = n * px * 1.5 - 0.5 * px;
-    const at0 = Math.max(cueFrom, (heroed ? heroFrom : cue.words[0]!.startMs) + 60);
-    const span = Math.min(300, Math.max(0, bandHold - at0 - 120));
-    if (paintedFrameCount(at0, bandHold, fps) >= 3) {
-      const spot = claim(w, px, [below(w, 0.5), above(w, px, 0.5), below(w, flip ? 0 : 1)]);
+    const at0 = startFor((heroed ? heroFrom : cue.words[0]!.startMs) + 60, 2);
+    if (at0 !== null) {
+      const span = Math.min(300, Math.max(0, bandHold - at0 - 120));
+      const spot = claim(w, px, [below(w, 0.5), above(w, px, 0.5), below(w, flip ? 0 : 1), ...elsewhere(w, px)]);
       if (spot) {
         const colours = [cyan, yellow, PINK] as const;
         const reachAt = (k: number) => (side > 0 ? spot.x1 + k * px * 1.5 : spot.x2 - k * px * 1.5);
@@ -448,4 +506,4 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
     }
   }
   return pieces;
-});
+}, undefined, 0);
