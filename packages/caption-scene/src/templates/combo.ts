@@ -1,46 +1,49 @@
+import type { CaptionFontName } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { EASES, kf, lerp, prog } from "../ease";
-import { SCENE_DEFAULT_FPS, paintedFrameCount } from "../frame-grid";
+import { paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
-import type { SceneCue, SceneInput, SceneProgram } from "../input";
-import { type SceneSpace, cueDirection, sceneSpace } from "../layout";
-import type { Box, Frames, Piece, TextPiece } from "../scene";
+import type { SceneInput, SceneProgram } from "../input";
+import { type SceneSpace, sceneSpace } from "../layout";
+import type { Box, Frames, Piece } from "../scene";
 import { ellipsePath, polygonPath } from "../shapes";
 import { caps, galleryScene, rowsOf } from "./gallery-layout";
-import { speechLaneSpace, speechWindows } from "./speech-layout";
+import { speechWindows } from "./speech-layout";
 
 /**
- * Combo (`samples/templates/m54-combo.js`): an arcade HUD driven by the speaker's delivery. Chunky Chakra Petch caps with a
- * red/cyan colour-split edge, a combo counter that climbs with every word of a breathless run and breaks on a pause, an XP
- * bar that fills a segment per word, and a critical hit (ring and shards) on the key word.
+ * Combo (`samples/templates/m54-combo.js`): arcade "combo hit" caps with a pink and cyan colour-split edge. Every word slams
+ * in with the split closing up, and the key word lands as a critical hit: a ring and a fan of shards behind the words.
  *
  * What changed from the sample, and why:
+ * - No XP bar and no combo counter (owner, after testing it in the Studio: "remove bottom line progress and numbers"). The
+ *   counter, its pulse ring and break drop, the segmented bar, its shine and the room reserved for them are gone; the block
+ *   is centred in the caption band like any other style.
+ * - A different face: the sample's Chakra Petch "doesn't fit" (owner). Archivo Black, the heaviest of four candidates tried
+ *   on the same real cues (Archivo Black, Bricolage Grotesque, Anton, Racing Sans One): its wide, closed forms keep the pink
+ *   and cyan split and the ink outline legible on busy footage where Anton's tight counters fill in and Racing Sans One's
+ *   thinner italic strokes wash out. It reads as a game-title hit at body size; the body is 76 px (the sample's 84 px was
+ *   Chakra Petch's narrower caps). Devanagari and Arabic fall back as in every style.
  * - Rows come from the words, not a cue table: each key word sits on its own row and the words around it wrap into
  *   balanced rows (the sample's flex-wrap, shrunk to fit). Every key word of a cue lands as a critical hit, not only the
  *   first (a cue with two gets two rows, two rings, two fans).
  * - The key word's size fits its row (never below 1.15x the body) before the shared fit, so a long key word does not
- *   shrink the body; its 2.0x slam starts no wider than the safe area allows.
- * - The counter is derived from the speech the sample's way (words since the last pause of 500 ms), now per speaker, and
- *   it spans cues: every cue draws the counts of its own words, a run that goes on across a cue boundary is not broken
- *   or faded at the handoff, and the break (drop, spin, fade) plays only where the speech really pauses. Counts that
- *   would paint on one frame at fast speech are merged into the next, so the counter never flashes.
- * - The counter sits above the block (the sample's fixed place, raised when a tall block needs the room) and mirrors for
- *   right-to-left cues. Its blurred glow is dropped (libass blur costs every frame); the hard ink drop shadow stays.
+ *   shrink the body; an overlong Latin, Cyrillic, Greek or CJK word breaks across rows (pieces of equal measured width) at
+ *   a readable floor instead of shrinking the block. Joined scripts shrink instead of breaking.
+ * - The slam (2.0x) and the body pop (1.3x) start as large as the real clearance allows: the neighbouring rows and words,
+ *   the colour-split copies (0.12 em out at the peak), the safe area and the caption band. Hero rows get a little extra air
+ *   so the slam still has room. An entrance never covers a word.
  * - The ring and the shards are drawn behind every word (the sample's z order, made explicit) and each shard's flight is
- *   clamped to the safe area, so the burst never covers a word and never pushes the text smaller.
+ *   clamped to the safe area. A window too short for the whole beat plays it compressed.
  * - Speech first: the first word of a cue enters with the cue's first painted frame (no empty frame between cues), the
  *   slam, pop and colour split compress into a short word's own time, and the row recentres as words arrive exactly as
  *   the sample's rows do.
- * - Extra recurring beats, all behind the words: a pulse ring on the counter at every fifth word of a run, a shine that
- *   sweeps the XP bar when its last segment fills (every cue), a small cyan ring on the last word of a cue that has no key
- *   word, and the critical-hit fan turns by a seeded amount and rotates its colours on every key word.
- * - Review fixes: the slam and pop are limited by the real clearance to the neighbouring rows and words (hero rows get
- *   a little extra air), so an entrance never covers a word; the counter stays anchored across a run (an eased slide between
- *   cues, never a jump), restarts at a pause or sentence-final punctuation, stops at x99 and caps its width; an overlong
- *   Latin, Cyrillic, Greek or CJK word breaks across rows at a readable floor instead of shrinking the block; and a window
- *   too short for the full beat still gets a compact ring, shards, hit ring and shine.
- * - Colours: white words, the highlight on key word, counter and filled segments, the accent as the ink outline and
- *   shadow (brand colours read on it), and the sample's pink and cyan split copies fixed.
+ * - The whole block is fitted into the caption band (860-1650 px of a 1920 px frame at the default position, the same share
+ *   of any canvas, never past the safe area): shrunk when too tall, centred in it. Two speakers on screen together read at
+ *   the smaller lane's size.
+ * - Extra recurring beats, all behind the words: a small cyan ring on the last word of a cue that has no key word, and the
+ *   critical-hit fan turns by a seeded amount and rotates its colours on every key word.
+ * - Colours: white words, the highlight on the key word, the accent as the ink outline (brand colours read on it), and the
+ *   sample's pink and cyan split copies fixed.
  */
 
 export const COMBO_DEMO: DemoScript = {
@@ -56,62 +59,16 @@ export const COMBO_DEMO: DemoScript = {
 
 const HOT = "#FF2E88";
 const COOL = "#00E5FF";
-const FACE = "Chakra Petch";
-const S = 84;
-const HERO = 130;
+const FACE: CaptionFontName = "Archivo Black";
+const S = 76;
+/** The key word, at the sample's 1.55x of the body. */
+const HERO = Math.round(S * 1.55);
 const COLUMN = 880;
 const ROW_GAP = 0.12 * S;
 const WORD_GAP = 0.3 * S;
-const BAR_HEIGHT = 22;
-const BAR_GAP = 8;
-const BAR_MARGIN = 0.32 * S;
-const SKEW = Math.tan((24 * Math.PI) / 180);
-const COUNTER_SIZE = 148;
-const BREAK = 260;
 const LEAD_NEXT = 40;
-
-interface RunWord {
-  readonly n: number;
-  readonly last: boolean;
-  readonly breakAt: number;
-  /** -1 for a run that starts in a right-to-left cue: the badge keeps one side for the whole run. */
-  readonly side: number;
-}
-
-const runCache = new WeakMap<readonly SceneCue[], Map<string, RunWord>>();
-
-/** A word that ends a sentence (. ? ! and the Hindi, Arabic and CJK stops, closing quotes allowed after it). */
-const SENTENCE_END = /[.!?।؟。！？…]["'”’)\]]*$/u;
-
-/** Per speaker, words since the last pause of 500 ms or more or the last sentence end, keyed `<cue>:<word>`. */
-function runsOf(cues: readonly SceneCue[]): Map<string, RunWord> {
-  const cached = runCache.get(cues);
-  if (cached) return cached;
-  const bySpeaker = new Map<number | null, { key: string; start: number; end: number; ends: boolean; side: number }[]>();
-  cues.forEach((cue, ci) => {
-    const list = bySpeaker.get(cue.speaker) ?? [];
-    for (const [wi, word] of cue.words.entries()) list.push({ key: `${ci}:${wi}`, start: word.startMs, end: word.endMs, ends: SENTENCE_END.test(word.text.trim()), side: cueDirection(cue) === "rtl" ? -1 : 1 });
-    bySpeaker.set(cue.speaker, list);
-  });
-  const runs = new Map<string, RunWord>();
-  for (const list of bySpeaker.values()) {
-    list.sort((a, b) => a.start - b.start);
-    let run: typeof list = [];
-    const flush = () => {
-      for (const [at, word] of run.entries()) runs.set(word.key, { n: at + 1, last: at === run.length - 1, breakAt: run.at(-1)!.end, side: run[0]!.side });
-      run = [];
-    };
-    for (const word of list) {
-      const previous = run.at(-1);
-      if (previous && word.start - previous.end >= 500) flush();
-      run.push(word);
-      if (word.ends) flush();
-    }
-    flush();
-  }
-  runCache.set(cues, runs);
-  return runs;
-}
+/** How far the colour-split copies reach from the ink at the peak of the slam, in em. */
+const COPY = 0.12;
 
 /** A small deterministic hash of a cue and a word, for seeded variety. */
 function seeded(...parts: readonly (number | string)[]): number {
@@ -181,10 +138,9 @@ function comboCuesFor(grow: number): SceneProgram {
     else groups.at(-1)!.push(at);
   });
   const wordOf = (cell: { at: number }) => units[cell.at]!.word;
-  const slot = badgeSlot(ctx.input, ctx.space, grow);
+  const band = captionBand(ctx.input, ctx.space, grow);
 
-  // Rows: the sample's line boxes (1.08 em, ink centred), then the XP bar under the widest row. Rows next to a key word
-  // get a little more air so its slam has room.
+  // Rows: the sample's line boxes (1.08 em, ink centred). Rows next to a key word get a little more air so its slam has room.
   const geometry = (k: number) => {
     const { cells, unit } = ctx.layout({
       column: COLUMN, gap: WORD_GAP * k, padding: 50, groups,
@@ -197,24 +153,25 @@ function comboCuesFor(grow: number): SceneProgram {
     const rowInk = rows.map((row) => ({ top: Math.min(...row.map((cell) => cell.inkTop)), bottom: Math.max(...row.map((cell) => cell.inkBottom)) }));
     const rowHeight = rows.map((_, r) => Math.max(1.08 * rowSize[r]!, rowInk[r]!.bottom - rowInk[r]!.top + 0.2 * rowSize[r]!));
     const gapAfter = rows.map((_, r) => (ROW_GAP + (isHeroRow[r] || isHeroRow[r + 1] ? 0.18 * S : 0)) * u);
-    const barH = BAR_HEIGHT * u;
-    const barMargin = BAR_MARGIN * u;
-    const total = rowHeight.reduce((sum, h) => sum + h, 0) + gapAfter.slice(0, -1).reduce((sum, g) => sum + g, 0) + barMargin + barH;
-    return { cells, u, rows, rowInk, rowHeight, gapAfter, barH, barMargin, total, k };
+    // The colour-split copies sit up to 0.12 em beyond the ink at the slam: keep that much of the band free at both ends.
+    const padTop = COPY * rowSize[0]!;
+    const padBottom = COPY * rowSize.at(-1)!;
+    const total = rowHeight.reduce((sum, h) => sum + h, 0) + gapAfter.slice(0, -1).reduce((sum, g) => sum + g, 0);
+    return { cells, u, rows, rowInk, rowHeight, gapAfter, total, padTop, padBottom, k };
   };
-  // The block lives in the caption band under the badge's reserved box: shrink it until it fits, then centre it there.
-  const room = slot.band.y2 - slot.bottom;
+  // The block lives in the caption band: shrink it until it fits, then centre it there.
+  const room = band.y2 - band.y1;
+  const need = (shape: { total: number; padTop: number; padBottom: number }) => shape.total + shape.padTop + shape.padBottom;
   let shape = geometry(1);
-  for (let tries = 0; tries < 3 && shape.total > room + 0.5; tries++) shape = geometry(Math.max(0.3, shape.k * (room / shape.total) * 0.98));
-  const { cells, u, rows, rowInk, rowHeight, gapAfter, barH, barMargin, total } = shape;
-  const blockTop = Math.min(Math.max(ctx.space.y(1320) - total / 2, slot.bottom), slot.band.y2 - total);
+  for (let tries = 0; tries < 3 && need(shape) > room + 0.5; tries++) shape = geometry(Math.max(0.3, shape.k * (room / need(shape)) * 0.98));
+  const { cells, u, rows, rowInk, rowHeight, gapAfter, total, padTop, padBottom } = shape;
+  const blockTop = Math.min(Math.max(ctx.space.y(1320) - total / 2, band.y1 + padTop), band.y2 - padBottom - total);
   const baselines: number[] = [];
   let y = blockTop;
   rows.forEach((_, r) => {
     baselines[r] = y + rowHeight[r]! / 2 - (rowInk[r]!.top + rowInk[r]!.bottom) / 2;
     y += rowHeight[r]! + gapAfter[r]!;
   });
-  const barBottom = y - gapAfter.at(-1)! + barMargin + barH;
   const rowOfCell = new Map(rows.flatMap((row, r) => row.map((cell) => [cell.at, r] as const)));
 
   // Entrances: each word is locked to its speech; the cue's first word enters with the cue's first frame.
@@ -248,18 +205,18 @@ function comboCuesFor(grow: number): SceneProgram {
 
   /** The largest entrance scale a word may start at: its ink, the colour-split copies (0.12 em out at the peak) and the
    * outline stay clear of the neighbouring rows and words, and inside the safe area. */
-  const COPY = 0.12;
   const clearScale = (cell: (typeof cells)[number], peak: number): number => {
     const r = rowOfCell.get(cell.at)!;
     const outline = 0.05 * cell.size;
     const halfW = cell.width / 2 + outline;
     const halfH = (cell.inkBottom - cell.inkTop) / 2 + outline;
     const grow = (limit: number, half: number) => (limit + half) / (half + COPY * cell.size);
-    const above = r > 0 ? baselines[r]! + cell.inkTop - Math.max(...rows[r - 1]!.map((other) => baselines[r - 1]! + other.inkBottom)) : baselines[r]! + cell.inkTop - (slot.bottom - 12 * slot.ub);
-    const below = r < rows.length - 1 ? Math.min(...rows[r + 1]!.map((other) => baselines[r + 1]! + other.inkTop)) - (baselines[r]! + cell.inkBottom) : Infinity;
-    // The row above and the XP bar are already on screen; the row below is spoken later, so it only gets half the gap.
-    const bar = r === rows.length - 1 ? barBottom - barH - (baselines[r]! + cell.inkBottom) : Number.POSITIVE_INFINITY;
-    const vertical = Math.min(above - 3, below / 2 - 1.5, bar - 3);
+    const above = r > 0 ? baselines[r]! + cell.inkTop - Math.max(...rows[r - 1]!.map((other) => baselines[r - 1]! + other.inkBottom)) : baselines[r]! + cell.inkTop - band.y1;
+    const below = r < rows.length - 1 ? Math.min(...rows[r + 1]!.map((other) => baselines[r + 1]! + other.inkTop)) - (baselines[r]! + cell.inkBottom) : Number.POSITIVE_INFINITY;
+    // The row above is already on screen; the row below is spoken later, so it only gets half the gap. The last row may
+    // pop down to the foot of the band.
+    const foot = r === rows.length - 1 ? band.y2 - (baselines[r]! + cell.inkBottom) : Number.POSITIVE_INFINITY;
+    const vertical = Math.min(above - 3, below / 2 - 1.5, foot - 3);
     const sideways = rows[r]!.filter((other) => other !== cell).map((other) => Math.abs(other.x - cell.x) - other.width / 2 - cell.width / 2);
     const across = sideways.length ? Math.min(...sideways) / 2 - 2 : Infinity;
     const edge = Math.min(cell.x - cell.width / 2 - safe.x1, safe.x2 - cell.x - cell.width / 2) - 12;
@@ -267,7 +224,6 @@ function comboCuesFor(grow: number): SceneProgram {
   };
 
   const pieces: Piece[] = [];
-  const cueFrom = enters[0]?.from ?? ctx.window.from;
 
   for (const cell of cells) {
     const unit = units[cell.at]!;
@@ -380,53 +336,6 @@ function comboCuesFor(grow: number): SceneProgram {
     }
   }
 
-  // XP bar: one parallelogram per word under the widest row, filled as each word is spoken.
-  const widest = rows.map((row) => ({ x1: Math.min(...row.map((cell) => cell.x - cell.width / 2)), x2: Math.max(...row.map((cell) => cell.x + cell.width / 2)) }))
-    .reduce((best, row) => (row.x2 - row.x1 > best.x2 - best.x1 ? row : best));
-  const barW = widest.x2 - widest.x1;
-  const n = cue.words.length;
-  const segGap = BAR_GAP * u;
-  const segW = Math.max(4 * u, (barW - segGap * (n - 1)) / n);
-  const lean = SKEW * barH;
-  const seg = [[-segW / 2, 0], [segW / 2, 0], [segW / 2 + lean, -barH], [-segW / 2 + lean, -barH]] as const;
-  const segX = (i: number) => (widest.x1 + widest.x2) / 2 + side * (-barW / 2 + segW / 2 + i * (segW + segGap));
-  cue.words.forEach((_, i) => {
-    const { from } = enters[i]!;
-    pieces.push({
-      ...ctx.shape(`seg${i}`, cueFrom, polygonPath(seg), { x: [[cueFrom, segX(i)]], y: [[cueFrom, barBottom]] }),
-      z: 2, fill: { colour: "#FFFFFF", alpha: 0.3 }, stroke: { colour: ink, widthPx: 3 * u, alpha: 0.55 },
-    });
-    const pop = Math.min(120, to - from);
-    const grow: Frames = paintedFrameCount(from, from + pop, ctx.fps) >= 2 ? [[from, 1.7], [from + pop, 1, "out"]] : [[from, 1]];
-    const flash = Math.min(70, pop);
-    pieces.push({
-      ...ctx.shape(`fill${i}`, from, polygonPath(seg), {
-        x: [[from, segX(i)]], y: [[from, barBottom]], sx: [[from, 1]], sy: grow,
-        colour: paintedFrameCount(from, from + flash, ctx.fps) >= 2 ? [[from, "#FFFFFF"], [from + flash, "#FFFFFF"], [from + flash + 1, c.highlight]] : [[from, c.highlight]],
-      }, c.highlight),
-      z: 3,
-    });
-  });
-  // The shine: when the last segment fills, a thin light sweeps the bar (compressed into a short window, a static glint
-  // when it cannot move).
-  const lastFrom = enters[n - 1]?.from ?? cueFrom;
-  const sweep = Math.min(280, to - lastFrom);
-  if (n > 0 && paintedFrameCount(lastFrom, lastFrom + sweep, ctx.fps) >= 2) {
-    const x1 = Math.min(segX(0), segX(n - 1)) - segW / 2;
-    const x2 = Math.max(segX(0), segX(n - 1)) + segW / 2 + lean;
-    const shineW = Math.max(6 * u, 0.1 * (x2 - x1));
-    const shine = polygonPath([[-shineW / 2, 0], [shineW / 2, 0], [shineW / 2 + lean, -barH], [-shineW / 2 + lean, -barH]]);
-    const [a, b] = side > 0 ? [x1 - shineW, x2 + shineW] : [x2 + shineW, x1 - shineW];
-    const moves = paintedFrameCount(lastFrom, lastFrom + sweep, ctx.fps) >= 3;
-    pieces.push({
-      ...ctx.shape("shine", lastFrom, shine, {
-        x: moves ? [[lastFrom, a], [lastFrom + sweep, b, "inOut"]] : [[lastFrom, (a + b) / 2]], y: [[lastFrom, barBottom]], o: [[lastFrom, 0.85]],
-      }, "#FFFFFF"),
-      z: 4, toMs: lastFrom + sweep,
-      clip: { x1: [[lastFrom, x1]], x2: [[lastFrom, x2]], y1: [[lastFrom, barBottom - barH * 1.8]], y2: [[lastFrom, barBottom]] },
-    });
-  }
-
   return pieces;
   });
 }
@@ -435,166 +344,21 @@ function comboCuesFor(grow: number): SceneProgram {
 const BAND_UP = 460 / 1920;
 const BAND_DOWN = 330 / 1920;
 
-interface BadgeSlot {
-  readonly band: Box;
-  /** The badge's unit: the canvas's, less when the band is too short to hold it above a block. */
-  readonly ub: number;
-  readonly u0: number;
-  readonly baseline: number;
-  /** Where the block may start: under the badge's reserved box. */
-  readonly bottom: number;
-  /** The pivot x of a left-to-right badge (its right end) and of a right-to-left one (its left end). */
-  readonly right: number;
-  readonly left: number;
-}
-
-/**
- * The badge's reserved box: one fixed slot at the top of the caption band (inside the lane for two speakers), clamped to the
- * safe area and following the anchor's x. Every cue fits its block into the band under it, so the badge never moves and no
- * word ever enters it. Computed from the canvas, the anchor and the lane only, never from the user's scale or a cue's fit.
- */
-function badgeSlot(input: Pick<SceneInput, "canvas" | "anchor" | "measure">, space: SceneSpace, grow: number): BadgeSlot {
-  const { canvas } = input;
+/** The band a cue's block is fitted into: moves with the anchor and the lane, grows with the user's size scale, stays in the safe area. */
+function captionBand(input: Pick<SceneInput, "canvas">, space: SceneSpace, grow: number): Box {
   const { safe } = space;
-  const u0 = Math.min(canvas.width, canvas.height) / 1080;
   const ay = space.y(1320);
-  const band: Box = {
+  return {
     x1: safe.x1 + 3, x2: safe.x2 - 3,
-    y1: Math.max(safe.y1 + 3, ay - BAND_UP * canvas.height * grow),
-    y2: Math.min(safe.y2 - 3, ay + BAND_DOWN * canvas.height * grow),
+    y1: Math.max(safe.y1 + 3, ay - BAND_UP * input.canvas.height * grow),
+    y2: Math.min(safe.y2 - 3, ay + BAND_DOWN * input.canvas.height * grow),
   };
-  const ub = u0 * Math.min(1, (band.y2 - band.y1) / (700 * u0));
-  // Resting ink top is 134 px above the baseline (digits, a 14 degree lean); a pop swings 70 px further, which stays in the safe area.
-  const baseline = Math.max(band.y1 + 138 * ub, safe.y1 + 3 + 210 * ub);
-  const lowest = Math.max(0, input.measure("×0", FACE, COUNTER_SIZE * ub, 0).inkBottom);
-  const bottom = baseline + (6 + 24) * ub + lowest;
-  const anchorX = (input.anchor.xPct / 100) * canvas.width;
-  const reach = (215 * 1.5 + 0.32 * COUNTER_SIZE) * ub;
-  const edge = 8 * ub;
-  const right = Math.max(safe.x1 + reach + edge, Math.min(anchorX + (1000 - 540) * u0, safe.x2 - 0.32 * COUNTER_SIZE * ub - edge));
-  const left = Math.min(safe.x2 - reach - edge, Math.max(anchorX - (1000 - 540) * u0, safe.x1 + 0.32 * COUNTER_SIZE * ub + edge));
-  return { band, ub, u0, baseline, bottom, right, left };
 }
 
 const FACE_ID = /^combo:(\d+):w(\d+)(?:l\d+)?$/;
 /** The lead and reading hold `galleryScene` uses to cut its windows. */
 const LEAD = 80;
 const HOLD = 150;
-
-/**
- * The combo badge, drawn after the cues so that a cue's fit (its scale or its shift into the safe area) can never move it.
- * A run's badge ends on the frame the next badge of its lane starts, whatever a cue's reading hold did to its own window.
- */
-function comboCounters(input: SceneInput, pieces: readonly Piece[], grow: number): Piece[] {
-  const fps = input.fps ?? SCENE_DEFAULT_FPS;
-  const base = sceneSpace(input, 1320);
-  const times = new Map<string, { from: number; to: number }>();
-  for (const piece of pieces) {
-    const match = FACE_ID.exec(piece.id);
-    if (!match) continue;
-    const key = `${match[1]}:${match[2]}`;
-    const known = times.get(key);
-    times.set(key, { from: Math.min(known?.from ?? Number.POSITIVE_INFINITY, piece.fromMs), to: Math.max(known?.to ?? 0, piece.toMs) });
-  }
-  const runs = runsOf(input.cues);
-
-  interface Entry {
-    readonly lane: number;
-    readonly index: number;
-    readonly cue: SceneCue;
-    readonly slot: BadgeSlot;
-    readonly side: number;
-    readonly span: { n: number; last: boolean; breakAt: number; wi: number; from: number; end: number };
-  }
-  const entries: Entry[] = [];
-  for (const window of speechWindows(input, base.safe, LEAD, HOLD)) {
-    const { cue, index } = window;
-    const space = speechLaneSpace(base, window.bounds, 1320);
-    const words = cue.words.map((_, wi) => ({ wi, info: runs.get(`${index}:${wi}`)!, ...times.get(`${index}:${wi}`)! })).filter((word) => word.info && word.from !== undefined);
-    if (!words.length) continue;
-    const to = Math.max(...words.map((word) => word.to));
-    const slot = badgeSlot(input, space, grow);
-    const side = words[0]!.info.side;
-    const spans = words.map((word, at) => ({
-      n: word.info.n, last: word.info.last, breakAt: word.info.breakAt, wi: word.wi, from: word.from,
-      end: word.info.last ? Math.min(to, word.info.breakAt + BREAK, words[at + 1]?.from ?? Number.POSITIVE_INFINITY) : words[at + 1]?.from ?? to,
-    }));
-    // A count that would paint on a single frame is folded into the one before it (or skipped at the start).
-    const kept: typeof spans = [];
-    for (const span of spans) {
-      if (paintedFrameCount(span.from, span.end, fps) < 2 && !span.last) {
-        const previous = kept.at(-1);
-        if (previous && !previous.last) previous.end = span.end;
-        continue;
-      }
-      kept.push({ ...span });
-    }
-    for (const span of kept) entries.push({ lane: window.lane, index, cue, slot, side, span });
-  }
-  // One badge per lane at a time: each ends where the next one of its lane starts.
-  const byLane = new Map<number, Entry[]>();
-  for (const entry of entries) byLane.set(entry.lane, [...(byLane.get(entry.lane) ?? []), entry]);
-  for (const list of byLane.values()) {
-    list.sort((a, b) => a.span.from - b.span.from);
-    list.forEach((entry, at) => {
-      const next = list[at + 1];
-      if (next && next.span.from < entry.span.end) entry.span.end = Math.max(entry.span.from, next.span.from);
-    });
-  }
-
-  const out: Piece[] = [];
-  for (const { index, cue, slot, side, span } of entries) {
-    if (span.end <= span.from || paintedFrameCount(span.from, span.end, fps) < 2) continue;
-    const { ub } = slot;
-    const pivotX = side > 0 ? slot.right : slot.left;
-    const text = `×${Math.min(99, span.n)}`;
-    const size = COUNTER_SIZE * ub * Math.min(1, (215 * ub) / Math.max(1, input.measure(text, FACE, COUNTER_SIZE * ub, 0).advance));
-    const m = input.measure(text, FACE, size, 0);
-    const mid = (m.inkTop + m.inkBottom) / 2;
-    const pop = Math.min(110, span.end - span.from);
-    const animate = paintedFrameCount(span.from, span.from + pop, fps) >= 2;
-    const breakDur = span.last ? Math.min(BREAK, span.end - span.breakAt) : 0;
-    const breaks = span.last && paintedFrameCount(span.breakAt, span.breakAt + breakDur, fps) >= 2;
-    const kick = span.n >= 10 ? 0.25 : 0.5;
-    const popAt = (t: number) => (animate ? 1 - EASES.out(prog(t, span.from, pop)) : 0);
-    const brokeAt = (t: number) => (breaks ? prog(t, span.breakAt, breakDur) : 0);
-    const edges = [span.from, span.from + pop, span.breakAt, span.breakAt + breakDur];
-    const frames = (fn: (t: number) => number, error: number) => sampleFrames(fn, edges, error, { range: [span.from, span.end], simplify: true });
-    const scale = frames((t) => 1 + kick * popAt(t), 0.01);
-    const id = `combo:${index}`;
-    const piece: TextPiece = {
-      id: `${id}:count${span.wi}`, kind: "text", z: 7, fromMs: span.from, toMs: span.end, text, face: FACE, sizePx: size, letterSpacingEm: 0,
-      fill: span.n >= 10 ? HOT : input.colours.highlight, anchor: "baseline-center", language: cue.language,
-      stroke: { colour: input.colours.accent, widthPx: 0.045 * size },
-      shadows: [{ dx: 0, dy: 6 * ub, blur: 0, colour: input.colours.accent, alpha: 0.85 }],
-      origin: { dx: (side * m.advance) / 2, dy: mid },
-      track: {
-        x: [[span.from, pivotX]], y: frames((t) => slot.baseline + mid + brokeAt(t) * 0.4 * S * 1.2 * ub, 0.2),
-        sx: scale, sy: scale, skx: [[span.from, -14]],
-        rz: frames((t) => side * (8 + 6 * popAt(t) + 22 * EASES.in(brokeAt(t))), 0.2),
-        o: frames((t) => 1 - EASES.in(brokeAt(t)), 0.01),
-      },
-    };
-    out.push(piece);
-    // Every fifth word of a run: a pulse ring rings out behind the counter.
-    if (span.n % 5 === 0 && span.n < 100 && animate) {
-      const dur = Math.min(300, span.end - span.from);
-      const centre = pivotX - (side * m.advance) / 2;
-      const room = Math.min(centre - slot.band.x1, slot.band.x2 - centre, slot.baseline + mid - (slot.band.y1 - 60 * ub));
-      const growTo = Math.max(1, Math.min(1.4, room / (0.55 * size)));
-      out.push({
-        id: `${id}:pulse${span.wi}`, kind: "shape", z: 1, fromMs: span.from, toMs: span.from + dur, path: ellipsePath(0, 0, 0.5 * size),
-        stroke: { colour: HOT, widthPx: 0.05 * size },
-        track: {
-          x: [[span.from, centre]], y: [[span.from, slot.baseline + mid]],
-          sx: [[span.from, 0.7], [span.from + dur, growTo, "out"]], sy: [[span.from, 0.7], [span.from + dur, growTo, "out"]],
-          o: [[span.from, 1], [span.from + dur, 0, "in"]],
-        },
-      });
-    }
-  }
-  return out;
-}
 
 /** Cues on screen together (two speakers) read alike: the larger lane is drawn again at the smaller lane's body size. */
 function sharedSize(input: SceneInput, scene: readonly Piece[], grow: number): Piece[] {
@@ -626,7 +390,6 @@ function sharedSize(input: SceneInput, scene: readonly Piece[], grow: number): P
 export const comboProgram: SceneProgram = {
   build(input) {
     const grow = Math.max(1, input.scale);
-    const cues = sharedSize(input, comboCuesFor(grow).build(input).pieces, grow);
-    return { pieces: [...cues, ...comboCounters(input, cues, grow)] };
+    return { pieces: sharedSize(input, comboCuesFor(grow).build(input).pieces, grow) };
   },
 };
