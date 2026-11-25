@@ -19,11 +19,12 @@ test("Slot follows the Studio position and rolls its own glyphs through the reel
   expect(upper.find((piece) => piece.id === "slot:0:w0l2")).toMatchObject({ text: "-" });
 });
 
-test("a word keeps its reading hold when the incoming reels paint in free space", () => {
+test("a word below the incoming reels gives up its reading hold, so the screen never reads out of order", () => {
   const { cues } = demoCues({
     lines: ["go@200", "so:m@330 then:m@330 over:h@550 soon:m@270"],
     options: { lead: 350, cueGap: 30, gap: 0 },
   });
   const { pieces } = slotProgram.build(sceneInput(cues, { anchor: { xPct: 50, yPct: 67 }, fps: 30 }));
-  expect(pieces.find(({ id }) => id === "slot:0:w0")!.toMs).toBe(700);
+  // GO sits below SO THEN: holding it to 700 ms would read "so then … go". It ends as SO paints.
+  expect(pieces.find(({ id }) => id === "slot:0:w0")!.toMs).toBe(pieces.find(({ id }) => id === "slot:1:w0")!.fromMs);
 });

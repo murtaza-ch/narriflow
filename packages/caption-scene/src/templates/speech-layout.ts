@@ -78,7 +78,12 @@ export function hasTwoPaintedFrames(piece: Piece, input: SceneInput): boolean {
   return false;
 }
 
-/** A short handoff can keep the outgoing hold if the next cue paints in free space. */
+/**
+ * A short handoff can keep the outgoing hold if the next cue paints in free space and the outgoing words still read
+ * first: above the words that follow them, or beside them on the same line in reading direction. Otherwise a held cue
+ * below the next sentence would read out of order ("Studio" above "out for Waveform"). Simultaneous speakers keep
+ * their lanes: the order check only applies to cues that start after the held cue's speech ends.
+ */
 export function renderWithReadingHolds(
   windows: readonly SpeechWindow[],
   input: SceneInput,
@@ -88,21 +93,38 @@ export function renderWithReadingHolds(
   const drawn = windows.map(render);
   const clipEnd = Math.max(...windows.map(({ to }) => to));
   const overlaps = (a: Box, b: Box) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+  const union = (boxes: readonly Box[]): Box | null => boxes.length === 0 ? null : {
+    x1: Math.min(...boxes.map((box) => box.x1)),
+    y1: Math.min(...boxes.map((box) => box.y1)),
+    x2: Math.max(...boxes.map((box) => box.x2)),
+    y2: Math.max(...boxes.map((box) => box.y2)),
+  };
+  const textBox = (pieces: readonly Piece[], t: number) =>
+    union(pieces.flatMap((piece) => piece.kind === "text" ? pieceBounds(piece, t, input.measure) ?? [] : []));
   for (let at = windows.length - 2; at >= 0; at--) {
     const w = windows[at]!;
     const desired = Math.min(w.spokenEnd + hold, clipEnd);
     if (w.to >= desired) continue;
-    const others = drawn.flatMap((pieces, i) => i === at ? [] : pieces.filter((piece) => piece.fromMs < desired && piece.toMs > w.to));
+    const live = (pieces: readonly Piece[]) => pieces.filter((piece) => piece.fromMs < desired && piece.toMs > w.to);
+    const others = drawn.flatMap((pieces, i) => i === at ? [] : live(pieces));
     if (!others.length) continue;
+    const following = drawn.flatMap((pieces, i) => i !== at && windows[i]!.start >= w.spokenEnd ? live(pieces) : []);
+    const rtl = cueDirection(w.cue) === "rtl";
+    const readsFirst = (held: Box, next: Box) =>
+      held.y2 <= next.y1 || (held.y1 < next.y2 && held.y2 > next.y1 && (rtl ? held.x1 >= next.x2 : held.x2 <= next.x1));
     const extended = render({ ...w, to: desired });
-    const collision = exportFrameTimes(w.to, desired, input.fps).find((t) => {
+    const conflict = exportFrameTimes(w.to, desired, input.fps).find((t) => {
       const later = others.flatMap((piece) => pieceBounds(piece, t, input.measure) ?? []);
-      return extended.some((piece) => {
+      const covers = extended.some((piece) => {
         const box = pieceBounds(piece, t, input.measure);
         return box !== null && later.some((other) => overlaps(box, other));
       });
+      if (covers) return true;
+      const held = textBox(extended, t);
+      const next = textBox(following, t);
+      return held !== null && next !== null && !readsFirst(held, next);
     });
-    if (collision === undefined) drawn[at] = extended;
+    if (conflict === undefined) drawn[at] = extended;
   }
   return drawn.flat();
 }
