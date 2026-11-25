@@ -29,6 +29,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "anime",
   "bento",
   "blinds",
+  "halftone",
 ];
 
 const LINES = [
