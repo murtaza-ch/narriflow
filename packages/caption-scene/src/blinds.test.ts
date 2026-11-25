@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
-import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
+import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
 import { type Piece, evaluatePiece, pieceBounds } from "./scene";
 import { BLINDS_DEMO, blindsProgram } from "./templates/blinds";
@@ -113,8 +113,7 @@ describe("Blinds slats", () => {
     }
   });
 
-  test("a word is whole one frame before its spoken end: no slat is still opening a moment before it, and nothing sits on its ink", () => {
-    const meets = (a: { x1: number; x2: number; y1: number; y2: number }, b: { x1: number; x2: number; y1: number; y2: number }) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
+  test("a word is whole one frame before its spoken end: no slat is still opening a moment before it", () => {
     let checked = 0;
     for (const fps of [24, 25, 30, 60]) {
       const frame = 1000 / fps;
@@ -131,14 +130,6 @@ describe("Blinds slats", () => {
             const box = shown(face, t);
             expect(box && box.x1 <= whole.x1 + 0.5 && box.x2 >= whole.x2 - 0.5, `${face.id} is not whole at ${t}, ${word.endMs - t} ms before its end (${fps} fps)`).toBe(true);
             for (const slat of own.filter((piece) => SLAT.test(piece.id) && piece.id.startsWith(`${face.id}s`))) expect(shown(slat, t), `${slat.id} still paints at ${t} (${fps} fps)`).toBeNull();
-          }
-          // The rule and the jambs are clear of every word of the cue at that moment.
-          const last = cue.words.at(-1)!;
-          const t = exportFrameAtOrBefore(last.endMs - 1 - frame, fps);
-          const ink = own.filter((piece) => FACE.test(piece.id)).flatMap((piece) => shown(piece, t) ?? []);
-          for (const deco of own.filter((piece) => /:(rule|jamb\d)$/.test(piece.id))) {
-            const at = shown(deco, t);
-            if (at) for (const box of ink) expect(meets(at, box), `${deco.id} on a word at ${t} (${fps} fps)`).toBe(false);
           }
         }
       }
@@ -274,43 +265,76 @@ describe("Blinds on real phrasing", () => {
   });
 });
 
-describe("Blinds recurring beats", () => {
+describe("Blinds draws no lines", () => {
   const pieces = build(LONG);
 
-  test("every cue of a 24-cue clip gets a rule under its last row and the rule cycles", () => {
-    const shapes = new Set<string>();
-    for (const cue of LONG) {
-      const rule = pieces.find((piece) => cueOf(piece) === cue.index && piece.id.endsWith(":rule"));
-      expect(rule, `cue ${cue.index} has no rule`).toBeDefined();
-      const t = exportFrameTimes(cue.startMs + 300, cue.endMs, 30).find((frame) => shown(rule!, frame));
-      expect(t, `rule of cue ${cue.index} never shows`).toBeDefined();
-      const box = shown(rule!, t! + 200) ?? shown(rule!, t!);
-      if (box) shapes.add(`${Math.round((box.x2 - box.x1) / 40)}`);
-    }
-    expect(shapes.size).toBeGreaterThanOrEqual(3);
+  test("no rule, jamb or other shape exists: every piece is a word face or one of its slats", () => {
+    expect(pieces.every((piece) => piece.kind === "text")).toBe(true);
+    for (const piece of pieces) expect(/^blinds:\d+:w\d+(?:l\d+)?(?:s\d)?$/.test(piece.id), `${piece.id} is not a face or a slat`).toBe(true);
+    expect(pieces.some((piece) => /rule|jamb|lintel|bar/.test(piece.id))).toBe(false);
   });
 
-  test("jambs flank the key row on most cues, with a pair, a leading and a trailing variant", () => {
-    const counts = LONG.map((cue) => pieces.filter((piece) => cueOf(piece) === cue.index && /:jamb\d$/.test(piece.id)).length);
-    expect(counts.filter((count) => count > 0).length).toBeGreaterThanOrEqual(LONG.length * 0.7);
-    expect(new Set(counts).size).toBeGreaterThanOrEqual(2);
-  });
-
-  test("the rule and the jambs sit behind the type and never meet a word's ink", () => {
-    const meets = (a: { x1: number; x2: number; y1: number; y2: number }, b: { x1: number; x2: number; y1: number; y2: number }) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
-    for (const cue of LONG) {
-      const own = pieces.filter((piece) => cueOf(piece) === cue.index);
-      const faces = own.filter((piece) => FACE.test(piece.id));
-      const faceZ = Math.min(...faces.map((piece) => piece.z));
-      const t = Math.max(...cue.words.map((word) => word.endMs)) - 20;
-      for (const deco of own.filter((piece) => /:(rule|jamb\d)$/.test(piece.id))) {
-        expect(deco.z).toBeLessThan(faceZ);
-        const box = shown(deco, t);
-        if (!box) continue;
-        for (const face of faces) {
-          const ink = shown(face, t);
-          if (ink) expect(meets(box, ink), `${deco.id} over ${face.id} in cue ${cue.index}`).toBe(false);
+  test("a settled word paints as a single plain face: one piece, one whole clip, no slat painted, on every frame between landing and closing", () => {
+    for (const fps of [24, 30, 60]) {
+      const out = build(LONG, fps);
+      let rested = 0;
+      for (const cue of LONG) {
+        const spokenEnd = Math.max(...cue.words.map((word) => word.endMs));
+        for (const [w, word] of cue.words.entries()) {
+          const own = out.filter((piece) => cueOf(piece) === cue.index && new RegExp(`^blinds:\\d+:w${w}(?:s\\d)?$`).test(piece.id));
+          const face = own.find((piece) => piece.id === `blinds:${cue.index}:w${w}`)!;
+          // From one frame before the spoken end (the word is whole by then) to the end of the reading hold.
+          for (const t of exportFrameTimes(exportFrameAtOrBefore(word.endMs - 1 - 1000 / fps, fps), spokenEnd + 150, fps)) {
+            if (t < face.fromMs || t >= face.toMs) continue;
+            const painted = own.filter((piece) => evaluatePiece(piece, t).visible && evaluatePiece(piece, t).o > 0 && pieceBounds(piece, t, fakeMeasure));
+            expect(painted.map((piece) => piece.id), `word ${w} of cue ${cue.index} at ${t} (${fps} fps)`).toEqual([face.id]);
+            const whole = pieceBounds({ ...face, clip: undefined }, t, fakeMeasure)!;
+            const box = pieceBounds(face, t, fakeMeasure)!;
+            expect(box.x1 <= whole.x1 + 0.5 && box.x2 >= whole.x2 - 0.5).toBe(true);
+            rested++;
+          }
         }
+      }
+      expect(rested).toBeGreaterThan(300);
+    }
+  });
+
+  test("a slat is handed over to the face the moment it is open: later slats outlive earlier ones, and the face covers each finished slat", () => {
+    const out = build(LONG);
+    let handedOver = 0;
+    for (const cue of LONG) {
+      for (const [w, word] of cue.words.entries()) {
+        const face = faceOf(out, cue.index, w);
+        const slats = [1, 2, 3, 4, 5].map((i) => out.find((piece) => piece.id === `blinds:${cue.index}:w${w}s${i}`));
+        if (!face || slats.some((slat) => !slat || slat.toMs >= word.endMs)) continue;
+        const own = slats as Piece[];
+        for (let i = 1; i < own.length; i++) expect(own[i]!.toMs, `${own[i]!.id} ends before ${own[i - 1]!.id}`).toBeGreaterThanOrEqual(own[i - 1]!.toMs);
+        if (own[4]!.fromMs - own[0]!.fromMs >= 5) expect(own[0]!.toMs, `${own[0]!.id} is held until the last slat is open`).toBeLessThan(own[4]!.toMs);
+        for (const slat of own) {
+          const lastPainted = exportFrameTimes(slat.fromMs, slat.toMs, 30).filter((t) => shown(slat, t)).at(-1);
+          if (lastPainted === undefined) continue;
+          const part = shown(slat, lastPainted)!;
+          const after = exportFrameAtOrAfter(slat.toMs, 30);
+          const covering = shown(face, after)!;
+          expect(covering.x1 <= part.x1 + 3 && covering.x2 >= part.x2 - 3, `${face.id} does not cover ${slat.id} once it is open (${after})`).toBe(true);
+          handedOver++;
+        }
+      }
+    }
+    expect(handedOver).toBeGreaterThan(300);
+  });
+
+  test("a slat is fully transparent while its word rests", () => {
+    const run = demoCues(BLINDS_DEMO);
+    const out = build(run.cues);
+    const cue = run.cues[4]!;
+    const spokenEnd = Math.max(...cue.words.map((word) => word.endMs));
+    const slats = out.filter((piece) => cueOf(piece) === 4 && SLAT.test(piece.id));
+    expect(slats.length).toBe(5);
+    for (const slat of slats) {
+      for (const t of exportFrameTimes(spokenEnd - 100, spokenEnd + 140, 30)) {
+        if (t < slat.fromMs || t >= slat.toMs) continue;
+        expect(evaluatePiece(slat, t).o, `${slat.id} at ${t}`).toBe(0);
       }
     }
   });
@@ -376,17 +400,5 @@ describe("Blinds in a shared lane, a long word and a tight frame", () => {
     for (const face of faces) if (face.kind === "text") expect(face.text.startsWith("\u0301")).toBe(false);
     const text = faces.map((face) => (face.kind === "text" ? face.text : "")).join("");
     expect(text).toBe(word.toLocaleUpperCase());
-  });
-
-  test("the jambs and the rule recur on the long-word and nine-word cues at twice the sample size on 16:9", () => {
-    for (const edge of ["long-word", "nine-words", "no-hero", "one-word"] as const) {
-      const cues = sceneEdgeDemo(edge).cues;
-      const out = build(cues, 30, wide);
-      for (const cue of cues) {
-        const own = out.filter((piece) => cueOf(piece) === cue.index);
-        expect(own.some((piece) => piece.id.endsWith(":rule")), `${edge} cue ${cue.index} has no rule`).toBe(true);
-        expect(own.some((piece) => /:jamb\d$/.test(piece.id)), `${edge} cue ${cue.index} has no jamb`).toBe(true);
-      }
-    }
   });
 });

@@ -3,10 +3,9 @@ import { EASES, type Frames, clamp, prog } from "../ease";
 import { exportFrameAtOrBefore, sceneSampleRate } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneProgram } from "../input";
-import type { Clip, Piece, ShapePiece, TextPiece } from "../scene";
+import type { Clip, Piece, TextPiece } from "../scene";
 import { mixColour } from "../scene";
-import { rectPath } from "../shapes";
-import { caps, galleryScene, rowBounds, rowsOf } from "./gallery-layout";
+import { caps, galleryScene } from "./gallery-layout";
 import type { SpeechCell } from "./speech-layout";
 
 /**
@@ -25,28 +24,24 @@ import type { SpeechCell } from "./speech-layout";
  *   close left to right).
  * - **Real speech.** The reveal is locked to the word: it starts 60 ms before the word (never earlier than the cue's window gives)
  *   and is finished one frame before the spoken end, the stagger squeezed with it (a word too short for two painted
- *   frames of every slat is drawn open at once). The slats are only ever slices of their own word and live until the word is
- *   open, at which point the sixth slat hands over to the plain copy in one frame. Nothing closes before the last word's spoken
+ *   frames of every slat is drawn open at once). The slats are only ever slices of their own word, each handed over to the plain
+ *   face the moment it is open. Nothing closes before the last word's spoken
  *   end plus 150 ms; the close takes whatever time the next cue leaves and is a cut when it leaves less than three frames.
- * - **The face is one piece.** The word's readable face is a single piece from its first frame: its clip is the first slat while
- *   the others open, the whole word afterwards and the first slat again as the blinds close (the sample's tail where the last 12 %
- *   of a slat is finished at once is kept). The other five slats are one piece each (opening and closing in one, with an empty
- *   clip in between), so no slat is ever drawn over a readable word and a nine-word cue costs 111 of its 150 pieces and shadow layers.
+ * - **The face is one piece, and no line is drawn.** The word's readable face is a single piece from its first frame: its clip is
+ *   the first slat while it opens, then every slat that is open whole (a finished slat is absorbed into the face, so no slat edge
+ *   is ever painted inside an open part of the word, in the Studio's DOM painter as in the export), the whole word at rest, and
+ *   the first slat again as the blinds close (the sample's tail where the last 12 % of a slat is finished at once is kept). The
+ *   other five slats are one piece each that opens its part of the word until the face takes it over, is invisible (empty clip,
+ *   opacity 0) while the word rests, and closes it again, so no slat is ever drawn over a readable word and a nine-word cue
+ *   costs about 111 of its 150 pieces and shadow layers. The style draws nothing but words: no rule, bars or underline.
  * - **Shared lanes and the band.** Two overlapping speakers scale to a share of their lane, so both captions come out alike; the
  *   whole block is fitted into the sample's caption band (y 860..1650 around the anchor, at the natural size), so a long word broken
- *   over several rows never fills the frame. Rows keep room beside them for the jambs. A broken word is cut between whole letters
- *   (graphemes), never between a letter and its combining mark.
+ *   over several rows never fills the frame. A broken word is cut between whole letters (graphemes), never between a letter and
+ *   its combining mark.
  * - **Colours go through the brand map.** Body words are the primary colour, the key word the highlight, the outline the accent
  *   (the guard checks both against it).
  * - **Shadow.** The sample's 0.05 em / 0.16 em soft shadow is one blurred copy (sigma 0.08 em) per slat; the stroke is half the
  *   sample's CSS stroke (CSS strokes are centred, `\bord` is not).
- *
- * Extra recurring beats (cheap shapes, behind the type, in the blinds' own language):
- * - rule: a thin bar under the last row that opens along the reading direction with the line and wipes away with the close; it
- *   cycles full width / a short stub at the leading end / at the trailing end by a per-cue counter and a seeded width;
- * - jambs: two upright bars flanking the key row (the first row when there is no key word) that rise from their centre as the
- *   row lands and shrink as it closes; they cycle pair / leading only / trailing only and tall / short, and are dropped when the
- *   safe area leaves no room beside the row.
  */
 
 export const BLINDS_DEMO: DemoScript = {
@@ -70,9 +65,7 @@ const SOLO = 330;
 const HERO = 250;
 const COLUMN = 900;
 const HERO_COLUMN = 820;
-const WORD_COLUMN = 860;
-/** Room kept beside the widest row for the jambs, sample px. */
-const JAMB_ROOM = 46;
+const WORD_COLUMN = 880;
 /** The caption band of the sample (y 860..1650 of 1920, moving with the anchor). */
 const BAND_ABOVE = ANCHOR - 860;
 const BAND_BELOW = 1650 - ANCHOR;
@@ -95,15 +88,6 @@ const FLASH_MS = 470;
 const SIMPLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Common}\p{Script=Inherited}]+$/u;
 const PICTO = /\p{Extended_Pictographic}/u;
 const WHITE = "#FFFFFF";
-
-const seeded = (text: string, salt: number) => {
-  let h = 2166136261 ^ salt;
-  for (let at = 0; at < text.length; at++) {
-    h ^= text.charCodeAt(at);
-    h = Math.imul(h, 16777619);
-  }
-  return ((h >>> 0) % 10007) / 10007;
-};
 
 interface Unit {
   /** Index of the spoken word. */
@@ -134,7 +118,7 @@ function breakInto(text: string, n: number): string[] {
 
 export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) => {
   const { input, window, id, rtl, fps, space, exit: exitCapable, exitAt } = ctx;
-  const { cue, to, index: cueIndex } = window;
+  const { cue, to } = window;
   const frame = 1000 / sceneSampleRate(fps);
   const u = space.u;
   const hasHero = cue.words.some((word) => word.role === "hero");
@@ -208,16 +192,16 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
     });
     flush();
     const laidOut = ctx.layout({
-      column: COLUMN, gap: GAP, padding: 14 + JAMB_ROOM, groups,
+      column: COLUMN, gap: GAP, padding: 14, groups,
       words: units.map((unit) => ({ text: unit.text, size: unit.size, face: FACE, spacing: unit.spacing })),
     });
     // The engine centres the rows' boxes, which keep 0.27 em under the last baseline; the sample centres the ink, so the block moves down by half of that.
     const lowest = Math.max(...laidOut.cells.map((cell) => cell.baseline));
     const lastSize = Math.max(...laidOut.cells.filter((cell) => cell.baseline === lowest).map((cell) => cell.size));
     const moved = laidOut.cells.map((cell) => ({ ...cell, baseline: cell.baseline + 0.135 * lastSize }));
-    // What the cue draws vertically: the ink of every row and the rule under the last.
+    // What the cue draws vertically: the ink of every row.
     const top = Math.min(...moved.map((cell) => cell.baseline + Math.min(cell.inkTop, -0.86 * cell.size)));
-    const bottom = Math.max(...moved.map((cell) => cell.baseline + Math.max(cell.inkBottom, 0))) + 0.17 * lastSize;
+    const bottom = Math.max(...moved.map((cell) => cell.baseline + Math.max(cell.inkBottom, 0)));
     return { units, cells: moved, top, bottom };
   };
 
@@ -235,7 +219,6 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
   const units = arranged.units;
   const cells = arranged.cells.map((cell) => ({ ...cell, baseline: cell.baseline + dy }));
   const byUnit = new Map<number, SpeechCell>(cells.map((cell) => [cell.at, cell]));
-  const rows = rowsOf(cells);
 
   // The close: every unit's slats shrink right to left, the first unit first, once the last word has been read.
   const avail = to - exitAt;
@@ -248,7 +231,6 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
   const slatGone = (at: number, slat: number) => Math.ceil(slatClose(at, slat) + closeMs);
 
   const pieces: Piece[] = [];
-  const reveals: { from: number; settled: number; animated: boolean }[] = [];
 
   units.forEach((unit, at) => {
     const cell = byUnit.get(at)!;
@@ -270,10 +252,9 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
     const offset = unit.part === null || unit.parts < 2 ? 0 : Math.round(((enter.settled - enter.from) * 0.4 * unit.part) / unit.parts);
     const from = Math.min(enter.settled, enter.from + offset);
     // The word is whole one frame before its spoken end, not on the last frame before it: whoever looks a moment before the end sees all of it.
-    const settled = Math.max(from, Math.min(enter.settled, exportFrameAtOrBefore(word.endMs - 1 - frame, fps)));
+    const settled = Math.max(from, Math.round(Math.min(enter.settled, exportFrameAtOrBefore(word.endMs - 1 - frame, fps))));
     const W = settled - from;
     const animated = W >= MIN_FRAMES * frame;
-    reveals.push({ from, settled, animated });
     const lead = word.startMs - from;
     const k = Math.min(1, W / FULL_MS);
     const st = animated ? Math.min(STAGGER * k, Math.max(0, W - MIN_FRAMES * frame) / (SLATS - 1)) : 0;
@@ -329,41 +310,67 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
     });
     const clipOf = (x1: Frames, x2: Frames, start: number): Clip => ({ x1, x2, y1: [[start, y1]], y2: [[start, y2]] });
 
-    // The face: the first slat while the others open, the whole word between, the first slat again as the blinds close.
+    // The face: the first slat while it opens, then the slats that are open whole (a finished slat is absorbed, so no slat edge is
+    // ever painted inside an open part of the word), the whole word at rest, and the first slat again as the blinds close.
     const faceEnd = close ? Math.min(to, slatGone(at, 0)) : to;
+    const fullAt = (i: number) => Math.round(slatStart(i) + D);
     const edgesIn = [from, ...Array.from({ length: SLATS }, (_, i) => slatStart(i)), doneAt];
     const edgesOut = [closeFrom, ...Array.from({ length: SLATS }, (_, i) => slatClose(at, i)), faceEnd];
+    /** `fn` smooth between the cuts and free to jump at one: each stretch is sampled alone, the jump is a one-ms segment. */
+    const stepped = (fn: (t: number) => number, cuts: readonly number[], edges: readonly number[]): [number, number][] => {
+      const out: [number, number][] = [];
+      for (let c = 0; c + 1 < cuts.length; c++) {
+        const a = cuts[c]!;
+        const b = cuts[c + 1]! - 1;
+        for (const [t, v] of sampled(fn, a, Math.max(a, b), edges.filter((edge) => edge > a && edge < b))) out.push([t, v]);
+      }
+      return out;
+    };
+    const whole = (i: number): readonly [number, number] => range(i, 1);
+    const faceRange = (t: number): readonly [number, number] => {
+      let done = 0;
+      while (done < SLATS && t >= fullAt(done)) done++;
+      if (done === 0) return range(0, pvOf(0, t));
+      if (done >= SLATS) return full;
+      let lo = Number.POSITIVE_INFINITY;
+      let hi = Number.NEGATIVE_INFINITY;
+      for (let i = 0; i < done; i++) {
+        lo = Math.min(lo, whole(i)[0]);
+        hi = Math.max(hi, whole(i)[1]);
+      }
+      return [lo, hi];
+    };
     const faceSide = (side: 0 | 1): Frames => {
-      const pick = (t: number) => range(0, pvOf(0, t))[side];
       const frames: [number, number][] = [];
-      if (animated) frames.push(...sampled(pick, from, doneAt - 1, edgesIn).map(([t, v]) => [t, v] as [number, number]));
-      const hold = Math.max(from, frames.at(-1)?.[0] ?? from);
-      if (animated) frames.push([Math.max(hold + 1, doneAt), full[side]]);
-      else frames.push([from, full[side]]);
+      if (animated) {
+        const cuts = [...new Set([from, ...Array.from({ length: SLATS - 1 }, (_, i) => fullAt(i)).filter((t) => t > from && t < doneAt), doneAt])].sort((x, y) => x - y);
+        frames.push(...stepped((t) => faceRange(t)[side], cuts, edgesIn));
+        frames.push([Math.max(frames.at(-1)![0] + 1, doneAt), full[side]]);
+      } else frames.push([from, full[side]]);
       if (close) {
         const last = frames.at(-1)![0];
         if (closeFrom - 1 > last) frames.push([closeFrom - 1, full[side]]);
         const start = Math.max(frames.at(-1)![0] + 1, closeFrom);
-        frames.push(...sampled(pick, start, faceEnd, edgesOut).map(([t, v]) => [t, v] as [number, number]));
+        frames.push(...sampled((t) => range(0, pvOf(0, t))[side], start, faceEnd, edgesOut).map(([t, v]) => [t, v] as [number, number]));
       }
       return frames;
     };
     pieces.push(piece("", from, faceEnd, clipOf(faceSide(0), faceSide(1), from), colourFrames()));
 
-    // The other five slats: one piece each that opens the word, holds an empty clip while the plain face is on, and closes it
-    // (a piece costs its shadow layer too, and a cue may draw 150 of them).
+    // The other five slats: one piece each that opens its part of the word until the face takes it over, is invisible (empty clip,
+    // opacity 0) while the plain face is on, and closes it again (a piece costs its shadow layer too, and a cue may draw 150 of them).
     for (let i = 1; i < SLATS; i++) {
-      const start = animated ? Math.floor(slatStart(i)) : closeFrom;
-      const stop = close ? goneAt(i) : doneAt;
       if (!animated && !close) continue;
+      const start = animated ? Math.floor(slatStart(i)) : closeFrom;
+      const handOver = animated ? fullAt(i) : closeFrom;
+      const stop = close ? goneAt(i) : handOver;
       if (stop <= start) continue;
-      const empty = (): [number, number][] => [];
       const side = (which: 0 | 1): Frames => {
-        const frames: [number, number][] = empty();
+        const frames: [number, number][] = [];
         const pick = (t: number) => range(i, pvOf(i, t))[which];
-        if (animated) frames.push(...sampled(pick, start, Math.max(start, doneAt - 1), edgesIn).map(([t, v]) => [t, v] as [number, number]));
+        if (animated) frames.push(...sampled(pick, start, Math.max(start, handOver - 1), edgesIn).map(([t, v]) => [t, v] as [number, number]));
         if (animated && close) {
-          frames.push([Math.max(frames.at(-1)![0] + 1, doneAt), 0]);
+          frames.push([Math.max(frames.at(-1)![0] + 1, handOver), 0]);
           if (closeFrom - 1 > frames.at(-1)![0]) frames.push([closeFrom - 1, 0]);
         }
         if (close) {
@@ -372,84 +379,15 @@ export const blindsProgram: SceneProgram = galleryScene("blinds", ANCHOR, (ctx) 
         }
         return frames;
       };
-      pieces.push(piece(`s${i}`, start, stop, clipOf(side(0), side(1), start)));
+      const made = piece(`s${i}`, start, stop, clipOf(side(0), side(1), start));
+      if (animated && close) {
+        const gone: Frames = [[start, 1], [Math.max(start + 1, handOver - 1), 1], [Math.max(start + 2, handOver), 0]];
+        const back: Frames = closeFrom - 1 > gone.at(-1)![0] ? [[closeFrom - 1, 0], [closeFrom, 1]] : [[gone.at(-1)![0] + 1, 1]];
+        made.track = { ...made.track, o: [...gone, ...back] };
+      }
+      pieces.push(made);
     }
   });
 
-  // Extra beats. The rule under the last row and the jambs beside the key row sit behind the type.
-  const ordinal = input.cues.slice(0, cueIndex).filter((other) => other.words.some((word) => word.role === "hero") === hasHero).length;
-  const key = hasHero ? heroColour : ordinal % 2 === 0 ? heroColour : bodyColour;
-  const rowFrom = (row: readonly SpeechCell[]) => Math.min(...row.map((cell) => reveals[cell.at]!.from));
-  const unitsEnd = Math.max(...units.map((_, at) => (close ? Math.min(to, slatGone(at, 0)) : to)));
-  const wipeEnd = close ? unitsEnd : to;
-  const barSeed = seeded(cue.words.map((word) => word.text).join(" "), cueIndex);
-
-  const lastRow = rows.at(-1)!;
-  const lastBox = rowBounds(lastRow);
-  const lastRowSize = Math.max(...lastRow.map((cell) => cell.size));
-  const ruleW = Math.max(1, lastBox.x2 - lastBox.x1);
-  const variant = ordinal % 3;
-  const width = variant === 0 ? ruleW : ruleW * (0.34 + 0.16 * barSeed);
-  const flushTrailing = variant === 0 ? false : (variant === 1) === rtl;
-  const left = flushTrailing ? lastBox.x2 - width : lastBox.x1;
-  const ruleH = Math.max(3, 0.045 * lastRowSize);
-  const ruleTop = Math.max(...lastRow.map((cell) => cell.baseline + Math.max(0, cell.inkBottom))) + 0.05 * lastRowSize + 0.025 * lastRowSize + 0.04 * lastRowSize;
-  const ruleFrom = Math.round(rowFrom(lastRow));
-  const ruleEnd = wipeEnd;
-  if (ruleEnd - ruleFrom > frame) {
-    const grow = Math.min(240, (close ? exitAt : to) - ruleFrom);
-    const animated = grow >= MIN_FRAMES * frame;
-    const reveal = (t: number) => (animated ? 0.08 + 0.92 * EASES.outExpo(prog(t, ruleFrom, grow)) : 1);
-    const wipeLen = close ? Math.max(MIN_FRAMES * frame, Math.min(ruleEnd - exitAt, stagger * squeeze + closeMs)) : 0;
-    const wipe = (t: number) => (close ? EASES.inOut(prog(t, exitAt, wipeLen)) : 0);
-    const x1 = (t: number) => (rtl ? left + width - width * reveal(t) : left + width * wipe(t));
-    const x2 = (t: number) => (rtl ? left + width - width * wipe(t) : left + width * reveal(t));
-    const edges = [ruleFrom, ruleFrom + grow, exitAt, exitAt + wipeLen];
-    pieces.push({
-      id: `${id}:rule`, kind: "shape", z: 2, fromMs: ruleFrom, toMs: ruleEnd, track: { x: [[ruleFrom, left]], y: [[ruleFrom, ruleTop]] },
-      clip: { x1: sampled(x1, ruleFrom, ruleEnd, edges), x2: sampled(x2, ruleFrom, ruleEnd, edges), y1: [[ruleFrom, ruleTop - 2]], y2: [[ruleFrom, ruleTop + ruleH + 2]] },
-      path: rectPath(0, 0, width, ruleH), fill: { colour: key },
-    } satisfies ShapePiece);
-  }
-
-  const keyRow = rows.find((row) => row.some((cell) => units[cell.at]!.hero && cue.words[units[cell.at]!.word]!.role === "hero")) ?? rows[0]!;
-  const keyBox = rowBounds(keyRow);
-  const keySize = Math.max(...keyRow.map((cell) => cell.size));
-  const jambW = Math.max(3, 0.05 * keySize);
-  const jambGap = 0.12 * keySize + PAD * u;
-  const tightGap = 0.04 * keySize + 0.5 * PAD * u;
-  const tall = (hasHero ? ordinal : ordinal + 1) % 2 === 0;
-  const jambH = (keyBox.y2 - keyBox.y1) * (tall ? 0.96 : 0.6);
-  const jambY = (keyBox.y1 + keyBox.y2) / 2;
-  const jambVariant = (hasHero ? ordinal : ordinal + 1) % 3;
-  const margin = 4 * u;
-  const jambFrom = Math.round(rowFrom(keyRow));
-  const jambEnd = wipeEnd;
-  const sides: { side: -1 | 1; x: number }[] = [
-    { side: -1, x: keyBox.x1 - jambGap - jambW / 2 },
-    { side: 1, x: keyBox.x2 + jambGap + jambW / 2 },
-  ];
-  const wanted = sides.filter(({ side }) => jambVariant === 0 || (jambVariant === 1) === (side * (rtl ? -1 : 1) < 0));
-  if (jambEnd - jambFrom > frame) {
-    wanted.forEach(({ side, x: roomy }, at) => {
-      // Beside the row at the usual gap, or at a tight one when the safe area leaves less room.
-      const tight = side < 0 ? keyBox.x1 - tightGap - jambW / 2 : keyBox.x2 + tightGap + jambW / 2;
-      const fits = (x: number) => x - jambW / 2 >= bounds.x1 + margin && x + jambW / 2 <= bounds.x2 - margin;
-      const x = fits(roomy) ? roomy : tight;
-      if (!fits(x)) return;
-      const pop = Math.min(220, (close ? exitAt : to) - jambFrom);
-      const animated = pop >= MIN_FRAMES * frame;
-      const sy: [number, number, ("outBack" | "in")?][] = animated ? [[jambFrom, 0.05], [jambFrom + pop, 1, "outBack"]] : [[jambFrom, 1]];
-      if (close) {
-        const shrink = Math.max(MIN_FRAMES * frame, Math.min(jambEnd - exitAt, closeMs + EXIT_WORD * squeeze));
-        sy.push([Math.max(sy.at(-1)![0] + 1, exitAt), 1], [Math.min(jambEnd, exitAt + shrink), 0.02, "in"]);
-      }
-      pieces.push({
-        id: `${id}:jamb${at}`, kind: "shape", z: 2, fromMs: jambFrom, toMs: jambEnd,
-        track: { x: [[jambFrom, x]], y: [[jambFrom, jambY]], sy, ...(close ? { o: [[jambFrom, 1], [Math.max(jambFrom + 1, exitAt), 1], [Math.max(jambFrom + 2, Math.min(jambEnd, exitAt + Math.max(MIN_FRAMES * frame, Math.min(jambEnd - exitAt, closeMs + EXIT_WORD * squeeze)))), 0, "in"]] as Frames } : {}) },
-        path: rectPath(-jambW / 2, -jambH / 2, jambW, jambH), fill: { colour: key }, stroke: { widthPx: Math.max(1.5, 0.012 * keySize), colour: accent },
-      } satisfies ShapePiece);
-    });
-  }
   return pieces;
 });
