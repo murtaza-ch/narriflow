@@ -286,6 +286,69 @@ describe("Bento review fixes", () => {
     }
   });
 
+  test("overlapping speakers at 2x on 16:9 never overlap and share one scale", () => {
+    const long = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    const run = [mk(["extraordinary", "understanding", "occasionally", "direction", "in", "clear", "detail", "at", "once"], 400, 0, 0), mk(["ہمارا", "انتخاب", "سے", "یہ", "ہے", long], 680, 1, 1, "ur")];
+    const out = build(run, { canvas: { width: 1920, height: 1080 }, scale: 2 });
+    for (const t of exportFrameTimes(380, 1800, 30)) {
+      const painted = out.flatMap((piece) => {
+        const box = shown(piece, t);
+        return box ? [{ piece, box }] : [];
+      });
+      for (const a of painted) for (const b of painted) {
+        if (cueOf(a.piece) >= cueOf(b.piece)) continue;
+        expect(meets(a.box, b.box), `${a.piece.id} meets ${b.piece.id} at ${t}`).toBe(false);
+      }
+    }
+    // The same scale: the body words of both lanes are the same size, give or take the row squeeze.
+    const body = (cue: number) => Math.max(...out.filter((piece): piece is Extract<Piece, { kind: "text" }> => piece.kind === "text" && FACE.test(piece.id) && cueOf(piece) === cue && !/:w(8|5l\d)$/.test(piece.id)).map((piece) => piece.sizePx));
+    expect(Math.max(body(0), body(1)) / Math.min(body(0), body(1))).toBeLessThan(1.4);
+  });
+
+  test("back-to-back one-frame cues keep a tile under every word", () => {
+    const cues = [331, 401, 471, 541, 611, 681, 751, 821].map((startMs, index): SceneCue => {
+      const word = { text: ["go", "yes", "wait", "later"][index % 4]!, startMs, endMs: startMs + 70, role: "hero" as const };
+      return { index, speaker: 0, language: "en", startMs, endMs: startMs + 70, words: [word] };
+    });
+    for (const fps of [24, 25, 30]) {
+      const out = build(cues, { fps });
+      let checked = 0;
+      for (const t of exportFrameTimes(331, 891, fps)) {
+        for (const face of out.filter((piece) => /^bento:\d+:w\d+$/.test(piece.id))) {
+          const box = shown(face, t);
+          if (!box || evaluatePiece(face, t).o < 0.2) continue;
+          checked++;
+          const backed = out.some((piece) => piece.kind === "shape" && cueOf(piece) === cueOf(face) && /:(card\d+|w\d+l\d+)$/.test(piece.id) && (() => {
+            const tile = shown(piece, t);
+            return tile !== null && tile.x1 <= box.x1 + 1.5 && tile.x2 >= box.x2 - 1.5 && tile.y1 <= box.y1 + 1.5 && tile.y2 >= box.y2 - 1.5;
+          })());
+          expect(backed, `${face.id} is bare at ${t} (${fps} fps)`).toBe(true);
+        }
+      }
+      expect(checked).toBeGreaterThan(0);
+    }
+  });
+
+  test("wrapped lines are spaced by their measured ink, so a descender never meets the accent below", () => {
+    const tall: Measure = (text, _face, sizePx) => ({
+      advance: [...text].length * 0.47 * sizePx,
+      inkTop: (/\p{M}/u.test(text) ? -0.98 : -0.72) * sizePx,
+      inkBottom: (/[pg]/.test(text) ? 0.3 : 0.2) * sizePx,
+      ascent: 1.04 * sizePx,
+      descent: 0.22 * sizePx,
+    });
+    const word = `${"p".repeat(11)}${"o\u0301".repeat(11)}${"p".repeat(11)}${"o\u0301".repeat(11)}`;
+    const cues = demoCues({ lines: [`${word}:h@900`], options: { lead: 400, gap: 0, cueGap: 0, tail: 400 } }).cues;
+    const out = build(cues, { measure: tall });
+    const t = settledAt(cues[0]!);
+    const lines = out.filter((piece) => FACE.test(piece.id)).flatMap((piece) => {
+      const box = pieceBounds(piece, t, tall);
+      return box ? [{ id: piece.id, box }] : [];
+    }).sort((a, b) => a.box.y1 - b.box.y1);
+    expect(lines.length).toBeGreaterThan(2);
+    for (let i = 1; i < lines.length; i++) expect(lines[i - 1]!.box.y2, `${lines[i - 1]!.id} reaches ${lines[i]!.id}`).toBeLessThanOrEqual(lines[i]!.box.y1 + 0.5);
+  });
+
   test("a grey brand colour that passes the shared 3:1 guard keeps white ink", () => {
     const out = build(demoCues(BENTO_DEMO).cues, { colours: { primary: "#F4F0E7", highlight: "#939393", accent: "#1A1D25", shadow: "#000000" } });
     const heroFaces = out.filter((piece): piece is Extract<Piece, { kind: "text" }> => piece.kind === "text" && /:w3$/.test(piece.id) && cueOf(piece) === 0);
