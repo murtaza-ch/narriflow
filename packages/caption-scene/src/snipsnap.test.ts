@@ -291,4 +291,55 @@ describe("Snip Snap on real phrasing", () => {
       }
     }
   });
+
+  test("a doodle waits for the part of the label it sits beside (review: 228 px from a label still growing)", () => {
+    const slow = demoCues({ lines: ["nobody:b tells:b you:b this:b", "the:m remote:b doesn't:b work:b", "keep:b the:m point:b sharp:h@500"], options: { lead: 400, gap: 60, rate: 420, cueGap: 150, tail: 500 } }).cues;
+    const out = build(slow);
+    let checked = 0;
+    for (const cue of slow) {
+      const own = out.filter((piece) => cueOf(piece) === cue.index);
+      for (const di of [0, 1]) {
+        const parts = own.filter((piece) => new RegExp(`:doodle${di}-\\d$`).test(piece.id));
+        if (parts.length === 0) continue;
+        const first = Math.min(...parts.map((piece) => exportFrameTimes(piece.fromMs, piece.toMs, 30).find((t) => shown(piece, t)) ?? Number.POSITIVE_INFINITY));
+        // A little after it first paints, once it has grown to size.
+        const at = Math.min(first + 200, cue.endMs - 40);
+        const boxes = parts.flatMap((piece) => shown(piece, at) ?? []);
+        if (boxes.length === 0) continue;
+        const box = { x1: Math.min(...boxes.map((b) => b.x1)), y1: Math.min(...boxes.map((b) => b.y1)), x2: Math.max(...boxes.map((b) => b.x2)), y2: Math.max(...boxes.map((b) => b.y2)) };
+        const plates = own.filter((piece) => /:p\d+s\d+$/.test(piece.id)).flatMap((piece) => shown(piece, at) ?? []);
+        const gap = Math.min(...plates.map((plate) => Math.hypot(Math.max(box.x1 - plate.x2, plate.x1 - box.x2, 0), Math.max(box.y1 - plate.y2, plate.y1 - box.y2, 0))));
+        expect(gap, `cue ${cue.index} doodle${di} first paints ${Math.round(gap)} px from the paper painted by then`).toBeLessThanOrEqual(40);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(3);
+  });
+
+  test("combining marks stay with their letter and soft hyphens are the places a long word breaks (review: one 37 px line)", () => {
+    const wordCue = (text: string): SceneCue => ({ index: 0, startMs: 400, endMs: 2400, speaker: null, language: "en", words: [{ text, startMs: 400, endMs: 1900, role: "body", key: null }] });
+    const segmentsOf = (text: string) => build([wordCue(text)]).filter((piece) => /^snipsnap:0:w0l\d+$/.test(piece.id) && piece.kind === "text");
+    const marked = segmentsOf("pneumono\u0301ultramicroscopicsilicovolcanoconiosis");
+    expect(marked.length).toBeGreaterThanOrEqual(2);
+    for (const segment of marked) {
+      if (segment.kind !== "text") throw new Error("text");
+      expect(segment.sizePx).toBeGreaterThanOrEqual(0.55 * 112);
+      expect(segment.text.startsWith("\u0301")).toBe(false);
+    }
+    expect(marked.map((segment) => (segment.kind === "text" ? segment.text : "")).join("")).toBe("PNEUMONO\u0301ULTRAMICROSCOPICSILICOVOLCANOCONIOSIS");
+    const soft = segmentsOf("pneumonoultra\u00ADmicroscopicsilico\u00ADvolcanoconiosis");
+    expect(soft.length).toBeGreaterThanOrEqual(2);
+    const drawn = soft.map((segment) => (segment.kind === "text" ? segment.text : ""));
+    expect(drawn.join("")).toBe("PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS");
+    // Cut where the word may be hyphenated: every piece but the last ends at a soft hyphen of the source.
+    expect(["PNEUMONOULTRA", "PNEUMONOULTRAMICROSCOPICSILICO"]).toContain(drawn[0]);
+  });
+
+  test("a Japanese cue keeps at least one scrap (review: none on とても 素晴らしい ですね)", () => {
+    const ja = demoCues({ language: "ja", lines: ["とても:b 素晴らしい:h@120 ですね:b", "もうすぐ:b 新しい:b アプリ:h@90 発売:b"], options: { rate: 100, lead: 400, tail: 200, cueGap: 0 } }).cues;
+    for (const fps of [24, 30, 60]) {
+      const out = build(ja, fps);
+      for (const cue of ja) expect(out.filter((piece) => cueOf(piece) === cue.index && /:scrap\d$/.test(piece.id)).length, `cue ${cue.index} at ${fps} fps`).toBeGreaterThanOrEqual(1);
+    }
+  });
 });

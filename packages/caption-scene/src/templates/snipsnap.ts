@@ -71,7 +71,7 @@ const POP_FROM = 0.85;
 /** The caption band, as shares of the canvas height around the anchor line (860-1650 px of a 1920 px frame at the default position). */
 const BAND_UP = 425 / 1920;
 const BAND_DOWN = 365 / 1920;
-const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}]+$/u;
+const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{M}]+$/u;
 const LIME = "#93E63E";
 const BLUE = "#3355FF";
 const ORANGE = "#FF9F1C";
@@ -194,6 +194,24 @@ function distanceTo(rect: Rect, x: number, y: number): number {
   return Math.hypot(Math.max(Math.abs(x - rect.x) - hx, 0), Math.max(Math.abs(y - rect.y) - hy, 0));
 }
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** `glyphs` in `n` pieces of about equal length, cut at soft hyphens when there are enough of them, else anywhere between graphemes. */
+function cutAt(glyphs: readonly string[], soft: ReadonlySet<number>, n: number): string[] {
+  const length = glyphs.length;
+  const inside = [...soft].filter((at) => at > 0 && at < length);
+  const pool = inside.length >= n - 1 ? inside : Array.from({ length: length - 1 }, (_, at) => at + 1);
+  const cuts: number[] = [];
+  for (let k = 1; k < n; k++) {
+    const ideal = (k * length) / n;
+    const free = pool.filter((at) => !cuts.includes(at));
+    if (free.length === 0) break;
+    cuts.push(free.reduce((best, at) => (Math.abs(at - ideal) < Math.abs(best - ideal) ? at : best)));
+  }
+  cuts.sort((a, b) => a - b);
+  return [0, ...cuts].map((from, k) => glyphs.slice(from, cuts[k] ?? length).join("")).filter((piece) => piece.length > 0);
+}
+
 /** One piece of layout: a spoken word, or one segment of a word too long to read on a single label. */
 interface Item {
   readonly at: number;
@@ -253,16 +271,21 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
   const items: Item[] = [];
   const itemsOfWord: number[][] = [];
   cue.words.forEach((word, at) => {
-    const text = texts[at]!;
-    const chars = [...text];
+    // Graphemes, not code points, so a combining mark stays with its letter; a soft hyphen is a place to break, never drawn.
+    const glyphs: string[] = [];
+    const soft = new Set<number>();
+    for (const { segment } of GRAPHEMES.segment(texts[at]!)) {
+      if (segment === "\u00AD") soft.add(glyphs.length);
+      else glyphs.push(segment);
+    }
+    const text = glyphs.join("");
     const per = (part: string) => input.measure(part, FACE, 100, SPACING).advance / 100;
     const cap = (word.role === "hero" ? HERO_TEXT_W : MAX_TEXT_W) * u0;
     const own: number[] = [];
     let pieces = [text];
-    if (per(text) * MIN_FIT * BODY * u0 > cap && chars.length > 1 && SPLITTABLE.test(text)) {
-      for (let n = 2; n <= chars.length; n++) {
-        const size = Math.ceil(chars.length / n);
-        pieces = Array.from({ length: n }, (_, k) => chars.slice(k * size, (k + 1) * size).join("")).filter((piece) => piece.length > 0);
+    if (per(text) * MIN_FIT * BODY * u0 > cap && glyphs.length > 1 && SPLITTABLE.test(text)) {
+      for (let n = 2; n <= glyphs.length; n++) {
+        pieces = cutAt(glyphs, soft, n);
         if (Math.max(...pieces.map(per)) * MIN_FIT * BODY * u0 <= cap) break;
       }
     }
@@ -368,6 +391,29 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
     };
   };
 
+  /** The words of a row as they come in, and the label's growth steps (a step under two painted frames joins the next). */
+  const rowSteps = (layout: Layout, row: Row) => {
+    const entries = row.items.map((i) => ({ i, ...ctx.enter(virtual(items[i]!), 220, LEAD) }));
+    const raw: { from: number; shown: number[] }[] = [];
+    let carry: number | null = null;
+    entries.forEach((entry, k) => {
+      const next = entries[k + 1];
+      const from: number = carry ?? entry.from;
+      if (next && paintedFrameCount(from, next.from, fps) < 2) {
+        carry = from;
+        return;
+      }
+      carry = null;
+      raw.push({ from, shown: entries.slice(0, k + 1).map((e) => e.i) });
+    });
+    const steps = raw.map((step) => {
+      const spanLeft = Math.max(0, Math.min(...step.shown.map((i) => row.cells.get(i)!.x - row.cells.get(i)!.width / 2)) - PAD_X * layout.u - row.left);
+      const spanRight = Math.min(row.width, Math.max(...step.shown.map((i) => row.cells.get(i)!.x + row.cells.get(i)!.width / 2)) + PAD_X * layout.u - row.left);
+      return { from: step.from, spanLeft, spanRight };
+    });
+    return { entries, steps };
+  };
+
   /** The labels and their words. */
   const drawRows = (layout: Layout): Piece[] => {
     const pieces: Piece[] = [];
@@ -384,23 +430,10 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
         return [row.cx + dx, row.cy + dy];
       };
 
-      // The label grows by whole words; a step shorter than two painted frames joins the next.
-      const entries = row.items.map((i) => ({ i, ...ctx.enter(virtual(items[i]!), 220, LEAD) }));
-      const steps: { from: number; shown: number[] }[] = [];
-      let carry: number | null = null;
-      entries.forEach((entry, k) => {
-        const next = entries[k + 1];
-        const from: number = carry ?? entry.from;
-        if (next && paintedFrameCount(from, next.from, fps) < 2) {
-          carry = from;
-          return;
-        }
-        carry = null;
-        steps.push({ from, shown: entries.slice(0, k + 1).map((e) => e.i) });
-      });
+      // The label grows by whole words.
+      const { entries, steps } = rowSteps(layout, row);
       steps.forEach((step, k) => {
-        const spanLeft = Math.max(0, Math.min(...step.shown.map((i) => row.cells.get(i)!.x - row.cells.get(i)!.width / 2)) - PAD_X * layout.u - row.left);
-        const spanRight = Math.min(row.width, Math.max(...step.shown.map((i) => row.cells.get(i)!.x + row.cells.get(i)!.width / 2)) + PAD_X * layout.u - row.left);
+        const { spanLeft, spanRight } = step;
         const w = spanRight - spanLeft;
         const toMs = steps[k + 1]?.from ?? to;
         const paperPts = labelPoints(w, row.h, row.style, row.seed, layout.u).map(([x, y]): Pt => [x + spanLeft - row.width / 2, y - row.h / 2]);
@@ -501,12 +534,21 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
   const frameMs = 1000 / sceneSampleRate(fps);
   const firstFrom = holderFor(rows[0]!).lineIn.from;
   /** When an extra can show: at `wanted`, or earlier so that it paints on two frames; a static pose when its entrance cannot. */
-  const showing = (wanted: number, duration: number) => {
-    const onset = Math.max(firstFrom, Math.min(wanted, to - 3 * frameMs));
+  const showing = (wanted: number, duration: number, notBefore = firstFrom) => {
+    const onset = Math.max(firstFrom, notBefore, Math.min(wanted, to - 3 * frameMs));
     if (paintedFrameCount(onset, to, fps) < 2) return null;
     const run = Math.min(duration, to - onset);
     return { onset, dur: paintedFrameCount(onset, onset + run, fps) >= 2 ? run : 0 };
   };
+
+  // The label grows as its words are said: an extra that sits beside a part of it waits until that part has painted.
+  const paintedSteps = rows.flatMap((row) => rowSteps(layout, row).steps.map((step) => {
+    const [dx, dy2] = rotatePoint((step.spanLeft + step.spanRight) / 2 - row.width / 2, 0, row.rot);
+    return { from: step.from, rect: { x: row.cx + dx, y: row.cy + dy2, hx: (step.spanRight - step.spanLeft) / 2, hy: row.h / 2, rot: row.rot } as Rect };
+  })).sort((a, b) => a.from - b.from);
+  /** The first moment a label already painted lies within `reach` of (x, y); null when none ever does. */
+  const paperAt = (x: number, y: number, reach: number): number | null =>
+    paintedSteps.find((step) => distanceToRect(step.rect, x, y) <= reach)?.from ?? null;
 
   const heroAt = cue.words.findIndex((word) => word.role === "hero");
   const anchorRow = rows.find((row) => row.hero) ?? rows.at(-1)!;
@@ -552,7 +594,8 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
     };
     const spot = find(true) ?? find(false);
     if (!spot) continue;
-    const when = showing(anchorWord.startMs + 50 + di * 120, 340);
+    const ready = paperAt(spot.x, spot.y, reach * (spot.size / 100) + 20 * u) ?? 0;
+    const when = showing(anchorWord.startMs + 50 + di * 120, 340, ready);
     if (!when) continue;
     taken.push({ x: spot.x, y: spot.y, r: reach * (spot.size / 100) * 1.07 + 6 * u });
     const hash = rnd(index * 5 + di, 3);
@@ -626,20 +669,19 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
     }
   }
 
-  // Paper scraps tumbling out of the key label into free space around it.
+  // Paper scraps tumbling out of the key label into free space around it. The usual eight spots first; when none is free (a tall
+  // stack, a wide key word) a ring of spots at growing distances, so a cue keeps at least one scrap wherever any room exists.
   {
     const row = anchorRow;
     const base = Math.floor((rnd(index * 11 + anchorLi, 2) * 0.5 + 0.5) * 8);
     let placed = 0;
-    for (let n = 0; n < 8 && placed < 4; n++) {
-      const angle = (((base + n * 3) % 8) * Math.PI) / 4 + rnd(index + n, 9) * 0.25;
-      const margin = (30 + 14 * (rnd(index * 7 + n, 4) * 0.5 + 0.5)) * u;
+    const scrap = (angle: number, margin: number, radius: number, n: number): boolean => {
       const x = row.cx + Math.cos(angle) * (row.width / 2 + margin) * side;
       const y = row.cy + Math.sin(angle) * (row.h / 2 + margin);
-      const radius = 20 * u;
-      if (!inside(x, y, radius * 1.3) || !clear(x, y, radius * 1.3, 6 * u) || taken.some((o) => Math.hypot(o.x - x, o.y - y) < o.r + radius * 1.3)) continue;
-      const when = showing(anchorWord.startMs + 20 + placed * 40, 380);
-      if (!when) continue;
+      if (!inside(x, y, radius * 1.3) || !clear(x, y, radius * 1.3, 6 * u) || taken.some((o) => Math.hypot(o.x - x, o.y - y) < o.r + radius * 1.3)) return false;
+      const ready = paperAt(x, y, radius * 1.3 + 60 * u) ?? 0;
+      const when = showing(anchorWord.startMs + 20 + placed * 40, 380, ready);
+      if (!when) return false;
       taken.push({ x, y, r: radius * 1.3 });
       const { onset: start, dur } = when;
       const q = (t: number) => (dur > 0 ? EASES.outExpo(prog(t, start, dur)) : 1);
@@ -655,6 +697,13 @@ export const snipsnapProgram = galleryScene("snipsnap", ANCHOR, (ctx) => {
       const colour = [c.primary, c.highlight, c.accent, LIME][(index + n) % 4]!;
       pieces.push({ ...ctx.shape(`scrap${placed}`, start, scrapPath(n, radius), track, colour), z: 18, toMs: to });
       placed++;
+      return true;
+    };
+    for (let n = 0; n < 8 && placed < 4; n++) {
+      scrap((((base + n * 3) % 8) * Math.PI) / 4 + rnd(index + n, 9) * 0.25, (30 + 14 * (rnd(index * 7 + n, 4) * 0.5 + 0.5)) * u, 20 * u, n);
+    }
+    for (const margin of [26, 44, 70, 100, 140]) {
+      for (let step = 0; step < 24 && placed === 0; step++) scrap(((base + step) * Math.PI) / 12, margin * u, 14 * u, step);
     }
   }
 
