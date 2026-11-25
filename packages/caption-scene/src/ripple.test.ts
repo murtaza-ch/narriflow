@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { describeSpeechConformance } from "./conformance-support";
-import { demoCues } from "./demo";
+import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
-import { evaluatePiece } from "./scene";
+import type { SceneCue } from "./input";
+import { type Box, evaluatePiece, pieceBounds } from "./scene";
 import { rippleProgram } from "./templates/ripple";
-import { sceneInput } from "./test-support";
+import { fakeMeasure, sceneInput } from "./test-support";
 
 describeSpeechConformance("ripple", rippleProgram, { anchorLineY: 1290 });
 
@@ -68,8 +69,9 @@ describe("ripple", () => {
     for (const index of [0, 1, 2]) {
       expect(pieces.filter((piece) => piece.id.startsWith(`ripple:${index}:ring0-`)).length).toBeGreaterThanOrEqual(2);
     }
-    // No key word: the last word is split into letters that wave; the words before it stay whole.
-    expect(pieces.some((piece) => /^ripple:1:w2l\d$/.test(piece.id))).toBe(true);
+    // No key word: the last word rides a small wave whole (never split into letters); the words before it stay whole too.
+    expect(pieces.some((piece) => /^ripple:1:w2l\d$/.test(piece.id))).toBe(false);
+    expect(pieces.some((piece) => piece.id === "ripple:1:w2")).toBe(true);
     expect(pieces.some((piece) => piece.id === "ripple:1:w0")).toBe(true);
   });
 
@@ -81,19 +83,6 @@ describe("ripple", () => {
     const swell = Math.min(...exportFrameTimes(heroStart, heroStart + 900, 60).map((t) => evaluatePiece(lead, t).y));
     expect(rest - swell).toBeGreaterThan(3);
     expect(evaluatePiece(lead, heroStart + 1400).y).toBeCloseTo(rest, -1);
-  });
-
-  test("rings are cut out around the words after the key word, so they never run through them", () => {
-    const { pieces } = build(["the:m remote:b doesn't:h@700 work:b", "just:m breathe:b"]);
-    const ring = pieces.find((piece) => piece.id === "ripple:0:ring0-0")!;
-    expect(ring.clip?.inverse).toBe(true);
-    const tail = pieces.find((piece) => piece.id === "ripple:0:w3")!;
-    const y = evaluatePiece(tail, tail.fromMs + 1500).y;
-    const clip = evaluatePiece(ring, ring.fromMs).clip!;
-    expect(clip.y1).toBeLessThan(y);
-    expect(clip.y2).toBeGreaterThan(y);
-    // A cue with nothing after the key word, or no key word, has nothing to cut out.
-    expect(pieces.find((piece) => piece.id === "ripple:1:ring0-0")!.clip).toBeUndefined();
   });
 
   test("rows follow speech: words before the key word sit above it, words after it below", () => {
@@ -109,5 +98,103 @@ describe("ripple", () => {
     const short = build(["hold:h@400"]);
     const bursts = (pieces: ReturnType<typeof build>["pieces"]) => new Set(pieces.filter((p) => p.id.includes(":ring")).map((p) => p.id.split(":ring")[1]![0]!)).size;
     expect(bursts(long.pieces)).toBeGreaterThan(bursts(short.pieces));
+  });
+});
+
+const anchor = { xPct: 50, yPct: (1290 / 1920) * 100 };
+const inkBox = (pieces: ReturnType<typeof build>["pieces"], cue: number, from: number, to: number, canvas: { width: number; height: number }, fps = 30) => {
+  let box: Box | null = null;
+  for (const t of exportFrameTimes(from, to, fps)) {
+    for (const piece of pieces) {
+      if (piece.kind !== "text" || !piece.id.startsWith(`ripple:${cue}:w`)) continue;
+      const b = pieceBounds(piece, t, fakeMeasure);
+      if (!b || evaluatePiece(piece, t).o < 0.5) continue;
+      box = box ? { x1: Math.min(box.x1, b.x1), y1: Math.min(box.y1, b.y1), x2: Math.max(box.x2, b.x2), y2: Math.max(box.y2, b.y2) } : b;
+    }
+  }
+  expect(box).not.toBeNull();
+  expect(canvas.width).toBeGreaterThan(0);
+  return box as unknown as Box;
+};
+
+describe("ripple review fixes", () => {
+  test("a word wider than the column breaks across rows at a readable size", () => {
+    const word = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    const { cues, pieces } = build([`${word}:h@900`]);
+    const parts = pieces.filter((piece) => /^ripple:0:w0l\d$/.test(piece.id));
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.map((piece) => (piece.kind === "text" ? piece.text : "")).join("")).toBe(word);
+    for (const piece of parts) expect(piece.kind === "text" && piece.sizePx).toBeGreaterThanOrEqual(90);
+    const rows = new Set(parts.map((piece) => Math.round(evaluatePiece(piece, cues[0]!.endMs - 300).y)));
+    expect(rows.size).toBe(parts.length);
+  });
+
+  test("a cue stays inside the caption band at twice the size, portrait and landscape", () => {
+    for (const edge of ["urdu", "nine-words", "long-word"] as const) {
+      for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+        const { cues } = sceneEdgeDemo(edge);
+        const pieces = rippleProgram.build(sceneInput(cues, { fps: 30, colours, anchor, scale: 2, canvas })).pieces;
+        const natural = Math.min(canvas.width, canvas.height) / 1080;
+        const ay = (anchor.yPct / 100) * canvas.height;
+        const y1 = Math.max(0.05 * canvas.height, ay - 430 * natural) - 2;
+        const y2 = Math.min(0.95 * canvas.height, ay + 360 * natural) + 2;
+        for (const cue of cues) {
+          const box = inkBox(pieces, cue.index, cue.startMs, cue.endMs, canvas);
+          // Ink at rest, not the crest's reach: the rows themselves sit in the band.
+          expect(box.y2, `${edge} ${canvas.width}x${canvas.height} cue ${cue.index} bottom`).toBeLessThanOrEqual(y2 + 60 * natural);
+          expect(box.y1, `${edge} ${canvas.width}x${canvas.height} cue ${cue.index} top`).toBeGreaterThanOrEqual(y1 - 60 * natural);
+        }
+      }
+    }
+  });
+
+  test("two speakers' identical key words come out at comparable sizes", () => {
+    const a = demoCues({ lines: ["extraordinary:b@300 responsibilities:b@300 really:h@1900 interdisciplinary:b@500 internationally:b@1100"] }).cues[0]!;
+    const b = demoCues({ lines: ["really:h@2100"], options: { lead: 1200, tail: 500 } }).cues[0]!;
+    const cues: SceneCue[] = [a, { ...b, index: 1 }];
+    const canvas = { width: 1920, height: 1080 };
+    const pieces = rippleProgram.build(sceneInput(cues, { fps: 30, colours, anchor, scale: 2, canvas })).pieces;
+    const size = (cue: number, word: number) => {
+      const piece = pieces.find((p) => new RegExp(`^ripple:${cue}:w${word}(l0)?$`).test(p.id))!;
+      return piece.kind === "text" ? piece.sizePx : 0;
+    };
+    const ratio = size(1, 0) / size(0, 2);
+    expect(ratio).toBeGreaterThan(0.6);
+    expect(ratio).toBeLessThan(1.7);
+  });
+
+  test("a cue too fast to animate a ring still paints one, at every export frame rate", () => {
+    const lines = Array.from({ length: 8 }, (_, i) => ["we:m@70 go:b@90", "extraordinary:h@70", "first:b@70 last:b@70", "extraordinary:h@120"][i % 4]!);
+    for (const fps of [24, 25, 30, 60]) {
+      const { cues } = demoCues({ lines, options: { gap: 0, cueGap: 0, lead: 401, tail: 180 } });
+      const pieces = rippleProgram.build(sceneInput(cues, { fps, colours })).pieces;
+      const missing = cues.filter((cue) => {
+        const faces = pieces.filter((piece) => piece.id.startsWith(`ripple:${cue.index}:w`));
+        const from = Math.min(...faces.map((piece) => piece.fromMs));
+        const to = Math.max(...faces.map((piece) => piece.toMs));
+        // A cue that paints on a single export frame cannot hold a two-frame decoration (the brief forbids one-frame motion).
+        if (exportFrameTimes(from, to, fps).length < 2) return false;
+        return !pieces.some((piece) => piece.id.startsWith(`ripple:${cue.index}:ring`) && exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => evaluatePiece(piece, t).o >= 0.2).length >= 2);
+      });
+      expect(missing.map((cue) => cue.index), `fps ${fps}`).toEqual([]);
+    }
+  });
+
+  test("the rings sit below every word of the cue, never behind or through a glyph", () => {
+    const { cues, pieces } = build(["it's:b time:b to:m say:b goodbye:h@900", "the:m remote:b doesn't:h@900 work:b", "just:m breathe:b"]);
+    for (const cue of cues) {
+      const t = cue.endMs - 250;
+      const faces = pieces.filter((piece) => piece.kind === "text" && piece.id.startsWith(`ripple:${cue.index}:w`));
+      const ink = Math.max(...faces.map((piece) => pieceBounds(piece, t, fakeMeasure)?.y2 ?? Number.NEGATIVE_INFINITY));
+      const rings = pieces.filter((piece) => piece.id.startsWith(`ripple:${cue.index}:ring`));
+      expect(rings.length).toBeGreaterThan(0);
+      for (const ring of rings) {
+        expect(ring.clip).toBeUndefined();
+        for (const frame of exportFrameTimes(ring.fromMs, ring.toMs, 30).filter((f) => f > ring.fromMs + 300).slice(0, 3)) {
+          const box = pieceBounds(ring, frame, fakeMeasure);
+          if (box) expect(box.y1).toBeGreaterThanOrEqual(ink - 1);
+        }
+      }
+    }
   });
 });
