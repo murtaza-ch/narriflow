@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { captionColourContrast } from "@narriflow/validators";
 import { describeSpeechConformance } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
@@ -9,9 +10,9 @@ import { fakeMeasure, sceneInput } from "./test-support";
 describeSpeechConformance("marquee", marqueeProgram, { anchorLineY: 1280 });
 
 const colours = { primary: "#F5E0B6", highlight: "#D8382B", accent: "#2A7A6C", shadow: "#000000" };
-const build = (lines: string[], opts: { gap?: number; cueGap?: number; language?: string; fps?: number; primary?: string; canvas?: { width: number; height: number } } = {}) => {
+const build = (lines: string[], opts: { gap?: number; cueGap?: number; language?: string; fps?: number; primary?: string; highlight?: string; accent?: string; canvas?: { width: number; height: number } } = {}) => {
   const { cues } = demoCues({ lines, language: opts.language, options: { lead: 400, gap: opts.gap ?? 30, cueGap: opts.cueGap ?? 140, tail: 800 } });
-  const input = sceneInput(cues, { fps: opts.fps ?? 30, colours: { ...colours, ...(opts.primary ? { primary: opts.primary } : {}) }, ...(opts.canvas ? { canvas: opts.canvas } : {}), anchor: { xPct: 50, yPct: (1280 / 1920) * 100 } });
+  const input = sceneInput(cues, { fps: opts.fps ?? 30, colours: { ...colours, ...(opts.primary ? { primary: opts.primary } : {}), ...(opts.highlight ? { highlight: opts.highlight } : {}), ...(opts.accent ? { accent: opts.accent } : {}) }, ...(opts.canvas ? { canvas: opts.canvas } : {}), anchor: { xPct: 50, yPct: (1280 / 1920) * 100 } });
   return { cues, pieces: marqueeProgram.build(input).pieces };
 };
 const mine = (pieces: Piece[], cue: number) => pieces.filter((piece) => piece.id.startsWith(`marquee:${cue}:`));
@@ -341,5 +342,140 @@ describe("marquee", () => {
     expect(plates.size).toBe(2);
     const sides = new Set(Array.from({ length: 20 }, (_, n) => { const star = named(pieces, n * 3 + (n % 2), "starA")[0]; return star ? Math.sign(at(star, star.fromMs + 100).x - 540) : 0; }));
     expect(sides.size).toBeGreaterThan(1);
+  });
+});
+
+describe("marquee review fixes", () => {
+  const fillOf = (piece: Piece) => (piece.kind === "text" ? piece.fill : (piece as ShapePiece).fill!.colour);
+
+  test("a red, orange or pink brand colour never paints the key word on a disc or plate it cannot read against", () => {
+    const primaries = ["#D8382B", "#E53935", "#FF5A3C", "#FF6FA8", "#2A7A6C", "#7FD6C2", "#FFFFFF", "#F5E0B6", "#222838", "#000000"];
+    const others = [undefined, "#FFFFFF", "#D8382B", "#FF5A3C", "#101010"];
+    for (const primary of primaries) {
+      for (const highlight of others) {
+        for (const accent of others) {
+          // Two key-word cues (the second flips the theme: plate red, disc navy) and a plain cue.
+          const { pieces } = build(["go:b legends:h@500", "so:b legends:h@500", "see:b you:m"], { primary, highlight, accent, cueGap: 300 });
+          for (const cue of [0, 1, 2]) {
+            const face = faces(pieces, cue)[0]!;
+            const disc = fillOf(named(pieces, cue, "disc")[0]!);
+            const plate = fillOf(named(pieces, cue, "plate")[0]!);
+            const where = `${primary}/${highlight}/${accent} cue ${cue}`;
+            expect(captionColourContrast(face.fill, disc), `face on disc, ${where}`).toBeGreaterThanOrEqual(3);
+            expect(captionColourContrast(face.fill, plate), `face on plate, ${where}`).toBeGreaterThanOrEqual(3);
+            if (face.stroke) expect(captionColourContrast(face.fill, face.stroke.colour), `face on outline, ${where}`).toBeGreaterThanOrEqual(3);
+          }
+        }
+      }
+    }
+    // A red face on the default red disc goes back to the default face rather than painting red on red.
+    for (const primary of ["#D8382B", "#FF5A3C"]) expect(faces(build(["legends:h@500"], { primary }).pieces, 0)[0]!.fill).toBe("#F5E0B6");
+    // A face that reads is kept.
+    expect(faces(build(["legends:h@500"], { primary: "#FFFFFF" }).pieces, 0)[0]!.fill).toBe("#FFFFFF");
+  });
+
+  const arcOf = (piece: ShapePiece) => {
+    const first = piece.path[0] as readonly ["M", number, number];
+    const last = piece.path.at(-1) as readonly ["C", number, number, number, number, number, number];
+    const radius = Math.hypot(first[1], first[2]);
+    const a0 = (Math.atan2(first[2], first[1]) * 180) / Math.PI;
+    let a1 = (Math.atan2(last[6], last[5]) * 180) / Math.PI;
+    while (a1 < a0) a1 += 360;
+    const points = [];
+    for (let a = a0; a <= a1 + 1e-6; a += 4) points.push({ x: radius * Math.cos((a * Math.PI) / 180), y: radius * Math.sin((a * Math.PI) / 180) });
+    return points;
+  };
+  const arcCases = [
+    "the:m good:b old:b days:h@600",
+    "even:b still:b work:h@500",
+    "so:b it:m is:b brave:h@500 and:b true:b",
+    "work.:h@600",
+    "everything:b brave:h@500",
+    "सीधा:h@500",
+    "और:m अगर:b इसे:m सीधा:h@400",
+    "to:m accidentally:b open:b them.:b",
+  ];
+
+  test("the cream arc keeps 12 px clear of every word, is drawn from the end away from the key word, and is complete by the key word's spoken end", () => {
+    for (const line of arcCases) {
+      const { cues, pieces } = build([line], { language: /[\u0900-\u097F]/.test(line) ? "hi" : undefined });
+      const arc = named(pieces, 0, "swoosh")[0] as ShapePiece | undefined;
+      if (!arc) continue;
+      const rest = cues[0]!.words.at(-1)!.endMs - 1;
+      const pose = at(arc, rest);
+      const stroke = arc.stroke!.widthPx;
+      const words = faces(pieces, 0).map((piece) => pieceBounds(piece, rest, fakeMeasure)!);
+      for (const point of arcOf(arc)) {
+        const box: Box = { x1: pose.x + point.x - stroke / 2 - 10, x2: pose.x + point.x + stroke / 2 + 10, y1: pose.y + point.y - stroke / 2 - 10, y2: pose.y + point.y + stroke / 2 + 10 };
+        for (const word of words) expect(meets(box, word), `${line}: arc point on a word`).toBe(false);
+      }
+      const hero = cues[0]!.words.find((word) => word.role === "hero");
+      if (!hero) continue;
+      // (Measured on points along the drawn arc; the revealed box is the path's control-point bounds, so 3 px of tolerance.)
+      // Whole by the key word's spoken end whenever it has three painted frames to be drawn in.
+      const last = exportFrameTimes(arc.fromMs, hero.endMs, 30).at(-1)!;
+      const drawnAt = at(arc, last);
+      const pts = arcOf(arc).map((point) => ({ x: drawnAt.x + point.x, y: drawnAt.y + point.y }));
+      const whole: Box = { x1: Math.min(...pts.map((q) => q.x)), x2: Math.max(...pts.map((q) => q.x)), y1: Math.min(...pts.map((q) => q.y)), y2: Math.max(...pts.map((q) => q.y)) };
+      const shown = pieceBounds(arc, last, fakeMeasure)!;
+      expect(shown.x1, line).toBeLessThanOrEqual(whole.x1 + 3);
+      expect(shown.x2, line).toBeGreaterThanOrEqual(whole.x2 - 3);
+      expect(shown.y1, line).toBeLessThanOrEqual(whole.y1 + 3);
+      expect(shown.y2, line).toBeGreaterThanOrEqual(whole.y2 - 3);
+      // The first revealed stroke is the far end: it is farther from the key word than the arc's middle is.
+      const frames = exportFrameTimes(arc.fromMs, hero.endMs, 30);
+      if (frames.length >= 3) {
+        const first = pieceBounds(arc, frames[1]!, fakeMeasure);
+        const heroBox = faces(pieces, 0).filter((piece) => /:w\d+$/.test(piece.id) && cues[0]!.words[Number(piece.id.split(":w")[1])]!.role === "hero").map((piece) => pieceBounds(piece, rest, fakeMeasure)!)[0]!;
+        const gap = (box: Box) => Math.hypot(Math.max(heroBox.x1 - (box.x1 + box.x2) / 2, 0, (box.x1 + box.x2) / 2 - heroBox.x2), Math.max(heroBox.y1 - (box.y1 + box.y2) / 2, 0, (box.y1 + box.y2) / 2 - heroBox.y2));
+        if (first) expect(gap(first), line).toBeGreaterThanOrEqual(gap(whole) - 1);
+      }
+    }
+  });
+
+  test("a star never sits on the arc", () => {
+    for (const line of arcCases) {
+      const { cues, pieces } = build([line], { language: /[\u0900-\u097F]/.test(line) ? "hi" : undefined });
+      const arc = named(pieces, 0, "swoosh")[0] as ShapePiece | undefined;
+      if (!arc) continue;
+      const rest = cues[0]!.words.at(-1)!.endMs - 1;
+      const pose = at(arc, rest);
+      for (const star of mine(pieces, 0).filter((piece) => /star/.test(piece.id))) {
+        const box = pieceBounds(star, rest, fakeMeasure);
+        if (!box) continue;
+        for (const point of arcOf(arc)) {
+          const dot: Box = { x1: pose.x + point.x - 4, x2: pose.x + point.x + 4, y1: pose.y + point.y - 4, y2: pose.y + point.y + 4 };
+          expect(meets(box, dot), `${line}: ${star.id} on the arc`).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("a very short cue opens its plate on the first painted frame, and a five-frame cue in two", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      const { cues, pieces } = build(["one:h@70", "two:h@70", "three:b four:h@120"], { cueGap: 0, fps });
+      for (const cue of cues) {
+        const plate = named(pieces, cue.index, "plate")[0];
+        if (!plate) continue;
+        const times = exportFrameTimes(plate.fromMs, plate.toMs, fps);
+        const widths = times.map((t) => { const clip = at(plate, t).clip!; return clip.x2 - clip.x1; });
+        const full = Math.max(...widths);
+        const opened = widths.findIndex((w) => w >= full - 0.5);
+        const limit = times.length <= 3 ? 0 : times.length <= 5 ? 1 : 2;
+        expect(opened, `cue ${cue.index} at ${fps} fps (${times.length} frames)`).toBeLessThanOrEqual(limit);
+      }
+    }
+  });
+
+  test("the bulbs chase on an ordinary 540 ms cue and rest lit below about 300 ms", () => {
+    const { cues, pieces } = build(["good:b old:b days:h@300"], { gap: 0, cueGap: 0 });
+    const a = named(pieces, 0, "bulbs-top-a")[0]!;
+    const b = named(pieces, 0, "bulbs-top-b")[0]!;
+    const times = exportFrameTimes(a.fromMs, cues[0]!.words.at(-1)!.endMs, 30);
+    const states = times.map((t) => `${at(a, t).o > 0.9 ? 1 : 0}${at(b, t).o > 0.9 ? 1 : 0}`);
+    expect(new Set(states).size).toBeGreaterThanOrEqual(2);
+    const short = build(["go:h@200", "go:h@200"], { cueGap: 0 });
+    const lit = named(short.pieces, 0, "bulbs-top-a")[0]!;
+    for (const t of exportFrameTimes(lit.fromMs, lit.toMs, 30)) expect(at(lit, t).o).toBe(1);
   });
 });

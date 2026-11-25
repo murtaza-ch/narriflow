@@ -1,7 +1,7 @@
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, type CaptionFontName, captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { type Frames, ease } from "../ease";
-import { exportFrameAtOrAfter, exportFrameTimes } from "../frame-grid";
+import { exportFrameAtOrAfter, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { balancedRows, rowVisualOrder, rowsFromRoles } from "../layout";
 import { type Box, type PathCmd, type Piece, type TextPiece, type Track, mixColour } from "../scene";
 import { arcPath, ellipsePath, polygonPath, rectPath, roundedRectPath, sparklePath } from "../shapes";
@@ -223,9 +223,18 @@ export const marqueeProgram = galleryScene("marquee", 1280, (ctx) => {
   const c = ctx.input.colours;
   const defaults = captionSceneMeta("marquee").colours;
   const reads = (a: string, b: string) => captionColourContrast(a, b) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
-  const cream = reads(c.primary, NAVY) ? c.primary : defaults.primary;
-  const red = reads(cream, c.highlight) ? c.highlight : defaults.highlight;
-  const teal = reads(cream, c.accent) ? c.accent : defaults.accent;
+  // The face is checked against the navy outline, and then against the disc and plate colours that will really be drawn: a
+  // disc or plate that fails against the face falls back to its default, and when even that fails (a red or orange face on
+  // the default red disc) the face goes back to the default too and the disc and plate are chosen again against it.
+  const choose = (face: string) => ({ disc: reads(face, c.highlight) ? c.highlight : defaults.highlight, plate: reads(face, c.accent) ? c.accent : defaults.accent });
+  let cream = reads(c.primary, NAVY) ? c.primary : defaults.primary;
+  let drawn = choose(cream);
+  if (!reads(cream, drawn.disc) || !reads(cream, drawn.plate)) {
+    cream = defaults.primary;
+    drawn = choose(cream);
+  }
+  const red = drawn.disc;
+  const teal = drawn.plate;
 
   const roles = cue.words.map((word) => word.role);
   const { lead, hero, tail } = rowsFromRoles(roles);
@@ -475,16 +484,37 @@ export const marqueeProgram = galleryScene("marquee", 1280, (ctx) => {
     upper = ring([], false, D, 0, "auto");
     lower = ring([], true, D, 0, "auto");
   }
-  // The swoosh sits where no arch is: below the disc when the words arch above it, above when they arch below, beside it when both do.
+  // The swoosh arc: the longest stretch of the ring round the disc (100 degrees, then shorter) whose every point keeps 12 px
+  // clear of every word box (the key word, the arch letters), looked for from the side where no arch is (below the disc when the
+  // words arch above it, above when they arch below, beside it when both do); with no such stretch the cue has no arc.
   const swooshBase = lead.length > 0 && tail.length > 0 ? 0 : tail.length > 0 ? -60 : 60;
-  const swooshAt = flip ? (swooshBase === 0 ? 180 : swooshBase > 0 ? 180 - swooshBase : -180 - swooshBase) : swooshBase;
+  const swooshPrefer = flip ? (swooshBase === 0 ? 180 : swooshBase > 0 ? 180 - swooshBase : -180 - swooshBase) : swooshBase;
   const swooshRadius = D / 2 + 16;
-  const swooshFrom = swooshAt - 50;
-  const swooshTo = swooshAt + 50;
+  const wordBoxes = [...heroBlock.items.map((item) => item.box), ...upper.boxes, ...lower.boxes];
+  const arcPoint = (a: number): [number, number] => [swooshRadius * Math.cos(rad(a)), swooshRadius * Math.sin(rad(a))];
+  const arcClear = (from: number, to: number) => {
+    for (let a = from; a <= to + 1e-6; a += 4) {
+      const [x, y] = arcPoint(a);
+      const reach = 3.5 + 12;
+      const box = { x1: x - reach, y1: y - reach, x2: x + reach, y2: y + reach };
+      if (wordBoxes.some((word) => meets(word, box))) return false;
+    }
+    return true;
+  };
+  let swoosh: { from: number; to: number } | null = null;
+  const centres = Array.from({ length: 24 }, (_, step) => swooshPrefer + (step % 2 === 0 ? 1 : -1) * Math.ceil(step / 2) * 15).sort((x, y) => Math.abs(x - swooshPrefer) - Math.abs(y - swooshPrefer));
+  search: for (const span of [100, 80, 60, 44]) {
+    for (const centre of [swooshPrefer, ...centres]) {
+      if (arcClear(centre - span / 2, centre + span / 2)) {
+        swoosh = { from: centre - span / 2, to: centre + span / 2 };
+        break search;
+      }
+    }
+  }
   const swooshPoints: [number, number][] = [];
-  for (let a = swooshFrom; a <= swooshTo; a += 10) swooshPoints.push([(swooshRadius + 4) * Math.cos(rad(a)), (swooshRadius + 4) * Math.sin(rad(a))]);
+  if (swoosh) for (let a = swoosh.from; a <= swoosh.to + 1e-6; a += 10) swooshPoints.push([(swooshRadius + 4) * Math.cos(rad(a)), (swooshRadius + 4) * Math.sin(rad(a))]);
   const discBox: Box = { x1: -D / 2, y1: -D / 2, x2: D / 2, y2: D / 2 };
-  const content = union([discBox, heroBlock.box, boxOf(swooshPoints), ...(upper.box ? [upper.box] : []), ...(lower.box ? [lower.box] : [])]);
+  const content = union([discBox, heroBlock.box, ...(swooshPoints.length ? [boxOf(swooshPoints)] : []), ...(upper.box ? [upper.box] : []), ...(lower.box ? [lower.box] : [])]);
   const plateW = content.x2 - content.x1 + 2 * PAD;
   const plateH = content.y2 - content.y1 + 2 * PAD;
   const pcx = (content.x1 + content.x2) / 2;
@@ -520,7 +550,10 @@ export const marqueeProgram = galleryScene("marquee", 1280, (ctx) => {
   } as Piece);
 
   // ---- The plate, rim, rays and bulbs: open from the middle on the first word's frames ----
-  const open = exportFrameTimes(t0, t0 + 100, fps).slice(0, 3);
+  // Up to three frames of wipe, fewer when the cue has few painted frames: three or fewer open whole on the first frame, five or
+  // fewer use two, so a very short cue never shows a half-open plate with a word sticking out.
+  const painted = paintedFrameCount(t0, to, fps);
+  const open = exportFrameTimes(t0, t0 + 100, fps).slice(0, painted <= 3 ? 1 : painted <= 5 ? 2 : 3);
   const shares = open.length >= 3 ? [0.55, 0.85, 1] : open.length === 2 ? [0.7, 1] : [1];
   const px1 = midX - (plateW * k) / 2;
   const px2 = midX + (plateW * k) / 2;
@@ -602,8 +635,9 @@ export const marqueeProgram = galleryScene("marquee", 1280, (ctx) => {
     const evens = Array.from({ length: bulbs }, (_, i) => i).filter((i) => i % 2 === 0);
     const odds = Array.from({ length: bulbs }, (_, i) => i).filter((i) => i % 2 === 1);
     const steps: number[] = [];
-    for (let at = openAt; at + 150 <= bandHold - 60 && steps.length < 40; at += 150) steps.push(exportFrameAtOrAfter(at, fps));
-    const animated = steps.length >= 4;
+    for (let at = openAt; at + 150 <= bandHold && steps.length < 40; at += 150) steps.push(exportFrameAtOrAfter(at, fps));
+    // One swap (about 300 ms of hold) already chases; a shorter cue keeps every bulb lit.
+    const animated = steps.length >= 2;
     for (const [rail, y] of [["top", py1 + S(inset)], ["bottom", py2 - S(inset)]] as const) {
       for (const [name, list, first] of [["a", evens, 1], ["b", odds, 0.3]] as const) {
         const o: [number, number][] = animated ? stairs(steps.map((at, n) => [at, n % 2 === 0 ? first : 1.3 - first] as const)) : [[openAt, 1]];
@@ -624,19 +658,38 @@ export const marqueeProgram = galleryScene("marquee", 1280, (ctx) => {
     origin: { dx: dr, dy: dr },
   });
 
-  // ---- The swoosh: a 7 px cream arc beside the disc, drawn on by a wipe from the edge nearest the horizontal axis ----
-  {
+  // ---- The swoosh: a 7 px cream arc beside the disc, drawn along its length from the end away from the key word ----
+  if (swoosh) {
     const ext = S(swooshRadius + 12);
-    const wipe = exportFrameTimes(heroAt + 40, heroAt + 420, fps);
-    const down = swooshAt >= 0;
-    const reveal = (p: number) => ({
-      x1: X(0) - ext, x2: X(0) + ext,
-      y1: down ? Y(0) - ext : Y(0) + ext - 2 * ext * p,
-      y2: down ? Y(0) - ext + 2 * ext * p : Y(0) + ext,
-    });
+    const lastHero = heroed ? Math.max(...hero.map((word) => cue.words[word]!.endMs)) : cue.words[0]!.endMs;
+    // Drawn by the key word's spoken end; with fewer than three painted frames before it the arc is simply there whole.
+    const wipe = exportFrameTimes(heroAt + 40, Math.min(heroAt + 420, lastHero), fps);
+    const near = (a: number) => {
+      const [x, y] = arcPoint(a);
+      const box = heroBlock.box;
+      return Math.hypot(Math.max(box.x1 - x, 0, x - box.x2), Math.max(box.y1 - y, 0, y - box.y2));
+    };
+    const startAngle = near(swoosh.from) >= near(swoosh.to) ? swoosh.from : swoosh.to;
+    const endAngle = startAngle === swoosh.from ? swoosh.to : swoosh.from;
+    const [sx, sy] = arcPoint(startAngle);
+    const [ex, ey] = arcPoint(endAngle);
+    const horizontal = Math.abs(ex - sx) >= Math.abs(ey - sy);
+    const towards = horizontal ? Math.sign(ex - sx) || 1 : Math.sign(ey - sy) || 1;
+    // The rectangle covers the arc from its start side, a little past the start so the round cap shows, to `p` of the way along the sweep.
+    // The sweep's extent is the arc's own along that axis (it can bulge past both ends), plus half the stroke.
+    const alongAxis: number[] = [];
+    for (let a = swoosh.from; a <= swoosh.to + 1e-6; a += 2) alongAxis.push(arcPoint(a)[horizontal ? 0 : 1]);
+    const lo = Math.min(...alongAxis) - 6;
+    const hi = Math.max(...alongAxis) + 6;
+    const reveal = (p: number) => {
+      const edge = towards > 0 ? lo + (hi - lo) * p : hi - (hi - lo) * p;
+      const [a1, a2] = towards > 0 ? [lo, edge] : [edge, hi];
+      const along = horizontal ? { x1: X(a1), x2: X(a2), y1: Y(0) - ext, y2: Y(0) + ext } : { x1: X(0) - ext, x2: X(0) + ext, y1: Y(a1), y2: Y(a2) };
+      return along;
+    };
     const animated = wipe.length >= 3;
     const clips = animated ? wipe.map((t, n): readonly [number, ReturnType<typeof reveal>] => [t, reveal(ease("out", n / (wipe.length - 1)))]) : [[heroAt, reveal(1)] as const];
-    const piece = shape("swoosh", clips[0]![0], arcPath(0, 0, S(swooshRadius), swooshFrom, swooshTo), X(0), Y(0), undefined, 5, {
+    const piece = shape("swoosh", clips[0]![0], arcPath(0, 0, S(swooshRadius), swoosh.from, swoosh.to), X(0), Y(0), undefined, 5, {
       clip: {
         x1: clips.map(([t, b]): [number, number] => [t, b.x1]), x2: clips.map(([t, b]): [number, number] => [t, b.x2]),
         y1: clips.map(([t, b]): [number, number] => [t, b.y1]), y2: clips.map(([t, b]): [number, number] => [t, b.y2]),
@@ -715,9 +768,9 @@ export const marqueeProgram = galleryScene("marquee", 1280, (ctx) => {
   }
 
   // ---- Stars, in free space: the key word's own, and a small second one at the opposite corner ----
-  const wordBoxes = [...heroBlock.items.map((item) => item.box), ...upper.boxes, ...lower.boxes];
   const inner: Box = { x1: content.x1 - PAD + 34, y1: content.y1 - PAD + 34, x2: content.x2 + PAD - 34, y2: content.y2 + PAD - 34 };
-  const taken: Box[] = [];
+  // The arc is taken space too: a star never sits on it.
+  const taken: Box[] = swoosh ? swooshPoints.map(([x, y]) => ({ x1: x - 9, y1: y - 9, x2: x + 9, y2: y + 9 })) : [];
   const claim = (r: number, spots: readonly (readonly [number, number])[]): [number, number] | null => {
     for (const [x, y] of spots) {
       const box = { x1: x - r, y1: y - r, x2: x + r, y2: y + r };
