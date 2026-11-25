@@ -32,6 +32,8 @@ const STYLES: readonly CaptionSceneName[] = [
   "halftone",
   "pixelpop",
   "tilt",
+  // Gallery 6.
+  "glint",
 ];
 
 const LINES = [
