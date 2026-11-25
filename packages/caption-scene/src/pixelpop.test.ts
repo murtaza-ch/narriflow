@@ -252,4 +252,22 @@ describe("pixelpop", () => {
     expect(Math.max(...first.map((p) => p.toMs))).toBeGreaterThanOrEqual(next - 1);
     expect(Math.min(...pieces.filter((p) => p.id.startsWith("pixelpop:1:")).map((p) => p.fromMs))).toBeGreaterThanOrEqual(next - 1);
   });
+
+  test("every row of a broken long word keeps the 62 % size floor: CONTEMPORANEOUSNESS takes three rows, portrait and landscape", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      const { cues } = demoCues({ lines: ["contemporaneousness:h@1000"], options: { lead: 400, gap: 30, cueGap: 140, tail: 800 } });
+      // Pixelify's caps are about 0.65 em wide: wide enough that a balanced two-row cut is wider than the column allows at the floor.
+      const wide: typeof fakeMeasure = (text, face, size, spacing) => ({ ...fakeMeasure(text, face, size, spacing), advance: [...text].length * (0.65 + spacing) * size - spacing * size });
+      const pieces = pixelpopProgram.build(sceneInput(cues, { fps: 30, colours, canvas, measure: wide })).pieces;
+      const parts = pieces.filter((p) => /^pixelpop:0:w0l\d$/.test(p.id));
+      expect(parts.map((p) => (p.kind === "text" ? p.text : "")).join("")).toBe("CONTEMPORANEOUSNESS");
+      expect(parts.length).toBe(3);
+      const natural = Math.min(canvas.width, canvas.height) / 1080;
+      for (const piece of parts) {
+        if (piece.kind !== "text") continue;
+        // 200 px is the key word's nominal size; the floor is 62 % of it.
+        expect(piece.sizePx / natural).toBeGreaterThanOrEqual(0.62 * 200 - 0.5);
+      }
+    }
+  });
 });

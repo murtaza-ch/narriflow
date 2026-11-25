@@ -162,26 +162,37 @@ export const pixelpopProgram = galleryScene("pixelpop", 1290, (ctx) => {
   const advance = (text: string, size: number) => ctx.input.measure(text, FACE, size * u, SPACING).advance;
   const nominal = (word: SceneWord) => (word.role === "hero" ? HERO : word.role === "minor" ? MINOR : BODY);
   const fit = (text: string, size: number) => Math.min(size, (size * room) / Math.max(1, advance(text, size)));
-  /** The fewest rows that keep every piece at 62 % of its size or more, cut where the measured widths come out even. */
+  /**
+   * The fewest rows for which every row, measured, keeps 62 % of the size or more, cut where the widths come out even within
+   * that count. A first guess from the whole width is raised until the widest row fits the floor (a balanced two-row cut of
+   * CONTEMPORANEOUSNESS is still wider than the column allows; three rows fit).
+   */
   const chunkOf = (text: string, size: number): string[] => {
     const width = advance(text, size);
     if (!SPLITTABLE.test(text) || width * MIN_FIT <= room) return [text];
     const letters = [...text];
-    const rowsNeeded = Math.min(letters.length, Math.ceil((width * MIN_FIT) / room));
     const prefix = letters.map((_, at) => advance(letters.slice(0, at + 1).join(""), size));
-    const out: string[] = [];
-    let start = 0;
-    for (let row = 1; row < rowsNeeded; row++) {
-      const target = (width * row) / rowsNeeded;
-      let cut = start + 1;
-      for (let at = start + 1; at <= letters.length - (rowsNeeded - row); at++) {
-        if (Math.abs(prefix[at - 1]! - target) < Math.abs(prefix[cut - 1]! - target)) cut = at;
+    const split = (rowsNeeded: number): string[] => {
+      const out: string[] = [];
+      let start = 0;
+      for (let row = 1; row < rowsNeeded; row++) {
+        const target = (width * row) / rowsNeeded;
+        let cut = start + 1;
+        for (let at = start + 1; at <= letters.length - (rowsNeeded - row); at++) {
+          if (Math.abs(prefix[at - 1]! - target) < Math.abs(prefix[cut - 1]! - target)) cut = at;
+        }
+        out.push(letters.slice(start, cut).join(""));
+        start = cut;
       }
-      out.push(letters.slice(start, cut).join(""));
-      start = cut;
+      out.push(letters.slice(start).join(""));
+      return out;
+    };
+    let best = split(Math.min(letters.length, Math.ceil((width * MIN_FIT) / room)));
+    for (let rowsNeeded = best.length; rowsNeeded <= letters.length; rowsNeeded++) {
+      best = split(rowsNeeded);
+      if (Math.max(...best.map((row) => advance(row, size))) * MIN_FIT <= room) break;
     }
-    out.push(letters.slice(start).join(""));
-    return out;
+    return best;
   };
   interface Item {
     readonly word: number;
