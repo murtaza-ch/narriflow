@@ -142,7 +142,7 @@ describe("anime", () => {
         const pieces = animeProgram.build(sceneInput(cues, { fps, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
         for (const face of pieces.filter((piece) => /^anime:\d+:w\d+$/.test(piece.id))) {
           const cue = face.id.split(":")[1];
-          const slabs = pieces.filter((piece) => piece.id.startsWith(`anime:${cue}:slab`));
+          const slabs = pieces.filter((piece) => piece.id.startsWith(`anime:${cue}:`) && piece.kind === "shape" && (piece.id.includes(":slab") || /:w\d+l\d+$/.test(piece.id)));
           for (const t of exportFrameTimes(face.fromMs, face.toMs, fps)) {
             if (!pieceBounds(face, t, fakeMeasure)) continue;
             expect(slabs.some((slab) => pieceBounds(slab, t, fakeMeasure) !== null), `${face.id} is bare at ${t}, ${fps} fps, gap ${cueGap}`).toBe(true);
@@ -178,12 +178,43 @@ describe("anime", () => {
     const pieces = animeProgram.build(sceneInput(cues, { fps: 30, canvas, scale: 2, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
     const sizeOf = (cue: number, word: number) => (pieces.find((piece) => piece.id === `anime:${cue}:w${word}`) as { sizePx: number }).sizePx;
     expect(sizeOf(0, 0)).toBeGreaterThanOrEqual(0.5 * sizeOf(1, 1));
+    for (const cue of [0, 1]) expect(pieces.filter((piece) => piece.id.startsWith(`anime:${cue}:spark`)).length, `cue ${cue} sparks`).toBeGreaterThanOrEqual(2);
     for (const piece of pieces) {
       for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
         const box = pieceBounds(piece, t, fakeMeasure);
         if (!box) continue;
-        expect(box.y1 >= 0.05 * 1080 - 1 && box.y2 <= 0.95 * 1080 + 1 && box.x1 >= 0.05 * 1920 - 1 && box.x2 <= 0.95 * 1920 + 1, `${piece.id} at ${t}: ${JSON.stringify(box)}`).toBe(true);
+        expect(box.y1 >= 0.05 * 1080 - 0.5 && box.y2 <= 0.95 * 1080 + 0.5 && box.x1 >= 0.05 * 1920 - 0.5 && box.x2 <= 0.95 * 1920 + 0.5, `${piece.id} at ${t}: ${JSON.stringify(box)}`).toBe(true);
       }
     }
+  });
+
+  test("a final one-frame cue keeps its slab, and no slab lingers under the next cue's words (24 fps)", () => {
+    const cues = [
+      { index: 0, startMs: 350, endMs: 825, language: "en", speaker: null, words: [{ text: "THEN", role: "body" as const, key: null, startMs: 350, endMs: 825 }] },
+      { index: 1, startMs: 825, endMs: 850, language: "en", speaker: null, words: [{ text: "NOW", role: "minor" as const, key: null, startMs: 825, endMs: 850 }] },
+    ];
+    const pieces = animeProgram.build(sceneInput(cues, { fps: 24, anchor: { xPct: 50, yPct: (1275 / 1920) * 100 } })).pieces;
+    for (const face of pieces.filter((piece) => /^anime:\d+:w\d+$/.test(piece.id))) {
+      const cue = face.id.split(":")[1];
+      const slabs = pieces.filter((piece) => piece.id.startsWith(`anime:${cue}:`) && (piece.id.includes("slab") || /:w\d+l\d+$/.test(piece.id)) && piece.kind === "shape");
+      for (const t of exportFrameTimes(face.fromMs, face.toMs, 24)) {
+        if (pieceBounds(face, t, fakeMeasure)) expect(slabs.some((slab) => pieceBounds(slab, t, fakeMeasure) !== null), `${face.id} is bare at ${t}`).toBe(true);
+      }
+      // The slab goes with its word: nothing of the cue paints after the cue's last word piece.
+      const lastFace = Math.max(...pieces.filter((piece) => piece.id.startsWith(`anime:${cue}:w`) && piece.kind === "text").map((piece) => piece.toMs));
+      for (const slab of slabs) expect(slab.toMs, slab.id).toBeLessThanOrEqual(lastFace);
+    }
+  });
+
+  test("the doodles keep bobbing on a long hold: their transforms differ at 2, 3 and 5 seconds", () => {
+    const { pieces } = build(["one:b two:b three:h@5600"], { lead: 400, gap: 30, cueGap: 0, tail: 2500 });
+    const stickers = pieces.filter((piece) => /^anime:0:sticker\d$/.test(piece.id));
+    expect(stickers.length).toBeGreaterThanOrEqual(4);
+    for (const piece of stickers) {
+      const ys = [2000, 3000, 5000].map((t) => evaluatePiece(piece, t).y);
+      expect(new Set(ys.map((y) => y.toFixed(2))).size, piece.id).toBeGreaterThan(1);
+    }
+    // The bob is cheap: about one keyframe per half period (750 ms and up).
+    for (const piece of stickers) expect((piece.track.y ?? []).length, piece.id).toBeLessThanOrEqual(Math.ceil((piece.toMs - piece.fromMs) / 700) + 4);
   });
 });

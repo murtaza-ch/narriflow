@@ -1,7 +1,7 @@
 import type { DemoScript } from "../demo";
 import { EASES, clamp, prog } from "../ease";
 import type { Frames } from "../ease";
-import { exportFrameTimes, paintedFrameCount } from "../frame-grid";
+import { paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import { balancedRows } from "../layout";
 import { type Box, type PathCmd, type Piece, type TextPiece, pieceBounds } from "../scene";
@@ -34,7 +34,7 @@ import type { SpeechCell } from "./speech-layout";
  * - **The exit waits for the speech.** The sample squashes each slab 190 ms before the cue ends, with the last word still being
  *   spoken. Here the same six-step squash runs from the end of the words' reading hold to the cue's end, and is dropped (a
  *   cut) when the next cue arrives sooner: the outgoing cue always gives way.
- * - **Speed lines are clipped to the caption zone and vary.** The sample's 18 rays are 12 here (budget); their starting angle turns by a
+ * - **Speed lines are clipped to the caption zone and vary.** The sample's 18 rays are 10 here (budget); their starting angle turns by a
  *   seeded amount on every key word so a long clip does not repeat one burst.
  * - Extra recurring beats, all behind the words: impact ticks (three chunky dashes, alternately white and cyan) jump off a
  *   corner of every slab as it lands (top corner on even rows, bottom on odd, on the leading side), and pixel sparks pop off
@@ -45,10 +45,13 @@ import type { SpeechCell } from "./speech-layout";
  *     size (the sample squeezed a 45-letter word to 27 px). Joined scripts are never cut and shrink as before.
  *   - The whole stack, stamp jitter and pops included, is fitted into the caption band (y 880..1630 of 1920, moving with the
  *     anchor and the lane): shifted when it only sits off-centre, shrunk when it is too tall. Landscape frames wrap rows wider.
- *   - A cue whose window paints one frame keeps its slab one frame longer, so the word is never bare (the one-frame filter
- *     would drop the slab); the doodles, ticks, sparks and rays compress into a short cue's own time instead of starting late.
- *   - The doodles land with the cue and then sit still (their idle bob cost more libass events than the rest of the cue);
- *     a doodle's landing overshoot is kept clear of the safe area.
+ *   - A cue whose window paints one frame keeps its slab (static, named as a part of its first word, the one name the
+ *     one-frame filter leaves), so the word is never bare, last cue included, and the slab never lingers under the next
+ *     cue's words; the doodles, ticks, sparks and rays compress into a short cue's own time instead of starting late.
+ *   - The band is inset by the 3 px the shared safe-area shift keeps, so that shift never moves a lane's stack (stamp included)
+ *     out of it. Sparks leave from the end of the key word's slab when the block fills its band (a lane).
+ *   - The doodles land with the cue, then bob as a slow linear ping-pong (one keyframe per half period, phases differ) for a
+ *     handful of libass events per second; a landing overshoot is kept clear of the safe area.
  * - Slabs grow word by word with a clip on one full-size rectangle (the sample resizes the box); the slab and its words move as
  *   one rigid piece (jitter, settle, squash) about the slab's centre.
  */
@@ -142,7 +145,7 @@ const SLOTS = [
 ] as const;
 
 const FLOOR = 0.5 * BODY;
-const RAYS = 12;
+const RAYS = 10;
 const SPARKS = 6;
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}]+$/u;
 
@@ -195,14 +198,13 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
   const key = hash(`${index}:${texts.join(" ")}`);
   const width100 = texts.map((text) => measure(text, FACE, 100, SPACING).advance);
   // The caption band the sample's speed lines are clipped to (y 880..1630 of 1920, moving with the anchor), inside the safe area.
-  const band: Box = { x1: safe.x1, x2: safe.x2, y1: Math.max(safe.y1, ctx.space.y(880)), y2: Math.min(safe.y2, ctx.space.y(1630)) };
+  // Inset by the 3 px margin the shared safe-area shift keeps, so that shift never has to move the stack (and its stamp) out of the band.
+  const band: Box = { x1: safe.x1, x2: safe.x2, y1: Math.max(safe.y1 + 4, ctx.space.y(880)), y2: Math.min(safe.y2 - 4, ctx.space.y(1630)) };
   // A landscape frame has room for longer rows than the sample's 1080 px column.
   const wide = ctx.input.canvas.width > 1.2 * ctx.input.canvas.height;
   const col = wide ? Math.max(COLUMN, (safe.x2 - safe.x1) / ctx.space.u - 2 * (PAD_X + 20)) : COLUMN;
   const heroCol = col + (HERO_ROW - COLUMN);
 
-  // Nothing may paint after the clip's last cue.
-  const lastCue = to >= Math.max(...ctx.input.cues.map((other) => other.endMs));
   const exitFor = Math.max(1, to - ctx.exitAt);
   const exitEdges = ctx.exit ? EXIT_X.flatMap((_, q) => { const e = Math.round(ctx.exitAt + (exitFor * q) / 6); return [e - 1, e]; }) : [];
   const enters = cue.words.map((word) => ctx.enter(word, POP, LEAD));
@@ -335,10 +337,9 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
       const idOf = (unit: Unit, suffix = "") => `${ctx.id}:w${unit.word}${suffix}`;
 
       // The slab: one full-size rectangle, its clip opening word by word along the reading direction. A line whose window paints
-      // only one frame holds its slab one frame longer (under the next cue's own slab and words), so the word is never bare:
-      // the one-frame filter would otherwise drop the slab and leave white text on the video.
+      // only one frame keeps its slab as a part of its first word (`w<word>l8x`, static, no clip), the one name the one-frame
+      // filter leaves: it paints with the word and goes with it, never under the next cue's words, last cue included.
       const slabFrom = line.from;
-      const slabEnd = lastCue ? to : (exportFrameTimes(slabFrom, to + 200, ctx.fps)[1] ?? to) + 1;
       const shown = line.words.map(({ cell, unit, lx }) => ({ from: enters[unit.word]!.from, left: lx - cell.width / 2 - padX, right: lx + cell.width / 2 + padX }));
       let left = Infinity;
       let right = -Infinity;
@@ -359,8 +360,10 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
         o: [[slabFrom, 1]],
       });
       pieces.push({
-        ...slab, z: 3, toMs: line.bare ? slabEnd : to,
-        clip: { x1: stepFrames(stepsL), x2: stepFrames(stepsR), y1: [[slabFrom, -line.h / 2]], y2: [[slabFrom, line.h / 2]], radius: 0 },
+        ...slab, z: 3, toMs: to,
+        ...(line.bare ? { id: idOf(line.words[0]!.unit, `l${80 + line.r}`) } : {
+          clip: { x1: stepFrames(stepsL), x2: stepFrames(stepsR), y1: [[slabFrom, -line.h / 2]], y2: [[slabFrom, line.h / 2]], radius: 0 },
+        }),
       });
 
       // The words: each pivots on its baseline, takes the slab's pose, then its own one-frame pop.
@@ -460,8 +463,8 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
   const lineOfWord = (at: number) => lines.find((l) => l.words.some(({ unit }) => unit.word === at))!;
   const frames2 = (from: number, until: number) => paintedFrameCount(from, until, ctx.fps) >= 2;
 
-  // Flat doodles around the block: four per cue, six with a key word. They land with the cue (sooner when it is short) and
-  // then sit still; a cue too short to animate them still shows them whole.
+  // Flat doodles around the block: four per cue, six with a key word. They land with the cue (sooner when it is short), then bob
+  // gently while it holds; a cue too short to animate them still shows them whole.
   const count = heroAt >= 0 ? 6 : 4;
   const colourOffset = (counter + (key >>> 3)) % STICKER_COLOURS.length;
   const avail = to - firstFrom;
@@ -473,7 +476,8 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
     let y = slot.ay === "t" ? block.y1 + slot.oy * u : slot.ay === "b" ? block.y2 + slot.oy * u : (block.y1 + block.y2) / 2 + slot.oy * u;
     const halfBox = size * 0.62 + 15 * u;
     // Its landing overshoots to ~1.3x and it is turned, so keep 0.66 of its size (and the stroke) to the safe edge.
-    const edge = 0.66 * size + 8 * u;
+    const amp = 9 * u;
+    const edge = 0.66 * size + 8 * u + amp;
     const place = (px: number, py: number) => ({
       x: clamp(px, safe.x1 + edge, Math.max(safe.x1 + edge, safe.x2 - edge)),
       y: clamp(py, safe.y1 + edge, Math.max(safe.y1 + edge, safe.y2 - edge)),
@@ -496,31 +500,56 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
     if (!frames2(from, to)) return;
     const spin = (si % 2 ? 1 : -1) * (8 + si * 3);
     const animated = dur >= 100;
-    const pop = (t: number) => (animated ? Math.max(0, EASES.spring(prog(t, from, dur))) : 1);
+    // Land with a short overshoot: two linear legs (a spring costs a libass event per curve segment).
+    const pop = (t: number) => (animated ? (t < from + dur * 0.55 ? 1.18 * prog(t, from, dur * 0.55) : 1.18 - 0.18 * prog(t, from + dur * 0.55, dur * 0.45)) : 1);
     const out = (t: number) => (ctx.exit ? 1 - prog(t, ctx.exitAt, exitFor) : 1);
-    const edges = [from, from + dur, ctx.exitAt, to];
+    const edges = [from, from + dur * 0.55, from + dur, ctx.exitAt, to];
     const colour = STICKER_COLOURS[(si + colourOffset) % STICKER_COLOURS.length]!;
     const scale = frames((t) => pop(t) * out(t), edges, 0.004, from, to);
+    // The sample's idle bob, as a slow linear ping-pong (one keyframe per half period, phases and periods differ per doodle):
+    // a long hold keeps moving for a handful of libass events per second, a short one never starts it.
+    const period = 1500 + si * 140;
+    const bobFrom = from + (animated ? dur : 0) + si * 90;
+    const bob: [number, number][] = [[from, y]];
+    if (to - bobFrom > period * 0.75) {
+      let t = bobFrom;
+      let sign = si % 2 ? 1 : -1;
+      bob.push([t, y], [t + period / 4, y + sign * amp]);
+      t += period / 4;
+      sign = -sign;
+      while (t + period / 2 < to) {
+        t += period / 2;
+        bob.push([t, y + sign * amp]);
+        sign = -sign;
+      }
+      const [lastAt, lastY] = bob.at(-1)!;
+      bob.push([to, lastY + (y + sign * amp - lastY) * ((to - lastAt) / (period / 2))]);
+    }
     const shape = ctx.shape(`sticker${si}`, from, doodle(kind, size / 100), {
-      x: [[from, x]], y: [[from, y]], rz: [[from, spin]], sx: scale, sy: scale, o: [[from, 1]],
+      x: [[from, x]], y: bob, rz: [[from, spin]], sx: scale, sy: scale, o: [[from, 1]],
     }, colour);
     pieces.push({ ...shape, z: slot.front ? 3.5 : 1.5, toMs: to, stroke: { widthPx: 0.04 * size, colour: INLINE } });
   });
 
-  // The key word's speed lines: 12 white wedges burst out of its slab behind everything, clipped to the caption zone.
+  // The key word's speed lines: 10 white wedges burst out of its slab behind everything, clipped to the caption zone.
   if (heroAt >= 0) {
     const line = lineOfWord(heroAt);
     const from = enters[heroAt]!.from;
     const dur = Math.min(340, to - from);
     const zone = {
       x1: Math.max(safe.x1 + 4, ctx.space.x(60)), x2: Math.min(safe.x2 - 4, ctx.space.x(1020)),
-      y1: band.y1 + 4, y2: band.y2 - 4,
+      y1: band.y1, y2: band.y2,
     };
     const r0 = Math.max(line.slabW, line.h) * 0.3;
     const turn = (rand(key, 1) - 0.5) * 0.35;
-    const grow = (t: number) => EASES.outExpo(clamp((t - from) / Math.min(190, dur)));
+    // Two linear legs stand in for the sample's outExpo (a curve costs a libass event per segment).
+    const growFor = Math.min(190, dur);
+    const grow = (t: number) => {
+      const p = clamp((t - from) / growFor);
+      return p < 0.3 ? (p / 0.3) * 0.8 : 0.8 + (0.2 * (p - 0.3)) / 0.7;
+    };
     const alpha = (t: number) => 1 - prog(t, from + Math.min(120, dur * 0.35), Math.max(1, dur - Math.min(120, dur * 0.35)));
-    const edges = [from, from + 120, from + 190, from + 340];
+    const edges = [from, from + 0.3 * growFor, from + 120, from + 190, from + 340];
     if (frames2(from, from + dur)) {
       for (let k = 0; k < RAYS; k++) {
         const angle = (k / RAYS) * Math.PI * 2 + 0.11 + turn;
@@ -590,7 +619,8 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
     pieces.push({ ...shape, z: 1.4, toMs: from + dur });
   }
 
-  // Beat 2, every cue: pixel sparks pop off the block's top or bottom edge when the key word (or the last word) is spoken.
+  // Beat 2, every cue: pixel sparks pop off the block's top or bottom edge when the key word (or the last word) is spoken; a
+  // block that fills its band (a lane, a tall stack) sends them out of the end of the key word's slab instead.
   {
     const sparkAt = heroAt >= 0 ? heroAt : cue.words.length - 1;
     const sparkLine = lineOfWord(sparkAt);
@@ -599,26 +629,40 @@ export const animeProgram = galleryScene("anime", ANCHOR, (ctx) => {
     const dur = Math.min(360, to - from);
     const palette = [YELLOW, c.highlight, c.primary, RED, BLUE, YELLOW];
     if (frames2(from, from + dur)) {
-      const edgeLine = upward ? lines[0]! : lines[lines.length - 1]!;
-      const edgeY = upward ? edgeLine.cy - edgeLine.h / 2 : edgeLine.cy + edgeLine.h / 2;
-      for (let n = 0; n < SPARKS; n++) {
-        const size = (14 + rand(key, 300 + n) * 10) * u;
-        const x0 = edgeLine.cx + (rand(key, 310 + n) - 0.5) * 0.7 * edgeLine.slabW;
-        const sign = upward ? -1 : 1;
-        const roomY = (upward ? edgeY - safe.y1 : safe.y2 - edgeY) - size * 1.5 - 4 * u;
-        const travel = Math.min((70 + rand(key, 320 + n) * 90) * u, roomY);
-        if (travel < 24 * u) continue;
-        const drift = (rand(key, 330 + n) - 0.5) * 80 * u;
-        const dx = clamp(drift, safe.x1 + size - x0, safe.x2 - size - x0);
-        const delay = Math.min(n * 22, dur * 0.3);
-        const q = (t: number) => EASES.out(prog(t, from + delay, dur - delay));
-        const edges = [from + delay, from + dur * 0.5, from + dur];
-        const shape = ctx.shape(`spark${n}`, from + delay, polygonPath([[-size / 2, -size / 2], [size / 2, -size / 2], [size / 2, size / 2], [-size / 2, size / 2]]), {
-          x: frames((t) => x0 + dx * q(t), edges, 0.2, from + delay, from + dur), y: frames((t) => edgeY + sign * (size / 2 + travel * q(t)), edges, 0.2, from + delay, from + dur),
-          rz: [[from + delay, 0], [from + dur, 45 * (n % 2 ? 1 : -1)]],
-          o: [[from + delay, 1], [from + dur * 0.55, 1], [from + dur, 0, "in"]],
-        }, palette[(n + key) % palette.length]!);
-        pieces.push({ ...shape, z: 1.6, toMs: from + dur });
+      const firstLine = lines[0]!;
+      const lastLine = lines[lines.length - 1]!;
+      // Each launch edge: where it is, which way sparks fly, the room to the safe area, and the slab it spreads along.
+      const edges4 = {
+        up: { x: firstLine.cx, y: firstLine.cy - firstLine.h / 2, ux: 0, uy: -1, room: firstLine.cy - firstLine.h / 2 - safe.y1, span: firstLine.slabW },
+        down: { x: lastLine.cx, y: lastLine.cy + lastLine.h / 2, ux: 0, uy: 1, room: safe.y2 - (lastLine.cy + lastLine.h / 2), span: lastLine.slabW },
+        right: { x: sparkLine.cx + sparkLine.slabW / 2, y: sparkLine.cy, ux: 1, uy: 0, room: safe.x2 - (sparkLine.cx + sparkLine.slabW / 2), span: sparkLine.h },
+        left: { x: sparkLine.cx - sparkLine.slabW / 2, y: sparkLine.cy, ux: -1, uy: 0, room: sparkLine.cx - sparkLine.slabW / 2 - safe.x1, span: sparkLine.h },
+      };
+      const order = upward ? ["up", "down", "right", "left"] as const : ["down", "up", "right", "left"] as const;
+      const launch = order.map((name) => edges4[name]).find((edge) => edge.room >= 60 * u);
+      if (launch) {
+        for (let n = 0; n < SPARKS; n++) {
+          const size = (14 + rand(key, 300 + n) * 10) * u;
+          const along = (rand(key, 310 + n) - 0.5) * 0.7 * launch.span;
+          // The lateral axis is perpendicular to the flight.
+          const x0 = launch.x + (launch.uy !== 0 ? along : 0);
+          const y0 = launch.y + (launch.ux !== 0 ? along : 0);
+          const travel = Math.min((70 + rand(key, 320 + n) * 90) * u, launch.room - size * 1.5 - 4 * u);
+          if (travel < 18 * u) continue;
+          const drift = (rand(key, 330 + n) - 0.5) * 80 * u;
+          const driftX = launch.uy !== 0 ? clamp(drift, safe.x1 + size - x0, safe.x2 - size - x0) : 0;
+          const driftY = launch.ux !== 0 ? clamp(drift, safe.y1 + size - y0, safe.y2 - size - y0) : 0;
+          const delay = Math.min(n * 22, dur * 0.3);
+          // A straight flight (an eased one costs a libass event per curve segment, and the squares are small and quick).
+          const flightTo = from + dur;
+          const shape = ctx.shape(`spark${n}`, from + delay, polygonPath([[-size / 2, -size / 2], [size / 2, -size / 2], [size / 2, size / 2], [-size / 2, size / 2]]), {
+            x: [[from + delay, x0 + launch.ux * (size / 2)], [flightTo, x0 + launch.ux * (size / 2 + travel) + driftX]],
+            y: [[from + delay, y0 + launch.uy * (size / 2)], [flightTo, y0 + launch.uy * (size / 2 + travel) + driftY]],
+            rz: [[from + delay, n % 2 ? 45 : 0]],
+            o: [[from + delay, 1], [from + dur * 0.55, 1], [from + dur, 0]],
+          }, palette[(n + key) % palette.length]!);
+          pieces.push({ ...shape, z: 1.6, toMs: from + dur });
+        }
       }
     }
   }
