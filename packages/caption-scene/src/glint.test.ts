@@ -294,6 +294,68 @@ describe("glint", () => {
     expect([...sizes][0]!).toBeGreaterThan(142 * 0.82 + 8);
   });
 
+  test("fragments of a broken word never share a row, even in the 16:9 overlapping-speaker lane at twice the size", () => {
+    const src = demoCues({
+      lines: ["contemporaneousness:h@520 creativity:b@380 great:b@250", "we:m@190 move:h@500 quickly:b@360", "next:b@245 scene:h@340"],
+      options: { lead: 400, gap: 30, cueGap: 50, tail: 380 },
+    }).cues;
+    const shifts = [0, -940, -860];
+    const cues = src.map((cue, i) => ({
+      ...cue,
+      speaker: i === 1 ? 1 : 0,
+      startMs: cue.startMs + shifts[i]!,
+      endMs: cue.endMs + shifts[i]!,
+      words: cue.words.map((word) => ({ ...word, startMs: word.startMs + shifts[i]!, endMs: word.endMs + shifts[i]! })),
+    }));
+    for (const canvas of [{ width: 1920, height: 1080 }, { width: 1080, height: 1920 }]) {
+      const pieces = glintProgram.build(sceneInput(cues, { fps: 30, colours, scale: 2, canvas })).pieces;
+      for (const cue of cues) {
+        const at = cue.words.at(-1)!.endMs - 40;
+        const fragments = pieces.filter((piece) => new RegExp(`^glint:${cue.index}:w\\d+l\\d+$`).test(piece.id) && piece.kind === "text" && piece.id.endsWith(piece.id.match(/w\d+l\d+$/)![0]));
+        const byWord = new Map<string, typeof fragments>();
+        for (const piece of fragments) byWord.set(piece.id.match(/w\d+/)![0], [...(byWord.get(piece.id.match(/w\d+/)![0]) ?? []), piece]);
+        for (const [word, parts] of byWord) {
+          const broken = parts.filter((piece) => /l\d+$/.test(piece.id) && piece.kind === "text" && piece.text.length > 1);
+          if (broken.length < 2 || broken.length !== parts.length) continue; // a hero word's single letters are not fragments
+          const ys = broken.map((piece) => evaluatePiece(piece, at).y);
+          const heights = broken.map((piece) => (piece.kind === "text" ? piece.sizePx : 0));
+          for (let a = 0; a < ys.length; a++) for (let b = a + 1; b < ys.length; b++) expect(Math.abs(ys[a]! - ys[b]!), `${canvas.width}x${canvas.height} cue ${cue.index} ${word}`).toBeGreaterThan(0.9 * Math.min(heights[a]!, heights[b]!));
+        }
+      }
+    }
+  });
+
+  test("sparkles keep a white fill wider than their dark outline", () => {
+    const { pieces } = build(["so:m here:b is:h@500 it:b"]);
+    const sparks = pieces.filter((piece) => piece.id.startsWith("glint:0:tw") && piece.kind === "shape");
+    expect(sparks.length).toBeGreaterThan(0);
+    for (const piece of sparks) {
+      if (piece.kind !== "shape") continue;
+      const points = piece.path.filter((cmd) => cmd[0] === "L");
+      if (points.length < 4) continue; // a heart
+      // The waist is the star's arm width: the outline may take at most a quarter of it.
+      const waist = Math.abs((points[0] as ["L", number, number])[1] * 2);
+      expect(piece.stroke!.widthPx).toBeLessThanOrEqual(0.25 * waist);
+    }
+  });
+
+  test("a key word on a 70-80 ms cue still gets a light pass on every letter, a static top-edge strip", () => {
+    const { cues, pieces } = build(["go:b now:h@75"], { cueGap: 40, tail: 0 });
+    const letters = pieces.filter((piece) => /^glint:0:w1l\d$/.test(piece.id));
+    expect(letters).toHaveLength(3);
+    for (const letter of letters) {
+      const sheen = pieces.find((piece) => piece.id === `${letter.id}h`);
+      expect(sheen, letter.id).toBeDefined();
+      expect(sheen!.toMs - sheen!.fromMs).toBeGreaterThanOrEqual(1000 / 30);
+      const box = pieceBounds({ ...letter, clip: undefined }, sheen!.fromMs + 5, fakeMeasure)!;
+      const clip = evaluatePiece(sheen!, sheen!.fromMs + 5).clip!;
+      expect(clip.x1).toBeLessThanOrEqual(box.x1 + 4);
+      expect(clip.x2).toBeGreaterThanOrEqual(box.x2 - 4);
+      expect(clip.y2 - clip.y1).toBeLessThan(0.55 * (box.y2 - box.y1));
+    }
+    expect(cues[0]!.words[1]!.endMs - cues[0]!.words[1]!.startMs).toBeLessThanOrEqual(90);
+  });
+
   test("a cue stays inside the safe area at twice the size, portrait and landscape, and under the piece budget", () => {
     for (const edge of ["urdu", "nine-words", "long-word"] as const) {
       for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {

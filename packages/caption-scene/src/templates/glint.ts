@@ -230,9 +230,11 @@ export const glintProgram = galleryScene("glint", 1290, (ctx) => {
     let run: number[] = [];
     for (const list of indexes) {
       if (list.length > 1) {
+        // Each fragment of a broken word is its own group, so no fragment can share a row (the shared layout keeps the row
+        // width when it shrinks a lane, so shrunk fragments would otherwise sit side by side with a word gap).
         if (run.length) groups.push(run);
         run = [];
-        groups.push(list);
+        for (const at of list) groups.push([at]);
       } else run.push(list[0]!);
     }
     if (run.length) groups.push(run);
@@ -394,14 +396,17 @@ export const glintProgram = galleryScene("glint", 1290, (ctx) => {
     }
     for (const [k, full] of sweeps.entries()) {
       const sweep = { ...full, t1: Math.min(full.t1, to) };
-      if (paintedFrameCount(sweep.t0, sweep.t1, fps) < 2) continue;
-      const steps = Array.from({ length: 5 }, (_, n) => n / 4);
+      const frames = paintedFrameCount(sweep.t0, sweep.t1, fps);
+      if (frames < 2) continue;
+      // A crossing needs a few frames to read; with fewer, the strip is static over the unit's own box.
+      const steps = frames < 4 ? [0] : Array.from({ length: 5 }, (_, n) => n / 4);
       const at = (f: number) => {
+        if (frames < 4) return { t: sweep.t0, x1: unit.box.x1, x2: unit.box.x2 };
         const x1 = sweep.left - sweep.band + f * (sweep.right - sweep.left + sweep.band);
         return { t: sweep.t0 + f * (sweep.t1 - sweep.t0), x1, x2: x1 + sweep.band };
       };
-      const stripe = 0.18 * h + sweep.band * Math.abs(slope);
-      const y1 = (f: number) => topAt((at(f).x1 + at(f).x2) / 2) - 0.07 * h;
+      const stripe = 0.18 * h + (frames < 4 ? w : sweep.band) * Math.abs(slope);
+      const y1 = (f: number) => (frames < 4 ? topAt(unit.x) - 0.07 * h - 0.5 * w * Math.abs(slope) : topAt((at(f).x1 + at(f).x2) / 2) - 0.07 * h);
       pieces.push({
         ...base, id: k === 0 ? `${unit.id}h` : `${unit.id}h${k}`, z: 7, fill: light, origin: { dx: 0, dy: mid },
         fromMs: sweep.t0, toMs: sweep.t1,
@@ -420,7 +425,7 @@ export const glintProgram = galleryScene("glint", 1290, (ctx) => {
   const targetBox = wordBox(target);
   const size = Math.max(...units.filter((unit) => unit.word === target).map((unit) => unit.cell.size));
   // 18-28 px across with the outline: a radius of 8-12 px.
-  const radius = clamp(0.08 * size, 8 * u, 12 * u);
+  const radius = clamp(0.08 * size, 8.5 * u, 12 * u);
   const others = units.filter((unit) => unit.word !== target).map((unit) => unit.box);
   const height = targetBox.y2 - targetBox.y1;
   const spots = [
@@ -452,7 +457,7 @@ export const glintProgram = galleryScene("glint", 1290, (ctx) => {
       const span = end - start;
       const still = frames < 4;
       const heart = (index + j + pair) % 3 === 0 && pair === 1;
-      const path = heart ? heartPath(radius * 0.9) : sparklePath(radius);
+      const path = heart ? heartPath(radius * 0.9) : sparklePath(radius, 0, 0, 0.32);
       const turn = ((index + j + pair) % 2 ? -1 : 1) * (heart ? 14 : 8);
       const shape = ctx.shape(`tw${target}-${j}${pair}`, start, path, {
         x: [[start, spot.x]], y: [[start, spot.y]],
@@ -460,7 +465,7 @@ export const glintProgram = galleryScene("glint", 1290, (ctx) => {
         sy: still ? [[start, 0.8]] : [[start, 0.2], [start + 0.35 * span, 1, "out"], [end, 0, "in"]],
         rz: still ? [[start, turn]] : [[start, turn], [end, turn + 70 * (span / TWINKLE_MS)]],
       }, light);
-      pieces.push({ ...shape, z: 9, toMs: end, stroke: { widthPx: Math.max(3.5 * u, 0.16 * radius), colour: INK } });
+      pieces.push({ ...shape, z: 9, toMs: end, stroke: { widthPx: Math.max(1.5 * u, 0.12 * radius), colour: INK } });
     }
   });
   return pieces;
