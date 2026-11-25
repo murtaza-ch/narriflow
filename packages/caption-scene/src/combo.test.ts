@@ -3,7 +3,7 @@ import { demoCues } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
 import { describeSpeechConformance } from "./conformance-support";
 import { comboProgram } from "./templates/combo";
-import { evaluatePiece, pieceBounds } from "./scene";
+import { type Box, type Piece, type TextPiece, evaluatePiece, pieceBounds } from "./scene";
 import { sceneInput } from "./test-support";
 
 describeSpeechConformance("combo", comboProgram, { anchorLineY: 1320 });
@@ -113,11 +113,22 @@ describe("Combo key word", () => {
 });
 
 describe("Combo block", () => {
-  test("a long key word keeps the body words at the sample ratio instead of shrinking them", () => {
-    const { pieces } = build(["we:b need:b incomprehensibility:h@600"]);
-    const size = (id: string) => (pieces.find((piece) => piece.id === id) as { sizePx: number }).sizePx;
-    expect(size("combo:0:w2")).toBeLessThan(130);
-    expect(size("combo:0:w0")).toBeGreaterThan(70);
+  test("an overlong key word breaks across rows at a readable size instead of shrinking the whole block", () => {
+    const { cues, pieces } = build(["we:b need:b incomprehensibility:h@600"]);
+    const parts = pieces.filter((piece): piece is TextPiece => piece.kind === "text" && /^combo:0:w2l\d+$/.test(piece.id));
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.map((piece) => piece.text).join("")).toBe(cues[0]!.words[2]!.text.toUpperCase());
+    for (const part of parts) expect(part.sizePx).toBeGreaterThanOrEqual(0.7 * 130 * 0.9);
+    const body = pieces.find((piece) => piece.id === "combo:0:w0") as TextPiece;
+    expect(body.sizePx).toBeGreaterThan(70);
+  });
+
+  test("a 44-letter word stays readable at phone size", () => {
+    const { cues } = build(["it's:m pneumonoultramicroscopicsilicovolcanoconiosis:b"]);
+    const input = sceneInput(cues, { fps: 30, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+    const sizes = comboProgram.build(input).pieces.filter((piece): piece is TextPiece => piece.kind === "text" && /^combo:0:w1l\d+$/.test(piece.id)).map((piece) => piece.sizePx);
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(56);
   });
 
   test("the XP bar has one segment per word and its last segment fills when the last word is said", () => {
@@ -129,5 +140,95 @@ describe("Combo block", () => {
     expect(fills[3]!.fromMs).toBeLessThanOrEqual(last.startMs);
     expect(fills[3]!.fromMs).toBeGreaterThan(last.startMs - 100);
     expect(pieces.some((piece) => piece.id === "combo:0:shine")).toBe(true);
+  });
+});
+
+const overlaps = (a: Box, b: Box) => a.x1 + 0.5 < b.x2 && b.x1 + 0.5 < a.x2 && a.y1 + 0.5 < b.y2 && b.y1 + 0.5 < a.y2;
+
+describe("Combo entrances keep clear of their neighbours", () => {
+  const lines = ["hey,:b real,:h@300 honest:b", "this:m one:b trick:b doubled:h@560 my:m views:b", "all:b of:m them:b are:m unplugged.:h@480", "这个:b 真的:h@400 很:m 好:b"];
+  for (const [label, canvas, scale] of [["9:16", { width: 1080, height: 1920 }, 1], ["2x on 16:9", { width: 1920, height: 1080 }, 2]] as const) {
+    test(`no word, nor the colour-split copy of one, ever covers another word (${label})`, () => {
+      const { cues } = demoCues({ lines, options: { lead: 400, gap: 30, cueGap: 120, tail: 600 } });
+      const input = sceneInput(cues, { fps: 30, canvas, scale, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+      const pieces = comboProgram.build(input).pieces;
+      for (const cue of cues) {
+        const own = pieces.filter((piece) => piece.id.startsWith(`combo:${cue.index}:w`));
+        const faces = own.filter((piece) => /^combo:\d+:w\d+(?:l\d+)?$/.test(piece.id));
+        const wordOf = (piece: Piece) => Number(/:w(\d+)/.exec(piece.id)![1]);
+        for (const t of exportFrameTimes(cue.startMs - 100, cue.endMs, 30)) {
+          for (const mine of own) {
+            const a = pieceBounds(mine, t, input.measure);
+            if (!a) continue;
+            for (const other of faces) {
+              if (wordOf(other) === wordOf(mine)) continue;
+              const b = pieceBounds(other, t, input.measure);
+              if (b) expect(overlaps(a, b), `${mine.id} covers ${other.id} at ${t} (${label})`).toBe(false);
+            }
+          }
+        }
+      }
+    });
+  }
+});
+
+describe("Combo counter stays put and stays small", () => {
+  test("it does not jump between the cues of a run, whatever the height of their blocks", () => {
+    const { cues, input, pieces } = build(["this:m one:b trick:b doubled:h@560 my:m views:b", "in:b just:b", "all:b of:m them:b are:m unplugged:h@480"], { lead: 400, gap: 0, cueGap: 0, tail: 600 });
+    const centre = (t: number) => pieces.flatMap((piece) => {
+      if (piece.kind !== "text" || !/:count\d+$/.test(piece.id)) return [];
+      const pose = evaluatePiece(piece, t);
+      return pose.visible && pose.o > 0.99 ? [pose.y] : [];
+    });
+    let last: number | undefined;
+    for (const t of exportFrameTimes(cues[0]!.words[0]!.startMs, cues.at(-1)!.words.at(-1)!.endMs, 30)) {
+      const ys = centre(t);
+      expect(ys.length, `counter at ${t}`).toBe(1);
+      if (last !== undefined) expect(Math.abs(ys[0]! - last), `counter moves ${Math.abs(ys[0]! - last)} px at ${t}`).toBeLessThan(25);
+      last = ys[0];
+    }
+    expect(input.cues.length).toBe(3);
+  });
+
+  test("after a tall block the counter slides down to its place over several frames instead of jumping", () => {
+    const { cues, pieces } = build(["go:b hard:h@300 now:b real:h@300", "then:b stop:b"], { lead: 400, gap: 0, cueGap: 0, tail: 600 });
+    const at = (t: number) => pieces.flatMap((piece) => (piece.kind === "text" && /:count\d+$/.test(piece.id) && evaluatePiece(piece, t).visible ? [evaluatePiece(piece, t).y] : []));
+    const frames = exportFrameTimes(cues[0]!.words[0]!.startMs, cues[1]!.words.at(-1)!.endMs, 30).map((t) => at(t)[0]!);
+    const steps = frames.slice(1).map((y, i) => Math.abs(y - frames[i]!));
+    expect(Math.max(...steps)).toBeLessThan(40);
+    expect(Math.max(...frames) - Math.min(...frames)).toBeGreaterThan(20);
+  });
+
+  test("a sentence end restarts the count", () => {
+    const { cues, pieces } = build(["so:b it:b works.:b", "now:b try:b it:b"], { lead: 400, gap: 0, cueGap: 0, tail: 600 });
+    const all = cues.flatMap((cue) => cue.words);
+    const expected = [1, 2, 3, 1, 2, 3];
+    for (const [i, word] of all.entries()) expect(counterAt(pieces, word.startMs + 90), all[i]!.text).toEqual([`×${expected[i]}`]);
+  });
+
+  test("it never shows more than x99 and a wide count is set no wider than a single digit's cap", () => {
+    const { pieces } = build(Array.from({ length: 22 }, (_, c) => Array.from({ length: 5 }, (_, i) => `w${c * 5 + i}:b@60`).join(" ")));
+    const counts = pieces.filter((piece): piece is TextPiece => piece.kind === "text" && /:count\d+$/.test(piece.id));
+    expect(counts.some((piece) => piece.text === "×99")).toBe(true);
+    expect(counts.some((piece) => piece.text === "×100" || piece.text === "×101")).toBe(false);
+    const wide = counts.find((piece) => piece.text === "×99")!;
+    const one = counts.find((piece) => piece.text === "×1" || piece.text === "×2")!;
+    expect(wide.sizePx).toBeLessThan(one.sizePx);
+  });
+});
+
+describe("Combo keeps its beats on fast cues", () => {
+  test("16 single-word 70 ms cues with no gap still paint the XP shine, and key words still burst", () => {
+    const lines = Array.from({ length: 16 }, (_, i) => `${i % 2 ? "yes" : "no"}${i % 2 ? ":h" : ":b"}@70`);
+    const { cues } = demoCues({ lines, options: { lead: 400, gap: 0, cueGap: 0, tail: 400 } });
+    for (const fps of [24, 30, 60]) {
+      const input = sceneInput(cues, { fps, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+      const pieces = comboProgram.build(input).pieces;
+      const shine = new Set(pieces.filter((piece) => piece.id.endsWith(":shine")).map((piece) => piece.id.split(":")[1]));
+      const shards = new Set(pieces.filter((piece) => /:shard\d+-0$/.test(piece.id)).map((piece) => piece.id.split(":")[1]));
+      // A 70 ms window holds one or two frames at 24 and 25 fps depending on its phase; a decoration needs two.
+      expect(shine.size, `shine at ${fps} fps`).toBeGreaterThanOrEqual(fps >= 30 ? 14 : 10);
+      expect(shards.size, `shards at ${fps} fps`).toBeGreaterThanOrEqual(fps >= 30 ? 6 : 4);
+    }
   });
 });
