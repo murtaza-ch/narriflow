@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { demoCues } from "./demo";
+import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
-import { describeSpeechConformance } from "./conformance-support";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { comboProgram } from "./templates/combo";
 import { type Box, type Piece, type TextPiece, evaluatePiece, pieceBounds } from "./scene";
 import { sceneInput } from "./test-support";
@@ -268,5 +268,96 @@ describe("Combo review re-check", () => {
     const pieces = comboProgram.build(input).pieces;
     const body = (cue: number) => Math.min(...pieces.flatMap((piece) => (piece.kind === "text" && new RegExp(`^combo:${cue}:w\\d+$`).test(piece.id) && run[cue]!.words[Number(piece.id.split(":w")[1])]!.role !== "hero" ? [piece.sizePx] : [])));
     expect(Math.abs(body(0) - body(1)) / Math.min(body(0), body(1))).toBeLessThan(0.05);
+  });
+});
+
+describe("Combo badge slot inside the band", () => {
+  const lines = ["it's:m accidentally:b open:b them:h@400", "a:b go:h@300 now:b real:h@300", "all:b of:m them:b are:m unplugged.:h@480", "this:m one:b trick:b doubled:h@560 my:m views:b"];
+  const looks = [
+    ["9:16", { width: 1080, height: 1920 }, 1], ["16:9", { width: 1920, height: 1080 }, 1], ["2x on 16:9", { width: 1920, height: 1080 }, 2], ["2x on 9:16", { width: 1080, height: 1920 }, 2],
+  ] as const;
+  for (const [label, canvas, scale] of looks) {
+    test(`words, hero copies and the XP bar stay under the badge and inside the band (${label})`, () => {
+      const { cues } = demoCues({ lines, options: { lead: 400, gap: 30, cueGap: 120, tail: 600 } });
+      const input = sceneInput(cues, { fps: 30, canvas, scale, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+      const pieces = comboProgram.build(input).pieces;
+      const anchorY = (1320 / 1920) * canvas.height;
+      const bandBottom = Math.min(0.95 * canvas.height - 3, anchorY + (330 / 1920) * canvas.height * Math.max(1, scale));
+      for (const cue of cues) {
+        const badges = pieces.filter((piece) => piece.id.startsWith(`combo:${cue.index}:count`));
+        const block = pieces.filter((piece) => piece.id.startsWith(`combo:${cue.index}:`) && /:(w\d+(?:l\d+)?[hk]?|seg\d+|fill\d+)$/.test(piece.id));
+        for (const t of exportFrameTimes(cue.startMs - 100, cue.endMs, 30)) {
+          const lowestBadge = Math.max(0, ...badges.map((piece) => pieceBounds(piece, t, input.measure)?.y2 ?? 0));
+          for (const piece of block) {
+            const box = pieceBounds(piece, t, input.measure);
+            if (!box) continue;
+            expect(box.y2, `${piece.id} below the band at ${t} (${label})`).toBeLessThanOrEqual(bandBottom + 1);
+            if (/:w\d+(?:l\d+)?$/.test(piece.id) && lowestBadge > 0) {
+              const badge = badges.flatMap((candidate) => pieceBounds(candidate, t, input.measure) ?? []);
+              for (const b of badge) {
+                const hit = box.x1 + 1 < b.x2 && b.x1 + 1 < box.x2 && box.y1 + 1 < b.y2 && b.y1 + 1 < box.y2;
+                expect(hit, `${piece.id} in the badge at ${t} (${label})`).toBe(false);
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  test("a run's badge ends on the frame the next run's badge starts, with no double badge", () => {
+    // en-waveform 14,190-15,750 ms (Sol's repro): "Just tear it down." then "Who cares?" 40 ms later, the reading hold of the first cue free to run on.
+    const word = (text: string, startMs: number, endMs: number, role: "hero" | "body" | "minor") => ({ text, startMs, endMs, role, key: null });
+    const cues = [
+      { index: 0, startMs: 14190, endMs: 15250, speaker: 4, language: "en", words: [word("Just", 14190, 14470, "body"), word("tear", 14470, 14710, "body"), word("it", 14710, 14870, "minor"), word("down.", 14870, 15210, "minor")] },
+      { index: 1, startMs: 15250, endMs: 15750, speaker: 4, language: "en", words: [word("Who", 15250, 15430, "minor"), word("cares?", 15430, 15710, "hero")] },
+    ];
+    for (const fps of [24, 25, 30, 60]) {
+      const input = sceneInput(cues, { fps, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+      const pieces = comboProgram.build(input).pieces;
+      for (const t of exportFrameTimes(14190, 15750, fps)) {
+        const shown = pieces.filter((piece) => piece.kind === "text" && /:count\d+$/.test(piece.id) && evaluatePiece(piece, t).visible && evaluatePiece(piece, t).o > 0.02);
+        expect(shown.length, `two badges at ${t} (${fps} fps)`).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  test("never two badges at once on a long fast run, at any frame rate", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const cues of [fastRun(0), fastRun(60), staccatoRun(0), staccatoRun(60)]) {
+        const pieces = comboProgram.build(sceneInput(cues, { fps, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } })).pieces;
+        for (const t of exportFrameTimes(cues[0]!.startMs, cues.at(-1)!.endMs, fps)) {
+          const shown = pieces.filter((piece) => piece.kind === "text" && /:count\d+$/.test(piece.id) && evaluatePiece(piece, t).visible && evaluatePiece(piece, t).o > 0.02);
+          expect(shown.length, `two badges at ${t} (${fps} fps)`).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
+  test("the badge is inside the safe area on every painted frame, for two speakers and for a mirrored cue at positionX 20", () => {
+    const check = (pieces: readonly Piece[], input: ReturnType<typeof sceneInput>, label: string) => {
+      const { canvas } = input;
+      const safe = { x1: 0.05 * canvas.width - 1, y1: 0.05 * canvas.height - 1, x2: 0.95 * canvas.width + 1, y2: 0.95 * canvas.height + 1 };
+      const badges = pieces.filter((piece) => /:(count|pulse)\d+$/.test(piece.id));
+      expect(badges.length, label).toBeGreaterThan(0);
+      for (const piece of badges) {
+        for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+          const box = pieceBounds(piece, t, input.measure);
+          if (!box) continue;
+          expect(box.x1 >= safe.x1 && box.x2 <= safe.x2 && box.y1 >= safe.y1 && box.y2 <= safe.y2, `${piece.id} at ${t} ${label}: ${JSON.stringify(box)}`).toBe(true);
+        }
+      }
+    };
+    const two = demoCues({ lines: ["go:b hard:h@300 now:b real:h@300", "yes:b ok:b"], options: { lead: 333, gap: 0, cueGap: 0, tail: 600 } }).cues;
+    const run = two.map((cue, i) => ({ ...cue, speaker: i }));
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      const input = sceneInput(run, { fps: 30, canvas, anchor: { xPct: 50, yPct: (1320 / 1920) * 100 } });
+      check(comboProgram.build(input).pieces, input, `two speakers ${canvas.width}x${canvas.height}`);
+    }
+    const urdu = sceneEdgeDemo("urdu").cues;
+    for (const xPct of [20, 80]) {
+      const input = sceneInput(urdu, { fps: 30, anchor: { xPct, yPct: (1320 / 1920) * 100 } });
+      check(comboProgram.build(input).pieces, input, `urdu at positionX ${xPct}`);
+    }
   });
 });
