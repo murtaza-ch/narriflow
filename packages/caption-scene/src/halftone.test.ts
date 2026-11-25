@@ -4,6 +4,7 @@ import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameTimes } from "./frame-grid";
 import { SCENE_PIECE_BUDGET, evaluatePiece, pieceBounds, type Box, type Piece } from "./scene";
 import { halftoneProgram } from "./templates/halftone";
+import { captionColourContrast } from "@narriflow/validators";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 describeSpeechConformance("halftone", halftoneProgram, { anchorLineY: 1290 });
@@ -61,8 +62,9 @@ describe("halftone", () => {
     expect(depth(bands[2]!)).toBeCloseTo(0.11, 3);
     expect(depth(bands[0]!)).toBeLessThan(depth(bands[1]!));
     expect(face.stroke!.widthPx).toBeLessThanOrEqual(2.6);
-    // Only the deepest band carries the soft shadow.
-    expect(bands.filter((band) => band.kind === "text" && band.shadows?.length).length).toBe(1);
+    // No band carries a shadow or a keyline of the face's colour; the thin rim next to the face has no border at all.
+    expect(bands.every((band) => band.kind === "text" && !band.shadows?.length)).toBe(true);
+    expect(bands.filter((band) => band.kind === "text" && band.stroke).length).toBe(2);
   });
 
   test("words keep the transcript's casing", () => {
@@ -82,7 +84,8 @@ describe("halftone", () => {
         const peakAlpha = (dot.fill?.alpha ?? 1) * Math.max(...exportFrameTimes(dot.fromMs, dot.toMs, 60).map((t) => evaluatePiece(dot, t).o));
         expect(peakAlpha).toBeLessThanOrEqual(0.52);
         const os = exportFrameTimes(dot.fromMs + 100, dot.toMs - 200, 60).map((t) => evaluatePiece(dot, t).o).sort((a, b) => a - b);
-        expect((dot.fill?.alpha ?? 1) * os[0]!).toBeCloseTo(0.36, 1);
+        // At rest 36 %; a pulse only ever lifts a dot above it.
+        expect((dot.fill?.alpha ?? 1) * os[0]!).toBeGreaterThanOrEqual(0.35);
         expect(dot.fromMs).toBeGreaterThanOrEqual(cue.words[0]!.startMs);
         // The pulse has settled back by the end of its window and nothing is clipped through a dot.
         expect(dot.clip).toBeUndefined();
@@ -204,5 +207,138 @@ describe("halftone edge cases", () => {
     const dotsOf = (canvas: { width: number; height: number }) =>
       halftoneProgram.build(sceneInput(cues, { fps: 30, colours, anchor, canvas })).pieces.filter((p) => p.id.includes(":dot"));
     expect(dotsOf({ width: 1920, height: 1080 }).length).toBeLessThan(dotsOf({ width: 1080, height: 1920 }).length);
+  });
+});
+
+describe("halftone review fixes", () => {
+  const faceAt = (pieces: readonly Piece[], cue: number) => faces(pieces, cue).filter((p) => !/d\d$/.test(p.id));
+
+  test("a cue's exit uses the time up to the next onset: with a 250 ms gap something is on screen on every frame", () => {
+    const { cues } = demoCues({ lines: ["support:b GORGEOUS:h@350 bottom:b@400", "next:b@250 cue:h@250"], options: { lead: 400, gap: 0, cueGap: 250, tail: 500 } });
+    const pieces = halftoneProgram.build(sceneInput(cues, { fps: 30, colours })).pieces;
+    const first = faces(pieces, 0);
+    const last = Math.max(...cues[0]!.words.map((w) => w.endMs));
+    const next = cues[1]!.words[0]!.startMs;
+    // The first cue's window runs to the next onset, not 80 ms short of it, and it fades inside that time.
+    expect(Math.max(...first.map((p) => p.toMs))).toBe(next);
+    const fading = exportFrameTimes(last, next, 30).some((t) => first.some((p) => evaluatePiece(p, t).o < 0.99));
+    expect(fading).toBe(true);
+    for (const t of exportFrameTimes(cues[0]!.words[0]!.startMs, cues[1]!.endMs, 30)) {
+      const shown = pieces.filter((p) => /:w\d+(l\d+)?$/.test(p.id) && evaluatePiece(p, t).visible && evaluatePiece(p, t).o > 0.02);
+      expect(shown.length, `a face at ${t} ms`).toBeGreaterThan(0);
+    }
+  });
+
+  test("a long word breaks at grapheme boundaries into balanced fragments, one row each, with no space inside the word", () => {
+    const word = "l’intergouvernementalisation";
+    const { cues, pieces } = build([`${word}:h@600 n’est:m@150`], "fr");
+    const parts = pieces.filter((p) => /^halftone:0:w0l\d$/.test(p.id));
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.map(text).join("")).toBe(word);
+    const ys = parts.map((p) => Math.round(evaluatePiece(p, cues[0]!.endMs - 200).y));
+    expect(new Set(ys).size).toBe(parts.length);
+    const widths = parts.map((p) => text(p).length);
+    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(Math.ceil(word.length / parts.length));
+    expect(widths.at(-1)!).toBeGreaterThanOrEqual(Math.floor(Math.min(...widths) / 2) + 1);
+  });
+
+  test("a key word that fits whole at the readable floor is never split", () => {
+    const { pieces } = build(["support:b GORGEOUS:h@350 bottom:b@400"]);
+    const hero = faceAt(pieces, 0).filter((p) => text(p) === "GORGEOUS");
+    expect(hero.length).toBe(1);
+    expect(hero[0]!.kind === "text" && hero[0]!.sizePx).toBeGreaterThanOrEqual(100);
+  });
+
+  test("a brand colour that sinks into the keyline keeps the default face", () => {
+    const sunk = { ...colours, primary: "#218174", highlight: "#70C08E" };
+    const { cues } = demoCues({ lines: ["first:h@400", "second:h@400", "third:h@400"], options: { lead: 400, gap: 0, cueGap: 0, tail: 500 } });
+    const pieces = halftoneProgram.build(sceneInput(cues, { fps: 30, colours: sunk })).pieces;
+    for (const cue of cues) {
+      for (const face of faceAt(pieces, cue.index)) {
+        if (face.kind !== "text" || !face.stroke) throw new Error("faces are text with a keyline");
+        const fill = typeof face.fill === "string" ? face.fill : "";
+        expect(captionColourContrast(fill, face.stroke.colour), `cue ${cue.index} ${fill}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+    // The default cream and yellow faces are what is left; a readable brand colour is kept.
+    const kept = halftoneProgram.build(sceneInput(cues, { fps: 30, colours: { ...colours, primary: "#FFFFFF" } })).pieces;
+    expect(faceAt(kept, 0).some((p) => p.kind === "text" && p.fill === "#FFFFFF")).toBe(true);
+  });
+
+  test("a word with too few frames for a bounce settles monotonically and never lands past 100 %", () => {
+    const { cues, pieces } = build(["fast:b@70 now:m@90 jump:h@120"]);
+    for (const [at, word] of cues[0]!.words.entries()) {
+      const face = pieces.find((p) => p.id === `halftone:0:w${at}`)!;
+      const frames = exportFrameTimes(face.fromMs, word.endMs, 30);
+      const scales = frames.map((t) => evaluatePiece(face, t).sx);
+      expect(Math.max(...scales)).toBeLessThanOrEqual(frames.length >= 4 ? 1.031 : 1.0001);
+      // No frame past the peak ever grows again.
+      const peakAt = scales.indexOf(Math.max(...scales));
+      for (let i = peakAt + 1; i < scales.length; i++) expect(scales[i]!).toBeLessThanOrEqual(scales[i - 1]! + 1e-9);
+    }
+  });
+
+  test("the dot wave fires on ordinary cues, repeats while time remains, and the column cap holds after rounding", () => {
+    const lines = ["It's:b time:b to:m say:h@260", "goodbye:h@300 to:m the:m Waveform:b@330", "studio:h@330", "Does:b the:m remote:b even:h@250", "still:b work:h@240", "so:m Hold:h@5200"];
+    const { cues, pieces } = build(lines);
+    for (const cue of cues) {
+      const dots = pieces.filter((p) => p.id.startsWith(`halftone:${cue.index}:dot`));
+      expect(dots.length).toBeGreaterThan(0);
+      expect(dots.some((dot) => exportFrameTimes(dot.fromMs, dot.toMs, 60).some((t) => evaluatePiece(dot, t).o >= 0.78)), `cue ${cue.index} pulses`).toBe(true);
+    }
+    const hold = pieces.filter((p) => p.id.startsWith(`halftone:${cues.length - 1}:dot`));
+    const rises = (dot: Piece) => (dot.track.o ?? []).filter(([, v]) => Math.abs(v - 0.8) < 1e-9).length;
+    expect(Math.max(...hold.map(rises))).toBeGreaterThanOrEqual(3);
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      const wide = demoCues({ lines: ["something:b@175 unbelievable:h@320 creativity:b@200 extraordinarily:b@300", "a:m b:m c:m d:m e:m f:m g:m h:m i:m j:m k:m l:m"], options: { lead: 400, gap: 0, cueGap: 0, tail: 500 } });
+      const built = halftoneProgram.build(sceneInput(wide.cues, { fps: 30, colours, canvas })).pieces;
+      for (const cue of wide.cues) {
+        const ownDots = built.filter((p) => p.id.startsWith(`halftone:${cue.index}:dot`));
+        const columns = ownDots.reduce((sum, p) => sum + (p.kind === "shape" ? new Set(p.path.filter((c) => c[0] === "M").map((c) => Math.round(c[1] as number / 4))).size : 0), 0);
+        expect(columns).toBeLessThanOrEqual(26 * 3);
+        const total = ownDots.reduce((sum, p) => sum + (p.kind === "shape" ? p.path.filter((c) => c[0] === "M").length : 0), 0);
+        expect(total).toBeLessThanOrEqual(76);
+      }
+    }
+  });
+
+  test("four rows are packed into three when the words can share rows at a readable size", () => {
+    const { cues, pieces } = build(["so:m unbelievable:b is:m GREAT:h@300"]);
+    const ys = faceAt(pieces, 0).map((p) => evaluatePiece(p, cues[0]!.endMs - 200).y).sort((a, b) => a - b);
+    const rows = 1 + ys.filter((y, at) => at > 0 && y - ys[at - 1]! > 90).length;
+    expect(rows).toBeLessThanOrEqual(3);
+    for (const face of faceAt(pieces, 0)) expect(face.kind === "text" && face.sizePx).toBeGreaterThanOrEqual(96);
+  });
+
+  test("colours the Studio's direct controls can send: a near-black or near-white face or accent never sinks into the keyline", () => {
+    const { cues } = demoCues({ lines: ["one:b two:h@300", "three:h@300"], options: { lead: 400, gap: 0, cueGap: 0, tail: 500 } });
+    for (const sent of [
+      { ...colours, primary: "#020304" },
+      { ...colours, highlight: "#0A0A0A" },
+      { ...colours, primary: "#2B0F10", highlight: "#3A1012" },
+      { ...colours, accent: "#FFFFFF" },
+      { ...colours, accent: "#000000", primary: "#111111" },
+    ]) {
+      const pieces = halftoneProgram.build(sceneInput(cues, { fps: 30, colours: sent })).pieces;
+      for (const cue of cues) {
+        for (const face of faceAt(pieces, cue.index)) {
+          if (face.kind !== "text" || !face.stroke) throw new Error("faces are text with a keyline");
+          expect(captionColourContrast(typeof face.fill === "string" ? face.fill : "", face.stroke.colour), JSON.stringify(sent)).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
+
+  test("every glyph of a word paints at its onset: whole, opaque and not collapsed", () => {
+    const { cues, pieces } = build(["keep:b it:m pneumonoultramicroscopicsilicovolcanoconiosis:h@900"]);
+    for (const [at, word] of cues[0]!.words.entries()) {
+      for (const face of pieces.filter((p) => new RegExp(`^halftone:0:w${at}(l\\d+)?$`).test(p.id))) {
+        const first = exportFrameTimes(word.startMs, word.endMs, 30)[0]!;
+        const pose = evaluatePiece(face, first);
+        expect(pose.visible).toBe(true);
+        expect(pose.o).toBe(1);
+        expect(pose.sx).toBeGreaterThan(0.9);
+      }
+    }
   });
 });
