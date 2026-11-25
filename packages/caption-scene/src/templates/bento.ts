@@ -6,7 +6,7 @@ import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narrif
 import type { SceneCue } from "../input";
 import { balancedRows, cueDirection, rowVisualOrder, rowWidth } from "../layout";
 import type { Frames, PathCmd, Piece, Track } from "../scene";
-import { ellipsePath, polylinePath, roundedRectPath } from "../shapes";
+import { ellipsePath, polylinePath } from "../shapes";
 import { galleryScene } from "./gallery-layout";
 import type { SpeechCell } from "./speech-layout";
 
@@ -29,7 +29,7 @@ import type { SpeechCell } from "./speech-layout";
  *   Cyrillic and Greek words only, other scripts shrink to the grid and are never cut apart). Stacked lines are spaced by their
  *   measured ink, so a descender never meets the accent on the line below.
  * - A stack too tall for its lane (2x size, tall scripts, two speakers on 16:9) first uses the whole lane width, then looks for the
- *   largest size that fits with room left for the focus ring and the entrance and exit offsets. Speakers who overlap take the smaller
+ *   largest size that fits with room left for the badges and the entrance and exit offsets. Speakers who overlap take the smaller
  *   of their fits, so they read alike and neither lane grows into the other.
  * - A card's height comes from the measured ink as well as the sample's 1.42 em, so Devanagari and Urdu ink never leaves its card,
  *   and the baseline sits where the sample's line box puts it (0.408 em under the card centre for this face). The card has widened to
@@ -45,10 +45,9 @@ import type { SpeechCell } from "./speech-layout";
  *   two painted frames remain. A cue whose window paints on a single frame keeps its tile (named as a part of its first word, so the
  *   shared one-frame filter leaves it), so no word is ever bare. Right-to-left cues mirror the row order, the growth edge and the
  *   corners the decorations use.
- * - New recurring beats, in the product-page language, on every cue: a white focus RING pulses out from the key card (the last
- *   card when there is no key word) as it lands, and small round BADGES (dot, plus, check, cycling by cue) pin to the leading top
- *   corner of every second other card (a one-card cue pins one to its key card). Both sit under or beside the type and clear of
- *   every word; the sample's arrow chip stays on the key word's card.
+ * - New recurring beat, in the product-page language, on every cue: small round BADGES (dot, plus, check, cycling by cue) pin to
+ *   the leading top corner of every second other card (a one-card cue pins one to its key card), beside the type and clear of every
+ *   word; the sample's arrow chip stays on the key word's card. No outline or focus ring around any card (owner, 2026-11-26).
  * - Cost: one blurred shadow per card; no other blur.
  */
 
@@ -150,7 +149,7 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
     const texts = target.words.map((word) => word.text);
     return (u: number, wide: boolean) => {
       const gap = GAP * u;
-      // The grid leaves room each side for the focus ring and the chip, which reach past the cards. `wide` lets it use the whole lane.
+      // The grid leaves room each side for the badges and the chip, which reach past the cards. `wide` lets it use the whole lane.
       const laneW = space.safe.x2 - space.safe.x1 - 100 * u;
       const gridMax = wide ? laneW : Math.min(GRID * u, laneW);
       const measure = (text: string, face: typeof FACE_BODY | typeof FACE_HERO, size: number) => input.measure(text, face, size, SPACING);
@@ -291,7 +290,7 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
     };
   };
 
-  // The stack must leave room above and below for the focus ring, the entrance rise and the exit drop.
+  // The stack must leave room above and below for the badges, the entrance rise and the exit drop.
   const reach = (u: number) => 76 * u;
   type Layout = ReturnType<ReturnType<typeof layoutOf>>;
   const fits = (laid: Layout, u: number) => laid.total + reach(u) <= safeH;
@@ -515,26 +514,9 @@ export const bentoProgram = galleryScene("bento", ANCHOR, (ctx) => {
     
     };
 
-    // Extra beat 1: a white focus ring pulses out from the key card as it lands.
+    // No focus ring around the key card (owner, 2026-11-26: "I don't need the outline for this template").
     if (k === keyCard) {
-      const onset = Math.max(from, cue.words[card.ids[0]!]!.startMs);
-      const length = Math.min(440, to - onset);
-      const grow = 28 * u;
-      const rp = (t: number) => prog(t, onset, length);
-      const ringEdges = [onset, onset + length];
-      const ringBase = 8 * u;
-      const rw = card.width + 2 * ringBase;
-      const rh = card.height + 2 * ringBase;
-      const ringTrack: Track = {
-        x: bake((t) => X(t), 0.15, onset, ringEdges), y: bake((t) => Y(t), 0.15, onset, ringEdges),
-        sx: bake((t) => scale(t) * lerp(1, (rw + 2 * grow) / rw, EASES.outExpo(rp(t))), 0.003, onset, ringEdges),
-        sy: bake((t) => scale(t) * lerp(1, (rh + 2 * grow) / rh, EASES.outExpo(rp(t))), 0.003, onset, ringEdges),
-        o: bake((t) => 0.9 * (1 - EASES.out(rp(t))) * alpha(t), 0.004, onset, ringEdges),
-      };
-      if (length >= 67) {
-        pieces.push({ ...ctx.shape(`ring${card.ids[0]}`, onset, roundedRectPath(-rw / 2, -rh / 2, rw, rh, radius + ringBase), ringTrack), z: 4, toMs: onset + length, stroke: { widthPx: 5 * u, colour: c.primary } });
-      }
-      // A cue with no other card gives its key card the badge as well, so every cue has a second beat.
+      // A cue with no other card gives its key card the badge, so every cue keeps a recurring beat.
       if (others.length === 0) addBadge();
     } else if (badged.has(k)) {
       addBadge();

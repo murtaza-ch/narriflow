@@ -78,13 +78,13 @@ describe("Bento on real phrasing", () => {
     expect(widthAt(first.startMs + 20)).toBeLessThan(widthAt(cue.words[1]!.endMs + 20) - 20);
   });
 
-  test("the decorations (chip, ring, badges) never sit on a word and come back on every cue", () => {
+  test("the decorations (chip, badges) never sit on a word, and no card has an outline ring", () => {
     let decorations = 0;
     for (const cue of LONG) {
       const own = pieces.filter((piece) => cueOf(piece) === cue.index);
       const faces = own.filter((piece) => FACE.test(piece.id));
       const extras = own.filter((piece) => /:(chip|chiparrow|badge|badgeglyph|ring)\d/.test(piece.id) && !/:ring\d/.test(piece.id));
-      expect(own.some((piece) => /:ring\d/.test(piece.id)), `cue ${cue.index} has no focus ring`).toBe(true);
+      expect(own.some((piece) => /:ring\d/.test(piece.id)), `cue ${cue.index} draws an outline ring`).toBe(false);
       // A decoration crossing a word for one or two frames while it spins in is motion; sitting on it for three is a covered word.
       const runs = new Map<string, number>();
       for (const t of exportFrameTimes(cue.startMs, cue.endMs, 30)) {
@@ -281,7 +281,6 @@ describe("Bento review fixes", () => {
     const oneCard = build(single);
     for (const cue of single) {
       const own = oneCard.filter((piece) => cueOf(piece) === cue.index);
-      expect(own.some((piece) => /:ring\d/.test(piece.id)), `cue ${cue.index} has no ring`).toBe(true);
       expect(own.some((piece) => /:badge\d/.test(piece.id)), `cue ${cue.index} has no second beat`).toBe(true);
     }
   });
