@@ -60,6 +60,11 @@ const TEMPLATE_FACES = [
   "Fredoka Bold",
   "Pixelify Sans Bold",
   "Londrina Solid Black",
+  "Lobster",
+  "Oleo Script Bold",
+  "Racing Sans One",
+  "Orbitron Black",
+  "Pacifico",
 ];
 
 describe("template-only caption faces", () => {

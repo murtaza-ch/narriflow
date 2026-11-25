@@ -63,6 +63,15 @@ export const SAMPLE_FILES: Readonly<Record<CaptionSceneName, string>> = {
   receipt: "m58-receipt",
   chronicle: "m55-chronicle",
   combo: "m54-combo",
+  rainbow: "m67-rainbow3d",
+  tilt: "m68-hype3d",
+  vibes: "m69-vibes",
+  pixelpop: "m70-pixelpop",
+  funky: "m71-funky",
+  glint: "m72-glint",
+  marquee: "m73-vintage",
+  horizon: "m74-synthwave",
+  halftone: "m75-halftone",
 };
 
 export function studioShot(input: { readonly url: string; readonly output: string; readonly width?: number; readonly height?: number }): void {

@@ -379,6 +379,15 @@ export const CAPTION_PRESETS = [
   scenePreset("receipt"),
   scenePreset("chronicle"),
   scenePreset("combo"),
+  scenePreset("rainbow"),
+  scenePreset("tilt"),
+  scenePreset("vibes"),
+  scenePreset("pixelpop"),
+  scenePreset("funky"),
+  scenePreset("glint"),
+  scenePreset("marquee"),
+  scenePreset("horizon"),
+  scenePreset("halftone"),
   // Bold
   namedPreset("bold-pop", "Bold Pop", "Bold", {
     fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,

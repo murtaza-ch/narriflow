@@ -78,6 +78,15 @@ import { BLINDS_DEMO, blindsProgram } from "./templates/blinds";
 import { RECEIPT_DEMO, receiptProgram } from "./templates/receipt";
 import { CHRONICLE_DEMO, chronicleProgram } from "./templates/chronicle";
 import { COMBO_DEMO, comboProgram } from "./templates/combo";
+import { RAINBOW_DEMO, rainbowProgram } from "./templates/rainbow";
+import { TILT_DEMO, tiltProgram } from "./templates/tilt";
+import { VIBES_DEMO, vibesProgram } from "./templates/vibes";
+import { PIXELPOP_DEMO, pixelpopProgram } from "./templates/pixelpop";
+import { FUNKY_DEMO, funkyProgram } from "./templates/funky";
+import { GLINT_DEMO, glintProgram } from "./templates/glint";
+import { MARQUEE_DEMO, marqueeProgram } from "./templates/marquee";
+import { HORIZON_DEMO, horizonProgram } from "./templates/horizon";
+import { HALFTONE_DEMO, halftoneProgram } from "./templates/halftone";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -161,6 +170,15 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   receipt: { program: receiptProgram, demo: RECEIPT_DEMO },
   chronicle: { program: chronicleProgram, demo: CHRONICLE_DEMO },
   combo: { program: comboProgram, demo: COMBO_DEMO },
+  rainbow: { program: rainbowProgram, demo: RAINBOW_DEMO },
+  tilt: { program: tiltProgram, demo: TILT_DEMO },
+  vibes: { program: vibesProgram, demo: VIBES_DEMO },
+  pixelpop: { program: pixelpopProgram, demo: PIXELPOP_DEMO },
+  funky: { program: funkyProgram, demo: FUNKY_DEMO },
+  glint: { program: glintProgram, demo: GLINT_DEMO },
+  marquee: { program: marqueeProgram, demo: MARQUEE_DEMO },
+  horizon: { program: horizonProgram, demo: HORIZON_DEMO },
+  halftone: { program: halftoneProgram, demo: HALFTONE_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

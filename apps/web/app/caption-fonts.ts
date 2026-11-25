@@ -1047,6 +1047,81 @@ const captionBagelFatOne = localFont({
   ],
 });
 
+const captionLobster = localFont({
+  src: "../../../packages/caption-fonts/fonts/Lobster-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-lobster",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "100%" },
+    { prop: "descent-override", value: "49%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionOleoScriptBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/OleoScript-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-oleo-script-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "100.4%" },
+    { prop: "descent-override", value: "37.9%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionRacingSansOne = localFont({
+  src: "../../../packages/caption-fonts/fonts/RacingSansOne-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-racing-sans-one",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "97.6%" },
+    { prop: "descent-override", value: "28.4%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionOrbitronBlack = localFont({
+  src: "../../../packages/caption-fonts/fonts/Orbitron-Black.ttf",
+  weight: "900",
+  style: "normal",
+  variable: "--font-caption-orbitron-black",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "101.1%" },
+    { prop: "descent-override", value: "24.3%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionPacifico = localFont({
+  src: "../../../packages/caption-fonts/fonts/Pacifico-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-pacifico",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "147.8%" },
+    { prop: "descent-override", value: "45.7%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 const captionSpaceMonoRegular = localFont({
   src: "../../../packages/caption-fonts/fonts/SpaceMono-Regular.ttf",
   weight: "400",
@@ -1278,4 +1353,9 @@ export const captionFontVariables = [
   captionFredokaBold.variable,
   captionPixelifySansBold.variable,
   captionLondrinaSolidBlack.variable,
+  captionLobster.variable,
+  captionOleoScriptBold.variable,
+  captionRacingSansOne.variable,
+  captionOrbitronBlack.variable,
+  captionPacifico.variable,
 ].join(" ");

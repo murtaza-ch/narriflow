@@ -83,6 +83,15 @@ export const CAPTION_SCENE_NAMES = [
   "receipt",
   "chronicle",
   "combo",
+  "rainbow",
+  "tilt",
+  "vibes",
+  "pixelpop",
+  "funky",
+  "glint",
+  "marquee",
+  "horizon",
+  "halftone",
 ] as const;
 
 export type CaptionSceneName = (typeof CAPTION_SCENE_NAMES)[number];
@@ -205,6 +214,15 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
   receipt: { name: "Receipt", bodyPx: 52, anchorLineY: 1390, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#17171C", highlight: "#E8452B", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Space Mono Bold", backdrop: "bright" },
   chronicle: { name: "Chronicle", bodyPx: 72, anchorLineY: 1370, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#F4F1EA", highlight: "#F2C14E", accent: "#F4F1EA" }, brand: { primary: { slot: "primaryColor", readsOn: ["#101010"] }, secondary: { slot: "highlightColor", readsOn: ["#101010"] } }, fontName: "Newsreader Medium", backdrop: "dark" },
   combo: { name: "Combo", bodyPx: 84, anchorLineY: 1320, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#0A0A12" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Chakra Petch", backdrop: "busy" },
+  rainbow: { name: "Rainbow", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Fredoka Bold", backdrop: "bright" },
+  tilt: { name: "Tilt", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Lilita One", backdrop: "dark" },
+  vibes: { name: "Vibes", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Oleo Script Bold", backdrop: "bright" },
+  pixelpop: { name: "Pixelpop", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Pixelify Sans Bold", backdrop: "dark" },
+  funky: { name: "Funky", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Luckiest Guy", backdrop: "busy" },
+  glint: { name: "Glint", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Titan One", backdrop: "busy" },
+  marquee: { name: "Marquee", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Oleo Script Bold", backdrop: "dark" },
+  horizon: { name: "Horizon", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Racing Sans One", backdrop: "dark" },
+  halftone: { name: "Halftone", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE600", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Pacifico", backdrop: "bright" },
   reveal: { name: "Reveal", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
 };
 
