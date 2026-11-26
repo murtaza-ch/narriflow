@@ -4,7 +4,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done
 
 Read `../spec.md` sections 2, 3 and 4 first, and ADR 0021 (`docs/adr/0021-caption-scenes.md`).
 
@@ -21,7 +21,23 @@ Read `../spec.md` sections 2, 3 and 4 first, and ADR 0021 (`docs/adr/0021-captio
 
 ## Acceptance
 
-- [ ] `{ id, text }` and the real old layer from `apps/media/src/__fixtures__/render-golden/documents.json` parse to the full default style; a layer of only whitespace or newlines is refused.
-- [ ] A document with an old-shape layer round-trips through the editor document codec without error.
-- [ ] `layoutTextLayer` tests pass and no layout constant exists outside the module.
-- [ ] `bun run lint`, `bun run typecheck`, `bun run test` pass. Database test files typecheck and are not run.
+- [x] `{ id, text }` and the real old layer from `apps/media/src/__fixtures__/render-golden/documents.json` parse to the full default style; a layer of only whitespace or newlines is refused.
+- [x] A document with an old-shape layer round-trips through the editor document codec without error.
+- [x] `layoutTextLayer` tests pass and no layout constant exists outside the module.
+- [x] `bun run lint`, `bun run typecheck`, `bun run test` pass. Database test files typecheck and are not run.
+
+## Evidence (2026-11-27)
+
+Commits on `feat/title-text-core`: 7c334bdac (model and consumers), 60f6b7ffc (layout builder), dbdbe572b (orchestrator review fixes: one plate shape per layer, captions' case rule, brand title style filled from the default title style, two samples).
+
+- Old layers: `packages/validators/src/text-layer.test.ts` parses `{ id, text }` and the real old layer to the full default body style, refuses whitespace/newline-only text, and proves `.prefault({})` gives fresh nested objects. Ticket 02 rewrote the golden document to the new shape, so the test keeps a verbatim copy of the old layer it held (`OLD_LAYER`, with its origin noted).
+- Codec: `packages/services/src/clip-editor-document-persistence.test.ts` "a stored Text Layer of the old flat shape decodes in the default style and round-trips" (decode, encode, decode equal).
+- Title pinning: `packages/validators/src/editor-document.test.ts` (cut before, trimmed start, clamp to shorter clip with the 0.5 s floor, untouched short title keeps its length).
+- Layout: `packages/caption-scene/src/text-layer/layout.test.ts`, 23 pass (wrap threshold, unequal widths, explicit and blank lines, overlong word, alignment, both box modes, both corner modes, one same-wound shape for line boxes, faux bold with and without a user stroke, shear italic, real italic, underline, z bands, braces/backslash kept, the active window, every sample on both canvases).
+- No layout constant outside the module: `grep -rn "PLATE_\|FAUX_BOLD_EM\|UNDERLINE_OFFSET_EM" apps packages` finds them only in `packages/caption-scene/src/text-layer/layout.ts`. The one number outside it is the shear angle in `resolveTextLayerFace` (validators), where the spec places the toggle resolution.
+- Verification: see ticket 02 (both tickets were verified together on the final tree).
+
+Interim decisions to know about:
+- Brand template `title` is `null` in `toSummary`/`buildSnapshot` and the selection capsule seeds `title: null` until ticket 05 stores and populates it.
+- Clip Editor Document Persistence refuses a `title` Apply-to-all patch (`editor_document_invalid`) until ticket 05 adds its merge; the generic merge would have dropped it silently.
+- The Studio's DOM text layer and text panel read `layer.style.*` with the smallest edit; tickets 03 and 04 replace them.
