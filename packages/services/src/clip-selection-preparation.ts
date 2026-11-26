@@ -105,6 +105,17 @@ export async function fitSelectionTags(withTags: (aiFillers: FillerTaggingOutcom
   throw new Error("unreachable");
 }
 
+/**
+ * The capsule staged outside the commit transaction must still be the run's capsule. When the
+ * run is still current but its inputs changed meanwhile (a brand or Content Pack edit), the run
+ * is not superseded: this throws a retryable failure, the commit rolls back, and the next attempt
+ * stages the current capsule. The staged objects keep their delayed cleanup obligations and are
+ * deleted by media cleanup, since no window row ever references them.
+ */
+export function requireStagedCapsuleCurrent(stagedSha256: string, currentSha256: string): void {
+  if (stagedSha256 !== currentSha256) throw new WorkflowFailure("selection_input_changed", "retryable", "Selection inputs changed while the capsule was staged");
+}
+
 export function createClipSelectionPreparation(config: { database: PrismaClient; storage: ClipSelectionStorage; provider: ClipSelectionInput["provider"]; guidance?: { promptLine(workspaceId: string): Promise<string | null> };
   fillerTagger?: ClipSelectionFillerTagger; emojiTagger?: ClipSelectionEmojiTagger; fillerTaggingBudgetMs?: number; now?: () => number }) {
   const transaction = <T>(body: (tx: Tx) => Promise<T>) => config.database.$transaction(body, { maxWait: 10_000, timeout: 30_000 });
@@ -189,7 +200,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
         if (!state || !["queued", "waiting"].includes(state.run.status)) return { kind: "superseded", dispatchIds: [] };
         const existing = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
         if (existing.length) return register(tx, existing);
-        if ((await encodeClipSelectionInput(await capsule(state, reference, audienceDataLine, aiFillers, emojiPicks))).sha256 !== encoded.sha256) return { kind: "superseded", dispatchIds: [] };
+        requireStagedCapsuleCurrent(encoded.sha256, (await encodeClipSelectionInput(await capsule(state, reference, audienceDataLine, aiFillers, emojiPicks))).sha256);
         for (const storageKey of objectKeys.slice().sort()) await lockPlannedExecutionObject(tx, { origin: "selection_execution", storageKey });
         await tx.mediaCleanupObligation.updateMany({ where: { origin: "selection_execution", cleanupClass: "execution_input", objectKey: { in: objectKeys } }, data: { nextAttemptAt: new Date(state.now.getTime() + 720_000) } });
         const rows: ClipSelectionWindow[] = [];

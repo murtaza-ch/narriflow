@@ -75,6 +75,14 @@ export interface ClipEditorDocumentStoredState {
   mutableRenders: Array<{ id: string; storageKey: string | null }>;
 }
 
+/** A clip the project-selection read could not decode. It is skipped, and its revision still
+ *  guards the commit, so a concurrent repair of it is noticed like any other change. */
+export interface ClipEditorDocumentUnreadableClip {
+  unreadable: true;
+  clipId: string;
+  revision: number;
+}
+
 export type ClipEditorDocumentActorScope = ActorScope;
 
 export interface ClipEditorDocumentScope extends ClipEditorDocumentActorScope {
@@ -114,6 +122,8 @@ export interface ClipEditorProjectSelectionResult {
   /** Per-clip title outcomes when the patches carry a title: changed title layers, new title
    *  layers, and clips left without one (at the layer limit or without usable words). */
   title?: { restyled: number; created: number; skipped: number };
+  /** Clips skipped because their stored document could not be read; absent when none. */
+  unreadable?: number;
   /** Clips whose update also wrote `captionEmojis` from the intent. */
   captionEmojisAdded: number;
   /** Clips with intent emojis that were not written because the clip changed since
@@ -155,7 +165,7 @@ export interface ClipEditorDocumentStore {
   commit(input: ClipEditorDocumentCommit): Promise<ClipEditorDocumentStoredState | null>;
   readProjectSelection(
     scope: ClipEditorProjectSelectionScope,
-  ): Promise<ClipEditorDocumentStoredState[] | null>;
+  ): Promise<Array<ClipEditorDocumentStoredState | ClipEditorDocumentUnreadableClip> | null>;
   commitProjectSelection(input: ClipEditorProjectSelectionCommit): Promise<boolean>;
 }
 
@@ -344,7 +354,7 @@ function hasCaptionEmojis(document: EditorDocument): boolean {
 function planProjectSelectionDocument(
   state: ClipEditorDocumentStoredState,
   intent: ClipEditorProjectSelectionIntent,
-): { document: EditorDocument; title: TitlePatchOutcome | null } {
+): { document: EditorDocument; title: TitlePatchOutcome | "unchanged" | null } {
   if (intent.kind === "set_caption_preset") {
     const suggested = intent.captionEmojis?.get(state.clipId);
     const studioEdits = suggested && suggested.revision === state.revision && !hasCaptionEmojis(state.document)
@@ -387,12 +397,17 @@ function planProjectSelectionDocument(
   const next = { ...state.document, studioEdits };
   if (title === null) return { document: canonicalizeDocument(next, sourceOf(state)), title };
   // A title that does not canonicalize on this clip skips the clip; it never fails the others.
+  let document: EditorDocument;
   try {
-    return { document: canonicalizeDocument(next, sourceOf(state)), title };
+    document = canonicalizeDocument(next, sourceOf(state));
   } catch (error) {
     if (!(error instanceof ClipEditorDocumentPersistenceError)) throw error;
     return { document: state.document, title: "skipped" };
   }
+  // Restyled only when the title layer itself changed, whatever other patches in the group did.
+  // Both documents are canonical, so their layers serialize in schema order.
+  const titleOf = (value: EditorDocument) => JSON.stringify(value.studioEdits.textLayers.find((layer) => layer.role === "title") ?? null);
+  return { document, title: title === "restyled" && titleOf(document) === titleOf(state.document) ? "unchanged" : title };
 }
 
 function canonicalizeStoredState(
@@ -419,6 +434,30 @@ function canonicalizeStoredState(
       "Clip Editor Document is malformed",
     );
   }
+}
+
+function isUnreadableClipError(error: unknown): boolean {
+  return error instanceof ClipEditorDocumentPersistenceError || error instanceof UnsafeUrlError;
+}
+
+/** The selection's readable clips, canonical, and the ones that are not: one unreadable clip
+ *  never stops a project-wide change to the others. */
+function readableSelection(entries: ReadonlyArray<ClipEditorDocumentStoredState | ClipEditorDocumentUnreadableClip>) {
+  const states: ClipEditorDocumentStoredState[] = [];
+  const unreadable: ClipEditorDocumentUnreadableClip[] = [];
+  for (const entry of entries) {
+    if ("unreadable" in entry) {
+      unreadable.push(entry);
+      continue;
+    }
+    try {
+      states.push(canonicalizeStoredState(entry));
+    } catch (error) {
+      if (!isUnreadableClipError(error)) throw error;
+      unreadable.push({ unreadable: true, clipId: entry.clipId, revision: entry.revision });
+    }
+  }
+  return { states, unreadable };
 }
 
 function safeRecord(
@@ -701,7 +740,7 @@ export function createClipEditorDocumentPersistence(input: {
       await input.authorize(request, "content.edit");
       const storedStates = await input.store.readProjectSelection(request);
       if (!storedStates) persistenceError("project_not_found", "project not found");
-      return storedStates.map(canonicalizeStoredState)
+      return readableSelection(storedStates).states
         .map((state) => ({ clipId: state.clipId, revision: state.revision, document: state.document }));
     },
     async mutateProjectSelection(request: {
@@ -721,20 +760,17 @@ export function createClipEditorDocumentPersistence(input: {
       for (let attempt = 0; attempt < fieldRetryLimit; attempt += 1) {
         const storedStates = await input.store.readProjectSelection(request);
         if (!storedStates) persistenceError("project_not_found", "project not found");
-        const states = storedStates.map(canonicalizeStoredState);
+        const { states, unreadable } = readableSelection(storedStates);
         lastStates = states;
         const titleCounts = { restyled: 0, created: 0, skipped: 0 };
-        let titlePatched = false;
+        // A title request always answers with counts, zeros included.
+        const titlePatched = request.intent.kind === "patch_studio_edits" && request.intent.patches.some((patch) => patch.title !== undefined);
         const documents = states.flatMap((state) => {
           const planned = planProjectSelectionDocument(state, request.intent);
           const nextDocument = planned.document;
           const changed = !editorDocumentsEqual(state.document, nextDocument);
-          if (planned.title !== null) {
-            titlePatched = true;
-            // A title that already matches is neither restyled nor created.
-            if (planned.title === "skipped") titleCounts.skipped += 1;
-            else if (changed) titleCounts[planned.title] += 1;
-          }
+          // A title that already matches is neither restyled nor created.
+          if (planned.title !== null && planned.title !== "unchanged") titleCounts[planned.title] += 1;
           if (!changed) return [];
           assertEditorDocumentFeatureDelta(pricingTier, state.document, nextDocument);
           return [
@@ -757,9 +793,9 @@ export function createClipEditorDocumentPersistence(input: {
         });
         const committed = await input.store.commitProjectSelection({
           scope: request,
-          expectedRevisions: states.map((state) => ({
-            clipId: state.clipId,
-            revision: state.revision,
+          expectedRevisions: [...states, ...unreadable].map((entry) => ({
+            clipId: entry.clipId,
+            revision: entry.revision,
           })),
           documents,
         });
@@ -792,7 +828,30 @@ export function createClipEditorDocumentPersistence(input: {
               elapsedMs: now().getTime() - startedAt,
             });
           }
-          return { updated: documents.length, captionEmojisAdded, captionEmojisStale, ...(titlePatched ? { title: titleCounts } : {}) };
+          for (const clip of unreadable) {
+            safeRecord(input.diagnostics, {
+              actorUserId: request.actorUserId,
+              projectId: request.projectId,
+              clipId: clip.clipId,
+              mutationKind,
+              attempt: attempt + 1,
+              baseRevision: null,
+              resultingRevision: clip.revision,
+              noop: true,
+              invalidationClasses: [],
+              cleanupCount: 0,
+              outcome: "rejected",
+              elapsedMs: now().getTime() - startedAt,
+            });
+          }
+          if (titlePatched) titleCounts.skipped += unreadable.length;
+          return {
+            updated: documents.length,
+            captionEmojisAdded,
+            captionEmojisStale,
+            ...(unreadable.length > 0 ? { unreadable: unreadable.length } : {}),
+            ...(titlePatched ? { title: titleCounts } : {}),
+          };
         }
       }
       for (const state of lastStates) {
@@ -1252,18 +1311,23 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
       },
     });
     if (!project) return null;
-    return project.clips.map((row) =>
-      decodePrismaState({
-        ...row,
-        project: {
-          workspaceId: project.workspaceId,
-          sourceDurationSeconds: project.sourceDurationSeconds,
-          sourceProbe: project.sourceProbe,
-          sourceStorageKey: project.sourceStorageKey,
-          transcript: project.transcript,
-        },
-      }),
-    );
+    return project.clips.map((row): ClipEditorDocumentStoredState | ClipEditorDocumentUnreadableClip => {
+      try {
+        return decodePrismaState({
+          ...row,
+          project: {
+            workspaceId: project.workspaceId,
+            sourceDurationSeconds: project.sourceDurationSeconds,
+            sourceProbe: project.sourceProbe,
+            sourceStorageKey: project.sourceStorageKey,
+            transcript: project.transcript,
+          },
+        });
+      } catch (error) {
+        if (!isUnreadableClipError(error)) throw error;
+        return { unreadable: true, clipId: row.id, revision: row.editorRevision };
+      }
+    });
   },
 
   async commitProjectSelection(input) {

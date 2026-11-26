@@ -15,14 +15,19 @@ export function clipEditedDurationSec(window: { startSec: number; endSec: number
   return buildClipCutPlan(deletedRanges, window).editedDurationSec;
 }
 
-/** The patch's timing on a clip `durationSec` long: start inside the clip with room for the minimum, end no later than the clip. */
+/**
+ * The patch's timing on a clip `durationSec` long. An interval that fits the clip is kept as is.
+ * Otherwise the end comes in to the clip's end and the start leaves at least the minimum before
+ * it, so the end is always after the start (for a clip with any duration).
+ */
 function clampTitleTiming(patch: Pick<TextLayerTitlePatch, "startSec" | "endSec">, durationSec: number): { startSec: number; endSec: number | null } {
-  const startSec = Math.min(Math.max(patch.startSec, 0), Math.max(0, durationSec - TITLE_MIN_DURATION_SEC));
-  if (patch.endSec === null) return { startSec, endSec: null };
-  const endSec = Math.min(patch.endSec, durationSec);
-  return { startSec, endSec: endSec > startSec ? endSec : null };
+  if (patch.startSec < durationSec && (patch.endSec === null || patch.endSec <= durationSec)) return { startSec: patch.startSec, endSec: patch.endSec };
+  const endSec = patch.endSec === null ? null : Math.min(patch.endSec, durationSec);
+  const startSec = Math.min(patch.startSec, Math.max(0, (endSec ?? durationSec) - TITLE_MIN_DURATION_SEC));
+  return { startSec, endSec };
 }
 
+/** `restyled` here means the clip had a title layer; the caller counts it only when that layer changed. */
 export type TitlePatchOutcome = "restyled" | "created" | "skipped";
 
 /**

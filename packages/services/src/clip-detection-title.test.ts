@@ -111,3 +111,13 @@ describe("auto title at generation", () => {
     expect(clipSelectionInputSchema.shape.editor.parse(first)).toEqual(first);
   });
 });
+
+describe("an unreadable brand snapshot", () => {
+  test("a caption preset that does not parse falls back as if the template had none, and generation goes on", () => {
+    const broken = project({ captionPreset: { fontSize: "huge", position: 42 } });
+    const pack = buildGenerationContentPack({ mode: "clip" });
+    const seed = prepareDetectedClipSeed(broken, pack, { quietRanges: null, languageCode: "en" });
+    expect(seed.captionPreset).toEqual(prepareDetectedClipSeed(project(), pack, { quietRanges: null, languageCode: "en" }).captionPreset);
+    expect(layers({ project: broken }).textLayers[0]).toMatchObject({ id: "title", style: DEFAULT_TITLE_STYLE });
+  });
+});

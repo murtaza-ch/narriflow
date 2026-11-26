@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createDatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import {
   DEFAULT_CAPTION_PRESET,
   DEFAULT_TITLE_STYLE,
@@ -18,6 +19,7 @@ import {
   decodeClipEditorDocumentFromStorage,
   decodeFrozenClipEditorDocument,
   encodeClipEditorDocumentForStorage,
+  prismaClipEditorDocumentStore,
   type ClipEditorDocumentDiagnostics,
   type ClipEditorDocumentStoredState,
 } from "./clip-editor-document-persistence";
@@ -599,7 +601,7 @@ describe("Clip Editor Document Persistence", () => {
     });
   });
 
-  test("a malformed project target aborts before any target changes", async () => {
+  test("a malformed project target is skipped and counted; the other targets change", async () => {
     const valid = stored({ clipId: "clip-valid" });
     const malformed = stored({ clipId: "clip-malformed" });
     malformed.document = {
@@ -608,7 +610,7 @@ describe("Clip Editor Document Persistence", () => {
     } as never;
     const store = createInMemoryClipEditorDocumentStore([valid, malformed]);
     const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
-    const before = store.inspect(valid.clipId);
+    const before = store.inspect(malformed.clipId);
 
     await expect(
       persistence.mutateProjectSelection({
@@ -619,8 +621,9 @@ describe("Clip Editor Document Persistence", () => {
           captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
         },
       }),
-    ).rejects.toMatchObject({ code: "corrupt_stored_document" });
-    expect(store.inspect(valid.clipId)).toEqual(before);
+    ).resolves.toEqual({ updated: 1, unreadable: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
+    expect(store.inspect(malformed.clipId)).toEqual(before);
+    expect(store.inspect(valid.clipId)!.state.document.captionPreset.fontName).toBe("Anton");
   });
 
   test("project contention exhausts without a partial mutation", async () => {
@@ -1225,5 +1228,77 @@ describe("Apply to all clips: title", () => {
     const result = await persistence.mutateProjectSelection({ ...actorScope(stored()), projectId: "project-1",
       intent: { kind: "patch_studio_edits", patches: [{ transition: { type: "fade", durationSec: 0.4 } }] } });
     expect(result).toEqual({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
+  });
+});
+
+describe("Apply to all clips: an unreadable clip", () => {
+  // A window that ends before it starts fails canonicalization, as a corrupt stored row does.
+  const corrupt = () => stored({ clipId: "b-corrupt", document: { ...document(), clipEndSec: 5 } });
+
+  test("is skipped and counted; the other clips still update and its revision still guards the commit", async () => {
+    const clips = [stored({ clipId: "a-good" }), corrupt(), stored({ clipId: "c-good" })];
+    const store = createInMemoryClipEditorDocumentStore(clips);
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
+    const scope = { ...actorScope(clips[0]!), projectId: "project-1" };
+    const transition = await persistence.mutateProjectSelection({ ...scope,
+      intent: { kind: "patch_studio_edits", patches: [{ transition: { type: "fade", durationSec: 0.4 } }] } });
+    expect(transition).toEqual({ updated: 2, unreadable: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
+    expect(store.inspect("b-corrupt")!.writeCount).toBe(0);
+    expect((await persistence.readProjectSelection(scope)).map((clip) => clip.clipId)).toEqual(["a-good", "c-good"]);
+
+    const title = await persistence.mutateProjectSelection({ ...scope,
+      intent: { kind: "patch_studio_edits", patches: [{ title: { style: DEFAULT_TITLE_STYLE, positionX: 50, positionY: 12, widthPct: 86, startSec: 0, endSec: 5 } }] } });
+    expect(title).toMatchObject({ updated: 2, unreadable: 1, title: { restyled: 0, created: 2, skipped: 1 } });
+  });
+
+  test("the Prisma bulk read returns a row that does not decode as unreadable, with its revision", async () => {
+    const row = (id: string, editorOriginal: unknown) => ({
+      ...encodeClipEditorDocumentForStorage(document(), { durationSec: 300, wholeSource: false }),
+      id, projectId: "project-1", editorRevision: 7, editorOriginal, title: "T", hookText: "H", viralityScore: 70, status: "detected",
+      previewStorageKey: null, previewStartSec: null, previewDurationSec: null, layoutAnalysis: null, autoLayoutAnalysis: null, splitLayoutAnalysis: null,
+      durationOptimalityScore: 80, tiktokScore: 80, youtubeScore: 70, instagramScore: 75, renders: [],
+    });
+    const client = { project: { findFirst: async () => ({ workspaceId: "workspace-1", sourceDurationSeconds: 300, sourceProbe: null, sourceStorageKey: null, transcript: null,
+      clips: [row("a-good", null), row("b-bad-original", { not: "a document" })] }) } };
+    const scope = createDatabaseScope({ createClient: () => ({ client: client as never, dispose: async () => {} }) });
+    const entries = await withDatabaseScope(scope, () => prismaClipEditorDocumentStore.readProjectSelection({ actorUserId: "u", workspaceId: "workspace-1", projectId: "project-1" }));
+    expect(entries).toHaveLength(2);
+    expect(entries![0]).toMatchObject({ clipId: "a-good", revision: 7, title: "T", hookText: "H" });
+    expect(entries![1]).toEqual({ unreadable: true, clipId: "b-bad-original", revision: 7 });
+  });
+});
+
+describe("Apply to all clips: title timing and counts", () => {
+  const style = { ...DEFAULT_TITLE_STYLE, color: "#123456" };
+  const patch = (startSec: number, endSec: number | null): TextLayerTitlePatch => ({ style, positionX: 50, positionY: 12, widthPct: 86, startSec, endSec });
+  const run = async (clips: ClipEditorDocumentStoredState[], patches: Parameters<ReturnType<typeof createClipEditorDocumentPersistence>["mutateProjectSelection"]>[0]["intent"], excludeClipId?: string) => {
+    const store = createInMemoryClipEditorDocumentStore(clips);
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
+    const result = await persistence.mutateProjectSelection({ ...actorScope(stored()), projectId: "project-1", intent: patches, ...(excludeClipId ? { excludeClipId } : {}) });
+    return { result, layers: (clipId: string) => store.inspect(clipId)!.state.document.studioEdits.textLayers };
+  };
+  // A 20 s window with 10 s cut out is 10 s long.
+  const tenSeconds = { deletedRanges: [{ startSec: 15, endSec: 25 }] };
+
+  test("an interval that fits the clip is kept; only a forced change clamps the end and applies the floor", async () => {
+    const fits = await run([stored({ clipId: "a", document: document(tenSeconds) })], { kind: "patch_studio_edits", patches: [{ title: patch(9.8, 10) }] });
+    expect(fits.layers("a")[0]).toMatchObject({ startSec: 9.8, endSec: 10 });
+    const forced = await run([stored({ clipId: "a", document: document(tenSeconds) })], { kind: "patch_studio_edits", patches: [{ title: patch(9.8, 12) }] });
+    expect(forced.layers("a")[0]).toMatchObject({ startSec: 9.5, endSec: 10 });
+    const late = await run([stored({ clipId: "a", document: document(tenSeconds) })], { kind: "patch_studio_edits", patches: [{ title: patch(15, null) }] });
+    expect(late.layers("a")[0]).toMatchObject({ startSec: 9.5, endSec: null });
+  });
+
+  test("a title request that touches no clip still answers with zero counts", async () => {
+    // The project's only clip is the open one.
+    const { result } = await run([stored({ clipId: "open" })], { kind: "patch_studio_edits", patches: [{ title: patch(0, 5) }] }, "open");
+    expect(result).toEqual({ updated: 0, captionEmojisAdded: 0, captionEmojisStale: 0, title: { restyled: 0, created: 0, skipped: 0 } });
+  });
+
+  test("a background change beside an unchanged title is not counted as restyled", async () => {
+    const matching = studioTextLayerSchema.parse({ id: "title", role: "title", text: "Mine", style, positionX: 50, positionY: 12, widthPct: 86, startSec: 0, endSec: 5 });
+    const clip = stored({ clipId: "a", document: document({ studioEdits: studioEditsSchema.parse({ textLayers: [matching] }) }) });
+    const { result } = await run([clip], { kind: "patch_studio_edits", patches: [{ title: patch(0, 5) }, { background: { mode: "color", color: "#112233" } }] });
+    expect(result).toEqual({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0, title: { restyled: 0, created: 0, skipped: 0 } });
   });
 });
