@@ -201,7 +201,8 @@ describe.skipIf(!hasLibass)("against real libass", () => {
         expect({ rate, window, lit: [lit[0], lit.at(-1), lit.length] }).toEqual({ rate, window, lit: [window.frames[0], window.frames[1], window.frames[1]! - window.frames[0]! + 1] });
       }
     }
-  });
+    // Fifteen small ffmpeg runs: about 2 s alone, several times that when the machine is busy.
+  }, 30_000);
 
   test("a backslash draws as typed, never as an escape, also next to a fallback face", () => {
     for (const text of ["back\\Nslash \\h \\{x\\}", "x\\ب y"]) {
