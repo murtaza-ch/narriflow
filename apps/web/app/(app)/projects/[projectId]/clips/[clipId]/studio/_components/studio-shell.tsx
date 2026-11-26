@@ -2297,8 +2297,10 @@ export function StudioShell({
       ...prev,
       textLayers: prev.textLayers.filter((layer) => layer.id !== id),
     }));
-    deselectTextLayer();
-  }, [selectedTextLayerId, setStudioEdits, deselectTextLayer]);
+    // Back to Text → Presets (title-text spec section 6), not a closed panel.
+    setSelectedTextLayerId(null);
+    setActiveTool("text");
+  }, [selectedTextLayerId, setStudioEdits]);
 
   const selectMusicBlock = useCallback((id: string) => {
     setSelectedMusicBlockId(id);

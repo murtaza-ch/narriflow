@@ -61,7 +61,7 @@ import { emojiFollowingCue } from "./emoji/held-cue-boxes";
 import { InteractiveSceneOverlay } from "./interactive-scene-overlay";
 import { classicCaptionLayerOf } from "./caption-cue-at";
 import { hexToRgba } from "./caption-style-engine";
-import { InteractiveTextLayer } from "./interactive-text-layer";
+import { StudioTextLayers } from "./studio-text-layers";
 import { MusicPreviewTrack } from "./music-preview-track";
 import { SfxPreviewTrack } from "./sfx-preview-track";
 import { CensorBeepPreviewTrack } from "./censor-beep-preview-track";
@@ -1027,6 +1027,15 @@ export function VideoPreview() {
   useEffect(() => {
     reportCaptionLayers(plannedCaptionLayers);
   }, [plannedCaptionLayers, reportCaptionLayers]);
+  // Text Layers are one static scene of the whole target on its canvas, painted from the clock like a
+  // Scene Style; the worker lays them out on the same canvas (`compileCompositionPlanTextLayers`).
+  const plannedTextTarget = useMemo(() => {
+    const target = compositionPlanResult && compositionPlanResult.status !== "invalid"
+      ? compositionPlanResult.plan.targets.find((candidate) => candidate.id === aspectRatio)
+      : undefined;
+    const layers = target?.visualLayers.filter((layer): layer is CompositionTextVisualLayer => layer.kind === "text") ?? [];
+    return target && layers.length > 0 ? { layers, canvas: target.canvas } : null;
+  }, [aspectRatio, compositionPlanResult]);
   // A Scene Style draws every cue of the target at once, not the one under the playhead.
   const sceneCaptionLayers = useMemo(() => plannedCaptionLayers.filter((layer) => layer.scene !== undefined), [plannedCaptionLayers]);
   // Where the scene is cut: the worker reads the same ranges off the same target.
@@ -1197,9 +1206,6 @@ export function VideoPreview() {
       : null,
     compositionPreview?.canvas ?? null,
   );
-  const plannedTextLayers = compositionPreview?.layers.filter(
-    (layer): layer is CompositionTextVisualLayer => layer.kind === "text",
-  ) ?? [];
   // The classic line: the one cue of a classic or Dynamic preset, or a Scene Style's untimed utterance (the scene draws the rest).
   const plannedCaptionLayer = compositionPreview ? classicCaptionLayerOf(compositionPreview.layers) : undefined;
   // The cue after it: the one cue's held emoji gives way to its text and its emoji, as in the export.
@@ -2269,16 +2275,15 @@ export function VideoPreview() {
             isPlaying={isPlaying}
           />
 
-          {plannedTextLayers.map((layer) => {
-            return (
-              <InteractiveTextLayer
-                key={layer.id}
-                layer={layer.value}
-                previewWidth={previewWidth}
-                videoContainerRef={videoContainerRef}
-              />
-            );
-          })}
+          {plannedTextTarget && previewWidth > 0 ? (
+            <StudioTextLayers
+              layers={plannedTextTarget.layers}
+              canvas={plannedTextTarget.canvas}
+              scale={previewWidth / plannedTextTarget.canvas.width}
+              currentTime={currentTime}
+              boundsRef={containerRef}
+            />
+          ) : null}
 
           {sceneCaptionLayers.length > 0 ? (
             <InteractiveSceneOverlay videoContainerRef={videoContainerRef} layers={sceneCaptionLayers} insertedScenes={plannedInsertedScenes} />

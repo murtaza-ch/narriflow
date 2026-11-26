@@ -6,7 +6,7 @@ import { Button } from "@narriflow/ui/components/button";
 
 /** What each editor-document area is called on screen; the most specific prefix wins. */
 const AREA_LABELS: readonly [prefix: string, label: string][] = [
-  ["studioEdits.textLayers", "Text overlays"],
+  ["studioEdits.textLayers", "Titles and text"],
   ["studioEdits.transition", "Transition"],
   ["studioEdits.music", "Music"],
   ["studioEdits.sourceAudio", "Original audio"],

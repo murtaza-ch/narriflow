@@ -60,7 +60,7 @@ export function ResetConfirmDialog({
               <Dialog.Description asChild>
                 <Text fontSize="14px" color="studio.fgMuted" lineHeight="1.6">
                   All edits — captions, transcript changes, B-roll, transitions,
-                  text overlays, and music — will be lost. This can't be undone.
+                  titles and text, and music — will be lost. This can't be undone.
                 </Text>
               </Dialog.Description>
             </Stack>
