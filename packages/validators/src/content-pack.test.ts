@@ -1,11 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  buildGenerationContentPack,
+  buildGenerationContext,
+  buildRecipeGenerationContext,
   clipLengthPresetRanges,
   contentPackSchema,
+  generateProjectRequestSchema,
+  generationSettingsSchema,
+  mcpGenerateClipsSchema,
+  mcpSubmitVideoSchema,
+  mcpUploadVideoSchema,
+  openUploadSessionSchema,
   parseStoredContentPack,
+  recipeInputSchema,
+  recipeSnapshotSchema,
+  recipeUpdateSchema,
+  regenerateClipsRequestSchema,
+  restApiSchemas,
   type ClipLengthPreset,
 } from ".";
+import { generationSetupSchema, rssImportRequestSchema } from "./api/ingest";
 
 const baseContentPack = {
   outputTypes: ["short_clip"],
@@ -100,5 +115,66 @@ describe("parseStoredContentPack", () => {
       ...baseContentPack, ...clipLengthPresetRanges.auto,
       processingStartSec: 50, processingEndSec: 20,
     })).toThrow();
+  });
+});
+
+describe("addEmojis generation setting", () => {
+  const WORKSPACE = "00000000-0000-4000-8000-0000000000c1";
+  const KEY = "00000000-0000-4000-8000-0000000000f1";
+  const PROJECT = "00000000-0000-4000-8000-0000000000a1";
+  const FILE = { name: "a.mp4", sizeBytes: 10, contentType: "video/mp4" } as const;
+  const SOURCE = { fileName: "a.mp4", sizeBytes: 10, contentType: "video/mp4", browserFingerprint: "f" } as const;
+  const on = buildGenerationContentPack({ addEmojis: true });
+
+  test("is off unless asked for, in a pack and in generation settings", () => {
+    expect(contentPackSchema.parse({ ...baseContentPack, ...clipLengthPresetRanges.auto }).addEmojis).toBe(false);
+    expect(generationSettingsSchema.parse({}).addEmojis).toBe(false);
+    expect(buildGenerationContentPack().addEmojis).toBe(false);
+    expect(generationSettingsSchema.safeParse({ addEmojis: "yes" }).success).toBe(false);
+  });
+
+  test("a pack with addEmojis on round-trips through every schema that carries one", () => {
+    expect(on.addEmojis).toBe(true);
+    expect(contentPackSchema.parse(on)).toEqual(on);
+    expect(parseStoredContentPack({ ...on, id: "row", draft: false, createdAt: new Date() })).toEqual(on);
+    expect(generateProjectRequestSchema.parse({ contentPack: on }).contentPack.addEmojis).toBe(true);
+    expect(generationSetupSchema.parse({ contentPack: on, languageCode: null }).contentPack.addEmojis).toBe(true);
+    expect(rssImportRequestSchema.parse({ rssUrl: "https://example.com/feed.xml", episodeIds: ["e1"], commitToken: KEY, contentPack: on, languageCode: null }).contentPack.addEmojis).toBe(true);
+    expect(regenerateClipsRequestSchema.parse({ contentPack: on }).contentPack.addEmojis).toBe(true);
+    expect(recipeInputSchema.parse({ name: "Show", contentPack: on }).contentPack.addEmojis).toBe(true);
+    expect(recipeUpdateSchema.parse({ expectedRevision: 1, contentPack: on }).contentPack?.addEmojis).toBe(true);
+    expect(openUploadSessionSchema.parse({ clientIdempotencyKey: KEY, title: "Upload", source: SOURCE, generationContext: { contentPack: on, languageCode: null } })
+      .generationContext?.contentPack.addEmojis).toBe(true);
+    expect(buildRecipeGenerationContext({ contentPack: on, languageCode: null, finishing: null }).contentPack.addEmojis).toBe(true);
+  });
+
+  test("REST and MCP generation settings carry it into the committed Content Pack", () => {
+    const generation = { addEmojis: true };
+    const rest = [
+      restApiSchemas.submitVideoRequestSchema.parse({ url: "https://youtube.com/watch?v=abc", generation }).generation,
+      restApiSchemas.openUploadRequestSchema.parse({ file: FILE, generation }).generation,
+      restApiSchemas.generateClipsRequestSchema.parse({ generation }).generation,
+    ];
+    const base = { workspaceId: WORKSPACE, clientIdempotencyKey: KEY };
+    const mcp = [
+      mcpSubmitVideoSchema.parse({ ...base, url: "https://youtube.com/watch?v=abc", generation }).generation,
+      mcpUploadVideoSchema.parse({ ...base, generation }).generation,
+      mcpGenerateClipsSchema.parse({ ...base, projectId: PROJECT, generation }).generation,
+    ];
+    for (const settings of [...rest, ...mcp]) {
+      expect(settings?.addEmojis).toBe(true);
+      expect(buildGenerationContext(settings).contentPack.addEmojis).toBe(true);
+    }
+  });
+
+  test("a Recipe stored before the setting existed reads with it off", () => {
+    const { addEmojis: _, ...stored } = buildGenerationContentPack();
+    expect("addEmojis" in stored).toBe(false);
+    expect(recipeSnapshotSchema.parse({
+      id: PROJECT, workspaceId: WORKSPACE, name: "Old", revision: 1, brandProfileId: null, languageCode: null, contentPack: stored, finishing: null, ruleCount: 0,
+      createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z",
+    }).contentPack.addEmojis).toBe(false);
+    expect(buildRecipeGenerationContext({ contentPack: stored, languageCode: null, finishing: null }).contentPack.addEmojis).toBe(false);
+    expect(parseStoredContentPack(stored).addEmojis).toBe(false);
   });
 });

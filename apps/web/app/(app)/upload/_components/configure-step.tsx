@@ -78,6 +78,7 @@ export function ConfigureStep({
   const [autoHook, setAutoHook] = useState(initialStep2.autoHook);
   const [removeSilences, setRemoveSilences] = useState(initialStep2.removeSilences);
   const [removeFillerWords, setRemoveFillerWords] = useState(initialStep2.removeFillerWords);
+  const [addEmojis, setAddEmojis] = useState(initialStep2.addEmojis);
   const [specificMoments, setSpecificMoments] = useState(
     initialStep2.specificMoments,
   );
@@ -122,6 +123,7 @@ export function ConfigureStep({
         autoHook,
         removeSilences,
         removeFillerWords,
+        addEmojis,
         specificMoments,
         platformTargets,
         clipCountTarget,
@@ -137,6 +139,7 @@ export function ConfigureStep({
       autoHook,
       removeSilences,
       removeFillerWords,
+      addEmojis,
       specificMoments,
       platformTargets,
       clipCountTarget,
@@ -234,6 +237,8 @@ export function ConfigureStep({
         setRemoveSilences={setRemoveSilences}
         removeFillerWords={removeFillerWords}
         setRemoveFillerWords={setRemoveFillerWords}
+        addEmojis={addEmojis}
+        setAddEmojis={setAddEmojis}
         specificMoments={specificMoments}
         setSpecificMoments={setSpecificMoments}
         platformTargets={platformTargets}

@@ -76,6 +76,18 @@ describe("caption line layout in visual order", () => {
     expect(first.leftEm + first.widthEm).toBeCloseTo(layout.widthEm, 6);
   });
 
+  test("a cursive word keeps its joining forms across a change of face, as libass draws it", () => {
+    const parts = (...runs: [string, string][]): CaptionLineWord => ({ parts: runs.map(([text, fontPath]) => ({ text, fontPath, spaced: false, inked: false })), gap: null, gapExtraEm: 0 });
+    // Rubik has ک, not ے: libass (0.17, ffmpeg 7.1) and Chrome's Canvas draw Rubik's initial ک joined to Nastaliq's
+    // final ے, 0.892 em; shaped apart they are the isolated forms, 0.923 + 1.409 em. Chrome: یہ 0.541, بہت 1.644.
+    const rubik = captionFontFilePath("Rubik-ExtraBold.ttf");
+    expect(layoutCaptionLine([parts(["ک", rubik], ["ے", nastaliq])], 0, "rtl").widthEm).toBeCloseTo(0.892, 3);
+    expect(layoutCaptionLine([parts(["ی", rubik], ["ہ", nastaliq])], 0, "rtl").widthEm).toBeCloseTo(0.541, 3);
+    expect(layoutCaptionLine([parts(["ب", rubik], ["ہ", nastaliq], ["ت", rubik])], 0, "rtl").widthEm).toBeCloseTo(1.644, 3);
+    // Latin takes no context: a split word is the sum of its runs.
+    expect(layoutCaptionLine([parts(["REA", latin], ["DY", latin])], 0, "ltr").widthEm).toBeCloseTo(shapeCaptionRun(latin, "REA").advanceEm + shapeCaptionRun(latin, "DY").advanceEm, 6);
+  });
+
   test("numbers and Latin inside an Arabic line read left to right in their own run", () => {
     // مرحبا بالعالم 2026 Narriflow رائع: the same visual order libass drew (evidence/10/ar-numbers-latin.png).
     const latinRun = (text: string): CaptionLineWord => word(text, latin);

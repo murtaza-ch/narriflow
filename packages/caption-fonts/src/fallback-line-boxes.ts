@@ -1,4 +1,4 @@
-import { captionGraphemes } from "./emoji";
+import { captionGraphemes } from "./graphemes";
 import { CAPTION_FALLBACK_LINE_BOXES } from "./fallback-line-boxes-data";
 import { isCaptionIgnorableCodePoint } from "./glyph-coverage";
 import { orderCaptionFallbackFaces } from "./locale-precedence";

@@ -405,7 +405,7 @@
     "emoji-sequences": {
       "defect": "emoji-burn-in",
       "owner": "08",
-      "predicate": "the plan carries cue emoji or literal emoji sequences",
+      "predicate": "the caption text carries literal emoji sequences, which the monochrome fallback face draws (caption emojis themselves are the emoji layer)",
       "contract": [
         {
           "id": "renders",

@@ -396,7 +396,7 @@ export function recipeView(recipe: Awaited<ReturnType<typeof recipeService.get>>
     recipeId: recipe.id, name: recipe.name, revision: recipe.revision,
     brandProfileId: recipe.brandProfileId, languageCode: recipe.languageCode,
     generation: { clipCountTarget: pack.clipCountTarget, clipLengthPreset: pack.clipLengthPreset, defaultAspectRatio: pack.defaultAspectRatio,
-      captionPreset: pack.captionPreset, mode: pack.mode, autoHook: pack.autoHook, removeSilences: pack.removeSilences, removeFillerWords: pack.removeFillerWords, specificMoments: pack.specificMoments,
+      captionPreset: pack.captionPreset, mode: pack.mode, autoHook: pack.autoHook, removeSilences: pack.removeSilences, removeFillerWords: pack.removeFillerWords, addEmojis: pack.addEmojis, specificMoments: pack.specificMoments,
       processingStartSec: pack.processingStartSec, processingEndSec: pack.processingEndSec },
     finishing: recipe.finishing,
     updatedAt: recipe.updatedAt,

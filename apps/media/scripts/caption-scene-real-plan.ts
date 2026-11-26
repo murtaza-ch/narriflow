@@ -25,6 +25,8 @@ export async function createRealPlanner(input: {
   evidence: { automatic?: unknown } | null;
   sourcePath: string;
   aspectRatio?: string;
+  /** The project's caption language, as the render attempt passes it (`frozenState.captionLanguage`): it decides word classes and roles. */
+  captionLanguage?: string | null;
   signal?: AbortSignal;
 }) {
   const signal = input.signal ?? new AbortController().signal;
@@ -64,6 +66,7 @@ export async function createRealPlanner(input: {
   function planDocument(document: RealDocument) {
     const result = planClipComposition({
       document,
+      ...(input.captionLanguage ? { captionLanguage: input.captionLanguage } : {}),
       source: plannerSource,
       evidence,
       assets: deriveRenderCompositionAssets({

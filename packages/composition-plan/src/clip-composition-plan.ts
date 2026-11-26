@@ -21,7 +21,6 @@ import {
   capDuckingWindows,
   clipAutoLayoutMatchesInputs,
   computeSpeechWindows,
-  emojiForWord,
   extractSpeechWordIntervals,
   formatCaptionWord,
   groupCaptionTokens,
@@ -41,6 +40,7 @@ import {
   sourceWordToEdited,
   type CaptionBlock,
   type CaptionCueRoles,
+  type CaptionEmojiRef,
   type CaptionEmphasisWord,
   type CaptionPreset,
   type ClipAspectRatio,
@@ -59,7 +59,15 @@ import {
   type SceneLayoutPreset,
   type StudioSceneLayoutSelection,
   type StudioTextLayer,
+  type TranscriptWord,
 } from "@narriflow/validators";
+import {
+  attachCaptionEmojis,
+  captionEmojisByWord,
+  captionEmojiWordId,
+  dubCaptionEmojis,
+  type PendingCaptionEmoji,
+} from "./caption-emoji-plan";
 import {
   planMediaMotion,
   planTransitionMotion,
@@ -480,9 +488,20 @@ export interface CompositionCaptionWord {
   readonly text: string;
   /** The provider's spacing before this word; absent when unknown. */
   readonly spaceBefore?: boolean;
-  readonly emoji: string | null;
   readonly startSec: number;
   readonly endSec: number;
+}
+
+/** A Caption Emoji on a cue: the catalog id, the skin tone, and when it appears (edited seconds). */
+export interface CompositionCaptionEmoji {
+  readonly id: string;
+  readonly tone?: number;
+  readonly atSec: number;
+  /**
+   * Its place among the target's emojis in time order, from 0. The sticker's tilt alternates by
+   * it, so a renderer that places one cue's emojis at a time turns each as the whole target does.
+   */
+  readonly order: number;
 }
 
 /** A cue laid out as rows of role-typed words (Dynamic Styles); see `CaptionBlock`. */
@@ -499,6 +518,12 @@ export interface CompositionCaptionVisualLayer {
   readonly zIndex: 40;
   readonly cueIndex: number;
   readonly words: readonly CompositionCaptionWord[];
+  /**
+   * The cue's Caption Emojis in time order, for every preset kind; empty when the preset's
+   * `emojis` is off. An emoji's word decides its cue; a cue that already shows a typed emoji
+   * takes none. Subtitles never read them.
+   */
+  readonly emojis: readonly CompositionCaptionEmoji[];
   readonly preset: CaptionPreset;
   /** Effective caption language (transcript language, else the requested one):
    * casing, fonts and direction read it. Null when neither is known. */
@@ -2405,7 +2430,7 @@ function retimeVisualLayersForInsertedScenes(
 ): CompositionVisualLayer[] {
   if (blocks.length === 0) return [...layers];
   const anchors = insertedBaseAnchors(blocks);
-  return layers.flatMap((layer) => {
+  const retimed = layers.flatMap((layer): CompositionVisualLayer[] => {
     if (layer.kind === "logo" || layer.kind === "output-treatment") {
       return [{ ...layer, activeRange: { startSec: 0, endSec: totalDurationSec } }];
     }
@@ -2431,28 +2456,83 @@ function retimeVisualLayersForInsertedScenes(
     }
     const slices: CompositionVisualLayer[] = [];
     sourceRangeSlicesForInsertions(layer.activeRange, anchors).forEach((slice, index) => {
-      const { startSec, endSec, shiftSec, outputRange } = slice;
+      const id = `${layer.id}:scene-slice:${index}`;
       if (layer.kind === "caption") {
-        // A word spanning an inserted scene belongs to each slice only for its
-        // own part, so neither slice shows it across the scene.
-        const words = layer.words
-          .filter((word) => word.endSec > startSec && word.startSec < endSec)
-          .map((word) => {
-            const wordStart = Math.max(word.startSec, startSec);
-            const wordEnd = Math.min(word.endSec, endSec);
-            return {
-              ...word,
-              startSec: wordStart + shiftSec,
-              endSec: wordEnd + shiftSec,
-            };
-          });
-        if (words.length === 0) return;
-        slices.push({ ...layer, id: `${layer.id}:scene-slice:${index}`, activeRange: outputRange, words });
+        const cue = captionCueSlice(layer, slice, id);
+        if (cue) slices.push(cue);
         return;
       }
-      slices.push({ ...layer, id: `${layer.id}:scene-slice:${index}`, activeRange: outputRange });
+      slices.push({ ...layer, id, activeRange: slice.outputRange });
     });
     return slices;
+  });
+  return numberCaptionCues(retimed);
+}
+
+/**
+ * The part of a caption cue on one side of an inserted Scene Block, as a cue of its own: the words
+ * it holds (a word spanning the scene only for its own part, so neither side shows it across the
+ * scene), the Scene Style roles and keys and the Caption Block roles, texts, keys and rows of those
+ * words, and the emojis whose time falls inside it. The block keeps the cue's seed, so both sides
+ * keep the cue's look. Null when no word is on this side.
+ */
+function captionCueSlice(
+  layer: CompositionCaptionVisualLayer,
+  slice: ReturnType<typeof sourceRangeSlicesForInsertions>[number],
+  id: string,
+): CompositionCaptionVisualLayer | null {
+  const { startSec, endSec, shiftSec, outputRange } = slice;
+  const kept = captionCueSliceWords(layer, slice);
+  if (kept.length === 0) return null;
+  const pick = <T,>(values: readonly T[]) => kept.map((at) => values[at]!);
+  const position = new Map(kept.map((at, index) => [at, index]));
+  return {
+    ...layer,
+    id,
+    activeRange: outputRange,
+    words: pick(layer.words).map((word) => ({
+      ...word,
+      startSec: Math.max(word.startSec, startSec) + shiftSec,
+      endSec: Math.min(word.endSec, endSec) + shiftSec,
+    })),
+    emojis: layer.emojis
+      .filter((emoji) => emoji.atSec >= startSec && emoji.atSec < endSec)
+      .map((emoji) => ({ ...emoji, atSec: emoji.atSec + shiftSec })),
+    ...(layer.scene ? { scene: { ...layer.scene, roles: pick(layer.scene.roles), keys: pick(layer.scene.keys) } } : {}),
+    ...(layer.block
+      ? {
+          block: {
+            ...layer.block,
+            roles: pick(layer.block.roles),
+            texts: pick(layer.block.texts),
+            keys: pick(layer.block.keys),
+            rows: layer.block.rows
+              .map((row) => row.flatMap((at) => (position.has(at) ? [position.get(at)!] : [])))
+              .filter((row) => row.length > 0),
+          },
+        }
+      : {}),
+  };
+}
+
+/** Indices of a cue's words on one side of an inserted Scene Block. */
+function captionCueSliceWords(
+  layer: CompositionCaptionVisualLayer,
+  { startSec, endSec }: ReturnType<typeof sourceRangeSlicesForInsertions>[number],
+): number[] {
+  return layer.words.flatMap((word, at) => (word.endSec > startSec && word.startSec < endSec ? [at] : []));
+}
+
+/**
+ * A target's caption layers in cue order, each `cueIndex` its place in that order: Scene Styles,
+ * the emoji layer and the worker key a cue's pieces and boxes by it, so it must be unique.
+ */
+function numberCaptionCues<T extends CompositionVisualLayer>(layers: T[]): T[] {
+  let next = 0;
+  return layers.map((layer) => {
+    if (layer.kind !== "caption") return layer;
+    const cueIndex = next++;
+    return layer.cueIndex === cueIndex ? layer : { ...layer, cueIndex };
   });
 }
 
@@ -2501,6 +2581,59 @@ export function deriveCaptionCues(
     : []);
 }
 
+/** One caption as it appears on the video, with the transcript words it shows. */
+export interface CaptionLine {
+  /** Position of the cue's utterance in `transcriptSlice`. */
+  readonly utterance: number;
+  /** Indices into that utterance's `words` of the words the cue shows, in order; empty for an untimed utterance. */
+  readonly words: readonly number[];
+  /** The cue's text as drawn: censor masks, punctuation and case applied. */
+  readonly text: string;
+  /** Composition seconds, the window `deriveCaptionCues` gives the same cue. */
+  readonly startSec: number;
+  readonly endSec: number;
+}
+
+/**
+ * The source-language captions of a document, one per cue on the video, for editors that address
+ * captions by their transcript words. The grouping, the bounding and the split at inserted scenes
+ * are the plan's own, so the list always matches the video; captions turned off still list theirs.
+ */
+export function deriveCaptionLines(document: EditorDocument, options: { readonly language?: string | null } = {}): CaptionLine[] {
+  const editedTimeMap = buildClipCutPlan(document.deletedRanges, {
+    startSec: document.clipStartSec,
+    endSec: document.clipEndSec,
+  }).map;
+  const grouped = groupCaptionCues({
+    document: { ...document, captionPreset: { ...document.captionPreset, visible: true } },
+    target: CAPTION_CUE_TARGET,
+    editedTimeMap,
+    language: options.language ?? null,
+  });
+  if (!grouped) return [];
+  boundCaptionCues(grouped.layers);
+  const totalDurationSec = editedTimeMap.editedDurationSec +
+    document.sceneBlocks.reduce((total, block) => total + block.durationSec, 0);
+  const anchors = insertedBaseAnchors(document.sceneBlocks);
+  return grouped.layers.flatMap((layer, at): CaptionLine[] => {
+    const source = grouped.sources[at];
+    if (!source || !captionLayerCanShow(layer)) return [];
+    const line = (cue: CompositionCaptionVisualLayer, words: readonly number[]): CaptionLine => ({
+      utterance: source.utterance,
+      words,
+      text: captionCueText(cue.words),
+      ...captionCueVisibleRange(cue, totalDurationSec),
+    });
+    if (anchors.length === 0) return [line(layer, source.words)];
+    return sourceRangeSlicesForInsertions(layer.activeRange, anchors).flatMap((slice, index) => {
+      const cue = captionCueSlice(layer, slice, `${layer.id}:scene-slice:${index}`);
+      if (!cue) return [];
+      const kept = captionCueSliceWords(layer, slice);
+      return [line(cue, source.words.length === 0 ? [] : kept.map((word) => source.words[word]!))];
+    });
+  });
+}
+
 export function captionCueText(words: readonly CompositionCaptionWord[]) {
   return joinTranscriptWords(words.map((word) => ({
     word: word.text,
@@ -2522,6 +2655,15 @@ export function captionCueVisibleRange(layer: CompositionCaptionVisualLayer, tot
     startSec: layer.words[0]!.startSec,
     endSec: captionWordSegmentEnd(layer.words, layer.words.length - 1, Math.min(totalDurationSec, layer.activeRange.endSec)),
   };
+}
+
+/** When a target plays an inserted Scene Block, on the composition clock, in time order. The clip's own picture, speech
+ * and captions stop for each one; a Scene Style's pieces are cut at them (`SceneInput.insertedScenes`). */
+export function insertedSceneRanges(target: Pick<CompositionTargetPlan, "scenes">): CompositionActiveRange[] {
+  return target.scenes
+    .filter((scene) => scene.layers.some((layer) => layer.kind === "inserted-scene"))
+    .map((scene) => ({ startSec: scene.startSec, endSec: scene.endSec }))
+    .sort((left, right) => left.startSec - right.startSec);
 }
 
 /** Caption text for an utterance with no word timings. Text in a no-space
@@ -2597,21 +2739,112 @@ interface PendingCaptionCue {
   readonly speaker: number | null;
 }
 
-function captionLayersForTarget(input: {
+interface CaptionCuesInput {
   document: EditorDocument;
   target: CompositionTarget;
   editedTimeMap: EditedTimeMap;
   language: string | null;
   captionOverride?: CaptionOverride | undefined;
-}): CompositionCaptionVisualLayer[] {
+}
+
+/** A target's cues as grouped, before `finalizeCaptionLayers` bounds them and attaches emojis and roles. */
+interface GroupedCaptionCues {
+  readonly layers: CompositionCaptionVisualLayer[];
+  /** Parallel to `layers`: the transcript words each cue shows; null for a dub cue. */
+  readonly sources: (CaptionLineSource | null)[];
+  readonly pending: PendingCaptionCue[];
+  readonly emojis: readonly PendingCaptionEmoji[];
+  readonly language: string | null;
+  readonly emphasisWords: readonly string[] | undefined;
+}
+
+/** Where a transcript cue's words come from: an utterance's position in the slice and its word indices. */
+interface CaptionLineSource {
+  readonly utterance: number;
+  readonly words: readonly number[];
+}
+
+/**
+ * The visible-word ranges of one utterance that the owner merged into one caption
+ * (`studioEdits.captionMerges`), in order and never overlapping. An entry whose first or last word
+ * is not in this utterance is ignored, so a merge whose words were edited away regroups on its own.
+ */
+function mergedCaptionRanges(
+  merges: Readonly<Record<string, string>> | undefined,
+  words: readonly TranscriptWord[],
+  visibleWords: readonly { readonly wordIndex: number }[],
+): { start: number; end: number }[] {
+  if (!merges || visibleWords.length < 2) return [];
+  const indexByKey = new Map(words.map((word, index) => [captionWordKey(word.startSec), index]));
+  const ranges: { start: number; end: number }[] = [];
+  for (const [firstKey, lastKey] of Object.entries(merges)) {
+    const first = indexByKey.get(firstKey);
+    const last = indexByKey.get(lastKey);
+    if (first === undefined || last === undefined || last <= first) continue;
+    const start = visibleWords.findIndex((entry) => entry.wordIndex >= first);
+    let end = start;
+    while (end >= 0 && end < visibleWords.length && visibleWords[end]!.wordIndex <= last) end++;
+    if (start >= 0 && end - start >= 2) ranges.push({ start, end });
+  }
+  ranges.sort((left, right) => left.start - right.start);
+  return ranges.filter((range, index) => index === 0 || range.start >= ranges[index - 1]!.end);
+}
+
+/**
+ * `groupCaptionTokens`, with each merged range one cue and every other cue keeping the words it had.
+ * Before a range the grouping's own breaks stand. After it, they stand too when the range ends on one
+ * of them (a merge inside one utterance: grouping anew would lose the minor words a cue carried over
+ * from the one before); otherwise (a merge that joined two utterances) the rest groups from a fresh
+ * start, as it did when it began its own utterance.
+ */
+function groupCaptionTokensWithMerges(
+  texts: readonly string[],
+  wordsPerCue: number,
+  softBreakAfter: readonly boolean[],
+  minor: readonly boolean[],
+  merged: readonly { start: number; end: number }[],
+): { start: number; end: number }[] {
+  const whole = groupCaptionTokens(texts, wordsPerCue, softBreakAfter, minor);
+  if (merged.length === 0) return whole;
+  const groups: { start: number; end: number }[] = [];
+  let at = 0;
+  let own = whole;
+  const take = (end: number) => {
+    // Groups of `own` from `at` up to `end`; one crossing `end` is cut there.
+    for (const group of own) {
+      if (group.end <= at || group.start >= end) continue;
+      groups.push({ start: Math.max(group.start, at), end: Math.min(group.end, end) });
+    }
+    at = end;
+  };
+  for (const range of merged) {
+    take(range.start);
+    groups.push(range);
+    at = range.end;
+    if (!own.some((group) => group.end === range.end)) {
+      own = groupCaptionTokens(texts.slice(at), wordsPerCue, softBreakAfter.slice(at), minor.slice(at)).map((group) => ({ start: group.start + at, end: group.end + at }));
+    }
+  }
+  take(texts.length);
+  return groups;
+}
+
+function captionLayersForTarget(input: CaptionCuesInput): CompositionCaptionVisualLayer[] {
+  const grouped = groupCaptionCues(input);
+  return grouped
+    ? finalizeCaptionLayers(grouped.layers, grouped.pending, grouped.emojis, input.document, grouped.language, grouped.emphasisWords)
+    : [];
+}
+
+/** The one grouping of words into cues (`groupCaptionTokens` per utterance or dub segment); null when captions are off. */
+function groupCaptionCues(input: CaptionCuesInput): GroupedCaptionCues | null {
   const { document, target, editedTimeMap, captionOverride } = input;
   const language = captionOverride ? captionOverride.language : input.language;
   const preset = document.captionPreset;
-  if (preset.visible === false) return [];
+  if (preset.visible === false) return null;
   const dynamicStyle = preset.dynamic ? captionDynamicStyle(preset.dynamic) : null;
   // A Scene Style groups by its own cue length; only a Dynamic Style bounds it for its rows.
   const wordsPerCue = dynamicStyle ? captionBlockWordsPerCue(preset.wordsPerCue) : preset.wordsPerCue;
-  const emojiFor = (word: string) => (preset.emojis && !dynamicStyle ? emojiForWord(word) : null);
   const destination = { x: 0, y: 0, width: target.width, height: target.height };
   const anchor = {
     xPct: preset.positionX ?? (dynamicStyle?.align === "left" ? dynamicStyle.leftGuidePct ?? 50 : 50),
@@ -2621,7 +2854,9 @@ function captionLayersForTarget(input: {
   };
   const punctuation = preset.punctuation !== false;
   const layers: CompositionCaptionVisualLayer[] = [];
+  const sources: (CaptionLineSource | null)[] = [];
   const pending: PendingCaptionCue[] = [];
+  const pendingEmojis: PendingCaptionEmoji[] = [];
   let previousEndSec: number | null = null;
   const pauseBefore = (startSec: number, endSec: number) => {
     const pause = previousEndSec === null ? 0 : Math.max(0, startSec - previousEndSec);
@@ -2668,6 +2903,7 @@ function captionLayersForTarget(input: {
           blockWords: group.map((entry) => ({ text: entry.text, key: null })),
           speaker: null,
         });
+        sources.push(null);
         layers.push({
           id: `layer:caption:dub:${segmentIndex}:${groupIndex}:${target.id}`,
           kind: "caption",
@@ -2681,29 +2917,33 @@ function captionLayersForTarget(input: {
           words: group.map((entry, index) => ({
             text: entry.formatted,
             ...(entry.word.spaceBefore === undefined ? {} : { spaceBefore: entry.word.spaceBefore }),
-            emoji: emojiFor(entry.word.text),
             startSec: entry.word.startSec,
             endSec:
               index + 1 < group.length
                 ? Math.max(entry.word.startSec + 0.05, group[index + 1]!.word.startSec)
                 : Math.max(entry.word.startSec + 0.1, entry.word.endSec),
           })),
+          emojis: [],
           preset,
           language,
         });
       }
     }
     // Dub captions are in another language: Clip Emphasis Words do not apply.
-    return finalizeCaptionLayers(layers, pending, document, language, undefined);
+    return { layers, sources, pending, emojis: dubCaptionEmojis(document, editedTimeMap), language, emphasisWords: undefined };
   }
 
-  for (const utterance of document.transcriptSlice) {
+  const emojisByWord = captionEmojisByWord(document);
+  for (const [utterancePosition, utterance] of document.transcriptSlice.entries()) {
     const visibleWords: {
       word: (typeof utterance.words)[number];
+      wordIndex: number;
       range: { startSec: number; endSec: number };
       text: string;
       formatted: string;
       masked: boolean;
+      /** A censored word takes no emoji. */
+      emoji: CaptionEmojiRef | undefined;
     }[] = [];
     const breakTokens: { raw: string; visible: boolean }[] = [];
     for (const [wordIndex, word] of utterance.words.entries()) {
@@ -2728,7 +2968,9 @@ function captionLayersForTarget(input: {
       // A punctuation-only token hidden by the Punctuation toggle still ends a phrase.
       breakTokens.push({ raw: word.word, visible: formatted !== "" });
       if (!formatted) continue;
-      visibleWords.push({ word, range, text, formatted, masked: maskSegment !== undefined });
+      const masked = maskSegment !== undefined;
+      const emoji = masked ? undefined : emojisByWord.get(captionEmojiWordId(utterancePosition, wordIndex));
+      visibleWords.push({ word, wordIndex, range, text, formatted, masked, emoji });
     }
     const breakRaws = captionBreakRaws(breakTokens);
 
@@ -2743,11 +2985,12 @@ function captionLayersForTarget(input: {
         pauseBeforeSec: pauseBefore(entry.range.startSec, entry.range.endSec),
         masked: entry.masked,
       }));
-      const groups = groupCaptionTokens(
+      const groups = groupCaptionTokensWithMerges(
         visibleWords.map((entry) => entry.formatted),
         wordsPerCue,
         captionSoftBreaks(visibleWords.map((entry, index) => ({ raw: breakRaws[index]!, ...entry.range }))),
         visibleWords.map((entry) => captionWordIsMinor(entry.word.word, language)),
+        mergedCaptionRanges(document.studioEdits.captionMerges, utterance.words, visibleWords),
       );
       for (const [groupIndex, range] of groups.entries()) {
         const group = visibleWords.slice(range.start, range.end);
@@ -2757,12 +3000,16 @@ function captionLayersForTarget(input: {
           startSec + 0.1,
           group[group.length - 1]!.range.endSec,
         );
+        group.forEach((entry, wordIndex) => {
+          if (entry.emoji) pendingEmojis.push({ layerIndex: cueIndex, wordIndex, ref: entry.emoji });
+        });
         pending.push({
           layerIndex: cueIndex,
           emphasis: emphasis.slice(range.start, range.end),
           blockWords: group.map((entry) => ({ text: entry.text, key: captionWordKey(entry.word.startSec) })),
           speaker: utterance.speaker,
         });
+        sources.push({ utterance: utterancePosition, words: group.map((entry) => entry.wordIndex) });
         layers.push({
           id: `layer:caption:${utterance.index}:${groupIndex}:${target.id}`,
           kind: "caption",
@@ -2776,13 +3023,13 @@ function captionLayersForTarget(input: {
           words: group.map((entry, index) => ({
             text: entry.formatted,
             ...(entry.word.spaceBefore === undefined ? {} : { spaceBefore: entry.word.spaceBefore }),
-            emoji: emojiFor(entry.word.word),
             startSec: entry.range.startSec,
             endSec:
               index + 1 < group.length
                 ? Math.max(entry.range.startSec + 0.05, group[index + 1]!.range.startSec)
                 : Math.max(entry.range.startSec + 0.1, entry.range.endSec),
           })),
+          emojis: [],
           preset,
           language,
         });
@@ -2798,6 +3045,8 @@ function captionLayersForTarget(input: {
       language,
     );
     if (!text) continue;
+    const untimedEmoji = emojisByWord.get(captionEmojiWordId(utterancePosition, -1));
+    if (untimedEmoji) pendingEmojis.push({ layerIndex: layers.length, wordIndex: 0, ref: untimedEmoji });
     // Untimed utterances render as the classic line. They still take part in
     // scoring, so the repeat penalty restarts after them as it does for G1.
     pending.push({
@@ -2816,6 +3065,7 @@ function captionLayersForTarget(input: {
       blockWords: [],
       speaker: utterance.speaker,
     });
+    sources.push({ utterance: utterancePosition, words: [] });
     layers.push({
       id: `layer:caption:${utterance.index}:0:${target.id}`,
       kind: "caption",
@@ -2829,29 +3079,22 @@ function captionLayersForTarget(input: {
       words: [
         {
           text,
-          emoji: null,
           startSec: range.startSec,
           endSec: range.endSec,
         },
       ],
+      emojis: [],
       preset,
       language,
     });
   }
 
-  return finalizeCaptionLayers(layers, pending, document, language, document.emphasisWords);
+  return { layers, sources, pending, emojis: pendingEmojis, language, emphasisWords: document.emphasisWords };
 }
 
-/** Bound each cue to its successor, then attach roles and a Caption Block or Scene Style facts. */
-function finalizeCaptionLayers(
-  layers: CompositionCaptionVisualLayer[],
-  pending: readonly PendingCaptionCue[],
-  document: EditorDocument,
-  language: string | null,
-  emphasisWords: readonly string[] | undefined,
-): CompositionCaptionVisualLayer[] {
-  // Provider word windows and the minimum cue duration may overlap the next
-  // utterance. One caption line owns each instant in both preview and export.
+/** Bounds each cue to its successor, in place: one caption line owns each instant in both preview and export. */
+function boundCaptionCues(layers: CompositionCaptionVisualLayer[]): void {
+  // Provider word windows and the minimum cue duration may overlap the next utterance.
   for (let index = 0; index + 1 < layers.length; index++) {
     const layer = layers[index]!;
     const next = layers[index + 1]!;
@@ -2875,10 +3118,29 @@ function finalizeCaptionLayers(
     }
     layers[index] = { ...layer, words };
   }
+}
+
+/** Bound each cue to its successor, then attach emojis, roles and a Caption Block or Scene Style facts.
+ * A cue its successor bounds to zero length (a zero-length word, or two utterances that start together)
+ * can never show and is not returned; its emojis go with it, and the cues after it are numbered on. */
+function finalizeCaptionLayers(
+  layers: CompositionCaptionVisualLayer[],
+  pending: readonly PendingCaptionCue[],
+  emojis: readonly PendingCaptionEmoji[],
+  document: EditorDocument,
+  language: string | null,
+  emphasisWords: readonly string[] | undefined,
+): CompositionCaptionVisualLayer[] {
+  boundCaptionCues(layers);
+  const emojiWords = attachCaptionEmojis(layers, emojis);
   const preset = document.captionPreset;
-  if ((!preset.dynamic && !preset.scene) || pending.length === 0) return layers;
+  if ((!preset.dynamic && !preset.scene) || pending.length === 0) return numberCaptionCues(layers.filter(captionLayerCanShow));
   const roles = assignCaptionRoles({
-    cues: pending.map((cue) => cue.emphasis),
+    // A word whose emoji is drawn is its cue's hero, so the highlighted word is the one the emoji shows.
+    cues: pending.map((cue) => {
+      const marked = cue.layerIndex === null ? undefined : emojiWords.get(cue.layerIndex);
+      return marked ? cue.emphasis.map((word, index) => (marked.has(index) ? { ...word, emoji: true } : word)) : cue.emphasis;
+    }),
     language,
     overrides: document.studioEdits.captionEmphasis ?? {},
     // A style without a hero (a Dynamic tile style like Cutout) never picks one, whatever the overrides say. Every Scene Style
@@ -2896,7 +3158,11 @@ function finalizeCaptionLayers(
     const block = captionCueBlock(cue.blockWords, preset, language, layer.cueIndex, roles[index]!);
     if (block) layers[cue.layerIndex] = { ...layer, block };
   });
-  return layers;
+  return numberCaptionCues(layers.filter(captionLayerCanShow));
+}
+
+function captionLayerCanShow(layer: CompositionCaptionVisualLayer) {
+  return layer.activeRange.endSec > layer.activeRange.startSec;
 }
 
 function visualLayersForTarget(input: {

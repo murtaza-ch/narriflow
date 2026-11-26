@@ -351,6 +351,8 @@ export async function loadStudioBootstrap(
           : ("video" as const),
       wholeSource: clip.wholeSource,
       sourceEdgeSec: project.sourceEdgeSec,
+      /** The rate the clip's renders are delivered at: Scene Styles and emojis are planned on its frame grid, as in the export. */
+      renderFrameRate: project.renderFrameRate,
       brollCues: clip.brollCues ?? [],
       can1080pExport: hasFeature(actor.pricingTier, "export.1080p"),
       exportHasWatermark: !hasFeature(actor.pricingTier, "export.noWatermark"),

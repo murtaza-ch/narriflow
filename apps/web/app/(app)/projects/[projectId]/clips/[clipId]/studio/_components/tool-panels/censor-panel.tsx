@@ -1,12 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box, Button, Flex, Stack, Text } from "@chakra-ui/react";
 import { ShieldCheck } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
-  censorWordsToScan,
-  detectAutoCensorSuggestions,
   isCensorSegmentStale,
   lowestTierWithFeature,
   PLAN_CATALOG,
@@ -33,9 +31,8 @@ import {
   type AutoCensorSound,
   type AutoCensorTextStyle,
 } from "../auto-censor-review-model";
+import { AUTO_CENSOR_PADDING_SEC, autoCensorApplyLock, useAutoCensorSuggestions } from "./auto-censor-scan";
 import { PANEL_PX, PanelButton, PanelEmpty, PanelSegmented, SectionLabel, chipProps, softButtonProps } from "./panel-ui";
-
-const PADDING_SEC = 0.06;
 
 /**
  * Auto-censor: pick how a censored word looks and sounds, then censor every
@@ -45,9 +42,7 @@ const PADDING_SEC = 0.06;
 export function CensorPanel() {
   const {
     editorDocument,
-    editorRevision,
     utterances,
-    clipWindow,
     autoCensorPolicy,
     setCensorSegments,
     censorWords,
@@ -58,12 +53,12 @@ export function CensorPanel() {
     recordAutoCensorEvent,
     upgradePrompts,
   } = useStudio(
-    "editorDocument", "editorRevision", "utterances", "clipWindow", "autoCensorPolicy",
+    "editorDocument", "utterances", "autoCensorPolicy",
     "setCensorSegments", "censorWords", "setCensorWords", "updateProjectCensorTerms", "replaceWorkspaceCensorWords", "resetWorkspaceCensorWords",
     "recordAutoCensorEvent", "upgradePrompts",
   );
   const { openUpgrade } = useUpgrade();
-  const applyLock = autoCensorPolicy.canApply ? null : upgradePrompts.censoring;
+  const applyLock = autoCensorApplyLock(autoCensorPolicy, upgradePrompts);
   const [effects, setEffects] = useState<AutoCensorEffects>(AUTO_CENSOR_DEFAULT_EFFECTS);
   // Held by the Studio, so saved edits survive switching to another tool.
   const workspaceList: WorkspaceCensorWords = censorWords.workspace;
@@ -72,27 +67,8 @@ export function CensorPanel() {
   const [wordsOpen, setWordsOpen] = useState(false);
   const existing = editorDocument.censorSegments;
 
-  // Until the list is edited, the scan uses the English defaults plus this clip's language.
-  const workspaceWords = useMemo(
-    () => censorWordsToScan(workspaceList, autoCensorPolicy.locale),
-    [autoCensorPolicy.locale, workspaceList],
-  );
-
   // The scan reads the corrected transcript and edits nothing; only Apply does.
-  const suggestions = useMemo(
-    () => detectAutoCensorSuggestions({
-      documentRevision: editorRevision,
-      locale: autoCensorPolicy.locale,
-      clipWindow,
-      deletedRanges: editorDocument.deletedRanges,
-      transcript: utterances,
-      workspaceTerms: workspaceWords,
-      brandTerms: autoCensorPolicy.brandTerms,
-      projectTerms,
-      paddingSec: PADDING_SEC,
-    }),
-    [autoCensorPolicy.brandTerms, autoCensorPolicy.locale, clipWindow, editorDocument.deletedRanges, editorRevision, projectTerms, utterances, workspaceWords],
-  );
+  const suggestions = useAutoCensorSuggestions();
 
   const recordEventBestEffort = (input: Parameters<typeof recordAutoCensorEvent>[0]) => {
     void recordAutoCensorEvent(input).catch(() => {
@@ -135,7 +111,7 @@ export function CensorPanel() {
         existing,
         canApply: autoCensorPolicy.canApply,
         effects,
-        paddingSec: PADDING_SEC,
+        paddingSec: AUTO_CENSOR_PADDING_SEC,
         createId: () => crypto.randomUUID(),
       });
       if (result.words === 0) {

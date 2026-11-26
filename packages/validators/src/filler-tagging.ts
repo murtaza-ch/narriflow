@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
-import { splitUtterancesIntoSentences } from "./utterance-split";
+import { chunkTranscriptForTagging, type TranscriptTaggingChunk } from "./transcript-tagging";
 
 // AI filler tagging for transcripts the built-in lists do not cover. Pure
 // contract: chunking, prompt, schema, acceptance and identity. The provider
@@ -38,13 +38,6 @@ export const FILLER_TAG_MAX_LETTERS = 6;
 export const FILLER_TAG_MAX_KEYS = 5_000;
 export const FILLER_TAG_MAX_KEY_LENGTH = 200;
 
-export interface FillerTaggingToken { speaker: number | null; word: TranscriptWord }
-export interface FillerTaggingChunk {
-  tokens: FillerTaggingToken[];
-  /** The user message, or null when the chunk's text could forge prompt structure. */
-  prompt: string | null;
-}
-
 /** Clip slicing rounds every word time this way (clip-timing normalizeTime),
  *  so a source key and its sliced word's key agree exactly. */
 const keyTime = (sec: number) => Math.max(0, Math.round(sec * 1000) / 1000).toFixed(3);
@@ -60,41 +53,9 @@ export function fillerTagLetters(text: string): string {
   return text.normalize("NFC").toLocaleLowerCase("und").replace(/[^\p{L}\p{M}‌‍]/gu, "");
 }
 
-// Rendering separates tokens with spaces, ids with ":" and lines with "\n".
-// A token containing whitespace, a line or paragraph separator or a control
-// character could forge that structure ("um 17:go"), so its whole chunk goes
-// untagged (no measured transcript token has one). A colon inside a token
-// ("sagte:", "10:30"; in 8-19% of measured chunks) is shown as a fullwidth
-// colon so it cannot read as an id separator; letters, which acceptance
-// compares, are unchanged. Format characters such as ZWNJ stay (Persian).
-const FORGES_STRUCTURE = /[\s\p{Z}\p{Cc}]/u;
-const shownToken = (text: string) => text.replaceAll(":", "\uFF1A");
-
 /** Sentence-split chunks of at most FILLER_TAGGING_CHUNK_WORDS words, with the prompt rendered as evaluated. */
-export function chunkTranscriptForFillerTagging(utterances: TranscriptUtterance[], languageCode: string): FillerTaggingChunk[] {
-  const chunks: FillerTaggingChunk[] = [];
-  let lines: { speaker: number | null; words: TranscriptWord[] }[] = [];
-  let count = 0;
-  const flush = () => {
-    if (count === 0) return;
-    const tokens = lines.flatMap((line) => line.words.map((word) => ({ speaker: line.speaker, word })));
-    const unsafe = tokens.some((token) => FORGES_STRUCTURE.test(token.word.word));
-    let id = 0;
-    const body = lines.map((line) => `S${line.speaker ?? "?"}: ${line.words.map((word) => `${id++}:${shownToken(word.word)}`).join(" ")}`).join("\n");
-    chunks.push({ tokens, prompt: unsafe ? null : `Language: ${languageCode}\nTokens:\n${body}` });
-    lines = [];
-    count = 0;
-  };
-  for (const sentence of splitUtterancesIntoSentences(utterances)) {
-    const words = sentence.words.filter((word) => word.word.length > 0);
-    if (words.length === 0) continue;
-    if (count + words.length > FILLER_TAGGING_CHUNK_WORDS) flush();
-    lines.push({ speaker: sentence.speaker, words });
-    count += words.length;
-    if (count >= FILLER_TAGGING_CHUNK_WORDS) flush();
-  }
-  flush();
-  return chunks;
+export function chunkTranscriptForFillerTagging(utterances: TranscriptUtterance[], languageCode: string): TranscriptTaggingChunk[] {
+  return chunkTranscriptForTagging(utterances, languageCode, FILLER_TAGGING_CHUNK_WORDS);
 }
 
 const reportSchema = z.object({ fillers: z.array(z.object({ id: z.number(), text: z.string(), is_dictionary_word: z.boolean(), kind: z.string() }).passthrough()) }).passthrough();
@@ -136,7 +97,7 @@ function isPlainWord(text: string): boolean {
   return /^(?:\p{L}|\p{M}|\u200c|\u200d|['’ʼ])+$/u.test(text.normalize("NFC")) && /\p{L}/u.test(text);
 }
 
-export function acceptFillerTags(chunk: FillerTaggingChunk, report: unknown): number[] {
+export function acceptFillerTags(chunk: TranscriptTaggingChunk, report: unknown): number[] {
   const parsed = reportSchema.safeParse(report);
   if (!parsed.success || chunk.prompt === null) return [];
   const accepted = new Set<number>(), vetoed = new Set<number>();
@@ -157,7 +118,7 @@ export function acceptFillerTags(chunk: FillerTaggingChunk, report: unknown): nu
  *   Portuguese "eeem" ("em") and "Eee" ("e") and Russian "Иии" ("и") in the
  *   2026-11-12 benchmark; a stretched real word is a word.
  */
-export function collectFillerKeys(chunks: FillerTaggingChunk[], acceptedPerChunk: readonly (readonly number[])[]): string[] {
+export function collectFillerKeys(chunks: TranscriptTaggingChunk[], acceptedPerChunk: readonly (readonly number[])[]): string[] {
   const seen = new Map<string, number>();
   const wordForms = new Set<string>();
   chunks.forEach((chunk, index) => {

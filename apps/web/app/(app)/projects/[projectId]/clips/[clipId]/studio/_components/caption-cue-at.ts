@@ -39,11 +39,8 @@ export function captionCueWordsAt(layer: Pick<CompositionCaptionVisualLayer, "wo
   const active = captionActiveWordIndex(layer, timeSec);
   return layer.words.map((word, index) => ({
     word: word.text,
-    emoji: word.emoji,
     ...(word.spaceBefore === undefined ? {} : { spaceBefore: word.spaceBefore }),
     durationMs: Math.max(50, Math.round((captionWordSegmentEnd(layer.words, index, layer.activeRange.endSec) - word.startSec) * 1000)),
-    // The export's own window for this word's emoji: through the next word's start.
-    emojiWindow: { startSec: word.startSec, endSec: captionWordSegmentEnd(layer.words, index, layer.activeRange.endSec) },
     isActive: index === active,
   }));
 }

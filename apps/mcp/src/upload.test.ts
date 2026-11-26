@@ -36,6 +36,16 @@ describe("local Upload Session delivery", () => {
     expect(bodies[0]).toMatchObject({ generationContext: { finishing: { topClips: 2, minScore: 0, copyPlatforms: ["tiktok"], delivery: "ready_to_review" } } });
   });
 
+  test("sends addEmojis from a settings file in the Upload Session's Content Pack", async () => {
+    let opened: { generationContext?: { contentPack?: { addEmojis?: boolean } } } | undefined;
+    await uploadVideo({ endpoint: "https://narriflow.test", apiKey: "nf_fixture", workspaceId, filePath: await source(), clientIdempotencyKey: key,
+      generationContext: buildGenerationContext(generationSettingsSchema.parse({ addEmojis: true })), fetch: async (_target, init) => {
+        opened = JSON.parse(String(init?.body));
+        return Response.json({ outcome: "queued_for_ingest", sessionId, projectId: "project", queuedJobId: "ingest" });
+      } });
+    expect(opened?.generationContext?.contentPack?.addEmojis).toBe(true);
+  });
+
   test.each([false, true, undefined])("freezes notification preference %s at Upload Session open", async notifyOnComplete => {
     let opened: Record<string, unknown> | undefined;
     const path = await source(), generationContext = buildGenerationContext({ clipCountTarget: 12 });

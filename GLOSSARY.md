@@ -83,8 +83,28 @@ _Avoid_: Element, sprite, glyph
 A word's source start time in whole milliseconds, as a string. It names a word for emphasis overrides and seeds its cue's look, and it survives cuts, trims and text corrections. A trim that clamps an edge word's start changes that one word's key.
 _Avoid_: Word ID, word index
 
+**Caption Emoji**:
+An emoji placed next to a caption cue, drawn from Narriflow's own vector art (`@narriflow/caption-emoji`) in the template's colours. A clip stores them as Emoji Refs by Word Key (`studioEdits.captionEmojis`), set by AI at import or in the Studio, or by hand. They draw on every preset kind when the preset's `emojis` is on, and never reach subtitle files. An emoji typed into caption text is not one: it is text, drawn in the single-colour fallback face.
+_Avoid_: Emoji caption, keyword emoji, sticker
+
+**Emoji Ref**:
+`{ id, tone?, word? }`: a catalog design's id (a single design or a phrase badge), the tone a person picked for a design with skin (0 the default yellow, 1 to 5), and the word it was placed on. Without `tone` it is drawn in the preset's Skin tone (`emojiTone`), which is how the AI's emojis get theirs. Unicode only connects it to the AI's answers, picker search and the accessible label (`emojiRefForGlyph`; a badge by its two emojis).
+_Avoid_: Emoji character, glyph, code point
+
+**Emoji Layer**:
+The pieces that draw one caption target's Caption Emojis, built by `buildCaptionEmojiPieces` from cue boxes, outside any scene build and above the captions. Each caption path (classic line, Caption Block, Caption Scene) supplies only cue boxes, and both renderers paint the pieces as they paint scene pieces. An emoji edit rebuilds this layer and never a template's scene.
+_Avoid_: Emoji overlay, emoji scene
+
+**Emoji Slot**:
+Where an emoji sits against its cue's box: above, below, or level with the last row at its reading end (`beside-end`). A Scene Style may declare a default (`emojiSlot`; Lyrics `beside-end`, Dialogue `below`); every other cue uses above. Auto moves it below a caption in the top 30% or when above would reach the face zone. A slot that is blocked or leaves the safe area tries the other side, then a smaller size, then drops that emoji.
+_Avoid_: Emoji position (that is the preset field), anchor
+
+**Emoji Palette**:
+The three colours `{ a, b, c }` (body, rim, detail) that a design's role layers take; ink and skin keep their own colours. `captionEmojiPalette` derives it from the template's colours with separation guards; `preset.emojiPalette` overrides it.
+_Avoid_: Emoji theme, emoji colours
+
 **Scene Block**:
-A bounded visual insertion that occupies edited time in one Clip Editor Document and may contain video, an image, a color card, or a text card.
+A bounded visual insertion that occupies edited time in one Clip Editor Document and may contain video, an image, a color card, or a text card. The clip's own speech stops while one plays, so no caption draws over it: the plan splits caption cues at it, and a Caption Scene's pieces are cut at it (`insertedSceneRanges`).
 _Avoid_: Timeline clip, composition scene, intro file
 
 **Music Block**:

@@ -1,12 +1,17 @@
 import { Prisma } from "@prisma/client";
-import { BRAND_DEFAULT_CAPTION_PRESET_ID, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, brandProfileSnapshotSchema, captionPresetSchema, captionedVideoFramingEdits,
-  clipEmphasisWords, clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById, isBrandDefaultCaptionPresetId, studioEditsSchema, studioMusicBlockSchema,
-  type BrollCue, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges, type FillerTaggingOutcome, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
+import { BRAND_DEFAULT_CAPTION_PRESET_ID, DEFAULT_CAPTION_EMOJI_DENSITY, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, brandProfileSnapshotSchema, captionPresetSchema,
+  captionWordKey, captionedVideoFramingEdits, clipEmphasisWords, clipSourceEdgeSec, decodeQuietRanges, detectClipCleanupRanges, encodedQuietRangesSchema, getCaptionPresetById,
+  isBrandDefaultCaptionPresetId, replaceCaptionEmojis, selectCaptionEmojiPicks, studioEditsSchema, studioMusicBlockSchema,
+  type BrollCue, type CaptionEmojiPick, type CaptionPreset, type ClipCategory, type ClipPlatformTarget, type ContentPack, type EncodedQuietRanges,
+  type FillerTaggingOutcome, type SourceRange, type StudioEdits, type TranscriptUtterance } from "@narriflow/validators";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
+import { clipEmojiWords } from "./clip-emoji-suggestion";
 
 /** Cleanup a generation asked for, with what it needs per clip. */
 export interface DetectedClipCleanup { removeSilences: boolean; removeFillerWords: boolean; quietRanges: EncodedQuietRanges | null; languageCode: string | null; aiFillers: FillerTaggingOutcome | null }
-export interface DetectedClipSeed { captionPreset: CaptionPreset; studioEdits: StudioEdits; sourceDurationSec: number | null; wholeSource: boolean; cleanup: DetectedClipCleanup }
+export interface DetectedClipSeed { captionPreset: CaptionPreset; studioEdits: StudioEdits; sourceDurationSec: number | null; wholeSource: boolean; cleanup: DetectedClipCleanup;
+  /** AI emoji picks over the whole source by Word Key; null when the generation adds none. */
+  emojiPicks: CaptionEmojiPick[] | null }
 export interface DetectedClip {
   startSec: number;
   endSec: number;
@@ -86,8 +91,13 @@ export function seedBrandMusic(
 }
 
 /** The caption style a generation run gives its clips: the run's Content Pack
- * choice, or the Brand Profile style snapshotted on the Project. */
-export function runDefaultCaptionPreset(brandSnapshot: unknown, captionPresetId: string | null | undefined): CaptionPreset {
+ * choice, or the Brand Profile style snapshotted on the Project. The import's
+ * Add emojis choice alone decides emojis, whatever the brand style says. */
+export function runDefaultCaptionPreset(brandSnapshot: unknown, contentPack: { captionPreset?: string | null; addEmojis?: boolean } | null | undefined): CaptionPreset {
+  return { ...runCaptionStyle(brandSnapshot, contentPack?.captionPreset), emojis: contentPack?.addEmojis ?? false };
+}
+
+function runCaptionStyle(brandSnapshot: unknown, captionPresetId: string | null | undefined): CaptionPreset {
   let template: CaptionPreset | null = null;
   if (brandSnapshot && typeof brandSnapshot === "object" && !Array.isArray(brandSnapshot)) {
     const snap = brandSnapshot as Record<string, unknown>;
@@ -99,11 +109,8 @@ export function runDefaultCaptionPreset(brandSnapshot: unknown, captionPresetId:
 }
 
 export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brandProfileSnapshot: unknown; sourceDurationSeconds: number | null; sourceProbe?: unknown } | null,
-  contentPack: ContentPack | null, source: { quietRanges: unknown; languageCode: string | null; aiFillers?: FillerTaggingOutcome | null }): DetectedClipSeed {
-    const resolvedCaptionPreset = runDefaultCaptionPreset(
-      project?.brandSnapshot,
-      contentPack?.captionPreset,
-    );
+  contentPack: ContentPack | null, source: { quietRanges: unknown; languageCode: string | null; aiFillers?: FillerTaggingOutcome | null; emojiPicks?: CaptionEmojiPick[] | null }): DetectedClipSeed {
+    const resolvedCaptionPreset = runDefaultCaptionPreset(project?.brandSnapshot, contentPack);
     // A caption-only generation's clip is its whole source (see
     // clipDurationBounds). Preserve its whole frame unless it explicitly asks
     // for Center; Auto framing belongs to AI clipping by default.
@@ -119,17 +126,40 @@ export function prepareDetectedClipSeed(project: { brandSnapshot: unknown; brand
     const quietRanges = encodedQuietRangesSchema.safeParse(source.quietRanges);
     const cleanup = { removeSilences: contentPack?.removeSilences ?? false, removeFillerWords: contentPack?.removeFillerWords ?? false,
       quietRanges: quietRanges.success ? quietRanges.data : null, languageCode: source.languageCode, aiFillers: source.aiFillers ?? null };
-    return { captionPreset: resolvedCaptionPreset, studioEdits, sourceDurationSec: project ? clipSourceEdgeSec(project) : null, wholeSource, cleanup };
+    return { captionPreset: resolvedCaptionPreset, studioEdits, sourceDurationSec: project ? clipSourceEdgeSec(project) : null, wholeSource, cleanup, emojiPicks: source.emojiPicks ?? null };
 }
 
-/** One canonical Editor Document writer is shared by worker and durable selection. */
-export function buildDetectedClipRows(input: { projectId: string; workflowRunId: string; clips: DetectedClip[]; llmMeta: LlmMeta; seed: DetectedClipSeed }) {
-  const { projectId, workflowRunId, clips, llmMeta, seed } = input;
+/** Picks keyed as the clip's words are: slicing clamps a source word that straddles the clip start to
+ * that start (`normalizeTranscriptSliceForClip`), which changes its Word Key. */
+function clipEmojiPicks(picks: readonly CaptionEmojiPick[], utterances: readonly TranscriptUtterance[], clipStartSec: number): readonly CaptionEmojiPick[] {
+  const clamped = new Set(utterances.flatMap((utterance) => utterance.words
+    .filter((word) => word.startSec < clipStartSec && word.endSec > clipStartSec).map((word) => captionWordKey(word.startSec))));
+  if (clamped.size === 0) return picks;
+  const key = captionWordKey(clipStartSec);
+  return picks.map((pick) => (clamped.has(pick.key) ? { ...pick, key } : pick));
+}
+
+/** The seed's Studio Edits for one clip: the source picks its kept words hold, at the default density. */
+function clipStudioEdits(seed: DetectedClipSeed, clip: DetectedClip, deletedRanges: SourceRange[], utterances: readonly TranscriptUtterance[]): StudioEdits {
+  if (!seed.emojiPicks?.length || !seed.captionPreset.emojis) return seed.studioEdits;
+  const { words } = clipEmojiWords({ transcriptSlice: clip.transcriptSlice, clipStartSec: clip.startSec, clipEndSec: clip.endSec, deletedRanges });
+  const picks = clipEmojiPicks(seed.emojiPicks, utterances, clip.startSec);
+  // selectCaptionEmojiPicks keeps at most CAPTION_EMOJI_LIMIT, so the replace never refuses.
+  return replaceCaptionEmojis(seed.studioEdits, selectCaptionEmojiPicks(picks, words, DEFAULT_CAPTION_EMOJI_DENSITY)) ?? seed.studioEdits;
+}
+
+/** One canonical Editor Document writer is shared by worker and durable selection. `utterances` is the
+ * source transcript the clips were sliced from (the selection capsule's). */
+export function buildDetectedClipRows(input: { projectId: string; workflowRunId: string; clips: DetectedClip[]; llmMeta: LlmMeta; seed: DetectedClipSeed;
+  utterances: readonly TranscriptUtterance[] }) {
+  const { projectId, workflowRunId, clips, llmMeta, seed, utterances } = input;
   const { cleanup } = seed;
   const quietRanges = cleanup.quietRanges ? decodeQuietRanges(cleanup.quietRanges) : null;
   const aiFillerKeys = cleanup.aiFillers ? new Set(cleanup.aiFillers.keys) : null;
     return clips.map((clip, i) => {
       const emphasisWords = clipEmphasisWords(clip.emphasisWords ?? [], clip.transcriptSlice);
+      const deletedRanges = detectClipCleanupRanges(clip.transcriptSlice, { startSec: clip.startSec, endSec: clip.endSec },
+        { removeSilences: cleanup.removeSilences, removeFillerWords: cleanup.removeFillerWords, quietRanges, languageCode: cleanup.languageCode, aiFillerKeys });
 		const editorDocument = encodeClipEditorDocumentForStorage(
 			{
 				version: EDITOR_DOCUMENT_VERSION,
@@ -137,10 +167,9 @@ export function buildDetectedClipRows(input: { projectId: string; workflowRunId:
 				clipEndSec: clip.endSec,
           captionPreset: seed.captionPreset,
           transcriptSlice: clip.transcriptSlice,
-          studioEdits: seed.studioEdits,
+          studioEdits: clipStudioEdits(seed, clip, deletedRanges, utterances),
 				brollUrl: null,
-				deletedRanges: detectClipCleanupRanges(clip.transcriptSlice, { startSec: clip.startSec, endSec: clip.endSec },
-					{ removeSilences: cleanup.removeSilences, removeFillerWords: cleanup.removeFillerWords, quietRanges, languageCode: cleanup.languageCode, aiFillerKeys }),
+				deletedRanges,
 				sceneBlocks: [],
 				censorSegments: [],
 				mediaMotions: [],

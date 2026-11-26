@@ -26,10 +26,10 @@ function brandFonts(path: string): RenderBrandFonts {
 
 function track(fonts: RenderBrandFonts, preset: ReturnType<typeof captionPresetSchema.parse>, words: readonly string[], language: string | null = null) {
   const cue: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
     anchor: { xPct: 50, yPct: 72 }, destination: { x: 0, y: 0, width: 1080, height: 1920 },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset: { ...preset, fontAsset: reference },
-    words: words.map((text, index) => ({ text, emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    words: words.map((text, index) => ({ text, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
     ...(language ? { language } : {}),
   };
   return renderCaptionTrack({ layers: [cue], canvas: { width: 1080, height: 1920 }, fonts });

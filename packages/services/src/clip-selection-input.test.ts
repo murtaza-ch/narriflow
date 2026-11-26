@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import { contentPackSchema, DEFAULT_CAPTION_PRESET, studioEditsSchema } from "@narriflow/validators";
-import { encodeClipSelectionInput, decodeClipSelectionInput, encodeClipSelectionResult, decodeClipSelectionResult } from "./clip-selection-input";
+import { clipSelectionBytesHash, encodeClipSelectionInput, decodeClipSelectionInput, encodeClipSelectionResult, decodeClipSelectionResult } from "./clip-selection-input";
 
 const parent = { id: "00000000-0000-4000-8000-000000000001", projectId: "00000000-0000-4000-8000-000000000002", generation: 1, deploymentEpoch: 1, inputHash: "a".repeat(64) };
 const capsule = () => ({ version: 1 as const, parent, transcript: { id: "00000000-0000-4000-8000-000000000003", generation: 1, attemptId: null, contentHash: "b".repeat(64), sourceRevision: 1, sourceAudioId: null, sourceAudioBindingHash: null },
   planning: { projectTitle: "Frozen title", contentPack: contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 45, platformPlaybookVersion: "platform-playbook-v1" }),
     sourceDurationSec: 3600, sourceProbeDurationSec: 3600, utterances: [], fullText: "private transcript", speakerCount: 1, sourceLanguageCode: "en", audienceDataLine: "Frozen audience data" },
   editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 3600, wholeSource: false,
-    cleanup: { removeSilences: false, removeFillerWords: false, quietRanges: null, languageCode: "en", aiFillers: null } },
+    cleanup: { removeSilences: false, removeFillerWords: false, quietRanges: null, languageCode: "en", aiFillers: null }, emojiPicks: null },
   provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "Frozen system prompt", responseSchemaHash: "c".repeat(64) });
 test("private selection input canonical bytes bind the frozen Transcript, settings, guidance and editor seed", async () => {
   const input = await encodeClipSelectionInput(capsule());
@@ -18,6 +18,12 @@ test("private selection input canonical bytes bind the frozen Transcript, settin
   await expect(decodeClipSelectionInput(input.bytes, input, { ...parent, generation: 2 })).rejects.toThrow("lineage");
   const reordered = { ...capsule(), editor: { ...capsule().editor }, parent: { inputHash: parent.inputHash, deploymentEpoch: 1, generation: 1, projectId: parent.projectId, id: parent.id } };
   expect((await encodeClipSelectionInput(reordered)).sha256).toBe(input.sha256);
+});
+test("a capsule frozen before emoji picks existed decodes with no picks, so finalization keeps its paid window results", async () => {
+  const { emojiPicks: _omitted, ...editor } = capsule().editor;
+  const bytes = new TextEncoder().encode(JSON.stringify({ ...capsule(), editor }));
+  const decoded = await decodeClipSelectionInput(bytes, { sha256: await clipSelectionBytesHash(bytes), byteLength: bytes.byteLength }, parent);
+  expect(decoded.editor.emojiPicks).toBeNull();
 });
 test("window results salvage valid raw candidates and retain oversized optional cue evidence for the existing degradation policy", async () => {
   const binding = { parentId: parent.id, parentGeneration: 1, selectionHash: "d".repeat(64), windowIndex: 1 };

@@ -27,7 +27,7 @@ describe("Recipe form", () => {
     const result = recipeFromDraft(draft);
     if ("error" in result) throw new Error(result.error);
     expect(result.input).toMatchObject({ name: "Weekly show", brandProfileId: BRAND_PROFILE_ID, languageCode: null, finishing: null });
-    expect(result.input.contentPack).toMatchObject({ clipCountTarget: 10, defaultAspectRatio: "9:16", clipLengthPreset: "auto", autoHook: true, removeSilences: false, removeFillerWords: false });
+    expect(result.input.contentPack).toMatchObject({ clipCountTarget: 10, defaultAspectRatio: "9:16", clipLengthPreset: "auto", autoHook: true, removeSilences: false, removeFillerWords: false, addEmojis: false });
   });
 
   test("an edit opens as the saved draft and round-trips to the same settings", () => {
@@ -67,6 +67,19 @@ describe("Recipe form", () => {
     const result = recipeFromDraft({ ...opened, removeFillerWords: false }, saved.contentPack);
     if ("error" in result) throw new Error(result.error);
     expect(result.input.contentPack).toMatchObject({ removeSilences: true, removeFillerWords: false });
+  });
+
+  test("Add emojis opens from the saved Recipe and saves what the switch says", () => {
+    const saved = recipe({ contentPack: buildGenerationContentPack({ addEmojis: true }) });
+    const opened = draftFromRecipe(saved);
+    expect(opened.addEmojis).toBe(true);
+    const off = recipeFromDraft({ ...opened, addEmojis: false }, saved.contentPack);
+    if ("error" in off) throw new Error(off.error);
+    expect(off.input.contentPack.addEmojis).toBe(false);
+    expect(recipeChanges(off.input, saved, false)).toMatchObject({ contentPack: { addEmojis: false } });
+    const on = recipeFromDraft({ ...emptyRecipeDraft(null), name: "Show", addEmojis: true });
+    if ("error" in on) throw new Error(on.error);
+    expect(on.input.contentPack.addEmojis).toBe(true);
   });
 
   test("says what to fix instead of sending a bad Recipe", () => {

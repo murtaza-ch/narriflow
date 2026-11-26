@@ -12,10 +12,11 @@ import { isWoff2, woff2ToSfnt } from "./woff2";
  *
  * `layoutCaptionLine` reproduces what libass does with one caption line: the
  * Unicode bidi algorithm (bidi-js) over the whole logical text, a shaping run
- * per contiguous stretch of one face and one embedding level, runs placed in
- * visual order (UAX #9 rule L2). The result is the box of every word in the
- * order the viewer sees it, so pills, plates, active-word overlays and emoji
- * land on the right word of an RTL or mixed line.
+ * per contiguous stretch of one face and one embedding level (shaped with the
+ * line's text around it as context, so joining forms hold across a face
+ * change), runs placed in visual order (UAX #9 rule L2). The result is the box
+ * of every word in the order the viewer sees it, so pills, plates, active-word
+ * overlays and emoji land on the right word of an RTL or mixed line.
  *
  * Direction and script are set per run exactly as libass sets them (level
  * parity and the run's text); no language tag is passed because libass passes
@@ -94,15 +95,34 @@ export class CaptionShapingError extends Error {
   }
 }
 
-/** Shapes `text` as one run. `rtl` null lets HarfBuzz take the direction from the script. */
-export function shapeCaptionRun(path: string, text: string, rtl: boolean | null = null): ShapedRun {
-  const key = `${path}\0${rtl}\0${text}`;
+/** HarfBuzz keeps this many code points of context on each side of a run (`HB_BUFFER_CONTEXT_LENGTH`). */
+const CONTEXT_CODE_POINTS = 5;
+
+/**
+ * The text around a run in its line, in logical order. libass shapes each run of one face inside
+ * the whole event's text, so a cursive letter at a face change takes its joining form: an Urdu
+ * word that Rubik draws in part (it has the Arabic letters, not ہ ے ھ ٹ) joins across the change.
+ */
+export interface CaptionShapingContext {
+  readonly before: string;
+  readonly after: string;
+}
+
+/**
+ * Shapes `text` as one run. `rtl` null lets HarfBuzz take the direction from the script. `context`
+ * is the text around the run (no context: the run stands alone, as a word drawn by one face does).
+ */
+export function shapeCaptionRun(path: string, text: string, rtl: boolean | null = null, context?: CaptionShapingContext): ShapedRun {
+  // Twice as many UTF-16 units always hold the code points wanted; a surrogate cut at the far end falls outside them.
+  const before = context ? Array.from(context.before.slice(-2 * CONTEXT_CODE_POINTS)).slice(-CONTEXT_CODE_POINTS).join("") : "";
+  const after = context ? Array.from(context.after.slice(0, 2 * CONTEXT_CODE_POINTS)).slice(0, CONTEXT_CODE_POINTS).join("") : "";
+  const key = `${path}\0${rtl}\0${before}\0${text}\0${after}`;
   const cached = shaped.get(key);
   if (cached) return cached;
   try {
     const { font, upem } = loadFont(path);
     const buffer = new hb.Buffer();
-    buffer.addText(text);
+    buffer.addText(before + text + after, before.length, text.length);
     if (rtl !== null) buffer.setDirection(rtl ? hb.Direction.RTL : hb.Direction.LTR);
     buffer.guessSegmentProperties();
     hb.shape(font, buffer);
@@ -242,7 +262,7 @@ export function layoutCaptionLine(
       let end = start + 1;
       while (end < part.text.length && levels[offset + end] === level) end++;
       const piece = part.text.slice(start, end);
-      const run = shapeCaptionRun(part.fontPath, piece, level % 2 === 1);
+      const run = shapeCaptionRun(part.fontPath, piece, level % 2 === 1, { before: text.slice(0, offset + start), after: text.slice(offset + end) });
       // libass adds the letter spacing after every cluster; the pill's extra advance belongs to the space.
       const spacing = part.spaced ? letterSpacingEm : 0;
       const extra = segment.extraEm > 0 && start === 0 ? segment.extraEm : 0;

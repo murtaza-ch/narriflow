@@ -26,6 +26,7 @@ export function recipeFormSettings(recipe: Pick<RecipeSnapshot, "languageCode" |
       autoHook: pack.autoHook,
       removeSilences: pack.removeSilences,
       removeFillerWords: pack.removeFillerWords,
+      addEmojis: pack.addEmojis,
       specificMoments: pack.specificMoments,
       platformTargets: pack.platformTargets,
       clipCountTarget: pack.clipCountTarget,

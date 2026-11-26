@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, chakra, Field, Flex, Stack, Text } from "@chakra-ui/react";
-import { AudioLines, Info, MessageSquareOff, Zap } from "lucide-react";
+import { AudioLines, Info, MessageSquareOff, Smile, Zap } from "lucide-react";
 import { Switch } from "@narriflow/ui/components/switch";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import type {
@@ -30,6 +30,8 @@ export interface ClipStyleSettingsProps {
   setRemoveSilences: (value: boolean) => void;
   removeFillerWords: boolean;
   setRemoveFillerWords: (value: boolean) => void;
+  addEmojis: boolean;
+  setAddEmojis: (value: boolean) => void;
   specificMoments: string;
   setSpecificMoments: (value: string) => void;
   platformTargets: ClipPlatformTarget[];
@@ -54,6 +56,8 @@ export function ClipStyleSettings({
   setRemoveSilences,
   removeFillerWords,
   setRemoveFillerWords,
+  addEmojis,
+  setAddEmojis,
   specificMoments,
   setSpecificMoments,
   platformTargets,
@@ -80,33 +84,38 @@ export function ClipStyleSettings({
         showClipLength={mode === "clip"}
       />
       <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
-      {mode === "clip" ? (
-        <Stack gap="2">
-          {[
-            { id: "auto-hook-label", name: "autoHook", icon: <Zap size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Start with a hook", hint: "Prefer clips that open on an attention-grabbing line", checked: autoHook, onChange: setAutoHook },
-            { id: "remove-silences-label", name: "removeSilences", icon: <AudioLines size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove silences", hint: "Cuts pauses where the audio is quiet", checked: removeSilences, onChange: setRemoveSilences },
-            { id: "remove-filler-words-label", name: "removeFillerWords", icon: <MessageSquareOff size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove filler words", hint: "Cuts um, uh and similar sounds", checked: removeFillerWords, onChange: setRemoveFillerWords },
-          ].map((row) => (
-            // The same row as the import card's "Get AI clips": icon, what it does, a switch.
-            <Flex key={row.name} align="center" gap="2.5" minH="52px" px="3" py="2" bg="bg.soft" borderRadius="l2">
-              {row.icon}
-              <Box flex="1" minW="0">
-                <Text id={row.id} fontSize="14px">
-                  {row.title}
-                </Text>
-                <Text fontSize="12px" color="fg.muted">
-                  {row.hint}
-                </Text>
-              </Box>
-              <Switch
-                checked={row.checked}
-                onCheckedChange={row.onChange}
-                inputProps={{ name: row.name, "aria-labelledby": row.id }}
-              />
-            </Flex>
-          ))}
-        </Stack>
-      ) : (
+      <Stack gap="2">
+        {[
+          // Emojis decorate the captions in both modes, so this row comes first, under the caption style.
+          { id: "add-emojis-label", name: "addEmojis", icon: <Smile size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Add emojis", hint: "AI adds emojis that match what is said", checked: addEmojis, onChange: setAddEmojis },
+          ...(mode === "clip"
+            ? [
+                { id: "auto-hook-label", name: "autoHook", icon: <Zap size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Start with a hook", hint: "Prefer clips that open on an attention-grabbing line", checked: autoHook, onChange: setAutoHook },
+                { id: "remove-silences-label", name: "removeSilences", icon: <AudioLines size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove silences", hint: "Cuts pauses where the audio is quiet", checked: removeSilences, onChange: setRemoveSilences },
+                { id: "remove-filler-words-label", name: "removeFillerWords", icon: <MessageSquareOff size={16} strokeWidth={1.75} aria-hidden="true" />, title: "Remove filler words", hint: "Cuts um, uh and similar sounds", checked: removeFillerWords, onChange: setRemoveFillerWords },
+              ]
+            : []),
+        ].map((row) => (
+          // The same row as the import card's "Get AI clips": icon, what it does, a switch.
+          <Flex key={row.name} align="center" gap="2.5" minH="52px" px="3" py="2" bg="bg.soft" borderRadius="l2">
+            {row.icon}
+            <Box flex="1" minW="0">
+              <Text id={row.id} fontSize="14px">
+                {row.title}
+              </Text>
+              <Text fontSize="12px" color="fg.muted">
+                {row.hint}
+              </Text>
+            </Box>
+            <Switch
+              checked={row.checked}
+              onCheckedChange={row.onChange}
+              inputProps={{ name: row.name, "aria-labelledby": row.id }}
+            />
+          </Flex>
+        ))}
+      </Stack>
+      {mode === "caption_only" && (
         <Flex
           gap="2"
           align="center"

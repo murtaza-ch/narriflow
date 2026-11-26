@@ -121,8 +121,16 @@ export interface ShapePiece extends PieceBase {
 
 export type Piece = TextPiece | ShapePiece;
 
+/** A stretch of clip time, ms: from inclusive, to exclusive. */
+export interface SceneWindow {
+  readonly fromMs: number;
+  readonly toMs: number;
+}
+
 export interface CaptionScene {
   readonly pieces: readonly Piece[];
+  /** The inserted scenes the pieces were cut at (`cutAtInsertedScenes`), in time order; absent when the clip has none. */
+  readonly insertedScenes?: readonly SceneWindow[];
 }
 
 /**

@@ -23,7 +23,7 @@ function capsule(responseSchemaHash: string): ClipSelectionInput {
       sourceDurationSec: 600, sourceProbeDurationSec: 600, fullText: "We grew fast.", speakerCount: 1, sourceLanguageCode: "en", audienceDataLine: null,
       utterances: [{ index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 1, endSec: 4, text: "We grew fast.", confidence: null, words: [] }] },
     editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 600, wholeSource: false,
-      cleanup: { removeSilences: false, removeFillerWords: false, quietRanges: null, languageCode: "en", aiFillers: null } },
+      cleanup: { removeSilences: false, removeFillerWords: false, quietRanges: null, languageCode: "en", aiFillers: null }, emojiPicks: null },
     provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: SYSTEM_PROMPT, responseSchemaHash };
 }
 

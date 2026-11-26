@@ -439,6 +439,11 @@
                 "default": false,
                 "description": "Cut hesitation sounds such as um and uh from each clip, in any transcript language"
               },
+              "addEmojis": {
+                "type": "boolean",
+                "default": false,
+                "description": "Place emojis on each clip's captions, chosen by AI from what is said"
+              },
               "specificMoments": {
                 "type": "string",
                 "maxLength": 500,
@@ -1084,6 +1089,11 @@
             "type": "boolean",
             "default": false,
             "description": "Cut hesitation sounds such as um and uh from each clip, in any transcript language"
+          },
+          "addEmojis": {
+            "type": "boolean",
+            "default": false,
+            "description": "Place emojis on each clip's captions, chosen by AI from what is said"
           },
           "specificMoments": {
             "type": "string",

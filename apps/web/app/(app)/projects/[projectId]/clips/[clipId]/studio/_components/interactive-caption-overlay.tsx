@@ -13,6 +13,9 @@ import { CaptionCue } from "./caption-style-engine";
 import { CaptionBlockWords, useCaptionBlockPaint, type CaptionBlockCueInput } from "./caption-block-painter";
 import { captionBlockDragPoint, captionBlockDroppedPosition, captionCueWordsAt } from "./caption-cue-at";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { BlockCaptionEmojis, ClassicCaptionEmojis } from "./emoji/cue-caption-emojis";
+import type { ClassicLineSize } from "./emoji/cue-emoji-boxes";
+import type { EmojiFollowingCue } from "./emoji/held-cue-boxes";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -165,10 +168,13 @@ export function InteractiveCaptionOverlay({
   videoContainerRef,
   layer,
   currentTime,
+  emojiFollowing,
 }: {
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
   layer: CompositionCaptionVisualLayer;
   currentTime: number;
+  /** The cue after this one, whose text and emoji this cue's held emoji gives way to. */
+  emojiFollowing?: EmojiFollowingCue;
 }) {
   const {
     setCaptionPreset,
@@ -178,7 +184,9 @@ export function InteractiveCaptionOverlay({
     aspectRatio,
     endCoalesce,
     playbackClock,
-  } = useStudio("setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "aspectRatio", "endCoalesce", "playbackClock");
+    clipInfo,
+  } = useStudio("setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "aspectRatio", "endCoalesce", "playbackClock", "clipInfo");
+  const fps = clipInfo.renderFrameRate.numerator / clipInfo.renderFrameRate.denominator;
   const captionPreset = layer.preset;
 
   // Vizard-parity Phase C subtitle visibility toggle — hidden captions must
@@ -219,6 +227,7 @@ export function InteractiveCaptionOverlay({
   const initialFontSizeRef = useRef(captionPreset.fontSize);
   const motionX = useMotionValue(0);
   const motionY = useMotionValue(0);
+  const dragOffset = useMemo(() => ({ x: motionX, y: motionY }), [motionX, motionY]);
 
   // Compute render resolution for font scaling
   const arOption = clipAspectRatioOptions.find(
@@ -242,6 +251,14 @@ export function InteractiveCaptionOverlay({
 
   // Display px per canvas px — the cue renders at true export scale.
   const displayScale = containerWidth > 0 ? containerWidth / renderWidth : 0.35;
+
+  // The classic line's advance width, as `CaptionCue` reports it once per cue and on a resize: the emoji layer's cue box.
+  const [lineSize, setLineSize] = useState<(ClassicLineSize & { readonly cueId: string }) | null>(null);
+  const reportLineSize = (width: number) =>
+    setLineSize((previous) =>
+      previous?.cueId === layer.id && previous.width === width && previous.scale === displayScale ? previous : { cueId: layer.id, width, scale: displayScale },
+    );
+  const lineBox = lineSize?.cueId === layer.id ? lineSize : null;
 
   // The point a drag moves. A classic line drags its stored anchor. A block
   // drags its drawn centre, or its left edge for a left style (right edge for
@@ -357,6 +374,7 @@ export function InteractiveCaptionOverlay({
     return (
       <>
         <SnapGuideLines guides={snapGuides} />
+        <BlockCaptionEmojis layer={layer} paint={blockPaint} following={emojiFollowing} scale={blockScale} timeSource={playbackClock} fps={fps} dragOffset={dragOffset} />
         <div
           style={{
             position: "absolute",
@@ -410,6 +428,15 @@ export function InteractiveCaptionOverlay({
     <>
       {/* Snap guide lines rendered at video container level */}
       <SnapGuideLines guides={snapGuides} />
+      <ClassicCaptionEmojis
+        layer={layer}
+        line={lineBox}
+        following={emojiFollowing}
+        scale={containerWidth > 0 ? containerWidth / layer.destination.width : displayScale}
+        timeSource={playbackClock}
+        fps={fps}
+        dragOffset={dragOffset}
+      />
 
       {/* Wrapper owns the center-anchor offset so Framer Motion's
           x/y-driven transform on the inner motion.div can't clobber it. */}
@@ -465,11 +492,10 @@ export function InteractiveCaptionOverlay({
             frameWidth={containerWidth > 0 ? containerWidth : undefined}
             cueKey={layer.id}
             cueIndex={layer.cueIndex}
-            showEmojis={captionPreset.emojis === true}
             reducedMotion={reducedMotion}
-            timeSec={currentTime}
             preformatted
             language={layer.language}
+            onLineSize={reportLineSize}
           />
         </motion.div>
       </div>

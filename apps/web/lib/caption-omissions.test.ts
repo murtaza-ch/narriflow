@@ -23,13 +23,13 @@ describe("caption omission note", () => {
   test("is absent for a normal render", () => {
     expect(captionOmissionNote(null)).toBeNull();
     expect(captionOmissionNote(undefined)).toBeNull();
-    expect(captionOmissionNote({ omittedCodePoints: [], skippedEmoji: [] })).toBeNull();
+    expect(captionOmissionNote({ omittedCodePoints: [] })).toBeNull();
   });
 
-  test("counts omitted code points and skipped emoji, naming every code point", () => {
-    const note = captionOmissionNote({ omittedCodePoints: ["U+13000"], skippedEmoji: ["\u{1F1FA}\u{1F1F8}"] });
+  test("counts omitted code points, naming each one", () => {
+    const note = captionOmissionNote({ omittedCodePoints: ["U+13000", "U+1F1FA"] });
     expect(note?.count).toBe(2);
-    expect(note?.omissions.map((omission) => omission.label)).toEqual(["U+13000", "U+1F1FA U+1F1F8"]);
+    expect(note?.omissions.map((omission) => omission.label)).toEqual(["U+13000", "U+1F1FA"]);
   });
 
   test("copy is plain and singular-aware", () => {

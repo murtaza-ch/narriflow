@@ -280,6 +280,7 @@ export function UploadShell({
   const [autoHook, setAutoHook] = useState(true);
   const [removeSilences, setRemoveSilences] = useState(false);
   const [removeFillerWords, setRemoveFillerWords] = useState(false);
+  const [addEmojis, setAddEmojis] = useState(false);
   const [specificMoments, setSpecificMoments] = useState("");
   const [captionPreset, setCaptionPreset] = useState<CaptionPresetId>(
     BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -566,6 +567,7 @@ export function UploadShell({
     setAutoHook(settings.clip.autoHook);
     setRemoveSilences(settings.clip.removeSilences);
     setRemoveFillerWords(settings.clip.removeFillerWords);
+    setAddEmojis(settings.clip.addEmojis);
     setSpecificMoments(settings.clip.specificMoments);
     setPlatformTargets(settings.clip.platformTargets);
     setClipCountTarget(settings.clip.clipCountTarget);
@@ -599,6 +601,7 @@ export function UploadShell({
       autoHook,
       removeSilences,
       removeFillerWords,
+      addEmojis,
       specificMoments,
       processingStartSec: hasCustomWindow ? nextStartSec : null,
       processingEndSec: hasCustomWindow ? nextEndSec : null,
@@ -1277,6 +1280,8 @@ export function UploadShell({
               setRemoveSilences={setRemoveSilences}
               removeFillerWords={removeFillerWords}
               setRemoveFillerWords={setRemoveFillerWords}
+              addEmojis={addEmojis}
+              setAddEmojis={setAddEmojis}
               specificMoments={specificMoments}
               setSpecificMoments={setSpecificMoments}
               platformTargets={platformTargets}

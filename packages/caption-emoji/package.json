@@ -1,0 +1,31 @@
+{
+  "name": "@narriflow/caption-emoji",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./index": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./draw": {
+      "types": "./src/draw.ts",
+      "default": "./src/draw.ts"
+    },
+    "./art": {
+      "types": "./src/art.ts",
+      "default": "./src/art.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "verify": "bun scripts/verify.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@types/node": "26.2.0",
+    "canvaskit-wasm": "0.42.0"
+  }
+}

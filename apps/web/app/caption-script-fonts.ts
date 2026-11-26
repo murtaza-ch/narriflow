@@ -13,7 +13,7 @@
  */
 
 import { captionShapingSensitivity, isShapingSensitiveText } from "@narriflow/caption-fonts/locale-precedence";
-import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
+import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
 import { captionWordLineBoxEm } from "@narriflow/caption-fonts/fallback-line-boxes";
 
 export interface CaptionScriptFace {

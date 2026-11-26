@@ -6,7 +6,7 @@ import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { WORKFLOW_LEASE_DURATION_MS, WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
-import { SOURCE_TIMECODE_PATTERN, standardFrameRate, type FrameRate, type SourceProbe, type MediaFacts } from "@narriflow/validators";
+import { MAX_PLAUSIBLE_BASE_FPS, SOURCE_TIMECODE_PATTERN, VIDEO_CLOCK_DISAGREEMENT_RATIO, chooseConstantFrameRate, standardFrameRate, type FrameRate, type SourceProbe, type MediaFacts } from "@narriflow/validators";
 
 const DEFAULT_KILL_GRACE_MS = 5_000;
 const DEFAULT_MEDIA_FPS = 30;
@@ -16,26 +16,6 @@ const DEFAULT_CAPTURED_STDOUT_BYTES = 8 * 1024 * 1024;
 const MAX_CAPTURED_STDOUT_BYTES = 64 * 1024 * 1024;
 const PROCESS_GROUP_REAP_TIMEOUT_MS = 1_000;
 const RESOURCE_SAMPLE_INTERVAL_MS = 100;
-/** Base and average rates this far apart (relative) put the clock in question. */
-const CLOCK_DISAGREEMENT_RATIO = 0.01;
-/** No constant-rate source reports a base rate above this; ffprobe guesses
- *  90000/1 or 1000/1 for variable-rate files. */
-const MAX_PLAUSIBLE_BASE_FPS = 240;
-/** The rates a variable source may be normalized to, ascending. */
-const NORMALIZED_RATES: readonly FrameRate[] = [
-  { numerator: 15, denominator: 1 },
-  { numerator: 24000, denominator: 1001 },
-  { numerator: 24, denominator: 1 },
-  { numerator: 25, denominator: 1 },
-  { numerator: 30000, denominator: 1001 },
-  { numerator: 30, denominator: 1 },
-  { numerator: 50, denominator: 1 },
-  { numerator: 60000, denominator: 1001 },
-  { numerator: 60, denominator: 1 },
-];
-const STANDARD_RATE_TOLERANCE = 0.0002;
-const NOT_BELOW_TOLERANCE = 0.01;
-const FALLBACK_NORMALIZED_RATE: FrameRate = { numerator: 30, denominator: 1 };
 /** Packets read for timestamp evidence (about ten seconds of video). */
 const CLOCK_PACKET_BUDGET = 300;
 const MIN_CLOCK_INTERVALS = 8;
@@ -635,21 +615,6 @@ export function hasVariableTimestamps(presentationTimesSec: readonly number[]): 
   return irregular / intervals.length > VARIABLE_INTERVAL_SHARE;
 }
 
-/** The constant rate for a variable source: its measured average snapped to
- *  the smallest standard rate that is not below it (within 1%), so no motion
- *  is dropped and platforms see a rate they expect. An average that already is
- *  a standard rate is kept exactly. Above 60 is 60/1, below 15 is 15/1, and an
- *  unknown average is 30/1. */
-export function chooseConstantFrameRate(average: FrameRate | null): FrameRate {
-  if (!average) return FALLBACK_NORMALIZED_RATE;
-  const fps = average.numerator / average.denominator;
-  if (!(fps > 0)) return FALLBACK_NORMALIZED_RATE;
-  const rateOf = (rate: FrameRate) => rate.numerator / rate.denominator;
-  const exact = NORMALIZED_RATES.find((rate) => Math.abs(rateOf(rate) - fps) / fps <= STANDARD_RATE_TOLERANCE);
-  if (exact) return exact;
-  return NORMALIZED_RATES.find((rate) => rateOf(rate) * (1 + NOT_BELOW_TOLERANCE) >= fps) ?? NORMALIZED_RATES[NORMALIZED_RATES.length - 1]!;
-}
-
 /** Decide the clock of one video stream. `readPresentationTimesSec` is called
  *  only when the base and average rates are both known and disagree. */
 export async function decideVideoClock(
@@ -660,7 +625,7 @@ export async function decideVideoClock(
   const averageRate = parseRational(stream.avg_frame_rate);
   if (!baseRate) return null;
   const base = baseRate.numerator / baseRate.denominator;
-  if (averageRate && Math.abs(averageRate.numerator / averageRate.denominator - base) <= base * CLOCK_DISAGREEMENT_RATIO) return null;
+  if (averageRate && Math.abs(averageRate.numerator / averageRate.denominator - base) <= base * VIDEO_CLOCK_DISAGREEMENT_RATIO) return null;
   // Without an average there is nothing to compare, and nothing to choose a
   // rate from: only an impossible base rate is acted on.
   if (!averageRate && base <= MAX_PLAUSIBLE_BASE_FPS) return null;

@@ -1,5 +1,6 @@
 import { type CaptionPreset, type CaptionSceneName, captionSceneDefaultPositionY, captionSceneMeta } from "@narriflow/validators";
 import { type DemoScript, demoCues } from "./demo";
+import { cutAtInsertedScenes } from "./inserted-scenes";
 import { memoMeasure } from "./measure-memo";
 import type { CaptionScene, Measure } from "./scene";
 import type { SceneCue, SceneInput, SceneProgram } from "./input";
@@ -193,9 +194,14 @@ export function drawableCues(cues: readonly SceneCue[]): SceneCue[] {
   return drawable;
 }
 
-/** The scene of `name` over `input`'s cues; its measurements are remembered for the build. */
+/**
+ * The scene of `name` over `input`'s cues; its measurements are remembered for the build. One rule for every program: no
+ * piece paints inside an inserted scene (the clip's speech stops there, as classic and Dynamic cues do).
+ */
 export function buildCaptionScene(name: CaptionSceneName, input: SceneInput): CaptionScene {
-  return CAPTION_SCENE_PROGRAMS[name].program.build({ ...input, cues: drawableCues(input.cues), measure: memoMeasure(input.measure) });
+  const scene = CAPTION_SCENE_PROGRAMS[name].program.build({ ...input, cues: drawableCues(input.cues), measure: memoMeasure(input.measure) });
+  const windows = input.insertedScenes;
+  return windows && windows.length > 0 ? { pieces: cutAtInsertedScenes(scene.pieces, windows), insertedScenes: windows } : scene;
 }
 
 /** The cues and length (ms) of a Scene Style's sample script. */
@@ -212,8 +218,10 @@ export function sceneInputFromPreset(
     readonly measure: Measure;
     /** Where the scene is anchored, percent of the frame; the preset's own position by default. */
     readonly anchor?: { readonly xPct: number; readonly yPct: number };
-    /** The render's frame rate, when known. */
+    /** The render's frame rate (`renderFrameRate` of the source); `SCENE_DEFAULT_FPS` when absent. */
     readonly fps?: number;
+    /** The target's inserted scenes, composition seconds (`insertedSceneRanges` of the plan target). */
+    readonly insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[];
   },
 ): SceneInput {
   const name = preset.scene;
@@ -227,12 +235,15 @@ export function sceneInputFromPreset(
     scale: preset.fontSize / meta.bodyPx,
     measure: args.measure,
     ...(args.fps ? { fps: args.fps } : {}),
+    ...(args.insertedScenes && args.insertedScenes.length > 0
+      ? { insertedScenes: args.insertedScenes.map((range) => ({ fromMs: range.startSec * 1000, toMs: range.endSec * 1000 })).sort((a, b) => a.fromMs - b.fromMs) }
+      : {}),
   };
 }
 
 /**
  * What a scene is a function of, as a string: the style, its cues (times, texts, roles, keys, speakers), the canvas, the anchor, the
- * colours, the size scale and the language. Two inputs with the same key build the same scene, whatever else about the clip's
+ * colours, the size scale, the language, the frame rate when given and, when there are any, the inserted scenes it is cut at. Two inputs with the same key build the same scene, whatever else about the clip's
  * document changed (a volume, a logo drag), so a renderer rebuilds when the key changes and not when an object does.
  */
 export function sceneBuildKey(name: CaptionSceneName, input: Omit<SceneInput, "measure">, language: string | null): string {
@@ -250,6 +261,8 @@ export function sceneBuildKey(name: CaptionSceneName, input: Omit<SceneInput, "m
     colours.shadow,
     scale,
     input.cues.map((cue) => [cue.index, cue.startMs, cue.endMs, cue.speaker, cue.language, cue.words.map((word) => [word.text, word.startMs, word.endMs, word.role, word.key])]),
+    input.fps ?? null,
+    ...(input.insertedScenes ? [input.insertedScenes.map((window) => [window.fromMs, window.toMs])] : []),
   ]);
 }
 

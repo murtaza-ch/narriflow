@@ -36,10 +36,10 @@ const SAMPLES: readonly Sample[] = [
 
 function cue(sample: Sample): CompositionCaptionVisualLayer {
   return {
-    id: "caption:0", kind: "caption", cueIndex: 0, activeRange: { startSec: 0, endSec: sample.words.length * 0.5 },
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0, activeRange: { startSec: 0, endSec: sample.words.length * 0.5 },
     anchor: { xPct: 50, yPct: 50 }, destination: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset: getCaptionPresetById("electric")!.preset,
-    words: sample.words.map((text, index) => ({ text, emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    words: sample.words.map((text, index) => ({ text, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
     language: sample.language,
   };
 }

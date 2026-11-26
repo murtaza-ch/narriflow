@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/query-core";
 import type { InferRequestType } from "hono/client";
-import type { CreateClipFromSelection, RegenerateClipsRequest } from "@narriflow/validators/api/clips";
+import type { CreateClipFromSelection, RegenerateClipsRequest, SuggestClipEmojis } from "@narriflow/validators/api/clips";
 import {
   CAMPAIGN_RETRY_OF_HEADER,
   IDEMPOTENCY_KEY_HEADER,
@@ -68,6 +68,13 @@ export const clipCommands = {
   suggestTitles(client: ClipsClient, projectId: string, clipId: string) {
     return client.projects[":id"].clips[":clipId"]["title-suggestions"]
       .$post({ param: { id: projectId, clipId } })
+      .then((response) => response.json());
+  },
+
+  /** AI Caption Emojis by Word Key (`{ emojis }`); writes nothing. Errors: `openai_not_configured`, `openai_rate_limited`, `clip_emoji_suggestion_failed`. */
+  suggestEmojis(client: ClipsClient, projectId: string, clipId: string, input: SuggestClipEmojis) {
+    return client.projects[":id"].clips[":clipId"].emojis.suggest
+      .$post({ param: { id: projectId, clipId }, json: input })
       .then((response) => response.json());
   },
 

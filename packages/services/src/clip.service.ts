@@ -31,8 +31,11 @@ import {
   clipExportDurationSec,
   clipRenderCaptionDiagnosticsSchema,
   clipRenderResolutionSchema,
+  captionWordComparable,
+  captionWordKey,
   clipTitleSuggestionsLlmResponseSchema,
 	contentPackSchema,
+  DEFAULT_CAPTION_EMOJI_DENSITY,
 	EDITOR_DOCUMENT_VERSION,
   getEffectiveClipTiming,
   joinTranscriptWords,
@@ -43,11 +46,15 @@ import {
   parseClipLayoutAnalysis,
   parseClipLayoutAnalysisFailure,
   parseClipLayoutAnalysisOutcome,
+  replaceCaptionEmojis,
+  resolveCaptionEmojiAnchors,
   resolvePricingTier,
   splitUtterancesIntoSentences,
   studioEditsSchema,
 } from "@narriflow/validators";
 import type {
+  CaptionEmojiDensity,
+  CaptionEmojiRef,
   CaptionPreset,
   ClipAspectRatio,
   ClipAutoLayoutAnalysis,
@@ -115,6 +122,9 @@ import {
 } from "./clip-scoring";
 import { requirePrisma } from "./require-prisma";
 import { OPENAI_TEXT_MODEL, OPENAI_TEXT_REASONING } from "./openai-models";
+import { tagCaptionEmojis } from "./clip-emoji-tagging";
+import { clipEmojiSuggestionFailure, clipEmojiTranscriptFailure, suggestClipEmojis, type ClipEmojiTagger } from "./clip-emoji-suggestion";
+import { applyCaptionPresetToProject, type CaptionPresetApplyResult } from "./clip-caption-preset-apply";
 
 export {
   computeDurationOptimality,
@@ -245,7 +255,7 @@ export function toClipRenderVariantSnapshot(render: ClipRenderVariantRow): ClipR
 function parseCaptionDiagnostics(value: Prisma.JsonValue | undefined): ClipRenderCaptionDiagnostics | null {
   const parsed = clipRenderCaptionDiagnosticsSchema.safeParse(value);
   if (!parsed.success) return null;
-  return parsed.data.omittedCodePoints.length + parsed.data.skippedEmoji.length > 0 ? parsed.data : null;
+  return parsed.data.omittedCodePoints.length > 0 ? parsed.data : null;
 }
 
 function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
@@ -327,6 +337,7 @@ const clipActionFailureCatalog = {
   clip_create_from_selection_failed: "unprocessable",
   clip_delete_failed: "unprocessable",
   clip_duplicate_failed: "unprocessable",
+  clip_emoji_suggestion_failed: "unavailable",
   clip_has_publication_history: "conflict",
   clip_has_scheduled_posts: "conflict",
   clip_not_found: "missing",
@@ -351,6 +362,7 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   clip_create_from_selection_failed: "The selected clip could not be created",
   clip_delete_failed: "The clip could not be deleted",
   clip_duplicate_failed: "The clip could not be duplicated",
+  clip_emoji_suggestion_failed: "Emoji suggestions are temporarily unavailable",
   clip_has_publication_history: "This clip has review or publishing history",
   clip_has_scheduled_posts: "Cancel scheduled posts before deleting this clip",
   clip_not_found: "Clip not found",
@@ -363,8 +375,8 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   editor_boundaries_invalid: "Choose valid clip boundaries",
   editor_document_empty_timeline: "The clip timeline cannot be empty",
 	no_clips_available: "No clips are available for rendering",
-  openai_not_configured: "Title suggestions are temporarily unavailable",
-  openai_rate_limited: "Title suggestions are busy. Try again in a minute",
+  openai_not_configured: "AI suggestions are temporarily unavailable",
+  openai_rate_limited: "AI suggestions are busy. Try again in a minute",
 	project_not_found: "Project not found",
 	transcript_not_ready: "The transcript is not ready",
 };
@@ -470,8 +482,10 @@ function deriveTitleAndHookFromSlice(
  * ranges have no meaning after this action creates a clip with a different
  * window, so the new clip starts without them. Music Blocks are timed the
  * same way, so the new clip keeps only the first block's track as one
- * full-length bed (its volume and fades, in-point 0). Window-independent
- * styling is copied unchanged.
+ * full-length bed (its volume and fades, in-point 0). Caption Emojis are keyed
+ * by the source clip's words, so they are carried separately
+ * (`planCaptionEmojisForClipFromSelection`). Window-independent styling is
+ * copied unchanged.
  *
  * Pulled out as its own pure step (mirrors `deriveTitleAndHookFromSlice`
  * above) so it's unit-testable without a database — `createClipFromSelection`
@@ -483,7 +497,7 @@ export function planStudioEditsForClipFromSelection(
   if (sourceStudioEdits === null || sourceStudioEdits === undefined) {
     return null;
   }
-  const parsed = studioEditsSchema.parse(sourceStudioEdits);
+  const { captionEmojis: _carriedSeparately, ...parsed } = studioEditsSchema.parse(sourceStudioEdits);
   const firstBlock = parsed.music.blocks[0];
   return {
     ...parsed,
@@ -516,10 +530,51 @@ export function planStudioEditsForClipFromSelection(
  * resolve a fresh URL from it. A clip that already has music keeps it.
  */
 /** What a new clip starts with besides its window. */
+/**
+ * The source clip's Caption Emojis that a clip made from a transcript
+ * selection keeps, by the new slice's Word Keys. Each entry first resolves to
+ * the source clip's word the way the plan resolves it (nearest source start,
+ * inside one utterance), so nearest-time resolution can never move it onto
+ * the new slice's first word. It is kept only when that word is provably in
+ * the new slice: a word with the same text (`captionWordComparable`) and the
+ * same source timing once each is clamped to the other clip's window (each
+ * slice clamps a word that crosses its window's edge). The new slice reads
+ * the project transcript, so a word the source clip rewrote or re-timed is a
+ * different word and its emoji stays behind. The new clip starts without cuts
+ * or caption masks, so an entry on a word the source clip cut or censored is
+ * kept too: that word shows again.
+ */
+export function planCaptionEmojisForClipFromSelection(
+  source: { clipStartSec: number; clipEndSec: number; transcriptSlice: readonly TranscriptUtterance[]; studioEdits: StudioEdits },
+  target: { startSec: number; endSec: number; transcriptSlice: readonly TranscriptUtterance[] },
+): Record<string, CaptionEmojiRef> {
+  const entries = source.studioEdits.captionEmojis ?? {};
+  if (Object.keys(entries).length === 0) return {};
+  const sourceWords = source.transcriptSlice.flatMap((utterance) => utterance.words.map((word) => ({
+    key: captionWordKey(word.startSec), sourceStartSec: word.startSec, endSec: word.endSec, text: captionWordComparable(word.word),
+    utteranceIndex: utterance.index, utteranceStartSec: utterance.startSec, utteranceEndSec: utterance.endSec,
+  })));
+  const ms = (sec: number) => Math.round(sec * 1000);
+  const clamped = (startSec: number, endSec: number, window: { startSec: number; endSec: number }) =>
+    `${ms(Math.max(startSec, window.startSec))}-${ms(Math.min(endSec, window.endSec))}`;
+  const sourceWindow = { startSec: source.clipStartSec, endSec: source.clipEndSec };
+  const sliceWords = target.transcriptSlice.flatMap((utterance) => utterance.words);
+  const carried: Record<string, CaptionEmojiRef> = {};
+  for (const [key, index] of resolveCaptionEmojiAnchors(entries, sourceWords)) {
+    const word = sourceWords[index]!;
+    const timing = clamped(word.sourceStartSec, word.endSec, target);
+    const kept = sliceWords.find((candidate) => clamped(candidate.startSec, candidate.endSec, sourceWindow) === timing && captionWordComparable(candidate.word) === word.text);
+    if (kept) carried[captionWordKey(kept.startSec)] = entries[key]!;
+  }
+  return carried;
+}
+
 interface NewClipLook {
   captionPreset: CaptionPreset;
   studioEdits: StudioEdits;
   brollUrl: string | null;
+  /** The clip a selection was made from: its Caption Emojis carry onto the new slice's words. */
+  captionEmojisFrom?: { clipStartSec: number; clipEndSec: number; transcriptSlice: readonly TranscriptUtterance[]; studioEdits: StudioEdits };
 }
 
 /**
@@ -694,6 +749,17 @@ export function planCreateClipFromSelection(
 // Three short titles; the budget also covers the model's reasoning tokens.
 const TITLE_MAX_OUTPUT_TOKENS = 4_000;
 const TITLE_TIMEOUT_MS = 45_000;
+// Emoji suggestions: a 10-minute clip is about three 500-word chunks tagged in
+// parallel, measured at a few seconds each (ticket 05 Evidence).
+const EMOJI_SUGGESTION_BUDGET_MS = 30_000;
+
+/** The emoji tagger for a suggestion or an apply: null without an OpenAI key; throws while execution admission is closed. */
+async function openClipEmojiTagger(prisma: ReturnType<typeof requirePrisma>): Promise<ClipEmojiTagger | null> {
+  const apiKey = readServiceEnvironment().OPENAI_API_KEY;
+  if (!apiKey) return null;
+  await prisma.$transaction(requireExecutionAdmissionOpen);
+  return (tagging) => tagCaptionEmojis(tagging, { apiKey });
+}
 
 /**
  * System prompt for AI title suggestions.
@@ -1184,6 +1250,92 @@ export class ClipService {
   }
 
   /**
+   * AI Caption Emojis for one clip at `density`, by Word Key, from its current
+   * Editor Document's kept, unmasked words. Read-only like title suggestions:
+   * the Studio applies the result as one edit. A project without a finished
+   * transcript is `transcript_not_ready`; a clip with no words returns an
+   * empty map without calling the model. Partial tagging returns what was
+   * tagged with `complete: false`, so the Studio does not let it replace a
+   * full set; nothing tagged at all is `openai_rate_limited` or
+   * `clip_emoji_suggestion_failed`.
+   */
+  async suggestEmojis(
+    scope: ActorScope,
+    projectId: string,
+    clipId: string,
+    input: { density: CaptionEmojiDensity },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ emojis: Record<string, CaptionEmojiRef>; complete: boolean }> {
+    await this.authorizeActor(scope, "content.edit");
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+      select: {
+        title: true, startSec: true, endSec: true, transcriptSlice: true, captionPreset: true, studioEdits: true, brollUrl: true, deletedRanges: true,
+        editorDocumentVersion: true, sceneBlocks: true, censorSegments: true, mediaMotions: true, wholeSource: true,
+        project: { select: { sourceDurationSeconds: true, sourceProbe: true, transcript: { select: { languageCode: true, status: true } } } },
+      },
+    });
+    if (!clip) throw new ClipActionError("clip_not_found");
+    const notReady = clipEmojiTranscriptFailure(clip.project?.transcript);
+    if (notReady) throw new ClipActionError(notReady);
+    const tag = await openClipEmojiTagger(prisma);
+    if (!tag) throw new ClipActionError("openai_not_configured");
+    const document = decodeClipEditorDocumentFromStorage(clip, { durationSec: clipSourceEdgeSec(clip.project), wholeSource: clip.wholeSource });
+    const startedAt = Date.now();
+    const { emojis, outcome, complete } = await suggestClipEmojis(
+      { document, languageCode: clip.project?.transcript?.languageCode ?? null, title: clip.title, density: input.density,
+        deadline: startedAt + EMOJI_SUGGESTION_BUDGET_MS, signal: options.signal },
+      tag,
+    );
+    if (outcome) {
+      const { picks, ...counts } = outcome;
+      console.warn(JSON.stringify({ level: "info", message: "clip_emoji_suggestion", clipId, ...counts, pickCount: picks.length,
+        emojiCount: Object.keys(emojis).length, complete, density: input.density, elapsedMs: Date.now() - startedAt }));
+    }
+    const failure = clipEmojiSuggestionFailure(outcome);
+    if (failure) throw new ClipActionError(failure);
+    return { emojis, complete };
+  }
+
+  /**
+   * Apply to all: `captionPreset` on every project clip but `excludeClipId`,
+   * through Clip Editor Document Persistence. With the preset's emojis on, a
+   * clip that has none also gets AI emojis at the default density in the same
+   * update; emojis never fail the apply.
+   */
+  async applyCaptionPresetToAll(
+    scope: ActorScope,
+    projectId: string,
+    input: { captionPreset: CaptionPreset; excludeClipId?: string },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<CaptionPresetApplyResult> {
+    return applyCaptionPresetToProject(
+      { actorUserId: scope.actorUserId, workspaceId: scope.workspaceId, projectId, captionPreset: input.captionPreset,
+        excludeClipId: input.excludeClipId, signal: options.signal },
+      {
+        persistence: clipEditorDocumentPersistence,
+        async prepareSuggester(clipIds) {
+          const prisma = requirePrisma();
+          const tag = await openClipEmojiTagger(prisma);
+          if (!tag) return null;
+          const project = await prisma.project.findFirst({
+            where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+            select: { transcript: { select: { languageCode: true } }, clips: { where: { id: { in: clipIds } }, select: { id: true, title: true } } },
+          });
+          if (!project) return null;
+          const titles = new Map(project.clips.map((clip) => [clip.id, clip.title]));
+          const languageCode = project.transcript?.languageCode ?? null;
+          return (clip, { deadline, signal }) => suggestClipEmojis(
+            { document: clip.document, languageCode, title: titles.get(clip.clipId) ?? null, density: DEFAULT_CAPTION_EMOJI_DENSITY, deadline, signal },
+            tag,
+          );
+        },
+      },
+    );
+  }
+
+  /**
    * Duplicates one clip, including its finished video, without re-rendering.
    *
    * Every completed render and the preview proxy are copied server-side inside
@@ -1590,6 +1742,7 @@ export class ClipService {
           planStudioEditsForClipFromSelection(sourceDocument.studioEdits) ??
           studioEditsSchema.parse(undefined),
         brollUrl: sourceDocument.brollUrl,
+        captionEmojisFrom: sourceDocument,
       },
       origin: { reasoning: "Created from a transcript selection in the studio.", llmModel: "transcript-selection" },
       acceptance,
@@ -1628,7 +1781,7 @@ export class ClipService {
     if (!current) throw new ClipActionError("clip_source_missing");
     const run = await requirePrisma().workflowRun.findUnique({
       where: { id: current.workflowRunId },
-      select: { contentPack: { select: { captionPreset: true } } },
+      select: { contentPack: { select: { captionPreset: true, addEmojis: true } } },
     });
 
     return this.createClipAtRange({
@@ -1640,7 +1793,7 @@ export class ClipService {
       rawUtterances: (project.transcript?.utterancesJson as TranscriptUtterance[] | null) ?? [],
       range: input,
       look: {
-        captionPreset: runDefaultCaptionPreset(project.brandSnapshot, run?.contentPack?.captionPreset),
+        captionPreset: runDefaultCaptionPreset(project.brandSnapshot, run?.contentPack),
         studioEdits: seedBrandMusic(studioEditsSchema.parse(undefined), project.brandProfileSnapshot),
         brollUrl: null,
       },
@@ -1679,7 +1832,10 @@ export class ClipService {
         clipEndSec: plan.endSec,
         captionPreset: look.captionPreset,
         transcriptSlice: plan.transcriptSlice,
-        studioEdits: look.studioEdits,
+        // At most the source clip's entries, so the replace never exceeds the cap.
+        studioEdits: look.captionEmojisFrom
+          ? replaceCaptionEmojis(look.studioEdits, planCaptionEmojisForClipFromSelection(look.captionEmojisFrom, plan)) ?? look.studioEdits
+          : look.studioEdits,
         brollUrl: look.brollUrl,
         deletedRanges: [],
         sceneBlocks: [],

@@ -30,14 +30,12 @@ import {
   sourceRangeToEdited,
   brollQueryForClip,
   planBrollCutaways,
-  detectSilenceRanges,
   silenceLeadInSec,
-  SILENCE_DEFAULT_MIN_SILENCE_SEC,
-  SILENCE_DEFAULT_PAD_SEC,
 } from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import type { ClipPreviewPeaks } from "@narriflow/validators/clip-preview-peaks";
 import { useStudio } from "./studio-shell";
+import { REMOVE_SILENCE_DEFAULTS, silenceCuts } from "./cleanup-cuts";
 import { resolveTrimPosition, trimLimits, trimSourceCeilingSec } from "./trim-control";
 import { usePlaybackTime } from "./playback-clock";
 import { deletedRangesToCutMarkers, projectSegmentToEdited, type CutMarker } from "./edited-timeline";
@@ -749,50 +747,38 @@ function CtrlBtn({
 // inline chip): a small popover recomputes `detectSilenceRanges` (pure, from
 // packages/validators) on every slider move for a live "N silences · −X.Xs"
 // line, with no dispatch until Apply. Apply hands the CURRENT preview's
-// exact ranges to `applyRemoveSilence`, which unions them with the existing
+// exact ranges to `applyDetectedCuts`, which unions them with the existing
 // manual `deletedRanges` and dispatches one undoable `setDeletedRanges`.
 
 const SILENCE_MIN_SEC_RANGE = { min: 0.3, max: 3.0, step: 0.1 };
 const SILENCE_PAD_SEC_RANGE = { min: 0, max: 0.5, step: 0.05 };
 
 function RemoveSilencePopover() {
-  const { utterances, clipWindow, deletedRanges, applyRemoveSilence, quietRanges } = useStudio("utterances", "clipWindow", "deletedRanges", "applyRemoveSilence", "quietRanges");
+  const { utterances, clipWindow, deletedRanges, applyDetectedCuts, quietRanges } = useStudio("utterances", "clipWindow", "deletedRanges", "applyDetectedCuts", "quietRanges");
   const [open, setOpen] = useState(false);
-  const [minSilenceSec, setMinSilenceSec] = useState(SILENCE_DEFAULT_MIN_SILENCE_SEC);
-  const [padSec, setPadSec] = useState(SILENCE_DEFAULT_PAD_SEC);
+  const [minSilenceSec, setMinSilenceSec] = useState(REMOVE_SILENCE_DEFAULTS.minSilenceSec);
+  const [padSec, setPadSec] = useState(REMOVE_SILENCE_DEFAULTS.padSec);
 
   // Defaults reset per open — no persistence across sessions of the popover,
   // keeping the scope tight (design doc §2).
   const handleOpenChange = useCallback((next: boolean) => {
     setOpen(next);
     if (next) {
-      setMinSilenceSec(SILENCE_DEFAULT_MIN_SILENCE_SEC);
-      setPadSec(SILENCE_DEFAULT_PAD_SEC);
+      setMinSilenceSec(REMOVE_SILENCE_DEFAULTS.minSilenceSec);
+      setPadSec(REMOVE_SILENCE_DEFAULTS.padSec);
     }
   }, []);
 
-  const detected = useMemo(
-    () =>
-      open
-        ? detectSilenceRanges(utterances, clipWindow, {
-            minSilenceSec,
-            padSec,
-            existingDeleted: deletedRanges,
-            // Measured quiet audio keeps music and laughter between words.
-            ...(quietRanges ? { quietRanges } : {}),
-          })
-        : [],
+  const cuts = useMemo(
+    () => (open ? silenceCuts({ utterances, clipWindow, deletedRanges, quietRanges }, { minSilenceSec, padSec }) : null),
     [open, utterances, clipWindow, minSilenceSec, padSec, deletedRanges, quietRanges],
   );
-
-  const totalRemovedSec = useMemo(
-    () => detected.reduce((sum, r) => sum + (r.endSec - r.startSec), 0),
-    [detected],
-  );
+  const detected = cuts?.ranges ?? [];
+  const totalRemovedSec = cuts?.removedSec ?? 0;
 
   const handleApply = useCallback(() => {
-    if (applyRemoveSilence(detected)) setOpen(false);
-  }, [applyRemoveSilence, detected]);
+    if (applyDetectedCuts(detected)) setOpen(false);
+  }, [applyDetectedCuts, detected]);
 
   return (
     <Popover.Root

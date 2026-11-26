@@ -6,6 +6,7 @@ import {
   CLIP_TRANSITION_TYPES,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
+  getCaptionPresetById,
   MAX_DUCKING_WINDOWS,
   studioEditsSchema,
 } from "@narriflow/validators";
@@ -356,6 +357,126 @@ describe("Clip Composition Plan", () => {
     expect(cueWords(1)).toEqual([["ONE"], ["TWO"], ["THREE"], ["FOUR"], ["FIVE"]]);
     expect(cueWords(2)).toEqual([["ONE", "TWO"], ["THREE", "FOUR"], ["FIVE"]]);
     expect(cueWords(3)).toEqual([["ONE", "TWO", "THREE"], ["FOUR", "FIVE"]]);
+  });
+
+  describe("a caption cue that can never show is not planned", () => {
+    type Word = [word: string, startSec: number, endSec: number];
+    const utterance = (index: number, words: Word[]) => ({
+      index, speaker: index, speakerLabel: `Speaker ${index + 1}`, startSec: words[0]![1], endSec: words.at(-1)![2],
+      text: words.map(([word]) => word).join(" "), confidence: 1,
+      words: words.map(([word, startSec, endSec]) => ({ word, startSec, endSec, confidence: 1 })),
+    });
+    const captions = (lines: Word[][], preset: Record<string, unknown>, captionEmojis?: Record<string, { id: string }>) => {
+      const document = editorDocumentSchema.parse({
+        version: 1, clipStartSec: 0, clipEndSec: 10,
+        captionPreset: captionPresetSchema.parse({ textTransform: "none", emojis: true, ...preset }),
+        transcriptSlice: lines.map((line, index) => utterance(index, line)),
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" }, ...(captionEmojis ? { captionEmojis } : {}) }),
+        brollUrl: null, deletedRanges: [],
+      });
+      const result = planClipComposition({
+        document, source: { identity: "source:degenerate", kind: "video", width: 1920, height: 1080, hasAudio: true },
+        evidence: { automaticLayout: { state: "missing" } }, assets: { backgroundImage: { state: "missing" } },
+        capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
+        targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      return {
+        cues: deriveCaptionCues(document),
+        layers: result.plan.targets[0]!.visualLayers.flatMap((layer) => layer.kind === "caption"
+          ? [{ cueIndex: layer.cueIndex, range: [layer.activeRange.startSec, layer.activeRange.endSec], text: layer.words.map((word) => word.text).join(" "),
+            emojis: layer.emojis.map((emoji) => emoji.id) }]
+          : []),
+      };
+    };
+
+    test("a zero-length word followed by a word at the same start", () => {
+      const { layers, cues } = captions([[["a", 1, 1], ["b", 1, 1], ["c", 1.5, 2]]], { wordsPerCue: 1 }, { "1000": { id: "fire" } });
+      expect(layers).toEqual([
+        { cueIndex: 0, range: [1, 1.1], text: "b", emojis: [] },
+        { cueIndex: 1, range: [1.5, 2], text: "c", emojis: [] },
+      ]);
+      // The emoji resolved to "a", the first word at its key; it goes with that cue.
+      expect(cues.map((cue) => cue.text)).toEqual(["b", "c"]);
+    });
+
+    test("two utterances that start together keep only the one that shows", () => {
+      const { layers } = captions([[["hi", 1, 1.5]], [["yo", 1, 1.4]]], { wordsPerCue: 3 });
+      expect(layers).toEqual([{ cueIndex: 0, range: [1, 1.4], text: "yo", emojis: [] }]);
+    });
+
+    test("a normal clip keeps every cue, in order, with its emojis", () => {
+      const line: Word[] = [["one", 1, 1.4], ["two", 1.5, 1.9], ["three", 2, 2.4], ["four", 2.5, 2.9], ["five", 3, 3.4]];
+      const { layers } = captions([line], { wordsPerCue: 2 }, { "1500": { id: "fire" }, "3000": { id: "rocket" } });
+      expect(layers).toEqual([
+        { cueIndex: 0, range: [1, 1.9], text: "one two", emojis: ["fire"] },
+        { cueIndex: 1, range: [2, 2.9], text: "three four", emojis: [] },
+        { cueIndex: 2, range: [3, 3.4], text: "five", emojis: ["rocket"] },
+      ]);
+    });
+  });
+
+  describe("a Scene Block inserted inside a cue splits it into two real cues", () => {
+    const WORDS = ["the", "biggest", "mistake", "people", "make", "is", "waiting", "until", "they", "feel", "ready", "today"];
+    // Words start every 0.4 s from 0.2 s; four per cue, so the scene at 1.7 s cuts the first cue inside "people" (1.4-1.75).
+    const planned = (presetId: string, sceneBlocks: unknown[]) => {
+      const spans = WORDS.map((word, index) => ({ word, startSec: 0.2 + index * 0.4, endSec: 0.55 + index * 0.4, confidence: 1 }));
+      const document = editorDocumentSchema.parse({
+        version: 1, clipStartSec: 0, clipEndSec: 5.4,
+        captionPreset: captionPresetSchema.parse({ ...getCaptionPresetById(presetId)!.preset, wordsPerCue: 4, emojis: true }),
+        transcriptSlice: [{ index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 0.2, endSec: 4.95, text: WORDS.join(" "), confidence: 1, words: spans }],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" }, captionEmojis: { "1000": { id: "flame" } } }),
+        brollUrl: null, deletedRanges: [], sceneBlocks,
+      });
+      const result = planClipComposition({
+        document, source: { identity: "source:inserted-cue", kind: "video", width: 1920, height: 1080, hasAudio: true },
+        evidence: { automaticLayout: { state: "missing" } }, assets: { backgroundImage: { state: "missing" } },
+        capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
+        targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      return result.plan.targets[0]!.visualLayers.flatMap((layer) => (layer.kind === "caption" ? [layer] : []));
+    };
+    const scene = { schemaVersion: 1, id: "8ab9d330-688f-4574-932c-27ac661245c2", anchorSec: 1.7, durationSec: 2,
+      content: { kind: "color", color: "#000000" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null };
+
+    test.each(["electric", "headline", "reveal"])("%s: unique ordered cues, each with its own words' roles, keys, block and emojis", (presetId) => {
+      const layers = planned(presetId, [scene]);
+      expect(layers.map((layer) => layer.cueIndex)).toEqual([0, 1, 2, 3]);
+      expect(layers.map((layer) => layer.words.map((word) => word.text.toLowerCase()).join(" "))).toEqual(["the biggest mistake people", "people", "make is waiting until", "they feel ready today"]);
+      expect(layers.map((layer) => [layer.activeRange.startSec, layer.activeRange.endSec].map((sec) => Number(sec.toFixed(3))))).toEqual([[0.2, 1.7], [3.7, 3.75], [3.8, 5.35], [5.4, 6.95]]);
+      // The flame's word ("mistake", 1.0 s) is before the scene: only the first side has it, at its own time.
+      expect(layers.map((layer) => layer.emojis.map((emoji) => [emoji.id, emoji.atSec, emoji.order]))).toEqual([[["flame", 1, 0]], [], [], []]);
+      for (const layer of layers) {
+        const facts = layer.block ?? layer.scene;
+        if (!facts) continue;
+        expect(facts.roles).toHaveLength(layer.words.length);
+        expect(facts.keys).toHaveLength(layer.words.length);
+      }
+      const [first, second] = layers;
+      if (presetId === "electric") expect(layers.every((layer) => !layer.block && !layer.scene)).toBe(true);
+      if (presetId === "headline") {
+        expect(first!.block!.keys).toEqual(["200", "600", "1000", "1400"]);
+        expect(second!.block).toMatchObject({ keys: ["1400"], texts: [first!.block!.texts[3]], roles: [first!.block!.roles[3]], rows: [[0]], seed: first!.block!.seed });
+      }
+      if (presetId === "reveal") {
+        expect(first!.scene!.keys).toEqual(["200", "600", "1000", "1400"]);
+        expect(second!.scene).toEqual({ keys: ["1400"], roles: [first!.scene!.roles[3]], speaker: 0 });
+      }
+    });
+
+    test("a Caption Block's rows keep each word's row on its side", () => {
+      const layers = planned("headline", [scene]);
+      for (const layer of layers) {
+        const rows = layer.block!.rows.flat();
+        expect(rows).toEqual(layer.words.map((_, index) => index));
+      }
+    });
+
+    test("a scene between cues leaves the cues whole and numbered as before", () => {
+      const layers = planned("reveal", [{ ...scene, anchorSec: 1.8 }]);
+      expect(layers.map((layer) => [layer.cueIndex, layer.words.length])).toEqual([[0, 4], [1, 4], [2, 4]]);
+    });
   });
 
   test("plans caption masks and the shared edited-time censor audio schedule", () => {

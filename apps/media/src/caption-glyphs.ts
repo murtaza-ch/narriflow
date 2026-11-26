@@ -65,12 +65,6 @@ export interface OmittedGlyph {
   readonly cueIndex: number;
 }
 
-/** A plan emoji the atlas and the monochrome face cannot draw; its overlay is skipped. */
-export interface SkippedEmoji {
-  readonly emoji: string;
-  readonly cueIndex: number;
-}
-
 export interface UnavailableGlyph {
   readonly cluster: string;
   readonly codePoints: readonly string[];
@@ -267,11 +261,6 @@ export class CaptionGlyphPlanner {
     }
     return { text, face };
   }
-}
-
-/** The monochrome emoji face and its coverage check, for plan emoji the atlas lacks. */
-export function monochromeEmojiFace(): CaptionFace {
-  return EMOJI_FACE;
 }
 
 // ---------------------------------------------------------------------------

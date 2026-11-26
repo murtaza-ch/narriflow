@@ -6,7 +6,7 @@ import { isApiError, type Intent } from "@narriflow/api-client/core";
 import type { RecipesActions } from "@narriflow/api-client/recipes";
 import { useMutation } from "@tanstack/react-query";
 import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, ArrowUpRight, AudioLines, Bot, Copy, Languages, MessageSquareOff, Pencil, Plus, Scissors, Sparkles, Timer, Trash2, Zap } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, AudioLines, Bot, Copy, Languages, MessageSquareOff, Pencil, Plus, Scissors, Smile, Sparkles, Timer, Trash2, Zap } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
@@ -255,6 +255,7 @@ export function RecipesPanel({
                     {contentPack.autoHook ? <SettingChip icon={<Zap size={12} />}>Hook first</SettingChip> : null}
                     {contentPack.removeSilences ? <SettingChip icon={<AudioLines size={12} />}>No silences</SettingChip> : null}
                     {contentPack.removeFillerWords ? <SettingChip icon={<MessageSquareOff size={12} />}>No filler words</SettingChip> : null}
+                    {contentPack.addEmojis ? <SettingChip icon={<Smile size={12} />}>Emojis</SettingChip> : null}
                   </Flex>
 
                   {recipe.finishing ? (
@@ -364,6 +365,7 @@ function RecipeDialog({
   const hookLabelId = useId();
   const silencesLabelId = useId();
   const fillerLabelId = useId();
+  const emojisLabelId = useId();
   // The parent keys this dialog by Recipe, so every open starts a fresh draft.
   const [opened] = useState<RecipeDraft>(() => (recipe ? draftFromRecipe(recipe) : emptyRecipeDraft(defaultBrandProfileId)));
   const [draft, setDraft] = useState<RecipeDraft>(opened);
@@ -478,6 +480,9 @@ function RecipeDialog({
                       />
                     </SliderField>
                   </Box>
+                  <ToggleCard labelId={emojisLabelId} title="Add emojis" description="AI adds emojis that match what is said.">
+                    <Switch checked={draft.addEmojis} onCheckedChange={(addEmojis) => set({ addEmojis })} inputProps={{ "aria-labelledby": emojisLabelId }} />
+                  </ToggleCard>
                   <ToggleCard labelId={hookLabelId} title="Start with a hook" description="Prioritize attention-grabbing openings.">
                     <Switch checked={draft.autoHook} onCheckedChange={(autoHook) => set({ autoHook })} inputProps={{ "aria-labelledby": hookLabelId }} />
                   </ToggleCard>

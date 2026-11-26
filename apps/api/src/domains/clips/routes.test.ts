@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import { contentPackSchema } from "@narriflow/validators";
+import { contentPackSchema, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import { createRequestPolicyRuntime } from "../../http/request-policy-runtime";
 import { createInventoryApp } from "../../test-app";
 import { createClipsRoutes, type ClipsRouteDeps } from "./routes";
@@ -350,5 +350,65 @@ describe("clip path parameters", () => {
     }
     expect(deps.clipService.getClipPreviewPeaks).not.toHaveBeenCalled();
     expect(deps.clipService.suggestClipTitles).not.toHaveBeenCalled();
+  });
+});
+
+describe("emoji suggestions", () => {
+  const url = `${base}/${CLIP_ID}/emojis/suggest`;
+  const request = (body: unknown): RequestInit => ({ method: "POST", headers, body: JSON.stringify(body) });
+
+  test("passes the density (Balanced by default) and returns the map by Word Key with its coverage", async () => {
+    const suggestEmojis = mock(async () => ({ emojis: { "12500": { id: "curry-rice" } }, complete: false }));
+    const app = appWith({ clipService: { suggestEmojis } as never });
+    const response = await app.request(url, request({}));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ emojis: { "12500": { id: "curry-rice" } }, complete: false });
+    expect(await app.request(url, request({ density: "light" })).then((r) => r.status)).toBe(200);
+    const calls = suggestEmojis.mock.calls as unknown as [unknown, string, string, { density: string }][];
+    expect(calls.map((call) => [call[1], call[2], call[3]])).toEqual([[PROJECT_ID, CLIP_ID, { density: "balanced" }], [PROJECT_ID, CLIP_ID, { density: "light" }]]);
+  });
+
+  test("an unknown density, an extra field or a malformed :clipId is a 400 before any service call", async () => {
+    const suggestEmojis = mock(async () => ({ emojis: {}, complete: true }));
+    const app = appWith({ clipService: { suggestEmojis } as never });
+    for (const [target, body] of [[url, { density: "lots" }], [url, { density: "light", write: true }], [`${base}/not-a-uuid/emojis/suggest`, {}]] as const) {
+      expect((await app.request(target, request(body))).status).toBe(400);
+    }
+    expect(suggestEmojis).not.toHaveBeenCalled();
+  });
+
+  test("a viewer cannot spend processing on suggestions", async () => {
+    const suggestEmojis = mock(async () => ({ emojis: {}, complete: true }));
+    const response = await appWith({ clipService: { suggestEmojis } as never }, { role: "viewer" }).request(url, request({}));
+    expect(response.status).toBe(403);
+    expect(suggestEmojis).not.toHaveBeenCalled();
+  });
+});
+
+describe("apply caption preset to all", () => {
+  test("hands the preset and the excluded clip to the service and returns its counts", async () => {
+    const result = { updated: 3, captionEmojis: { added: 2, failed: 1 } };
+    const applyCaptionPresetToAll = mock(async () => result);
+    const captionPreset = { ...DEFAULT_CAPTION_PRESET, emojis: true };
+    const response = await appWith({ clipService: { applyCaptionPresetToAll } as never })
+      .request(`${base}/apply-caption-preset`, { method: "POST", headers, body: JSON.stringify({ captionPreset, excludeClipId: CLIP_ID }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(result);
+    const calls = applyCaptionPresetToAll.mock.calls as unknown as [unknown, string, { excludeClipId: string; captionPreset: { emojis: boolean } }][];
+    expect(calls.map((call) => [call[1], call[2].excludeClipId, call[2].captionPreset.emojis])).toEqual([[PROJECT_ID, CLIP_ID, true]]);
+  });
+
+  test("an exhausted or unavailable limiter refuses only an apply that tags emojis", async () => {
+    const apply = (emojis: boolean, options: { rateAllowed?: boolean; rateAvailable?: boolean }) => {
+      const applyCaptionPresetToAll = mock(async () => ({ updated: 1, captionEmojis: { added: 0, failed: 0 } }));
+      const response = appWith({ clipService: { applyCaptionPresetToAll } as never }, options).request(`${base}/apply-caption-preset`,
+        { method: "POST", headers, body: JSON.stringify({ captionPreset: { ...DEFAULT_CAPTION_PRESET, emojis } }) });
+      return response.then(async (r) => ({ status: r.status, error: r.status === 200 ? null : (await r.json()).error, calls: applyCaptionPresetToAll.mock.calls.length }));
+    };
+    expect(await apply(true, { rateAllowed: false })).toEqual({ status: 429, error: "rate_limited", calls: 0 });
+    expect(await apply(true, { rateAvailable: false })).toEqual({ status: 503, error: "mutations_unavailable", calls: 0 });
+    expect(await apply(false, { rateAllowed: false })).toEqual({ status: 200, error: null, calls: 1 });
+    expect(await apply(false, { rateAvailable: false })).toEqual({ status: 200, error: null, calls: 1 });
+    expect(await apply(true, {})).toEqual({ status: 200, error: null, calls: 1 });
   });
 });

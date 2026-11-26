@@ -1,6 +1,6 @@
 import type { ClipSelectionWindow, Prisma, PrismaClient } from "@prisma/client";
-import { fillerTaggingOutcomeSchema, listFillerClassifier, parseStoredContentPack, sourceProbeSchema, transcriptUtteranceSchema, type ClipSelectionInput, type ClipSelectionParent,
-  type FillerTaggingOutcome, type TranscriptUtterance } from "@narriflow/validators";
+import { captionEmojiPicksSchema, fillerTaggingOutcomeSchema, listFillerClassifier, parseStoredContentPack, sourceProbeSchema, transcriptUtteranceSchema, type CaptionEmojiPick, type ClipSelectionInput,
+  type ClipSelectionParent, type FillerTaggingOutcome, type TranscriptUtterance } from "@narriflow/validators";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch } from "./execution-dispatch";
 import { prepareDetectedClipSeed } from "./clip-detection-persistence";
@@ -36,8 +36,8 @@ export interface ClipSelectionFillerTagger {
   tag(utterances: TranscriptUtterance[], languageCode: string, deadline: number): Promise<FillerTaggingOutcome>;
 }
 
-/** The utterances AI filler tagging covers: those the processing range keeps, as selection planning filters them. */
-export function fillerTaggingUtterances(input: Pick<ClipSelectionInput, "planning">): TranscriptUtterance[] {
+/** The utterances AI filler and emoji tagging cover: those the processing range keeps, as selection planning filters them. */
+export function selectionTaggingUtterances(input: Pick<ClipSelectionInput, "planning">): TranscriptUtterance[] {
   const { processingStartSec: start, processingEndSec: end } = input.planning.contentPack;
   return input.planning.utterances.filter((utterance) => (start === null || utterance.endSec > start) && (end === null || utterance.startSec < end));
 }
@@ -48,7 +48,7 @@ export function fillerTaggingUtterances(input: Pick<ClipSelectionInput, "plannin
 export async function tagSelectionFillers(input: ClipSelectionInput, tagger: ClipSelectionFillerTagger | undefined, deadline: number): Promise<FillerTaggingOutcome | null> {
   const { removeFillerWords, languageCode } = input.editor.cleanup;
   if (!tagger || !removeFillerWords || !languageCode || listFillerClassifier(languageCode)) return null;
-  const utterances = fillerTaggingUtterances(input);
+  const utterances = selectionTaggingUtterances(input);
   if (utterances.length === 0) return null;
   try {
     const outcome = fillerTaggingOutcomeSchema.safeParse(await tagger.tag(utterances, languageCode, deadline));
@@ -62,12 +62,55 @@ export async function tagSelectionFillers(input: ClipSelectionInput, tagger: Cli
   }
 }
 
+/** Suggests caption emojis over the source. Must finish by `deadline` (epoch
+ *  ms); a failed chunk yields no picks. */
+export interface ClipSelectionEmojiTagger {
+  tag(input: { utterances: TranscriptUtterance[]; languageCode: string | null; title: string; deadline: number }): Promise<{ picks: CaptionEmojiPick[]; chunks: number;
+    tagged: number; failed: number; skipped: number; tokensUsed: number }>;
+}
+
+/** Tags once per preparation, only when the pack adds emojis, over the same
+ *  utterances as filler tagging. Optional enrichment: any failure or invalid
+ *  outcome is null (clips without emojis), never a failed generation. */
+export async function tagSelectionEmojis(input: ClipSelectionInput, tagger: ClipSelectionEmojiTagger | undefined, deadline: number): Promise<CaptionEmojiPick[] | null> {
+  if (!tagger || !input.planning.contentPack.addEmojis) return null;
+  const utterances = selectionTaggingUtterances(input);
+  if (utterances.length === 0) return null;
+  try {
+    const startedAt = Date.now();
+    const { picks, ...counts } = await tagger.tag({ utterances, languageCode: input.planning.sourceLanguageCode, title: input.planning.projectTitle, deadline });
+    const parsed = captionEmojiPicksSchema.safeParse(picks);
+    console.warn(JSON.stringify({ level: "info", message: "clip_emoji_tagging", workflowRunId: input.parent.id, languageCode: input.planning.sourceLanguageCode,
+      chunks: counts.chunks, tagged: counts.tagged, failed: counts.failed, skipped: counts.skipped, tokensUsed: counts.tokensUsed,
+      pickCount: parsed.success ? parsed.data.length : 0, valid: parsed.success, elapsedMs: Date.now() - startedAt }));
+    return parsed.success ? parsed.data : null;
+  } catch (error) {
+    console.warn(JSON.stringify({ level: "warn", message: "clip_emoji_tagging_failed", workflowRunId: input.parent.id, error: error instanceof Error ? error.message : String(error) }));
+    return null;
+  }
+}
+
+/**
+ * The richest capsule that fits. Optional tags never make an input that fits
+ * without them too large: emoji picks are dropped first, then filler tags. An
+ * input too large even without tags throws as before.
+ */
+export async function fitSelectionTags(withTags: (aiFillers: FillerTaggingOutcome | null, emojiPicks: CaptionEmojiPick[] | null) => ClipSelectionInput,
+  aiFillers: FillerTaggingOutcome | null, emojiPicks: CaptionEmojiPick[] | null, encode: typeof encodeClipSelectionInput = encodeClipSelectionInput) {
+  const options = [{ aiFillers, emojiPicks }, ...(emojiPicks ? [{ aiFillers, emojiPicks: null }] : []), ...(aiFillers ? [{ aiFillers: null, emojiPicks: null }] : [])];
+  for (const [index, option] of options.entries()) {
+    try { return { ...option, encoded: await encode(withTags(option.aiFillers, option.emojiPicks)) }; }
+    catch (error) { if (index === options.length - 1) throw error; }
+  }
+  throw new Error("unreachable");
+}
+
 export function createClipSelectionPreparation(config: { database: PrismaClient; storage: ClipSelectionStorage; provider: ClipSelectionInput["provider"]; guidance?: { promptLine(workspaceId: string): Promise<string | null> };
-  fillerTagger?: ClipSelectionFillerTagger; fillerTaggingBudgetMs?: number; now?: () => number }) {
+  fillerTagger?: ClipSelectionFillerTagger; emojiTagger?: ClipSelectionEmojiTagger; fillerTaggingBudgetMs?: number; now?: () => number }) {
   const transaction = <T>(body: (tx: Tx) => Promise<T>) => config.database.$transaction(body, { maxWait: 10_000, timeout: 30_000 });
   const responseSchemaHash = clipSelectionBytesHash(new TextEncoder().encode(JSON.stringify(CLIP_DETECTION_JSON_SCHEMA)));
   async function capsule(state: NonNullable<Awaited<ReturnType<typeof lockClipSelectionParent>>>, parentReference: ExecutionDispatchReference, audienceDataLine: string | null,
-    aiFillers: FillerTaggingOutcome | null): Promise<ClipSelectionInput> {
+    aiFillers: FillerTaggingOutcome | null, emojiPicks: CaptionEmojiPick[] | null): Promise<ClipSelectionInput> {
     if (!state.run.contentPack || state.run.contentPack.draft) throw new WorkflowFailure("workflow_content_pack_invalid", "permanent", "Selection requires its committed Content Pack");
     const pack = parseStoredContentPack(state.run.contentPack), transcript = state.transcript;
     const probe = sourceProbeSchema.safeParse(state.project.sourceProbe);
@@ -77,7 +120,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
       planning: { projectTitle: state.project.title, contentPack: pack, sourceDurationSec: (state.project.sourceDurationSeconds ?? transcript.durationSeconds) || null,
         sourceProbeDurationSec: probe.success ? probe.data.durationSec : null, utterances: transcriptUtteranceSchema.array().parse(transcript.utterancesJson ?? []), fullText: transcript.text ?? "",
         speakerCount: transcript.speakerCount, sourceLanguageCode: transcript.languageCode, audienceDataLine },
-      editor: prepareDetectedClipSeed(state.project, pack, { quietRanges: transcript.sourceAudio?.quietRanges ?? null, languageCode: transcript.languageCode, aiFillers }), provider: config.provider, systemPrompt: SYSTEM_PROMPT, responseSchemaHash: await responseSchemaHash };
+      editor: prepareDetectedClipSeed(state.project, pack, { quietRanges: transcript.sourceAudio?.quietRanges ?? null, languageCode: transcript.languageCode, aiFillers, emojiPicks }), provider: config.provider, systemPrompt: SYSTEM_PROMPT, responseSchemaHash: await responseSchemaHash };
   }
   async function register(tx: Tx, rows: ClipSelectionWindow[]): Promise<ClipSelectionPreparation> {
     if (!rows.length || rows.length !== rows[0]!.windowCount || rows.some((row, index) => row.windowIndex !== index || row.selectionHash !== rows[0]!.selectionHash || row.inputStorageKey !== rows[0]!.inputStorageKey)) throw new Error("Selection membership is incomplete");
@@ -92,7 +135,8 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
   }
   return {
     async prepare(reference: ExecutionDispatchReference): Promise<ClipSelectionPreparation> {
-      // Tagging must end well inside the 2-minute workflow command that runs preparation.
+      // Filler and emoji tagging share this deadline; it must end well inside
+      // the 2-minute workflow command that runs preparation.
       const taggingDeadline = (config.now ?? Date.now)() + (config.fillerTaggingBudgetMs ?? 60_000);
       const initial = await transaction(async tx => {
         const state = await lockClipSelectionParent(tx, reference);
@@ -100,28 +144,25 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
         if (["completed", "failed", "cancelled"].includes(state.run.status)) return { kind: state.run.status as "completed" | "failed" | "cancelled", dispatchIds: [] };
         const rows = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
         if (rows.length) return register(tx, rows);
-        return { kind: "new" as const, state, capsule: await capsule(state, reference, null, null) };
+        return { kind: "new" as const, state, capsule: await capsule(state, reference, null, null, null) };
       });
       if (initial.kind !== "new") return initial;
       // A failed optional guidance read keeps the current product's degradation.
       // Tagging is frozen here once. Spend policy (accepted): until the windows
       // commit, a failed command attempt or a concurrent preparation may tag
       // again, at most 11 times per command sequence (1 + 10 workflow retries),
-      // about $0.84 each for a 3-hour source. The first committed capsule wins
+      // about $0.84 each for a 3-hour source (emoji tagging adds about $0.05
+      // when the pack adds emojis). The first committed capsule wins
       // and losers reuse its windows below; once windows exist, nothing tags.
-      const [audienceDataLine, tagged] = await Promise.all([
+      const [audienceDataLine, tagged, taggedEmojis] = await Promise.all([
         config.guidance?.promptLine(initial.state.project.workspaceId).catch(() => null) ?? Promise.resolve(null),
         tagSelectionFillers(initial.capsule, config.fillerTagger, taggingDeadline),
+        tagSelectionEmojis(initial.capsule, config.emojiTagger, taggingDeadline),
       ]);
-      const withTags = (aiFillers: FillerTaggingOutcome | null): ClipSelectionInput => ({ ...initial.capsule, planning: { ...initial.capsule.planning, audienceDataLine },
-        editor: { ...initial.capsule.editor, cleanup: { ...initial.capsule.editor.cleanup, aiFillers } } });
-      // Optional tags never make an input that fits without them too large:
-      // freeze none instead. The final check below reuses this choice.
-      const fitted = await encodeClipSelectionInput(withTags(tagged)).then((encoded) => ({ aiFillers: tagged, encoded }), async (error) => {
-        if (tagged === null) throw error;
-        return { aiFillers: null, encoded: await encodeClipSelectionInput(withTags(null)) };
-      });
-      const { aiFillers, encoded } = fitted, input = withTags(aiFillers), plan = buildClipSelectionPlan(input.planning);
+      const withTags = (aiFillers: FillerTaggingOutcome | null, emojiPicks: CaptionEmojiPick[] | null): ClipSelectionInput => ({ ...initial.capsule, planning: { ...initial.capsule.planning, audienceDataLine },
+        editor: { ...initial.capsule.editor, cleanup: { ...initial.capsule.editor.cleanup, aiFillers }, emojiPicks } });
+      // The final check below reuses this choice of tags.
+      const { aiFillers, emojiPicks, encoded } = await fitSelectionTags(withTags, tagged, taggedEmojis), input = withTags(aiFillers, emojiPicks), plan = buildClipSelectionPlan(input.planning);
       const inputKey = `projects/${input.parent.projectId}/selection/${input.parent.id}/${crypto.randomUUID()}/${encoded.sha256}.json`;
       const planned = plan.kind === "selection" ? plan.windows : [{ windowIndex: 0, startSec: plan.clips[0]!.startSec, endSec: plan.clips[0]!.endSec, userPrompt: null }];
       const staged = await Promise.all(planned.map(async window => {
@@ -148,7 +189,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
         if (!state || !["queued", "waiting"].includes(state.run.status)) return { kind: "superseded", dispatchIds: [] };
         const existing = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
         if (existing.length) return register(tx, existing);
-        if ((await encodeClipSelectionInput(await capsule(state, reference, audienceDataLine, aiFillers))).sha256 !== encoded.sha256) return { kind: "superseded", dispatchIds: [] };
+        if ((await encodeClipSelectionInput(await capsule(state, reference, audienceDataLine, aiFillers, emojiPicks))).sha256 !== encoded.sha256) return { kind: "superseded", dispatchIds: [] };
         for (const storageKey of objectKeys.slice().sort()) await lockPlannedExecutionObject(tx, { origin: "selection_execution", storageKey });
         await tx.mediaCleanupObligation.updateMany({ where: { origin: "selection_execution", cleanupClass: "execution_input", objectKey: { in: objectKeys } }, data: { nextAttemptAt: new Date(state.now.getTime() + 720_000) } });
         const rows: ClipSelectionWindow[] = [];

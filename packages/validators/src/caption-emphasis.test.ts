@@ -496,3 +496,57 @@ describe("clipEmphasisWords", () => {
     expect(clipEmphasisWords(["luck. یہ", "fallback text"], slice)).toEqual(["fallback text"]);
   });
 });
+
+describe("emoji words", () => {
+  const withEmoji = (cues: CaptionEmphasisWord[][], marks: readonly (readonly number[])[]) =>
+    cues.map((cue, cueIndex) => cue.map((word, index) => (marks[cueIndex]?.includes(index) ? { ...word, emoji: true } : word)));
+  const assign = (
+    cues: CaptionEmphasisWord[][],
+    options: { overrides?: Record<string, CaptionEmphasisOverride>; emphasisWords?: readonly string[]; policy?: "auto" | "never" } = {},
+  ) => assignCaptionRoles({ cues, language: "en", overrides: options.overrides ?? {}, policy: options.policy ?? "auto",
+    ...(options.emphasisWords ? { emphasisWords: options.emphasisWords } : {}) });
+
+  test("a word with a drawn emoji is its cue's hero, over a stronger word and a Clip Emphasis Word", () => {
+    const cues = build([["close", { raw: "kartay", dur: 0.9 }, "huay", "magnets"]]);
+    expect(heroes(cues, assign(cues))).toEqual(["kartay"]);
+    expect(heroes(cues, assign(withEmoji(cues, [[3]])))).toEqual(["magnets"]);
+    expect(heroes(cues, assign(withEmoji(cues, [[3]]), { emphasisWords: ["kartay"] }))).toEqual(["magnets"]);
+  });
+
+  test("a weak emoji word still wins: the confidence gate does not apply to it", () => {
+    const cues = build([["we", "zip", "it", "wonderful"]]);
+    expect(heroes(cues, assign(cues))).toEqual(["wonderful"]);
+    expect(heroes(cues, assign(withEmoji(cues, [[1]])))).toEqual(["zip"]);
+    const alone = build([["we", "zip", "it"]]);
+    expect(heroes(alone, assign(alone))).toEqual([null]);
+    expect(heroes(alone, assign(withEmoji(alone, [[1]])))).toEqual(["zip"]);
+  });
+
+  test("an override wins over the emoji, and plain on the emoji word gives the scorer's pick", () => {
+    const cues = withEmoji(build([["my", "savings", { raw: "doubled", dur: 0.9 }, "overnight"]]), [[1]]);
+    expect(heroes(cues, assign(cues))).toEqual(["savings"]);
+    expect(heroes(cues, assign(cues, { overrides: { [cues[0]![3]!.key!]: "hero" } }))).toEqual(["overnight"]);
+    const plain = assign(cues, { overrides: { [cues[0]![1]!.key!]: "plain" } });
+    expect(heroes(cues, plain)).toEqual(heroes(cues, assign(build([["my", "savings", { raw: "doubled", dur: 0.9 }, "overnight"]]))));
+    expect(heroes(cues, plain)).not.toEqual(["savings"]);
+  });
+
+  test("an emoji inside a 2-word unit makes the unit the hero", () => {
+    const cues = withEmoji(build([["this", "is", "really", "important", "stuff"]]), [[3]]);
+    expect(heroes(cues, assign(cues, { emphasisWords: ["really important"] }))).toEqual(["really important"]);
+  });
+
+  test("an emoji on a minor word, a style without a hero, and other cues change nothing", () => {
+    const cues = build([
+      ["so", "I", "quit", "my", "job"],
+      ["honestly", "best", { raw: "decision", dur: 0.9 }, "ever"],
+      ["best", "decision", "ever"],
+    ]);
+    const plain = assign(cues);
+    expect(assign(withEmoji(cues, [[0]]))).toEqual(plain);
+    expect(assign(withEmoji(cues, [[], [1]]), { policy: "never" })).toEqual(assign(cues, { policy: "never" }));
+    const marked = assign(withEmoji(cues, [[], [1]]));
+    expect(heroes(cues, marked)[1]).toBe("best");
+    expect([marked[0], marked[2]]).toEqual([plain[0], plain[2]]);
+  });
+});

@@ -17,6 +17,7 @@ function baseInput(overrides: Partial<Parameters<typeof buildUploadSettingsFormD
     autoHook: true,
     removeSilences: false,
     removeFillerWords: false,
+    addEmojis: false,
     specificMoments: "",
     processingStartSec: null,
     processingEndSec: null,
@@ -97,4 +98,14 @@ test("silence and filler-word removal default off and travel through the form", 
   const on = buildUploadGenerationContext(baseInput({ removeSilences: true, removeFillerWords: true }));
   expect(on.contentPack).toMatchObject({ removeSilences: true, removeFillerWords: true });
   expect(readContentPackFromForm(new FormData()).removeSilences).toBe(false);
+});
+
+test("Add emojis defaults off and travels through the form", () => {
+  expect(buildUploadGenerationContext(baseInput()).contentPack.addEmojis).toBe(false);
+  expect(buildUploadGenerationContext(baseInput({ addEmojis: true })).contentPack.addEmojis).toBe(true);
+  expect(readContentPackFromForm(new FormData()).addEmojis).toBe(false);
+  // The regenerate form posts the switch as a hidden "true"/"false" field.
+  const regenerate = new FormData();
+  regenerate.set("addEmojis", "true");
+  expect(readContentPackFromForm(regenerate).addEmojis).toBe(true);
 });

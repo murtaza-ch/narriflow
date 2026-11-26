@@ -6,7 +6,7 @@ import { captionEmphasisChanges, captionEmphasisRow, captionPanelScene, captionP
 /** A Scene Style cue is edited in the Emphasis row exactly like a Caption Block cue (spec 3.3, panel). */
 
 const layer = {
-  words: ["it's", "all", "about", "talent"].map((text, index) => ({ text, emoji: null, startSec: index, endSec: index + 1 })),
+  words: ["it's", "all", "about", "talent"].map((text, index) => ({ text, startSec: index, endSec: index + 1 })),
   scene: { roles: ["minor", "minor", "minor", "hero"] as const, keys: ["k0", "k1", "k2", "k3"], speaker: null },
 } as unknown as Pick<CompositionCaptionVisualLayer, "block" | "words" | "scene">;
 

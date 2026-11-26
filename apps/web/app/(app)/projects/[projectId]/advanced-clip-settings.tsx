@@ -95,6 +95,7 @@ export function AdvancedClipSettings({
   const hookLabelId = useId();
   const silencesLabelId = useId();
   const fillerLabelId = useId();
+  const emojisLabelId = useId();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("clip");
   const [languageCode, setLanguageCode] = useState(defaultSourceLanguageCode ?? "auto");
@@ -114,6 +115,7 @@ export function AdvancedClipSettings({
   const [autoHook, setAutoHook] = useState(true);
   const [removeSilences, setRemoveSilences] = useState(false);
   const [removeFillerWords, setRemoveFillerWords] = useState(false);
+  const [addEmojis, setAddEmojis] = useState(false);
   const [specificMoments, setSpecificMoments] = useState("");
   const [toneConstraints, setToneConstraints] = useState("concise, conversational");
   const [captionPreset, setCaptionPreset] = useState(defaultCaptionPreset);
@@ -183,6 +185,7 @@ export function AdvancedClipSettings({
       <input type="hidden" name="clipGenerationMode" value="best" />
       {sourceLanguageEditable && <input type="hidden" name="languageCode" value={languageCode} />}
       <input type="hidden" name="captionPreset" value={captionPreset} />
+      <input type="hidden" name="addEmojis" value={String(addEmojis)} />
       {clipMode && (
         <>
           <input type="hidden" name="clipLengthPreset" value={clipLengthPreset} />
@@ -433,7 +436,16 @@ export function AdvancedClipSettings({
                   </Section>
                 )}
 
-                <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
+                <Stack gap="3">
+                  <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
+                  <ToggleCard labelId={emojisLabelId} title="Add emojis" description="AI adds emojis that match what is said">
+                    <Switch
+                      checked={addEmojis}
+                      onCheckedChange={setAddEmojis}
+                      inputProps={{ "aria-labelledby": emojisLabelId }}
+                    />
+                  </ToggleCard>
+                </Stack>
 
                 <Box bg="bg.soft" borderRadius="l2" p="4">
                   <ProcessingTimeframeFields

@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
+  studioEditsSchema,
   type TranscriptUtterance,
 } from "@narriflow/validators";
 import {
   ClipActionError,
+  planCaptionEmojisForClipFromSelection,
   planCreateClipFromSelection,
   planStudioEditsForClipFromSelection,
 } from "./clip.service";
@@ -406,5 +408,63 @@ describe("planStudioEditsForClipFromSelection", () => {
     expect(result).not.toBeNull();
     expect(result!.textLayers).toEqual([]);
     expect(result!.sfx).toEqual([]);
+  });
+});
+
+describe("planCaptionEmojisForClipFromSelection", () => {
+  const word = (text: string, startSec: number, endSec: number) => ({ word: text, startSec, endSec, confidence: null });
+  const utterance = (words: ReturnType<typeof word>[]): TranscriptUtterance => ({
+    index: 0, speaker: 0, speakerLabel: "Speaker A", startSec: words[0]!.startSec, endSec: words.at(-1)!.endSec,
+    text: words.map((entry) => entry.word).join(" "), confidence: null, words,
+  });
+  // "party" at 0.8 s, then a word every 0.5 s from 1.0 s ("hospital", "tonight", "again", ...) for 15 s.
+  const tail = Array.from({ length: 30 }, (_, index) => word(["hospital", "tonight", "again"][index] ?? `word${index}`, 1 + index * 0.5, 1.4 + index * 0.5));
+  const raw = [utterance([word("party", 0.8, 0.98), ...tail])];
+
+  // The parent clip spans the whole transcript unless a test says otherwise.
+  const parentOf = (transcriptSlice: TranscriptUtterance[], captionEmojis: Record<string, { id: string; tone?: number }>, clip = { clipStartSec: 0.8, clipEndSec: 15.9 }) => ({
+    ...clip, transcriptSlice, studioEdits: studioEditsSchema.parse({ captionEmojis }),
+  });
+  const selection = planCreateClipFromSelection({ rawUtterances: raw, sourceDurationSec: 30, startSec: 1, endSec: 15.4 });
+
+  test("an emoji on a word outside the new slice is not carried onto the first word that is", () => {
+    expect(selection.transcriptSlice[0]!.words[0]).toMatchObject({ word: "hospital", startSec: 1 });
+    expect(planCaptionEmojisForClipFromSelection(parentOf(raw, { "800": { id: "party-popper" } }), selection)).toEqual({});
+  });
+
+  test("an entry whose word survives moves to that word's key in the new slice", () => {
+    // 1580 is an entry a few ms off its word: the parent resolves it to "tonight" (1.5 s) by nearest time.
+    const parent = parentOf(raw, { "800": { id: "party-popper" }, "1580": { id: "crescent-moon" }, "2000": { id: "repeat-button", tone: 2 } });
+    const target = { startSec: 1, endSec: 2.4, transcriptSlice: [utterance(tail.slice(0, 3))] };
+    expect(planCaptionEmojisForClipFromSelection(parent, target)).toEqual({ "1500": { id: "crescent-moon" }, "2000": { id: "repeat-button", tone: 2 } });
+  });
+
+  test("a parent word clamped to the parent's start still finds its full word in the new slice", () => {
+    const parent = parentOf([utterance([word("party", 0.9, 0.98), tail[0]!])], { "900": { id: "party-popper" } }, { clipStartSec: 0.9, clipEndSec: 1.4 });
+    expect(planCaptionEmojisForClipFromSelection(parent, { startSec: 0.8, endSec: 15.9, transcriptSlice: raw })).toEqual({ "800": { id: "party-popper" } });
+  });
+
+  test("a word the parent rewrote at the same time is a different word: its emoji is not carried onto the transcript's word", () => {
+    // The parent rewrote "hospital" (1.0 s) to "party" and gave it a party popper; the new clip reads the project transcript.
+    const rewritten = [utterance(raw[0]!.words.map((entry) => (entry.startSec === 1 ? { ...entry, word: "party" } : entry)))];
+    expect(planCaptionEmojisForClipFromSelection(parentOf(rewritten, { "1000": { id: "party-popper" } }), selection)).toEqual({});
+    // Case and punctuation are not a rewrite (\`captionWordComparable\`): "Hospital!" is still "hospital".
+    const punctuated = [utterance(raw[0]!.words.map((entry) => (entry.startSec === 1 ? { ...entry, word: "Hospital!" } : entry)))];
+    expect(planCaptionEmojisForClipFromSelection(parentOf(punctuated, { "1000": { id: "hospital" } }), selection)).toEqual({ "1000": { id: "hospital" } });
+  });
+
+  test("an unedited word carries; a word the parent re-timed does not, by exact key or by the span it now starts in", () => {
+    expect(planCaptionEmojisForClipFromSelection(parentOf(raw, { "1500": { id: "crescent-moon" } }), selection)).toEqual({ "1500": { id: "crescent-moon" } });
+    // A line rewrite in the parent moved "tonight" from 1.5 s to 1.6 s: it starts inside the transcript's "tonight" (1.5-1.9 s).
+    const retimed = [utterance(raw[0]!.words.map((entry) => (entry.word === "tonight" ? { ...entry, startSec: 1.6 } : entry)))];
+    expect(planCaptionEmojisForClipFromSelection(parentOf(retimed, { "1600": { id: "crescent-moon" } }), selection)).toEqual({});
+    // Moved to start where the transcript has "again" (2.0 s): the same key, other text and timing.
+    const moved = [utterance(raw[0]!.words.flatMap((entry) => (entry.word === "again" ? [] : entry.word === "tonight" ? [{ ...entry, startSec: 2, endSec: 2.4 }] : [entry])))];
+    expect(planCaptionEmojisForClipFromSelection(parentOf(moved, { "2000": { id: "crescent-moon" } }), selection)).toEqual({});
+  });
+
+  test("the new clip's Studio Edits do not copy the parent's emoji map; the carried one replaces it", () => {
+    const edits = planStudioEditsForClipFromSelection({ captionEmojis: { "800": { id: "party-popper" } } });
+    expect(edits && "captionEmojis" in edits).toBe(false);
   });
 });

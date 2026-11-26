@@ -243,9 +243,32 @@ describe("caption preset catalog", () => {
   test("matchCaptionPreset recognises each preset and ignores placement", () => {
     for (const named of CAPTION_PRESETS) {
       expect(matchCaptionPreset(named.preset)?.id).toBe(named.id);
-      const placed = { ...named.preset, position: "top" as const, positionX: 30, positionY: 40, emojis: true };
+      const placed = {
+        ...named.preset, position: "top" as const, positionX: 30, positionY: 40, emojis: true,
+        emojiPalette: { a: "#59f0d2", b: "#1a1a1a", c: "#fff3d6" }, emojiSize: 1.25 as const, emojiPosition: "below" as const, emojiSticker: false, emojiTone: 3,
+      };
       expect(matchCaptionPreset(placed)?.id).toBe(named.id);
     }
+  });
+
+  test("the emoji style fields parse, compare by value and carry across a look change", () => {
+    const palette = { a: "#59f0d2", b: "#1a1a1a", c: "#fff3d6" };
+    const styled = captionPresetSchema.parse({ emojis: true, emojiPalette: palette, emojiSize: 0.8, emojiPosition: "above", emojiSticker: false, emojiTone: 4 });
+    expect(styled).toMatchObject({ emojis: true, emojiPalette: palette, emojiSize: 0.8, emojiPosition: "above", emojiSticker: false, emojiTone: 4 });
+    // The Skin tone is 1 to 5; the default yellow is its absence.
+    for (const tone of [0, 6, 2.5]) expect(captionPresetSchema.safeParse({ emojiTone: tone }).success).toBe(false);
+    expect(captionPresetsEqual(styled, { ...styled, emojiTone: 5 })).toBe(false);
+    expect(captionPresetsEqual(styled, { ...styled, emojiTone: undefined })).toBe(false);
+    expect(captionPresetSchema.safeParse({ emojiSize: 1.1 }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ emojiPosition: "left" }).success).toBe(false);
+    expect(captionPresetSchema.safeParse({ emojiPalette: { a: "#59f0d2", b: "#1a1a1a" } }).success).toBe(false);
+    // A palette is compared by value, not by reference.
+    expect(captionPresetsEqual(styled, { ...styled, emojiPalette: { ...palette } })).toBe(true);
+    expect(captionPresetsEqual(styled, { ...styled, emojiPalette: { ...palette, b: "#000000" } })).toBe(false);
+    expect(captionPresetsEqual(styled, { ...styled, emojiPalette: undefined })).toBe(false);
+    expect(captionPresetsEqual({ ...styled, emojiPalette: undefined }, { ...styled, emojiPalette: undefined })).toBe(true);
+    const neon = getCaptionPresetById("neon")!;
+    expect(applyCaptionPresetLook(styled, neon)).toMatchObject({ emojis: true, emojiPalette: palette, emojiSize: 0.8, emojiPosition: "above", emojiSticker: false, emojiTone: 4 });
   });
 
   test("matchCaptionPreset stops matching once the look is edited", () => {

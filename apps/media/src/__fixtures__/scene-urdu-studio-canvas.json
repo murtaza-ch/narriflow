@@ -1,0 +1,1850 @@
+{
+ "cues": {
+  "ur": [
+   {
+    "index": 0,
+    "startMs": 400,
+    "endMs": 1375,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "یہ",
+      "startMs": 400,
+      "endMs": 690,
+      "role": "minor",
+      "key": "400"
+     },
+     {
+      "text": "ایک",
+      "startMs": 690,
+      "endMs": 1014.9999999999999,
+      "role": "minor",
+      "key": "690"
+     },
+     {
+      "text": "خیال",
+      "startMs": 1014.9999999999999,
+      "endMs": 1335,
+      "role": "hero",
+      "key": "1015"
+     }
+    ]
+   },
+   {
+    "index": 1,
+    "startMs": 1375,
+    "endMs": 3105,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "میرے",
+      "startMs": 1375,
+      "endMs": 1735,
+      "role": "minor",
+      "key": "1375"
+     },
+     {
+      "text": "کاروبار",
+      "startMs": 1735,
+      "endMs": 2200,
+      "role": "hero",
+      "key": "1735"
+     },
+     {
+      "text": "کے",
+      "startMs": 2200,
+      "endMs": 2490,
+      "role": "minor",
+      "key": "2200"
+     },
+     {
+      "text": "لیے",
+      "startMs": 2490,
+      "endMs": 2815,
+      "role": "minor",
+      "key": "2490"
+     },
+     {
+      "text": "سب",
+      "startMs": 2815,
+      "endMs": 3065,
+      "role": "body",
+      "key": "2815"
+     }
+    ]
+   },
+   {
+    "index": 2,
+    "startMs": 3105,
+    "endMs": 4480,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "کچھ",
+      "startMs": 3105,
+      "endMs": 3430,
+      "role": "minor",
+      "key": "3105"
+     },
+     {
+      "text": "بدل",
+      "startMs": 3430,
+      "endMs": 3755,
+      "role": "body",
+      "key": "3430"
+     },
+     {
+      "text": "گیا",
+      "startMs": 3755,
+      "endMs": 4040,
+      "role": "minor",
+      "key": "3755"
+     }
+    ]
+   },
+   {
+    "index": 3,
+    "startMs": 4480,
+    "endMs": 5780,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "ہم",
+      "startMs": 4480,
+      "endMs": 4770,
+      "role": "minor",
+      "key": "4480"
+     },
+     {
+      "text": "نے",
+      "startMs": 4770,
+      "endMs": 5060,
+      "role": "minor",
+      "key": "4770"
+     },
+     {
+      "text": "ایک",
+      "startMs": 5060,
+      "endMs": 5385,
+      "role": "minor",
+      "key": "5060"
+     },
+     {
+      "text": "مہینے",
+      "startMs": 5385,
+      "endMs": 5740,
+      "role": "hero",
+      "key": "5385"
+     }
+    ]
+   },
+   {
+    "index": 4,
+    "startMs": 5780,
+    "endMs": 7115,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "میں",
+      "startMs": 5780,
+      "endMs": 6105,
+      "role": "minor",
+      "key": "5780"
+     },
+     {
+      "text": "سال",
+      "startMs": 6105,
+      "endMs": 6430,
+      "role": "body",
+      "key": "6105"
+     },
+     {
+      "text": "سے",
+      "startMs": 6430,
+      "endMs": 6720,
+      "role": "minor",
+      "key": "6430"
+     },
+     {
+      "text": "زیادہ",
+      "startMs": 6720,
+      "endMs": 7075,
+      "role": "hero",
+      "key": "6720"
+     }
+    ]
+   },
+   {
+    "index": 5,
+    "startMs": 7115,
+    "endMs": 8270,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "پیسے",
+      "startMs": 7115,
+      "endMs": 7475,
+      "role": "hero",
+      "key": "7115"
+     },
+     {
+      "text": "کمائے",
+      "startMs": 7475,
+      "endMs": 7830,
+      "role": "body",
+      "key": "7475"
+     }
+    ]
+   },
+   {
+    "index": 6,
+    "startMs": 8270,
+    "endMs": 8955,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "پوری",
+      "startMs": 8270,
+      "endMs": 8630,
+      "role": "body",
+      "key": "8270"
+     },
+     {
+      "text": "ٹیم",
+      "startMs": 8630,
+      "endMs": 8915,
+      "role": "hero",
+      "key": "8630"
+     }
+    ]
+   },
+   {
+    "index": 7,
+    "startMs": 8955,
+    "endMs": 10945,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "کو",
+      "startMs": 8955,
+      "endMs": 9245,
+      "role": "minor",
+      "key": "8955"
+     },
+     {
+      "text": "یہ",
+      "startMs": 9245,
+      "endMs": 9535,
+      "role": "minor",
+      "key": "9245"
+     },
+     {
+      "text": "بہت",
+      "startMs": 9535,
+      "endMs": 9860,
+      "role": "body",
+      "key": "9535"
+     },
+     {
+      "text": "پسند",
+      "startMs": 9860,
+      "endMs": 10220,
+      "role": "body",
+      "key": "9860"
+     },
+     {
+      "text": "آیا",
+      "startMs": 10220,
+      "endMs": 10505,
+      "role": "hero",
+      "key": "10220"
+     }
+    ]
+   },
+   {
+    "index": 8,
+    "startMs": 10945,
+    "endMs": 11595,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "سچ",
+      "startMs": 10945,
+      "endMs": 11235,
+      "role": "body",
+      "key": "10945"
+     },
+     {
+      "text": "کہوں",
+      "startMs": 11235,
+      "endMs": 11555,
+      "role": "hero",
+      "key": "11235"
+     }
+    ]
+   },
+   {
+    "index": 9,
+    "startMs": 11595,
+    "endMs": 13830,
+    "speaker": 0,
+    "language": "ur",
+    "words": [
+     {
+      "text": "تو",
+      "startMs": 11595,
+      "endMs": 11885,
+      "role": "minor",
+      "key": "11595"
+     },
+     {
+      "text": "یہ",
+      "startMs": 11885,
+      "endMs": 12175,
+      "role": "minor",
+      "key": "11885"
+     },
+     {
+      "text": "جادو",
+      "startMs": 12175,
+      "endMs": 12535,
+      "role": "hero",
+      "key": "12175"
+     },
+     {
+      "text": "جیسا",
+      "startMs": 12535,
+      "endMs": 12895,
+      "role": "minor",
+      "key": "12535"
+     },
+     {
+      "text": "لگا",
+      "startMs": 12895,
+      "endMs": 13180,
+      "role": "body",
+      "key": "12895"
+     }
+    ]
+   }
+  ],
+  "ar": [
+   {
+    "index": 0,
+    "startMs": 400,
+    "endMs": 1735,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "هذه",
+      "startMs": 400,
+      "endMs": 690,
+      "role": "body",
+      "key": "400"
+     },
+     {
+      "text": "هي",
+      "startMs": 690,
+      "endMs": 1014.9999999999999,
+      "role": "minor",
+      "key": "690"
+     },
+     {
+      "text": "الفكرة",
+      "startMs": 1014.9999999999999,
+      "endMs": 1375,
+      "role": "hero",
+      "key": "1015"
+     },
+     {
+      "text": "التي",
+      "startMs": 1375,
+      "endMs": 1695,
+      "role": "body",
+      "key": "1375"
+     }
+    ]
+   },
+   {
+    "index": 1,
+    "startMs": 1735,
+    "endMs": 2815,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "غيّرت",
+      "startMs": 1735,
+      "endMs": 2200,
+      "role": "hero",
+      "key": "1735"
+     },
+     {
+      "text": "كل",
+      "startMs": 2200,
+      "endMs": 2490,
+      "role": "minor",
+      "key": "2200"
+     },
+     {
+      "text": "شيء",
+      "startMs": 2490,
+      "endMs": 2775,
+      "role": "body",
+      "key": "2490"
+     }
+    ]
+   },
+   {
+    "index": 2,
+    "startMs": 2815,
+    "endMs": 4480,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "في",
+      "startMs": 2815,
+      "endMs": 3105,
+      "role": "minor",
+      "key": "2815"
+     },
+     {
+      "text": "عملي",
+      "startMs": 3105,
+      "endMs": 3430,
+      "role": "body",
+      "key": "3105"
+     },
+     {
+      "text": "التجاري",
+      "startMs": 3430,
+      "endMs": 3755,
+      "role": "body",
+      "key": "3430"
+     },
+     {
+      "text": "تماما",
+      "startMs": 3755,
+      "endMs": 4040,
+      "role": "hero",
+      "key": "3755"
+     }
+    ]
+   },
+   {
+    "index": 3,
+    "startMs": 4480,
+    "endMs": 5780,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "ربحنا",
+      "startMs": 4480,
+      "endMs": 4770,
+      "role": "body",
+      "key": "4480"
+     },
+     {
+      "text": "في",
+      "startMs": 4770,
+      "endMs": 5060,
+      "role": "minor",
+      "key": "4770"
+     },
+     {
+      "text": "شهر",
+      "startMs": 5060,
+      "endMs": 5385,
+      "role": "body",
+      "key": "5060"
+     },
+     {
+      "text": "واحد",
+      "startMs": 5385,
+      "endMs": 5740,
+      "role": "hero",
+      "key": "5385"
+     }
+    ]
+   },
+   {
+    "index": 4,
+    "startMs": 5780,
+    "endMs": 7115,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "أكثر",
+      "startMs": 5780,
+      "endMs": 6105,
+      "role": "body",
+      "key": "5780"
+     },
+     {
+      "text": "من",
+      "startMs": 6105,
+      "endMs": 6430,
+      "role": "minor",
+      "key": "6105"
+     },
+     {
+      "text": "سنة",
+      "startMs": 6430,
+      "endMs": 6720,
+      "role": "body",
+      "key": "6430"
+     },
+     {
+      "text": "كاملة",
+      "startMs": 6720,
+      "endMs": 7075,
+      "role": "hero",
+      "key": "6720"
+     }
+    ]
+   },
+   {
+    "index": 5,
+    "startMs": 7115,
+    "endMs": 8270,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "مالا",
+      "startMs": 7115,
+      "endMs": 7475,
+      "role": "hero",
+      "key": "7115"
+     },
+     {
+      "text": "وفيرا",
+      "startMs": 7475,
+      "endMs": 7830,
+      "role": "body",
+      "key": "7475"
+     }
+    ]
+   },
+   {
+    "index": 6,
+    "startMs": 8270,
+    "endMs": 9535,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "كل",
+      "startMs": 8270,
+      "endMs": 8630,
+      "role": "minor",
+      "key": "8270"
+     },
+     {
+      "text": "الفريق",
+      "startMs": 8630,
+      "endMs": 8955,
+      "role": "hero",
+      "key": "8630"
+     },
+     {
+      "text": "أحب",
+      "startMs": 8955,
+      "endMs": 9245,
+      "role": "body",
+      "key": "8955"
+     },
+     {
+      "text": "هذا",
+      "startMs": 9245,
+      "endMs": 9495,
+      "role": "body",
+      "key": "9245"
+     }
+    ]
+   },
+   {
+    "index": 7,
+    "startMs": 9535,
+    "endMs": 10945,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "كثيرا",
+      "startMs": 9535,
+      "endMs": 9860,
+      "role": "body",
+      "key": "9535"
+     },
+     {
+      "text": "وكذلك",
+      "startMs": 9860,
+      "endMs": 10220,
+      "role": "body",
+      "key": "9860"
+     },
+     {
+      "text": "العملاء",
+      "startMs": 10220,
+      "endMs": 10505,
+      "role": "hero",
+      "key": "10220"
+     }
+    ]
+   },
+   {
+    "index": 8,
+    "startMs": 10945,
+    "endMs": 12175,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "بصراحة",
+      "startMs": 10945,
+      "endMs": 11235,
+      "role": "body",
+      "key": "10945"
+     },
+     {
+      "text": "شعرت",
+      "startMs": 11235,
+      "endMs": 11595,
+      "role": "body",
+      "key": "11235"
+     },
+     {
+      "text": "أن",
+      "startMs": 11595,
+      "endMs": 11885,
+      "role": "minor",
+      "key": "11595"
+     },
+     {
+      "text": "الأمر",
+      "startMs": 11885,
+      "endMs": 12135,
+      "role": "hero",
+      "key": "11885"
+     }
+    ]
+   },
+   {
+    "index": 9,
+    "startMs": 12175,
+    "endMs": 13830,
+    "speaker": 0,
+    "language": "ar",
+    "words": [
+     {
+      "text": "سحر",
+      "startMs": 12175,
+      "endMs": 12535,
+      "role": "hero",
+      "key": "12175"
+     },
+     {
+      "text": "حقيقي",
+      "startMs": 12535,
+      "endMs": 12895,
+      "role": "body",
+      "key": "12535"
+     },
+     {
+      "text": "فعلا",
+      "startMs": 12895,
+      "endMs": 13180,
+      "role": "body",
+      "key": "12895"
+     }
+    ]
+   }
+  ]
+ },
+ "canvas": [
+  {
+   "language": "ur",
+   "text": "یہ",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 0.541,
+   "inkTopEm": 0.453,
+   "inkBottomEm": 0.217
+  },
+  {
+   "language": "ur",
+   "text": "ایک",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.603,
+   "inkTopEm": 0.772,
+   "inkBottomEm": 0.217
+  },
+  {
+   "language": "ur",
+   "text": "خیال",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.224,
+   "inkTopEm": 0.773,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "میرے",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.772,
+   "inkTopEm": 0.497,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ur",
+   "text": "کے",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 0.892,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "لیے",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.022,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.217
+  },
+  {
+   "language": "ur",
+   "text": "سب",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.814,
+   "inkTopEm": 0.435,
+   "inkBottomEm": 0.234
+  },
+  {
+   "language": "ur",
+   "text": "کاروبار",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.871,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ur",
+   "text": "کچھ",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.764,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.285
+  },
+  {
+   "language": "ur",
+   "text": "بدل",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.708,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "گیا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.202,
+   "inkTopEm": 0.882,
+   "inkBottomEm": 0.217
+  },
+  {
+   "language": "ur",
+   "text": "ہم",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 0.878,
+   "inkTopEm": 0.437,
+   "inkBottomEm": 0.393
+  },
+  {
+   "language": "ur",
+   "text": "نے",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 0.648,
+   "inkTopEm": 0.689,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "مہینے",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.017,
+   "inkTopEm": 0.684,
+   "inkBottomEm": 0.383
+  },
+  {
+   "language": "ur",
+   "text": "میں",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.683,
+   "inkTopEm": 0.438,
+   "inkBottomEm": 0.217
+  },
+  {
+   "language": "ur",
+   "text": "سال",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.935,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.216
+  },
+  {
+   "language": "ur",
+   "text": "سے",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.202,
+   "inkTopEm": 0.436,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "زیادہ",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 1.954,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ur",
+   "text": "کمائے",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.116,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "پیسے",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 1.885,
+   "inkTopEm": 0.48,
+   "inkBottomEm": 0.359
+  },
+  {
+   "language": "ur",
+   "text": "پوری",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.076,
+   "inkTopEm": 0.543,
+   "inkBottomEm": 0.348
+  },
+  {
+   "language": "ur",
+   "text": "ٹیم",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 1.303,
+   "inkTopEm": 0.757,
+   "inkBottomEm": 0.317
+  },
+  {
+   "language": "ur",
+   "text": "کو",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.088,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.247
+  },
+  {
+   "language": "ur",
+   "text": "بہت",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.644,
+   "inkTopEm": 0.577,
+   "inkBottomEm": 0.383
+  },
+  {
+   "language": "ur",
+   "text": "پسند",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.137,
+   "inkTopEm": 0.649,
+   "inkBottomEm": 0.348
+  },
+  {
+   "language": "ur",
+   "text": "آیا",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 0.985,
+   "inkTopEm": 0.898,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "سچ",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.594,
+   "inkTopEm": 0.54,
+   "inkBottomEm": 0.345
+  },
+  {
+   "language": "ur",
+   "text": "کہوں",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.255,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.383
+  },
+  {
+   "language": "ur",
+   "text": "تو",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 0.844,
+   "inkTopEm": 0.677,
+   "inkBottomEm": 0.247
+  },
+  {
+   "language": "ur",
+   "text": "جیسا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.289,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.217
+  },
+  {
+   "language": "ur",
+   "text": "لگا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.203,
+   "inkTopEm": 0.871,
+   "inkBottomEm": 0.009
+  },
+  {
+   "language": "ur",
+   "text": "جادو",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.255,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.252
+  },
+  {
+   "language": "ar",
+   "text": "هذه",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.902,
+   "inkTopEm": 0.791,
+   "inkBottomEm": 0.008
+  },
+  {
+   "language": "ar",
+   "text": "هي",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.45,
+   "inkTopEm": 0.634,
+   "inkBottomEm": 0.447
+  },
+  {
+   "language": "ar",
+   "text": "التي",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.678,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.447
+  },
+  {
+   "language": "ar",
+   "text": "الفكرة",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.757,
+   "inkTopEm": 0.827,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "كل",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.306,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.218
+  },
+  {
+   "language": "ar",
+   "text": "شيء",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.101,
+   "inkTopEm": 0.748,
+   "inkBottomEm": 0.447
+  },
+  {
+   "language": "ar",
+   "text": "غيّرت",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.267,
+   "inkTopEm": 0.808,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "في",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.253,
+   "inkTopEm": 0.908,
+   "inkBottomEm": 0.447
+  },
+  {
+   "language": "ar",
+   "text": "عملي",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.218,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.447
+  },
+  {
+   "language": "ar",
+   "text": "التجاري",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 3.278,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.405
+  },
+  {
+   "language": "ar",
+   "text": "تماما",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.175,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.016
+  },
+  {
+   "language": "ar",
+   "text": "ربحنا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.071,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ar",
+   "text": "شهر",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.823,
+   "inkTopEm": 0.748,
+   "inkBottomEm": 0.255
+  },
+  {
+   "language": "ar",
+   "text": "واحد",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.323,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.252
+  },
+  {
+   "language": "ar",
+   "text": "أكثر",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.601,
+   "inkTopEm": 0.908,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ar",
+   "text": "من",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.339,
+   "inkTopEm": 0.549,
+   "inkBottomEm": 0.19
+  },
+  {
+   "language": "ar",
+   "text": "سنة",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.766,
+   "inkTopEm": 0.81,
+   "inkBottomEm": 0.009
+  },
+  {
+   "language": "ar",
+   "text": "كاملة",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.459,
+   "inkTopEm": 0.847,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "وفيرا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.177,
+   "inkTopEm": 0.908,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ar",
+   "text": "مالا",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 1.573,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "أحب",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.036,
+   "inkTopEm": 0.908,
+   "inkBottomEm": 0.234
+  },
+  {
+   "language": "ar",
+   "text": "هذا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.705,
+   "inkTopEm": 0.791,
+   "inkBottomEm": 0.008
+  },
+  {
+   "language": "ar",
+   "text": "الفريق",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.878,
+   "inkTopEm": 0.827,
+   "inkBottomEm": 0.258
+  },
+  {
+   "language": "ar",
+   "text": "كثيرا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.945,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ar",
+   "text": "وكذلك",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.96,
+   "inkTopEm": 0.791,
+   "inkBottomEm": 0.251
+  },
+  {
+   "language": "ar",
+   "text": "العملاء",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 3.16,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.051
+  },
+  {
+   "language": "ar",
+   "text": "بصراحة",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 3.309,
+   "inkTopEm": 0.81,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ar",
+   "text": "شعرت",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.835,
+   "inkTopEm": 0.748,
+   "inkBottomEm": 0.254
+  },
+  {
+   "language": "ar",
+   "text": "أن",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.049,
+   "inkTopEm": 0.908,
+   "inkBottomEm": 0.152
+  },
+  {
+   "language": "ar",
+   "text": "الأمر",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.002,
+   "inkTopEm": 0.844,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "حقيقي",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 2.94,
+   "inkTopEm": 0.77,
+   "inkBottomEm": 0.447
+  },
+  {
+   "language": "ar",
+   "text": "فعلا",
+   "face": "Rubik ExtraBold",
+   "letterSpacingEm": 0,
+   "advanceEm": 1.857,
+   "inkTopEm": 0.908,
+   "inkBottomEm": 0.044
+  },
+  {
+   "language": "ar",
+   "text": "سحر",
+   "face": "Rubik Black",
+   "letterSpacingEm": 0.01,
+   "advanceEm": 2.049,
+   "inkTopEm": 0.525,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ur",
+   "text": "یہ",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 0.555,
+   "inkTopEm": 0.477,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "ایک",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.621,
+   "inkTopEm": 0.774,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "خیال",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.224,
+   "inkTopEm": 0.773,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "میرے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.795,
+   "inkTopEm": 0.497,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ur",
+   "text": "کاروبار",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.871,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ur",
+   "text": "کے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 0.917,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "لیے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.036,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "سب",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.823,
+   "inkTopEm": 0.457,
+   "inkBottomEm": 0.248
+  },
+  {
+   "language": "ur",
+   "text": "کچھ",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.796,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.293
+  },
+  {
+   "language": "ur",
+   "text": "بدل",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.743,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.237
+  },
+  {
+   "language": "ur",
+   "text": "گیا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.241,
+   "inkTopEm": 0.885,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "ہم",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 0.892,
+   "inkTopEm": 0.464,
+   "inkBottomEm": 0.393
+  },
+  {
+   "language": "ur",
+   "text": "نے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 0.655,
+   "inkTopEm": 0.725,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "مہینے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.017,
+   "inkTopEm": 0.684,
+   "inkBottomEm": 0.383
+  },
+  {
+   "language": "ur",
+   "text": "میں",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.716,
+   "inkTopEm": 0.465,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "سال",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.964,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.218
+  },
+  {
+   "language": "ur",
+   "text": "سے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.208,
+   "inkTopEm": 0.453,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "زیادہ",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.954,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ur",
+   "text": "پیسے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.885,
+   "inkTopEm": 0.48,
+   "inkBottomEm": 0.359
+  },
+  {
+   "language": "ur",
+   "text": "کمائے",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.155,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.046
+  },
+  {
+   "language": "ur",
+   "text": "پوری",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.127,
+   "inkTopEm": 0.568,
+   "inkBottomEm": 0.359
+  },
+  {
+   "language": "ur",
+   "text": "ٹیم",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.303,
+   "inkTopEm": 0.757,
+   "inkBottomEm": 0.317
+  },
+  {
+   "language": "ur",
+   "text": "کو",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.128,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.248
+  },
+  {
+   "language": "ur",
+   "text": "بہت",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.654,
+   "inkTopEm": 0.602,
+   "inkBottomEm": 0.383
+  },
+  {
+   "language": "ur",
+   "text": "پسند",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.161,
+   "inkTopEm": 0.684,
+   "inkBottomEm": 0.359
+  },
+  {
+   "language": "ur",
+   "text": "آیا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 0.985,
+   "inkTopEm": 0.898,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "سچ",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.619,
+   "inkTopEm": 0.576,
+   "inkBottomEm": 0.342
+  },
+  {
+   "language": "ur",
+   "text": "کہوں",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.255,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.383
+  },
+  {
+   "language": "ur",
+   "text": "تو",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 0.866,
+   "inkTopEm": 0.71,
+   "inkBottomEm": 0.248
+  },
+  {
+   "language": "ur",
+   "text": "جادو",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.255,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.252
+  },
+  {
+   "language": "ur",
+   "text": "جیسا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.322,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.225
+  },
+  {
+   "language": "ur",
+   "text": "لگا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.226,
+   "inkTopEm": 0.872,
+   "inkBottomEm": 0.011
+  },
+  {
+   "language": "ar",
+   "text": "هذه",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.94,
+   "inkTopEm": 0.828,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "هي",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.481,
+   "inkTopEm": 0.671,
+   "inkBottomEm": 0.463
+  },
+  {
+   "language": "ar",
+   "text": "الفكرة",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.757,
+   "inkTopEm": 0.827,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "التي",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.709,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.463
+  },
+  {
+   "language": "ar",
+   "text": "غيّرت",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.267,
+   "inkTopEm": 0.808,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "كل",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.341,
+   "inkTopEm": 0.784,
+   "inkBottomEm": 0.22
+  },
+  {
+   "language": "ar",
+   "text": "شيء",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.128,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.463
+  },
+  {
+   "language": "ar",
+   "text": "في",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.287,
+   "inkTopEm": 0.953,
+   "inkBottomEm": 0.463
+  },
+  {
+   "language": "ar",
+   "text": "عملي",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.252,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.463
+  },
+  {
+   "language": "ar",
+   "text": "التجاري",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 3.339,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.427
+  },
+  {
+   "language": "ar",
+   "text": "تماما",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.175,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.016
+  },
+  {
+   "language": "ar",
+   "text": "ربحنا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.108,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "شهر",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.856,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.26
+  },
+  {
+   "language": "ar",
+   "text": "واحد",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.323,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.252
+  },
+  {
+   "language": "ar",
+   "text": "أكثر",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.64,
+   "inkTopEm": 0.922,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "من",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.366,
+   "inkTopEm": 0.574,
+   "inkBottomEm": 0.19
+  },
+  {
+   "language": "ar",
+   "text": "سنة",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.793,
+   "inkTopEm": 0.847,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "كاملة",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.459,
+   "inkTopEm": 0.847,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "مالا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.573,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "وفيرا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.236,
+   "inkTopEm": 0.953,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "الفريق",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.878,
+   "inkTopEm": 0.827,
+   "inkBottomEm": 0.258
+  },
+  {
+   "language": "ar",
+   "text": "أحب",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.063,
+   "inkTopEm": 0.922,
+   "inkBottomEm": 0.248
+  },
+  {
+   "language": "ar",
+   "text": "هذا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.744,
+   "inkTopEm": 0.828,
+   "inkBottomEm": 0.01
+  },
+  {
+   "language": "ar",
+   "text": "كثيرا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.99,
+   "inkTopEm": 0.814,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "وكذلك",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 3.031,
+   "inkTopEm": 0.828,
+   "inkBottomEm": 0.252
+  },
+  {
+   "language": "ar",
+   "text": "العملاء",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 3.16,
+   "inkTopEm": 0.75,
+   "inkBottomEm": 0.051
+  },
+  {
+   "language": "ar",
+   "text": "بصراحة",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 3.378,
+   "inkTopEm": 0.847,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "شعرت",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.862,
+   "inkTopEm": 0.78,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "أن",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.073,
+   "inkTopEm": 0.922,
+   "inkBottomEm": 0.156
+  },
+  {
+   "language": "ar",
+   "text": "الأمر",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.002,
+   "inkTopEm": 0.844,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "سحر",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.049,
+   "inkTopEm": 0.525,
+   "inkBottomEm": 0.256
+  },
+  {
+   "language": "ar",
+   "text": "حقيقي",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 2.993,
+   "inkTopEm": 0.812,
+   "inkBottomEm": 0.463
+  },
+  {
+   "language": "ar",
+   "text": "فعلا",
+   "face": "Rubik Black",
+   "letterSpacingEm": -0.01,
+   "advanceEm": 1.902,
+   "inkTopEm": 0.953,
+   "inkBottomEm": 0.051
+  }
+ ]
+}

@@ -59,6 +59,10 @@ export interface CaptionSceneBuildInput {
   readonly canvas: { readonly width: number; readonly height: number };
   readonly anchor?: { readonly xPct: number; readonly yPct: number };
   readonly language: string | null;
+  /** The target's inserted scenes, composition seconds: no piece paints inside one. */
+  readonly insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[];
+  /** The clip's render rate (`ClipInfo.renderFrameRate`), so the scene is planned on the export's frame grid. */
+  readonly fps?: number;
 }
 
 /** A scene with the measurement that built it (the selection box and the painter read the same). */
@@ -66,6 +70,8 @@ export interface MeasuredScene {
   readonly scene: CaptionScene;
   readonly measure: Measure;
   readonly language: string | null;
+  /** What the scene was built from (absent for a fixture): its cues, preset, canvas and anchor. */
+  readonly input?: CaptionSceneBuildInput;
 }
 
 type SceneResult =
@@ -98,10 +104,10 @@ function buildScene(input: CaptionSceneBuildInput, force: boolean): SceneResult 
   const measure = wanted ? canvasMeasure(input.language, wanted) : memoMeasure(canvasMeasure(input.language, null));
   const scene = buildCaptionScene(
     preset.scene,
-    sceneInputFromPreset(preset, { cues: input.cues, canvas: input.canvas, measure, ...(input.anchor ? { anchor: input.anchor } : {}) }),
+    sceneInputFromPreset(preset, { cues: input.cues, canvas: input.canvas, measure, ...(input.anchor ? { anchor: input.anchor } : {}), ...(input.insertedScenes ? { insertedScenes: input.insertedScenes } : {}), ...(input.fps ? { fps: input.fps } : {}) }),
   );
   if (wanted && wanted.size > 0) return { status: "pending", load: () => Promise.all([...wanted.values()].map((load) => load())) };
-  return { status: "ready", built: { scene, measure: wanted ? memoMeasure(canvasMeasure(input.language, null)) : measure, language: input.language } };
+  return { status: "ready", built: { scene, measure: wanted ? memoMeasure(canvasMeasure(input.language, null)) : measure, language: input.language, input } };
 }
 
 /**
@@ -128,12 +134,12 @@ const unusedMeasure: Measure = () => {
 
 /**
  * What a scene is built from, as a string (`sceneBuildKey`): the cues, the canvas, the anchor, the colours and size the
- * template reads, the language. Null for a preset that is not a Scene Style. Two inputs with the same key build the same scene.
+ * template reads, the language, the frame rate. Null for a preset that is not a Scene Style. Two inputs with the same key build the same scene.
  */
 export function captionSceneInputKey(input: CaptionSceneBuildInput): string | null {
   const { preset } = input;
   if (!preset.scene) return null;
-  return sceneBuildKey(preset.scene, sceneInputFromPreset(preset, { cues: input.cues, canvas: input.canvas, measure: unusedMeasure, ...(input.anchor ? { anchor: input.anchor } : {}) }), input.language);
+  return sceneBuildKey(preset.scene, sceneInputFromPreset(preset, { cues: input.cues, canvas: input.canvas, measure: unusedMeasure, ...(input.anchor ? { anchor: input.anchor } : {}), ...(input.insertedScenes ? { insertedScenes: input.insertedScenes } : {}), ...(input.fps ? { fps: input.fps } : {}) }), input.language);
 }
 
 /**

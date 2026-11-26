@@ -48,10 +48,10 @@ function heights(file: string, word: string, language: string, decoration: "pill
     ...(decoration === "pill" ? { highlightBoxColor: "#ffffff" } : { backgroundColor: "#000000" }),
   });
   const layer: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0, activeRange: { startSec: 0, endSec: 1 },
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0, activeRange: { startSec: 0, endSec: 1 },
     anchor: { xPct: 50, yPct: 70 }, destination: { x: 0, y: 0, width: 1080, height: 1920 },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset, language,
-    words: [{ text: word, emoji: null, startSec: 0, endSec: 1 }],
+    words: [{ text: word, startSec: 0, endSec: 1 }],
   };
   const { ass, geometryUnavailable } = renderCaptionTrack({ layers: [layer], canvas: { width: 1080, height: 1920 }, fonts });
   expect(geometryUnavailable).toEqual([]);

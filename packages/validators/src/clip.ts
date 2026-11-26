@@ -163,11 +163,11 @@ export const CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT = 50;
 /**
  * Caption characters a finished render could not draw. The worker records them
  * when it commits a successful render; the clip row shows them as a quiet note.
- * Code points are `U+XXXX` labels; skipped emoji are the plan emoji strings.
+ * Code points are `U+XXXX` labels. A plain (stripping) object: a stored row with
+ * a field this shape no longer has still reads, the field dropped.
  */
 export const clipRenderCaptionDiagnosticsSchema = z.object({
   omittedCodePoints: z.array(z.string().regex(/^U\+[0-9A-F]{4,6}$/)).max(CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT),
-  skippedEmoji: z.array(z.string().min(1).max(64)).max(CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT),
 });
 
 export type ClipRenderCaptionDiagnostics = z.infer<typeof clipRenderCaptionDiagnosticsSchema>;

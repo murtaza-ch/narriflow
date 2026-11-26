@@ -109,7 +109,7 @@ describe("caption override", () => {
     expect(layers.map((layer) => layer.words.map((word) => word.text))).toEqual([["Hello", "world"]]);
   });
 
-  test("keeps emoji enrichment and ignores censor masks", () => {
+  test("ignores censor masks", () => {
     const sourceWord = { word: "Source", startSec: 0, endSec: 0.5, confidence: 1 };
     const doc = document({
       censorSegments: [{
@@ -119,13 +119,12 @@ describe("caption override", () => {
         captionMaskPolicy: { replacement: "first_last", preservePunctuation: true },
         suggestionFingerprint: "a".repeat(64), policyVersion: "auto-censor-v1", enabled: true,
       }],
-    }, { emojis: true });
+    });
     const override = { language: "en", segments: [[{ text: "Source", startSec: 0, endSec: 0.5 }, { text: "love", startSec: 0.5, endSec: 1 }]] };
     const withMask = captionLayers(plan(doc, override));
     expect(withMask[0]!.words[0]!.text).toBe("Source");
-    const withoutMask = captionLayers(plan(document({}, { emojis: true }), override));
+    const withoutMask = captionLayers(plan(document({}), override));
     expect(withMask.map((layer) => layer.words)).toEqual(withoutMask.map((layer) => layer.words));
-    expect(withMask[0]!.words[1]!.emoji).not.toBeNull();
   });
 
   test("renders nothing when the preset hides captions", () => {

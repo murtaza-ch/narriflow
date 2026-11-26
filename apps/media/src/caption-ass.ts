@@ -1,14 +1,9 @@
 import { brandFontKey, type RenderBrandFonts, type RenderBrandFont } from "./brand-font-resolution";
 import {
-	CAPTION_EMOJI_FONT_EM,
-	CAPTION_EMOJI_HEIGHT_EM,
-	CAPTION_EMOJI_WIDTH_EM,
 	CaptionShapingError,
 	captionGraphemes,
-	fontFileCovers,
 	isShapingSensitiveText,
 	layoutCaptionLine,
-	resolveCaptionEmoji,
 	type CaptionLineLayout,
 	type CaptionLineWord,
 } from "@narriflow/caption-fonts";
@@ -18,14 +13,21 @@ import {
 	type CaptionGlyphNotice,
 	CaptionGlyphPlanner,
 	catalogCaptionFace,
-	monochromeEmojiFace,
 	type OmittedGlyph,
 	type PlannedCluster,
-	type SkippedEmoji,
 } from "./caption-glyphs";
 import { captionWordSegmentEnd, type CompositionCaptionBlock, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import { captionUnturnedTravel, type PlacedDecoration, type PlacedGradient } from "@narriflow/caption-fonts/caption-block";
 import { ASS_BLUR_PER_SIGMA, type AssEvent, alphaByte, assAlpha, assColor, assFontSize, assText, assTime, escapeAssText, num } from "./ass-format";
+import { type CaptionEmojiCueBox, captionBlockCueBox, captionSceneEmojiCueBoxes, classicLineCueBox, classicLineReachBox } from "@narriflow/caption-scene";
+import {
+	type CaptionEmojiArtMap,
+	type CaptionEmojiGroup,
+	type CaptionEmojiLayerSummary,
+	NO_CAPTION_EMOJIS,
+	captionEmojiEvents,
+	hasCaptionEmojis,
+} from "./caption-emoji-ass";
 import { isSceneLayer, renderCaptionScene } from "./caption-scene-ass";
 import { type CaptionBlockGeometry, type CaptionBlockSlot, measureCaptionBlock } from "./caption-block-geometry";
 import {
@@ -93,9 +95,10 @@ import {
  * their typewriter reveals word by word. Karaoke is one tag at the word's start
  * and sweeps right to left on RTL words (verified on libass 0.17.4).
  *
- * ASS cannot draw colour emoji, so the active word's emoji is not in the
- * script: it comes back as an overlay schedule the FFmpeg graph composites from
- * the shared atlas (see CaptionEmojiOverlay).
+ * Emojis the plan adds to cues are the emoji layer (caption-emoji-ass.ts): each
+ * path below reports its cues' boxes, and the layer's drawings are written above
+ * every caption event of the target. Emoji typed in the text is drawn by the
+ * monochrome fallback face like any other glyph.
  *
  * A cue with a Caption Block (Dynamic Styles, ADR 0020) is painted differently:
  * libass lays out no line. Every word is measured alone
@@ -136,7 +139,6 @@ const LAYER = {
 	overlayOuter: 9,
 	overlayGlow: 10,
 	overlayText: 11,
-	emoji: 12,
 	/** The clipped highlight of a right-to-left karaoke word, above the base line. */
 	sweep: 13,
 	/** Caption Block decorations (underline, stars), their shadows below them. */
@@ -172,6 +174,8 @@ interface CueGeometry {
 	readonly baselineY: number;
 	/** Top of the line box: the highest ascent among the faces on the line. */
 	readonly lineTopY: number;
+	/** The line box's height, em: the tallest ascent plus the deepest descent among the faces on the line. */
+	readonly lineHeightEm: number;
 	/** Visual word boxes in canvas px; `anchorY` is where an event holding only that word sits so its baseline matches the line's. Null when unmeasurable. */
 	readonly words: readonly { readonly centerX: number; readonly width: number; readonly anchorY: number; readonly inkTopEm: number; readonly inkBottomEm: number; readonly eventX: number }[] | null;
 	readonly lineWidth: number | null;
@@ -191,21 +195,6 @@ export interface CaptionGeometryUnavailable {
 	readonly fontPath: string;
 }
 
-/** One emoji picture the export composites above the active word. Coordinates are canvas px after the cue's tilt. */
-export interface CaptionEmojiOverlay {
-	readonly key: string;
-	readonly column: number;
-	readonly row: number;
-	readonly startSec: number;
-	readonly endSec: number;
-	readonly centerX: number;
-	readonly centerY: number;
-	readonly widthPx: number;
-	readonly heightPx: number;
-	/** Clockwise, like the cue tilt. */
-	readonly rotationDeg: number;
-}
-
 /** A Scene Style program or its writer threw: its cues burn as the classic line instead, and the render goes on. */
 export interface CaptionSceneFailedNotice {
 	readonly code: "caption_scene_failed";
@@ -221,31 +210,57 @@ export type CaptionTrackNotice = CaptionGlyphNotice | CaptionSceneFailedNotice;
 
 export interface CaptionTrack {
 	readonly ass: string;
-	readonly emoji: readonly CaptionEmojiOverlay[];
 	readonly notices: readonly CaptionTrackNotice[];
 	/** Code points no pinned face draws, left out of the text (`captionGlyphsOmitted`). */
 	readonly omitted: readonly OmittedGlyph[];
-	/** Plan emoji with no atlas cell and no monochrome glyph, whose overlay is skipped (`captionEmojiSkipped`). */
-	readonly emojiSkipped: readonly SkippedEmoji[];
 	/** Cues whose geometry could not be measured; the typed degradation Studio mirrors. */
 	readonly geometryUnavailable: readonly CaptionGeometryUnavailable[];
+	/** The emoji layer: how many emojis were drawn and how many left out (no art, no room), by reason. */
+	readonly emojis: CaptionEmojiLayerSummary;
 }
 
 interface TrackCollector {
-	readonly emoji: CaptionEmojiOverlay[];
 	readonly notices: Map<string, CaptionGlyphNotice>;
 	readonly omitted: Map<string, OmittedGlyph>;
-	readonly emojiSkipped: SkippedEmoji[];
 	readonly geometryUnavailable: CaptionGeometryUnavailable[];
 	readonly sceneFailures: CaptionSceneFailedNotice[];
 	readonly forcedOmissions: ReadonlySet<number>;
+	/**
+	 * The emoji layer's groups (a Scene Style's cues, or one classic line or block), each path adding its own with a function
+	 * that finds its cue boxes; null when the target draws no emoji. The layer calls them inside its own guard, so a cue box
+	 * that throws costs only the emojis.
+	 */
+	readonly emojiGroups: CaptionEmojiGroup[] | null;
+	/**
+	 * Each classic line's and Caption Block's box as an emoji held over it from the cue before sees it, by cue index
+	 * (`classicLineReachBox` for a line, which the Studio cannot lay out before it shows; a block's own box); null when the
+	 * target draws no emoji.
+	 */
+	readonly reachBoxes: Map<number, () => CaptionEmojiCueBox | null> | null;
 }
 
 /**
- * Serializes the caption cues. A character no pinned face draws is left out of
- * the text and an emoji nothing draws is skipped, so the clip still renders;
- * both come back on the track for the caller to record.
- * `omitCodePoints` forces further code points out (libass reported them).
+ * The emoji group of one classic line or Caption Block: its own box, then the next cue's as a held emoji sees it, so the
+ * held emoji stays off the next cue's text (the Studio passes the same two boxes).
+ */
+function oneCueEmojiGroup(cue: CompositionCaptionVisualLayer, own: () => CaptionEmojiCueBox | null, collector: TrackCollector): CaptionEmojiGroup {
+	return {
+		layers: [cue],
+		cueBoxes: () => {
+			const box = own();
+			if (!box) return [];
+			const next = collector.reachBoxes?.get(cue.cueIndex + 1)?.() ?? null;
+			return next ? [box, next] : [box];
+		},
+	};
+}
+
+/**
+ * Serializes the caption cues and, above them, the emoji layer. A character no
+ * pinned face draws is left out of the text, so the clip still renders; it comes
+ * back on the track for the caller to record. `omitCodePoints` forces further
+ * code points out (libass reported them). `emojiArt` is the preloaded art of the
+ * plan's emojis (`loadPlanCaptionEmojiArt`); an emoji without art is left out.
  */
 export function renderCaptionTrack(input: {
 	layers: readonly CompositionCaptionVisualLayer[];
@@ -254,24 +269,37 @@ export function renderCaptionTrack(input: {
 	omitCodePoints?: ReadonlySet<number>;
 	/** Sampling rate of Scene Style tracks (default 30; libass interpolates between samples at the real rate). */
 	fps?: number;
+	emojiArt?: CaptionEmojiArtMap;
+	/** The target's inserted scenes (`insertedSceneRanges`): a Scene Style's pieces are cut at them. */
+	insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[];
 }): CaptionTrack {
 	const first = input.layers[0];
-	if (!first) return { ass: "", emoji: [], notices: [], omitted: [], emojiSkipped: [], geometryUnavailable: [] };
+	if (!first) return { ass: "", notices: [], omitted: [], geometryUnavailable: [], emojis: NO_CAPTION_EMOJIS };
 	const face = (first.preset.fontAsset ? input.fonts?.get(brandFontKey(first.preset.fontAsset))?.face : null) ?? captionFontFace(first.preset.fontName);
-	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], sceneFailures: [], forcedOmissions: input.omitCodePoints ?? new Set() };
+	const collector: TrackCollector = {
+		notices: new Map(),
+		omitted: new Map(),
+		geometryUnavailable: [],
+		sceneFailures: [],
+		forcedOmissions: input.omitCodePoints ?? new Set(),
+		emojiGroups: hasCaptionEmojis(input.layers) ? [] : null,
+		reachBoxes: hasCaptionEmojis(input.layers) ? new Map() : null,
+	};
 	const classic = (cue: CompositionCaptionVisualLayer) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector);
 	// A Scene Style target is drawn by its program across all its cues; a layer without scene facts
 	// (an untimed utterance) keeps the classic line, which every preset can draw.
 	const sceneLayers = input.layers.filter(isSceneLayer);
 	const events = [...input.layers.filter((cue) => !isSceneLayer(cue)).flatMap(classic), ...sceneEvents(sceneLayers, input, collector, classic)];
-	const ass = assScript(events, input.canvas, first.preset, face);
+	const emojiLayer = collector.emojiGroups
+		? captionEmojiEvents({ groups: collector.emojiGroups, layers: input.layers, art: input.emojiArt ?? new Map(), canvas: input.canvas, ...(input.fps ? { fps: input.fps } : {}) })
+		: { events: [], summary: NO_CAPTION_EMOJIS };
+	const ass = assScript([...events, ...emojiLayer.events], input.canvas, first.preset, face);
 	return {
 		ass,
-		emoji: collector.emoji,
 		notices: [...collector.notices.values(), ...collector.sceneFailures],
 		omitted: [...collector.omitted.values()],
-		emojiSkipped: collector.emojiSkipped,
 		geometryUnavailable: collector.geometryUnavailable,
+		emojis: emojiLayer.summary,
 	};
 }
 
@@ -282,13 +310,25 @@ export function renderCaptionTrack(input: {
  */
 function sceneEvents(
 	layers: readonly CompositionCaptionVisualLayer[],
-	input: { readonly canvas: { width: number; height: number }; readonly fps?: number | undefined },
+	input: {
+		readonly canvas: { width: number; height: number };
+		readonly fps?: number | undefined;
+		readonly insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[] | undefined;
+	},
 	collector: TrackCollector,
 	classic: (cue: CompositionCaptionVisualLayer) => AssEvent[],
 ): AssEvent[] {
 	if (layers.length === 0) return [];
+	let rendered: ReturnType<typeof renderCaptionScene>;
 	try {
-		return renderCaptionScene({ layers, canvas: input.canvas, report: collector, forcedOmissions: collector.forcedOmissions, ...(input.fps ? { fps: input.fps } : {}) }).events;
+		rendered = renderCaptionScene({
+			layers,
+			canvas: input.canvas,
+			report: collector,
+			forcedOmissions: collector.forcedOmissions,
+			...(input.fps ? { fps: input.fps } : {}),
+			...(input.insertedScenes ? { insertedScenes: input.insertedScenes } : {}),
+		});
 	} catch (error) {
 		const scene = layers[0]!.preset.scene ?? "unknown";
 		const message = error instanceof Error ? error.message : String(error);
@@ -296,6 +336,11 @@ function sceneEvents(
 		collector.sceneFailures.push({ code: "caption_scene_failed", scene, cues: layers.length, message });
 		return layers.flatMap(classic);
 	}
+	// Added only once the scene is written (a template that throws takes the classic boxes with its classic lines), and outside
+	// the scene's guard: an emoji problem must not burn the scene as classic lines.
+	const { scene, input: sceneInput, measurer } = rendered;
+	collector.emojiGroups?.push({ layers, cueBoxes: () => captionSceneEmojiCueBoxes(scene, { ...sceneInput, preset: layers[0]!.preset }, measurer.measure) });
+	return rendered.events;
 }
 
 /** The ASS script of events: header, the `Caption` and `Shape` styles, one Dialogue per event. */
@@ -351,6 +396,9 @@ function cueEvents(
 		}
 		return events;
 	}
+	const box = () => captionBlockCueBox(block, geometry.layout, geometry.words.map((word) => word.measured));
+	collector.reachBoxes?.set(cue.cueIndex, box);
+	if (collector.emojiGroups && cue.emojis.length > 0) collector.emojiGroups.push(oneCueEmojiGroup(cue, box, collector));
 	return blockCueEvents(block, geometry, canvas);
 }
 
@@ -387,7 +435,7 @@ export function captionBlockGeometry(input: {
 }): CaptionBlockGeometry {
 	const { cue } = input;
 	const customFont = cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined;
-	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], sceneFailures: [], forcedOmissions: new Set() };
+	const collector: TrackCollector = { notices: new Map(), omitted: new Map(), geometryUnavailable: [], sceneFailures: [], forcedOmissions: new Set(), emojiGroups: null, reachBoxes: null };
 	return measureCaptionBlock({ cue, canvas: input.canvas, slots: captionBlockSlots(cue, customFont, collector) });
 }
 
@@ -540,6 +588,8 @@ function classicCueEvents(
 	const cueStart = cue.activeRange.startSec;
 	const cueEnd = cue.activeRange.endSec;
 	const tilt = tiltTags(geometry);
+	collector.reachBoxes?.set(cue.cueIndex, () => classicLineReachBox(cue, classicLineMeasure(geometry, canvas).heightEm, canvas));
+	if (collector.emojiGroups && cue.emojis.length > 0) collector.emojiGroups.push(oneCueEmojiGroup(cue, () => classicLineCueBox(cue, classicLineMeasure(geometry, canvas), canvas), collector));
 
 	if (preset.backgroundColor && geometry.lineWidth !== null) {
 		const plate = plateRect(face, geometry);
@@ -660,29 +710,6 @@ function classicCueEvents(
 					common: `${tilt}${fade}`,
 				}),
 			);
-		}
-
-		if (activeWord.emoji) {
-			const placed = placeEmoji({
-				emoji: activeWord.emoji,
-				geometry,
-				centerX: box?.centerX ?? geometry.anchorX,
-				startSec: segStart,
-				endSec: segEnd,
-				cueIndex: cue.cueIndex,
-				collector,
-			});
-			if (placed) {
-				events.push({
-					layer: LAYER.emoji,
-					startSec: segStart,
-					endSec: segEnd,
-					style: "Caption",
-					text:
-						`{\\an5\\pos(${num(placed.x)},${num(placed.y)})${tilt}${fade}\\fn${placed.face.assName}\\fs${num(geometry.px * CAPTION_EMOJI_FONT_EM * placed.face.lineHeightEm)}` +
-						`\\fsp0\\bord0\\shad0\\1c${assColor(preset.primaryColor)}}${escapeAssText(activeWord.emoji.replace(/[\ufe0e\ufe0f]/g, ""))}`,
-				});
-			}
 		}
 
 		if (usesOverlay && box) {
@@ -821,7 +848,7 @@ function cueGeometry(
 	const px = preset.fontSize * fit;
 	const baselineY = anchorY + ((line.ascentEm - line.descentEm) / 2) * px;
 	const lineTopY = anchorY - ((line.ascentEm + line.descentEm) / 2) * px;
-	const base = { px, anchorX, anchorY, baselineY, lineTopY, tiltDeg, direction };
+	const base = { px, anchorX, anchorY, baselineY, lineTopY, lineHeightEm: line.ascentEm + line.descentEm, tiltDeg, direction };
 	if (!layout) return { ...base, words: null, lineWidth: null, lineCenterX: anchorX, inkTopEm: 0, inkBottomEm: 0 };
 	// libass puts the middle of its `\pos` bbox, not of the advance box, on the anchor.
 	const left = anchorX - layout.bboxCenterEm * px;
@@ -844,53 +871,15 @@ function cueGeometry(
 }
 
 /**
- * Where the active word's emoji goes: a colour picture from the shared atlas
- * (recorded as an overlay), or, when the atlas lacks that sequence, the
- * monochrome Noto glyph as an ASS event (returned, and noted as a fallback).
- * Placement is Studio's: 0.8em above the word, bottom edge on the line box top,
- * centred on the word, turning with the cue. A sequence neither draws is
- * skipped and reported.
+ * What the emoji layer's classic cue box (`classicLineCueBox`) reads of the line libass lays out: its
+ * advance and its line box. Unmeasured, the line is taken as wide as it may fit.
  */
-function placeEmoji(input: {
-	emoji: string;
-	geometry: CueGeometry;
-	centerX: number;
-	startSec: number;
-	endSec: number;
-	cueIndex: number;
-	collector: TrackCollector;
-}): { x: number; y: number; face: CaptionFace } | null {
-	const { geometry, collector } = input;
-	const boxTop = geometry.lineTopY;
-	const heightPx = CAPTION_EMOJI_HEIGHT_EM * geometry.px;
-	const centerY = boxTop - heightPx / 2;
-	const sprite = resolveCaptionEmoji(input.emoji);
-	if (sprite) {
-		const angle = (geometry.tiltDeg * Math.PI) / 180;
-		const dx = input.centerX - geometry.anchorX;
-		const dy = centerY - geometry.anchorY;
-		collector.emoji.push({
-			...sprite,
-			startSec: input.startSec,
-			endSec: input.endSec,
-			centerX: geometry.anchorX + dx * Math.cos(angle) - dy * Math.sin(angle),
-			centerY: geometry.anchorY + dx * Math.sin(angle) + dy * Math.cos(angle),
-			widthPx: CAPTION_EMOJI_WIDTH_EM * geometry.px,
-			heightPx,
-			rotationDeg: geometry.tiltDeg,
-		});
-		return null;
-	}
-	const mono = monochromeEmojiFace();
-	const glyph = input.emoji.replace(/\ufe0f/g, "");
-	// Only a single pictograph survives as one monochrome picture; a ZWJ, flag
-	// or skin-tone sequence would split into unrelated glyphs.
-	if ([...glyph].length === 1 && fontFileCovers(mono.path, glyph)) {
-		collector.notices.set(`${mono.assName}\0${input.emoji}`, { code: "glyph_fallback_used", cluster: input.emoji, font: mono.assName, sequenceSplit: false });
-		return { x: input.centerX, y: centerY, face: mono };
-	}
-	collector.emojiSkipped.push({ emoji: input.emoji, cueIndex: input.cueIndex });
-	return null;
+function classicLineMeasure(geometry: CueGeometry, canvas: { width: number; height: number }) {
+	return {
+		widthEm: geometry.lineWidth === null ? (CAPTION_FIT_WIDTH_FRACTION * canvas.width) / geometry.px : geometry.lineWidth / geometry.px,
+		heightEm: geometry.lineHeightEm,
+		px: geometry.px,
+	};
 }
 
 function stackEvents(input: {

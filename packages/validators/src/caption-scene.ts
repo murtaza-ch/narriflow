@@ -118,6 +118,14 @@ export interface CaptionSceneBrand {
   readonly secondary: CaptionSceneBrandTarget | null;
 }
 
+/**
+ * Where a Scene Style puts an added emoji when the preset's `emojiPosition` is auto (Add Emojis spec D4).
+ * `above` (the default) centres it over the cue, or under it when the caption sits in the top 30%; `below`
+ * under the cue; `beside-end` level with the cue at its reading end (right in LTR, left in RTL), for a style
+ * whose neighbour cues stay on screen above and below.
+ */
+export type CaptionSceneEmojiSlot = "above" | "below" | "beside-end";
+
 export interface CaptionSceneMeta {
   /** Picker label. */
   readonly name: string;
@@ -137,11 +145,13 @@ export interface CaptionSceneMeta {
   readonly fontName: CaptionFontName;
   /** The still the sample was judged on. */
   readonly backdrop: "dark" | "bright" | "busy";
+  /** Where an added emoji sits; absent = `above`. Every style draws emojis. */
+  readonly emojiSlot?: CaptionSceneEmojiSlot;
 }
 
 export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>> = {
-  lyrics: { name: "Lyrics", bodyPx: 92, anchorLineY: 1226, wordsPerCue: 5, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#A5EBC5", accent: "#A5EBC5" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight Bold", backdrop: "dark" },
-  dialogue: { name: "Dialogue", bodyPx: 58, anchorLineY: 1560, wordsPerCue: 5, emphasis: "auto", colours: { primary: "#111111", highlight: "#FFE14A", accent: "#2F6BFF" }, brand: { primary: { slot: "accentColor", readsOn: ["#FFFFFF"] }, secondary: { slot: "highlightColor", readsOn: ["primaryColor"] } }, fontName: "Inter SemiBold", backdrop: "bright" },
+  lyrics: { name: "Lyrics", bodyPx: 92, anchorLineY: 1226, wordsPerCue: 5, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#A5EBC5", accent: "#A5EBC5" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight Bold", backdrop: "dark", emojiSlot: "beside-end" },
+  dialogue: { name: "Dialogue", bodyPx: 58, anchorLineY: 1560, wordsPerCue: 5, emphasis: "auto", colours: { primary: "#111111", highlight: "#FFE14A", accent: "#2F6BFF" }, brand: { primary: { slot: "accentColor", readsOn: ["#FFFFFF"] }, secondary: { slot: "highlightColor", readsOn: ["primaryColor"] } }, fontName: "Inter SemiBold", backdrop: "bright", emojiSlot: "below" },
   dossier: { name: "Dossier", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#111111", highlight: "#D7263D", accent: "#F4EFE6" }, brand: { primary: null, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Courier Prime", backdrop: "bright" },
   hollow: { name: "Hollow", bodyPx: 124, anchorLineY: 1268, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#D7FF3E", accent: "#D7FF3E" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Anton", backdrop: "busy" },
   signal: { name: "Signal", bodyPx: 52, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#D8FFE9", highlight: "#FFFFFF", accent: "#39FF9C" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "accentColor" } }, fontName: "JetBrains Mono Medium", backdrop: "dark" },
@@ -228,6 +238,11 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
 
 export function captionSceneMeta(name: CaptionSceneName): CaptionSceneMeta {
   return CAPTION_SCENES[name];
+}
+
+/** Where a Scene Style puts an added emoji when the preset leaves it to the style. */
+export function captionSceneEmojiSlot(name: CaptionSceneName): CaptionSceneEmojiSlot {
+  return CAPTION_SCENES[name].emojiSlot ?? "above";
 }
 
 /** Default `positionY` (percent of frame height) of a Scene Style: its sample's anchor line. */

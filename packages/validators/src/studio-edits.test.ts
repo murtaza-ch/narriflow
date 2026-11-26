@@ -19,6 +19,7 @@ import {
   studioMusicSchema,
   studioTransitionSchema,
   studioSfxPlacementSchema,
+  withCaptionEmojis,
   type DuckingWindow,
 } from "./studio-edits";
 import type { TranscriptUtterance } from "./transcript";
@@ -1022,5 +1023,41 @@ describe("studioEdits.captionEmphasis", () => {
 
   test("stays per clip: the apply-to-all patch cannot carry it", () => {
     expect(applyStudioEditsPatchSchema.safeParse({ captionEmphasis: { "1200": "hero" } }).success).toBe(false);
+  });
+});
+
+describe("studioEdits.captionEmojis", () => {
+  test("is absent by default and keeps emojis by Word Key", () => {
+    expect(studioEditsSchema.parse({}).captionEmojis).toBeUndefined();
+    const parsed = studioEditsSchema.parse({ captionEmojis: { "1200": { id: "fire" }, "1500": { id: "thumbs-up", tone: 2 } } });
+    expect(parsed.captionEmojis).toEqual({ "1200": { id: "fire" }, "1500": { id: "thumbs-up", tone: 2 } });
+    expect(studioEditsSchema.safeParse({ captionEmojis: { "1200": { id: "fire", tone: 9 } } }).success).toBe(false);
+  });
+
+  test("withCaptionEmojis sets and removes entries, stores empty as absent and refuses more than 500", () => {
+    const base = studioEditsSchema.parse({});
+    const one = withCaptionEmojis(base, { "1200": { id: "fire" } })!;
+    expect(one.captionEmojis).toEqual({ "1200": { id: "fire" } });
+    expect(base.captionEmojis).toBeUndefined();
+    const cleared = withCaptionEmojis(one, { "1200": null })!;
+    expect("captionEmojis" in cleared).toBe(false);
+    const full = withCaptionEmojis(base, Object.fromEntries(Array.from({ length: 500 }, (_, index) => [String(index), { id: "fire" }])))!;
+    expect(withCaptionEmojis(full, { "9000": { id: "fire" } })).toBeNull();
+    expect(withCaptionEmojis(full, { "0": null, "9000": { id: "fire" } })).not.toBeNull();
+  });
+
+  test("studioEditsEqual compares id and tone, treating absent and empty alike", () => {
+    const base = studioEditsSchema.parse({});
+    const fire = studioEditsSchema.parse({ captionEmojis: { "1200": { id: "fire" } } });
+    expect(studioEditsEqual(base, studioEditsSchema.parse({ captionEmojis: {} }))).toBe(true);
+    expect(studioEditsEqual(base, fire)).toBe(false);
+    expect(studioEditsEqual(fire, studioEditsSchema.parse({ captionEmojis: { "1200": { id: "fire" } } }))).toBe(true);
+    expect(studioEditsEqual(fire, studioEditsSchema.parse({ captionEmojis: { "1200": { id: "rocket" } } }))).toBe(false);
+    expect(studioEditsEqual(fire, studioEditsSchema.parse({ captionEmojis: { "1200": { id: "fire", tone: 1 } } }))).toBe(false);
+    expect(studioEditsEqual(fire, studioEditsSchema.parse({ captionEmojis: { "1300": { id: "fire" } } }))).toBe(false);
+  });
+
+  test("stays per clip: the apply-to-all patch cannot carry it", () => {
+    expect(applyStudioEditsPatchSchema.safeParse({ captionEmojis: { "1200": { id: "fire" } } }).success).toBe(false);
   });
 });

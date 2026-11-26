@@ -10,8 +10,8 @@ import {
   FILLER_TAGGING_CHUNK_WORDS,
   fillerTagLetters,
   fillerWordKey,
-  type FillerTaggingChunk,
 } from "./filler-tagging";
+import type { TranscriptTaggingChunk } from "./transcript-tagging";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
 function word(startSec: number, text: string, endSec = startSec + 0.2): TranscriptWord {
@@ -60,7 +60,7 @@ describe("chunkTranscriptForFillerTagging", () => {
 });
 
 describe("acceptFillerTags", () => {
-  const chunk = (texts: string[]): FillerTaggingChunk =>
+  const chunk = (texts: string[]): TranscriptTaggingChunk =>
     chunkTranscriptForFillerTagging([utterance(0, texts.map((t, i) => word(i, t)))], "xx")[0]!;
 
   test("accepts an explicit non-word hesitation whose letters match the token", () => {

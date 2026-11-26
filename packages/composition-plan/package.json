@@ -18,6 +18,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@narriflow/caption-fonts": "workspace:*",
     "@narriflow/validators": "workspace:*"
   }
 }

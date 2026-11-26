@@ -4,7 +4,6 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   BrandTemplateSummary,
-  ContentPack,
   GenerationMode,
   LinkProviderId,
   RecipeSnapshot,
@@ -12,6 +11,7 @@ import type {
 import type { LinkResumeData } from "@narriflow/validators/api/ingest";
 import {
   DEFAULT_LINK_CONFIGURE_STATE,
+  linkConfigureStateFromContentPack,
   type LinkConfigureState,
 } from "../_lib/link-content-pack";
 import type { DrivePick } from "../_lib/google-drive-picker";
@@ -61,24 +61,6 @@ interface LinkImportFlowProps {
   onCommitted?: () => void;
 }
 
-function step2StateFromContentPack(contentPack: ContentPack): LinkConfigureState {
-  return {
-    mode: contentPack.mode,
-    clipLengthPreset: contentPack.clipLengthPreset,
-    captionPreset: contentPack.captionPreset,
-    defaultAspectRatio: contentPack.defaultAspectRatio,
-    autoHook: contentPack.autoHook,
-    removeSilences: contentPack.removeSilences,
-    removeFillerWords: contentPack.removeFillerWords,
-    specificMoments: contentPack.specificMoments,
-    platformTargets: contentPack.platformTargets,
-    clipCountTarget: contentPack.clipCountTarget,
-    toneConstraints: contentPack.toneConstraints.join(", "),
-    processingStartSec: contentPack.processingStartSec,
-    processingEndSec: contentPack.processingEndSec,
-  };
-}
-
 /**
  * Link-first Commit → Configure state machine (Phase 1 of the link-to-clips
  * plan). Owns all state for the link path independent of the shared
@@ -107,7 +89,7 @@ export function LinkImportFlow({
   const [mode, setMode] = useState<GenerationMode>(resumeData?.contentPack.mode ?? "clip");
   const [step2State, setStep2State] = useState<LinkConfigureState>(() =>
     resumeData
-      ? step2StateFromContentPack(resumeData.contentPack)
+      ? linkConfigureStateFromContentPack(resumeData.contentPack)
       : {
           ...DEFAULT_LINK_CONFIGURE_STATE,
           mode: "clip",

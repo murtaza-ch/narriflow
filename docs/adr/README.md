@@ -27,3 +27,4 @@ Add an ADR when a decision is costly to reverse, would surprise a reader without
 - [0019: Postgres owns execution; Workflows schedules it](0019-serverless-execution.md)
 - [0020: Caption Blocks keep both renderers; shared geometry places every word](0020-caption-block-geometry.md)
 - [0021: Scene Styles are programs; both renderers only measure and paint a shared Caption Scene](0021-caption-scenes.md)
+- [0022: Caption Emojis are compiled vector art in one Emoji Layer, anchored by Word Key and tagged at selection preparation](0022-caption-emojis.md)

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { FILLER_TAG_MAX_KEYS, fillerWordKey, type TranscriptUtterance, type TranscriptWord } from "@narriflow/validators";
-import { FILLER_TAGGING_DEFAULTS, tagTranscriptFillers, type FillerTaggingConfig } from "./clip-filler-tagging";
+import { tagTranscriptFillers, type FillerTaggingConfig } from "./clip-filler-tagging";
+import { TAGGING_REQUEST_DEFAULTS } from "./transcript-tagging-request";
 
 const w = (startSec: number, text: string): TranscriptWord => ({ word: text, startSec, endSec: startSec + 0.2, confidence: null });
 const utterances = (count: number, filler = (k: number) => k === 5): TranscriptUtterance[] => Array.from({ length: count }, (_, i) => ({
@@ -83,7 +84,7 @@ describe("tagTranscriptFillers", () => {
   });
 
   test("incomplete, failed, truncated, oversized or malformed streams fail their chunk only", async () => {
-    const huge = "x".repeat(FILLER_TAGGING_DEFAULTS.maxResponseBytes + 10);
+    const huge = "x".repeat(TAGGING_REQUEST_DEFAULTS.maxResponseBytes + 10);
     for (const reply of [
       () => sse([{ event: "response.incomplete", data: { type: "response.incomplete", response: { status: "incomplete" } } }]),
       () => sse([{ event: "response.failed", data: { type: "response.failed", response: { status: "failed" } } }]),
@@ -108,7 +109,7 @@ describe("tagTranscriptFillers", () => {
       `data: ${P}\n\n`, // no event name
       `event: response.completed\ndata: ${P}`, // unfinished at end of stream
       `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "in_progress" } })}\n\n`,
-      `event: response.completed\ndata: ${JSON.stringify({ ...completed([hesitation(5)]), padding: "x".repeat(FILLER_TAGGING_DEFAULTS.maxLineBytes + 1) })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({ ...completed([hesitation(5)]), padding: "x".repeat(TAGGING_REQUEST_DEFAULTS.maxLineBytes + 1) })}\n\n`,
     ];
     for (const text of failing) {
       const outcome = await tagTranscriptFillers(utterances(1), "de", config(async () => raw(text)));

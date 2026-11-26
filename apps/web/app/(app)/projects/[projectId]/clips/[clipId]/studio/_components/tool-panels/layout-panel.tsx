@@ -6,7 +6,6 @@ import { PanelButton, PanelSegmented, softFieldProps, softFocusWithin } from "./
 import { AlertTriangle, Ban, Check, ImageIcon, Link2, Palette } from "lucide-react";
 import {
   SCENE_LAYOUT_MIN_DURATION_SEC,
-  removeSpeakerLayoutOverrideRange,
   resolveEffectiveFramingMode,
   type SceneLayoutPreset,
 } from "@narriflow/validators";
@@ -14,7 +13,7 @@ import { useStudio } from "../studio-shell";
 import { SceneLayoutPresetGrid } from "./framing-preset-thumbnails";
 import {
   activeSceneLayoutChoice,
-  applySceneLayoutChoice,
+  sceneLayoutEdits,
   sceneLayoutEvidenceHint,
   type SceneLayoutChoice,
 } from "./layout-panel-model";
@@ -87,14 +86,8 @@ export function LayoutPanel() {
 
   const selectLayout = (choice: SceneLayoutChoice) => {
     if (!canApplyLayout || (!applyToAllScenes && choice === selected)) return;
-    const startSec = applyToAllScenes ? 0 : layoutScene.startSec!;
-    const endSec = applyToAllScenes
-      ? editedTimeMap.editedDurationSec
-      : layoutScene.endSec!;
-    setStudioEdits((previous) => ({
-      ...previous,
-      sceneLayouts: applySceneLayoutChoice({
-        selections: previous.sceneLayouts,
+    setStudioEdits((previous) =>
+      sceneLayoutEdits(previous, {
         aspectRatio,
         scene: layoutScene,
         applyToAllScenes,
@@ -102,11 +95,7 @@ export function LayoutPanel() {
         choice,
         id: `scene-layout-${crypto.randomUUID()}`,
       }),
-      speakerLayoutOverrides: removeSpeakerLayoutOverrideRange(
-        previous.speakerLayoutOverrides,
-        { aspectRatio, startSec, endSec },
-      ),
-    }));
+    );
   };
 
   const evidenceHint = (preset: SceneLayoutPreset) =>

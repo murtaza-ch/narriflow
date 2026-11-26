@@ -160,6 +160,7 @@ function harness(
             sourceMimeType: "video/mp4",
             sourceType: "link",
             sourceEdgeSec: 600,
+            renderFrameRate: { numerator: 30000, denominator: 1001 },
           },
         };
       },
@@ -362,6 +363,7 @@ describe("Studio bootstrap", () => {
         sourceKind: "video",
         can1080pExport: true,
         captionLanguage: "ur",
+        renderFrameRate: { numerator: 30000, denominator: 1001 },
       },
       editor: { revision: 7, document: { version: 1 } },
       source: { videoUrl: "https://signed.test/sources/a.mp4", previewId: "sources/a.mp4", purged: false },

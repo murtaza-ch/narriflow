@@ -33,6 +33,7 @@ export interface RecipeDraft {
   autoHook: boolean;
   removeSilences: boolean;
   removeFillerWords: boolean;
+  addEmojis: boolean;
   finishing: FinishingDraft;
 }
 
@@ -47,6 +48,7 @@ export function emptyRecipeDraft(defaultBrandProfileId: string | null): RecipeDr
     autoHook: true,
     removeSilences: false,
     removeFillerWords: false,
+    addEmojis: false,
     finishing: EMPTY_FINISHING_DRAFT,
   };
 }
@@ -62,6 +64,7 @@ export function draftFromRecipe(recipe: RecipeSnapshot): RecipeDraft {
     autoHook: recipe.contentPack.autoHook,
     removeSilences: recipe.contentPack.removeSilences,
     removeFillerWords: recipe.contentPack.removeFillerWords,
+    addEmojis: recipe.contentPack.addEmojis,
     finishing: draftFromFinishing(recipe.finishing),
   };
 }
@@ -90,6 +93,7 @@ export function recipeFromDraft(
     autoHook: draft.autoHook,
     removeSilences: draft.removeSilences,
     removeFillerWords: draft.removeFillerWords,
+    addEmojis: draft.addEmojis,
   });
   if (!contentPack.success) return { error: "These generation settings are not valid together." };
   const input = recipeInputSchema.safeParse({

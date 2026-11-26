@@ -10,6 +10,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@narriflow/caption-emoji": "workspace:*",
     "@narriflow/caption-fonts": "workspace:*",
     "@narriflow/caption-scene": "workspace:*",
     "@narriflow/composition-plan": "workspace:*",

@@ -76,7 +76,7 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     await this.groupFor(attempt, id);
     return true;
   }
-  async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: { storageKey: string; sizeBytes: number; durationSec: number; captionDiagnostics?: { omittedCodePoints: string[]; skippedEmoji: string[] } | null; brollCredits?: Prisma.InputJsonValue | null }) {
+  async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: { storageKey: string; sizeBytes: number; durationSec: number; captionDiagnostics?: { omittedCodePoints: string[] } | null; brollCredits?: Prisma.InputJsonValue | null }) {
     return (await this.groupFor(attempt, id)).complete(id, input);
   }
   async failClipRenderVariant(attempt: WorkflowAttemptRef, id: string, code: string, disposition: "retryable" | "permanent") {

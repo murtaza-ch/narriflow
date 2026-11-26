@@ -340,7 +340,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       projectId: f.project.id,
       intent: { kind: "set_caption_preset", captionPreset },
     });
-    expect(result).toEqual({ updated: 2 });
+    expect(result).toEqual({ updated: 2, captionEmojisAdded: 0, captionEmojisStale: 0 });
 
     const [clips, renderCount, obligations] = await Promise.all([
       prisma.clip.findMany({
@@ -375,7 +375,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         projectId: f.project.id,
         intent: { kind: "set_caption_preset", captionPreset },
       }),
-    ).resolves.toEqual({ updated: 0 });
+    ).resolves.toEqual({ updated: 0, captionEmojisAdded: 0, captionEmojisStale: 0 });
     expect(
       await prisma.mediaCleanupObligation.count({
         where: { clipId: { in: [f.clip.id, second.id] } },
@@ -408,7 +408,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       },
     });
 
-    expect(result).toEqual({ updated: 1 });
+    expect(result).toEqual({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
   }));
 
   test("two different full replacements from one revision have one winner", scopedDatabase.bind(async () => {
@@ -682,7 +682,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
     releaseCommit();
 
-    await expect(bulk).resolves.toEqual({ updated: 2 });
+    await expect(bulk).resolves.toEqual({ updated: 2, captionEmojisAdded: 0, captionEmojisStale: 0 });
     const clips = await prisma.clip.findMany({
       where: { id: { in: [f.clip.id, second.id] } },
       orderBy: { index: "asc" },

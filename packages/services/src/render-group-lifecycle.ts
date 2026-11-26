@@ -82,8 +82,8 @@ export type RenderGroupInputPreparation = { kind: "ready"; group: RenderGroup; p
 function captionDiagnosticsColumn(
   diagnostics: ClipRenderCaptionDiagnostics | null | undefined,
 ): Prisma.InputJsonValue | typeof Prisma.DbNull {
-  if (!diagnostics || diagnostics.omittedCodePoints.length + diagnostics.skippedEmoji.length === 0) return Prisma.DbNull;
-  return { omittedCodePoints: [...diagnostics.omittedCodePoints], skippedEmoji: [...diagnostics.skippedEmoji] };
+  if (!diagnostics || diagnostics.omittedCodePoints.length === 0) return Prisma.DbNull;
+  return { omittedCodePoints: [...diagnostics.omittedCodePoints] };
 }
 export interface RenderGroupAdmission {
   readonly configuration: RenderGroupConfiguration;

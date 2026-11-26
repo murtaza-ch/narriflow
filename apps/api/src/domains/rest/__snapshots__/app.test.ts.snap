@@ -1931,6 +1931,11 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
       "GenerationSettings": {
         "additionalProperties": false,
         "properties": {
+          "addEmojis": {
+            "default": false,
+            "description": "Place emojis on each clip's captions, chosen by AI from what is said",
+            "type": "boolean",
+          },
           "autoHook": {
             "default": true,
             "type": "boolean",
@@ -3125,6 +3130,11 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
           "generation": {
             "additionalProperties": false,
             "properties": {
+              "addEmojis": {
+                "default": false,
+                "description": "Place emojis on each clip's captions, chosen by AI from what is said",
+                "type": "boolean",
+              },
               "autoHook": {
                 "default": true,
                 "type": "boolean",

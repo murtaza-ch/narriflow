@@ -5,14 +5,14 @@ import { renderCaptionTrack } from "./caption-ass";
 
 test("a classic caption ends at its cue boundary even when the final word overlaps the next cue", () => {
   const layer: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0,
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0,
     activeRange: { startSec: 0, endSec: 0.6 },
     anchor: { xPct: 50, yPct: 72 },
     destination: { x: 0, y: 0, width: 1080, height: 1920 },
     rotationDeg: 0, opacity: 1, zIndex: 40,
     preset: getCaptionPresetById("flip")!.preset,
     language: "ur",
-    words: [{ text: "نہیں", emoji: null, startSec: 0, endSec: 0.8 }],
+    words: [{ text: "نہیں", startSec: 0, endSec: 0.8 }],
   };
   const { ass } = renderCaptionTrack({ layers: [layer], canvas: { width: 1080, height: 1920 } });
   const dialogue = ass.split("\n").filter((line) => line.startsWith("Dialogue:"));
@@ -27,20 +27,20 @@ test("a classic caption ends at its cue boundary even when the final word overla
 function render(id: string, texts = ["READY", "TO", "GO"]) {
   const preset = getCaptionPresetById(id)!.preset;
   const cue: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0,
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0,
     activeRange: { startSec: 0, endSec: 1.5 },
     anchor: { xPct: 50, yPct: 72 },
     destination: { x: 0, y: 0, width: 1080, height: 1920 },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset,
-    words: texts.map((text, index) => ({ text, emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    words: texts.map((text, index) => ({ text, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
   };
   return renderCaptionTrack({ layers: [cue], canvas: { width: 1080, height: 1920 } }).ass;
 }
 
-function track(id: string, words: Array<{ text: string; emoji: string | null }>) {
+function track(id: string, words: Array<{ text: string }>) {
   const preset = getCaptionPresetById(id)!.preset;
   const cue: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0,
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0,
     activeRange: { startSec: 0, endSec: words.length * 0.5 },
     anchor: { xPct: 50, yPct: 72 },
     destination: { x: 0, y: 0, width: 1080, height: 1920 },
@@ -53,12 +53,12 @@ function track(id: string, words: Array<{ text: string; emoji: string | null }>)
 function cue(id: string, words: Array<string | { text: string; spaceBefore?: boolean }>, options: { language?: string | null; yPct?: number } = {}) {
   const preset = getCaptionPresetById(id)!.preset;
   const layer: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0,
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0,
     activeRange: { startSec: 0, endSec: words.length * 0.5 },
     anchor: { xPct: 50, yPct: options.yPct ?? 72 },
     destination: { x: 0, y: 0, width: 1080, height: 1920 },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset,
-    words: words.map((word, index) => ({ ...(typeof word === "string" ? { text: word } : word), emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    words: words.map((word, index) => ({ ...(typeof word === "string" ? { text: word } : word), startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
     language: options.language ?? null,
   };
   return renderCaptionTrack({ layers: [layer], canvas: { width: 1080, height: 1920 } });
@@ -105,7 +105,7 @@ describe("caption ASS paint contract", () => {
   });
 
   test("text drawn by a fallback face is measured like any other: pill and overlay stay", () => {
-    const result = track("electric", [{ text: "READY💰", emoji: null }, { text: "TO", emoji: null }, { text: "GO", emoji: null }]);
+    const result = track("electric", [{ text: "READY💰" }, { text: "TO" }, { text: "GO" }]);
     expect(result.geometryUnavailable).toEqual([]);
     expect(events(result.ass).some((event) => event.style === "Shape")).toBe(true);
     // The money bag is not in Montserrat: it is drawn by the pinned monochrome emoji face, switched in and out explicitly.
@@ -130,7 +130,7 @@ describe("caption ASS paint contract", () => {
   });
 
   test("a code point no pinned face has is left out alone and recorded, the cue still renders", () => {
-    const result = track("electric", [{ text: "hel\u{13000}lo", emoji: null }, { text: "world", emoji: null }]);
+    const result = track("electric", [{ text: "hel\u{13000}lo" }, { text: "world" }]);
     expect(result.omitted).toEqual([{ codePoint: "U+13000", cueIndex: 0 }]);
     expect(result.ass).not.toContain("\u{13000}");
     expect(result.ass).toContain("hello");
@@ -140,9 +140,9 @@ describe("caption ASS paint contract", () => {
   test("libass-reported code points are forced out of the text on a re-render", () => {
     const preset = getCaptionPresetById("electric")!.preset;
     const cue: CompositionCaptionVisualLayer = {
-      id: "caption:0", kind: "caption", cueIndex: 2, activeRange: { startSec: 0, endSec: 1 }, anchor: { xPct: 50, yPct: 72 },
+      id: "caption:0", kind: "caption", emojis: [], cueIndex: 2, activeRange: { startSec: 0, endSec: 1 }, anchor: { xPct: 50, yPct: 72 },
       destination: { x: 0, y: 0, width: 1080, height: 1920 }, rotationDeg: 0, opacity: 1, zIndex: 40, preset,
-      words: [{ text: "AB\u2605", emoji: null, startSec: 0, endSec: 1 }],
+      words: [{ text: "AB\u2605", startSec: 0, endSec: 1 }],
     };
     const retried = renderCaptionTrack({ layers: [cue], canvas: { width: 1080, height: 1920 }, omitCodePoints: new Set([0x2605]) });
     expect(retried.ass).not.toContain("\u2605");
@@ -151,35 +151,9 @@ describe("caption ASS paint contract", () => {
   });
 
   test("ZWJ, flag and skin-tone clusters are one typewriter letter", () => {
-    const { ass, notices } = track("typewriter", [{ text: "👨\u200d👩\u200d👧", emoji: null }]);
+    const { ass, notices } = track("typewriter", [{ text: "👨\u200d👩\u200d👧" }]);
     for (const event of events(ass).filter((candidate) => candidate.text.includes("\\ko"))) expect(event.text.match(/\\ko\d+/g)).toHaveLength(1);
     expect(notices.some((notice) => notice.code === "glyph_fallback_used" && notice.sequenceSplit)).toBe(true);
-  });
-
-  test("the active word's emoji is an atlas overlay above the word, not ASS text", () => {
-    const { ass, emoji } = track("electric", [{ text: "MONEY", emoji: "💰" }, { text: "NOW", emoji: null }]);
-    expect(ass).not.toContain("💰");
-    expect(emoji).toHaveLength(1);
-    const [overlay] = emoji;
-    expect(overlay).toMatchObject({ key: "1f4b0", startSec: 0, endSec: 0.5, rotationDeg: 0 });
-    // Bottom edge on the line box top (0.8em above the word), centred on the word, inside the 1080x1920 canvas.
-    expect(overlay!.centerY + overlay!.heightPx / 2).toBeLessThan(0.72 * 1920);
-    expect(overlay!.centerX).toBeGreaterThan(0);
-    expect(overlay!.centerX).toBeLessThan(1080 / 2);
-    expect(overlay!.widthPx / overlay!.heightPx).toBeCloseTo(1, 5);
-  });
-
-  test("a plan emoji outside the atlas falls back to a monochrome glyph or is skipped, never failing the render", () => {
-    const fallback = track("electric", [{ text: "HELLO", emoji: "\u{1F600}" }]);
-    expect(fallback.emoji).toHaveLength(0);
-    expect(fallback.ass).toContain("\\fnNoto Emoji Regular");
-    expect(fallback.notices).toEqual([expect.objectContaining({ code: "glyph_fallback_used", cluster: "\u{1F600}" })]);
-    expect(fallback.emojiSkipped).toEqual([]);
-    const flag = track("electric", [{ text: "HELLO", emoji: "🇵🇰" }]);
-    expect(flag.emoji).toHaveLength(0);
-    expect(flag.emojiSkipped).toEqual([{ emoji: "🇵🇰", cueIndex: 0 }]);
-    expect(flag.ass).toContain("HELLO");
-    expect(track("electric", [{ text: "HELLO", emoji: "\u{13000}" }]).emojiSkipped).toEqual([{ emoji: "\u{13000}", cueIndex: 0 }]);
   });
 
   test("transcript text cannot inject ASS override tags", () => {
@@ -325,12 +299,12 @@ describe("classic preset snapshot", () => {
     const layers = fixture.map((entry, cueIndex): CompositionCaptionVisualLayer => {
       const cueStartSec = cueIndex * 2;
       return {
-        id: `caption:${cueIndex}`, kind: "caption", cueIndex,
+        id: `caption:${cueIndex}`, kind: "caption", emojis: [], cueIndex,
         activeRange: { startSec: cueStartSec, endSec: cueStartSec + 1.5 },
         anchor: { xPct: 50, yPct: 72 },
         destination: { x: 0, y: 0, width: 1080, height: 1920 },
         rotationDeg: 0, opacity: 1, zIndex: 40, preset,
-        words: entry.words.map((word, index) => ({ ...word, emoji: null, startSec: cueStartSec + index * 0.5, endSec: cueStartSec + (index + 1) * 0.5 })),
+        words: entry.words.map((word, index) => ({ ...word, startSec: cueStartSec + index * 0.5, endSec: cueStartSec + (index + 1) * 0.5 })),
         language: entry.language,
       };
     });

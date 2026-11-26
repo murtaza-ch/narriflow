@@ -259,6 +259,16 @@ describe("REST v1 idempotency and errors", () => {
       expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: "drive-file-1:submit" }) }));
   }));
 
+  test("addEmojis rides in the generation context's Content Pack to intake", bindServiceTestEnvironment(async () => {
+    const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
+    const { call } = harness();
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    expect((await call("/projects", { method: "POST", idempotencyKey: "emoji-on", json: { url, generation: { addEmojis: true } } })).status).toBe(202);
+    expect((await call("/projects", { method: "POST", idempotencyKey: "emoji-off", json: { url, generation: {} } })).status).toBe(202);
+    expect(intake.mock.calls[0]![2]).toMatchObject({ generationContext: { contentPack: { addEmojis: true } } });
+    expect(intake.mock.calls[1]![2]).toMatchObject({ generationContext: { contentPack: { addEmojis: false } } });
+  }));
+
   test("finishing rides in the generation context to intake, and an invalid one is refused before any work", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call } = harness();
@@ -851,9 +861,15 @@ describe("REST v1 Recipes", () => {
     const listed = await (await call("/recipes")).json();
     expect(listed).toEqual({ recipes: [{
       recipeId: RECIPE_ID, name: "Weekly show", revision: 3, brandProfileId: BRAND_ID, languageCode: "en", finishing: null, updatedAt: "2026-10-02T00:00:00.000Z",
-      generation: { clipCountTarget: 6, clipLengthPreset: "auto", defaultAspectRatio: "1:1", captionPreset: "brand_default", mode: "clip", autoHook: true, removeSilences: false, removeFillerWords: false, specificMoments: "", processingStartSec: null, processingEndSec: null },
+      generation: { clipCountTarget: 6, clipLengthPreset: "auto", defaultAspectRatio: "1:1", captionPreset: "brand_default", mode: "clip", autoHook: true, removeSilences: false, removeFillerWords: false, addEmojis: false, specificMoments: "", processingStartSec: null, processingEndSec: null },
     }] });
     expect(await (await call(`/recipes/${RECIPE_ID}`)).json()).toEqual({ recipe: listed.recipes[0] });
+  }));
+
+  test("a Recipe that adds emojis reads back with addEmojis on", bindServiceTestEnvironment(async () => {
+    spy(recipeService, "get").mockResolvedValue(snapshot({ contentPack: buildGenerationContentPack({ addEmojis: true }) }) as never);
+    const { call } = harness();
+    expect((await (await call(`/recipes/${RECIPE_ID}`)).json()).recipe.generation).toMatchObject({ addEmojis: true, removeFillerWords: false });
   }));
 
   test("an unknown Recipe is a 404 with a stable code", bindServiceTestEnvironment(async () => {

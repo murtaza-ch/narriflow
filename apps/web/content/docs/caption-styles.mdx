@@ -470,6 +470,24 @@ A Motion style offers fewer controls, because the style owns its motion: **Size*
 
 Subtitle files (SRT and WebVTT) and editor timelines keep the transcript's words as they are. Dynamic and Motion styles change only how the burned-in captions look.
 
+## Emojis
+
+Narriflow can place emojis next to your captions in every style: Dynamic, Motion and classic, in right-to-left languages too. An emoji appears with the word it belongs to and stays until the next emoji in that caption or until the caption ends. It sits above or below the caption, or beside it in styles that need the space, and never covers the words. If a caption has no room for one, that emoji is left out.
+
+**At import.** Turn on **Add emojis** when you upload a video, import a link, set up a Recipe or regenerate clips. AI reads the transcript in any language and picks words where an emoji adds something at a glance, from all 2,317 of Narriflow's emojis. When a line describes a moment, such as "time for my morning coffee", it can use a two-emoji badge for it. It skips names, numbers and filler words, and gives serious passages, such as an accident or an illness, no emoji. It never guesses a skin tone: emojis with skin use the clip's **Skin tone**. Each clip starts with these emojis at the Balanced density. In the API it is `addEmojis` in the generation settings. Adding emojis uses no credits.
+
+**In Studio.** Open **Captions** and find **Emojis**.
+
+- The switch shows or hides every emoji in the clip without deleting them.
+- **Add with AI** picks emojis for this clip. **How many emojis** sets the density: Light keeps only the emojis the AI is surest of, at most one about every 5 seconds; Balanced (the default) keeps clear matches too, every 2.5 seconds at most; Expressive keeps every match, every 1.5 seconds at most. The same emoji does not come back within 20 seconds. **Regenerate** replaces every emoji in the clip and asks first if you changed any by hand. **Remove all** clears them. Each of these is one undo step.
+- Under **On screen now**, tap a word to add, change or remove its emoji. In the transcript, each subtitle line shows its emojis, and you can add one to the line.
+- The picker holds all 2,317 emojis. Search by name, keyword or a badge's phrase, or paste an emoji, a skin-toned one included. It keeps your recent picks. Emojis with skin carry a small dot and take the tone chosen at the bottom of the picker, which starts at the clip's Skin tone.
+- Emojis stay on their words when you edit the text, cut or trim. An emoji on a word that is cut or censored is not shown, and comes back if you restore the word.
+
+**Colours follow the template.** Narriflow draws its own emoji art and colours it from the caption style's text, hero and accent colours, so the emojis match the captions and your Brand Profile's colours. Every emoji follows the same colours, faces included. A word with an emoji becomes its line's highlighted word in styles that highlight one. **Emoji colors** lets you pick **Match template colors**, one of four ready palettes, or your own three colours. You can also set the emoji size, its position (Auto, Above or Below), the white sticker outline and the **Skin tone**. Skin tone is the tone of every emoji with skin that the AI adds, so changing it updates them; an emoji you picked yourself keeps the tone you chose. Applying a style with emojis on to all clips adds emojis to the clips that have none.
+
+An emoji you type into the caption text is part of the text, not one of these emojis: it is drawn in a single colour, and the emoji switch does not affect it. Subtitle files never contain the added emojis.
+
 ## Classic styles
 
 Classic styles are grouped as Bold, Clean, Expressive and Effects. Use their IDs, such as `bold-pop` or `karaoke`, the same way. The [API reference](/docs/api/introduction) lists every ID.

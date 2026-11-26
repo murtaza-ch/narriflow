@@ -10,11 +10,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
-    "./emoji": {
-      "types": "./src/emoji.ts",
-      "default": "./src/emoji.ts"
+    "./graphemes": {
+      "types": "./src/graphemes.ts",
+      "default": "./src/graphemes.ts"
     },
-    "./emoji/atlas.png": "./emoji/atlas.png",
     "./locale-precedence": {
       "types": "./src/locale-precedence.ts",
       "default": "./src/locale-precedence.ts"

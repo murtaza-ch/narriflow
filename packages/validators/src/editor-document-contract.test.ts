@@ -406,4 +406,49 @@ describe("Clip Editor Document", () => {
     expect(applyEditorAction(full, { type: "setCaptionEmphasis", keys: ["5000"], value: "hero" })).toBe(full);
     expect(applyEditorAction(full, { type: "setCaptionEmphasis", keys: ["0"], value: "hero" }).studioEdits.captionEmphasis?.["0"]).toBe("hero");
   });
+
+  test("caption emojis are strict, one undo step per action, capped and no-op stable", () => {
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmojis", entries: { "1200": { id: "fire" } } }).success).toBe(true);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmojis", entries: { "1200": null } }).success).toBe(true);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmojis", entries: {} }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmojis", entries: { "1.2": { id: "fire" } } }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmojis", entries: { "1200": { id: "Fire" } } }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "setCaptionEmojis", entries: { "1200": { id: "fire" } }, extra: 1 }).success).toBe(false);
+    expect(editorActionSchema.safeParse({ type: "replaceCaptionEmojis", value: {} }).success).toBe(true);
+    expect(editorActionSchema.safeParse({ type: "replaceCaptionEmojis", value: { "1200": null } }).success).toBe(false);
+
+    const base = editorDocumentSchema.parse(currentDocument());
+    let history = createEditorHistory(base);
+    history = applyWithHistory(history, { type: "setCaptionEmojis", entries: { "1200": { id: "fire" }, "1500": { id: "thumbs-up", tone: 3 } } });
+    expect(history.present.studioEdits.captionEmojis).toEqual({ "1200": { id: "fire" }, "1500": { id: "thumbs-up", tone: 3 } });
+    history = applyWithHistory(history, { type: "setCaptionEmojis", entries: { "1200": null, "1800": { id: "rocket" } } });
+    expect(history.present.studioEdits.captionEmojis).toEqual({ "1500": { id: "thumbs-up", tone: 3 }, "1800": { id: "rocket" } });
+    expect(history.past).toHaveLength(2);
+    expect(editorDocumentSchema.parse(history.present)).toEqual(history.present);
+
+    // Same refs, or removing an absent key, change nothing.
+    expect(applyWithHistory(history, { type: "setCaptionEmojis", entries: { "1800": { id: "rocket" } } })).toBe(history);
+    expect(applyWithHistory(history, { type: "setCaptionEmojis", entries: { "9999": null } })).toBe(history);
+    expect(applyWithHistory(history, { type: "setCaptionEmojis", entries: { "1500": { id: "thumbs-up" } } })).not.toBe(history);
+
+    // Regenerate replaces every emoji in one step; Remove all drops the field.
+    const regenerated = applyWithHistory(history, { type: "replaceCaptionEmojis", value: { "2100": { id: "brain" } } });
+    expect(regenerated.present.studioEdits.captionEmojis).toEqual({ "2100": { id: "brain" } });
+    expect(regenerated.past).toHaveLength(3);
+    const removed = applyWithHistory(regenerated, { type: "replaceCaptionEmojis", value: {} });
+    expect("captionEmojis" in removed.present.studioEdits).toBe(false);
+    expect(undoEditor(removed).present.studioEdits.captionEmojis).toEqual({ "2100": { id: "brain" } });
+    expect(undoEditor(undoEditor(removed)).present.studioEdits.captionEmojis).toEqual(history.present.studioEdits.captionEmojis);
+    expect(redoEditor(undoEditor(removed)).present.studioEdits.captionEmojis).toBeUndefined();
+    expect(applyWithHistory(removed, { type: "replaceCaptionEmojis", value: {} })).toBe(removed);
+
+    const value = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [String(index), { id: "fire" }]));
+    const full = applyEditorAction(base, { type: "replaceCaptionEmojis", value });
+    expect(Object.keys(full.studioEdits.captionEmojis ?? {})).toHaveLength(500);
+    expect(applyEditorAction(full, { type: "setCaptionEmojis", entries: { "5000": { id: "fire" } } })).toBe(full);
+    expect(applyEditorAction(full, { type: "setCaptionEmojis", entries: { "0": { id: "rocket" } } }).studioEdits.captionEmojis?.["0"]).toEqual({ id: "rocket" });
+
+    // Reset to original restores the original's emojis.
+    expect(applyEditorAction(regenerated.present, { type: "reset", original: base }).studioEdits.captionEmojis).toBeUndefined();
+  });
 });

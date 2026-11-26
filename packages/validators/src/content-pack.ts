@@ -52,6 +52,8 @@ export const contentPackSchema = z.object({
   autoHook: z.boolean().default(true),
   removeSilences: z.boolean().default(false),
   removeFillerWords: z.boolean().default(false),
+  /** AI places emojis on each new clip's captions; at import it alone decides the clip preset's `emojis`. */
+  addEmojis: z.boolean().default(false),
   specificMoments: z.string().max(500).default(""),
   processingStartSec: z.number().int().min(0).nullable().default(null),
   processingEndSec: z.number().int().min(0).nullable().default(null),

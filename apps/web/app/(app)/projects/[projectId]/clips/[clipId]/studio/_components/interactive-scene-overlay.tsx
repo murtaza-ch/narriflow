@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useMotionValue } from "framer-motion";
 import { sceneCuesFromLayers } from "@narriflow/caption-scene";
-import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import type { CompositionActiveRange, CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
 import { CaptionSceneLayers, captionSceneBoundsAt, useCaptionScene } from "./caption-scene-painter";
 import { DragResizeHandles, SelectionFrame, SnapGuideLines } from "./interactive-caption-overlay";
+import { SceneCaptionEmojis } from "./emoji/scene-caption-emojis";
 
 /**
  * The on-video caption of a Scene Style (ADR 0021). A scene draws all the cues of the target at once
@@ -19,20 +20,25 @@ import { DragResizeHandles, SelectionFrame, SnapGuideLines } from "./interactive
 export function InteractiveSceneOverlay({
   videoContainerRef,
   layers,
+  insertedScenes,
 }: {
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
   layers: readonly CompositionCaptionVisualLayer[];
+  /** The target's inserted scenes (`insertedSceneRanges`): the scene is cut at them. */
+  insertedScenes: readonly CompositionActiveRange[];
 }) {
-  const { setCaptionPreset, captionSelected, selectCaption, deselectCaption, endCoalesce, playbackClock } = useStudio(
-    "setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "endCoalesce", "playbackClock",
+  const { setCaptionPreset, captionSelected, selectCaption, deselectCaption, endCoalesce, playbackClock, clipInfo } = useStudio(
+    "setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "endCoalesce", "playbackClock", "clipInfo",
   );
+  // The export's frame grid: the scene and its emojis are planned for the rate the clip renders at.
+  const fps = clipInfo.renderFrameRate.numerator / clipInfo.renderFrameRate.denominator;
   const first = layers[0]!;
   const preset = first.preset;
   const canvas = useMemo(() => ({ width: first.destination.width, height: first.destination.height }), [first.destination.width, first.destination.height]);
 
   const input = useMemo(
-    () => ({ preset, cues: sceneCuesFromLayers(layers), canvas, anchor: first.anchor, language: first.language }),
-    [preset, layers, canvas, first.anchor, first.language],
+    () => ({ preset, cues: sceneCuesFromLayers(layers), canvas, anchor: first.anchor, language: first.language, insertedScenes, fps }),
+    [preset, layers, canvas, first.anchor, first.language, insertedScenes, fps],
   );
   const built = useCaptionScene(input);
 
@@ -135,6 +141,7 @@ export function InteractiveSceneOverlay({
       <SnapGuideLines guides={snapGuides} />
       <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: 5, pointerEvents: "none" }}>
         <CaptionSceneLayers built={built} canvas={canvas} scale={scale} timeSource={playbackClock} />
+        <SceneCaptionEmojis built={built} layers={layers} scale={scale} timeSource={playbackClock} />
       </div>
       {bounds ? (
         <div

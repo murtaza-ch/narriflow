@@ -2,8 +2,14 @@ import { z } from "zod";
 import {
   CAPTION_EMPHASIS_OVERRIDE_LIMIT,
   captionEmphasisOverrideSchema,
+  captionWordKeySchema,
   type CaptionEmphasisOverride,
 } from "./caption-emphasis";
+import {
+  CAPTION_EMOJI_LIMIT,
+  captionEmojisSchema,
+  type CaptionEmojiRef,
+} from "./caption-emojis";
 import { logoPositionSchema } from "./logo-position";
 import {
   sourceRangeToEdited,
@@ -510,9 +516,6 @@ export const studioVisualBrollPlacementSchema = z.strictObject({
   path: ["endSec"],
 });
 
-/** A Word Key: a word's source start in whole milliseconds. */
-export const captionWordKeySchema = z.string().regex(/^\d+$/);
-
 /**
  * Caption emphasis overrides by Word Key (a word's source start in whole
  * milliseconds). Overrides whose key matches no word are kept and ignored.
@@ -521,6 +524,20 @@ export const studioCaptionEmphasisSchema = z
   .record(captionWordKeySchema, captionEmphasisOverrideSchema)
   .refine((overrides) => Object.keys(overrides).length <= CAPTION_EMPHASIS_OVERRIDE_LIMIT, {
     message: `at most ${CAPTION_EMPHASIS_OVERRIDE_LIMIT} caption emphasis overrides`,
+  });
+
+/** Most captions a clip can hold merged by hand. */
+export const CAPTION_MERGE_LIMIT = 2000;
+
+/**
+ * Captions merged by hand: by the Word Key of a caption's first word, the Word Key of its last.
+ * The cue grouping keeps the words from one to the other in one caption (both in one utterance);
+ * an entry whose words are gone is kept and ignored.
+ */
+export const studioCaptionMergesSchema = z
+  .record(captionWordKeySchema, captionWordKeySchema)
+  .refine((merges) => Object.keys(merges).length <= CAPTION_MERGE_LIMIT, {
+    message: `at most ${CAPTION_MERGE_LIMIT} merged captions`,
   });
 
 export const studioEditsSchema = z
@@ -544,6 +561,10 @@ export const studioEditsSchema = z
     visualBroll: z.array(studioVisualBrollPlacementSchema).max(STUDIO_EDIT_LIMITS.visualBroll).default([]),
     /** Hero overrides for Dynamic Style captions. Absent = none. */
     captionEmphasis: studioCaptionEmphasisSchema.optional(),
+    /** Caption Emojis by Word Key, drawn when the preset's `emojis` is on. Absent = none. */
+    captionEmojis: captionEmojisSchema.optional(),
+    /** Captions merged by hand (`studioCaptionMergesSchema`). Absent = none. */
+    captionMerges: studioCaptionMergesSchema.optional(),
   })
   .superRefine((edits, context) => {
     const ordered = [...edits.visualBroll].sort((left, right) => left.startSec - right.startSec);
@@ -703,9 +724,52 @@ export function withCaptionEmphasis(
   return rest;
 }
 
-function captionEmphasisEqual(
-  left: Readonly<Record<string, CaptionEmphasisOverride>> | undefined,
-  right: Readonly<Record<string, CaptionEmphasisOverride>> | undefined,
+/**
+ * `edits` with each entry's emoji set, or removed when it is null. The field
+ * is dropped once no emoji is left. Null when the result would hold more than
+ * `CAPTION_EMOJI_LIMIT` emojis.
+ */
+export function withCaptionEmojis(
+  edits: StudioEdits,
+  entries: Readonly<Record<string, CaptionEmojiRef | null>>,
+): StudioEdits | null {
+  const next: Record<string, CaptionEmojiRef> = { ...edits.captionEmojis };
+  for (const [key, ref] of Object.entries(entries)) {
+    if (ref === null) delete next[key];
+    else next[key] = ref;
+  }
+  return replaceCaptionEmojis(edits, next);
+}
+
+/** `edits` with exactly `value` as its emojis, stored as absent when empty. Null beyond `CAPTION_EMOJI_LIMIT`. */
+export function replaceCaptionEmojis(
+  edits: StudioEdits,
+  value: Readonly<Record<string, CaptionEmojiRef>>,
+): StudioEdits | null {
+  const count = Object.keys(value).length;
+  if (count > CAPTION_EMOJI_LIMIT) return null;
+  if (count > 0) return { ...edits, captionEmojis: { ...value } };
+  const { captionEmojis: _cleared, ...rest } = edits;
+  return rest;
+}
+
+function captionEmojisEqual(
+  left: Readonly<Record<string, CaptionEmojiRef>> | undefined,
+  right: Readonly<Record<string, CaptionEmojiRef>> | undefined,
+): boolean {
+  if (left === right) return true;
+  const leftKeys = Object.keys(left ?? {});
+  if (leftKeys.length !== Object.keys(right ?? {}).length) return false;
+  return leftKeys.every((key) => {
+    const candidate = right?.[key];
+    return candidate !== undefined && candidate.id === left![key]!.id && candidate.tone === left![key]!.tone && candidate.word === left![key]!.word;
+  });
+}
+
+/** Equality of two records of strings by Word Key (emphasis overrides, merged captions). */
+function wordKeyRecordEqual(
+  left: Readonly<Record<string, string>> | undefined,
+  right: Readonly<Record<string, string>> | undefined,
 ): boolean {
   if (left === right) return true;
   const leftKeys = Object.keys(left ?? {});
@@ -737,7 +801,9 @@ export function studioEditsEqual(
     studioTextLayersEqual(left.textLayers, right.textLayers) &&
     studioSfxPlacementsEqual(left.sfx, right.sfx) &&
     studioVisualBrollEqual(left.visualBroll, right.visualBroll) &&
-    captionEmphasisEqual(left.captionEmphasis, right.captionEmphasis) &&
+    wordKeyRecordEqual(left.captionEmphasis, right.captionEmphasis) &&
+    wordKeyRecordEqual(left.captionMerges, right.captionMerges) &&
+    captionEmojisEqual(left.captionEmojis, right.captionEmojis) &&
     speakerLayoutOverridesEqual(
       left.speakerLayoutOverrides,
       right.speakerLayoutOverrides,

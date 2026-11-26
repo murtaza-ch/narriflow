@@ -144,3 +144,57 @@ export function standardFrameRate(fps: number): FrameRate | null {
 export function isStandardFrameRate(rate: FrameRate): boolean {
   return STANDARD_FRAME_RATES.some((standard) => standard.numerator * rate.denominator === standard.denominator * rate.numerator);
 }
+
+/** Base and average rates this far apart (relative) put a video clock in question. */
+export const VIDEO_CLOCK_DISAGREEMENT_RATIO = 0.01;
+/** No constant-rate source reports a base rate above this; ffprobe guesses
+ *  90000/1 or 1000/1 for variable-rate files. */
+export const MAX_PLAUSIBLE_BASE_FPS = 240;
+/** The rates a variable source may be normalized to, ascending. */
+const NORMALIZED_RATES: readonly FrameRate[] = [
+  { numerator: 15, denominator: 1 },
+  { numerator: 24000, denominator: 1001 },
+  { numerator: 24, denominator: 1 },
+  { numerator: 25, denominator: 1 },
+  { numerator: 30000, denominator: 1001 },
+  { numerator: 30, denominator: 1 },
+  { numerator: 50, denominator: 1 },
+  { numerator: 60000, denominator: 1001 },
+  { numerator: 60, denominator: 1 },
+];
+const NOT_BELOW_TOLERANCE = 0.01;
+const FALLBACK_RENDER_RATE: FrameRate = { numerator: 30, denominator: 1 };
+
+/** The constant rate for a variable source: its measured average snapped to
+ *  the smallest standard rate that is not below it (within 1%), so no motion
+ *  is dropped and platforms see a rate they expect. An average that already is
+ *  a standard rate is kept exactly. Above 60 is 60/1, below 15 is 15/1, and an
+ *  unknown average is 30/1. */
+export function chooseConstantFrameRate(average: FrameRate | null): FrameRate {
+  if (!average) return FALLBACK_RENDER_RATE;
+  const fps = average.numerator / average.denominator;
+  if (!(fps > 0)) return FALLBACK_RENDER_RATE;
+  const rateOf = (rate: FrameRate) => rate.numerator / rate.denominator;
+  const exact = NORMALIZED_RATES.find((rate) => Math.abs(rateOf(rate) - fps) / fps <= STANDARD_RATE_TOLERANCE);
+  if (exact) return exact;
+  return NORMALIZED_RATES.find((rate) => rateOf(rate) * (1 + NOT_BELOW_TOLERANCE) >= fps) ?? NORMALIZED_RATES[NORMALIZED_RATES.length - 1]!;
+}
+
+/**
+ * The rate a render of this source is delivered at, read from its stored probe, so the Studio plans
+ * Scene Styles on the export's frame grid. It is the worker's `renderOutputFrameRate` without the
+ * packet read: the base rate, or `chooseConstantFrameRate(average)` for an impossible base rate.
+ * Where the two header rates disagree and the base rate is plausible, the worker reads packet
+ * timestamps, which are not stored, and normalizes a stream they show to be variable; for that
+ * stream alone this is its base rate while the export uses the normalized one. 30/1 without video.
+ */
+export function renderFrameRate(probe: SourceProbe | null): FrameRate {
+  const video = probe?.facts?.videos[0];
+  if (!video) return probe?.video?.frameRate ?? FALLBACK_RENDER_RATE;
+  const base = video.rFrameRate;
+  if (!base) return FALLBACK_RENDER_RATE;
+  const fps = base.numerator / base.denominator;
+  const average = video.avgFrameRate;
+  const agree = average !== null && Math.abs(average.numerator / average.denominator - fps) <= fps * VIDEO_CLOCK_DISAGREEMENT_RATIO;
+  return agree || fps <= MAX_PLAUSIBLE_BASE_FPS ? base : chooseConstantFrameRate(average);
+}

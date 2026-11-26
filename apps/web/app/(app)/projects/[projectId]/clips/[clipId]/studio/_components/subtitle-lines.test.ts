@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { joinTranscriptWords, type TranscriptUtterance } from "@narriflow/validators";
 import {
-  addSubtitleLineAfter,
-  deleteSubtitleLine,
   labelForTimelineSegment,
-  mergeSubtitleLineWithNext,
-  replaceSubtitleLineText,
+  PARAGRAPH_MAX_WORDS,
+  PARAGRAPH_PAUSE_SEC,
   replaceSubtitleParagraphText,
+  subtitleParagraphGroups,
 } from "./subtitle-lines";
 
 const lines: TranscriptUtterance[] = [
@@ -39,35 +38,6 @@ const lines: TranscriptUtterance[] = [
 ];
 
 describe("subtitle line operations", () => {
-  test("rewrites one line while preserving its timing", () => {
-    const next = replaceSubtitleLineText(lines, 0, "A replacement line");
-    expect(next[0]!.text).toBe("A replacement line");
-    expect(next[0]!.words[0]!.startSec).toBe(10);
-    expect(next[0]!.words.at(-1)!.endSec).toBe(11);
-  });
-
-  test("deletes only subtitle metadata and reindexes", () => {
-    const next = deleteSubtitleLine(lines, 0);
-    expect(next).toHaveLength(1);
-    expect(next[0]!.text).toBe("real sentence");
-    expect(next[0]!.index).toBe(0);
-  });
-
-  test("adds a short visible placeholder at the following boundary", () => {
-    const next = addSubtitleLineAfter(lines, 0);
-    expect(next[1]!.text).toBe("Subtitle here");
-    expect(next[1]!.startSec).toBe(11);
-    expect(next[1]!.endSec).toBe(11.25);
-  });
-
-  test("merges adjacent lines using the outer timing bounds", () => {
-    const next = mergeSubtitleLineWithNext(lines, 0);
-    expect(next).toHaveLength(1);
-    expect(next[0]!.text).toBe("The first real sentence");
-    expect(next[0]!.startSec).toBe(10);
-    expect(next[0]!.endSec).toBe(12);
-  });
-
   test("rewrites a paragraph atomically while keeping each line timing", () => {
     const next = replaceSubtitleParagraphText(lines, [0, 1], "One polished paragraph here");
     expect(next.map((line) => line.text).join(" ")).toBe("One polished paragraph here");
@@ -99,6 +69,31 @@ describe("subtitle line operations", () => {
 
   test("rejects paragraph rewrites that cannot leave one word per timed line", () => {
     expect(replaceSubtitleParagraphText(lines, [0, 1], "Too-short")).toBe(lines);
+  });
+});
+
+describe("subtitleParagraphGroups", () => {
+  const line = (index: number, startSec: number, words: number, speaker = 0): TranscriptUtterance => ({
+    index, speaker, speakerLabel: `Speaker ${speaker + 1}`, startSec, endSec: startSec + words * 0.3, text: "word ".repeat(words).trim(), confidence: 1,
+    words: Array.from({ length: words }, (_, at) => ({ word: "word", startSec: startSec + at * 0.3, endSec: startSec + at * 0.3 + 0.25, confidence: 1 })),
+  });
+
+  test("breaks at a speaker change and at a pause that reads as a new thought", () => {
+    const at = (lines: TranscriptUtterance[]) => subtitleParagraphGroups(lines);
+    expect(at([line(0, 0, 5), line(1, 1.6, 5), line(2, 3.2, 5, 1)])).toEqual([[0, 1], [2]]);
+    expect(at([line(0, 0, 5), line(1, 1.5 + PARAGRAPH_PAUSE_SEC, 5)])).toEqual([[0], [1]]);
+  });
+
+  test("a single speaker who never pauses does not become one giant paragraph", () => {
+    const lines = Array.from({ length: 12 }, (_, index) => line(index, index * 6.05, 20));
+    const groups = subtitleParagraphGroups(lines);
+    expect(groups.length).toBeGreaterThan(4);
+    for (const group of groups) expect(group.length * 20).toBeLessThanOrEqual(PARAGRAPH_MAX_WORDS);
+    expect(groups.flat()).toEqual(lines.map((_, index) => index));
+  });
+
+  test("an utterance longer than the cap is a paragraph of its own", () => {
+    expect(subtitleParagraphGroups([line(0, 0, 80), line(1, 24.1, 5)])).toEqual([[0], [1]]);
   });
 });
 

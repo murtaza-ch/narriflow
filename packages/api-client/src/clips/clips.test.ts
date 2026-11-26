@@ -18,6 +18,17 @@ function clientWith(...handlers: Parameters<typeof fakeFetch>) {
 }
 
 describe("clips client", () => {
+  test("emoji suggestions post the density and return the map by Word Key with its coverage", async () => {
+    const { client, calls } = clientWith(() => jsonResponse({ emojis: { "1200": { id: "laugh-tears" } }, complete: false }));
+    const suggestion = await clipCommands.suggestEmojis(client, PROJECT, CLIP, { density: "expressive" });
+    expect(suggestion).toEqual({ emojis: { "1200": { id: "laugh-tears" } }, complete: false });
+    const complete: boolean = suggestion.complete;
+    expect(complete).toBe(false);
+    expect(calls[0]?.url).toBe(`https://api.example.test/api/projects/${PROJECT}/clips/${CLIP}/emojis/suggest`);
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ density: "expressive" });
+  });
+
   test("a duplicate sends the intent's Idempotency-Key and no body", async () => {
     const { client, calls } = clientWith(() => jsonResponse({ id: "copy" }, { status: 201 }));
     expect(await clipCommands.duplicate(client, PROJECT, CLIP, "intent-1")).toEqual({ id: "copy" });

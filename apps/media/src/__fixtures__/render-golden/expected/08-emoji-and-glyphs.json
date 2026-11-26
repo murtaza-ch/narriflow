@@ -22,15 +22,19 @@
           "metric": "video.saturatedPixels",
           "op": "gte",
           "value": 100
+        },
+        {
+          "id": "emojis-placed",
+          "metric": "captions.emojisPlaced",
+          "op": "eq",
+          "value": 3
         }
       ],
       "retain": [
-        "plan",
         "crop",
-        "cue",
         "layer"
       ],
-      "expectedChange": "emoji-motion (follow-up 2026-10-30): the active-word emoji overlay now pops in (scale 0.6 to 1.0 with a slight overshoot, fading in over 150 ms) and fades out over the last 80 ms of its word window, on the curve shared with Studio (captionEmojiPose in @narriflow/caption-fonts). The case's filter graph and frames differ from the earlier static overlay by design; plan, crop, cue and layer stay retained. The saturation probe therefore samples the middle of each emoji word's window instead of the cue midpoint, which falls on the fade between a cue's two words. No normal case burns an emoji, so every normal case stays bit-identical."
+      "expectedChange": "emoji-layer (add-emojis ticket 06, 2026-11-26): caption emojis come from studioEdits.captionEmojis and are drawn by the emoji layer as ASS vector drawings in the caption script (the flame and the tone-3 biceps anchor words that leave under 450 ms of their cues, so each shows from its cue's start and the money bag and heart before them get no time; the rocket draws on 'strong', a cue of its own; the party anchors the cue that types the flag, so the plan draws none: 3 placed, 2 left out with no time). The FFmpeg overlay chain is gone, so the filter graph is the plain ass filter and the frames differ by design; the plan, cue and layer summaries carry the layer emojis instead of a per-word emoji. The saturation probe samples 300 ms after each emoji's anchor, when the pop has settled. Literal emoji in the text keep the monochrome fallback face (known defect). Normal cases draw no emoji and their caption scripts are byte-identical."
     },
     "missing-glyph": {
       "contract": [
@@ -47,8 +51,8 @@
           "value": 2
         },
         {
-          "id": "nothing-else-skipped",
-          "metric": "captions.emojiSkipped",
+          "id": "no-emoji-dropped",
+          "metric": "captions.emojisDropped",
           "op": "eq",
           "value": 0
         }

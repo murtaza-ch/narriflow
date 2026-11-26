@@ -83,7 +83,6 @@ function layer(frame: FrameCase): CompositionCaptionVisualLayer {
   const preset = getCaptionPresetById(frame.preset)!.preset;
   const words = frame.words.map((text, index) => ({
     text,
-    emoji: null,
     startSec: index * 0.5,
     endSec: (index + 1) * 0.5,
     ...(frame.abutting?.includes(index) ? { spaceBefore: false } : {}),
@@ -100,6 +99,7 @@ function layer(frame: FrameCase): CompositionCaptionVisualLayer {
     zIndex: 40,
     preset,
     words,
+    emojis: [],
     language: frame.language,
   };
 }

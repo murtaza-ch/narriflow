@@ -4534,7 +4534,7 @@
           "aspectRatio": "9:16"
         }
       ],
-      "description": "Mapped cue emoji plus literal family, flag, skin-tone and variation-selector sequences on a monochrome picture",
+      "description": "Caption emojis (the emoji layer: a second emoji in a short cue takes the slot from the cue's start, a skin-toned one, one on a cue of its own, one on a cue that types its own emoji and so draws none) plus literal family, flag, skin-tone and variation-selector sequences on a monochrome picture",
       "source": "talk-gray-720p",
       "probes": [
         "saturation"
@@ -4622,6 +4622,14 @@
         "studioEdits": {
           "framing": {
             "mode": "center"
+          },
+          "captionEmojis": {
+            "200": { "id": "money-bag" },
+            "600": { "id": "flame" },
+            "1000": { "id": "heart" },
+            "1400": { "id": "flexed-biceps", "tone": 3 },
+            "1800": { "id": "rocket" },
+            "2600": { "id": "party" }
           }
         },
         "brollUrl": null,

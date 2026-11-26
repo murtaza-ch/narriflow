@@ -6,6 +6,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
+  insertedSceneRanges,
   interpolateCompositionCropTrack,
   planClipComposition,
   screenLayoutInputFingerprint,
@@ -20,6 +21,7 @@ import {
   type CompositionTransitionVisualLayer,
   type CompositionInsertedSceneLayer,
   type CompositionAssetAvailability,
+  type CompositionActiveRange,
 } from "@narriflow/composition-plan";
 import {
   Smartphone,
@@ -54,6 +56,8 @@ import {
   systemSceneFontPreviewFamily,
 } from "./scene-fonts";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
+import { HeldCueEmojis } from "./emoji/held-cue-emojis";
+import { emojiFollowingCue } from "./emoji/held-cue-boxes";
 import { InteractiveSceneOverlay } from "./interactive-scene-overlay";
 import { classicCaptionLayerOf } from "./caption-cue-at";
 import { hexToRgba } from "./caption-style-engine";
@@ -351,6 +355,7 @@ function BrollPreviewLayer({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const NO_CAPTION_LAYERS: readonly CompositionCaptionVisualLayer[] = [];
+const NO_INSERTED_SCENES: readonly CompositionActiveRange[] = [];
 
 export function VideoPreview() {
   const prefersReducedMotion = usePrefersReducedMotion();
@@ -1024,6 +1029,14 @@ export function VideoPreview() {
   }, [plannedCaptionLayers, reportCaptionLayers]);
   // A Scene Style draws every cue of the target at once, not the one under the playhead.
   const sceneCaptionLayers = useMemo(() => plannedCaptionLayers.filter((layer) => layer.scene !== undefined), [plannedCaptionLayers]);
+  // Where the scene is cut: the worker reads the same ranges off the same target.
+  const plannedInsertedScenes = useMemo(() => {
+    const target = compositionPlanResult && compositionPlanResult.status !== "invalid"
+      ? compositionPlanResult.plan.targets.find((candidate) => candidate.id === aspectRatio)
+      : undefined;
+    const ranges = target ? insertedSceneRanges(target) : [];
+    return ranges.length > 0 ? ranges : NO_INSERTED_SCENES;
+  }, [aspectRatio, compositionPlanResult]);
   const compositionPreview = useMemo(() => {
     if (compositionPlanResult?.status === "invalid") return null;
     return adoptCompositionPreviewResult(
@@ -1189,6 +1202,11 @@ export function VideoPreview() {
   ) ?? [];
   // The classic line: the one cue of a classic or Dynamic preset, or a Scene Style's untimed utterance (the scene draws the rest).
   const plannedCaptionLayer = compositionPreview ? classicCaptionLayerOf(compositionPreview.layers) : undefined;
+  // The cue after it: the one cue's held emoji gives way to its text and its emoji, as in the export.
+  const plannedEmojiFollowing = useMemo(
+    () => (plannedCaptionLayer ? emojiFollowingCue(plannedCaptionLayers, plannedCaptionLayer) : undefined),
+    [plannedCaptionLayers, plannedCaptionLayer],
+  );
   const plannedLogoLayer = compositionPreview?.layers.find(
     (layer): layer is CompositionLogoVisualLayer => layer.kind === "logo",
   );
@@ -2263,15 +2281,23 @@ export function VideoPreview() {
           })}
 
           {sceneCaptionLayers.length > 0 ? (
-            <InteractiveSceneOverlay videoContainerRef={videoContainerRef} layers={sceneCaptionLayers} />
+            <InteractiveSceneOverlay videoContainerRef={videoContainerRef} layers={sceneCaptionLayers} insertedScenes={plannedInsertedScenes} />
           ) : null}
           {plannedCaptionLayer ? (
             <InteractiveCaptionOverlay
               videoContainerRef={videoContainerRef}
               layer={plannedCaptionLayer}
               currentTime={currentTime}
+              emojiFollowing={plannedEmojiFollowing}
             />
           ) : null}
+          <HeldCueEmojis
+            layers={plannedCaptionLayers}
+            timeSec={currentTime}
+            previewWidth={previewWidth}
+            timeSource={playbackClock}
+            fps={clipInfo.renderFrameRate.numerator / clipInfo.renderFrameRate.denominator}
+          />
 
           {/* The plan places the brand logo above captions and text. Wait for
               a measured preview width so the planned pixel geometry never

@@ -16,7 +16,7 @@ function input(over: { removeFillerWords?: boolean; languageCode?: string | null
       removeFillerWords: over.removeFillerWords ?? true, processingStartSec, processingEndSec }),
       sourceDurationSec: 300, sourceProbeDurationSec: 300, utterances, fullText: "x", speakerCount: 1, sourceLanguageCode: over.languageCode === undefined ? "de" : over.languageCode, audienceDataLine: null },
     editor: { captionPreset: DEFAULT_CAPTION_PRESET, studioEdits: studioEditsSchema.parse({}), sourceDurationSec: 300, wholeSource: false,
-      cleanup: { removeSilences: false, removeFillerWords: over.removeFillerWords ?? true, quietRanges: null, languageCode: over.languageCode === undefined ? "de" : over.languageCode, aiFillers: null } },
+      cleanup: { removeSilences: false, removeFillerWords: over.removeFillerWords ?? true, quietRanges: null, languageCode: over.languageCode === undefined ? "de" : over.languageCode, aiFillers: null }, emojiPicks: null },
     provider: { model: "gpt-6-luna", reasoningEffort: "medium", maxOutputTokens: 32000 }, systemPrompt: "p", responseSchemaHash: "c".repeat(64) };
 }
 

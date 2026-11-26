@@ -47,6 +47,12 @@ export interface CaptionEmphasisWord {
    * repeat penalty.
    */
   readonly untimed?: boolean;
+  /**
+   * The word carries a Caption Emoji the plan draws. The AI chose it as the
+   * line's meaningful word, and the eye links the sticker to the cue's hero,
+   * so a cue with one makes it the hero unless an override says otherwise.
+   */
+  readonly emoji?: boolean;
 }
 
 export type CaptionEmphasisPolicy = "auto" | "never";
@@ -104,6 +110,9 @@ export interface CaptionCueRoles {
 export function captionWordKey(sourceStartSec: number): string {
   return String(Math.round(sourceStartSec * 1000));
 }
+
+/** A Word Key: a word's source start in whole milliseconds. */
+export const captionWordKeySchema = z.string().regex(/^\d+$/);
 
 interface WordList {
   readonly minor: ReadonlySet<string>;
@@ -296,6 +305,11 @@ export function captionWordIsMinor(raw: string, language: string | null): boolea
   return classFacts(raw, language).minor;
 }
 
+/** Whether a transcript token is a number in `language`: a digit, %, a currency sign or a listed number word. */
+export function captionWordIsNumber(raw: string, language: string | null): boolean {
+  return classFacts(raw, language).number;
+}
+
 function wordFacts(word: CaptionEmphasisWord, language: string | null): WordFacts {
   const { normalised, letters, inList, minor, number, negation, power } = classFacts(word.raw, language);
   const sourceLetters = Array.from(word.raw).filter((char) => LETTER_RE.test(char));
@@ -470,18 +484,27 @@ function cueCandidates(
   return candidates;
 }
 
-/** The confidence gate: the top candidate wins only by a clear margin. Ties go to the later word. */
-function gatedPick(
+/** Best first, with the repeat penalty. Ties go to the later word. */
+function rankedCandidates(
   candidates: readonly Candidate[],
   previousAutomatic: string | null,
   weights: CaptionEmphasisWeights,
-): Candidate | null {
-  const ranked = candidates
+): Candidate[] {
+  return candidates
     .map((candidate) => ({
       ...candidate,
       score: candidate.score + (previousAutomatic !== null && candidate.text === previousAutomatic ? weights.repeat : 0),
     }))
     .sort((left, right) => right.score - left.score || right.span[0] - left.span[0]);
+}
+
+/** The confidence gate: the top candidate wins only by a clear margin. */
+function gatedPick(
+  candidates: readonly Candidate[],
+  previousAutomatic: string | null,
+  weights: CaptionEmphasisWeights,
+): Candidate | null {
+  const ranked = rankedCandidates(candidates, previousAutomatic, weights);
   const top = ranked[0];
   if (!top || top.score < weights.gateMinScore) return null;
   const runnerUp = ranked[1];
@@ -506,9 +529,10 @@ function overriddenPick(
 /**
  * Assigns a Caption Role to every word of a target's cues, as a second pass
  * after grouping. A cue gets at most one hero (one word or a 2-word unit):
- * an override, else the scorer's pick when it clears the confidence gate.
- * The repeat penalty looks at the previous cue's automatic pick only, so an
- * override never changes another cue. Untimed utterances get no hero.
+ * an override, else the best unit holding an emoji word, else the scorer's
+ * pick when it clears the confidence gate. The repeat penalty looks at the
+ * previous cue's automatic pick only (emojis aside), so neither an override
+ * nor an emoji changes another cue. Untimed utterances get no hero.
  */
 export function assignCaptionRoles(input: CaptionEmphasisInput): CaptionCueRoles[] {
   const weights = input.weights ?? CAPTION_EMPHASIS_WEIGHTS;
@@ -531,7 +555,11 @@ export function assignCaptionRoles(input: CaptionEmphasisInput): CaptionCueRoles
           return key !== null && input.overrides[key] === "plain";
         };
         const allowed = candidates.filter((candidate) => !plain(candidate.span[0]) && !plain(candidate.span[1]));
-        heroSpan = gatedPick(allowed, previousAutomatic, weights)?.span ?? null;
+        const withEmoji = allowed.filter((candidate) =>
+          words.slice(candidate.span[0], candidate.span[1] + 1).some((entry) => entry.word.emoji === true));
+        heroSpan = withEmoji.length > 0
+          ? rankedCandidates(withEmoji, previousAutomatic, weights)[0]!.span
+          : gatedPick(allowed, previousAutomatic, weights)?.span ?? null;
       }
     }
     previousAutomatic = automatic?.text ?? null;

@@ -14,7 +14,7 @@ const KEYS = ["1000", "1200", "1500", "1900"];
 
 function layer(roles: readonly CaptionWordRole[], keys: readonly (string | null)[] = KEYS) {
   const block: CaptionBlock = { style: "headline", roles, texts: TEXTS, keys, rows: [[0, 1, 2, 3]], seed: 7 };
-  return { block, words: TEXTS.map((text, index) => ({ text, emoji: null, startSec: index, endSec: index + 0.5 })) };
+  return { block, words: TEXTS.map((text, index) => ({ text, startSec: index, endSec: index + 0.5 })) };
 }
 
 /** Applies a gesture's changes the way the Studio dispatches them. */

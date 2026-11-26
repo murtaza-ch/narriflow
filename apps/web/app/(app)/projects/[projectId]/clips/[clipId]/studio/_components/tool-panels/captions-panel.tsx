@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid, VisuallyHidden } from "@chakra-ui/react";
 import { PANEL_PX, PanelSegmented, PanelTabs, SectionLabel, chipProps, studioSliderCss } from "./panel-ui";
-import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote, ChevronDown, Link2, Unlink2 } from "lucide-react";
+import { Check, Type, AlignCenter, MoveUp, MoveDown, Captions, Quote, ChevronDown, Link2, Unlink2 } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
@@ -44,6 +44,7 @@ import {
   captionPanelScene,
   captionPanelStyle,
   captionPositionReset,
+  captionPresetHasEmphasis,
   type CaptionEmphasisChip,
   type CaptionEmphasisIntent,
 } from "./captions-panel-model";
@@ -52,6 +53,8 @@ import { requireStudioApi } from "../studio-api";
 import { useStudioApi } from "../use-studio-api";
 import { studioCaptionOmissionNote } from "@/lib/caption-omissions";
 import { StudioCaptionOmissionNote } from "./caption-omission-note";
+import { StudioEmojisSection } from "../emoji/studio-emojis-section";
+import { captionsPanelTab, panelSectionAttribute, revealPanelSection } from "../tool-target";
 
 const ANIMATION_LABELS = Object.fromEntries(
   Object.entries(CAPTION_MOTIONS).map(([id, spec]) => [id, spec.label]),
@@ -431,7 +434,6 @@ function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
           frameWidth={stage.width}
           cueKey={layer.id}
           cueIndex={layer.cueIndex}
-          showEmojis={layer.preset.emojis === true}
           reducedMotion={reducedMotion}
           preformatted
           language={layer.language}
@@ -449,7 +451,6 @@ function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
           scale={scale}
           frameWidth={stage.width}
           cueKey="sample"
-          showEmojis={captionPreset.emojis === true}
           reducedMotion={reducedMotion}
           language={clipInfo.captionLanguage}
         />
@@ -460,6 +461,7 @@ function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
   return (
     // Sticky on Customize so the style stays in view while its controls scroll
     <Box
+      data-panel-sticky={sticky ? "" : undefined}
       position={sticky ? "sticky" : undefined}
       top="0"
       zIndex="2"
@@ -530,7 +532,7 @@ function PresetsGrid() {
 //
 // A classic preset keeps its full control set. A Dynamic Style (spec section 7)
 // shows Size, Position, its colours and the Emphasis row, with fonts, motion
-// and effects under Advanced; controls a block does not draw (emoji, highlight
+// and effects under Advanced; controls a block does not draw (highlight
 // pill, backdrop, active-word glow, second outline) are hidden, never greyed.
 
 function useCaptionUpdate() {
@@ -710,20 +712,12 @@ function DisplaySection({ dynamic }: { dynamic: boolean }) {
       <SectionLabel>Display</SectionLabel>
       <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="6px">
         {dynamic ? null : (
-          <>
-            <ToggleChip
-              icon={<Type size={14} />}
-              label="Outline"
-              active={captionPreset.outlineWidth > 0}
-              onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 6 })}
-            />
-            <ToggleChip
-              icon={<Smile size={14} />}
-              label="Emoji"
-              active={captionPreset.emojis === true}
-              onClick={() => update({ emojis: !captionPreset.emojis })}
-            />
-          </>
+          <ToggleChip
+            icon={<Type size={14} />}
+            label="Outline"
+            active={captionPreset.outlineWidth > 0}
+            onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 6 })}
+          />
         )}
         <ToggleChip
           icon={<Captions size={14} />}
@@ -945,7 +939,7 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
   const heroFont = captionPreset.heroFontName ?? style.heroFontName;
   const colors = captionPanelColors(style);
   // A style without a hero (Cutout) shows no hero colour, emphasis, hero font or emphasis size: they act on nothing.
-  const hero = colors.includes("hero");
+  const hero = captionPresetHasEmphasis(captionPreset);
 
   return (
     <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
@@ -1058,7 +1052,7 @@ function DynamicCustomizeControls({ style }: { style: CaptionDynamicStyle }) {
 function SceneCustomizeControls({ meta }: { meta: CaptionSceneMeta }) {
   const { captionPreset } = useStudio("captionPreset");
   const update = useCaptionUpdate();
-  const hero = meta.emphasis === "auto";
+  const hero = captionPresetHasEmphasis(captionPreset);
   return (
     <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
       <SizeSection label="Size" />
@@ -1116,7 +1110,7 @@ function EmphasisSection() {
   };
 
   return (
-    <Box>
+    <Box {...panelSectionAttribute("emphasis")}>
       <SectionLabel>Emphasis</SectionLabel>
       {row ? (
         <Stack gap="10px">
@@ -1216,8 +1210,18 @@ function EmphasisChip({
 // ─── Main Panel ──────────────────────────────────────────────────────────────
 
 export function CaptionsPanel() {
-  const [activeTab, setActiveTab] = useState<"presets" | "customize">("presets");
-  const { captionPreset, clipInfo, editorDocument } = useStudio("captionPreset", "clipInfo", "editorDocument");
+  const { captionPreset, clipInfo, editorDocument, toolTarget, clearToolTarget } = useStudio("captionPreset", "clipInfo", "editorDocument", "toolTarget", "clearToolTarget");
+  // Opened at a place (the AI tools panel): read once, choose the tab, then scroll the section in.
+  const [opening] = useState(() => (toolTarget?.tool === "captions" ? toolTarget : null));
+  const [activeTab, setActiveTab] = useState<"presets" | "customize">(() => captionsPanelTab(opening));
+  const rootRef = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the target is read once, on mount.
+  useEffect(() => {
+    if (!opening) return;
+    clearToolTarget();
+    const frame = requestAnimationFrame(() => revealPanelSection(rootRef.current, opening.section));
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const omissionNote = useMemo(() => studioCaptionOmissionNote(editorDocument), [editorDocument]);
   const [applyState, setApplyState] = useState<
     "idle" | "applying" | "applied" | "error"
@@ -1240,7 +1244,7 @@ export function CaptionsPanel() {
         param: { id: clipInfo.projectId },
         json: { captionPreset, excludeClipId: clipInfo.id },
       });
-      const { updated } = (await response.json()) as { updated: number };
+      const { updated, captionEmojis } = (await response.json()) as { updated: number; captionEmojis: { failed: number } };
       void invalidateAfterClipChange(api.runtime.queryClient, api.scope, clipInfo.projectId);
       setApplyState("applied");
       toaster.create({
@@ -1249,6 +1253,10 @@ export function CaptionsPanel() {
           updated > 0
             ? `Applied to ${updated} other clip${updated === 1 ? "" : "s"}`
             : "Every other clip already matches",
+        description:
+          captionEmojis.failed > 0
+            ? `Emojis could not be added to ${captionEmojis.failed} clip${captionEmojis.failed === 1 ? "" : "s"}. Open a clip and choose Add with AI.`
+            : undefined,
       });
       setTimeout(() => setApplyState("idle"), 2000);
     } catch {
@@ -1263,7 +1271,7 @@ export function CaptionsPanel() {
   }
 
   return (
-    <Stack gap="0">
+    <Stack gap="0" ref={rootRef}>
       {/* Tabs */}
       <PanelTabs
         ariaLabel="Caption editing"
@@ -1281,6 +1289,11 @@ export function CaptionsPanel() {
 
       {activeTab === "presets" && <PresetsGrid />}
       {activeTab === "customize" && <CustomizeControls />}
+      {activeTab === "customize" && (
+        <Box {...panelSectionAttribute("emojis")}>
+          <StudioEmojisSection ColorField={ColorField} />
+        </Box>
+      )}
 
       {/* Apply to all — secondary action (Export owns the solid button) */}
       <Box px={PANEL_PX} pb="5" pt="2">

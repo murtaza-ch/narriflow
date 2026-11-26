@@ -29,6 +29,7 @@ const defaultContentPack: ContentPack = {
   autoHook: true,
   removeSilences: false,
   removeFillerWords: false,
+  addEmojis: false,
   specificMoments: "",
   processingStartSec: null,
   processingEndSec: null,
@@ -152,6 +153,7 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
     autoHook: readBoolean(formData, "autoHook", true),
     removeSilences: readBoolean(formData, "removeSilences", false),
     removeFillerWords: readBoolean(formData, "removeFillerWords", false),
+    addEmojis: readBoolean(formData, "addEmojis", false),
     specificMoments: String(formData.get("specificMoments") ?? "").slice(
       0,
       500,
@@ -178,6 +180,7 @@ export type UploadSettingsFormInput = {
   autoHook: boolean;
   removeSilences: boolean;
   removeFillerWords: boolean;
+  addEmojis: boolean;
   specificMoments: string;
   processingStartSec: number | null;
   processingEndSec: number | null;
@@ -198,6 +201,7 @@ export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
   formData.set("autoHook", String(input.autoHook));
   formData.set("removeSilences", String(input.removeSilences));
   formData.set("removeFillerWords", String(input.removeFillerWords));
+  formData.set("addEmojis", String(input.addEmojis));
   formData.set("defaultAspectRatio", input.defaultAspectRatio ?? "9:16");
   formData.set("specificMoments", input.specificMoments);
   if (input.processingStartSec !== null) {

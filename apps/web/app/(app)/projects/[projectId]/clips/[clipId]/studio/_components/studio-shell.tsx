@@ -39,6 +39,7 @@ import {
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
   type CaptionEmphasisOverride,
+  type CaptionEmojiRef,
   type CaptionPreset,
   type CaptionAnimation,
   type LogoPosition,
@@ -70,7 +71,7 @@ import {
 import { TopBar } from "./top-bar";
 import { saveIssueFor, type SaveIssue } from "./save-issue";
 import type { SaveIssueSessionActions } from "./save-issue-panel";
-import { TranscriptPanel } from "./transcript-panel";
+import { TranscriptPanel } from "./transcript/transcript-panel";
 import { VideoPreview } from "./video-preview";
 import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
@@ -102,7 +103,9 @@ import {
 } from "./studio-editing-session-react";
 import { checkpointBeforeLeaving } from "./studio-leave";
 import { splitBlock as splitMusicBlock } from "./music-blocks";
-import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioMotionPreview, type StudioSessionSnapshot } from "./studio-editing-session";
+import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type IntentReceipt, type StudioMotionPreview, type StudioSessionSnapshot } from "./studio-editing-session";
+import { refusedEditToast } from "./edit-refusal";
+import { resolveToolOpening, type ToolOpening, type ToolTarget } from "./tool-target";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import {
   createStudioAccess,
@@ -110,13 +113,11 @@ import {
   type StudioKeys,
 } from "./studio-access";
 import {
-  addSubtitleLineAfter as insertSubtitleLineAfter,
-  deleteSubtitleLine as removeSubtitleLine,
-  mergeSubtitleLineWithNext as mergeAdjacentSubtitleLines,
   labelForTimelineSegment,
-  replaceSubtitleLineText,
   replaceSubtitleParagraphText,
+  type CaptionRowAddress,
 } from "./subtitle-lines";
+import { captionRowCommandActions, mergeCrossesSceneSplit, type CaptionRowCommand } from "./subtitle-row-commands";
 import type { TimelineSegment } from "./studio-types";
 import type { CompositionPlanQaFixture } from "./composition-plan-qa-fixture";
 import { NO_STUDIO_UPGRADE_PROMPTS, type StudioUpgradePrompts } from "./studio-upgrade";
@@ -130,6 +131,7 @@ import {
 import { apiFailureBody, apiFailureStatus, createStudioExport, requireStudioApi, type StudioExportInput, studioReads, type StudioReads } from "./studio-api";
 import { useStudioApi } from "./use-studio-api";
 import { usePrefetchAudioLibrary } from "./tool-panels/audio-library";
+import { CaptionEmojiPickerHost } from "./emoji/emoji-picker-host";
 import { invalidateProjectClips } from "@narriflow/api-client/clips";
 import { createTokenSnapshot, createStudioCloudHttp } from "./studio-cloud-http";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
@@ -170,7 +172,7 @@ const STUDIO_MIN_VIEWPORT_WIDTH = 900;
 const TIMELINE_SNAP_THRESHOLD_SEC = 0.25;
 
 /** Shared guard for `deleteSelectedSegment` (timeline), `deleteSourceRange`
- *  (transcript selection, Phase B step 11), and `applyRemoveSilence` (Phase
+ *  (transcript selection, Phase B step 11), and `applyDetectedCuts` (Phase
  *  B step 12, which passes the whole batch of detected ranges at once):
  *  mirrors the worker's render-time `isEmpty` check (`buildClipCutPlan`) so a
  *  delete that would leave nothing renderable is rejected client-side
@@ -288,7 +290,8 @@ export interface CaptionEmphasisChange {
   readonly value: CaptionEmphasisOverride | null;
 }
 export type ToolId =
-  "captions"
+  "ai"
+  | "captions"
   | "brand"
   | "broll"
   | "transitions"
@@ -405,6 +408,9 @@ export interface ClipInfo {
   /** Where the source ends: its probed duration, exact, else the rounded one. A
    *  whole-source clip's trim handles stop here. */
   sourceEdgeSec: number | null;
+  /** The rate the clip's renders are delivered at (`renderFrameRate`): the Studio builds Scene Styles and places
+   *  emojis on its frame grid, as the export does. Fixed for the clip. */
+  renderFrameRate: { numerator: number; denominator: number };
   /** Detection-time visual cues, clip-relative. The studio uses the same
    *  cues as the worker so its automatic-cutaway plan never falls back to
    *  one repeated title query when richer timing data already exists. */
@@ -450,7 +456,6 @@ interface StudioState {
   /** The Music Block selected on the timeline, or null. Joins the same
    *  single-selection rule as the caption, text layers and segments. */
   selectedMusicBlockId: string | null;
-  transcriptOnly: boolean;
   segments: readonly TimelineSegment[];
   studioEdits: StudioEdits;
   /** Current B-roll cutaway URL — lives in the editor document (undoable,
@@ -593,7 +598,7 @@ interface StudioFields extends StudioState {
   deletedRanges: SourceRange[];
   /** The same (window, deletedRanges) window `editedTimeMap` was built
    *  from — pass this to `detectSilenceRanges` (Phase B step 12) so the
-   *  timeline's live preview can never disagree with what `applyRemoveSilence`
+   *  timeline's live preview can never disagree with what `applyDetectedCuts`
    *  actually dispatches. */
   clipWindow: ClipWindow;
   /** Server-seeded brand logo (URL + snapshot defaults), or null when the
@@ -616,30 +621,40 @@ interface StudioFields extends StudioState {
   layoutAnalysisFailure: ClipLayoutAnalysisFailure | null;
   autoLayoutAnalysisStatus: "available" | "pending" | "failed";
   utterances: TranscriptUtterance[];
-  updateUtteranceText: (index: number, newText: string) => void;
   updateParagraphText: (indices: number[], newText: string) => void;
-  addSubtitleLineAfter: (index: number) => void;
-  deleteSubtitleLine: (index: number) => void;
-  mergeSubtitleLineWithNext: (index: number) => boolean;
+  /** Rewrites one caption row's words (`replaceCaptionRowText`) as one undo step, carrying censor
+   *  marks, emojis and emphasis of the words it did not rewrite. An empty text deletes the row's words. */
+  editCaptionRow: (row: CaptionRowAddress, text: string) => void;
+  /** Adds a placeholder caption after a row, splitting its utterance there when needed. */
+  addCaptionRowAfter: (row: CaptionRowAddress) => void;
+  /** Deletes a row's words from the subtitles; the footage is not cut. */
+  deleteCaptionRow: (row: CaptionRowAddress) => void;
+  /** Makes a row and the next one a single caption (`mergeCaptionRowWithNext`); refused across a manual scene split. */
+  mergeCaptionRowWithNext: (row: CaptionRowAddress, next: CaptionRowAddress) => void;
   /** Word-level Correct (vizard-parity.md Phase B step 10) — changes only
    *  this one word's text, no proportional retiming. `utteranceIndex`/
    *  `wordIndex` are indices into the displayed `utterances` array, which
    *  transcript-panel.tsx's callers already assume line up 1:1 with
-   *  `doc.transcriptSlice` (the same contract `updateUtteranceText` uses). */
+   *  `doc.transcriptSlice`. */
   updateWord: (utteranceIndex: number, wordIndex: number, text: string) => void;
   /** Transcript selection Delete (vizard-parity.md Phase B step 11) — same
    *  isEmpty guard as `deleteSelectedSegment`, over an arbitrary absolute-
    *  source-second range instead of a timeline segment. Returns false (and
    *  toasts) when the delete was rejected, true once it was dispatched. */
   deleteSourceRange: (range: SourceRange) => boolean;
-  /** Vizard-parity Phase B step 12 (Remove silence): unions `detected` with
-   *  the existing manual `deletedRanges` and dispatches ONE undoable
-   *  `setDeletedRanges` action. Same isEmpty guard/toast as every other
-   *  delete path; returns false (no dispatch) when blocked, empty, or a
-   *  no-op. */
-  applyRemoveSilence: (detected: SourceRange[]) => boolean;
+  /** Remove silences and Remove filler words (`cleanup-cuts.ts`): unions
+   *  `detected` with the existing manual `deletedRanges` and dispatches ONE
+   *  undoable `setDeletedRanges` action. Same isEmpty guard/toast as every
+   *  other delete path; returns false when blocked, empty, a no-op, or
+   *  refused by the session (which toasts why). */
+  applyDetectedCuts: (detected: SourceRange[]) => boolean;
   setPlaybackRate: (v: number) => void;
   setActiveTool: (t: ToolId | null) => void;
+  /** Opens a tool, or a tool at a place (`tool-target.ts`). */
+  openTool: (opening: ToolOpening) => void;
+  /** Where the open tool was asked to open; its panel reads it once on mount, then clears it. */
+  toolTarget: ToolTarget | null;
+  clearToolTarget: () => void;
   setShowTimeline: (v: boolean) => void;
   setTimelineSnapping: (v: boolean) => void;
   setAspectRatio: (r: AspectRatio) => void;
@@ -668,14 +683,19 @@ interface StudioFields extends StudioState {
    *  caller can fall through to the segment split. */
   splitSelectedMusicBlock: () => boolean;
   deleteSelectedMusicBlock: () => void;
-  setTranscriptOnly: (v: boolean) => void;
   setSegments: (s: TimelineSegment[]) => void;
   setStudioEdits: (
     p: StudioEdits | ((prev: StudioEdits) => StudioEdits),
     coalesceKey?: string,
-  ) => void;
+  ) => IntentReceipt;
   /** Applies caption emphasis changes in order as one undo step (`setCaptionEmphasis` actions). */
   setCaptionEmphasis: (changes: readonly CaptionEmphasisChange[]) => void;
+  /** Caption Emojis by Word Key as one undo step (`setCaptionEmojis`); a null entry removes that emoji. */
+  setCaptionEmojis: (entries: Record<string, CaptionEmojiRef | null>) => void;
+  /** Every Caption Emoji at once as one undo step (`replaceCaptionEmojis`); returns the emojis the document holds afterwards. */
+  replaceCaptionEmojis: (value: Record<string, CaptionEmojiRef>) => Readonly<Record<string, CaptionEmojiRef>> | undefined;
+  /** Saves the document to the cloud now; true once the cloud holds the current revision. */
+  checkpointCloud: () => Promise<boolean>;
   setBrollUrl: (url: string | null, coalesceKey?: string) => void;
   setBrollPreviewAsset: (asset: StudioBrollPreviewAsset | null) => void;
   /** Breaks the document's coalesce chain without recording an undo step —
@@ -741,6 +761,17 @@ interface StudioFields extends StudioState {
 
 const StudioContext = createContext<StudioAccess<StudioFields> | null>(null);
 
+export type { StudioFields };
+
+/** Mounts Studio components over fields a harness supplies (the subtitle panel prototype); the Studio itself uses `StudioShell`. */
+export function StudioFieldsProvider({ fields, children }: { fields: StudioFields; children: React.ReactNode }) {
+  const [source] = useState(() => createStudioAccess(fields));
+  useLayoutEffect(() => {
+    source.publish(fields);
+  });
+  return <StudioContext.Provider value={source.access}>{children}</StudioContext.Provider>;
+}
+
 export function useStudio<const Keys extends StudioKeys<StudioFields>>(
   ...keys: Keys
 ): Readonly<Pick<StudioFields, Keys[number]>> {
@@ -769,6 +800,7 @@ const StudioEditorTree = memo(function StudioEditorTree() {
       </Flex>
       <Timeline />
       <KeyboardShortcutsModal />
+      <CaptionEmojiPickerHost />
     </>
   );
 });
@@ -1335,6 +1367,13 @@ export function StudioShell({
   const isPlaying = playbackPresentation.state === "playing";
   const playbackRate = playbackPresentation.rate;
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
+  const [toolTarget, setToolTarget] = useState<ToolTarget | null>(null);
+  const openTool = useCallback((opening: ToolOpening) => {
+    const { tool, target } = resolveToolOpening(opening);
+    setToolTarget(target);
+    setActiveTool(tool);
+  }, []);
+  const clearToolTarget = useCallback(() => setToolTarget(null), []);
   const [censorWords, setCensorWords] = useState<StudioCensorWords>(() => ({
     workspace: {
       words: [...autoCensorPolicy.workspaceTerms],
@@ -1383,7 +1422,6 @@ export function StudioShell({
     setSelectedSegmentId(id);
     if (id) setSelectedMusicBlockId(null);
   }, []);
-  const [transcriptOnly, setTranscriptOnly] = useState(false);
   const [exportState, setExportState] = useState<StudioExportState>("idle");
   const [compositionPlanStatus, setCompositionPlanStatus] =
     useState<StudioCompositionPlanStatus>("unresolved");
@@ -1489,7 +1527,7 @@ export function StudioShell({
     ) => {
       const current = getStudioDocument().studioEdits;
       const next = typeof updater === "function" ? updater(current) : updater;
-      studioSession.dispatch({
+      return studioSession.dispatch({
         type: "document.edit",
         action: { type: "setStudioEdits", studioEdits: next },
         coalesceKey,
@@ -1512,6 +1550,21 @@ export function StudioShell({
         });
       }
       studioSession.dispatch({ type: "gesture.end" });
+    },
+    [studioSession],
+  );
+
+  const setCaptionEmojis = useCallback(
+    (entries: Record<string, CaptionEmojiRef | null>) => {
+      studioSession.dispatch({ type: "document.edit", action: { type: "setCaptionEmojis", entries } });
+    },
+    [studioSession],
+  );
+
+  const replaceCaptionEmojis = useCallback(
+    (value: Record<string, CaptionEmojiRef>) => {
+      studioSession.dispatch({ type: "document.edit", action: { type: "replaceCaptionEmojis", value } });
+      return (studioSession.getSnapshot().document as EditorDocument).studioEdits.captionEmojis;
     },
     [studioSession],
   );
@@ -1578,19 +1631,6 @@ export function StudioShell({
   }, [studioSession],
   );
 
-  // Update utterance text — whole-utterance rewrite with proportional timing
-  // redistribution across the new word count (distinct from the reducer's
-  // word-level `updateWordText`, which deliberately never redistributes).
-  const updateUtteranceText = useCallback((utteranceIndex: number, newText: string) => {
-    const prev = getStudioDocument().transcriptSlice;
-    const nextSlice = replaceSubtitleLineText(prev, utteranceIndex, newText);
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-    });
-  }, [getStudioDocument, studioSession],
-  );
-
   const updateParagraphText = useCallback((indices: number[], newText: string) => {
     const nextSlice = replaceSubtitleParagraphText(
       getStudioDocument().transcriptSlice,
@@ -1604,62 +1644,31 @@ export function StudioShell({
   }, [getStudioDocument, studioSession],
   );
 
-  const addSubtitleLineAfter = useCallback((index: number) => {
-    const nextSlice = insertSubtitleLineAfter(
-      getStudioDocument().transcriptSlice,
-      index,
-    );
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-    });
-  }, [getStudioDocument, studioSession],
-  );
+  // A row command is one undo step: its actions (the slice, then the censor marks and Word-Keyed
+  // edits that follow its words) dispatched under one coalesce key.
+  const runCaptionRowCommand = useCallback((command: CaptionRowCommand) => {
+    const actions = captionRowCommandActions(getStudioDocument(), command);
+    if (actions.length === 0) return;
+    const coalesceKey = `caption-row:${crypto.randomUUID()}`;
+    for (const action of actions) studioSession.dispatch({ type: "document.edit", action, coalesceKey });
+    studioSession.dispatch({ type: "gesture.end" });
+  }, [getStudioDocument, studioSession]);
 
-  const deleteSubtitleLine = useCallback((index: number) => {
-    const nextSlice = removeSubtitleLine(
-      getStudioDocument().transcriptSlice,
-      index,
-    );
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-    });
-  }, [getStudioDocument, studioSession],
-  );
+  const editCaptionRow = useCallback((row: CaptionRowAddress, text: string) => runCaptionRowCommand({ type: "edit", row, text }), [runCaptionRowCommand]);
+  const addCaptionRowAfter = useCallback((row: CaptionRowAddress) => runCaptionRowCommand({ type: "add-after", row }), [runCaptionRowCommand]);
+  const deleteCaptionRow = useCallback((row: CaptionRowAddress) => runCaptionRowCommand({ type: "delete", row }), [runCaptionRowCommand]);
 
-  const mergeSubtitleLineWithNext = useCallback(
-    (index: number) => {
-      const first = utterances[index];
-      const second = utterances[index + 1];
-      if (!first || !second) return false;
-      const boundaryRelative = second.startSec - effectiveClipStartSec;
-      const crossesManualSceneBoundary = segments.some(
-        (segment) =>
-          segment.id.includes("-b") &&
-          Math.abs(segment.startSec - boundaryRelative) <= 0.02,
-      );
-      if (crossesManualSceneBoundary) {
-        toaster.create({
-          type: "error",
-          title: "Subtitles cannot be merged across scenes",
-          description: "Remove the scene split first, then merge these subtitle lines.",
-        });
-        return false;
-      }
-      const nextSlice = mergeAdjacentSubtitleLines(
-        getStudioDocument().transcriptSlice,
-        index,
-      );
-      studioSession.dispatch({
-        type: "document.edit",
-        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
+  const mergeCaptionRowWithNext = useCallback((row: CaptionRowAddress, next: CaptionRowAddress) => {
+    if (mergeCrossesSceneSplit(getStudioDocument().transcriptSlice, row, next, segments, effectiveClipStartSec)) {
+      toaster.create({
+        type: "error",
+        title: "Subtitles cannot be merged across scenes",
+        description: "Remove the scene split first, then merge these subtitle lines.",
       });
-      return true;
-    },
-    [effectiveClipStartSec, getStudioDocument, segments, studioSession, utterances,
-    ],
-  );
+      return;
+    }
+    runCaptionRowCommand({ type: "merge-next", row, next });
+  }, [effectiveClipStartSec, getStudioDocument, runCaptionRowCommand, segments]);
 
   const setPlaybackRate = useCallback((rate: number) => {
     studioSession.dispatch({ type: "playback.set-rate", rate });
@@ -1865,9 +1874,9 @@ export function StudioShell({
     [doc.clipStartSec, doc.clipEndSec, doc.deletedRanges, studioSession],
   );
 
-  // Vizard-parity Phase B step 12: Remove silence. `detected` is a batch of
-  // ranges the caller (timeline.tsx's popover) already computed with the
-  // pure `detectSilenceRanges` (packages/validators) for its own live
+  // Vizard-parity Phase B step 12: Remove silence (and Remove filler words).
+  // `detected` is a batch of ranges the caller (the timeline popover or the
+  // AI tools panel) already computed with `cleanup-cuts.ts` for its own live
   // preview line — what's shown before Apply is exactly what gets unioned
   // and dispatched here, never recomputed. Unions with the existing manual
   // `deletedRanges` (never replaces them — a manual cut always survives)
@@ -1875,7 +1884,7 @@ export function StudioShell({
   // via `computeDeleteCandidate`'s multi-range form. One `setDeletedRanges`
   // dispatch = one undo step, so ⌘Z restores exactly the pre-Apply
   // deletedRanges (manual cuts included) in a single action.
-  const applyRemoveSilence = useCallback(
+  const applyDetectedCuts = useCallback(
     (detected: SourceRange[]): boolean => {
       if (detected.length === 0) return false;
       const { candidateRanges, blocked } = computeDeleteCandidate(
@@ -1898,10 +1907,14 @@ export function StudioShell({
       if (deletedRangesEqual(candidateRanges, doc.deletedRanges, clipWindow)) {
         return false;
       }
-      studioSession.dispatch({
+      const receipt = studioSession.dispatch({
         type: "document.edit",
         action: { type: "setDeletedRanges", ranges: candidateRanges },
       });
+      if (!receipt.accepted) {
+        toaster.create({ type: "error", ...refusedEditToast(receipt) });
+        return false;
+      }
       return true;
     },
     [doc.deletedRanges, clipWindow, studioSession],
@@ -1909,8 +1922,7 @@ export function StudioShell({
 
   // Vizard-parity Phase B step 10: word-level Correct — changes only ONE
   // word's text via the reducer's non-retiming `updateWordText` action
-  // (distinct from `updateUtteranceText` above, which rewrites the whole
-  // utterance with proportional timing redistribution). This is what the
+  // (distinct from the caption row edits above, which may re-time a row). This is what the
   // transcript panel's double-click-to-correct UI dispatches; no
   // coalesceKey is passed, so every correction is its own undo step.
   const updateWord = useCallback((utteranceIndex: number, wordIndex: number, text: string) => {
@@ -1996,6 +2008,8 @@ export function StudioShell({
   const handleRedo = useCallback(() => {
     applyHistoryIntent("history.redo");
   }, [applyHistoryIntent]);
+
+  const checkpointCloud = useCallback(async () => (await studioSession.perform({ type: "checkpoint-cloud" })).kind === "cloud-current", [studioSession]);
 
   const handleSave = useCallback(async () => {
     const result = await studioSession.perform({ type: "checkpoint-cloud" });
@@ -2505,7 +2519,7 @@ export function StudioShell({
   const fields: StudioFields = {
     isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
     layoutScene, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
-    captionPreset, captionSelected, selectedTextLayerId, selectedMusicBlockId, transcriptOnly, segments, studioEdits, brollUrl,
+    captionPreset, captionSelected, selectedTextLayerId, selectedMusicBlockId, segments, studioEdits, brollUrl,
     brollPreviewAsset,
     sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, brandAudio, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy, upgradePrompts,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus, captionLayers,
@@ -2528,14 +2542,14 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, quietRanges, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
-    updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
-    updateWord, deleteSourceRange, applyRemoveSilence,
-    setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
+    brandLogo, quietRanges, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances,
+    updateParagraphText, editCaptionRow, addCaptionRowAfter, deleteCaptionRow, mergeCaptionRowWithNext,
+    updateWord, deleteSourceRange, applyDetectedCuts,
+    setPlaybackRate, setActiveTool, openTool, toolTarget, clearToolTarget, setShowTimeline, setTimelineSnapping, setAspectRatio,
     reportLayoutScene, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId: chooseSegment, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
     selectTextLayer, deselectTextLayer, selectMusicBlock, deselectMusicBlock, splitSelectedMusicBlock, deleteSelectedMusicBlock,
-    setTranscriptOnly, setSegments, setStudioEdits, setCaptionEmphasis, setBrollUrl, setBrollPreviewAsset, endCoalesce,
+    setSegments, setStudioEdits, setCaptionEmphasis, setCaptionEmojis, replaceCaptionEmojis, checkpointCloud, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, leaveStudio, leavingStudio, handleExport,
     reportCompositionPlanStatus, reportCaptionLayers, compositionPlanQaFixture,

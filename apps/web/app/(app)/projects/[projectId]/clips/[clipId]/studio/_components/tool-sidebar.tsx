@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
+  ArrowLeft,
   Subtitles,
   LayoutGrid,
   Clapperboard,
@@ -15,9 +16,12 @@ import {
   X,
   PanelsTopLeft,
   ShieldCheck,
+  WandSparkles,
 } from "lucide-react";
 import { useStudio } from "./studio-shell";
 import type { ToolId } from "./studio-shell";
+import { PANEL_SCROLL_ATTRIBUTE } from "./tool-target";
+import { CaptionEmojiRunHost } from "./emoji/caption-emoji-run-host";
 
 // Each panel is its own chunk, fetched when its tool is first opened.
 function PanelPending() {
@@ -27,6 +31,7 @@ function PanelPending() {
     </Flex>
   );
 }
+const AiToolsPanel = dynamic(() => import("./tool-panels/ai-tools-panel").then((m) => m.AiToolsPanel), { loading: PanelPending });
 const CaptionsPanel = dynamic(() => import("./tool-panels/captions-panel").then((m) => m.CaptionsPanel), { loading: PanelPending });
 const BRollPanel = dynamic(() => import("./tool-panels/broll-panel").then((m) => m.BRollPanel), { loading: PanelPending });
 const TextPanel = dynamic(() => import("./tool-panels/text-panel").then((m) => m.TextPanel), { loading: PanelPending });
@@ -37,8 +42,12 @@ const LayoutPanel = dynamic(() => import("./tool-panels/layout-panel").then((m) 
 const ScenesPanel = dynamic(() => import("./tool-panels/scenes-panel").then((m) => m.ScenesPanel), { loading: PanelPending });
 const CensorPanel = dynamic(() => import("./tool-panels/censor-panel").then((m) => m.CensorPanel), { loading: PanelPending });
 
-/** `railLabel` is the short name under the rail icon; `label` titles the panel. */
-const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactNode }[] = [
+/**
+ * `railLabel` is the short name under the rail icon; `label` titles the panel. A tool with a
+ * `parent` has no rail button: it opens from a row of its parent's panel, which stays selected.
+ */
+export const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactNode; parent?: ToolId }[] = [
+  { id: "ai",          label: "AI tools", icon: <WandSparkles size={22} strokeWidth={1.75} /> },
   { id: "captions",    label: "Captions", icon: <Subtitles size={22} strokeWidth={1.75} /> },
   { id: "brand",       label: "Brand template", railLabel: "Brand", icon: <LayoutGrid size={22} strokeWidth={1.75} /> },
   { id: "broll",       label: "B-Roll",   icon: <Clapperboard size={22} strokeWidth={1.75} /> },
@@ -47,10 +56,14 @@ const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactN
   { id: "music",       label: "Music",    icon: <Music size={22} strokeWidth={1.75} /> },
   { id: "layout",      label: "Layout",   icon: <Crop size={22} strokeWidth={1.75} /> },
   { id: "scenes",      label: "Scenes",   icon: <PanelsTopLeft size={22} strokeWidth={1.75} /> },
-  { id: "censor",      label: "Auto-censor", railLabel: "Censor", icon: <ShieldCheck size={22} strokeWidth={1.75} /> },
+  { id: "censor",      label: "Auto-censor", icon: <ShieldCheck size={22} strokeWidth={1.75} />, parent: "ai" },
 ]
 
-const PANEL_MAP: Record<ToolId, React.ReactNode> = {
+/** The tools with a rail button, in rail order. */
+export const RAIL_TOOLS = TOOLS.filter((tool) => !tool.parent);
+
+export const PANEL_MAP: Record<ToolId, React.ReactNode> = {
+  "ai":          <AiToolsPanel />,
   "captions":    <CaptionsPanel />,
   "brand":       <BrandTemplatePanel />,
   "broll":       <BRollPanel />,
@@ -99,7 +112,7 @@ export function ReadOnlyPanelNotice({ onTakeOver }: { onTakeOver: () => void }) 
  * panel floating beside it. With no tool selected the canvas gets the room.
  */
 export function ToolSidebar() {
-  const { activeTool, setActiveTool, editingElsewhere, handleTakeOverEditing } = useStudio("activeTool", "setActiveTool", "editingElsewhere", "handleTakeOverEditing");
+  const { activeTool, setActiveTool, openTool, editingElsewhere, handleTakeOverEditing } = useStudio("activeTool", "setActiveTool", "openTool", "editingElsewhere", "handleTakeOverEditing");
 
   // The library list is prefetched with the Studio; warm the Music panel's code
   // too once the page is idle, so the first open paints rows, not a spinner.
@@ -113,14 +126,19 @@ export function ToolSidebar() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  // A rail click opens the tool at its top, dropping any place an earlier row asked for.
   const handleToolClick = (id: ToolId) => {
-    setActiveTool(activeTool === id ? null : id);
+    if (activeTool === id) setActiveTool(null);
+    else openTool(id);
   };
 
-  const activeLabel = TOOLS.find((t) => t.id === activeTool)?.label;
+  const active = TOOLS.find((t) => t.id === activeTool);
+  const activeLabel = active?.label;
+  const parent = active?.parent ? TOOLS.find((t) => t.id === active.parent) : undefined;
 
   return (
     <Flex h="100%" flexShrink={0} gap="2">
+      <CaptionEmojiRunHost />
       {activeTool ? (
         <Flex
           direction="column"
@@ -130,9 +148,34 @@ export function ToolSidebar() {
           overflow="hidden"
         >
           <Flex px="5" pt="4" pb="3" align="center" justify="space-between" flexShrink={0}>
-            <Text fontSize="16px" fontWeight="500" color="studio.fg">
-              {activeLabel}
-            </Text>
+            <Flex align="center" gap="1.5" minW="0">
+              {parent ? (
+                <Flex
+                  as="button"
+                  aria-label={`Back to ${parent.label}`}
+                  title={`Back to ${parent.label}`}
+                  align="center"
+                  justify="center"
+                  boxSize="32px"
+                  ms="-2"
+                  flexShrink={0}
+                  borderRadius="8px"
+                  bg="transparent"
+                  border="none"
+                  color="studio.fgMuted"
+                  cursor="pointer"
+                  _hover={{ color: "studio.fg", bg: "studio.raised" }}
+                  _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
+                  transition="background 120ms ease, color 120ms ease"
+                  onClick={() => openTool(parent.id)}
+                >
+                  <ArrowLeft size={16} />
+                </Flex>
+              ) : null}
+              <Text fontSize="16px" fontWeight="500" color="studio.fg">
+                {activeLabel}
+              </Text>
+            </Flex>
             <Flex
               as="button"
               aria-label="Close tool panel"
@@ -155,6 +198,7 @@ export function ToolSidebar() {
           </Flex>
           {editingElsewhere ? <ReadOnlyPanelNotice onTakeOver={handleTakeOverEditing} /> : null}
           <Box
+            {...{ [PANEL_SCROLL_ATTRIBUTE]: "" }}
             flex="1"
             overflowY="auto"
             css={{
@@ -170,11 +214,14 @@ export function ToolSidebar() {
         </Flex>
       ) : null}
 
-      {/* Nine tools must fit short laptop screens: below 900px tall the
-          buttons compact, below 760px they drop to icons (names stay in the
-          tooltip and accessible label); anything shorter scrolls. */}
+      {/* The rail's tools must fit short laptop screens. The rail sizes its buttons by
+          its own height (the timeline takes a variable share of the window):
+          compact, then smaller labels, then icons only (names stay in the
+          tooltip and accessible label), then tighter icons; anything shorter
+          scrolls. Thresholds were set for 10 buttons + 9 gaps + the rail's padding. */}
+      <Box w="92px" h="100%" flexShrink={0} css={{ containerType: "size" }}>
       <Stack
-        w="92px"
+        w="full"
         h="100%"
         gap="1"
         py="3"
@@ -186,16 +233,26 @@ export function ToolSidebar() {
         aria-orientation="vertical"
         overflowY="auto"
         css={{
-          "@media (max-height: 900px)": { paddingBlock: "8px" },
-          "& > [role=tab]": {
-            "@media (max-height: 900px)": { minHeight: "58px", gap: "4px", paddingBlock: "6px" },
-            "@media (max-height: 760px)": { minHeight: "44px" },
+          "@container (max-height: 819px)": {
+            paddingBlock: "8px",
+            "& > [role=tab]": { minHeight: "58px", gap: "4px", paddingBlock: "6px" },
           },
-          "@media (max-height: 760px)": { "& [data-rail-label]": { display: "none" } },
+          "@container (max-height: 631px)": {
+            "& > [role=tab]": { minHeight: "48px", gap: "2px", paddingBlock: "4px" },
+          },
+          "@container (max-height: 531px)": {
+            "& > [role=tab]": { minHeight: "36px", paddingBlock: "0" },
+            "& [data-rail-label]": { display: "none" },
+          },
+          "@container (max-height: 411px)": {
+            gap: "2px",
+            paddingBlock: "6px",
+            "& > [role=tab]": { minHeight: "30px" },
+          },
         }}
       >
-        {TOOLS.map((tool) => {
-          const isActive = activeTool === tool.id;
+        {RAIL_TOOLS.map((tool) => {
+          const isActive = activeTool === tool.id || active?.parent === tool.id;
           return (
             <Flex
               key={tool.id}
@@ -230,6 +287,7 @@ export function ToolSidebar() {
           );
         })}
       </Stack>
+      </Box>
     </Flex>
   );
 }

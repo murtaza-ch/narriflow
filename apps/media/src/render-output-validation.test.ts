@@ -555,13 +555,11 @@ describe("render output admission", () => {
 			signal,
 			mixPeak,
 			captionGlyphsOmitted: [{ codePoint: 0x378, cueIndex: 2 }],
-			captionEmojiSkipped: [{ emoji: "🇵🇰", cueIndex: 3 }],
 			diagnose: (event) => events.push(event),
 		});
 		expect(result.captionGlyphsOmitted).toEqual([
 			{ codePoint: 0x378, cueIndex: 2 },
 		]);
-		expect(result.captionEmojiSkipped).toEqual([{ emoji: "🇵🇰", cueIndex: 3 }]);
 		expect(result.mixPeak).toBe(mixPeak);
 		expect(events).toMatchObject([{ accepted: true }]);
 	});

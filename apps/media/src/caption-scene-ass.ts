@@ -179,11 +179,13 @@ export function sceneInputForLayers(
   canvas: { width: number; height: number },
   measure: Measure,
   fps?: number,
+  /** The target's inserted scenes (`insertedSceneRanges`). */
+  insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[],
 ): { name: CaptionSceneName; input: SceneInput } {
   const first = layers[0]!;
   return {
     name: first.preset.scene!,
-    input: sceneInputFromPreset(first.preset, { cues: sceneCuesFromLayers(layers), canvas, measure, anchor: first.anchor, ...(fps ? { fps } : {}) }),
+    input: sceneInputFromPreset(first.preset, { cues: sceneCuesFromLayers(layers), canvas, measure, anchor: first.anchor, ...(fps ? { fps } : {}), ...(insertedScenes ? { insertedScenes } : {}) }),
   };
 }
 
@@ -557,10 +559,11 @@ export function renderCaptionScene(input: {
   readonly report: SceneGlyphReport;
   readonly forcedOmissions: ReadonlySet<number>;
   readonly fps?: number;
-}): { events: AssEvent[]; scene: CaptionScene; measurer: SceneMeasurer } {
+  readonly insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[];
+}): { events: AssEvent[]; scene: CaptionScene; input: SceneInput; measurer: SceneMeasurer } {
   const language = input.layers[0]?.language ?? null;
   const measurer = new SceneMeasurer(input.report, input.forcedOmissions, language);
-  const { name, input: sceneInput } = sceneInputForLayers(input.layers, input.canvas, measurer.measure, input.fps);
+  const { name, input: sceneInput } = sceneInputForLayers(input.layers, input.canvas, measurer.measure, input.fps, input.insertedScenes);
   const scene = buildCaptionScene(name, sceneInput);
-  return { events: sceneEvents(scene, measurer, { canvas: input.canvas, ...(input.fps ? { fps: input.fps } : {}) }), scene, measurer };
+  return { events: sceneEvents(scene, measurer, { canvas: input.canvas, ...(input.fps ? { fps: input.fps } : {}) }), scene, input: sceneInput, measurer };
 }

@@ -36,7 +36,7 @@ import {
   type PlacedGradient,
   type PlacedWord,
 } from "@narriflow/caption-fonts/caption-block";
-import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
+import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
 import type { CompositionCaptionBlock } from "@narriflow/composition-plan";
 import {
   CAPTION_EXTRUDE,

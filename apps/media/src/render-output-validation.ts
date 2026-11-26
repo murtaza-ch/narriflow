@@ -5,7 +5,7 @@ import {
 	type FrameRate,
 	type MediaFacts,
 } from "@narriflow/validators";
-import type { OmittedGlyph, SkippedEmoji } from "./caption-glyphs";
+import type { OmittedGlyph } from "./caption-glyphs";
 import {
 	DUB_OUTPUT_AUDIO,
 	OUTPUT_PIXEL_FORMAT,
@@ -111,7 +111,6 @@ export interface ValidatedRenderResult {
 	decoded: { video: DecodedStreamFacts; audio: DecodedStreamFacts | null };
 	mixPeak: MixPeakResult | null;
 	captionGlyphsOmitted: readonly OmittedGlyph[];
-	captionEmojiSkipped: readonly SkippedEmoji[];
 	diagnosticCodes: string[];
 }
 
@@ -380,7 +379,6 @@ export async function validateRenderOutput(input: {
 	statFile?: typeof stat;
 	mixPeak?: MixPeakResult | null;
 	captionGlyphsOmitted?: readonly OmittedGlyph[];
-	captionEmojiSkipped?: readonly SkippedEmoji[];
 	diagnose?(event: {
 		accepted: boolean;
 		diagnosticCodes: string[];
@@ -391,7 +389,6 @@ export async function validateRenderOutput(input: {
 		expected: input.expected,
 		mixPeak: input.mixPeak ?? null,
 		captionGlyphsOmitted: input.captionGlyphsOmitted ?? [],
-		captionEmojiSkipped: input.captionEmojiSkipped ?? [],
 	};
 	const reject = (codes: string[]): never => {
 		input.diagnose?.({ accepted: false, diagnosticCodes: codes, facts });
@@ -591,7 +588,6 @@ export async function validateRenderOutput(input: {
 	if (codes.length) return reject(codes);
 	const warnings = [
 		...(input.captionGlyphsOmitted?.length ? ["caption_glyph_omitted"] : []),
-		...(input.captionEmojiSkipped?.length ? ["caption_emoji_skipped"] : []),
 	];
 	const result: ValidatedRenderResult = {
 		durationSec: picture.durationSec,
@@ -600,7 +596,6 @@ export async function validateRenderOutput(input: {
 		decoded,
 		mixPeak: input.mixPeak ?? null,
 		captionGlyphsOmitted: input.captionGlyphsOmitted ?? [],
-		captionEmojiSkipped: input.captionEmojiSkipped ?? [],
 		diagnosticCodes: warnings,
 	};
 	input.diagnose?.({

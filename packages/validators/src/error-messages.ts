@@ -365,6 +365,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	clip_title_update_failed: "We couldn't rename this clip. Please try again.",
 	clip_title_suggestion_failed:
 		"We couldn't come up with title ideas just now. Please try again.",
+	clip_emoji_suggestion_failed:
+		"We couldn't add emojis just now. Please try again.",
+	transcript_not_ready:
+		"The transcript isn't ready yet. Try again when transcription finishes.",
 	// Configuration, not a transient fault — telling someone to "try again" sends
 	// them in a loop until an operator sets the key. Also thrown by the content
 	// suite, which previously fell through to the generic message.

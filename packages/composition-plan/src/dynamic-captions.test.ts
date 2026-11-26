@@ -116,7 +116,6 @@ describe("dynamic caption fixtures (spec section 9)", () => {
     expect(block.seed).toBe(captionBlockSeed(entry.words[0]!.key, 0));
     // Subtitle text keeps the preset's case (Groove's caps), never the roles'.
     expect(layer!.words.map((word) => word.text)).toEqual(entry.words.map((word) => applyCaptionTextTransform(word.word, preset.textTransform, entry.language)));
-    expect(layer!.words.every((word) => word.emoji === null)).toBe(true);
   });
 });
 
@@ -161,13 +160,12 @@ describe("Caption Blocks in the plan", () => {
     { word: "real", key: "1200", startSec: 1.2, endSec: 1.45 },
   ];
 
-  test("a dynamic preset gets a block; words[].text keeps the preset transform and emoji is null", () => {
+  test("a dynamic preset gets a block; words[].text keeps the preset transform", () => {
     const preset = { ...headline, textTransform: "uppercase", emojis: true };
     const layers = captionLayers(document({ preset, utterances: [utterance(words)] }), "en");
     expect(layers.map((layer) => layer.words.length)).toEqual([4, 1]);
     const block = layers[0]!.block!;
     expect(layers[0]!.words.map((word) => word.text)).toEqual(["THE", "MONEY", "IS", "99%"]);
-    expect(layers[0]!.words.map((word) => word.emoji)).toEqual([null, null, null, null]);
     // Text-slot roles inherit the preset's case; the hero takes the style's ("none").
     expect(block.roles).toEqual(["minor", "body", "minor", "hero"]);
     expect(block.texts).toEqual(["THE", "MONEY", "IS", "99%"]);
@@ -186,10 +184,10 @@ describe("Caption Blocks in the plan", () => {
     expect(layers[0]!.words.map((word) => word.text)).toEqual(["THE", "MONEY", "TALKS"]);
   });
 
-  test("a classic preset gets no block and keeps its emoji", () => {
+  test("a classic preset gets no block, and no emoji without stored ones", () => {
     const layers = captionLayers(document({ preset: { ...boldPop, emojis: true }, utterances: [utterance(words)] }), "en");
     expect(layers.every((layer) => layer.block === undefined)).toBe(true);
-    expect(layers[0]!.words.find((word) => word.text === "MONEY")!.emoji).toBe("💰");
+    expect(layers.every((layer) => layer.emojis.length === 0)).toBe(true);
   });
 
   test("subtitle cues (which the clip timeline also reads) come from words[].text, unchanged by roles", () => {
@@ -287,7 +285,6 @@ describe("Caption Blocks in the plan", () => {
     expect(block.keys).toEqual([null, null, null, null]);
     expect(block.roles).toEqual(["minor", "body", "hero", "hero"]);
     expect(block.seed).toBe(captionBlockSeed(null, 0));
-    expect(layers[0]!.words.every((word) => word.emoji === null)).toBe(true);
   });
 
   test("a left style defaults its anchor to the style's guide", () => {

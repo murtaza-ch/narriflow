@@ -16,11 +16,13 @@ import {
   getEffectiveClipTiming,
   mergeCorrectedWordsIntoWindow,
   normalizeTranscriptSliceForClip,
+  replaceCaptionEmojis,
   splitUtterancesIntoSentences,
   updateClipBoundariesSchema,
   updateClipTranscriptSliceSchema,
   type EditorDocument,
   type ApplyStudioEditsPatch,
+  type CaptionEmojiRef,
   type ClipStatus,
   type TranscriptUtterance,
 } from "@narriflow/validators";
@@ -89,11 +91,28 @@ export type ClipEditorDocumentMutationIntent =
   | { kind: "set_studio_edits"; studioEdits: EditorDocument["studioEdits"] };
 
 export type ClipEditorProjectSelectionIntent =
-  | { kind: "set_caption_preset"; captionPreset: EditorDocument["captionPreset"] }
+  | {
+      kind: "set_caption_preset";
+      captionPreset: EditorDocument["captionPreset"];
+      /** Caption Emojis by Clip id, suggested from the clip at `revision`. Written
+       * in the same update only into a clip still at that revision with an empty
+       * map, so emojis added since are never replaced and a suggestion for
+       * words, cuts or masks that changed since is never written. */
+      captionEmojis?: ReadonlyMap<string, { readonly revision: number; readonly emojis: Readonly<Record<string, CaptionEmojiRef>> }>;
+    }
   | {
       kind: "patch_studio_edits";
       patches: ReadonlyArray<ApplyStudioEditsPatch>;
     };
+
+export interface ClipEditorProjectSelectionResult {
+  updated: number;
+  /** Clips whose update also wrote `captionEmojis` from the intent. */
+  captionEmojisAdded: number;
+  /** Clips with intent emojis that were not written because the clip changed since
+   *  their revision, and still has no emojis. */
+  captionEmojisStale: number;
+}
 
 export interface ClipEditorDocumentMutationResult {
   revision: number;
@@ -311,13 +330,21 @@ function planNextDocument(
   );
 }
 
+function hasCaptionEmojis(document: EditorDocument): boolean {
+  return Object.keys(document.studioEdits.captionEmojis ?? {}).length > 0;
+}
+
 function planProjectSelectionDocument(
   state: ClipEditorDocumentStoredState,
   intent: ClipEditorProjectSelectionIntent,
 ): EditorDocument {
   if (intent.kind === "set_caption_preset") {
+    const suggested = intent.captionEmojis?.get(state.clipId);
+    const studioEdits = suggested && suggested.revision === state.revision && !hasCaptionEmojis(state.document)
+      ? replaceCaptionEmojis(state.document.studioEdits, suggested.emojis) ?? state.document.studioEdits
+      : state.document.studioEdits;
     return canonicalizeDocument(
-      { ...state.document, captionPreset: intent.captionPreset },
+      { ...state.document, captionPreset: intent.captionPreset, studioEdits },
       sourceOf(state),
     );
   }
@@ -632,13 +659,28 @@ export function createClipEditorDocumentPersistence(input: {
       };
     },
     mutateDocument,
+    /** The project's clips (minus `excludeClipId`) as a mutation would read
+     * them, for work that must happen before `mutateProjectSelection` and
+     * outside its transaction. */
+    async readProjectSelection(request: {
+      actorUserId: string;
+      workspaceId: string;
+      projectId: string;
+      excludeClipId?: string;
+    }): Promise<Array<{ clipId: string; revision: number; document: EditorDocument }>> {
+      await input.authorize(request, "content.edit");
+      const storedStates = await input.store.readProjectSelection(request);
+      if (!storedStates) persistenceError("project_not_found", "project not found");
+      return storedStates.map(canonicalizeStoredState)
+        .map((state) => ({ clipId: state.clipId, revision: state.revision, document: state.document }));
+    },
     async mutateProjectSelection(request: {
       actorUserId: string;
       workspaceId: string;
       projectId: string;
       excludeClipId?: string;
       intent: ClipEditorProjectSelectionIntent;
-    }): Promise<{ updated: number }> {
+    }): Promise<ClipEditorProjectSelectionResult> {
       const { pricingTier } = await input.authorize(request, "content.edit");
       const startedAt = now().getTime();
       const mutationKind =
@@ -685,8 +727,16 @@ export function createClipEditorDocumentPersistence(input: {
           const commitsByClipId = new Map(
             documents.map((document) => [document.scope.clipId, document]),
           );
+          let captionEmojisAdded = 0;
+          let captionEmojisStale = 0;
           for (const state of states) {
             const document = commitsByClipId.get(state.clipId);
+            if (document && hasCaptionEmojis(document.nextDocument) && !hasCaptionEmojis(state.document)) {
+              captionEmojisAdded += 1;
+            } else if (request.intent.kind === "set_caption_preset" && !hasCaptionEmojis(state.document) &&
+              (request.intent.captionEmojis?.get(state.clipId)?.revision ?? state.revision) !== state.revision) {
+              captionEmojisStale += 1;
+            }
             safeRecord(input.diagnostics, {
               actorUserId: request.actorUserId,
               projectId: request.projectId,
@@ -702,7 +752,7 @@ export function createClipEditorDocumentPersistence(input: {
               elapsedMs: now().getTime() - startedAt,
             });
           }
-          return { updated: documents.length };
+          return { updated: documents.length, captionEmojisAdded, captionEmojisStale };
         }
       }
       for (const state of lastStates) {

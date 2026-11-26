@@ -38,6 +38,7 @@ const OPEN_PAYLOAD = {
       autoHook: true,
       removeSilences: false,
       removeFillerWords: false,
+      addEmojis: false,
       specificMoments: "",
       processingStartSec: null,
       processingEndSec: null,

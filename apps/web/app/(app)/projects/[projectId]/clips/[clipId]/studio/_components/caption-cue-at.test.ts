@@ -55,27 +55,27 @@ describe("caption cues read from the plan (the one cue derivation)", () => {
     expect(text).not.toContain("feels");
   });
 
-  test("classic words carry the active word, emoji window and duration", () => {
+  test("classic words carry the active word and its duration", () => {
     const layer = planLayers("bold-pop")[0]!;
     const second = layer.words[1]!;
     const words = captionCueWordsAt(layer, second.startSec + 0.01);
     expect(words.map((word) => word.isActive)).toEqual(layer.words.map((_, index) => index === 1));
-    expect(words[1]!.emojiWindow).toEqual({ startSec: second.startSec, endSec: layer.words[2]?.startSec ?? second.endSec });
+    expect(words[1]!.durationMs).toBe(Math.max(50, Math.round(((layer.words[2]?.startSec ?? layer.activeRange.endSec) - second.startSec) * 1000)));
     expect(captionActiveWordIndex(layer, layer.activeRange.endSec)).toBe(-1);
   });
 
-  test("highlight, duration and emoji stop at the cue boundary and follow the same segment clock", () => {
+  test("highlight and duration stop at the cue boundary and follow the same segment clock", () => {
     const layer = {
       activeRange: { startSec: 0, endSec: 0.6 },
       words: [
-        { text: "یہ", emoji: null, startSec: 0, endSec: 0.2 },
-        { text: "ہے", emoji: null, startSec: 0.3, endSec: 0.8 },
+        { text: "یہ", startSec: 0, endSec: 0.2 },
+        { text: "ہے", startSec: 0.3, endSec: 0.8 },
       ],
     };
     expect(captionActiveWordIndex(layer, 0.25)).toBe(0);
     expect(captionActiveWordIndex(layer, 0.4)).toBe(1);
     expect(captionActiveWordIndex(layer, 0.6)).toBe(-1);
-    expect(captionCueWordsAt(layer, 0.4)[1]).toMatchObject({ durationMs: 300, emojiWindow: { startSec: 0.3, endSec: 0.6 } });
+    expect(captionCueWordsAt(layer, 0.4)[1]).toMatchObject({ durationMs: 300 });
   });
 
   test("a Dynamic Style layer carries its block for the block painter", () => {

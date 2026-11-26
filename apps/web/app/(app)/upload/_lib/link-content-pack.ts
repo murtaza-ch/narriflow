@@ -25,6 +25,7 @@ export interface LinkConfigureState {
   autoHook: boolean;
   removeSilences: boolean;
   removeFillerWords: boolean;
+  addEmojis: boolean;
   specificMoments: string;
   platformTargets: ClipPlatformTarget[];
   clipCountTarget: number;
@@ -65,12 +66,33 @@ export function buildLinkContentPack(state: LinkConfigureState): ContentPack {
     autoHook: state.autoHook,
     removeSilences: state.removeSilences,
     removeFillerWords: state.removeFillerWords,
+    addEmojis: state.addEmojis,
     specificMoments: state.specificMoments.slice(0, 500),
     processingStartSec: state.processingStartSec,
     processingEndSec: state.processingEndSec,
     clipLengthPreset: state.clipLengthPreset,
     defaultAspectRatio: state.defaultAspectRatio,
   });
+}
+
+/** The Configure state a resumed link import reopens with: the inverse of `buildLinkContentPack`. */
+export function linkConfigureStateFromContentPack(contentPack: ContentPack): LinkConfigureState {
+  return {
+    mode: contentPack.mode,
+    clipLengthPreset: contentPack.clipLengthPreset,
+    captionPreset: contentPack.captionPreset,
+    defaultAspectRatio: contentPack.defaultAspectRatio,
+    autoHook: contentPack.autoHook,
+    removeSilences: contentPack.removeSilences,
+    removeFillerWords: contentPack.removeFillerWords,
+    addEmojis: contentPack.addEmojis,
+    specificMoments: contentPack.specificMoments,
+    platformTargets: contentPack.platformTargets,
+    clipCountTarget: contentPack.clipCountTarget,
+    toneConstraints: contentPack.toneConstraints.join(", "),
+    processingStartSec: contentPack.processingStartSec,
+    processingEndSec: contentPack.processingEndSec,
+  };
 }
 
 export const DEFAULT_LINK_CONFIGURE_STATE: Omit<
@@ -83,6 +105,7 @@ export const DEFAULT_LINK_CONFIGURE_STATE: Omit<
   autoHook: true,
   removeSilences: false,
   removeFillerWords: false,
+  addEmojis: false,
   specificMoments: "",
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
   clipCountTarget: 10,

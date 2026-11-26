@@ -16,6 +16,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@narriflow/caption-emoji": "workspace:*",
     "@narriflow/caption-fonts": "workspace:*",
     "@narriflow/validators": "workspace:*"
   }

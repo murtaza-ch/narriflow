@@ -10,6 +10,7 @@ import { createClipSelectionProvider } from "./clip-selection-provider";
 import { createClipSelectionStorage } from "./clip-selection-storage";
 import { OPENAI_TEXT_MODEL } from "./openai-models";
 import { FILLER_TAGGING_DEFAULTS, FILLER_TAGGING_MODELS, tagTranscriptFillers } from "./clip-filler-tagging";
+import { tagCaptionEmojis } from "./clip-emoji-tagging";
 
 /** A required positive-integer setting; a missing one names itself instead of becoming NaN. */
 function requiredLimit(settings: Record<string, string | undefined>, name: string) {
@@ -31,7 +32,8 @@ export function getClipSelectionControl() {
   const apiKey = settings.OPENAI_API_KEY ?? "";
   const fillerTagger = { tag: (utterances: Parameters<typeof tagTranscriptFillers>[0], languageCode: string, deadline: number) => tagTranscriptFillers(utterances, languageCode,
     { apiKey, models: FILLER_TAGGING_MODELS, deadline, concurrency: FILLER_TAGGING_DEFAULTS.concurrency, maxOutputTokens: FILLER_TAGGING_DEFAULTS.maxOutputTokens }) };
-  return createClipSelectionControl({ preparation: createClipSelectionPreparation({ database, storage, provider, guidance: getPerformanceGuidance(), fillerTagger,
+  const emojiTagger = { tag: (input: Parameters<typeof tagCaptionEmojis>[0]) => tagCaptionEmojis(input, { apiKey }) };
+  return createClipSelectionControl({ preparation: createClipSelectionPreparation({ database, storage, provider, guidance: getPerformanceGuidance(), fillerTagger, emojiTagger,
     fillerTaggingBudgetMs: FILLER_TAGGING_DEFAULTS.budgetMs }),
     lifecycle: createClipSelectionLifecycle({ database, maxInFlightRequests: requiredLimit(settings, "OPENAI_SELECTION_MAX_IN_FLIGHT_REQUESTS"), maxEstimatedTokens: requiredLimit(settings, "OPENAI_SELECTION_MAX_ESTIMATED_TOKENS") }),
     finalization: getWorkflowRunLifecycle(), storage, deliver: deliverExecutionDispatches,

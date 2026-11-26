@@ -82,7 +82,7 @@ export function createClipSelectionControl(ports: ClipSelectionControlPorts) {
         const plan = buildClipSelectionPlan(capsule.planning);
         const clips = plan.kind === "caption_only" ? plan.clips : finalizeClipSelectionCandidates(plan, results.flatMap(result => result.clips.map(normalizeLlmClip).filter(clip => clip !== null))).clips;
         evidence = { proof: read.proof, outcome: { kind: "clips", contentPack: capsule.planning.contentPack,
-          clips: buildDetectedClipRows({ projectId: read.parent.projectId, workflowRunId: read.parent.id, clips, seed: capsule.editor,
+          clips: buildDetectedClipRows({ projectId: read.parent.projectId, workflowRunId: read.parent.id, clips, seed: capsule.editor, utterances: capsule.planning.utterances,
             llmMeta: { provider: "openai", model: plan.kind === "caption_only" ? "caption-only" : capsule.provider.model, totalTokensUsed: results.reduce((sum, result) => sum + result.tokensUsed, 0) } }) } };
       } catch (error) {
         evidence = { proof: read.proof, outcome: { kind: "failure", code: error instanceof WorkflowFailure && error.code === "no_clips_detected" ? "no_clips_detected" : "selection_result_invalid" } };

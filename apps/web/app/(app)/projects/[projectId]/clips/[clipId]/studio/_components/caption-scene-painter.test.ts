@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type Measure, type SceneCue, SCENE_PERSPECTIVE_PX, buildCaptionScene, sceneInputFromPreset } from "@narriflow/caption-scene";
+import { type Measure, type SceneCue, SCENE_PERSPECTIVE_PX, buildCaptionScene, sceneBuildKey, sceneInputFromPreset } from "@narriflow/caption-scene";
 import { getCaptionPresetById } from "@narriflow/validators";
 import { captionSceneInputKey, mountWindowStart, mountedPieceIndexes, sceneClipPath, sceneTransform, stableByKey } from "./caption-scene-painter";
 
@@ -89,6 +89,33 @@ describe("the scene is rebuilt when what it is built from changes, not when the 
     expect(stableByKey(stableByKey(null, key, base), next, edited)!.value).toBe(edited);
   });
 
+  test("inserted scenes: none (or an empty list) leave the key alone; the target's ranges enter it as the worker's input has them", () => {
+    const base = input();
+    const key = captionSceneInputKey(base);
+    expect(captionSceneInputKey({ ...base, insertedScenes: [] })).toBe(key);
+    const ranges = [{ startSec: 3.2, endSec: 5.2 }];
+    const cut = captionSceneInputKey({ ...base, insertedScenes: ranges });
+    expect(cut).not.toBe(key);
+    expect(captionSceneInputKey({ ...input(), insertedScenes: [{ ...ranges[0]! }] })).toBe(cut);
+    // The worker's input (`sceneInputForLayers`) is `sceneInputFromPreset` over the same layers and the same plan ranges.
+    const worker = sceneInputFromPreset(base.preset, { cues: base.cues, canvas: base.canvas, measure: fakeMeasure, anchor: base.anchor, insertedScenes: ranges });
+    expect(worker.insertedScenes).toEqual([{ fromMs: 3200, toMs: 5200 }]);
+    expect(sceneBuildKey("lyrics", worker, "en")).toBe(cut!);
+  });
+
+  test("the clip's render rate enters the key as the worker passes it, and a 30 fps clip builds the scene it built without one", () => {
+    const base = input();
+    const keys = [24, 25, 30, 30000 / 1001, 50, 60].map((fps) => captionSceneInputKey({ ...base, fps }));
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(captionSceneInputKey({ ...input(), fps: 30 })).toBe(keys[2]!);
+    for (const fps of [24, 60]) {
+      const worker = sceneInputFromPreset(base.preset, { cues: base.cues, canvas: base.canvas, measure: fakeMeasure, anchor: base.anchor, fps });
+      expect(sceneBuildKey("lyrics", worker, "en")).toBe(captionSceneInputKey({ ...base, fps })!);
+    }
+    const build = (fps?: number) => JSON.stringify(buildCaptionScene("lyrics", sceneInputFromPreset(base.preset, { cues: base.cues, canvas: base.canvas, measure: fakeMeasure, anchor: base.anchor, ...(fps ? { fps } : {}) })));
+    expect(build(30)).toBe(build());
+  });
+
   test("a preset that is not a Scene Style has no key", () => {
     expect(captionSceneInputKey({ ...input(), preset: getCaptionPresetById("headline")!.preset })).toBeNull();
     expect(stableByKey(null, null, input())).toBeNull();
@@ -118,5 +145,20 @@ describe("only the pieces near the playhead are mounted, and the frame at the pl
     }
     // A seek lands in a window that holds the frame: nothing is missing, and almost nothing else is mounted.
     expect(mostMounted).toBeLessThan(scene.pieces.length * 0.12);
+  });
+
+  test("a scene cut at an inserted scene mounts both parts of a cut piece around it, and nothing inside it", () => {
+    // A 3 s scene inserted at 3.5 s, between the third and fourth cues: everything after it moves 3 s later.
+    const later = (ms: number) => (ms >= 3500 ? ms + 3000 : ms);
+    const around = cues(12, 4).map((cue) => ({ ...cue, startMs: later(cue.startMs), endMs: later(cue.endMs), words: cue.words.map((word) => ({ ...word, startMs: later(word.startMs), endMs: later(word.endMs) })) }));
+    const lyrics = buildCaptionScene("lyrics", sceneInputFromPreset(getCaptionPresetById("lyrics")!.preset, { cues: around, canvas: { width: 1080, height: 1920 }, measure: fakeMeasure, insertedScenes: [{ startSec: 3.5, endSec: 6.5 }] }));
+    expect(lyrics.pieces.some((piece) => piece.id.includes("#"))).toBe(true);
+    expect(new Set(lyrics.pieces.map((piece) => piece.id)).size).toBe(lyrics.pieces.length);
+    for (const ms of [3490, 3500, 5000, 6490, 6500, 6510]) {
+      const mounted = new Set(mountedPieceIndexes(lyrics.pieces, mountWindowStart(ms)));
+      const live = lyrics.pieces.flatMap((piece, at) => (ms >= piece.fromMs && ms < piece.toMs ? [at] : []));
+      for (const at of live) expect(mounted.has(at)).toBe(true);
+      expect(live.length === 0).toBe(ms >= 3500 && ms < 6500);
+    }
   });
 });

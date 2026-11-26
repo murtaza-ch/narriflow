@@ -1,4 +1,4 @@
-import type { CaptionScene, Measure } from "./scene";
+import type { CaptionScene, Measure, SceneWindow } from "./scene";
 
 /** One caption cue of a target as a scene program sees it, in clip ms. */
 export interface SceneCue {
@@ -39,9 +39,16 @@ export interface SceneInput {
   /** The user's size scale: the preset's `fontSize` over the sample's body size. 1 = sample size. */
   readonly scale: number;
   readonly measure: Measure;
-  /** The render's frame rate, for programs that plan by painted frames (`frame-grid.ts`). Unknown in the
-   * Studio preview; programs then plan for `SCENE_DEFAULT_FPS`. */
+  /** The render's frame rate, for programs that plan by painted frames (`frame-grid.ts`). Programs decide timing and
+   * layout from it (Trail moves a cue that would meet the next on a painted frame), so the Studio passes the clip's
+   * `renderFrameRate` too. Absent, programs plan for `SCENE_DEFAULT_FPS`. */
   readonly fps?: number;
+  /**
+   * When the clip plays an inserted Scene Block, in time order (`sceneInputFromPreset` sets it only when there is one). The
+   * clip's own speech stops there, so no piece paints inside one; programs do not read it, `buildCaptionScene` cuts the
+   * pieces after the program has run.
+   */
+  readonly insertedScenes?: readonly SceneWindow[];
 }
 
 export interface SceneProgram {

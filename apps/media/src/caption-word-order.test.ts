@@ -11,10 +11,10 @@ import { renderCaptionTrack } from "./caption-ass";
  */
 function burnedOrder(words: readonly string[], language: string | null): number[] {
   const layer: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
     anchor: { xPct: 50, yPct: 50 }, destination: { x: 0, y: 0, width: 1080, height: 400 },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset: captionPresetSchema.parse({ animation: "pop" }),
-    words: words.map((text, index) => ({ text, emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    words: words.map((text, index) => ({ text, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
     language,
   };
   const { ass } = renderCaptionTrack({ layers: [layer], canvas: { width: 1080, height: 400 } });

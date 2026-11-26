@@ -163,7 +163,7 @@ suite("Render Group independent native invocations", () => {
 
   test("committed caption diagnostics follow their exact output and clean siblings retain no diagnostics", bindServiceTestEnvironment(async () => {
     const f = await fixture(), owner = await acquireFixtureRenderGroup(db, f.refs[0]!), [omitted, clean] = owner.attempt.memberIds;
-    const captionDiagnostics = { omittedCodePoints: ["U+2605"], skippedEmoji: [] as string[] };
+    const captionDiagnostics = { omittedCodePoints: ["U+2605"] };
     await owner.complete(omitted!, { ...completed, captionDiagnostics });await owner.complete(clean!, completed);
     await f.workflow.settleRenderRun(f.reference);
     expect((await db.clipRender.findUniqueOrThrow({ where: { id: omitted! } })).captionDiagnostics).toEqual(captionDiagnostics);

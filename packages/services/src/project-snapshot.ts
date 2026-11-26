@@ -2,7 +2,7 @@ import type {
 	IngestStatus as PrismaIngestStatus,
 	Prisma,
 } from "@prisma/client";
-import { clipSourceEdgeSec } from "@narriflow/validators";
+import { clipSourceEdgeSec, type FrameRate, renderFrameRate, sourceProbeSchema } from "@narriflow/validators";
 import type { RetentionPolicyKey } from "./project-retention.service";
 
 export interface ProjectSnapshot {
@@ -21,6 +21,8 @@ export interface ProjectSnapshot {
 	sourceDurationSeconds: number | null;
 	/** Where a clip window may end: the probed duration, exact, when known; else the rounded one. */
 	sourceEdgeSec: number | null;
+	/** The rate renders of the source are delivered at, from its stored probe (`renderFrameRate`); 30/1 before ingest. */
+	renderFrameRate: FrameRate;
 	languageCode: string | null;
 	brandProfileId: string | null;
 	brandTemplateId: string | null;
@@ -67,6 +69,7 @@ export function toProjectSnapshot(row: Prisma.ProjectGetPayload<{ select: typeof
 		sourceSizeBytes: bigintToNumber(row.sourceSizeBytes),
 		sourceDurationSeconds: row.sourceDurationSeconds,
 		sourceEdgeSec: clipSourceEdgeSec(row),
+		renderFrameRate: renderFrameRate(sourceProbeSchema.safeParse(row.sourceProbe).data ?? null),
 		languageCode: row.languageCode,
 		brandProfileId: row.brandProfileId,
 		brandTemplateId: row.brandTemplateId,

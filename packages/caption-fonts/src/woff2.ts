@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 /**
  * WOFF2 to sfnt for HarfBuzz, which reads sfnt only (`wawoff2`, Google's woff2 decoder compiled to WASM).
  * libass keeps opening the uploaded file itself; this only gives the measuring side the same glyphs.
- * The module is imported by the worker alone (the web client takes `./locale-precedence` and `./emoji`).
+ * The module is imported by the worker alone (the web client takes `./locale-precedence` and `./graphemes`).
  */
 interface Woff2Binding {
   onRuntimeInitialized?: () => void;

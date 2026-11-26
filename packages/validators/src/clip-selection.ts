@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { captionPresetSchema } from "./caption-preset";
 import { encodedQuietRangesSchema } from "./clip-cleanup";
+import { captionEmojiPicksSchema } from "./emoji-tagging";
 import { fillerTaggingOutcomeSchema } from "./filler-tagging";
 import { clipDetectionLlmResponseSchema } from "./clip";
 import { contentPackSchema } from "./content-pack";
@@ -21,7 +22,9 @@ export const clipSelectionInputSchema = z.strictObject({
   editor: z.strictObject({ captionPreset: captionPresetSchema, studioEdits: studioEditsSchema, sourceDurationSec: positive.nullable(), wholeSource: z.boolean(),
     cleanup: z.strictObject({ removeSilences: z.boolean(), removeFillerWords: z.boolean(), quietRanges: encodedQuietRangesSchema.nullable(), languageCode: z.string().nullable(),
       /** AI-tagged fillers frozen at preparation (non-English only); null when tagging did not run. */
-      aiFillers: fillerTaggingOutcomeSchema.nullable() }) }),
+      aiFillers: fillerTaggingOutcomeSchema.nullable() }),
+    /** AI emoji picks over the whole source, frozen at preparation when the pack adds emojis; null when tagging did not run or did not fit. */
+    emojiPicks: captionEmojiPicksSchema.nullable().default(null) }),
   provider: z.strictObject({ model: z.string().min(1).max(100), reasoningEffort: z.string().min(1).max(40), maxOutputTokens: z.number().int().positive() }),
   systemPrompt: z.string().min(1), responseSchemaHash: hash,
 });

@@ -1,4 +1,4 @@
-export { CAPTION_EMOJI_ATLAS_PATH, CAPTION_FONTS_DIRECTORY, captionFontFilePath } from "./paths";
+export { CAPTION_FONTS_DIRECTORY, captionFontFilePath } from "./paths";
 export {
   type CaptionDirection,
   type CaptionOrderWord,
@@ -37,5 +37,5 @@ export {
   fontFileLineHeightEm,
   fontFileMetricsEm,
 } from "./fallback-fonts";
-export * from "./emoji";
+export { captionGraphemes, isCaptionEmojiCluster } from "./graphemes";
 export { captionCodePointLabel, captionUndrawableCodePoints } from "./glyph-coverage";

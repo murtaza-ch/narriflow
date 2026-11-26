@@ -21,3 +21,4 @@ docs
 **/__pycache__
 **/*.pyc
 apps/media/models
+packages/caption-emoji/source

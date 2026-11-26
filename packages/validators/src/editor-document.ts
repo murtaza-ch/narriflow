@@ -5,7 +5,9 @@ import {
   CLIP_EMPHASIS_WORD_MAX_LENGTH,
   CLIP_EMPHASIS_WORDS_LIMIT,
   captionEmphasisOverrideSchema,
+  captionWordKeySchema,
 } from "./caption-emphasis";
+import { CAPTION_EMOJI_LIMIT, captionEmojiRefSchema } from "./caption-emojis";
 import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
 import { joinTranscriptWords } from "./text-script";
 import {
@@ -23,10 +25,11 @@ import {
   type SourceRange,
 } from "./edit-ranges";
 import {
-  captionWordKeySchema,
   MUSIC_BLOCK_MIN_DURATION_SEC,
   studioEditsEqual,
   studioEditsSchema,
+  replaceCaptionEmojis,
+  withCaptionEmojis,
   withCaptionEmphasis,
   type StudioEdits,
   type StudioMusicBlock,
@@ -257,6 +260,23 @@ export const editorActionSchema = z.discriminatedUnion("type", [
     type: z.literal("setCaptionEmphasis"),
     keys: z.array(captionWordKeySchema).min(1).max(CAPTION_EMPHASIS_OVERRIDE_LIMIT),
     value: captionEmphasisOverrideSchema.nullable(),
+  }),
+  /** Caption Emojis by Word Key; a null entry removes that emoji. */
+  z.strictObject({
+    type: z.literal("setCaptionEmojis"),
+    entries: z
+      .record(captionWordKeySchema, captionEmojiRefSchema.nullable())
+      .refine((entries) => {
+        const count = Object.keys(entries).length;
+        return count >= 1 && count <= CAPTION_EMOJI_LIMIT;
+      }, { message: `between 1 and ${CAPTION_EMOJI_LIMIT} entries` }),
+  }),
+  /** All Caption Emojis at once (AI regenerate, Remove all); `{}` removes every emoji. */
+  z.strictObject({
+    type: z.literal("replaceCaptionEmojis"),
+    value: z
+      .record(captionWordKeySchema, captionEmojiRefSchema)
+      .refine((value) => Object.keys(value).length <= CAPTION_EMOJI_LIMIT, { message: `at most ${CAPTION_EMOJI_LIMIT} caption emojis` }),
   }),
   z.object({ type: z.literal("setBrollUrl"), brollUrl: z.string().url().nullable() }),
   z.object({ type: z.literal("deleteRange"), range: sourceRangeSchema }),
@@ -826,6 +846,16 @@ export function applyEditorAction(
     case "setCaptionEmphasis": {
       // Beyond the override cap the edit is refused, as the save would refuse it.
       const studioEdits = withCaptionEmphasis(doc.studioEdits, action.keys, action.value);
+      return studioEdits === null || studioEditsEqual(studioEdits, doc.studioEdits)
+        ? doc
+        : { ...doc, studioEdits };
+    }
+    case "setCaptionEmojis":
+    case "replaceCaptionEmojis": {
+      // Beyond the emoji cap the edit is refused, as the save would refuse it.
+      const studioEdits = action.type === "setCaptionEmojis"
+        ? withCaptionEmojis(doc.studioEdits, action.entries)
+        : replaceCaptionEmojis(doc.studioEdits, action.value);
       return studioEdits === null || studioEditsEqual(studioEdits, doc.studioEdits)
         ? doc
         : { ...doc, studioEdits };

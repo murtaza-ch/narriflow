@@ -594,7 +594,7 @@ describe.skipIf(!Bun.which("ffmpeg"))("Caption Block words over the real libass"
     const classic: CompositionCaptionVisualLayer = {
       ...rest,
       preset,
-      words: [{ text: "AVAVAV", emoji: null, startSec: 1, endSec: 2 }],
+      words: [{ text: "AVAVAV", startSec: 1, endSec: 2 }],
       activeRange: { startSec: 1, endSec: 2 },
     };
     const { ass } = renderCaptionTrack({ layers: [classic], canvas: CANVAS });

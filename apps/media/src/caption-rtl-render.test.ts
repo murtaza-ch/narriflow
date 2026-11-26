@@ -21,10 +21,10 @@ const HIGHLIGHT = [0x00, 0xff, 0x88] as const;
 function frame(words: readonly string[], atSec: number, language: string | null = null): Buffer {
   const preset = getCaptionPresetById("karaoke")!.preset;
   const layer: CompositionCaptionVisualLayer = {
-    id: "caption:0", kind: "caption", cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
+    id: "caption:0", kind: "caption", emojis: [], cueIndex: 0, activeRange: { startSec: 0, endSec: words.length * 0.5 },
     anchor: { xPct: 50, yPct: 50 }, destination: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
     rotationDeg: 0, opacity: 1, zIndex: 40, preset,
-    words: words.map((text, index) => ({ text, emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    words: words.map((text, index) => ({ text, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
     language,
   };
   const directory = mkdtempSync(join(tmpdir(), "caption-rtl-"));

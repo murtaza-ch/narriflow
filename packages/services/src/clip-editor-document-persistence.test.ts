@@ -489,7 +489,7 @@ describe("Clip Editor Document Persistence", () => {
       },
     });
 
-    expect(result).toEqual({ updated: 1 });
+    expect(result).toEqual({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
     expect(store.inspect(open.clipId)).toMatchObject({ writeCount: 0 });
     expect(store.inspect(matching.clipId)).toMatchObject({
       writeCount: 0,
@@ -544,7 +544,7 @@ describe("Clip Editor Document Persistence", () => {
         projectId: matching.projectId,
         intent: { kind: "set_caption_preset", captionPreset },
       }),
-    ).resolves.toEqual({ updated: 1 });
+    ).resolves.toEqual({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
     expect(store.inspect(matching.clipId)).toMatchObject({ writeCount: 0 });
     expect(store.inspect(changed.clipId)).toMatchObject({
       writeCount: 1,

@@ -38,8 +38,8 @@ describe("caption glyph planner", () => {
     expect([...report.notices.values()]).toEqual([expect.objectContaining({ code: "glyph_fallback_used", font: "Noto Emoji Regular", sequenceSplit: true })]);
   });
 
-  // Flags are not in the 2D emoji atlas and never come from the plan (CAPTION_EMOJI_MAP has none), so a literal
-  // flag in transcript text is the only way to meet one: it stays one cluster and draws as the monochrome
+  // Added Caption Emojis are drawn as vector art, never as text, so a literal flag in transcript text is the
+  // only flag captions meet: it stays one cluster and draws as the monochrome
   // regional-indicator letters, reported as a fallback and never omitted.
   test("a literal flag cluster draws monochrome through the chain and is reported", () => {
     const { planner: chain, report } = planner();
@@ -65,7 +65,7 @@ describe("caption glyph planner", () => {
     chain.plan("\u13A0 \u16A0 \u2D30 \u{13000}");
     const labels = [...report.omitted.values()].map((glyph) => glyph.codePoint);
     expect(labels).toEqual(["U+13A0", "U+16A0", "U+2D30", "U+13000"]);
-    const parsed = clipRenderCaptionDiagnosticsSchema.safeParse({ omittedCodePoints: labels, skippedEmoji: [] });
+    const parsed = clipRenderCaptionDiagnosticsSchema.safeParse({ omittedCodePoints: labels });
     expect(parsed.success).toBe(true);
   });
 

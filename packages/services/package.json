@@ -150,6 +150,14 @@
       "types": "./src/openai-responses.ts",
       "default": "./src/openai-responses.ts"
     },
+    "./clip-emoji-suggestion": {
+      "types": "./src/clip-emoji-suggestion.ts",
+      "default": "./src/clip-emoji-suggestion.ts"
+    },
+    "./clip-emoji-tagging": {
+      "types": "./src/clip-emoji-tagging.ts",
+      "default": "./src/clip-emoji-tagging.ts"
+    },
     "./bounded-body": {
       "types": "./src/bounded-body.ts",
       "default": "./src/bounded-body.ts"
@@ -725,6 +733,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.923.0",
     "@aws-sdk/s3-request-presigner": "^3.923.0",
+    "@narriflow/caption-emoji": "workspace:*",
     "@narriflow/composition-plan": "workspace:*",
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",

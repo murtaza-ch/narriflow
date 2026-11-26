@@ -90,12 +90,12 @@ import {
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
 } from "../composition-ffmpeg-adapter";
-import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../caption-ass";
+import type { CaptionGeometryUnavailable, CaptionTrack } from "../caption-ass";
+import { type CaptionEmojiArtMap, loadPlanCaptionEmojiArt } from "../caption-emoji-ass";
 import {
 	CAPTION_RENDER_DIAGNOSTIC_PATTERN,
 	type CaptionGlyphUnavailableError,
 	type OmittedGlyph,
-	type SkippedEmoji,
 	captionRenderDiagnosticsFailure,
 	classifyCaptionRenderDiagnostics,
 } from "../caption-glyphs";
@@ -656,9 +656,7 @@ interface PendingRenderOutput {
 	outputPath: string;
 	storageKey: string;
 	subtitlePath?: string | null;
-	/** Emoji pictures composited above the burned captions. */
-	captionEmoji?: readonly CaptionEmojiOverlay[];
-	/** Code points left out of the burned text, and emoji skipped. */
+	/** Code points left out of the burned text. */
 	captionWarnings?: CaptionWarnings;
 	/** Code points forced out of the text after libass reported them. */
 	captionOmitCodePoints?: Set<number>;
@@ -1120,24 +1118,25 @@ interface MixPeakGuardMode {
  *  render's analytics (`fallbackCode`) and logged with the details. */
 interface CaptionWarnings {
 	omitted: Map<string, OmittedGlyph>;
-	emojiSkipped: SkippedEmoji[];
 	/** Cues whose pills, plate and overlays were dropped because HarfBuzz could not shape their font. */
 	geometryUnavailable: CaptionGeometryUnavailable[];
 }
 
-/** The caption script, emoji overlays and glyph notices for one output. A
- *  character no pinned face draws is left out of the text (that code point
- *  only), and a plan emoji nothing draws is skipped: the clip still renders and
- *  both are logged and recorded. */
+/** The caption script with its emoji layer, and the glyph notices, for one
+ *  output. A character no pinned face draws is left out of the text (that code
+ *  point only): the clip still renders, and it is logged and recorded. An emoji
+ *  with no art or no room is left out and counted in one log line, never a
+ *  warning on the render. */
 function compileCaptionTrack(
 	plan: Parameters<typeof compileCompositionPlanCaptions>[0],
 	targetId: string,
 	fonts: Parameters<typeof compileCompositionPlanCaptions>[2],
 	context: Record<string, unknown>,
+	emojiArt: CaptionEmojiArtMap,
 	omitCodePoints?: ReadonlySet<number>,
 	fps?: number,
 ): CaptionTrack {
-	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints, fps);
+	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints, fps, emojiArt);
 	for (const notice of track.notices) {
 		if (notice.code === "caption_scene_failed") {
 			// The cues burned as the classic line: the clip still renders.
@@ -1171,35 +1170,26 @@ function compileCaptionTrack(
 			fontPath: cue.fontPath,
 		});
 	}
-	for (const skipped of track.emojiSkipped) {
-		log("error", "caption_emoji_skipped", {
-			...context,
-			phase: "caption_glyphs",
-			disposition: "degraded",
-			emoji: skipped.emoji,
-			cueIndex: skipped.cueIndex,
-		});
+	if (Object.keys(track.emojis.dropped).length > 0) {
+		log("info", "caption_emojis_dropped", { ...context, phase: "caption_emojis", placed: track.emojis.placed, dropped: track.emojis.dropped });
 	}
 	return track;
 }
 
 function recordCaptionWarnings(output: PendingRenderOutput, track: CaptionTrack): void {
-	const warnings: CaptionWarnings = output.captionWarnings ?? { omitted: new Map(), emojiSkipped: [], geometryUnavailable: [] };
+	const warnings: CaptionWarnings = output.captionWarnings ?? { omitted: new Map(), geometryUnavailable: [] };
 	output.captionWarnings = warnings;
 	for (const glyph of track.omitted) warnings.omitted.set(`${glyph.cueIndex}:${glyph.codePoint}`, glyph);
-	warnings.emojiSkipped = [...track.emojiSkipped];
 	warnings.geometryUnavailable = [...track.geometryUnavailable];
- log("info", "clip_render_glyph_omissions", { clipId: output.clipId, clipRenderId: output.clipRenderId, count: track.omitted.length + track.emojiSkipped.length });
+ log("info", "clip_render_glyph_omissions", { clipId: output.clipId, clipRenderId: output.clipRenderId, count: track.omitted.length });
 }
 
 /** What the render left out of its captions, for the clip row; null when nothing. */
 export function captionDiagnosticsOf(
-  validated: Pick<ValidatedRenderResult, "captionGlyphsOmitted" | "captionEmojiSkipped">,
+  validated: Pick<ValidatedRenderResult, "captionGlyphsOmitted">,
 ): ClipRenderCaptionDiagnostics | null {
-  const unique = (values: readonly string[]) => [...new Set(values)].sort().slice(0, CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT);
-  const omittedCodePoints = unique(validated.captionGlyphsOmitted.map((glyph) => glyph.codePoint));
-  const skippedEmoji = unique(validated.captionEmojiSkipped.map((emoji) => emoji.emoji));
-  return omittedCodePoints.length + skippedEmoji.length > 0 ? { omittedCodePoints, skippedEmoji } : null;
+  const omittedCodePoints = [...new Set(validated.captionGlyphsOmitted.map((glyph) => glyph.codePoint))].sort().slice(0, CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT);
+  return omittedCodePoints.length > 0 ? { omittedCodePoints } : null;
 }
 
 /** Analytics for an output, with its caption warnings added as fallback codes. */
@@ -1210,7 +1200,6 @@ function withCaptionWarningCodes(
 	const warnings = output.captionWarnings;
 	const codes = [
 		...(warnings && warnings.omitted.size > 0 ? ["caption_glyph_omitted"] : []),
-		...(warnings && warnings.emojiSkipped.length > 0 ? ["caption_emoji_skipped"] : []),
 		...(warnings && warnings.geometryUnavailable.length > 0 ? ["caption_geometry_unavailable"] : []),
 	];
 	if (codes.length === 0) return analytics;
@@ -3752,6 +3741,8 @@ async function renderClipGroup(input: {
 	const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
 	let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
 	let compositionPlan: ClipCompositionPlan | null = null;
+	/** The plan's caption emoji art, loaded once before any caption script is written. */
+	let captionEmojiArt: CaptionEmojiArtMap = new Map();
 	/** Rewrites an output's caption script without code points libass found no glyph for. */
 	const captionRecoveryFor =
 		(output: PendingRenderOutput) =>
@@ -3765,6 +3756,7 @@ async function renderClipGroup(input: {
 				output.clipRenderId,
 				customFonts,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
+				captionEmojiArt,
 				omit,
 				captionFps,
 			);
@@ -3937,6 +3929,12 @@ async function renderClipGroup(input: {
 				...(dubAudio ? { dub: dubAudio } : {}),
 			},
 		);
+		try {
+			captionEmojiArt = await loadPlanCaptionEmojiArt(compositionPlan);
+		} catch (error) {
+			// The art ships in the image; without it the captions still burn, with no emoji drawn.
+			log("error", "caption_emoji_art_unavailable", { workflowRunId: run.id, clipId: clip.id, phase: "caption_emojis", disposition: "degraded", error: error instanceof Error ? error.message : String(error) });
+		}
 		for (const output of outputs) {
 			const target = compositionPlan.targets.find(
 				(candidate) => candidate.id === output.clipRenderId,
@@ -3953,6 +3951,7 @@ async function renderClipGroup(input: {
 				output.clipRenderId,
 				customFonts,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
+				captionEmojiArt,
 				undefined,
 				captionFps,
 			);
@@ -3968,7 +3967,6 @@ async function renderClipGroup(input: {
 					"utf-8",
 				);
 				output.subtitlePath = assPath;
-				output.captionEmoji = captions.emoji;
 			}
 		}
 	}
@@ -3981,7 +3979,6 @@ async function renderClipGroup(input: {
     statFile: currentRenderAdapters().workspace.stat,
     mixPeak,
     captionGlyphsOmitted: [...(output.captionWarnings?.omitted.values() ?? [])],
-    captionEmojiSkipped: output.captionWarnings?.emojiSkipped ?? [],
     diagnose: (event) => log(event.accepted ? "info" : "error", "clip_render_output_validation", {
       workflowRunId: run.id, clipId: output.clipId, clipRenderId: output.clipRenderId, ...event,
     }),
@@ -4021,7 +4018,6 @@ async function renderClipGroup(input: {
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,
-							captionEmoji: output.captionEmoji,
 						},
 					});
 				const ffmpegArgs = compileAudioOnly(null);
@@ -4162,7 +4158,6 @@ async function renderClipGroup(input: {
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,
-							captionEmoji: output.captionEmoji,
 						},
 					});
 				const ffmpegArgs = compileVideo(null);

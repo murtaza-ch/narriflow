@@ -18,3 +18,4 @@ export {
 } from "../campaign-operation";
 export { requestThumbnailFrameSchema } from "../assisted-publishing";
 export { applyStudioEditsToAllSchema } from "../studio-edits";
+export { suggestClipEmojisSchema, type SuggestClipEmojis } from "../emoji-tagging";

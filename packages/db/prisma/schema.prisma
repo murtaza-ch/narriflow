@@ -572,6 +572,8 @@ model ContentPack {
   /// Clip cleanup seeded into each new clip's deletedRanges.
   removeSilences          Boolean      @default(false)
   removeFillerWords       Boolean      @default(false)
+  /// AI caption emojis on each new clip.
+  addEmojis               Boolean      @default(false)
   specificMoments         String       @default("")
   processingStartSec      Int?
   processingEndSec        Int?
@@ -1832,8 +1834,8 @@ model ClipRender {
   /// Resolution this render was produced at ("720p" | "1080p"), validated by
   /// clipRenderResolutionSchema.
   resolution         String                        @default("1080p")
-  /// Caption characters this render could not draw ({ omittedCodePoints,
-  /// skippedEmoji }, clipRenderCaptionDiagnosticsSchema). Written when the
+  /// Caption characters this render could not draw ({ omittedCodePoints },
+  /// clipRenderCaptionDiagnosticsSchema). Written when the
   /// worker commits a successful render; null when nothing was left out.
   captionDiagnostics Json?
   /// Actual used stock-media attribution, derived from the frozen render plan.

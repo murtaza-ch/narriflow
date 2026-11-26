@@ -1,4 +1,4 @@
-import { captionCodePointLabel, captionUndrawableCodePoints } from "@narriflow/caption-fonts/glyph-coverage";
+import { captionUndrawableCodePoints } from "@narriflow/caption-fonts/glyph-coverage";
 import { deriveCaptionCues } from "@narriflow/composition-plan";
 import type { ClipRenderCaptionDiagnostics, EditorDocument } from "@narriflow/validators";
 
@@ -12,16 +12,10 @@ export interface CaptionOmissionNote {
   readonly omissions: readonly CaptionOmission[];
 }
 
-/**
- * What a finished render left out of its captions, or null when it left
- * nothing out. A skipped emoji lists every code point of its sequence.
- */
+/** What a finished render left out of its captions, or null when it left nothing out. */
 export function captionOmissionNote(diagnostics: ClipRenderCaptionDiagnostics | null | undefined): CaptionOmissionNote | null {
   if (!diagnostics) return null;
-  const labels = new Set<string>([
-    ...diagnostics.omittedCodePoints,
-    ...diagnostics.skippedEmoji.map((emoji) => [...emoji].map((character) => captionCodePointLabel(character.codePointAt(0)!)).join(" ")),
-  ]);
+  const labels = new Set(diagnostics.omittedCodePoints);
   if (labels.size === 0) return null;
   return { count: labels.size, omissions: [...labels].map((label) => ({ label })) };
 }

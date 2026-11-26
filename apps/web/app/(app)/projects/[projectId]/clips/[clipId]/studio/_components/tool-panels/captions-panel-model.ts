@@ -57,6 +57,14 @@ export function captionPanelColors(style: CaptionDynamicStyle): readonly ("text"
   ];
 }
 
+/** Whether the preset draws a hero word, so its Customize tab has the Emphasis controls (a Scene Style with automatic emphasis, or a Dynamic Style with a hero). */
+export function captionPresetHasEmphasis(preset: Pick<CaptionPreset, "scene" | "dynamic">): boolean {
+  const scene = captionPanelScene(preset);
+  if (scene) return scene.emphasis === "auto";
+  const style = captionPanelStyle(preset);
+  return style ? captionPanelColors(style).includes("hero") : false;
+}
+
 /** "auto": no override in the cue; "none": every word is plain; "custom": a chosen hero. */
 export type CaptionEmphasisMode = "auto" | "none" | "custom";
 

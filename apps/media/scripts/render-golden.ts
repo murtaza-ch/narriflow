@@ -53,6 +53,7 @@ import {
 } from "@narriflow/validators";
 import { prepareCaptionFontsDirectory } from "../src/brand-font-resolution";
 import type { CaptionTrack } from "../src/caption-ass";
+import { loadPlanCaptionEmojiArt } from "../src/caption-emoji-ass";
 import { CAPTION_RENDER_DIAGNOSTIC_PATTERN, captionRenderDiagnosticsFailure, classifyCaptionRenderDiagnostics } from "../src/caption-glyphs";
 import {
   bindCompositionPlanAudioInputs,
@@ -681,7 +682,7 @@ function summarizePlan(plan: ClipCompositionPlan, target: ClipCompositionPlan["t
   }
   const cues = (target.visualLayers as any[])
     .filter((layer) => layer.kind === "caption")
-    .map((layer) => ({ cueIndex: layer.cueIndex, activeRange: layer.activeRange, anchor: layer.anchor, destination: layer.destination, words: layer.words.map((word: any) => [word.text, word.emoji, word.startSec, word.endSec]), preset: sha256(canonicalJson(layer.preset)).slice(0, 16) }));
+    .map((layer) => ({ cueIndex: layer.cueIndex, activeRange: layer.activeRange, anchor: layer.anchor, destination: layer.destination, words: layer.words.map((word: any) => [word.text, word.startSec, word.endSec]), emojis: layer.emojis, preset: sha256(canonicalJson(layer.preset)).slice(0, 16) }));
   const layers = (target.visualLayers as any[]).map((layer) => ({ id: layer.id, kind: layer.kind, zIndex: layer.zIndex, activeRange: layer.activeRange ?? null, destination: layer.destination, opacity: layer.opacity, rotationDeg: layer.rotationDeg }));
   return {
     fingerprint: plan.fingerprint,
@@ -955,9 +956,8 @@ async function measureOutput(input: {
   }
   if (videoFacts && input.probes.includes("saturation")) {
     const captionCues = (input.target.visualLayers as any[]).filter((layer) => layer.kind === "caption");
-    // The middle of each emoji word's window: the emoji has settled there (it pops in over the first
-    // 150 ms and fades over the last 80 ms), where a cue midpoint can fall on the fade between two words.
-    const emojiTimes = captionCues.flatMap((cue) => cue.words.filter((word: any) => word.emoji).map((word: any) => (word.startSec + word.endSec) / 2));
+    // Just after each emoji's pop (180 ms from its anchor word) and before its cue ends: the emoji has settled there.
+    const emojiTimes = captionCues.flatMap((cue) => cue.emojis.map((emoji: any) => Math.min(emoji.atSec + 0.3, cue.activeRange.endSec - 0.05)));
     const cueTimes = emojiTimes.length > 0 ? emojiTimes : captionCues.map((cue) => (cue.activeRange.startSec + cue.activeRange.endSec) / 2);
     measurements["video.saturatedPixels"] = await saturatedPixels(input.outputPath, cueTimes.length > 0 ? cueTimes : [planned / 2]);
   }
@@ -1069,7 +1069,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
 
       let captions: CaptionTrack;
       try {
-        captions = compileCompositionPlanCaptions(planned.plan, target.id, new Map());
+        captions = compileCompositionPlanCaptions(planned.plan, target.id, new Map(), undefined, undefined, await loadPlanCaptionEmojiArt(planned.plan));
       } catch (error) {
         record.failure = { stage: "compile", code: failureCode(error), message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
         targetRecord.measurements["render.ok"] = false;
@@ -1096,7 +1096,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         encoder: context.inputs.manifest.encoder,
         cutPlan: planned.cutPlan,
         ...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
-        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts, captionEmoji: captions.emoji },
+        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
       });
       try {
         argv = compile(null);
@@ -1155,7 +1155,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
           expected: compositionOutputExpectation({ plan: planned.plan, targetId: target.id, source: planned.inspection, audio, hdrAssets: Object.keys(planned.assets.hdr).length > 0 }),
           workerProcess: productionWorkerProcessModule, signal: context.signal,
           mixPeak: targetRecord.encode.mixPeak as unknown as import("../src/render-mix-peak").MixPeakResult ?? null,
-          captionGlyphsOmitted: captions.omitted, captionEmojiSkipped: captions.emojiSkipped,
+          captionGlyphsOmitted: captions.omitted,
           diagnose: (event) => { targetRecord.validation = event; },
         });
       } catch (error) {
@@ -1165,7 +1165,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         const measured = await measureOutput({ outputPath, snapshotDir: join(caseDir, "snapshots"), target: planTarget, plan: planned.plan, probes: definition.probes ?? [], expectedQuadrants });
         targetRecord.output = measured.output;
         // What the burned captions had to leave out (recorded on the worker's render result, `fallbackCode`).
-        targetRecord.measurements = { ...measured.measurements, "render.exitCode": 0, "captions.glyphsOmitted": captions.omitted.length, "captions.emojiSkipped": captions.emojiSkipped.length };
+        targetRecord.measurements = { ...measured.measurements, "render.exitCode": 0, "captions.glyphsOmitted": captions.omitted.length, "captions.emojisPlaced": captions.emojis.placed, "captions.emojisDropped": Object.values(captions.emojis.dropped).reduce((sum, count) => sum + (count ?? 0), 0) };
       } catch (error) {
         targetRecord.measurements["render.ok"] = false;
         record.failure ??= { stage: "encode", code: "measurement_failed", message: normalize(String((error as Error).message ?? error)).slice(0, 500) };

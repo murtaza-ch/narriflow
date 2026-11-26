@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CAPTION_DYNAMIC_NAMES, CAPTION_DYNAMIC_STYLES } from "./caption-dynamic";
+import { captionEmojiPaletteSchema, captionEmojiPositionSchema, captionEmojiSizeSchema, captionEmojiToneSchema } from "./caption-emojis";
 import { CAPTION_FONT_NAMES } from "./caption-font";
 import { CAPTION_SCENE_NAMES, CAPTION_SCENES, type CaptionSceneName } from "./caption-scene";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
@@ -40,40 +41,6 @@ export const captionFontNameSchema = z.enum(CAPTION_FONT_NAMES);
 export const captionShadowSchema = z.enum(["none", "soft", "hard", "extrude"]);
 
 export type CaptionShadow = z.infer<typeof captionShadowSchema>;
-
-/**
- * Curated keyword → emoji map for "emoji captions" (a 2026 table-stakes style).
- * Deterministic (no LLM cost) and SHARED by the studio preview and the worker
- * burn-in so the exported emoji matches what the user sees.
- */
-export const CAPTION_EMOJI_MAP: Record<string, string> = {
-  money: "💰", cash: "💰", dollar: "💰", dollars: "💰", rich: "💰",
-  fire: "🔥", hot: "🔥", lit: "🔥", amazing: "🔥",
-  love: "❤️", heart: "❤️",
-  idea: "💡", think: "💡", thought: "💡", smart: "🧠", brain: "🧠",
-  time: "⏰", fast: "⚡", quick: "⚡", energy: "⚡", power: "⚡",
-  growth: "📈", grow: "📈", growing: "📈", scale: "📈", up: "📈",
-  down: "📉", drop: "📉",
-  win: "🏆", winner: "🏆", winning: "🏆", best: "🏆", goal: "🎯", goals: "🎯",
-  yes: "✅", correct: "✅", right: "✅", true: "✅",
-  no: "🚫", never: "🚫", stop: "🛑", wrong: "❌",
-  world: "🌍", global: "🌍", everyone: "🌍",
-  rocket: "🚀", launch: "🚀", growthhack: "🚀",
-  look: "👀", watch: "👀", see: "👀", eyes: "👀",
-  music: "🎵", sound: "🎵",
-  star: "⭐", magic: "✨", special: "✨",
-  warning: "⚠️", important: "⚠️", careful: "⚠️",
-  data: "📊", numbers: "📊", stats: "📊",
-  build: "🛠️", work: "💪", strong: "💪", hard: "💪",
-  question: "❓", why: "❓",
-  boom: "💥", huge: "💥", massive: "💥",
-};
-
-export function emojiForWord(word: string): string | null {
-  const key = word.toLowerCase().replace(/[^a-z]/g, "");
-  if (!key) return null;
-  return CAPTION_EMOJI_MAP[key] ?? null;
-}
 
 /**
  * Shared pure helper — the ONE place caption cue text is formatted for
@@ -163,7 +130,18 @@ export const captionPresetSchema = z.object({
   position: z.enum(["bottom", "top", "center"]).default("bottom"),
   positionX: z.number().min(0).max(100).optional(),
   positionY: z.number().min(0).max(100).optional(),
+  /** Caption Emojis on/off: draws `studioEdits.captionEmojis` on every preset kind. Absent = off. */
   emojis: z.boolean().optional(),
+  /** Emoji colours; absent = matched to the template (`captionEmojiPalette`). */
+  emojiPalette: captionEmojiPaletteSchema.optional(),
+  /** Emoji size as a multiple of the default; absent = 1. */
+  emojiSize: captionEmojiSizeSchema.optional(),
+  /** Emoji side of the cue; absent = auto. */
+  emojiPosition: captionEmojiPositionSchema.optional(),
+  /** Sticker look (tilt, white outline, hard shadow); absent = on, false draws the art flat. */
+  emojiSticker: z.boolean().optional(),
+  /** Skin tone (1 to 5) of every emoji with skin that has no tone of its own (the AI's); absent = the default yellow. */
+  emojiTone: captionEmojiToneSchema.min(1).optional(),
   /** Subtitle display on/off (vizard-parity Phase C). Absent/true = shown;
    *  false hides subtitle burn-in AND the studio's on-video caption overlay
    *  (style controls stay live either way — only display is gated). */
@@ -176,7 +154,7 @@ export const captionPresetSchema = z.object({
    * Dynamic Style (caption-dynamic.ts). Absent = classic single-line caption.
    * When set, `fontSize` is the body size S, `primaryColor` the body colour,
    * `highlightColor` the hero colour and `accentColor` the third colour;
-   * `highlightBoxColor`, `backgroundColor` and `emojis` do nothing.
+   * `highlightBoxColor` and `backgroundColor` do nothing.
    */
   dynamic: z.enum(CAPTION_DYNAMIC_NAMES).optional(),
   /** Built-in face for roles on the hero font slot. Defaults to the style's hero font. */
@@ -196,7 +174,8 @@ export const captionPresetSchema = z.object({
    * name draws every cue of the target as a Caption Scene. `fontSize` is the sample's body size
    * times the user's size scale, `primaryColor`, `highlightColor`, `accentColor` and
    * `shadowColor` are the colours the template maps; the template owns fonts, shadows, strokes
-   * and motion, so the other fields do nothing. Never together with `dynamic`.
+   * and motion, so the other look fields do nothing (the emoji fields still apply). Never
+   * together with `dynamic`.
    */
   scene: z.enum(CAPTION_SCENE_NAMES).optional(),
 }).refine((preset) => !(preset.scene && preset.dynamic), {
@@ -207,7 +186,12 @@ export const captionPresetSchema = z.object({
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;
 export type CaptionPresetInput = z.input<typeof captionPresetSchema>;
 
-/** Field-aware equality, including the immutable uploaded-font reference. */
+function captionEmojiPalettesEqual(left: CaptionPreset["emojiPalette"], right: CaptionPreset["emojiPalette"]): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.a === right.a && left.b === right.b && left.c === right.c;
+}
+
+/** Field-aware equality, including the immutable uploaded-font reference and the emoji palette. */
 export function captionPresetsEqual(
   left: CaptionPreset,
   right: CaptionPreset,
@@ -218,6 +202,10 @@ export function captionPresetsEqual(
     if (key === "fontAsset") {
       if ((left.fontAsset?.id ?? null) !== (right.fontAsset?.id ?? null) ||
           (left.fontAsset?.fingerprint ?? null) !== (right.fontAsset?.fingerprint ?? null)) return false;
+      continue;
+    }
+    if (key === "emojiPalette") {
+      if (!captionEmojiPalettesEqual(left.emojiPalette, right.emojiPalette)) return false;
       continue;
     }
     if (left[key] !== right[key]) return false;
@@ -531,6 +519,11 @@ const CAPTION_PLACEMENT_FIELDS = new Set<keyof CaptionPreset>([
   "positionX",
   "positionY",
   "emojis",
+  "emojiPalette",
+  "emojiSize",
+  "emojiPosition",
+  "emojiSticker",
+  "emojiTone",
   "visible",
   "punctuation",
 ]);

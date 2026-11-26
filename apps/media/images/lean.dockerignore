@@ -21,6 +21,6 @@ docs
 **/__pycache__
 **/*.pyc
 packages/caption-fonts/fonts
-packages/caption-fonts/emoji
 apps/media/src/__fixtures__
 apps/media/models
+packages/caption-emoji/source

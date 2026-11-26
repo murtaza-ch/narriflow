@@ -14,6 +14,7 @@ import {
   previewCampaignEditorActionSchema,
   regenerateClipsRequestSchema,
   requestThumbnailFrameSchema,
+  suggestClipEmojisSchema,
   triggerClipRenderSchema,
 } from "@narriflow/validators/api/clips";
 import { resolvePricingTier } from "@narriflow/validators";
@@ -90,6 +91,25 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
         );
         return c.json({ titles }, 200);
       },
+    )
+
+    // AI Caption Emojis for one clip, by Word Key. Read-only like titles: the
+    // Studio applies the map as one edit. Rate limited per user (LLM calls).
+    .post(
+      "/projects/:id/clips/:clipId/emojis/suggest",
+      uuidParams("id", "clipId"),
+      validate("json", suggestClipEmojisSchema),
+      async (c) =>
+        c.json(
+          await clipService.suggestEmojis(
+            getActor(c),
+            c.req.valid("param").id,
+            c.req.valid("param").clipId,
+            { density: c.req.valid("json").density },
+            { signal: c.req.raw.signal },
+          ),
+          200,
+        ),
     )
 
     // Duplicates a clip, copying its finished renders and preview proxy inside
@@ -425,17 +445,16 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     .post(
       "/projects/:id/clips/apply-caption-preset",
       validate("json", applyCaptionPresetToAllSchema),
+      // With the preset's emojis on, clips without emojis are tagged first
+      // (bounded, about 20 s at most); the apply never fails because of them.
+      // Only that apply spends model calls, so only it honours the limiter.
       async (c) => {
-        const appUser = getActor(c);
         const input = c.req.valid("json");
-        const result = await clipEditorDocumentPersistence.mutateProjectSelection({
-          actorUserId: appUser.actorUserId,
-          workspaceId: appUser.workspaceId,
-          projectId: c.req.param("id"),
-          excludeClipId: input.excludeClipId,
-          intent: { kind: "set_caption_preset", captionPreset: input.captionPreset },
-        });
-        return c.json(result, 200);
+        if (input.captionPreset.emojis) enforceRecordedRateLimit(getRecordedRateLimit(c));
+        return c.json(
+          await clipService.applyCaptionPresetToAll(getActor(c), c.req.param("id"), input, { signal: c.req.raw.signal }),
+          200,
+        );
       },
     )
 
@@ -460,7 +479,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
             : firstPatch.background !== undefined
               ? "background"
               : "framing";
-        return c.json({ ...result, field }, 200);
+        return c.json({ updated: result.updated, field }, 200);
       },
     )
 

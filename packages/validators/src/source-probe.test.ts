@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isStandardFrameRate, sourceProbeSchema, standardFrameRate } from "./source-probe";
+import { type SourceProbe, isStandardFrameRate, renderFrameRate, sourceProbeSchema, standardFrameRate } from "./source-probe";
 
 describe("standardFrameRate", () => {
   test.each([
@@ -91,4 +91,41 @@ test("complete media facts survive persistence while missing facts cannot masque
   expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, audios: [{ ...facts.audios[0], startTimeSec: Number.NaN }] } }).success).toBe(false);
   expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, audios: [{ ...facts.audios[0], timeBase: { numerator: 1, denominator: 0 } }] } }).success).toBe(false);
   expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, extra: "raw probe" } }).success).toBe(false);
+});
+
+describe("renderFrameRate", () => {
+  const rate = (numerator: number, denominator = 1) => ({ numerator, denominator });
+  const video = (rFrameRate: { numerator: number; denominator: number } | null, avgFrameRate: { numerator: number; denominator: number } | null) => ({
+    index: 0, codec: "h264", profile: null, timeBase: null, startPts: null, startTimeSec: null, durationTs: null, durationSec: null, endTimeSec: null,
+    frameCount: null, bitRate: null, width: 1920, height: 1080, codedWidth: null, codedHeight: null, displayWidth: null, displayHeight: null,
+    sampleAspectRatio: null, displayMatrix: null, rotationDeg: null, reflected: null, avgFrameRate, rFrameRate, pixelFormat: null, colorRange: null,
+    colorSpace: null, colorTransfer: null, colorPrimaries: null, chromaLocation: null, fieldOrder: null, masteringDisplay: null, contentLight: null, dolbyVision: null,
+  });
+  const probe = (videos: ReturnType<typeof video>[], frameRate = rate(25)): SourceProbe => sourceProbeSchema.parse({
+    durationSec: 10,
+    facts: { format: { name: null, startTimeSec: null, durationSec: 10, sizeBytes: null, bitRate: null }, attachedPictureCount: 0, videos, audios: [] },
+    video: videos.length > 0 ? { width: 1920, height: 1080, frameRate, startTimecode: null } : null,
+    audio: null,
+  });
+
+  test("a constant-rate source renders at its base rate, NTSC kept exact", () => {
+    for (const r of [rate(24), rate(25), rate(30), rate(50), rate(60), rate(30000, 1001), rate(24000, 1001)]) expect(renderFrameRate(probe([video(r, r)]))).toEqual(r);
+    expect(renderFrameRate(probe([video(rate(30), rate(2998, 100))]))).toEqual(rate(30));
+    // Interlaced: the field rate over a frame-rate average keeps the base (the render reads regular packets).
+    expect(renderFrameRate(probe([video(rate(60000, 1001), rate(30000, 1001))]))).toEqual(rate(60000, 1001));
+  });
+
+  test("an impossible base rate renders at the normalized average", () => {
+    expect(renderFrameRate(probe([video(rate(90000), rate(15))]))).toEqual(rate(15));
+    expect(renderFrameRate(probe([video(rate(1000), rate(2997, 100))]))).toEqual(rate(30000, 1001));
+    expect(renderFrameRate(probe([video(rate(90000), null)]))).toEqual(rate(30));
+    expect(renderFrameRate(probe([video(rate(1000), rate(1000))]))).toEqual(rate(1000));
+  });
+
+  test("without video, facts or a base rate it is 30, or the measured rate of a probe without facts", () => {
+    expect(renderFrameRate(null)).toEqual(rate(30));
+    expect(renderFrameRate(probe([]))).toEqual(rate(30));
+    expect(renderFrameRate(probe([video(null, rate(25))]))).toEqual(rate(30));
+    expect(renderFrameRate({ durationSec: 10, video: { width: 1920, height: 1080, frameRate: rate(25), startTimecode: null }, audio: null })).toEqual(rate(25));
+  });
 });

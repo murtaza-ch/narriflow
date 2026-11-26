@@ -184,7 +184,7 @@ export async function acquireFixtureRenderGroup(db: PrismaClient, reference: Exe
       });
       return execution.control.expireDeadline({ deadline: { reference: fence.reference, attemptToken: fence.attemptToken, kind: "lease", observedDeadlineAt: lease.toISOString() }, deliveryId: randomUUID() });
     },
-    async complete(renderId: string, details: { sizeBytes: number; durationSec: number; captionDiagnostics?: { omittedCodePoints: string[]; skippedEmoji: string[] } | null }) {
+    async complete(renderId: string, details: { sizeBytes: number; durationSec: number; captionDiagnostics?: { omittedCodePoints: string[] } | null }) {
       const artifact = await output(renderId, "render_variant");
       heads.set(artifact.id, { etag: `"${artifact.id}"`, contentType: artifact.contentType, byteLength: BigInt(details.sizeBytes), sha256 });
       const command: ExecutionCommand = { action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role: "render_variant", bindingHash: artifact.bindingHash,

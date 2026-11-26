@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { planClipComposition } from "@narriflow/composition-plan";
-import { captionPresetSchema, editorDocumentSchema, studioEditsSchema } from "@narriflow/validators";
+import { captionPresetSchema, chooseConstantFrameRate, editorDocumentSchema, renderFrameRate, studioEditsSchema } from "@narriflow/validators";
 import {
   bindCompositionPlanAudioInputs,
   compileClipCompositionCommand,
@@ -11,7 +11,6 @@ import {
 import { passthroughColor, validateRenderOutput } from "./render-output-validation";
 import { buildClipCutPlan } from "./tasks/cut-plan";
 import {
-  chooseConstantFrameRate,
   createWorkerProcessModule,
   decideVideoClock,
   hasVariableTimestamps,
@@ -159,6 +158,22 @@ describe("inspection of a variable-rate stream", () => {
     const { inspection } = await inspect(probe("50/1", "25/1"), new Error("ffprobe failed"));
     expect(inspection.fps).toBe(50);
     expect(inspection.videoClock).toMatchObject({ variable: null, constantRate: null });
+  });
+
+  test("the stored probe gives the Studio the rate the render delivers, except for a variable stream with a plausible base", async () => {
+    const cases = [
+      ["30/1", "30/1", null], ["30000/1001", "30000/1001", null], ["24/1", "24/1", null], ["25/1", "25/1", null], ["50/1", "50/1", null],
+      ["60/1", "60/1", null], ["30/1", "2998/100", null], ["30000/1001", "30/1", null], ["60000/1001", "30000/1001", regular(100, 1001 / 30000)],
+      ["50/1", "25/1", regular(100, 1 / 25)], ["50/1", "25/1", new Error("ffprobe failed")], ["90000/1", "15/1", irregular],
+      ["90000/1", "15/1", regular(100, 1 / 15)], ["1000/1", "2997/100", null], ["90000/1", "0/0", null], ["1000/1", "1000/1", null],
+    ] as const;
+    for (const [base, average, packets] of cases) {
+      const { inspection } = await inspect(probe(base, average), packets instanceof Error ? packets : () => packetJson(packets ? [...packets] : []));
+      expect(renderFrameRate(inspection.sourceProbe ?? null)).toEqual(renderOutputFrameRate(inspection));
+    }
+    const { inspection } = await inspect(probe("60/1", "30/1"), () => packetJson(irregular));
+    expect(renderOutputFrameRate(inspection)).toEqual({ numerator: 30, denominator: 1 });
+    expect(renderFrameRate(inspection.sourceProbe ?? null)).toEqual({ numerator: 60, denominator: 1 });
   });
 
   test("cancellation is not swallowed", async () => {
