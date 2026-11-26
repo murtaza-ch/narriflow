@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cornerResizeTextLayer, dragTextLayer, sideResizeTextLayer, textToolbarPlacement } from "./text-layer-gestures";
+import { cornerResizeTextLayer, dragTextLayer, nudgeTextLayer, sideResizeTextLayer, textToolbarPlacement } from "./text-layer-gestures";
 
 describe("Text Layer canvas gestures", () => {
   test("a drag moves the centre, snaps to the guides and keeps the centre on the canvas", () => {
@@ -9,6 +9,26 @@ describe("Text Layer canvas gestures", () => {
     expect(snapped.guides).toContainEqual({ axis: "x", position: 50 });
     expect(dragTextLayer({ positionX: 90, positionY: 95 }, 40, 40)).toMatchObject({ positionX: 100, positionY: 100 });
     expect(dragTextLayer({ positionX: 10, positionY: 10 }, -40, -40)).toMatchObject({ positionX: 0, positionY: 0 });
+  });
+
+  test("a drag to an edge keeps part of the frame, and so one side's grips, on the canvas", () => {
+    // A 40% x 10% frame: its centre stays on the canvas (the schema range), which keeps 20% of it inside.
+    const reach = { widthPct: 40, heightPct: 10, overlapXPct: 5, overlapYPct: 2 };
+    expect(dragTextLayer({ positionX: 30, positionY: 50 }, -80, 0, reach).positionX).toBe(0);
+    expect(dragTextLayer({ positionX: 30, positionY: 50 }, 0, 80, reach).positionY).toBe(100);
+    // A small frame: the overlap rule is the tighter one.
+    const small = { widthPct: 4, heightPct: 4, overlapXPct: 5, overlapYPct: 5 };
+    expect(dragTextLayer({ positionX: 30, positionY: 50 }, -80, -80, small)).toMatchObject({ positionX: 2, positionY: 2 });
+    expect(dragTextLayer({ positionX: 30, positionY: 50 }, 80, 80, small)).toMatchObject({ positionX: 98, positionY: 98 });
+    // Wider than the canvas: the centre stays inside.
+    const wide = { widthPct: 120, heightPct: 10, overlapXPct: 5, overlapYPct: 2 };
+    expect(dragTextLayer({ positionX: 50, positionY: 50 }, 90, 0, wide).positionX).toBe(100);
+  });
+
+  test("an arrow nudge moves by the step and keeps the same reach", () => {
+    const reach = { widthPct: 4, heightPct: 4, overlapXPct: 5, overlapYPct: 5 };
+    expect(nudgeTextLayer({ positionX: 50, positionY: 50 }, 1, -5, reach)).toEqual({ positionX: 51, positionY: 45 });
+    expect(nudgeTextLayer({ positionX: 2.5, positionY: 50 }, -1, 0, reach)).toEqual({ positionX: 2, positionY: 50 });
   });
 
   test("a corner scales font size and width together", () => {

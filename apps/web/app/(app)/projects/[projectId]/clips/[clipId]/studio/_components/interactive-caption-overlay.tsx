@@ -5,6 +5,7 @@ import { Box, Flex } from "@chakra-ui/react";
 import { motion, useMotionValue, useReducedMotion } from "framer-motion";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
+import { PREVIEW_Z } from "./preview-stacking";
 import {
   captionDynamicStyle,
   clipAspectRatioOptions,
@@ -58,7 +59,7 @@ export function SnapGuideLines({ guides }: { guides: SnapGuide[] }) {
               : "repeating-linear-gradient(to right, {colors.studio.accent} 0px, {colors.studio.accent} 4px, transparent 4px, transparent 8px)"
           }
           pointerEvents="none"
-          zIndex={20}
+          zIndex={PREVIEW_Z.snapGuides}
         />
       ))}
     </>
@@ -382,7 +383,7 @@ export function InteractiveCaptionOverlay({
             top: `${blockBounds.y * blockScale}px`,
             width: `${blockBounds.width * blockScale}px`,
             height: `${blockBounds.height * blockScale}px`,
-            zIndex: 5,
+            zIndex: PREVIEW_Z.caption,
           }}
         >
           <motion.div
@@ -447,7 +448,7 @@ export function InteractiveCaptionOverlay({
           top: `${posY}%`,
           transform: "translate(-50%, -50%)",
           width: "max-content",
-          zIndex: 5,
+          zIndex: PREVIEW_Z.caption,
         }}
       >
         <motion.div

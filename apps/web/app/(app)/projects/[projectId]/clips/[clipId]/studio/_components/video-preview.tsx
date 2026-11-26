@@ -62,6 +62,7 @@ import { InteractiveSceneOverlay } from "./interactive-scene-overlay";
 import { classicCaptionLayerOf } from "./caption-cue-at";
 import { hexToRgba } from "./caption-style-engine";
 import { StudioTextLayers } from "./studio-text-layers";
+import { PREVIEW_Z } from "./preview-stacking";
 import { MusicPreviewTrack } from "./music-preview-track";
 import { SfxPreviewTrack } from "./sfx-preview-track";
 import { CensorBeepPreviewTrack } from "./censor-beep-preview-track";
@@ -296,7 +297,7 @@ function BrollPreviewLayer({
     <Box
       position="absolute"
       inset="0"
-      zIndex={3}
+      zIndex={PREVIEW_Z.videoBroll}
       bg="black"
       pointerEvents="none"
       aria-label="B-roll preview"
@@ -1840,7 +1841,7 @@ export function VideoPreview() {
               top="8px"
               left="50%"
               transform="translateX(-50%)"
-              zIndex={8}
+              zIndex={PREVIEW_Z.status}
               px="8px"
               py="4px"
               bg="studio.surface/92"
@@ -2156,7 +2157,7 @@ export function VideoPreview() {
           ) : null}
 
 			{plannedBrollLayer?.kind === "broll-image" && plannedVisualBrollAsset?.accessUrl ? (
-				<Box position="absolute" inset="0" zIndex="20" overflow="hidden" bg="studio.canvas" style={brollMotionStyle}>
+				<Box position="absolute" inset="0" zIndex={PREVIEW_Z.imageBroll} overflow="hidden" bg="studio.canvas" style={brollMotionStyle}>
 					<img
 						src={plannedVisualBrollAsset.accessUrl}
 						alt=""
@@ -2166,7 +2167,7 @@ export function VideoPreview() {
 			) : null}
 
           {plannedInsertedScene ? (
-            <Flex key={plannedInsertedScene.sceneBlockId} position="absolute" inset="0" zIndex="24" align="center" justify="center" overflow="hidden" bg={plannedInsertedScene.content.kind === "color" ? plannedInsertedScene.content.color : plannedInsertedScene.content.kind === "text" ? plannedInsertedScene.content.backgroundColor : plannedInsertedScene.content.backgroundColor} style={insertedSceneMotionStyle}>
+            <Flex key={plannedInsertedScene.sceneBlockId} position="absolute" inset="0" zIndex={PREVIEW_Z.insertedScene} align="center" justify="center" overflow="hidden" bg={plannedInsertedScene.content.kind === "color" ? plannedInsertedScene.content.color : plannedInsertedScene.content.kind === "text" ? plannedInsertedScene.content.backgroundColor : plannedInsertedScene.content.backgroundColor} style={insertedSceneMotionStyle}>
               {plannedInsertedScene.content.kind === "text" ? (
                 plannedInsertedSceneText ? (
                   <Text maxW={`${plannedInsertedSceneText.maxWidthPx}px`} textAlign="center" whiteSpace="pre" fontFamily={insertedSceneFont ? sceneFontPreviewFamily(insertedSceneFont) : systemSceneFontPreviewFamily(plannedInsertedScene.content.fontFamily)} fontSize={`${plannedInsertedSceneText.fontSizePx}px`} fontWeight={insertedSceneFont?.weight ?? 700} fontStyle={insertedSceneFont?.style.toLowerCase().includes("italic") ? "italic" : "normal"} lineHeight={`${plannedInsertedSceneText.lineHeightPx}px`} color={plannedInsertedScene.content.color}>{plannedInsertedSceneText.text}</Text>
@@ -2320,7 +2321,7 @@ export function VideoPreview() {
                 width: `${previewWidth * (plannedLogoLayer.widthPx / compositionPreview!.canvas.width)}px`,
                 height: "auto",
                 opacity: plannedLogoLayer.opacity,
-                zIndex: 25,
+                zIndex: PREVIEW_Z.logo,
                 pointerEvents: "none",
               }}
             />
@@ -2334,7 +2335,7 @@ export function VideoPreview() {
               bg={plannedTransitionLayer.color}
               style={{ opacity: 0 }}
               pointerEvents="none"
-              zIndex={30}
+              zIndex={PREVIEW_Z.transition}
               aria-hidden="true"
             />
           ) : null}
@@ -2355,7 +2356,7 @@ export function VideoPreview() {
                 paintOrder: "stroke fill",
               }}
               pointerEvents="none"
-              zIndex={35}
+              zIndex={PREVIEW_Z.watermark}
               aria-hidden="true"
             >
               {plannedOutputTreatment.watermark.text}

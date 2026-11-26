@@ -16,12 +16,46 @@ const round = (value: number, step: number) => Math.round(value / step) * step;
 export type TextLayerGeometry = Pick<StudioTextLayer, "positionX" | "positionY" | "widthPct"> & { readonly fontSize: number };
 
 /**
- * A drag by `dxPct, dyPct` of the canvas: the centre snaps to the guides and stays inside the canvas,
- * so the layer can always be grabbed again.
+ * How far a frame may leave the canvas: its size and the overlap that must stay inside, in percent
+ * of the canvas on each axis.
  */
-export function dragTextLayer(start: Pick<TextLayerGeometry, "positionX" | "positionY">, dxPct: number, dyPct: number): { positionX: number; positionY: number; guides: SnapGuide[] } {
+export interface TextLayerReach {
+  readonly widthPct: number;
+  readonly heightPct: number;
+  /** Frame that stays inside on each axis (24 preview px, as a percentage of the canvas). */
+  readonly overlapXPct: number;
+  readonly overlapYPct: number;
+}
+
+/** The frame's centre on one axis: at least `overlap` of the frame stays inside, and the centre itself never leaves. */
+function clampAxis(centre: number, size: number, overlap: number): number {
+  const keep = Math.min(overlap, size);
+  return clamp(centre, Math.max(0, keep - size / 2), Math.min(100, 100 - keep + size / 2));
+}
+
+/** A centre kept where the frame's grips stay reachable (`TextLayerReach`). */
+export function keepTextLayerReachable(positionX: number, positionY: number, reach: TextLayerReach): { positionX: number; positionY: number } {
+  return {
+    positionX: round(clampAxis(positionX, reach.widthPct, reach.overlapXPct), 0.01),
+    positionY: round(clampAxis(positionY, reach.heightPct, reach.overlapYPct), 0.01),
+  };
+}
+
+/**
+ * A drag by `dxPct, dyPct` of the canvas: the centre snaps to the guides, then is held so part of
+ * the frame stays on the canvas (`keepTextLayerReachable`; without a reach, the centre stays inside).
+ */
+export function dragTextLayer(start: Pick<TextLayerGeometry, "positionX" | "positionY">, dxPct: number, dyPct: number, reach?: TextLayerReach): { positionX: number; positionY: number; guides: SnapGuide[] } {
   const snapped = computeSnap(clamp(start.positionX + dxPct, 0, 100), clamp(start.positionY + dyPct, 0, 100));
-  return { positionX: round(snapped.x, 0.01), positionY: round(snapped.y, 0.01), guides: snapped.guides };
+  const kept = keepTextLayerReachable(snapped.x, snapped.y, reach ?? { widthPct: 0, heightPct: 0, overlapXPct: 0, overlapYPct: 0 });
+  // A guide shows only where the layer actually sits.
+  const guides = snapped.guides.filter((guide) => (guide.axis === "x" ? kept.positionX : kept.positionY) === guide.position);
+  return { ...kept, guides };
+}
+
+/** An arrow-key nudge: no snapping, the same reach rule as a drag. */
+export function nudgeTextLayer(start: Pick<TextLayerGeometry, "positionX" | "positionY">, dxPct: number, dyPct: number, reach: TextLayerReach): { positionX: number; positionY: number } {
+  return keepTextLayerReachable(start.positionX + dxPct, start.positionY + dyPct, reach);
 }
 
 /**

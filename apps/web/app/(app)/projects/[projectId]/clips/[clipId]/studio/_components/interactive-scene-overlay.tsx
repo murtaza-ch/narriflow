@@ -6,6 +6,7 @@ import { sceneCuesFromLayers } from "@narriflow/caption-scene";
 import type { CompositionActiveRange, CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
+import { PREVIEW_Z } from "./preview-stacking";
 import { CaptionSceneLayers, captionSceneBoundsAt, useCaptionScene } from "./caption-scene-painter";
 import { DragResizeHandles, SelectionFrame, SnapGuideLines } from "./interactive-caption-overlay";
 import { SceneCaptionEmojis } from "./emoji/scene-caption-emojis";
@@ -139,7 +140,7 @@ export function InteractiveSceneOverlay({
   return (
     <>
       <SnapGuideLines guides={snapGuides} />
-      <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: 5, pointerEvents: "none" }}>
+      <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: PREVIEW_Z.caption, pointerEvents: "none" }}>
         <CaptionSceneLayers built={built} canvas={canvas} scale={scale} timeSource={playbackClock} />
         <SceneCaptionEmojis built={built} layers={layers} scale={scale} timeSource={playbackClock} />
       </div>
@@ -151,7 +152,7 @@ export function InteractiveSceneOverlay({
             top: `${bounds.y1 * scale}px`,
             width: `${(bounds.x2 - bounds.x1) * scale}px`,
             height: `${(bounds.y2 - bounds.y1) * scale}px`,
-            zIndex: 6,
+            zIndex: PREVIEW_Z.captionFrame,
           }}
         >
           <motion.div

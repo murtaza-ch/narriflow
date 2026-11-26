@@ -8,6 +8,7 @@ import { type CaptionPreset, captionFontFace } from "@narriflow/validators";
 import { useBrandFont } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { CAPTION_FACE_OWN_SCRIPTS } from "@/app/caption-script-fonts";
 import { type CaptionBlockCueInput, type CaptionBlockPaint, type CaptionTimeSource, useCaptionBlockPaint } from "../caption-block-painter";
+import { PREVIEW_Z } from "../preview-stacking";
 import { CaptionEmojiLayer, type CaptionEmojiCueSource } from "./caption-emoji-layer";
 import { type ClassicLineFace, type ClassicLineSize, blockEmojiCueBox, classicLineBoxEm, classicLineEmojiCueBox, oneCueSourceKey } from "./cue-emoji-boxes";
 import { type EmojiFollowingCue, NO_FOLLOWING_CUE, type OneCueEmojiInput, rememberHeldCue } from "./held-cue-boxes";
@@ -60,7 +61,7 @@ export function CueEmojiLayer({ layer, scale, timeSource, fps, dragOffset, input
   const canvas = useMemo(() => ({ width, height }), [width, height]);
   if (emojis.length === 0) return null;
   return (
-    <motion.div style={{ x: dragOffset?.x ?? 0, y: dragOffset?.y ?? 0, position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: 6, pointerEvents: "none" }}>
+    <motion.div style={{ x: dragOffset?.x ?? 0, y: dragOffset?.y ?? 0, position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: PREVIEW_Z.captionEmoji, pointerEvents: "none" }}>
       <CaptionEmojiLayer source={source} emojis={emojis} style={style} canvas={canvas} anchorYPct={layer.anchor.yPct} fps={fps} nextEmojiAtMs={input?.nextEmojiAtMs} scale={scale} timeSource={timeSource} />
     </motion.div>
   );
