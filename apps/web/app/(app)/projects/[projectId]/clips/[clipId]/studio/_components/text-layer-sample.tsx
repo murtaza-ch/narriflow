@@ -31,7 +31,8 @@ export function sampleStyle(style: TextLayerStyle, fontSize = SAMPLE_FONT_SIZE):
   };
 }
 
-function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
+/** An element's content width, kept up by a ResizeObserver (0 until it has been measured). */
+export function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
   const ref = useRef<T>(null);
   const [width, setWidth] = useState(0);
   useEffect(() => {

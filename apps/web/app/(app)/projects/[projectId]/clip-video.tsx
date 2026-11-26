@@ -2,8 +2,53 @@
 
 import { Box, Flex } from "@chakra-ui/react";
 import { Pause, Play } from "lucide-react";
-import { type SyntheticEvent, useEffect, useRef, useState } from "react";
+import { type ReactNode, type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { formatDuration } from "@/lib/format";
+import type { CaptionTimeSource } from "./clips/[clipId]/studio/_components/caption-block-painter";
+
+/**
+ * The player's time (seconds of the media) as a time source for overlays. Media events
+ * (seek, load, pause, the end-of-clip rewind) notify once; while the clip plays, one animation
+ * frame loop notifies every frame, and only while something listens.
+ */
+export function createPlayerClock(read: () => number) {
+	const listeners = new Set<() => void>();
+	let running = false;
+	let frame = 0;
+	const notify = () => {
+		for (const listener of listeners) listener();
+	};
+	const tick = () => {
+		frame = 0;
+		if (!running || listeners.size === 0) return;
+		notify();
+		frame = requestAnimationFrame(tick);
+	};
+	const schedule = () => {
+		if (running && listeners.size > 0 && !frame) frame = requestAnimationFrame(tick);
+	};
+	return {
+		getSnapshot: read,
+		subscribe(listener: () => void) {
+			listeners.add(listener);
+			schedule();
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+		notify,
+		start() {
+			running = true;
+			schedule();
+		},
+		stop() {
+			running = false;
+			if (frame) cancelAnimationFrame(frame);
+			frame = 0;
+			notify();
+		},
+	};
+}
 
 /**
  * Preview player for one clip segment.
@@ -27,15 +72,20 @@ export function ClipVideo({
 	startSec,
 	endSec,
 	onMediaError,
+	overlay,
 }: {
 	src: string;
 	startSec: number;
 	endSec: number;
 	/** The player could not load its grant (expired or revoked): ask for a fresh one. */
 	onMediaError: () => void;
+	/** Drawn over the video, under the controls, from the player's time (media seconds); mounted once the row is near the viewport. */
+	overlay?: (clock: CaptionTimeSource) => ReactNode;
 }) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const videoRef = useRef<HTMLVideoElement>(null);
+	const [clock] = useState(() => createPlayerClock(() => videoRef.current?.currentTime ?? 0));
+	useEffect(() => () => clock.stop(), [clock]);
 	const [shouldLoad, setShouldLoad] = useState(false);
 	const [playing, setPlaying] = useState(false);
 	// Seconds into the clip, for the countdown on the duration chip.
@@ -97,8 +147,16 @@ export function ClipVideo({
 				playsInline
 				disablePictureInPicture
 				preload={shouldLoad ? "metadata" : "none"}
-				onPlay={() => setPlaying(true)}
-				onPause={() => setPlaying(false)}
+				onPlay={() => {
+					setPlaying(true);
+					clock.start();
+				}}
+				onPause={() => {
+					setPlaying(false);
+					clock.stop();
+				}}
+				onSeeked={clock.notify}
+				onLoadedData={clock.notify}
 				onError={() => {
 					setFailed(true);
 					onMediaError();
@@ -112,6 +170,7 @@ export function ClipVideo({
 				onLoadedMetadata={(event: SyntheticEvent<HTMLVideoElement>) => {
 					const video = event.currentTarget;
 					if (video.currentTime < startSec) video.currentTime = startSec;
+					clock.notify();
 				}}
 				onTimeUpdate={(event: SyntheticEvent<HTMLVideoElement>) => {
 					const video = event.currentTarget;
@@ -120,8 +179,10 @@ export function ClipVideo({
 						video.currentTime = startSec;
 					}
 					setElapsed(Math.min(clipDuration, Math.max(0, video.currentTime - startSec)));
+					clock.notify();
 				}}
 			/>
+			{overlay && shouldLoad ? overlay(clock) : null}
 			<Flex
 				as="button"
 				aria-label={playing ? "Pause clip" : "Play clip"}

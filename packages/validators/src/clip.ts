@@ -8,6 +8,7 @@ export {
 import { brollCuesArraySchema } from "./broll";
 import { captionPresetSchema } from "./caption-preset";
 import { contentPackSchema, clipPlatformTargetSchema } from "./content-pack";
+import { sourceRangeSchema } from "./edit-ranges";
 import { studioEditsSchema } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
@@ -217,6 +218,10 @@ export const clipSnapshotSchema = z.object({
   brollUrl: z.string().nullable().optional(),
   brollCues: brollCuesArraySchema.optional(),
   studioEdits: studioEditsSchema.optional(),
+  /** Source seconds cut from `[startSec, endSec)`, canonical. With the window it gives the
+   *  clip's edited timeline (`buildClipCutPlan`): a card playing the preview proxy maps the
+   *  player's source time to the edited time Text Layers are timed in. */
+  deletedRanges: z.array(sourceRangeSchema).optional(),
   // Whether the worker has cut this clip's lightweight 540p preview proxy
   // yet (Clip.previewStorageKey is set). The raw storage key never reaches
   // the client — this boolean is the only proxy-readiness signal exposed,
