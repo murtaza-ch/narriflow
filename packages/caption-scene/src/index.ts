@@ -14,3 +14,4 @@ export * from "./registry";
 export * from "./scene";
 export * from "./shapes";
 export * from "./sheet";
+export * from "./text-layer";
