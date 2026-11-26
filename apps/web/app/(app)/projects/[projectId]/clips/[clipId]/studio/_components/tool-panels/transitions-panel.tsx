@@ -296,7 +296,7 @@ export function TransitionsPanel() {
     setApplyState("applying");
     try {
       const api = requireStudioApi(studioApi);
-      let data: { updated: number };
+      let data: { updated: number; unreadable?: number };
       try {
         const response = await createClipsClient(api.runtime.transport.scoped(api.scope)).projects[":id"].clips[
           "apply-studio-edits"
@@ -304,7 +304,7 @@ export function TransitionsPanel() {
           param: { id: clipInfo.projectId },
           json: { patches: [{ transition: { type: selected, durationSec: duration } }], excludeClipId: clipInfo.id },
         });
-        data = (await response.json()) as { updated: number };
+        data = (await response.json()) as { updated: number; unreadable?: number };
       } catch (error) {
         const upgrade = upgradePromptFromFailure(apiFailureBody(error));
         if (upgrade) openUpgrade(upgrade);
@@ -312,7 +312,12 @@ export function TransitionsPanel() {
       }
       void invalidateAfterClipChange(api.runtime.queryClient, api.scope, clipInfo.projectId);
       setApplyState("applied");
-      toaster.create({ type: "success", title: data.updated > 0 ? `Applied to ${data.updated} other clip${data.updated === 1 ? "" : "s"}` : "Every other clip already matches" });
+      const unreadable = data.unreadable ?? 0;
+      toaster.create({
+        type: unreadable > 0 ? "warning" : "success",
+        title: data.updated > 0 ? `Applied to ${data.updated} other clip${data.updated === 1 ? "" : "s"}` : unreadable > 0 ? "No other clip was changed" : "Every other clip already matches",
+        ...(unreadable > 0 ? { description: `${unreadable} clip${unreadable === 1 ? " couldn't" : "s couldn't"} be read and ${unreadable === 1 ? "was" : "were"} left as ${unreadable === 1 ? "it was" : "they were"}.` } : {}),
+      });
       setTimeout(() => setApplyState("idle"), 2_000);
     } catch {
       setApplyState("error");

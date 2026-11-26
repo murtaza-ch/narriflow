@@ -483,7 +483,8 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
             : firstPatch.background !== undefined
               ? "background"
               : "framing";
-        return c.json({ updated: result.updated, field }, 200);
+        // Clips whose stored document cannot be read are left as they are and counted, never silently.
+        return c.json({ updated: result.updated, field, ...(result.unreadable ? { unreadable: result.unreadable } : {}) }, 200);
       },
     )
 

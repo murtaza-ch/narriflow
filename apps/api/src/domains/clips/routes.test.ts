@@ -432,10 +432,14 @@ describe("apply studio edits to all clips", () => {
     expect(await grouped.json()).toEqual({ updated: 2, field: "title", title: { restyled: 1, created: 1, skipped: 3 } });
   });
 
-  test("other patch kinds keep their response", async () => {
-    const { app, mutateProjectSelection } = appFor({ updated: 1, unreadable: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
+  test("other patch kinds keep their response and count clips that could not be read", async () => {
+    const { app, mutateProjectSelection } = appFor({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
     const response = await app.request(url, post({ patches: [{ transition: { type: "fade", durationSec: 0.4 } }] }));
     expect(await response.json()).toEqual({ updated: 1, field: "transition" });
     expect(mutateProjectSelection).toHaveBeenCalledTimes(1);
+
+    const skipped = appFor({ updated: 1, unreadable: 2, captionEmojisAdded: 0, captionEmojisStale: 0 });
+    const withUnreadable = await skipped.app.request(url, post({ patches: [{ transition: { type: "fade", durationSec: 0.4 } }] }));
+    expect(await withUnreadable.json()).toEqual({ updated: 1, field: "transition", unreadable: 2 });
   });
 });
