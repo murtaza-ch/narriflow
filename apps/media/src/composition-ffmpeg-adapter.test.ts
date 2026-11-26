@@ -33,7 +33,9 @@ import {
 	compileCompositionPlanVisualLayers,
 	bindCompositionPlanAudioInputs,
 } from "./composition-ffmpeg-adapter";
+import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import { renderCaptionTrack } from "./caption-ass";
+import { compileCompositionPlanTextLayers } from "./text-layer-ass";
 import { drawtextLiteralText } from "./ffmpeg-text";
 import { productionWorkerProcessModule } from "./worker-process";
 import { compositionOutputExpectation, validateRenderOutput } from "./render-output-validation";
@@ -920,6 +922,8 @@ function planBrollWithInsertions(anchors = [2.5]) {
 function planVisualStack(
 	input: {
 		captions?: boolean;
+		/** Leave the hook Text Layer out. */
+		noText?: boolean;
 		transitionType?: (typeof MOTION_ADAPTER_FIXTURES.transitions)[number]["type"];
 	} = {},
 ) {
@@ -950,7 +954,7 @@ function planVisualStack(
 				: [],
 			studioEdits: studioEditsSchema.parse({
 				framing: { mode: "center" },
-				textLayers: [{ id: "hook", text: "It's 50%", startSec: 1, endSec: 4 }],
+				textLayers: input.noText ? [] : [{ id: "hook", text: "It's 50%", startSec: 1, endSec: 4 }],
 				transition: {
 					type: input.transitionType ?? "dip-white",
 					durationSec: 0.5,
@@ -1035,6 +1039,7 @@ describe("composition FFmpeg adapter", () => {
 				targetId: "variant-1",
 				inputLabel: "[composition_base]",
 				outputLabel: "[outv]",
+				textAssPath: "/work/text.ass",
 				logoInputIndex: 1,
 			});
 			expect(compiled.filterParts.length).toBeGreaterThan(0);
@@ -1578,11 +1583,13 @@ describe("composition FFmpeg adapter", () => {
 				targetId: "variant-1",
 				inputLabel: "[composition_base]",
 				outputLabel: "[outv]",
+				textAssPath: "/work/clip-text.ass",
+				textFontsDirectory: "/fonts",
 				logoInputIndex: 1,
 			}),
 		).toEqual({
 			filterParts: [
-				"[composition_base]drawtext=fontfile=Inter\\\\:weight=extrabold:text=It\\\\\\'s 50%:expansion=none:fontsize=48:fontcolor=0xFFFFFF:x=w*0.5000-text_w/2:y=h*0.1200-text_h/2:enable='between(t\\,1.000\\,4.000)':shadowcolor=black@0.45:shadowx=0:shadowy=2:borderw=3:bordercolor=0x000000[composition_visual_0]",
+				"[composition_base]ass='/work/clip-text.ass':fontsdir='/fonts'[composition_visual_0]",
 				"[1:v]scale=130:-1,format=rgba,colorchannelmixer=aa=0.800[composition_logo_1]",
 				"[composition_visual_0][composition_logo_1]overlay=W-w-24:24[composition_visual_1]",
 				"[composition_visual_1]fade=t=in:st=0.000:d=0.500:color=white,fade=t=out:st=4.500:d=0.500:color=white[composition_visual_2]",
@@ -1592,52 +1599,84 @@ describe("composition FFmpeg adapter", () => {
 		});
 	});
 
-	test("draws text layers with quotes, percents, and filter syntax in real FFmpeg", async () => {
-		const plan = planVisualStack();
-		const text = "Don't miss: 50% off [today], \\o/; %{pts}";
-		const visual = compileCompositionPlanVisualLayers({
-			plan: {
-				...plan,
-				targets: plan.targets.map((target) => ({
-					...target,
-					visualLayers: target.visualLayers.map((layer) =>
-						layer.kind === "text"
-							? { ...layer, value: { ...layer.value, text } }
-							: layer,
-					),
-				})),
-			},
+	test("every Text Layer burns in one ass stage, under the captions, with the vendored caption faces by default", () => {
+		const plan = planVisualStack({ captions: true });
+		const twoLayers = {
+			...plan,
+			targets: plan.targets.map((target) => {
+				const text = target.visualLayers.find((layer) => layer.kind === "text")!;
+				return { ...target, visualLayers: [text, { ...text, id: `${text.id}:second` }, ...target.visualLayers.slice(1)] };
+			}),
+		};
+		const parts = compileCompositionPlanVisualLayers({
+			plan: twoLayers,
 			targetId: "variant-1",
-			inputLabel: "[0:v]",
+			inputLabel: "[composition_base]",
 			outputLabel: "[outv]",
+			subtitlePath: "/work/captions.ass",
+			textAssPath: "/work/clip-text.ass",
 			logoInputIndex: 1,
-		});
-		const process = Bun.spawn(
-			[
-				"ffmpeg",
-				"-v",
-				"error",
-				"-f",
-				"lavfi",
-				"-i",
-				"testsrc2=size=1080x1920:rate=24:duration=5",
-				"-f",
-				"lavfi",
-				"-i",
-				"color=c=red:size=64x64:duration=5",
-				"-filter_complex",
-				visual.filterParts.join(";"),
-				"-map",
-				"[outv]",
-				"-f",
-				"null",
-				"-",
-			],
-			{ stdout: "ignore", stderr: "pipe" },
-		);
-		const stderr = await new Response(process.stderr).text();
-		expect(await process.exited, stderr).toBe(0);
-		expect(stderr).not.toMatch(/drawtext/i);
+		}).filterParts;
+		const textStages = parts.filter((part) => part.includes("clip-text.ass"));
+		expect(textStages).toHaveLength(1);
+		expect(textStages[0]).toContain(`fontsdir='${CAPTION_FONTS_DIRECTORY.replace(/:/g, "\\:")}'`);
+		expect(parts.findIndex((part) => part.includes("clip-text.ass"))).toBeLessThan(parts.findIndex((part) => part.includes("captions.ass")));
+	});
+
+	test("a text-only plan and a captions-only plan both compile", () => {
+		const textOnly = planVisualStack();
+		expect(textOnly.targets[0]!.visualLayers.some((layer) => layer.kind === "caption")).toBe(false);
+		const text = compileCompositionPlanTextLayers(textOnly, "variant-1");
+		expect(text.ass).toContain("Dialogue:");
+		expect(renderCaptionTrack({ layers: [], canvas: textOnly.targets[0]!.canvas }).ass).toBe("");
+		expect(compileCompositionPlanVisualLayers({ plan: textOnly, targetId: "variant-1", inputLabel: "[a]", outputLabel: "[b]", textAssPath: "/work/text.ass", logoInputIndex: 1 }).filterParts[0]).toContain("ass='/work/text.ass'");
+
+		const captionsOnly = planVisualStack({ captions: true, noText: true });
+		expect(compileCompositionPlanTextLayers(captionsOnly, "variant-1").ass).toBe("");
+		const parts = compileCompositionPlanVisualLayers({ plan: captionsOnly, targetId: "variant-1", inputLabel: "[a]", outputLabel: "[b]", subtitlePath: "/work/captions.ass", logoInputIndex: 1 }).filterParts;
+		expect(parts.some((part) => part.includes("captions.ass"))).toBe(true);
+		expect(parts.some((part) => part.includes("text.ass"))).toBe(false);
+	});
+
+	test("burns Text Layers with quotes, percents, braces, backslashes and filter syntax in real FFmpeg", async () => {
+		const plan = planVisualStack();
+		const text = "Don't miss: 50% off [today], \\o/; %{pts} \\N {braces}";
+		const withText = {
+			...plan,
+			targets: plan.targets.map((target) => ({
+				...target,
+				visualLayers: target.visualLayers.map((layer) =>
+					layer.kind === "text" ? { ...layer, value: { ...layer.value, text } } : layer,
+				),
+			})),
+		};
+		const track = compileCompositionPlanTextLayers(withText, "variant-1");
+		expect(track.omitted).toEqual([]);
+		expect(track.ass).toContain("\\{braces\\}");
+		expect(track.ass).toContain("\\\u2060N");
+		const dir = await mkdtemp(join(tmpdir(), "text-layer-burn-"));
+		try {
+			const textAssPath = join(dir, "text.ass");
+			await writeFile(textAssPath, track.ass);
+			const visual = compileCompositionPlanVisualLayers({
+				plan: withText,
+				targetId: "variant-1",
+				inputLabel: "[0:v]",
+				outputLabel: "[outv]",
+				textAssPath,
+				logoInputIndex: 1,
+			});
+			const process = Bun.spawn(
+				["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=24:duration=5", "-f", "lavfi", "-i", "color=c=red:size=64x64:duration=5",
+					"-filter_complex", visual.filterParts.join(";"), "-map", "[outv]", "-f", "null", "-"],
+				{ stdout: "ignore", stderr: "pipe" },
+			);
+			const stderr = await new Response(process.stderr).text();
+			expect(await process.exited, stderr).toBe(0);
+			expect(stderr).not.toMatch(/glyph|fontselect|\[Parsed_ass/i);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
 	}, 30_000);
 
 	test("rejects missing resolved inputs for planned optional visual assets", () => {
@@ -1647,6 +1686,7 @@ describe("composition FFmpeg adapter", () => {
 				targetId: "variant-1",
 				inputLabel: "[composition_base]",
 				outputLabel: "[outv]",
+				textAssPath: "/work/text.ass",
 			}),
 		).toThrow("clip_composition_logo_input_missing");
 
@@ -1656,9 +1696,21 @@ describe("composition FFmpeg adapter", () => {
 				targetId: "variant-1",
 				inputLabel: "[composition_base]",
 				outputLabel: "[outv]",
+				textAssPath: "/work/text.ass",
 				logoInputIndex: 1,
 			}),
 		).toThrow("clip_composition_caption_asset_missing");
+
+		expect(() =>
+			compileCompositionPlanVisualLayers({
+				plan: planVisualStack({ captions: true }),
+				targetId: "variant-1",
+				inputLabel: "[composition_base]",
+				outputLabel: "[outv]",
+				subtitlePath: "/work/captions.ass",
+				logoInputIndex: 1,
+			}),
+		).toThrow("clip_composition_text_asset_missing");
 	});
 
 	test("rejects visual geometry outside the planned target canvas", () => {

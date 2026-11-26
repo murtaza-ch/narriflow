@@ -10,6 +10,7 @@ import {
   buildCaptionScene,
   evaluatePiece,
   exportFrameAfter,
+  exportFrameTime,
   exportFrameTimes,
   pathBounds,
   pathToAss,
@@ -17,6 +18,7 @@ import {
   roundedClipPath,
   sceneCuesFromLayers,
   sceneInputFromPreset,
+  sceneSampleRate,
 } from "@narriflow/caption-scene";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
@@ -104,6 +106,11 @@ export class SceneMeasurer {
     private readonly report: SceneGlyphReport,
     private readonly forcedOmissions: ReadonlySet<number>,
     private readonly language: string | null,
+    /**
+     * Braces and backslashes are measured and drawn as typed (Text Layers). Captions leave them out
+     * of both (`wordParts`, `escapeAssText`); `sceneEvents` writes the text the way it was measured.
+     */
+    readonly literalText = false,
   ) {}
 
   private planner(fontName: CaptionFontName): CaptionGlyphPlanner {
@@ -125,11 +132,11 @@ export class SceneMeasurer {
     // Select the same paragraph level as Canvas, including LTR phrases that
     // open with an RTL word. A mark preserves the inner runs' own directions.
     const mark = direction === "rtl" ? CAPTION_RTL_MARK : "\u200E";
-    const markFace = direction === "rtl" || textDirection(text) !== direction ? planner.markFace(mark, wordParts(planned).map((part) => part.face)) : null;
+    const markFace = direction === "rtl" || textDirection(text) !== direction ? planner.markFace(mark, wordParts(planned, this.literalText).map((part) => part.face)) : null;
     const clusters: readonly PlannedCluster[] = markFace
       ? [{ text: mark, parts: [{ text: mark, face: markFace, spaced: false }] }, ...planned]
       : planned;
-    const parts = wordParts(clusters);
+    const parts = wordParts(clusters, this.literalText);
     const line = layoutCaptionLine(
       [{ parts: parts.map((part) => ({ text: part.text, fontPath: part.face.path, spaced: part.spaced, inked: true })), gap: null, gapExtraEm: 0 }],
       letterSpacingEm,
@@ -195,6 +202,11 @@ export interface SceneEventOptions {
   readonly canvas: { width: number; height: number };
   /** Sampling frame rate (clamped to 60). */
   readonly fps?: number;
+}
+
+/** What one piece's events are written with: the options and how the measurer read its text. */
+interface PieceEventOptions extends SceneEventOptions {
+  readonly literalText: boolean;
 }
 
 
@@ -287,8 +299,9 @@ interface Span {
  * The events of one piece. `metrics` is the measured text of a text piece. Returns events in paint
  * order within the piece (shadows, fill, stroke).
  */
-function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: SceneEventOptions): AssEvent[] {
+function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: PieceEventOptions): AssEvent[] {
   const fps = options.fps ?? 30;
+  if (poseIsConstant(piece)) return constantPieceEvents(piece, metrics, options);
   const times = exportFrameTimes(piece.fromMs, piece.toMs, fps);
   if (times.length === 0) return [];
   const poses = times.map((t) => evaluatePiece(piece, t));
@@ -318,10 +331,45 @@ function pieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: Sc
     for (const span of cutSpans(run, times, poses, geometry, layers)) {
       const startMs = csFloor(times[span.from]!);
       const endMs = csFloor(span.to + 1 < times.length && drawn[span.to + 1] ? times[span.to + 1]! : exportFrameAfter(times[span.to]!, fps));
-      for (const layer of layers) events.push(layerEvent(piece, metrics, geometry, layer, span, times, poses, startMs, endMs, roundedClips?.[span.from]));
+      for (const layer of layers) events.push(layerEvent(piece, metrics, geometry, layer, span, times, poses, startMs, endMs, roundedClips?.[span.from], options.literalText));
     }
   }
   return events;
+}
+
+/** No track, clip or colour of the piece has more than one key: its pose is the same at every frame. */
+function poseIsConstant(piece: Piece): boolean {
+  const single = (frames: readonly unknown[] | undefined) => frames === undefined || frames.length <= 1;
+  const { track, clip } = piece;
+  return (
+    single(track.x) && single(track.y) && single(track.sx) && single(track.sy) && single(track.rz) && single(track.rx) && single(track.ry) &&
+    single(track.skx) && single(track.o) && single(track.blur) && single(track.colour) &&
+    (!clip || (single(clip.x1) && single(clip.y1) && single(clip.x2) && single(clip.y2)))
+  );
+}
+
+/**
+ * The events of a piece whose pose never changes (`poseIsConstant`): evaluated once, one event per paint layer from
+ * its first export frame to the frame after its last, the same events the sampled path writes for it. A title that
+ * lasts the whole clip costs what a 5 second one does.
+ */
+function constantPieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: PieceEventOptions): AssEvent[] {
+  const fps = options.fps ?? 30;
+  const rate = sceneSampleRate(fps);
+  // The first and last of `exportFrameTimes(piece.fromMs, piece.toMs, fps)`, without listing the frames between.
+  let first = Math.max(0, Math.ceil(((piece.fromMs - 0.5) * rate) / 1000));
+  while (exportFrameTime(first, rate) < piece.fromMs) first++;
+  let last = Math.ceil((piece.toMs * rate) / 1000) + 1;
+  while (last >= first && exportFrameTime(last, rate) >= piece.toMs) last--;
+  if (last < first) return [];
+  const firstMs = exportFrameTime(first, rate);
+  const pose = evaluatePiece(piece, firstMs);
+  if (!frameDrawn(pose)) return [];
+  const roundedClip = piece.clip?.radius === undefined ? undefined : `\\${pose.clip!.inverse ? "iclip" : "clip"}(4,${pathToAss(roundedClipPath(pose), 4)})`;
+  const geometry = pieceGeometry(piece, metrics);
+  const startMs = csFloor(firstMs);
+  const endMs = csFloor(exportFrameAfter(exportFrameTime(last, rate), fps));
+  return paintLayers(piece).map((layer) => layerEvent(piece, metrics, geometry, layer, { from: 0, to: 0 }, [firstMs], [pose], startMs, endMs, roundedClip, options.literalText));
 }
 
 function paintLayers(piece: Piece): PaintLayer[] {
@@ -413,6 +461,7 @@ function layerEvent(
   startMs: number,
   endMs: number,
   roundedClip?: string,
+  literalText?: boolean,
 ): AssEvent {
   const indices = Array.from({ length: span.to - span.from + 1 }, (_, k) => span.from + k);
   const rel = indices.map((k) => times[k]! - startMs);
@@ -503,7 +552,7 @@ function layerEvent(
       alphaChain("3a", outlineAlpha) +
       `${bordTags(bord)}\\shad0`;
     const face = m.requested;
-    body = `{\\an5\\fn${face.assName}${position}${org}\\fs${num(px * face.lineHeightEm)}\\fsp${num(piece.letterSpacingEm * px)}${paint}${tags.join("")}}${assText(m.clusters, face, px, piece.letterSpacingEm)}`;
+    body = `{\\an5\\fn${face.assName}${position}${org}\\fs${num(px * face.lineHeightEm)}\\fsp${num(piece.letterSpacingEm * px)}${paint}${tags.join("")}}${assText(m.clusters, face, px, piece.letterSpacingEm, undefined, literalText)}`;
   } else {
     style = "Shape";
     const shadow = layer.kind === "shadow" ? piece.shadows![layer.shadowIndex!]! : null;
@@ -547,7 +596,7 @@ export function sceneEvents(scene: CaptionScene, measurer: SceneMeasurer, option
   const events: AssEvent[] = [];
   for (const piece of scene.pieces) {
     const metrics = piece.kind === "text" ? measurer.metrics(piece.text, piece.face, piece.letterSpacingEm) : null;
-    events.push(...pieceEvents(piece, metrics, options));
+    events.push(...pieceEvents(piece, metrics, { ...options, literalText: measurer.literalText }));
   }
   return events.map((event, index) => ({ event, index })).sort((a, b) => a.event.layer - b.event.layer || a.index - b.index).map(({ event }) => event);
 }

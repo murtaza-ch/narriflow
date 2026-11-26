@@ -80,6 +80,7 @@ import {
 	type WorkerProcessDiagnostic,
 	type WorkerProcessModule,
 } from "../worker-process";
+import { compileCompositionPlanTextLayers, type TextLayerTrack } from "../text-layer-ass";
 import {
 	compileClipCompositionCommand,
 	compileCompositionPlanCaptions,
@@ -656,6 +657,8 @@ interface PendingRenderOutput {
 	outputPath: string;
 	storageKey: string;
 	subtitlePath?: string | null;
+	/** The target's Text Layer script, when it has Text Layers. */
+	textAssPath?: string | null;
 	/** Code points left out of the burned text. */
 	captionWarnings?: CaptionWarnings;
 	/** Code points forced out of the text after libass reported them. */
@@ -1172,6 +1175,24 @@ function compileCaptionTrack(
 	}
 	if (Object.keys(track.emojis.dropped).length > 0) {
 		log("info", "caption_emojis_dropped", { ...context, phase: "caption_emojis", placed: track.emojis.placed, dropped: track.emojis.dropped });
+	}
+	return track;
+}
+
+/** The Text Layer script for one output. A code point no pinned face draws is left out of that layer's text and logged by layer. */
+function compileTextLayerTrack(
+	plan: Parameters<typeof compileCompositionPlanTextLayers>[0],
+	targetId: string,
+	context: Record<string, unknown>,
+	omitCodePoints?: ReadonlySet<number>,
+	fps?: number,
+): TextLayerTrack {
+	const track = compileCompositionPlanTextLayers(plan, targetId, omitCodePoints, fps);
+	for (const notice of track.notices) {
+		log("info", notice.code, { ...context, phase: "text_layer_glyphs", disposition: "degraded", cluster: notice.cluster, font: notice.font, sequenceSplit: notice.sequenceSplit });
+	}
+	for (const glyph of track.omitted) {
+		log("error", "text_layer_glyph_omitted", { ...context, phase: "text_layer_glyphs", disposition: "degraded", layerId: glyph.layerId, codePoint: glyph.codePoint });
 	}
 	return track;
 }
@@ -3743,14 +3764,19 @@ async function renderClipGroup(input: {
 	let compositionPlan: ClipCompositionPlan | null = null;
 	/** The plan's caption emoji art, loaded once before any caption script is written. */
 	let captionEmojiArt: CaptionEmojiArtMap = new Map();
-	/** Rewrites an output's caption script without code points libass found no glyph for. */
+	/** Rewrites an output's caption and Text Layer scripts without code points libass found no glyph for (one run burns both). */
 	const captionRecoveryFor =
 		(output: PendingRenderOutput) =>
 		async (codePoints: ReadonlySet<number>): Promise<void> => {
-			if (!compositionPlan || !output.subtitlePath) return;
+			if (!compositionPlan || (!output.subtitlePath && !output.textAssPath)) return;
 			const omit = output.captionOmitCodePoints ?? new Set<number>();
 			output.captionOmitCodePoints = omit;
 			for (const codePoint of codePoints) omit.add(codePoint);
+			if (output.textAssPath) {
+				const text = compileTextLayerTrack(compositionPlan, output.clipRenderId, { workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId }, omit, captionFps);
+				await currentRenderAdapters().workspace.writeFile(output.textAssPath, text.ass, "utf-8");
+			}
+			if (!output.subtitlePath) return;
 			const track = compileCaptionTrack(
 				compositionPlan,
 				output.clipRenderId,
@@ -3968,6 +3994,18 @@ async function renderClipGroup(input: {
 				);
 				output.subtitlePath = assPath;
 			}
+			const text = compileTextLayerTrack(
+				compositionPlan,
+				output.clipRenderId,
+				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
+				undefined,
+				captionFps,
+			);
+			if (text.ass.length > 0) {
+				const textAssPath = join(tempDir, `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}-text.ass`);
+				await currentRenderAdapters().workspace.writeFile(textAssPath, text.ass, "utf-8");
+				output.textAssPath = textAssPath;
+			}
 		}
 	}
 
@@ -4014,6 +4052,7 @@ async function renderClipGroup(input: {
 						...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
 						assets: {
 							subtitlePath: output.subtitlePath ?? null,
+							textAssPath: output.textAssPath ?? null,
 							logo: logo,
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
@@ -4153,6 +4192,7 @@ async function renderClipGroup(input: {
 							broll: resolvedBrollAssets,
 							hdr: hdrAssets,
 							subtitlePath: output.subtitlePath ?? null,
+							textAssPath: output.textAssPath ?? null,
 							logo,
 							background: backgroundPlan,
 							scenes: resolvedSceneAssets,

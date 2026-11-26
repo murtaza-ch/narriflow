@@ -35,7 +35,6 @@ import {
 	type CompositionRect,
 	type CompositionSourceVideoLayer,
 	type CompositionTargetPlan,
-	type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
 import { drawtextLiteralText, escapeFilterOptionValue } from "./ffmpeg-text";
 
@@ -616,36 +615,6 @@ function logoOverlayPosition(position: string, marginPx: number) {
 	return { x, y };
 }
 
-function textLayerFilter(
-	layer: Extract<CompositionVisualLayer, { kind: "text" }>,
- fonts?: Readonly<Record<string, string>>,
-): string {
-	const value = layer.value;
-	const style = value.style;
-	const border = style.stroke
-		? `:borderw=${style.stroke.width}:bordercolor=0x${style.stroke.color.slice(1)}`
-		: "";
-	const box = style.background
-		? `:box=1:boxcolor=0x${style.background.color.slice(1)}@${style.background.opacity.toFixed(3)}:boxborderw=10`
-		: "";
-	// drawtext parses Fontconfig patterns through fontfile; font only accepts
-	// a family name. Match Studio's 800/500 weight request on available faces.
-	const uploadedPath = style.fontAsset ? fonts?.[compositionAssetRef("brand_font", `${style.fontAsset.id}:${style.fontAsset.fingerprint}`)] : undefined;
- const fontPattern = uploadedPath ?? `${style.font}:weight=${style.bold ? "extrabold" : "medium"}`;
-	return (
-		`drawtext=fontfile=${escapeFilterOptionValue(fontPattern)}` +
-		`:${drawtextLiteralText(value.text)}` +
-		`:fontsize=${Math.round(style.fontSize)}` +
-		`:fontcolor=0x${style.color.slice(1)}` +
-		`:x=w*${(layer.anchor.xPct / 100).toFixed(4)}-text_w/2` +
-		`:y=h*${(layer.anchor.yPct / 100).toFixed(4)}-text_h/2` +
-		`:enable='between(t\\,${layer.activeRange.startSec.toFixed(3)}\\,${layer.activeRange.endSec.toFixed(3)})'` +
-		":shadowcolor=black@0.45:shadowx=0:shadowy=2" +
-		border +
-		box
-	);
-}
-
 /** Translates the target's already-ordered visual schedule into FFmpeg syntax.
  * It does not inspect the editor document or select timing, precedence,
  * entitlement, geometry, or optional-media fallbacks. */
@@ -654,9 +623,12 @@ export function compileCompositionPlanVisualLayers(input: {
 	targetId: string;
 	inputLabel: string;
 	outputLabel: string;
- resolvedFonts?: Readonly<Record<string, string>>;
  captionFontsDirectory?: string;
 	subtitlePath?: string | null;
+	/** The target's Text Layer script (`compileCompositionPlanTextLayers`). */
+	textAssPath?: string | null;
+	/** Fonts the text script draws with; the vendored caption faces by default. */
+	textFontsDirectory?: string;
 	logoInputIndex?: number | null;
 }): {
 	filterParts: string[];
@@ -702,11 +674,19 @@ export function compileCompositionPlanVisualLayers(input: {
 	};
 	const stages: Stage[] = [];
 	let captionsAdded = false;
+	let textAdded = false;
 	for (const layer of target.visualLayers) {
-		if (layer.kind === "text") {
-			stages.push((source, output) => ({
-				parts: [`${source}${textLayerFilter(layer, input.resolvedFonts)}${output}`],
-			}));
+		if (layer.kind === "text" && !textAdded) {
+			// Every Text Layer of the target is in one script, burned at the first one's place (under the captions).
+			textAdded = true;
+			stages.push((source, output) => {
+				if (!input.textAssPath) {
+					throw new Error("clip_composition_text_asset_missing");
+				}
+				return {
+					parts: [`${source}ass='${escapeSubtitlePath(input.textAssPath)}':fontsdir='${escapeSubtitlePath(input.textFontsDirectory ?? CAPTION_FONTS_DIRECTORY)}'${output}`],
+				};
+			});
 		} else if (layer.kind === "caption" && !captionsAdded) {
 			captionsAdded = true;
 			stages.push((source, output) => {
@@ -2153,6 +2133,8 @@ export interface ClipCompositionCommandInput {
 	mixPeakCeiling?: number;
 	assets: {
 		subtitlePath: string | null;
+		/** The target's Text Layer script; absent or null when it has none. */
+		textAssPath?: string | null;
 		logo?: LogoOverlay | null;
 		background?: BackgroundPlan | null;
 		broll?: Readonly<Record<string, string>>;
@@ -2191,6 +2173,7 @@ export function compileClipCompositionCommand(
 		cutPlan: input.cutPlan,
 		mixPeakCeiling: input.mixPeakCeiling,
 		subtitlePath: input.assets.subtitlePath,
+		textAssPath: input.assets.textAssPath ?? null,
 		logo: input.assets.logo,
 		background: input.assets.background,
 		resolvedSceneAssets: input.assets.scenes,
@@ -2963,6 +2946,7 @@ function buildSingleVideoArgs(params: {
 	aspectRatio: ClipAspectRatio;
 	probe: SourceProbe;
 	subtitlePath: string | null;
+	textAssPath?: string | null;
  captionFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	/** The sole versioned composition policy for every video render. */
@@ -3119,7 +3103,7 @@ function buildSingleVideoArgs(params: {
 		inputLabel: "[composition_base]",
 		outputLabel: "[outv]",
 		subtitlePath: params.subtitlePath,
- resolvedFonts: params.resolvedSceneFonts,
+		textAssPath: params.textAssPath,
  captionFontsDirectory: params.captionFontsDirectory,
 		logoInputIndex,
 	});
@@ -3253,6 +3237,7 @@ function buildBrollVideoArgs(params: {
 	aspectRatio: ClipAspectRatio;
 	probe: SourceProbe;
 	subtitlePath: string | null;
+	textAssPath?: string | null;
  captionFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	composition: {
@@ -3418,7 +3403,7 @@ function buildBrollVideoArgs(params: {
 		inputLabel: "[stage0]",
 		outputLabel: "[outv]",
 		subtitlePath: params.subtitlePath,
- resolvedFonts: params.resolvedSceneFonts,
+		textAssPath: params.textAssPath,
  captionFontsDirectory: params.captionFontsDirectory,
 		logoInputIndex,
 	});
@@ -3579,6 +3564,7 @@ function buildAudiogramArgs(params: {
 	};
 	clipDurationSec: number;
 	subtitlePath: string | null;
+	textAssPath?: string | null;
  captionFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	audio: BoundCompositionAudioRenderRequest;
@@ -3786,7 +3772,7 @@ function buildAudiogramArgs(params: {
 		inputLabel: "[comp]",
 		outputLabel: "[composition_visual]",
 		subtitlePath: params.subtitlePath,
- resolvedFonts: params.resolvedSceneFonts,
+		textAssPath: params.textAssPath,
  captionFontsDirectory: params.captionFontsDirectory,
 		logoInputIndex,
 	});

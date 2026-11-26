@@ -2709,14 +2709,16 @@
               "endSec": 3.2,
               "positionX": 50,
               "positionY": 22,
-              "fontName": "Montserrat",
-              "fontSize": 64,
-              "color": "#FFFFFF",
-              "backgroundColor": "#000000",
-              "backgroundOpacity": 0.5,
-              "bold": true,
-              "outlineColor": "#000000",
-              "outlineWidth": 3
+              "role": "title",
+              "widthPct": 86,
+              "style": {
+                "font": "Montserrat",
+                "fontSize": 64,
+                "bold": true,
+                "color": "#FFFFFF",
+                "stroke": { "color": "#000000", "width": 3 },
+                "background": { "color": "#000000", "opacity": 0.5, "corners": "rounded", "display": "line" }
+              }
             }
           ]
         },

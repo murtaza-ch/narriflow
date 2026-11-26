@@ -30,6 +30,8 @@ export function assText(
 	letterSpacingEm: number,
 	/** Override block placed before each cluster (typewriter letters). */
 	beforeCluster?: (index: number) => string,
+	/** Keep braces and backslashes as typed (`escapeLiteralAssText`) instead of leaving them out. */
+	literal = false,
 ): string {
 	let current = requested;
 	let spaced = true;
@@ -48,7 +50,7 @@ export function assText(
 				current = part.face;
 				spaced = part.spaced;
 			}
-			text += escapeAssText(part.text);
+			text += literal ? escapeLiteralAssText(part.text) : escapeAssText(part.text);
 		}
 	}
 	if (current !== requested || !spaced) text += switchTo(requested, true);
@@ -89,4 +91,14 @@ export function num(value: number): string {
 /** Braces and backslashes would open override blocks or escapes in ASS text. */
 export function escapeAssText(text: string): string {
 	return text.replace(/[{}\\]/g, "");
+}
+
+/**
+ * Braces and backslashes drawn as typed. libass reads `\{` and `\}` as literal braces. A backslash is
+ * followed by U+2060 WORD JOINER (zero width, no glyph needed), so it can never start an escape
+ * (`\N`, `\h`, `\{`), not even with the override block a fallback face opens right after it.
+ * Settled against a real libass render (title-text ticket 02).
+ */
+export function escapeLiteralAssText(text: string): string {
+	return text.replace(/\\/g, "\\\u2060").replace(/[{}]/g, (brace) => `\\${brace}`);
 }

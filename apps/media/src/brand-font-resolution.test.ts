@@ -7,7 +7,6 @@ import { createRequire } from "node:module";
 import { captionFontFilePath, shapeCaptionRun } from "@narriflow/caption-fonts";
 import {
   planClipComposition,
-  compositionAssetRef,
 } from "@narriflow/composition-plan";
 import {
   editorDocumentSchema,
@@ -154,8 +153,11 @@ describe("uploaded font preview/export contract", () => {
       inputLabel: "[in]",
       outputLabel: "[out]",
       subtitlePath: join(temp, "captions.ass"),
+      textAssPath: join(temp, "text.ass"),
     });
-    expect(output.filterParts.join(";")).toContain("fontfile=Inter");
+    // Text Layers burn from their own script in their font family until uploaded fonts reach them (title-text ticket 08).
+    expect(output.filterParts.join(";")).toContain("text.ass");
+    expect(output.filterParts.join(";")).not.toContain("drawtext");
   });
   test("attempt cancellation is never converted into a font fallback", async () => {
     const controller = new AbortController();
@@ -167,7 +169,7 @@ describe("uploaded font preview/export contract", () => {
       download: async () => { controller.abort(reason); throw reason; },
     })).rejects.toBe(reason);
   });
-  test("TTF files supply the exact face, metrics, shaping and drawtext path", async () => {
+  test("TTF files supply the exact face, metrics, shaping and caption fonts directory", async () => {
     const bytes = await readFile(captionFontFilePath("Anton-Regular.ttf"));
     const { fonts, fingerprint, temp } = await resolve(bytes);
     const font = fonts.get(brandFontKey({ id, fingerprint }))!;
@@ -194,22 +196,15 @@ describe("uploaded font preview/export contract", () => {
     for (const fallback of ["NotoSansArabic-Regular.ttf", "NotoSansSC-Regular.otf", "NotoEmoji-Regular.ttf"]) {
       expect((await readFile(join(fontsDirectory, fallback))).length).toBeGreaterThan(1000);
     }
-    const paths = Object.fromEntries(
-      [...fonts].map(([key, value]) => [
-        compositionAssetRef("brand_font", key),
-        value.path,
-      ]),
-    );
     const output = compileCompositionPlanVisualLayers({
       plan: plan(fingerprint),
       targetId: "test",
       inputLabel: "[in]",
       outputLabel: "[out]",
-      resolvedFonts: paths,
       captionFontsDirectory: fontsDirectory,
       subtitlePath: join(temp, "captions.ass"),
+      textAssPath: join(temp, "text.ass"),
     });
-    expect(output.filterParts.join(";")).toContain(font.path);
     expect(output.filterParts.join(";")).toContain(fontsDirectory);
     expect(
       await prepareCaptionFontsDirectory(
