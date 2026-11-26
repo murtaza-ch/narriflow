@@ -8,7 +8,6 @@ import {
   brandProfileMembershipSchema,
   brandProfileSoftDeleteSchema,
   brandProfileUpdateSchema,
-  brandTemplateSnapshotSchema,
   brandVisualIdentitySchema,
   brandVoiceGuidanceSchema,
   resolvePricingTier,
@@ -19,7 +18,6 @@ import {
   type BrandProfileSoftDeleteInput,
   type BrandProfileUpdateInput,
   type BrandVisualIdentity,
-  type BrandTemplateSnapshot,
 } from "@narriflow/validators";
 import {
   assertBrandApplicationAllowed,
@@ -44,6 +42,7 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { requirePrisma } from "./require-prisma";
+import { brandTemplateSnapshot, type BrandTemplateSnapshotSource } from "./brand-template.service";
 
 const brandProfileFailureCatalog = {
   brand_profile_not_found: "missing",
@@ -104,32 +103,8 @@ type SnapshotProfile = Pick<
   approvalRule: string;
 };
 
-type SnapshotTemplate = Pick<
-  BrandTemplate,
-  | "id"
-  | "captionPreset"
-  | "logoStorageKey"
-  | "logoPosition"
-  | "logoOpacity"
-  | "logoScalePct"
-  | "primaryColor"
-  | "secondaryColor"
-  | "accentColor"
->;
-
-function templateSnapshot(template: SnapshotTemplate): BrandTemplateSnapshot {
-  return brandTemplateSnapshotSchema.parse({
-    templateId: template.id,
-    captionPreset: template.captionPreset,
-    logoStorageKey: template.logoStorageKey,
-    logoPosition: template.logoPosition,
-    logoOpacity: template.logoOpacity,
-    logoScalePct: template.logoScalePct,
-    primaryColor: template.primaryColor,
-    secondaryColor: template.secondaryColor,
-    accentColor: template.accentColor,
-  });
-}
+/** A profile's style is the same snapshot a Project freezes (`brandTemplateSnapshot`). */
+type SnapshotTemplate = BrandTemplateSnapshotSource;
 
 type SnapshotAudioMembership = {
   audio: { id: string; kind: string; title: string; durationSec: number; deletedAt: Date | null };
@@ -165,7 +140,7 @@ export function buildBrandProfileSnapshot(
     identity: brandVisualIdentitySchema.parse(profile.visualIdentity),
     voice: brandVoiceGuidanceSchema.parse(profile.voiceGuidance),
     approvalRule: profile.approvalRule,
-    style: template ? templateSnapshot(template) : null,
+    style: template ? brandTemplateSnapshot(template) : null,
     audio,
   };
 }
@@ -854,7 +829,7 @@ export class BrandProfileService {
       profileId: profile.id,
       profileSnapshot: buildBrandProfileSnapshot(profile, selected, brandAudioSnapshot(profile.audio)),
       templateId: selected?.id ?? null,
-      templateSnapshot: selected ? templateSnapshot(selected) : null,
+      templateSnapshot: selected ? brandTemplateSnapshot(selected) : null,
     };
   }
 

@@ -25,6 +25,7 @@ const template = {
   primaryColor: "#102A43",
   secondaryColor: "#F0B429",
   accentColor: null,
+  title: null,
 };
 
 describe("Brand Profile project resolution", () => {
