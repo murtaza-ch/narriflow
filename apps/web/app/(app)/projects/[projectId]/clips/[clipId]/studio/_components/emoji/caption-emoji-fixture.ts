@@ -11,8 +11,8 @@ import {
 } from "@narriflow/validators";
 
 /**
- * A fixed clip with Caption Emojis, planned by the real composition plan: the emoji layer's tests and
- * its prototype page (`/prototype/caption-emojis`) read the same layers the Studio would.
+ * A fixed clip with Caption Emojis, planned by the real composition plan: the emoji layer's tests read
+ * the same layers the Studio would.
  */
 
 const LTR_SCRIPT = [
@@ -31,7 +31,7 @@ const RTL_SCRIPT = [
 
 /**
  * The emojis each sentence carries, chosen by hand so every one illustrates the word it sits on
- * (a viewer of the prototype must never see an emoji that does not fit its word): the first pair
+ * (a rendered test frame must never show an emoji that does not fit its word): the first pair
  * of a sentence is its emoji, the second is used only by the 20-emoji `long` run.
  */
 const LTR_EMOJIS: readonly (readonly (readonly [word: string, id: string])[])[] = [
@@ -59,9 +59,6 @@ export interface EmojiFixtureOptions {
   /** Ids that replace the hand-chosen ones in turn (an edit: the same anchors, other emojis). */
   readonly emojiIds?: readonly string[];
 }
-
-/** Every hand-chosen word of both scripts and its emoji: what a harness's stand-in AI suggests. */
-export const EMOJI_FIXTURE_WORD_IDS: ReadonlyMap<string, string> = new Map([...LTR_EMOJIS, ...RTL_EMOJIS].flat().map(([word, id]) => [word, id]));
 
 interface FixtureWord {
   readonly word: string;

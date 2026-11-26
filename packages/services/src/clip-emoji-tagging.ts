@@ -23,7 +23,7 @@ export const EMOJI_TAGGING_SYSTEM_PROMPT = emojiTaggingSystemPrompt({ glyphs: CA
  * Low reasoning, not the text jobs' none: on the four real clips (ticket 20) it took the share of
  * emojis that depict their word from 74% to 94% at Balanced, for a few more output tokens.
  */
-export const EMOJI_TAGGING_MODEL = { model: OPENAI_TEXT_MODEL, reasoningEffort: "low" };
+const EMOJI_TAGGING_MODEL = { model: OPENAI_TEXT_MODEL, reasoningEffort: "low" };
 
 /**
  * Measured 2026-11-26 (gpt-6-luna, no reasoning, 500-word chunks, 16 in
@@ -32,7 +32,7 @@ export const EMOJI_TAGGING_MODEL = { model: OPENAI_TEXT_MODEL, reasoningEffort: 
  * 7,800 of them the cacheable vocabulary prefix) and 880 output tokens: about
  * $0.0017 at list price before caching, $0.05 for a 3-hour source.
  */
-export const EMOJI_TAGGING_DEFAULTS = {
+const EMOJI_TAGGING_DEFAULTS = {
   /** Requests in flight at once. Import runs it beside filler tagging's 24. */
   concurrency: 16,
   /**
