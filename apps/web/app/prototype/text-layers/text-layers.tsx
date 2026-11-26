@@ -3,7 +3,7 @@
 // Text Layer harness (title-text tickets 03 and 04). The sheet draws the shared samples with the real
 // Scene painter, tiled like the export's contact sheet; the playground is the Studio's canvas pieces
 // (frame, grips, toolbar) and the Text panel's style controls on local state.
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Box, Flex, SimpleGrid, Stack, Text, Textarea } from "@chakra-ui/react";
 import { Heading, Type } from "lucide-react";
 import { TEXT_LAYER_SAMPLES } from "@narriflow/caption-scene";
@@ -79,15 +79,18 @@ const HideDevBadge = () => <style>{"nextjs-portal { display: none; }"}</style>;
 // ─── Playground ──────────────────────────────────────────────────────────────
 
 const CANVAS = { width: 1080, height: 1920 } as const;
-const PREVIEW_HEIGHT = 760;
-const SCALE = PREVIEW_HEIGHT / CANVAS.height;
+/** Preview heights: the usual one, and a narrow one (`?narrow=1`) where the toolbar goes compact. */
+const PREVIEW_HEIGHT = { wide: 760, narrow: 600 } as const;
 
 const INITIAL_LAYERS: StudioTextLayer[] = [
   newTitleLayer({ id: "title", clipTitle: "Why top creators aren't leaving YouTube for Netflix", hookText: null, clipDurationSec: 30, settings: DEFAULT_BRAND_TITLE }),
-  studioTextLayerSchema.parse({ id: "body", role: "body", text: "made with Narriflow", positionY: 30, widthPct: 60, style: { fontSize: 36 } }),
+  studioTextLayerSchema.parse({ id: "body", role: "body", text: "made with Narriflow", positionY: 70, widthPct: 60, style: { fontSize: 36 } }),
 ];
 
-export function TextLayersPlayground({ initialSelected, initialTab }: { initialSelected: boolean; initialTab: "presets" | "settings" }) {
+export function TextLayersPlayground({ initialSelected, initialTab, narrow = false }: { initialSelected: boolean; initialTab: "presets" | "settings"; narrow?: boolean }) {
+  const previewHeight = PREVIEW_HEIGHT[narrow ? "narrow" : "wide"];
+  const scale = previewHeight / CANVAS.height;
+  const previewRef = useRef<HTMLDivElement>(null);
   const [layers, setLayers] = useState<StudioTextLayer[]>(INITIAL_LAYERS);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelected ? "title" : null);
   const [tab, setTab] = useState<"presets" | "settings">(initialSelected ? initialTab : "presets");
@@ -102,7 +105,7 @@ export function TextLayersPlayground({ initialSelected, initialTab }: { initialS
     const { fontSize, ...place } = change;
     setLayers((current) => current.map((layer) => (layer.id === id ? { ...layer, ...place, ...(fontSize !== undefined ? { style: { ...layer.style, fontSize } } : {}) } : layer)));
   };
-  const entries = useMemo(() => layers.map((layer) => ({ layer, window: WHOLE })), [layers]);
+  const entries = useMemo(() => layers.map((layer) => ({ key: layer.id, layer, window: WHOLE })), [layers]);
 
   return (
     <Flex minH="100vh" bg="studio.canvas" color="studio.fg" gap="6" p="6" align="flex-start">
@@ -110,25 +113,31 @@ export function TextLayersPlayground({ initialSelected, initialTab }: { initialS
       <Box
         position="relative"
         flexShrink={0}
-        style={{ width: CANVAS.width * SCALE, height: PREVIEW_HEIGHT, background: BACKGROUNDS.photo }}
+        ref={previewRef}
+        style={{ width: CANVAS.width * scale, height: previewHeight, background: BACKGROUNDS.photo }}
         borderRadius="4px"
+        // Clipped like the Studio's video box: what passes the canvas is not drawn, as in the export.
+        overflow="hidden"
         onClick={() => select(null)}
       >
         <TextLayerCanvas
           entries={entries}
           canvas={CANVAS}
-          scale={SCALE}
+          scale={scale}
           timeSource={still}
           timeSec={0}
           selectedId={selectedId}
           onSelect={select}
           onCommit={commit}
+          onNudge={(id, place) => patch(id, place)}
+          toolbarBoundsRef={previewRef}
           onEditText={(id) => {
             select(id);
             document.getElementById(`playground-text-${id}`)?.focus();
           }}
-          toolbar={(layer) => (
+          toolbar={(layer, { compact }) => (
             <TextLayerToolbar
+              compact={compact}
               style={layer.style}
               onChange={(change) => patchStyle(layer.id, change)}
               onDuplicate={() => {
