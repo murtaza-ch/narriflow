@@ -107,9 +107,9 @@ function runCaptionStyle(brandSnapshot: unknown, captionPresetId: string | null 
   let template: CaptionPreset | null = null;
   if (brandSnapshot && typeof brandSnapshot === "object" && !Array.isArray(brandSnapshot)) {
     const snap = brandSnapshot as Record<string, unknown>;
-    if (snap.captionPreset && typeof snap.captionPreset === "object") {
-      template = captionPresetSchema.parse(snap.captionPreset);
-    }
+    // An unreadable stored preset counts as none: the run falls back as without a template preset.
+    const parsed = snap.captionPreset && typeof snap.captionPreset === "object" ? captionPresetSchema.safeParse(snap.captionPreset) : null;
+    if (parsed?.success) template = parsed.data;
   }
   return resolveClipCaptionPresetForContentPack(captionPresetId, template) ?? DEFAULT_CAPTION_PRESET;
 }
