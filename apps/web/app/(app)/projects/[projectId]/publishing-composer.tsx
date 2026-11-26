@@ -62,6 +62,7 @@ import {
 } from "@/lib/social-post-status";
 import {
 	currentPublicationExport,
+	postableExports,
 	publishingDraftKey,
 } from "./publishing-draft";
 import {
@@ -230,8 +231,8 @@ export function PublishingComposer({
 		enabled: open && scope !== null,
 	});
 	const exports = useMemo<ClipExportSnapshot[]>(
-		() => (currentExports.data ? clipExportSnapshotSchema.array().parse(currentExports.data.exports) : []),
-		[currentExports.data],
+		() => (currentExports.data ? postableExports(clipExportSnapshotSchema.array().parse(currentExports.data.exports), currentTier) : []),
+		[currentExports.data, currentTier],
 	);
 	const refetchExports = currentExports.refetch;
 	const refreshExports = useCallback(async () => {

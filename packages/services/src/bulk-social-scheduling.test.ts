@@ -523,7 +523,7 @@ describe("bulk social scheduling", () => {
 		requirePublishableAccount: async () => {},
 			readExport: async () => ({
 				id: EXPORT_A, workspaceId: INPUT.workspaceId, projectId: INPUT.projectId, clipId: CLIP_A,
-				editorRevision: 4, resolution: "1080p", fingerprint: "frozen-export",
+				editorRevision: 4, resolution: "1080p", watermark: false, fingerprint: "frozen-export",
 				variants: [{ id: VARIANT_A, aspectRatio: "9:16", resolution: "1080p", status: "completed", storageKey: "local/export.mp4", sizeBytes: 42_000, durationSec: 30 }],
 			}),
 			createExport: async () => { throw new Error("bulk uses an exact prepared Export"); },
@@ -742,7 +742,7 @@ describe("bulk scheduling against a dead connection", () => {
 			requirePublishableAccount: async () => {},
 			readExport: async (id) => ({
 				id, workspaceId: INPUT.workspaceId, projectId: INPUT.projectId, clipId: id === EXPORT_A ? CLIP_A : CLIP_B,
-				editorRevision: id === EXPORT_A ? 4 : 7, resolution: "1080p", fingerprint: `fingerprint-${id}`,
+				editorRevision: id === EXPORT_A ? 4 : 7, resolution: "1080p", watermark: false, fingerprint: `fingerprint-${id}`,
 				variants: [{ id: id === EXPORT_A ? VARIANT_A : VARIANT_B, aspectRatio: "9:16", resolution: "1080p", status: "completed", storageKey: "local/export.mp4", sizeBytes: 42_000, durationSec: 30 }],
 			}),
 			createExport: async () => { throw new Error("bulk uses an exact prepared Export"); },

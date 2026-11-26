@@ -5,7 +5,7 @@ import type { BrandActorScope } from "./brand-ownership";
 import { ThumbnailPreparationError, validateThumbnailSelection, validateProviderThumbnailAsset, type ThumbnailSelection } from "./thumbnail-frame-preparation";
 import type { ReviewApprovalPrincipal, ReviewApprovalResult } from "./review-approval-gate";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
-import { requirePlanFeature } from "./plan-features";
+import { hasFeature, requirePlanFeature } from "./plan-features";
 
 export type FrozenPublicationState = {
 	deliveryMode?: import("@narriflow/validators").SocialDeliveryMode;
@@ -100,6 +100,8 @@ export type PublicationExportFacts = {
 	clipId: string;
 	editorRevision: number;
 	resolution: string;
+	/** Frozen when the export was made: a Free-plan export carries the mark. */
+	watermark: boolean;
 	fingerprint: string;
 	variants: Array<{
 		id: string;
@@ -354,7 +356,9 @@ async function freezePublication(
 	const exportId = input.clipExportId ?? await ports.createExport(input);
 	const exported = await ports.readExport(exportId);
 	if (!exported || exported.workspaceId !== input.workspaceId || exported.projectId !== input.projectId ||
-		exported.clipId !== input.clipId || exported.editorRevision !== input.expectedEditorRevision || exported.resolution !== input.resolution) {
+		exported.clipId !== input.clipId || exported.editorRevision !== input.expectedEditorRevision || exported.resolution !== input.resolution ||
+		// An export made while Free keeps its mark; a plan without one never posts it.
+		(exported.watermark && hasFeature(actor.pricingTier, "export.noWatermark"))) {
 		throw new PublicationIntentStateError("publication_export_mismatch", "The selected Clip Export is no longer current for this publication");
 	}
 	const variant = exported.variants.find((candidate) =>

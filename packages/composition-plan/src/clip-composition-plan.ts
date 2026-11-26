@@ -572,6 +572,42 @@ export interface CompositionTransitionVisualLayer {
   readonly zIndex: 60;
 }
 
+/** The one committed Free-plan badge (`assets/watermark-badge.png`). The
+ * index never imports the image itself, so this stays safe for the browser
+ * and the Worker; each adapter loads the file and checks it against these. */
+export const NARRIFLOW_WATERMARK_ART = {
+  id: "narriflow-badge-1",
+  width: 940,
+  height: 446,
+  sha256: "e5ede2c73284d6e487fb3a1376d5362c9d955115e1e29a864a956f9badf4143c",
+} as const;
+
+/** The frame size after the output treatment's scale. For 720p this is
+ * exactly what the export's `scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2`
+ * produces from the 1080p canvas. */
+export function compositionOutputSize(
+  canvas: { readonly width: number; readonly height: number },
+  resolution: "720p" | "1080p",
+): { width: number; height: number } {
+  if (resolution === "1080p") return { width: canvas.width, height: canvas.height };
+  const side = (n: number) => 2 * Math.floor((n * 2) / 3 / 2);
+  return { width: side(canvas.width), height: side(canvas.height) };
+}
+
+/** One placement rule for every aspect ratio: sized from the frame's short
+ * side, inset from the left, a little under a quarter of the way down. */
+function watermarkRect(outputPx: { width: number; height: number }) {
+  const even = (n: number) => 2 * Math.round(n / 2);
+  const shortSide = Math.min(outputPx.width, outputPx.height);
+  const width = even(0.26 * shortSide);
+  return {
+    x: even(0.07 * shortSide),
+    y: even(0.235 * outputPx.height),
+    width,
+    height: even((width * NARRIFLOW_WATERMARK_ART.height) / NARRIFLOW_WATERMARK_ART.width),
+  };
+}
+
 export interface CompositionOutputTreatmentVisualLayer {
   readonly id: string;
   readonly kind: "output-treatment";
@@ -579,21 +615,20 @@ export interface CompositionOutputTreatmentVisualLayer {
   readonly destination: CompositionRect;
   readonly resolution: "720p" | "1080p";
   readonly scale: { readonly numerator: 1 | 2; readonly denominator: 1 | 3 };
-  readonly watermark: {
-    readonly enabled: boolean;
-    readonly text: "Made with Narriflow";
-    readonly fontSizePx: number;
-    readonly fontFamily: "Arial";
-    readonly fontWeight: 700;
-    readonly color: "#FFFFFF";
-    readonly opacity: 0.85;
-    readonly marginPx: { readonly x: number; readonly y: number };
-    readonly outline: {
-      readonly widthPx: 2;
-      readonly color: "#000000";
-      readonly opacity: 0.6;
-    };
-  };
+  readonly watermark:
+    | { readonly enabled: false }
+    | {
+        readonly enabled: true;
+        readonly art: typeof NARRIFLOW_WATERMARK_ART.id;
+        /** The frame after the output scale; the badge is placed in these pixels. */
+        readonly outputPx: { readonly width: number; readonly height: number };
+        readonly rectPx: {
+          readonly x: number;
+          readonly y: number;
+          readonly width: number;
+          readonly height: number;
+        };
+      };
   readonly rotationDeg: 0;
   readonly opacity: 1;
   readonly zIndex: 70;
@@ -3282,9 +3317,9 @@ function visualLayersForTarget(input: {
   }
 
   if (target.outputTreatment) {
-    const outputHeight = Math.round(
-      target.height *
-        (target.outputTreatment.resolution === "720p" ? 2 / 3 : 1),
+    const outputPx = compositionOutputSize(
+      { width: target.width, height: target.height },
+      target.outputTreatment.resolution,
     );
     visualLayers.push({
       id: `layer:output-treatment:${target.id}`,
@@ -3296,24 +3331,14 @@ function visualLayersForTarget(input: {
         target.outputTreatment.resolution === "720p"
           ? { numerator: 2, denominator: 3 }
           : { numerator: 1, denominator: 1 },
-      watermark: {
-        enabled: target.outputTreatment.watermark,
-        text: "Made with Narriflow",
-        fontSizePx: Math.max(1, Math.round(outputHeight / 28)),
-        fontFamily: "Arial",
-        fontWeight: 700,
-        color: "#FFFFFF",
-        opacity: 0.85,
-        marginPx: {
-          x: Math.max(1, Math.round(outputHeight / 40)),
-          y: Math.max(1, Math.round(outputHeight / 40)),
-        },
-        outline: {
-          widthPx: 2,
-          color: "#000000",
-          opacity: 0.6,
-        },
-      },
+      watermark: target.outputTreatment.watermark
+        ? {
+            enabled: true,
+            art: NARRIFLOW_WATERMARK_ART.id,
+            outputPx,
+            rectPx: watermarkRect(outputPx),
+          }
+        : { enabled: false },
       rotationDeg: 0,
       opacity: 1,
       zIndex: 70,

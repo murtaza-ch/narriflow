@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   buildClipCutPlan,
   autoCensorWordId,
@@ -15,6 +17,8 @@ import {
   deriveCaptionCues,
   interpolateCompositionCropTrack,
   CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
+  compositionOutputSize,
+  NARRIFLOW_WATERMARK_ART,
   planClipComposition,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
@@ -3825,7 +3829,12 @@ describe("Clip Composition Plan", () => {
       kind: "output-treatment",
       resolution: "720p",
       scale: { numerator: 2, denominator: 3 },
-      watermark: { enabled: true, text: "Made with Narriflow" },
+      watermark: {
+        enabled: true,
+        art: "narriflow-badge-1",
+        outputPx: { width: 720, height: 1280 },
+        rectPx: { x: 50, y: 300, width: 188, height: 90 },
+      },
     });
     expect(available.plan.targets[1]?.visualLayers.map((layer) => [
       layer.id,
@@ -3850,13 +3859,7 @@ describe("Clip Composition Plan", () => {
       kind: "output-treatment",
       resolution: "1080p",
       scale: { numerator: 1, denominator: 1 },
-      watermark: {
-        enabled: false,
-        fontFamily: "Arial",
-        fontWeight: 700,
-        fontSizePx: 39,
-        marginPx: { x: 27, y: 27 },
-      },
+      watermark: { enabled: false },
     });
 
     const failedLogo = planClipComposition({
@@ -4453,5 +4456,66 @@ describe("Clip Composition Plan", () => {
       effectiveFallback: "center",
       userActionPossible: true,
     });
+  });
+});
+
+describe("Free-plan watermark badge", () => {
+  function outputTreatment(
+    target: { aspectRatio: "9:16" | "1:1" | "16:9" | "4:5"; width: number; height: number },
+    resolution: "720p" | "1080p",
+    watermark: boolean,
+  ) {
+    const result = planClipComposition({
+      document: centerDocument(),
+      source: { identity: "source:watermark", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "target", ...target, outputTreatment: { resolution, watermark } }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const layer = result.plan.targets[0]!.visualLayers.at(-1)!;
+    if (layer.kind !== "output-treatment") throw new Error("missing output treatment");
+    return layer;
+  }
+
+  const canvases = {
+    "9:16": { width: 1080, height: 1920 },
+    "1:1": { width: 1080, height: 1080 },
+    "16:9": { width: 1920, height: 1080 },
+    "4:5": { width: 1080, height: 1350 },
+  } as const;
+
+  test.each([
+    ["9:16", "720p", { width: 720, height: 1280 }, { x: 50, y: 300, width: 188, height: 90 }],
+    ["9:16", "1080p", { width: 1080, height: 1920 }, { x: 76, y: 452, width: 280, height: 132 }],
+    ["1:1", "720p", { width: 720, height: 720 }, { x: 50, y: 170, width: 188, height: 90 }],
+    ["1:1", "1080p", { width: 1080, height: 1080 }, { x: 76, y: 254, width: 280, height: 132 }],
+    ["16:9", "720p", { width: 1280, height: 720 }, { x: 50, y: 170, width: 188, height: 90 }],
+    ["16:9", "1080p", { width: 1920, height: 1080 }, { x: 76, y: 254, width: 280, height: 132 }],
+    ["4:5", "720p", { width: 720, height: 900 }, { x: 50, y: 212, width: 188, height: 90 }],
+    ["4:5", "1080p", { width: 1080, height: 1350 }, { x: 76, y: 318, width: 280, height: 132 }],
+  ] as const)("places the badge on %s %s", (aspectRatio, resolution, outputPx, rectPx) => {
+    const layer = outputTreatment({ aspectRatio, ...canvases[aspectRatio] }, resolution, true);
+    expect(layer.zIndex).toBe(70);
+    expect(layer.watermark).toEqual({ enabled: true, art: NARRIFLOW_WATERMARK_ART.id, outputPx, rectPx });
+    expect(compositionOutputSize(canvases[aspectRatio], resolution)).toEqual(outputPx);
+  });
+
+  test("plans no badge for a workspace entitled to clean exports", () => {
+    for (const resolution of ["720p", "1080p"] as const) {
+      expect(outputTreatment({ aspectRatio: "9:16", ...canvases["9:16"] }, resolution, false).watermark).toEqual({ enabled: false });
+    }
+  });
+
+  test("the committed art matches its constant", () => {
+    const bytes = readFileSync(new URL("../assets/watermark-badge.png", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(NARRIFLOW_WATERMARK_ART.sha256);
+    expect(bytes.subarray(12, 16).toString("ascii")).toBe("IHDR");
+    expect(bytes.readUInt32BE(16)).toBe(NARRIFLOW_WATERMARK_ART.width);
+    expect(bytes.readUInt32BE(20)).toBe(NARRIFLOW_WATERMARK_ART.height);
   });
 });

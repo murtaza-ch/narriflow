@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ClipExportSnapshot, ClipSnapshot } from "@narriflow/validators";
 import { clipRenderState, renderSummary, type ClipRenderState } from "./publishing-render-state";
+import { currentPublicationExport, postableExports } from "./publishing-draft";
 
 const clip = { id: "clip-a", editorRevision: 3 } as ClipSnapshot;
 
@@ -20,6 +21,25 @@ function exported(
 		...rest,
 	} as ClipExportSnapshot;
 }
+
+describe("exports a plan may post", () => {
+	const marked = exported("ready", { id: "export-marked", watermark: true });
+	const clean = exported("ready", { id: "export-clean", watermark: false });
+
+	test("a plan with clean exports never posts one made with the Free-plan watermark", () => {
+		for (const tier of ["creator", "pro", "business"] as const) {
+			expect(postableExports([marked, clean], tier)).toEqual([clean]);
+			// With only the marked export, no video is ready, so the composer offers to prepare one.
+			const usable = postableExports([marked], tier);
+			expect(currentPublicationExport(clip, "tiktok", usable)).toBeNull();
+			expect(clipRenderState(clip, usable, ["tiktok"])).toEqual({ kind: "none" });
+		}
+	});
+
+	test("the Free plan keeps its own marked exports", () => {
+		expect(postableExports([marked, clean], "free")).toEqual([marked, clean]);
+	});
+});
 
 describe("clip render state", () => {
 	test("maps each export status for a chosen platform", () => {

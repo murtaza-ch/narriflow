@@ -1,5 +1,7 @@
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { NARRIFLOW_WATERMARK_ART } from "@narriflow/composition-plan";
 import { autoCensorWordId, editorDocumentSchema } from "@narriflow/validators";
 import { brandOwnerForWorkspace } from "./brand-ownership";
 import {
@@ -166,6 +168,17 @@ describe("clip export fingerprint", () => {
     expect(buildClipExportFingerprint({ ...base, aspectRatios: ["1:1"] })).not.toBe(fingerprint);
     expect(buildClipExportFingerprint({ ...base, aspectRatios: [...base.aspectRatios], resolution: "720p" })).not.toBe(fingerprint);
     expect(buildClipExportFingerprint({ ...base, aspectRatios: [...base.aspectRatios], watermark: true })).not.toBe(fingerprint);
+  }));
+
+  test("a marked export is identified by its badge, so a mark drawn before the badge is never reused", bindServiceTestEnvironment(() => {
+    const identity = (watermark: unknown) => createHash("sha256").update(JSON.stringify({
+      contract: "clip-export-v1", editorRevision: 4, aspectRatios: ["9:16"], resolution: "720p", watermark,
+    })).digest("hex");
+    const marked = buildClipExportFingerprint({ editorRevision: 4, aspectRatios: ["9:16"], resolution: "720p", watermark: true });
+    expect(marked).toBe(identity(NARRIFLOW_WATERMARK_ART.id));
+    expect(marked).not.toBe(identity(true));
+    // A clean export's identity is unchanged.
+    expect(buildClipExportFingerprint({ editorRevision: 4, aspectRatios: ["9:16"], resolution: "720p", watermark: false })).toBe(identity(false));
   }));
 });
 

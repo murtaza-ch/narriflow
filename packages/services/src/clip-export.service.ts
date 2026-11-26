@@ -5,6 +5,7 @@ import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { receiptCallback } from "./completion-callback";
 import type { IntegrationMutation } from "./operation-receipt";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { NARRIFLOW_WATERMARK_ART } from "@narriflow/composition-plan";
 import { Prisma } from "@prisma/client";
 import {
   clipAspectRatioDbSchema,
@@ -181,7 +182,8 @@ export function buildClipExportFingerprint(input: {
         editorRevision: input.editorRevision,
         aspectRatios: normalizeAspectRatios(input.aspectRatios),
         resolution: input.resolution,
-        watermark: input.watermark,
+        // The mark is part of the output: a different badge is a different export.
+        watermark: input.watermark ? NARRIFLOW_WATERMARK_ART.id : false,
         ...(input.dubId ? { dubId: input.dubId } : {}),
       }),
     )

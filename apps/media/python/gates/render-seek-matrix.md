@@ -32,7 +32,7 @@ must be three seconds within one video frame, and both stream clocks must start
 at zero within that same tolerance.
 
 The central 96×96 clock region remains source content after the square center
-crop. Its middle 16×16 excludes texture, borders, captions and the corner watermark.
+crop. Its middle 16×16 excludes texture, borders, captions and the watermark.
 The first three decoded output luma means must match decoded source frames 69–71
 within two 8-bit luma levels. Adjacent source frames differ by seven levels; each
 fixture also proves that both a one-frame slip and a seek snapped to its preceding
