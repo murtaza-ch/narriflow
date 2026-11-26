@@ -23,7 +23,9 @@ The existing keyword emoji feature is removed in the same change (pre-production
   None documents density control, template-matched colour, RTL behaviour, or tone awareness.
 - libass cannot draw colour fonts (issue 381; PRs 915 and 917 closed unmerged in 2026-01). ASS
   vector drawings (`\p1`) work and Narriflow's Scene writer already emits them for `ShapePiece`.
-- The emoji pack (`narriflow-emoji-pack.zip`): 2,308 SVGs on a 64 grid = 1,008 single designs + 400
+- The emoji pack (`narriflow-emoji-pack.zip`, kept outside the repo since 2026-11-26 in
+  `~/Documents/dev/narriflow-emoji-originals/` with the volume zips and the prototype HTML; pass it to
+  `bun run --cwd packages/caption-emoji verify -- --pack <path>`): 2,308 SVGs on a 64 grid = 1,008 single designs + 400
   two-emoji "phrase" badges + 900 skin-tone variants of 180 bases. No gradients, masks, filters or
   text. 82% use strokes (round caps and joins). Colour is three palette roles `a` body, `b` accent
   rim, `c` detail, plus fixed ink and literal colours (skin). Every single design maps 1:1 to a

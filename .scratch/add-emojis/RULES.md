@@ -11,8 +11,8 @@ ticket. Do the work yourself; start no subagents.
 - Never `git commit`, `stash`, `reset`, `checkout`, `restore` or `clean`. The tree holds
   uncommitted work that is not yours. `git diff refs/emoji-baseline -- <path>` shows what this
   effort changed in a tracked file.
-- Do not modify or delete the owner's untracked root files (`narriflow-emoji-*.zip`,
-  `narriflow-emoji-prototype.html`).
+- The owner's original emoji files (`narriflow-emoji-*.zip`, `narriflow-emoji-prototype.html`) live
+  outside the repo in `~/Documents/dev/narriflow-emoji-originals/`. Do not modify or delete them.
 - If lint, typecheck or a test fails in a file you did not touch, another agent may be mid-edit.
   Re-run once after a minute; if it still fails, report it and carry on. Do not fix other tickets'
   files.
