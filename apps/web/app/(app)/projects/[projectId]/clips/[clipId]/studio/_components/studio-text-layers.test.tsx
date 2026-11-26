@@ -1,11 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { type StudioEdits, studioEditsSchema, studioTextLayerSchema } from "@narriflow/validators";
+import { type BrandTitle, DEFAULT_BRAND_TITLE, type StudioEdits, studioEditsSchema, studioTextLayerSchema } from "@narriflow/validators";
 
 type Setter = (update: (prev: StudioEdits) => StudioEdits, coalesceKey?: string) => void;
 
 let fields: Record<string, unknown> = {};
 mock.module("./studio-shell", () => ({ useStudio: () => fields }));
+let brandTitle: BrandTitle = DEFAULT_BRAND_TITLE;
+mock.module("./project-brand-title", () => ({ useProjectBrandTitle: () => brandTitle }));
 
 const { useTextLayerCommands } = await import("./studio-text-layers");
 
@@ -13,8 +15,8 @@ const title = studioTextLayerSchema.parse({ id: "t", role: "title", text: "A tit
 const body = studioTextLayerSchema.parse({ id: "b", role: "body", text: "Body", startSec: 1, endSec: 4 });
 
 /** The Studio as the commands see it, recording every document change, coalesce key and coalesce end. */
-function studio(selectedTextLayerId: string | null = null) {
-  let edits: StudioEdits = { ...studioEditsSchema.parse({}), textLayers: [title, body] };
+function studio(selectedTextLayerId: string | null = null, textLayers = [title, body]) {
+  let edits: StudioEdits = { ...studioEditsSchema.parse({}), textLayers };
   const log: string[] = [];
   const setStudioEdits: Setter = (update, coalesceKey) => {
     edits = update(edits);
@@ -34,7 +36,7 @@ function studio(selectedTextLayerId: string | null = null) {
     compositeToBaseEdited: (time: number) => time,
     baseEditedToComposite: (time: number) => time,
     editedTimeMap: { editedDurationSec: 30 },
-    clipInfo: { clipTitle: "Clip title", title: "hook" },
+    clipInfo: { projectId: "p", clipTitle: "Clip title", title: "hook" },
     seekTo: (time: number) => log.push(`seek:${time}`),
   };
   let commands: ReturnType<typeof useTextLayerCommands> | null = null;
@@ -75,6 +77,24 @@ describe("Text Layer commands in the Studio", () => {
     expect(edits().textLayers).toHaveLength(2);
     // The playhead (2 s) is inside the title (0–5 s): no seek.
     expect(log).toEqual(["select:t"]);
+  });
+
+  test("Add a title places, times and styles a new title from the project's brand title settings", () => {
+    const style = { ...DEFAULT_BRAND_TITLE.style, color: "#FFD400", fontSize: 64 };
+    brandTitle = { ...DEFAULT_BRAND_TITLE, durationSec: 10, positionY: 80, widthPct: 70, style };
+    try {
+      const { commands, edits } = studio(null, [body]);
+      commands.addTitle();
+      expect(edits().textLayers[1]).toMatchObject({ role: "title", text: "Clip title", startSec: 0, endSec: 10, positionY: 80, widthPct: 70, style });
+    } finally {
+      brandTitle = DEFAULT_BRAND_TITLE;
+    }
+  });
+
+  test("without brand title settings (loading, failed, none) Add a title uses the built-in default", () => {
+    const { commands, edits } = studio(null, [body]);
+    commands.addTitle();
+    expect(edits().textLayers[1]).toMatchObject({ role: "title", endSec: DEFAULT_BRAND_TITLE.durationSec, positionY: DEFAULT_BRAND_TITLE.positionY, style: DEFAULT_BRAND_TITLE.style });
   });
 
   test("a row whose layer is not on screen seeks to its start", () => {

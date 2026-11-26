@@ -3,6 +3,7 @@ import { QueryClient } from "@tanstack/query-core";
 import { type ApiTransport, scopedKey, type WorkspaceScope } from "../core";
 import { brandMutations } from "./mutations";
 import { brandQueries, invalidateBrand } from "./queries";
+import { studioQueries } from "../studio/queries";
 
 const scope: WorkspaceScope = { userId: "user-1", workspaceId: "workspace-1" };
 const ID = "11111111-1111-4111-8111-111111111111";
@@ -170,6 +171,19 @@ describe("brand mutations", () => {
     await brandMutations(api).createGeneratedImage(ID, { projectId: ID, idempotencyKey: "job-key-1" } as never);
     expect(calls[0]!.headers["idempotency-key"]).toBeUndefined();
     expect(calls[0]!.body).toMatchObject({ idempotencyKey: "job-key-1" });
+  });
+});
+
+describe("the project brand snapshot (Studio)", () => {
+  test("reads GET /projects/:id/brand-snapshot and a brand edit marks it stale", async () => {
+    const { api, calls } = recording(() => ({ snapshot: null, brandLogo: null, audio: [] }));
+    const options = studioQueries(api.transport, scope).brandSnapshot(ID);
+    await run(options);
+    expect(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([`GET /api/projects/${ID}/brand-snapshot`]);
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(options.queryKey, { snapshot: null, brandLogo: null, audio: [] });
+    await invalidateBrand(queryClient, scope);
+    expect(queryClient.getQueryState(options.queryKey)?.isInvalidated).toBe(true);
   });
 });
 

@@ -7,10 +7,11 @@
  * the caller turns a patch into a document change and `gesture` into its undo coalescing.
  *
  * Colours here are USER text colours (they are burned in) and stay literal; everything else uses
- * mode-invariant `studio.*` tokens, which also holds for the portaled menus and colour pickers.
+ * the tone's tokens (Studio graphite by default; the app's surfaces under `TextControlsAppTone`),
+ * portaled menus and colour pickers included.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { Box, ColorPicker, Flex, HStack, Input, Menu, Portal, Slider, Stack, Text, parseColor } from "@chakra-ui/react";
 import { AlignCenter, AlignLeft, AlignRight, Bold, Check, ChevronDown, Italic, Minus, Plus, Underline, UnfoldVertical } from "lucide-react";
 import {
@@ -40,21 +41,66 @@ export interface TextStyleControlsProps {
 export const TEXT_SIZE_CHOICES = [16, 20, 24, 28, 32, 36, 40, 44, 48, 56, 64, 72, 80, 96, 112, 128, 160, 200, 240] as const;
 const LINE_SPACING_PCT = { min: 80, max: 250 } as const;
 
-const menuContentProps = { p: "1", bg: "studio.surface", borderWidth: "0", borderRadius: "12px", boxShadow: "none", color: "studio.fg" } as const;
-const menuItemProps = {
-  gap: "2.5",
-  minH: "36px",
-  px: "2.5",
-  borderRadius: "8px",
-  color: "studio.fg",
-  bg: "transparent",
-  cursor: "pointer",
-  _hover: { bg: "studio.raised" },
-  _highlighted: { bg: "studio.raised" },
+const appFieldFocus = { borderColor: "border.focus", outline: "none", boxShadow: "none" } as const;
+/** `softFieldProps` on the app's surfaces. */
+const appFieldProps = {
+  bg: "bg.soft",
+  borderWidth: "1px",
+  borderColor: "transparent",
+  borderRadius: "10px",
+  color: "fg",
+  focusVisibleRing: "none",
+  _placeholder: { color: "fg.subtle" },
+  _focus: appFieldFocus,
+  _focusVisible: appFieldFocus,
+} as const;
+/** The app's own slider (`@narriflow/ui` Slider): a thin muted track, the accent range, a bordered thumb. */
+const appSliderCss = {
+  "& [data-part=track]": { bg: "bg.muted", h: "3px", borderRadius: "full" },
+  "& [data-part=range]": { bg: "accent.solid" },
+  "& [data-part=thumb]": { boxSize: "3.5", bg: "bg.panel", borderWidth: "1px", borderColor: "border.control", borderRadius: "full" },
 } as const;
 
-/** A soft control surface (font menu, size, segmented groups). */
-const fieldSurface = { bg: "studio.subtle", borderRadius: "10px", h: "40px" } as const;
+/**
+ * The tokens the controls draw with. `studio`: the editor's graphite chrome (mode-invariant, so the
+ * portaled menus and pickers match it). `app`: the app's own surfaces, light or dark, for the brand
+ * kit's title form.
+ */
+function tone(kind: "studio" | "app") {
+  const studio = kind === "studio";
+  const t = {
+    field: studio ? "studio.subtle" : "bg.soft",
+    fieldHover: studio ? "studio.surface" : "bg.softHover",
+    hover: studio ? "studio.raised" : "bg.softHover",
+    fg: studio ? "studio.fg" : "fg",
+    fgMuted: studio ? "studio.fgMuted" : "fg.muted",
+    fgSubtle: studio ? "studio.fgSubtle" : "fg.subtle",
+    accentFg: studio ? "studio.accentFg" : "accent.fg",
+    accentSubtle: studio ? "studio.accentSubtle" : "accent.subtle",
+    swatchRing: studio ? "studio.raised" : "bg.softHover",
+    pickerTool: studio ? "studio.borderStrong" : "bg.soft",
+    /** The colour picker's surface: the raised fill on graphite; on the app's surfaces the theme's dropdown (raised fill, hairline). */
+    popover: studio ? { bg: "studio.raised", borderWidth: "0" } : { bg: "bg.raised", borderWidth: "1px", borderColor: "border.card" },
+    fieldInput: studio ? softFieldProps : appFieldProps,
+    slider: studio ? studioSliderCss : appSliderCss,
+  };
+  return {
+    ...t,
+    menuContent: { p: "1", ...(studio ? { bg: "studio.surface", borderWidth: "0" } : t.popover), borderRadius: "12px", boxShadow: "none", color: t.fg },
+    menuItem: { gap: "2.5", minH: "36px", px: "2.5", borderRadius: "8px", color: t.fg, bg: "transparent", cursor: "pointer", _hover: { bg: t.hover }, _highlighted: { bg: t.hover } },
+    /** A soft control surface (font menu, size, segmented groups). */
+    fieldSurface: { bg: t.field, borderRadius: "10px", h: "40px" },
+  };
+}
+
+const TONES = { studio: tone("studio"), app: tone("app") } as const;
+const ToneContext = createContext(TONES.studio);
+const useTone = () => useContext(ToneContext);
+
+/** Draws the text controls inside it with the app's own surfaces (light or dark) instead of the Studio's graphite. */
+export function TextControlsAppTone({ children }: { children: ReactNode }) {
+  return <ToneContext.Provider value={TONES.app}>{children}</ToneContext.Provider>;
+}
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -65,6 +111,7 @@ export function textFamilyFaceStyle(family: TextLayerFontFamily) {
 
 /** The font menu: every family, each written in its own face. */
 export function TextFontMenu({ value, onChange, compact = false }: { value: TextLayerFontFamily; onChange: (font: TextLayerFontFamily) => void; compact?: boolean }) {
+  const t = useTone();
   return (
     <Menu.Root onSelect={({ value: next }) => onChange(next as TextLayerFontFamily)} positioning={{ placement: "bottom-start" }} lazyMount>
       <Menu.Trigger asChild>
@@ -76,8 +123,8 @@ export function TextFontMenu({ value, onChange, compact = false }: { value: Text
           gap="2"
           minW="0"
           px="3"
-          {...(compact ? { w: "full", h: "32px", borderRadius: "8px", bg: "transparent", _hover: { bg: "studio.raised" } } : { ...fieldSurface, flex: "1", _hover: { bg: "studio.surface" } })}
-          color="studio.fg"
+          {...(compact ? { w: "full", h: "32px", borderRadius: "8px", bg: "transparent", _hover: { bg: t.hover } } : { ...t.fieldSurface, flex: "1", _hover: { bg: t.fieldHover } })}
+          color={t.fg}
           fontSize={compact ? "13px" : "14px"}
           cursor="pointer"
           transition="background 120ms ease"
@@ -90,14 +137,13 @@ export function TextFontMenu({ value, onChange, compact = false }: { value: Text
       </Menu.Trigger>
       <Portal>
         <Menu.Positioner>
-          {/* Portaled: mode-invariant studio tokens only. */}
-          <Menu.Content {...menuContentProps} minW="240px" maxH="min(420px, 60vh)" overflowY="auto">
+          <Menu.Content {...t.menuContent} minW="240px" maxH="min(420px, 60vh)" overflowY="auto">
             {TEXT_LAYER_FONT_FAMILIES.map((family) => (
-              <Menu.Item key={family} value={family} {...menuItemProps} aria-label={family}>
+              <Menu.Item key={family} value={family} {...t.menuItem} aria-label={family}>
                 <Text as="span" fontSize="16px" style={textFamilyFaceStyle(family)}>
                   {family}
                 </Text>
-                <Box ms="auto" w="16px" color="studio.accentFg">
+                <Box ms="auto" w="16px" color={t.accentFg}>
                   {family === value ? <Check size={16} /> : null}
                 </Box>
               </Menu.Item>
@@ -111,6 +157,7 @@ export function TextFontMenu({ value, onChange, compact = false }: { value: Text
 
 /** A number field that commits on Enter and blur, and returns to the stored value when what was typed is not a number. */
 function NumberField({ label, value, min, max, onCommit, width, suffix, compact = false }: { label: string; value: number; min: number; max: number; onCommit: (value: number) => void; width: string; suffix?: string; compact?: boolean }) {
+  const t = useTone();
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
   const commit = () => {
@@ -138,7 +185,7 @@ function NumberField({ label, value, min, max, onCommit, width, suffix, compact 
             event.currentTarget.blur();
           }
         }}
-        {...softFieldProps}
+        {...t.fieldInput}
         bg="transparent"
         h={compact ? "32px" : "40px"}
         px="1.5"
@@ -146,7 +193,7 @@ function NumberField({ label, value, min, max, onCommit, width, suffix, compact 
         fontVariantNumeric="tabular-nums"
       />
       {suffix ? (
-        <Text as="span" fontSize="12px" color="studio.fgSubtle" pe="1">
+        <Text as="span" fontSize="12px" color={t.fgSubtle} pe="1">
           {suffix}
         </Text>
       ) : null}
@@ -156,20 +203,21 @@ function NumberField({ label, value, min, max, onCommit, width, suffix, compact 
 
 /** Font size: typed directly, or picked from the menu. */
 export function TextSizeField({ value, onChange, compact = false }: { value: number; onChange: (size: number) => void; compact?: boolean }) {
+  const t = useTone();
   return (
-    <Flex align="center" {...(compact ? { h: "32px" } : fieldSurface)} ps="1" pe="0.5">
+    <Flex align="center" {...(compact ? { h: "32px" } : t.fieldSurface)} ps="1" pe="0.5">
       <NumberField label="Font size" value={value} min={TEXT_LAYER_FONT_SIZE.min} max={TEXT_LAYER_FONT_SIZE.max} onCommit={onChange} width={compact ? "40px" : "52px"} compact={compact} />
       <Menu.Root onSelect={({ value: next }) => onChange(Number(next))} positioning={{ placement: "bottom-end" }} lazyMount>
         <Menu.Trigger asChild>
-          <Flex as="button" aria-label="Choose a font size" align="center" justify="center" boxSize={compact ? "28px" : "32px"} borderRadius="8px" color="studio.fgMuted" cursor="pointer" _hover={{ bg: "studio.raised", color: "studio.fg" }}>
+          <Flex as="button" aria-label="Choose a font size" align="center" justify="center" boxSize={compact ? "28px" : "32px"} borderRadius="8px" color={t.fgMuted} cursor="pointer" _hover={{ bg: t.hover, color: t.fg }}>
             <ChevronDown size={14} />
           </Flex>
         </Menu.Trigger>
         <Portal>
           <Menu.Positioner>
-            <Menu.Content {...menuContentProps} minW="96px" maxH="min(320px, 50vh)" overflowY="auto">
+            <Menu.Content {...t.menuContent} minW="96px" maxH="min(320px, 50vh)" overflowY="auto">
               {TEXT_SIZE_CHOICES.map((size) => (
-                <Menu.Item key={size} value={String(size)} {...menuItemProps} fontVariantNumeric="tabular-nums" color={size === value ? "studio.accentFg" : "studio.fg"}>
+                <Menu.Item key={size} value={String(size)} {...t.menuItem} fontVariantNumeric="tabular-nums" color={size === value ? t.accentFg : t.fg}>
                   {size}
                 </Menu.Item>
               ))}
@@ -183,6 +231,7 @@ export function TextSizeField({ value, onChange, compact = false }: { value: num
 
 /** A colour swatch that opens a picker. `label` names the colour for assistive tech ("Text colour", "Background colour"). */
 export function TextColorSwatch({ label, value, onChange, onGestureEnd, size = "36px" }: { label: string; value: string; onChange: (hex: string) => void; onGestureEnd?: () => void; size?: string }) {
+  const t = useTone();
   return (
     <ColorPicker.Root
       value={parseColor(value)}
@@ -195,20 +244,19 @@ export function TextColorSwatch({ label, value, onChange, onGestureEnd, size = "
     >
       <ColorPicker.HiddenInput />
       <ColorPicker.Control>
-        <ColorPicker.Trigger w={size} h={size} borderRadius="full" borderWidth="0" bg="studio.raised" cursor="pointer" p="3px" aria-label={label}>
+        <ColorPicker.Trigger w={size} h={size} borderRadius="full" borderWidth="0" bg={t.swatchRing} cursor="pointer" p="3px" aria-label={label}>
           <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="full" />
         </ColorPicker.Trigger>
       </ColorPicker.Control>
       <Portal>
         <ColorPicker.Positioner>
-          {/* Portaled: mode-invariant studio tokens only. */}
-          <ColorPicker.Content bg="studio.raised" borderWidth="0" borderRadius="12px" boxShadow="none">
+          <ColorPicker.Content {...t.popover} borderRadius="12px" boxShadow="none">
             <ColorPicker.Area />
             <HStack>
-              <ColorPicker.EyeDropper size="xs" variant="ghost" bg="studio.borderStrong" color="studio.fg" aria-label={`Pick ${label.toLowerCase()} from the screen`} />
+              <ColorPicker.EyeDropper size="xs" variant="ghost" bg={t.pickerTool} color={t.fg} aria-label={`Pick ${label.toLowerCase()} from the screen`} />
               <ColorPicker.Sliders />
             </HStack>
-            <ColorPicker.ChannelInput channel="hex" aria-label={`${label} hex`} {...softFieldProps} bg="studio.subtle" h="32px" fontSize="13px" />
+            <ColorPicker.ChannelInput channel="hex" aria-label={`${label} hex`} {...t.fieldInput} bg={t.field} h="32px" fontSize="13px" />
           </ColorPicker.Content>
         </ColorPicker.Positioner>
       </Portal>
@@ -218,6 +266,7 @@ export function TextColorSwatch({ label, value, onChange, onGestureEnd, size = "
 
 /** One square button of a soft group; `active` is the accent tint. */
 function GroupButton({ label, active, onClick, children }: { label: string; active: boolean; onClick: () => void; children: ReactNode }) {
+  const t = useTone();
   return (
     <Flex
       as="button"
@@ -229,13 +278,13 @@ function GroupButton({ label, active, onClick, children }: { label: string; acti
       align="center"
       justify="center"
       borderRadius="8px"
-      bg={active ? "studio.accentSubtle" : "transparent"}
-      color={active ? "studio.accentFg" : "studio.fgMuted"}
+      bg={active ? t.accentSubtle : "transparent"}
+      color={active ? t.accentFg : t.fgMuted}
       fontSize="14px"
       fontWeight="600"
       cursor="pointer"
       transition="background 120ms ease, color 120ms ease"
-      _hover={active ? undefined : { bg: "studio.raised", color: "studio.fg" }}
+      _hover={active ? undefined : { bg: t.hover, color: t.fg }}
       onClick={onClick}
     >
       {children}
@@ -244,8 +293,9 @@ function GroupButton({ label, active, onClick, children }: { label: string; acti
 }
 
 function Group({ label, children, flex }: { label: string; children: ReactNode; flex?: string }) {
+  const t = useTone();
   return (
-    <Flex role="group" aria-label={label} gap="2px" p="3px" bg="studio.subtle" borderRadius="10px" flex={flex}>
+    <Flex role="group" aria-label={label} gap="2px" p="3px" bg={t.field} borderRadius="10px" flex={flex}>
       {children}
     </Flex>
   );
@@ -286,9 +336,10 @@ export function TextCaseGroup({ value, onChange }: { value: TextLayerStyle["text
 
 /** A labelled slider with its value. */
 function SliderRow({ label, value, min, max, step, format, onChange, onEnd }: { label: string; value: number; min: number; max: number; step: number; format: (value: number) => string; onChange: (value: number) => void; onEnd?: () => void }) {
+  const t = useTone();
   return (
     <Flex align="center" gap="3">
-      <Text fontSize="12px" color="studio.fgMuted" w="64px" flexShrink={0}>
+      <Text fontSize="12px" color={t.fgMuted} w="64px" flexShrink={0}>
         {label}
       </Text>
       <Slider.Root
@@ -300,7 +351,7 @@ function SliderRow({ label, value, min, max, step, format, onChange, onEnd }: { 
         onValueChange={(event) => onChange(event.value[0] ?? value)}
         onValueChangeEnd={() => onEnd?.()}
         size="sm"
-        css={studioSliderCss}
+        css={t.slider}
         flex="1"
       >
         <Slider.Control>
@@ -310,7 +361,7 @@ function SliderRow({ label, value, min, max, step, format, onChange, onEnd }: { 
           <Slider.Thumbs />
         </Slider.Control>
       </Slider.Root>
-      <Text fontSize="12px" color="studio.fg" w="40px" textAlign="right" fontVariantNumeric="tabular-nums">
+      <Text fontSize="12px" color={t.fg} w="40px" textAlign="right" fontVariantNumeric="tabular-nums">
         {format(value)}
       </Text>
     </Flex>
@@ -319,10 +370,11 @@ function SliderRow({ label, value, min, max, step, format, onChange, onEnd }: { 
 
 /** An effect row: `+` switches it on with its default, `−` removes it; while on, its controls show under it. */
 function EffectRow({ label, on, onAdd, onRemove, swatch, children }: { label: string; on: boolean; onAdd: () => void; onRemove: () => void; swatch?: ReactNode; children?: ReactNode }) {
+  const t = useTone();
   return (
     <Box py="3">
       <Flex align="center" gap="3" minH="36px">
-        <Text fontSize="14px" color="studio.fg" fontWeight="500" flex="1">
+        <Text fontSize="14px" color={t.fg} fontWeight="500" flex="1">
           {label}
         </Text>
         {on ? swatch : null}
@@ -333,9 +385,9 @@ function EffectRow({ label, on, onAdd, onRemove, swatch, children }: { label: st
           align="center"
           justify="center"
           borderRadius="8px"
-          color="studio.fgMuted"
+          color={t.fgMuted}
           cursor="pointer"
-          _hover={{ bg: "studio.raised", color: "studio.fg" }}
+          _hover={{ bg: t.hover, color: t.fg }}
           onClick={on ? onRemove : onAdd}
         >
           {on ? <Minus size={16} /> : <Plus size={16} />}
@@ -352,9 +404,10 @@ function EffectRow({ label, on, onAdd, onRemove, swatch, children }: { label: st
 
 /** A row with a label and a pair of icon choices (Corners, Box display). */
 function ChoiceRow<T extends string>({ label, value, items, onChange }: { label: string; value: T; items: readonly { value: T; label: string; icon: ReactNode }[]; onChange: (value: T) => void }) {
+  const t = useTone();
   return (
     <Flex align="center" gap="3" py="2.5" minH="36px">
-      <Text fontSize="14px" color="studio.fg" fontWeight="500" flex="1">
+      <Text fontSize="14px" color={t.fg} fontWeight="500" flex="1">
         {label}
       </Text>
       <Group label={label}>
@@ -400,6 +453,7 @@ const plain = (value: number) => `${Math.round(value * 10) / 10}`;
  * only while Background is on).
  */
 export function TextStyleControls({ value, onChange, onGestureEnd }: TextStyleControlsProps) {
+  const t = useTone();
   const style = value;
   return (
     <Stack gap="2.5">
@@ -423,8 +477,8 @@ export function TextStyleControls({ value, onChange, onGestureEnd }: TextStyleCo
       </Flex>
       <Flex gap="2" align="center">
         <TextCaseGroup value={style.textCase} onChange={(textCase) => onChange({ textCase })} />
-        <Flex align="center" gap="1" ps="2.5" {...fieldSurface} title="Line spacing">
-          <Box color="studio.fgMuted" aria-hidden>
+        <Flex align="center" gap="1" ps="2.5" {...t.fieldSurface} title="Line spacing">
+          <Box color={t.fgMuted} aria-hidden>
             <UnfoldVertical size={15} />
           </Box>
           <NumberField

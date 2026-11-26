@@ -69,5 +69,17 @@ export function studioQueries(transport: ApiTransport, scope: WorkspaceScope) {
           (await client().projects[":id"].clips[":clipId"].layout.screen.$get(param(target), { init: { signal } })).json(),
         ...poll,
       }),
+
+    /**
+     * The project's frozen brand snapshot (`GET /projects/:id/brand-snapshot`): its title settings,
+     * logo and brand audio. A brand edit marks it stale (`invalidateBrand`).
+     */
+    brandSnapshot: (projectId: string) =>
+      queryOptions({
+        queryKey: scopedKey(scope, "studio", "brand-snapshot", projectId) as unknown[],
+        queryFn: async ({ signal }) =>
+          (await client().projects[":id"]["brand-snapshot"].$get({ param: { id: projectId } }, { init: { signal } })).json(),
+        staleTime: 5 * 60_000,
+      }),
   };
 }
