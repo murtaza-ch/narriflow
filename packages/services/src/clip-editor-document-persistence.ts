@@ -37,6 +37,7 @@ import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
 import { assertEditorDocumentFeatureDelta } from "./scene-document-mutation";
+import { applyTitlePatch, clipEditedDurationSec, clipTitleWords, type TitlePatchOutcome } from "./clip-title-text";
 
 export interface ClipEditorDocumentStoredState {
   workspaceId: string;
@@ -45,6 +46,9 @@ export interface ClipEditorDocumentStoredState {
   revision: number;
   document: EditorDocument;
   original: EditorDocument | null;
+  /** The clip's AI title and hook text: the words Apply to all clips gives a clip without a title layer. */
+  title: string | null;
+  hookText: string;
   sourceDurationSec: number | null;
   /** The clip is its whole source; `clipDurationBounds(wholeSource)` bounds its window. */
   wholeSource: boolean;
@@ -107,6 +111,9 @@ export type ClipEditorProjectSelectionIntent =
 
 export interface ClipEditorProjectSelectionResult {
   updated: number;
+  /** Per-clip title outcomes when the patches carry a title: changed title layers, new title
+   *  layers, and clips left without one (at the layer limit or without usable words). */
+  title?: { restyled: number; created: number; skipped: number };
   /** Clips whose update also wrote `captionEmojis` from the intent. */
   captionEmojisAdded: number;
   /** Clips with intent emojis that were not written because the clip changed since
@@ -337,35 +344,55 @@ function hasCaptionEmojis(document: EditorDocument): boolean {
 function planProjectSelectionDocument(
   state: ClipEditorDocumentStoredState,
   intent: ClipEditorProjectSelectionIntent,
-): EditorDocument {
+): { document: EditorDocument; title: TitlePatchOutcome | null } {
   if (intent.kind === "set_caption_preset") {
     const suggested = intent.captionEmojis?.get(state.clipId);
     const studioEdits = suggested && suggested.revision === state.revision && !hasCaptionEmojis(state.document)
       ? replaceCaptionEmojis(state.document.studioEdits, suggested.emojis) ?? state.document.studioEdits
       : state.document.studioEdits;
-    return canonicalizeDocument(
-      { ...state.document, captionPreset: intent.captionPreset, studioEdits },
-      sourceOf(state),
-    );
+    return {
+      document: canonicalizeDocument(
+        { ...state.document, captionPreset: intent.captionPreset, studioEdits },
+        sourceOf(state),
+      ),
+      title: null,
+    };
   }
   if (intent.patches.length === 0) {
     persistenceError("editor_document_invalid", "Studio edit patches cannot be empty");
   }
   let studioEdits = state.document.studioEdits;
+  let title: TitlePatchOutcome | null = null;
   for (const patch of intent.patches) {
     const parsed = applyStudioEditsPatchSchema.safeParse(patch);
     if (!parsed.success) {
       persistenceError("editor_document_invalid", "Studio edit patch is malformed");
     }
-    const { title, ...edits } = parsed.data;
-    // Not a `studioEdits` key: the generic merge would drop it silently. Its own merge comes with title-text ticket 05.
-    if (title) persistenceError("editor_document_invalid", "Title patches are not supported yet");
+    const { title: titlePatch, ...edits } = parsed.data;
+    if (titlePatch) {
+      // Not a `studioEdits` key, so it has its own merge (the generic one would drop it).
+      const merged = applyTitlePatch(studioEdits, titlePatch, {
+        words: clipTitleWords(state.title, state.hookText),
+        editedDurationSec: clipEditedDurationSec(
+          { startSec: state.document.clipStartSec, endSec: state.document.clipEndSec },
+          state.document.deletedRanges,
+        ),
+      });
+      studioEdits = merged.studioEdits;
+      title = merged.outcome;
+      continue;
+    }
     studioEdits = { ...studioEdits, ...edits };
   }
-  return canonicalizeDocument(
-    { ...state.document, studioEdits },
-    sourceOf(state),
-  );
+  const next = { ...state.document, studioEdits };
+  if (title === null) return { document: canonicalizeDocument(next, sourceOf(state)), title };
+  // A title that does not canonicalize on this clip skips the clip; it never fails the others.
+  try {
+    return { document: canonicalizeDocument(next, sourceOf(state)), title };
+  } catch (error) {
+    if (!(error instanceof ClipEditorDocumentPersistenceError)) throw error;
+    return { document: state.document, title: "skipped" };
+  }
 }
 
 function canonicalizeStoredState(
@@ -696,9 +723,19 @@ export function createClipEditorDocumentPersistence(input: {
         if (!storedStates) persistenceError("project_not_found", "project not found");
         const states = storedStates.map(canonicalizeStoredState);
         lastStates = states;
+        const titleCounts = { restyled: 0, created: 0, skipped: 0 };
+        let titlePatched = false;
         const documents = states.flatMap((state) => {
-          const nextDocument = planProjectSelectionDocument(state, request.intent);
-          if (editorDocumentsEqual(state.document, nextDocument)) return [];
+          const planned = planProjectSelectionDocument(state, request.intent);
+          const nextDocument = planned.document;
+          const changed = !editorDocumentsEqual(state.document, nextDocument);
+          if (planned.title !== null) {
+            titlePatched = true;
+            // A title that already matches is neither restyled nor created.
+            if (planned.title === "skipped") titleCounts.skipped += 1;
+            else if (changed) titleCounts[planned.title] += 1;
+          }
+          if (!changed) return [];
           assertEditorDocumentFeatureDelta(pricingTier, state.document, nextDocument);
           return [
             {
@@ -755,7 +792,7 @@ export function createClipEditorDocumentPersistence(input: {
               elapsedMs: now().getTime() - startedAt,
             });
           }
-          return { updated: documents.length, captionEmojisAdded, captionEmojisStale };
+          return { updated: documents.length, captionEmojisAdded, captionEmojisStale, ...(titlePatched ? { title: titleCounts } : {}) };
         }
       }
       for (const state of lastStates) {
@@ -1047,6 +1084,8 @@ function decodePrismaState(
     revision: row.editorRevision,
     document,
     original: original?.data ?? null,
+    title: row.title,
+    hookText: row.hookText,
     sourceDurationSec,
     wholeSource: row.wholeSource,
     sourceStorageKey: row.project.sourceStorageKey,

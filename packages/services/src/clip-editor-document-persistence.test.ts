@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_CAPTION_PRESET,
+  DEFAULT_TITLE_STYLE,
+  STUDIO_EDIT_LIMITS,
   editorDocumentSchema,
   studioEditsSchema,
+  studioTextLayerSchema,
+  type TextLayerTitlePatch,
   type EditorDocument,
   type TranscriptUtterance,
 } from "@narriflow/validators";
@@ -61,7 +65,10 @@ function stored(overrides: Partial<ClipEditorDocumentStoredState> = {}) {
     revision: 3,
     document: document(),
     original: null,
+    title: "One two three",
+    hookText: "Hook words here",
     sourceDurationSec: 300,
+    wholeSource: false,
     sourceStorageKey: "projects/project-1/source.mp4",
     sourceTranscript: [utterance("one two three four five six", 10)],
     viralityScore: 70,
@@ -1144,5 +1151,79 @@ describe("Clip Emphasis Words", () => {
     const next = await persistence.readDocument(scope);
     const result = await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: next.revision, document: { ...next.document, emphasisWords: ["four"], brollUrl: null } } });
     expect(result.document.emphasisWords).toEqual(["three", "one two"]);
+  });
+});
+
+describe("Apply to all clips: title", () => {
+  const style = { ...DEFAULT_TITLE_STYLE, color: "#123456", fontSize: 64 };
+  const patch: TextLayerTitlePatch = { style, positionX: 30, positionY: 70, widthPct: 60, startSec: 1, endSec: 6 };
+  const look = { positionX: 30, positionY: 70, widthPct: 60, style };
+  const body = (id: string) => studioTextLayerSchema.parse({ id, text: `Body ${id}` });
+  const title = (overrides: Record<string, unknown> = {}) => studioTextLayerSchema.parse({ id: "title", role: "title", text: "My own words", ...overrides });
+  const withLayers = (textLayers: unknown[], overrides: Partial<EditorDocument> = {}) =>
+    document({ studioEdits: studioEditsSchema.parse({ textLayers }), ...overrides });
+
+  async function apply(clips: ClipEditorDocumentStoredState[], titlePatch: TextLayerTitlePatch = patch, excludeClipId?: string) {
+    const store = createInMemoryClipEditorDocumentStore(clips);
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
+    const result = await persistence.mutateProjectSelection({
+      ...actorScope(clips[0]!), projectId: clips[0]!.projectId, ...(excludeClipId ? { excludeClipId } : {}),
+      intent: { kind: "patch_studio_edits", patches: [{ title: titlePatch }] },
+    });
+    const layersOf = (clipId: string) => store.inspect(clipId)!.state.document.studioEdits.textLayers;
+    return { result, store, layersOf };
+  }
+
+  test("restyles each clip's title and keeps its words, creates one from the title or hook text, and skips the rest", async () => {
+    const clips = [
+      stored({ clipId: "a-open", document: withLayers([title({ text: "Open clip" })]) }),
+      stored({ clipId: "b-restyle", document: withLayers([body("intro"), title()]) }),
+      stored({ clipId: "c-from-title", title: "From the AI title" }),
+      stored({ clipId: "d-from-hook", title: "  ", hookText: "From the hook" }),
+      stored({ clipId: "e-full", document: withLayers(Array.from({ length: STUDIO_EDIT_LIMITS.textLayers }, (_, index) => body(`b${index}`))) }),
+      stored({ clipId: "f-no-text", title: null, hookText: " " }),
+      stored({ clipId: "g-matching", document: withLayers([title({ ...look, startSec: 1, endSec: 6 })]) }),
+    ];
+    const { result, store, layersOf } = await apply(clips, patch, "a-open");
+
+    expect(result).toEqual({ updated: 3, captionEmojisAdded: 0, captionEmojisStale: 0, title: { restyled: 1, created: 2, skipped: 2 } });
+    expect(store.inspect("a-open")!.writeCount).toBe(0);
+    expect(layersOf("b-restyle")).toEqual([body("intro"), { ...title(), ...look, startSec: 1, endSec: 6 }]);
+    expect(layersOf("c-from-title")).toEqual([{ id: "title", role: "title", text: "From the AI title", ...look, startSec: 1, endSec: 6 }]);
+    expect(layersOf("d-from-hook")).toEqual([expect.objectContaining({ role: "title", text: "From the hook" })]);
+    for (const skipped of ["e-full", "f-no-text", "g-matching"]) expect(store.inspect(skipped)!.writeCount).toBe(0);
+    // Changed clips lose their renders as every other Apply to all does.
+    expect(store.inspect("b-restyle")!.state).toMatchObject({ revision: 4, mutableRenders: [] });
+  });
+
+  test("timing is clamped to each clip's edited duration after cuts", async () => {
+    // A 20 s window with 16 s cut out is 4 s long.
+    const short = { deletedRanges: [{ startSec: 12, endSec: 28 }] };
+    const clips = [
+      stored({ clipId: "a", document: document(short) }),
+      stored({ clipId: "b", document: withLayers([title()], short) }),
+      stored({ clipId: "c" }),
+    ];
+    const { result, layersOf } = await apply(clips, { ...patch, startSec: 19, endSec: null });
+    expect(result.title).toEqual({ restyled: 1, created: 2, skipped: 0 });
+    expect(layersOf("a")[0]).toMatchObject({ startSec: 3.5, endSec: null });
+    expect(layersOf("b")[0]).toMatchObject({ text: "My own words", startSec: 3.5, endSec: null });
+    expect(layersOf("c")[0]).toMatchObject({ startSec: 19, endSec: null });
+
+    const ended = await apply([stored({ clipId: "a", document: document(short) })]);
+    expect(ended.layersOf("a")[0]).toMatchObject({ startSec: 1, endSec: 4 });
+  });
+
+  test("a clip whose title id is taken by a body layer gets the next free id", async () => {
+    const { layersOf } = await apply([stored({ clipId: "a", document: withLayers([body("title")]) })]);
+    expect(layersOf("a").map((layer) => [layer.id, layer.role])).toEqual([["title", "body"], ["title-2", "title"]]);
+  });
+
+  test("other patch kinds keep their response without title counts", async () => {
+    const store = createInMemoryClipEditorDocumentStore([stored()]);
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
+    const result = await persistence.mutateProjectSelection({ ...actorScope(stored()), projectId: "project-1",
+      intent: { kind: "patch_studio_edits", patches: [{ transition: { type: "fade", durationSec: 0.4 } }] } });
+    expect(result).toEqual({ updated: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
   });
 });

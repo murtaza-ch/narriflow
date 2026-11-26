@@ -472,6 +472,10 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
           excludeClipId: input.excludeClipId,
           intent: { kind: "patch_studio_edits", patches: input.patches },
         });
+        // A title patch reports what it did to each clip's title layer.
+        if (result.title) {
+          return c.json({ updated: result.updated, field: "title" as const, title: result.title }, 200);
+        }
         const firstPatch = input.patches[0]!;
         const field =
           firstPatch.transition !== undefined

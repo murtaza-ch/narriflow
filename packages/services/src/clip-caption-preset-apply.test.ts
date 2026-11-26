@@ -21,7 +21,7 @@ function document(captionEmojis?: Record<string, CaptionEmojiRef>): EditorDocume
 
 function stored(clipId: string, captionEmojis?: Record<string, CaptionEmojiRef>): ClipEditorDocumentStoredState {
   return {
-    workspaceId: "workspace-1", projectId: "project-1", clipId, revision: 3, document: document(captionEmojis), original: null,
+    workspaceId: "workspace-1", projectId: "project-1", clipId, revision: 3, document: document(captionEmojis), original: null, title: null, hookText: "",
     sourceDurationSec: 300, wholeSource: false, sourceStorageKey: "projects/project-1/source.mp4", sourceTranscript: [], viralityScore: 70,
     status: "detected", preview: { storageKey: null, startSec: null, durationSec: null }, evidence: { screen: null, automatic: null, split: null },
     scores: { durationOptimality: 80, tiktok: 80, youtube: 70, instagram: 75 },
