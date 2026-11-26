@@ -264,22 +264,22 @@ export type TextLayerTitlePatch = z.infer<typeof textLayerTitlePatchSchema>;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /**
- * `text` on one line, cut to at most `maxChars` UTF-16 units: at the last word boundary that fits,
- * else at the last whole grapheme that fits. Empty when the text is blank.
+ * `text` on one line, cut to at most `maxChars` UTF-16 units on grapheme boundaries: before the last
+ * grapheme holding a space that the cut reaches (a word boundary), else after the last whole grapheme
+ * that fits. Empty when the text is blank.
  */
 export function cutTitleText(text: string, maxChars = TITLE_TEXT_MAX_CHARS): string {
   const line = text.replace(/\s+/gu, " ").trim();
   if (line.length <= maxChars) return line;
   let end = 0;
+  let boundary = 0;
   for (const { segment, index } of graphemeSegmenter.segment(line)) {
+    // A grapheme holding a space ends a word: cut before it (it may be the one just past the limit).
+    if (segment.includes(" ")) boundary = index;
     if (index + segment.length > maxChars) break;
     end = index + segment.length;
   }
-  const head = line.slice(0, end);
-  // The cut falls between words when the next character is a space; otherwise back off to the last space.
-  if (line[end] === " ") return head.trimEnd();
-  const space = head.lastIndexOf(" ");
-  return (space > 0 ? head.slice(0, space) : head).trimEnd();
+  return line.slice(0, boundary > 0 ? boundary : end);
 }
 
 /**

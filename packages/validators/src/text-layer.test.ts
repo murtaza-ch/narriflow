@@ -219,6 +219,15 @@ describe("title text and the title layer builder", () => {
     expect(cutTitleText("   ")).toBe("");
   });
 
+  test("cutTitleText backs off to a word boundary on grapheme boundaries", () => {
+    // U+0600 (a prepended mark) joins the space after it into one grapheme: the cut goes before that grapheme.
+    expect(cutTitleText("ab\u0600 cde", 5)).toBe("ab");
+    expect(cutTitleText("ab\u0600 cde", 4)).toBe("ab");
+    expect(cutTitleText("abc defgh", 6)).toBe("abc");
+    expect(cutTitleText("abc defgh", 3)).toBe("abc");
+    expect(cutTitleText("abc defgh", 4)).toBe("abc");
+  });
+
   test("cutTitleText never splits a grapheme, and a single long word is cut at a grapheme", () => {
     const family = "👨‍👩‍👧‍👦";
     const text = `${"a".repeat(115)}${family}${family}`;

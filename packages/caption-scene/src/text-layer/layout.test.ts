@@ -21,6 +21,8 @@ const SIZE = 40;
 const CHAR = SIZE * 0.5;
 const PAD = 0.32 * SIZE;
 const INTER_CAP = captionFontFace("Inter").capHeight * SIZE;
+/** Faux bold outline, em (review round 2: 0.035 closed up heavy single-weight faces such as Anton). */
+const FAUX = 0.02;
 
 const make = (text: string, style: Partial<StudioTextLayer["style"]> = {}, place: Partial<StudioTextLayer> = {}): StudioTextLayer =>
   studioTextLayerSchema.parse({ id: "t", text, positionX: 50, positionY: 50, widthPct: 50, ...place, style: { ...DEFAULT_TITLE_STYLE, fontSize: SIZE, ...style } });
@@ -82,6 +84,23 @@ describe("wrapping", () => {
     expect(wrapTextLayer("abcdefg hi", 5 * CHAR, (text) => captionGraphemes(text).length * CHAR)).toEqual(["abcde", "fg hi"]);
     // A grapheme wider than the line still gets one line, and a family emoji is never split.
     expect(wrapTextLayer("👨‍👩‍👧x", 0.5 * CHAR, (text) => captionGraphemes(text).length * CHAR)).toEqual(["👨‍👩‍👧", "x"]);
+  });
+
+  test("controls never reach a renderer: a tab is a space, NUL and other C0/C1 controls are dropped, line breaks stay", () => {
+    const result = layout(make("A\u0000B\tC\u0007D\u009F\r\nE\rF\u007F"));
+    expect(result.lines.map((line) => line.text)).toEqual(["AB CD", "E", "F"]);
+    const stored = make("A\u0000B");
+    expect(stored.text).toBe("A\u0000B");
+    expect(texts(layout(stored).pieces)[0]!.text).toBe("AB");
+  });
+
+  test("only ordinary spaces are wrap points: a no-break space or a word joiner keeps its words on one line", () => {
+    const width = (text: string) => captionGraphemes(text).length * CHAR;
+    expect(wrapTextLayer("aa\u00A0bb cc", 5 * CHAR, width)).toEqual(["aa\u00A0bb", "cc"]);
+    expect(wrapTextLayer("aa\u202Fbb cc", 5 * CHAR, width)).toEqual(["aa\u202Fbb", "cc"]);
+    expect(wrapTextLayer("aa\u2060bb cc", 5 * CHAR, width)).toEqual(["aa\u2060bb", "cc"]);
+    // A run of ordinary spaces is one break.
+    expect(wrapTextLayer("aa    bb", 10 * CHAR, width)).toEqual(["aa bb"]);
   });
 
   test("uppercase is drawn, the stored text is not rewritten", () => {
@@ -198,14 +217,14 @@ describe("bold, italic, underline, stroke and shadow", () => {
   test("faux bold without a user stroke: one piece outlined in its own fill colour", () => {
     const pieces = texts(layout(make("abc", { font: "Anton", bold: true, stroke: null, color: "#FF0000" })).pieces);
     expect(pieces).toHaveLength(1);
-    expect(pieces[0]!.stroke).toEqual({ widthPx: 0.035 * SIZE, colour: "#FF0000" });
+    expect(pieces[0]!.stroke).toEqual({ widthPx: FAUX * SIZE, colour: "#FF0000" });
   });
 
   test("faux bold with a user stroke: an under piece outside both, shadows once on it", () => {
     const pieces = texts(layout(make("abc", { font: "Anton", bold: true, stroke: STROKE, color: "#FF0000", shadow: DEFAULT_TEXT_SHADOW })).pieces);
     expect(pieces.map((piece) => piece.id)).toEqual(["t:line:0:under", "t:line:0:text"]);
-    expect(pieces[0]!.stroke).toEqual({ widthPx: 0.035 * SIZE + 4, colour: "#000000" });
-    expect(pieces[1]!.stroke).toEqual({ widthPx: 0.035 * SIZE, colour: "#FF0000" });
+    expect(pieces[0]!.stroke).toEqual({ widthPx: FAUX * SIZE + 4, colour: "#000000" });
+    expect(pieces[1]!.stroke).toEqual({ widthPx: FAUX * SIZE, colour: "#FF0000" });
     expect(pieces[0]!.shadows).toEqual([{ dx: 0, dy: 4, blur: 8, colour: "#000000", alpha: 0.6 }]);
     expect(pieces[1]!.shadows).toBeUndefined();
     expect(pieces[0]!.z).toBeLessThan(pieces[1]!.z);

@@ -24,7 +24,7 @@ const PLATE_RADIUS_EM = 0.28;
 const UNDERLINE_OFFSET_EM = 0.12;
 const UNDERLINE_THICKNESS_EM = 0.065;
 /** Faux bold: a fill-coloured outline this far outside the glyph. */
-const FAUX_BOLD_EM = 0.035;
+const FAUX_BOLD_EM = 0.02;
 
 /** `z` values one layer uses: plates, underline, the text's under piece, the text. */
 export const TEXT_LAYER_Z_BAND = 4;
@@ -184,7 +184,12 @@ export function buildTextLayerScene(entries: readonly TextLayerEntry[], canvas: 
 
 /** The text as drawn: the layer's case applied, line breaks normalised. */
 function drawnText(text: string, textCase: StudioTextLayer["style"]["textCase"]): string {
-  const normalised = text.replace(/\r\n?/g, "\n");
+  // Line breaks are `\n`; a tab is a space; other C0 and C1 controls (and DEL) are dropped: a raw NUL would
+  // end libass's line and the next layer's, and neither renderer draws a control.
+  const normalised = text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, " ")
+    .replace(/[^\P{Cc}\n]/gu, "");
   // The captions' case rule; a layer has no language, so no locale-specific casing.
   return textCase === "uppercase" ? applyCaptionTextTransform(normalised, "uppercase", null) : normalised;
 }
@@ -197,7 +202,8 @@ function drawnText(text: string, textCase: StudioTextLayer["style"]["textCase"])
 export function wrapTextLayer(text: string, maxWidth: number, advance: (text: string) => number): string[] {
   const lines: string[] = [];
   for (const paragraph of text.split("\n")) {
-    const words = paragraph.split(/[^\S\n]+/u).filter((word) => word.length > 0);
+    // Ordinary spaces only: a no-break space (U+00A0, U+202F) or a word joiner keeps its words together.
+    const words = paragraph.split(/ +/u).filter((word) => word.length > 0);
     if (words.length === 0) {
       lines.push("");
       continue;
