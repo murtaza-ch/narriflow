@@ -1,16 +1,6 @@
-import { LoadingScreen } from "@narriflow/ui/components/page-loading";
-import { ProjectsGridSkeleton, ProjectsHeaderSkeleton } from "./_components/projects-skeleton";
+import { ProjectsRouteLoading } from "./_components/projects-route-loading";
 
-/**
- * The page's own static shell — the same root, the same header fallback and
- * the same grid skeleton as page.tsx's Suspense fallbacks — so the handoff
- * from this route boundary to the in-page one doesn't repaint anything.
- */
+/** Also the first loading state of every page below /projects; it shows the page being opened. */
 export default function Loading() {
-  return (
-    <LoadingScreen label="Loading projects">
-      <ProjectsHeaderSkeleton />
-      <ProjectsGridSkeleton />
-    </LoadingScreen>
-  );
+  return <ProjectsRouteLoading />;
 }

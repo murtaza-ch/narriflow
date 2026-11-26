@@ -1,7 +1,7 @@
 import { Flex, Grid, Stack } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { Bone } from "@narriflow/ui/components/page-loading";
+import { Bone, LoadingScreen } from "@narriflow/ui/components/page-loading";
 import { FolderPlus, Plus } from "lucide-react";
 
 /**
@@ -90,5 +90,15 @@ function TextLine({ h, w, small = false }: { h: string; w: string; small?: boole
     <Flex h={h} align="center">
       <Bone h={small ? "2.5" : "3"} w={w} />
     </Flex>
+  );
+}
+
+/** The Projects page while it loads: the header, then the grid of wells. */
+export function ProjectsListLoading() {
+  return (
+    <LoadingScreen label="Loading projects">
+      <ProjectsHeaderSkeleton />
+      <ProjectsGridSkeleton />
+    </LoadingScreen>
   );
 }

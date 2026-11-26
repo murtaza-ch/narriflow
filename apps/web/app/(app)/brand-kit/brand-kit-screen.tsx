@@ -21,7 +21,7 @@ import { BrandApiProvider, useBrandScope } from "./_components/brand-api-provide
 import { BrandMark, BrandTabs, CoverChip, PaletteDots, plural } from "./_components/brand-kit-ui";
 import { FontLibrary, FontUploadButton } from "./_components/font-manager";
 import { TemplateGallery } from "./_components/template-gallery";
-import BrandKitLoading from "./loading";
+import { BrandKitListLoading } from "./_components/brand-kit-list-loading";
 
 const TABS = ["profiles", "styles", "fonts"] as const;
 type Tab = (typeof TABS)[number];
@@ -29,7 +29,7 @@ type Tab = (typeof TABS)[number];
 /** Brand kit: profiles, caption styles and fonts of the selected Workspace, read as one aggregate. */
 export function BrandKitScreen() {
   const scope = useBrandScope();
-  if (!scope) return <BrandKitLoading />;
+  if (!scope) return <BrandKitListLoading />;
   return (
     <BrandApiProvider key={scope.workspaceId} scope={scope}>
       <BrandKitContent />
@@ -56,7 +56,7 @@ function BrandKitContent() {
       />
     );
   }
-  if (!kitQuery.data || !bootstrap.data) return <BrandKitLoading />;
+  if (!kitQuery.data || !bootstrap.data) return <BrandKitListLoading />;
   const { profiles, defaultProfileId, templates, fonts, access, plan } = kitQuery.data;
   const { workspace, capabilities } = bootstrap.data;
 
