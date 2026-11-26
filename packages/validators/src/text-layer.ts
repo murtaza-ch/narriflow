@@ -232,7 +232,8 @@ export const brandTitleSchema = z.object({
   positionX: z.number().min(0).max(100).default(50),
   positionY: z.number().min(0).max(100).default(12),
   widthPct: z.number().min(10).max(100).default(86),
-  style: textLayerStyleSchema.prefault(DEFAULT_TITLE_STYLE),
+  /** A whole style; a partial stored style is filled from the default title style (not the body defaults). */
+  style: z.preprocess((value) => (value === undefined ? DEFAULT_TITLE_STYLE : typeof value === "object" && value !== null ? { ...DEFAULT_TITLE_STYLE, ...value } : value), textLayerStyleSchema),
 });
 
 export type BrandTitle = z.infer<typeof brandTitleSchema>;

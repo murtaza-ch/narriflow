@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
 import { DEFAULT_TEXT_SHADOW, DEFAULT_TITLE_STYLE, type StudioTextLayer, captionFontFace, studioTextLayerSchema } from "@narriflow/validators";
-import { type Measure, type Piece, type ShapePiece, type TextPiece, evaluatePiece, visiblePieces } from "../scene";
+import { type Measure, type PathCmd, type Piece, type ShapePiece, type TextPiece, evaluatePiece, visiblePieces } from "../scene";
 import { TEXT_LAYER_Z_BAND, buildTextLayerScene, layoutTextLayer, wrapTextLayer } from "./layout";
 import { TEXT_LAYER_SAMPLES } from "./samples";
 
@@ -28,11 +28,35 @@ const make = (text: string, style: Partial<StudioTextLayer["style"]> = {}, place
 const layout = (layer: StudioTextLayer, canvas = SQUARE) => layoutTextLayer(layer, canvas, measure, WINDOW, 0);
 const texts = (pieces: readonly Piece[]) => pieces.filter((piece): piece is TextPiece => piece.kind === "text");
 const shapes = (pieces: readonly Piece[], id: string) => pieces.filter((piece): piece is ShapePiece => piece.kind === "shape" && piece.id.includes(id));
-const pathBox = (piece: ShapePiece) => {
-  const xs = piece.path.flatMap((command) => (command[0] === "Z" ? [] : command.slice(1).filter((_, index) => index % 2 === 0) as number[]));
-  const ys = piece.path.flatMap((command) => (command[0] === "Z" ? [] : command.slice(1).filter((_, index) => index % 2 === 1) as number[]));
+/** The subpaths of a shape (each starts at an `M`), as their own command lists. */
+const subpaths = (piece: ShapePiece): PathCmd[][] => {
+  const result: PathCmd[][] = [];
+  for (const command of piece.path) {
+    if (command[0] === "M") result.push([]);
+    result[result.length - 1]!.push(command);
+  }
+  return result;
+};
+/** Canvas box of each subpath of a shape (one per line box in `line` display). */
+const boxesOf = (piece: ShapePiece) => {
   const pose = evaluatePiece(piece, WINDOW.fromMs);
-  return { x1: pose.x + Math.min(...xs), y1: pose.y + Math.min(...ys), x2: pose.x + Math.max(...xs), y2: pose.y + Math.max(...ys) };
+  return subpaths(piece).map((path) => {
+    const xs = path.flatMap((command) => (command[0] === "Z" ? [] : command.slice(1).filter((_, index) => index % 2 === 0) as number[]));
+    const ys = path.flatMap((command) => (command[0] === "Z" ? [] : command.slice(1).filter((_, index) => index % 2 === 1) as number[]));
+    return { x1: pose.x + Math.min(...xs), y1: pose.y + Math.min(...ys), x2: pose.x + Math.max(...xs), y2: pose.y + Math.max(...ys) };
+  });
+};
+/** Signed area of a subpath's polygon of end points (shoelace); its sign is the winding. */
+const signedArea = (path: readonly PathCmd[]) => {
+  const points = path.flatMap((command) => (command[0] === "Z" ? [] : [[command[command.length - 2] as number, command[command.length - 1] as number] as const]));
+  return points.reduce((sum, [x, y], index) => {
+    const [nx, ny] = points[(index + 1) % points.length]!;
+    return sum + x * ny - nx * y;
+  }, 0) / 2;
+};
+const plates = (pieces: readonly Piece[]) => {
+  const found = shapes(pieces, "plate");
+  return found.length === 0 ? [] : boxesOf(found[0]!);
 };
 
 describe("wrapping", () => {
@@ -49,7 +73,8 @@ describe("wrapping", () => {
     expect(result.lines[1]!.baselineY - result.lines[0]!.baselineY).toBeCloseTo(pitch, 6);
     expect(result.lines[2]!.baselineY - result.lines[1]!.baselineY).toBeCloseTo(pitch, 6);
     expect(texts(result.pieces).map((piece) => piece.text)).toEqual(["one", "two"]);
-    expect(shapes(result.pieces, "plate")).toHaveLength(2);
+    expect(shapes(result.pieces, "plate")).toHaveLength(1);
+    expect(plates(result.pieces)).toHaveLength(2);
   });
 
   test("a word wider than the line breaks at grapheme boundaries and its tail joins the next words", () => {
@@ -80,14 +105,14 @@ describe("placement", () => {
     expect((result.frame.y1 + result.frame.y2) / 2).toBeCloseTo(0.3 * 1920, 6);
     expect(result.frame.y2 - result.frame.y1).toBeCloseTo(height, 6);
     // The block's boxes fill the frame's height exactly.
-    const plates = shapes(result.pieces, "plate").map(pathBox);
-    expect(plates[0]!.y1).toBeCloseTo(result.frame.y1, 6);
-    expect(plates[2]!.y2).toBeCloseTo(result.frame.y2, 6);
+    const boxes = plates(result.pieces);
+    expect(boxes[0]!.y1).toBeCloseTo(result.frame.y1, 6);
+    expect(boxes[2]!.y2).toBeCloseTo(result.frame.y2, 6);
   });
 
   test("a line box hugs its own line: unequal widths, centred on the cap height", () => {
     const result = layout(make("a long first line\nshort"));
-    const [first, second] = shapes(result.pieces, "plate").map(pathBox);
+    const [first, second] = plates(result.pieces);
     expect(first!.x2 - first!.x1).toBeCloseTo(17 * CHAR + 2 * PAD, 6);
     expect(second!.x2 - second!.x1).toBeCloseTo(5 * CHAR + 2 * PAD, 6);
     const line = result.lines[0]!;
@@ -121,12 +146,30 @@ describe("placement", () => {
 describe("boxes", () => {
   test("block display draws one box around every line", () => {
     const result = layout(make("a long first line\nshort", { background: { color: "#FFFFFF", opacity: 1, corners: "rounded", display: "block" } }));
-    const plates = shapes(result.pieces, "plate");
-    expect(plates).toHaveLength(1);
-    const box = pathBox(plates[0]!);
+    expect(shapes(result.pieces, "plate")).toHaveLength(1);
+    const boxes = plates(result.pieces);
+    expect(boxes).toHaveLength(1);
+    const box = boxes[0]!;
     expect(box.x2 - box.x1).toBeCloseTo(17 * CHAR + 2 * PAD, 6);
     expect(box.y1).toBeCloseTo(result.frame.y1, 6);
     expect(box.y2).toBeCloseTo(result.frame.y2, 6);
+  });
+
+  test("a layer's line boxes are one shape of same-wound rectangles, so overlaps fill once", () => {
+    for (const corners of ["rounded", "square"] as const) {
+      const result = layout(make("a long first line\nmid\nlonger last line", { background: { color: "#000000", opacity: 0.6, corners, display: "line" } }));
+      const found = shapes(result.pieces, "plate");
+      expect(found).toHaveLength(1);
+      const paths = subpaths(found[0]!);
+      expect(paths).toHaveLength(3);
+      const areas = paths.map(signedArea);
+      expect(areas.every((area) => Math.sign(area) === Math.sign(areas[0]!) && area !== 0)).toBe(true);
+      const boxes = boxesOf(found[0]!);
+      expect(boxes[1]!.y1).toBeLessThan(boxes[0]!.y2);
+      // The anchor is the union's top-left, so the path starts at (0, 0).
+      expect(Math.min(...boxes.map((box) => box.x1))).toBeCloseTo(evaluatePiece(found[0]!, WINDOW.fromMs).x, 6);
+      expect(found[0]!.fill).toEqual({ colour: "#000000", alpha: 0.6 });
+    }
   });
 
   test("rounded corners are curves; square corners are straight", () => {
@@ -194,7 +237,7 @@ describe("bold, italic, underline, stroke and shadow", () => {
     const result = layout(make("ab cd\nlonger line", { underline: true, background: null, stroke: STROKE, shadow: DEFAULT_TEXT_SHADOW }));
     const bars = shapes(result.pieces, "underline");
     expect(bars).toHaveLength(2);
-    const bar = pathBox(bars[0]!);
+    const bar = boxesOf(bars[0]!)[0]!;
     expect(bar.x1).toBeCloseTo(result.lines[0]!.x1, 6);
     expect(bar.x2 - bar.x1).toBeCloseTo(5 * CHAR, 6);
     expect(bar.y1).toBeGreaterThan(result.lines[0]!.baselineY);
@@ -226,7 +269,7 @@ describe("scene", () => {
     expect(secondPlate).toBeGreaterThan(firstText);
     expect(secondPlate).toBe(TEXT_LAYER_Z_BAND);
     const order = visiblePieces(scene, WINDOW.fromMs).map((piece) => piece.id);
-    expect(order.indexOf("second:plate:0")).toBeGreaterThan(order.indexOf("t:line:0:text"));
+    expect(order.indexOf("second:plate")).toBeGreaterThan(order.indexOf("t:line:0:text"));
   });
 
   test("every sample lays out on both canvases", () => {

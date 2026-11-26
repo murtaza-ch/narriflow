@@ -1,5 +1,5 @@
 import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
-import { type StudioTextLayer, captionFontFace, resolveTextLayerFace } from "@narriflow/validators";
+import { type StudioTextLayer, applyCaptionTextTransform, captionFontFace, resolveTextLayerFace } from "@narriflow/validators";
 import type { Box, CaptionScene, Measure, Piece, SceneWindow, Shadow, ShapePiece, TextPiece } from "../scene";
 import { rectPath, roundedRectPath } from "../shapes";
 
@@ -94,27 +94,29 @@ export function layoutTextLayer(layer: TextLayerInput, canvas: TextLayerCanvas, 
   const pieces: Piece[] = [];
   const drawn = lines.flatMap((line, index) => (line.blank ? [] : [{ line, index }]));
 
-  // Boxes behind every line's text.
+  // Boxes behind every line's text: one shape per layer. In `line` display it is each line's
+  // rectangle one after another, all wound the same way, so where neighbours overlap the union is
+  // filled once (nonzero in SVG and in libass) and a box that is not opaque shows no darker stripe.
   const background = style.background;
   if (background && background.opacity > 0 && drawn.length > 0) {
     const radius = background.corners === "rounded" ? PLATE_RADIUS_EM * size : 0;
     const plateTop = (line: TextLayerLine) => line.baselineY - cap / 2 - plateHeight / 2;
-    const plate = (id: string, x1: number, y1: number, x2: number, y2: number): ShapePiece => ({
-      ...base(id, Z.plate),
-      kind: "shape",
-      track: { x: at(x1), y: at(y1) },
-      path: radius > 0 ? roundedRectPath(0, 0, x2 - x1, y2 - y1, radius) : rectPath(0, 0, x2 - x1, y2 - y1),
-      fill: { colour: background.color, alpha: background.opacity },
+    const boxes: Box[] = background.display === "line"
+      ? drawn.map(({ line }) => ({ x1: line.x1 - padX, y1: plateTop(line), x2: line.x2 + padX, y2: plateTop(line) + plateHeight }))
+      : [{
+          x1: Math.min(...drawn.map(({ line }) => line.x1)) - padX,
+          y1: plateTop(drawn[0]!.line),
+          x2: Math.max(...drawn.map(({ line }) => line.x2)) + padX,
+          y2: plateTop(drawn[drawn.length - 1]!.line) + plateHeight,
+        }];
+    // The shape's anchor is the boxes' top-left corner; its path is relative to it.
+    const left = Math.min(...boxes.map((box) => box.x1));
+    const top = Math.min(...boxes.map((box) => box.y1));
+    const path = boxes.flatMap((box) => {
+      const [x, y, width, height] = [box.x1 - left, box.y1 - top, box.x2 - box.x1, box.y2 - box.y1];
+      return radius > 0 ? roundedRectPath(x, y, width, height, radius) : rectPath(x, y, width, height);
     });
-    if (background.display === "line") {
-      for (const { line, index } of drawn) pieces.push(plate(`plate:${index}`, line.x1 - padX, plateTop(line), line.x2 + padX, plateTop(line) + plateHeight));
-    } else {
-      const first = drawn[0]!.line;
-      const last = drawn[drawn.length - 1]!.line;
-      const x1 = Math.min(...drawn.map(({ line }) => line.x1)) - padX;
-      const x2 = Math.max(...drawn.map(({ line }) => line.x2)) + padX;
-      pieces.push(plate("plate", x1, plateTop(first), x2, plateTop(last) + plateHeight));
-    }
+    pieces.push({ ...base("plate", Z.plate), kind: "shape", track: { x: at(left), y: at(top) }, path, fill: { colour: background.color, alpha: background.opacity } } satisfies ShapePiece);
   }
 
   const userStroke = style.stroke ? { widthPx: style.stroke.width * u, colour: style.stroke.color } : null;
@@ -180,7 +182,8 @@ export function buildTextLayerScene(entries: readonly TextLayerEntry[], canvas: 
 /** The text as drawn: the layer's case applied, line breaks normalised. */
 function drawnText(text: string, textCase: StudioTextLayer["style"]["textCase"]): string {
   const normalised = text.replace(/\r\n?/g, "\n");
-  return textCase === "uppercase" ? normalised.toUpperCase() : normalised;
+  // The captions' case rule; a layer has no language, so no locale-specific casing.
+  return textCase === "uppercase" ? applyCaptionTextTransform(normalised, "uppercase", null) : normalised;
 }
 
 /**

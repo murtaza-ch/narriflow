@@ -23,6 +23,8 @@ export const TEXT_LAYER_SAMPLES: readonly TextLayerSample[] = [
   ...TEXT_LAYER_STYLE_PRESETS.map((preset) => sample(`preset-${preset.id}`, preset.name, layer("title", TITLE, preset.style))),
   sample("box-line", "Line boxes", layer("title", TITLE, { background: { color: "#FFFFFF", opacity: 1, corners: "rounded", display: "line" } })),
   sample("box-block", "Block box", layer("title", TITLE, { background: { color: "#FFFFFF", opacity: 1, corners: "rounded", display: "block" } })),
+  sample("line-boxes-translucent", "Line boxes, 60% black", layer("title", "A long first line here\nshort\nand a longer last line", { color: "#FFFFFF", background: { color: "#000000", opacity: 0.6, corners: "rounded", display: "line" } })),
+  sample("block-translucent-shadow", "Block box 60% with shadow", layer("title", TITLE, { color: "#FFFFFF", shadow: DEFAULT_TEXT_SHADOW, background: { color: "#000000", opacity: 0.6, corners: "rounded", display: "block" } })),
   sample("corners-square", "Square corners", layer("title", TITLE, { background: { color: "#FFFFFF", opacity: 1, corners: "square", display: "line" } })),
   sample("align-left", "Align left", layer("title", TITLE, { align: "left" })),
   sample("align-center", "Align centre", layer("title", TITLE, { align: "center" })),
@@ -42,6 +44,6 @@ export const TEXT_LAYER_SAMPLES: readonly TextLayerSample[] = [
     "overlap",
     "Two overlapping layers",
     layer("title", "First layer under", { background: { color: "#111111", opacity: 1, corners: "rounded", display: "line" }, color: "#FFFFFF" }, { positionY: 38 }),
-    layer("body", "Second layer on top", {}, { positionY: 41, role: "body" }),
+    layer("body", "Second layer on top", {}, { positionY: 43, role: "body" }),
   ),
 ];

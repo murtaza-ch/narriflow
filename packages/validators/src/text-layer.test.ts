@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { captionFontFace } from "./caption-font";
 import { brandTemplateSnapshotSchema } from "./brand-template";
 import { applyStudioEditsToAllSchema, studioEditsEqual, studioEditsSchema } from "./studio-edits";
@@ -35,15 +33,11 @@ const BODY_STYLE = {
   background: null,
 };
 
-/** The old flat layer a stored render document still carries. */
-function goldenOldLayer(): Record<string, unknown> {
-  const path = join(import.meta.dir, "../../../apps/media/src/__fixtures__/render-golden/documents.json");
-  const documents = JSON.parse(readFileSync(path, "utf8")) as { cases: Record<string, { document: { studioEdits: { textLayers: Record<string, unknown>[] } } }> };
-  const layer = Object.values(documents.cases).flatMap((entry) => entry.document.studioEdits?.textLayers ?? []).find((candidate) => "fontName" in candidate);
-  if (!layer) throw new Error("the golden documents no longer hold an old-shape layer; keep a copy of one here");
-  return layer;
-}
-
+/**
+ * A real old stored layer, verbatim: the render golden document `text-layers-transition`
+ * (apps/media/src/__fixtures__/render-golden/documents.json) held it before ticket 02 rewrote that
+ * document to the new shape.
+ */
 const OLD_LAYER = {
   id: "title",
   text: "Don't miss: 50% off",
@@ -76,7 +70,7 @@ describe("Text Layer schema", () => {
   });
 
   test("an old stored layer keeps its words, timing and place and loads in the default style", () => {
-    for (const old of [OLD_LAYER, goldenOldLayer()]) {
+    for (const old of [OLD_LAYER]) {
       const parsed = studioTextLayerSchema.parse(old);
       expect(parsed).toEqual({
         id: old.id as string,
@@ -159,7 +153,7 @@ describe("title constants", () => {
     expect(DEFAULT_BRAND_TITLE).toEqual({ enabled: true, durationSec: 5, positionX: 50, positionY: 12, widthPct: 86, style: DEFAULT_TITLE_STYLE });
     const parsed = brandTitleSchema.parse({});
     expect(parsed.style).not.toBe(DEFAULT_TITLE_STYLE);
-    expect(brandTitleSchema.parse({ style: { color: "#FF0000" } }).style).toEqual({ ...BODY_STYLE, color: "#FF0000" } as never);
+    expect(brandTitleSchema.parse({ style: { color: "#FF0000" } }).style).toEqual({ ...DEFAULT_TITLE_STYLE, color: "#FF0000" });
     expect(brandTitleSchema.parse({ durationSec: null }).durationSec).toBeNull();
   });
 
