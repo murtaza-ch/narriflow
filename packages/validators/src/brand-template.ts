@@ -4,6 +4,7 @@ import { applyBrandColorsToScene, brandColorsFromScene } from "./caption-scene";
 import type { CaptionPreset } from "./caption-preset";
 import { captionPresetSchema } from "./clip";
 import { logoPositionSchema, type LogoPosition } from "./logo-position";
+import { brandTitleSchema } from "./text-layer";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -61,6 +62,8 @@ export const brandTemplateInputSchema = z.object({
   primaryColor: hexColorSchema.default("#FFFFFF"),
   secondaryColor: hexColorSchema.default("#00FF88"),
   accentColor: hexColorSchema.nullable().optional(),
+  /** Title settings for new clips; null is the built-in default (`DEFAULT_BRAND_TITLE`). */
+  title: brandTitleSchema.nullable().optional(),
 }).strict();
 
 export type BrandTemplateInput = z.infer<typeof brandTemplateInputSchema>;
@@ -79,6 +82,8 @@ export const brandTemplateSnapshotSchema = z.object({
   primaryColor: hexColorSchema,
   secondaryColor: hexColorSchema,
   accentColor: hexColorSchema.nullable(),
+  /** Null (and absent in snapshots stored before titles) is the built-in default. */
+  title: brandTitleSchema.nullable().default(null),
 });
 
 export type BrandTemplateSnapshot = z.infer<typeof brandTemplateSnapshotSchema>;
@@ -97,6 +102,8 @@ export const brandTemplateSummarySchema = z.object({
   primaryColor: hexColorSchema,
   secondaryColor: hexColorSchema,
   accentColor: hexColorSchema.nullable(),
+  /** Null is the built-in default. */
+  title: brandTitleSchema.nullable().default(null),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

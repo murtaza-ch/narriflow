@@ -79,7 +79,7 @@ export function documentFontReferences(document: {
     ...new Map(
       [
         document.captionPreset.fontAsset,
-        ...document.studioEdits.textLayers.map((layer) => layer.fontAsset),
+        ...document.studioEdits.textLayers.map((layer) => layer.style.fontAsset),
       ]
         .filter((font): font is FontReference => Boolean(font))
         .map((font) => [brandFontKey(font), font]),

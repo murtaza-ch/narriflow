@@ -70,7 +70,7 @@ function document(fingerprint: string) {
     ],
     studioEdits: studioEditsSchema.parse({
       textLayers: [
-        { id: "title", text: "Uploaded text", fontName: "Arial", fontAsset },
+        { id: "title", text: "Uploaded text", style: { fontAsset } },
       ],
       framing: { mode: "center" },
     }),
@@ -155,7 +155,7 @@ describe("uploaded font preview/export contract", () => {
       outputLabel: "[out]",
       subtitlePath: join(temp, "captions.ass"),
     });
-    expect(output.filterParts.join(";")).toContain("Arial");
+    expect(output.filterParts.join(";")).toContain("fontfile=Inter");
   });
   test("attempt cancellation is never converted into a font fallback", async () => {
     const controller = new AbortController();

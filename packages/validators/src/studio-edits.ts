@@ -21,7 +21,13 @@ import {
   speakerLayoutOverridesEqual,
   studioSpeakerLayoutOverrideSchema,
 } from "./speaker-layout-overrides";
-import { brandFontReferenceSchema, visualAssetReferenceSchema } from "./timed-edits";
+import { visualAssetReferenceSchema } from "./timed-edits";
+import {
+  studioTextLayerSchema,
+  TEXT_LAYER_MAX_CHARS,
+  textLayerTitlePatchSchema,
+  type StudioTextLayer,
+} from "./text-layer";
 import {
   sceneLayoutSelectionsEqual,
   studioSceneLayoutSelectionsSchema,
@@ -49,34 +55,11 @@ const httpUrlSchema = z.string().url().refine(
  *  its save would refuse. */
 export const STUDIO_EDIT_LIMITS = {
   textLayers: 12,
-  textLayerChars: 280,
+  textLayerChars: TEXT_LAYER_MAX_CHARS,
   sfx: 20,
   visualBroll: 20,
   musicBlocks: 12,
 } as const;
-
-export const studioTextLayerSchema = z
-  .object({
-    id: z.string().min(1).max(80),
-    text: z.string().trim().min(1).max(STUDIO_EDIT_LIMITS.textLayerChars),
-    startSec: z.number().min(0).default(0),
-    endSec: z.number().min(0).nullable().optional(),
-    positionX: z.number().min(0).max(100).default(50),
-    positionY: z.number().min(0).max(100).default(18),
-    fontName: z.string().trim().min(1).max(100).default("Arial"),
-    fontAsset: brandFontReferenceSchema.nullable().optional(),
-    fontSize: z.number().min(8).max(160).default(44),
-    color: hexColorSchema.default("#FFFFFF"),
-    backgroundColor: hexColorSchema.nullable().optional(),
-    backgroundOpacity: z.number().min(0).max(1).default(0.72),
-    bold: z.boolean().default(true),
-    outlineColor: hexColorSchema.default("#000000"),
-    outlineWidth: z.number().min(0).max(8).default(2),
-  })
-  .refine(
-    (layer) => layer.endSec == null || layer.endSec > layer.startSec,
-    { message: "endSec must be greater than startSec" },
-  );
 
 export const CLIP_TRANSITION_TYPES = [
   "none",
@@ -596,7 +579,6 @@ export const updateClipStudioEditsSchema = z.object({
   studioEdits: studioEditsSchema,
 });
 
-export type StudioTextLayer = z.infer<typeof studioTextLayerSchema>;
 export type StudioTransition = z.infer<typeof studioTransitionSchema>;
 export type StudioMusic = z.infer<typeof studioMusicSchema>;
 export type StudioMusicBlock = z.infer<typeof studioMusicBlockSchema>;
@@ -621,23 +603,27 @@ function studioTextLayersEqual(
     return (
       layer === candidate ||
       (layer.id === candidate.id &&
+        layer.role === candidate.role &&
         layer.text === candidate.text &&
         layer.startSec === candidate.startSec &&
-        layer.endSec === candidate.endSec &&
+        (layer.endSec ?? null) === (candidate.endSec ?? null) &&
         layer.positionX === candidate.positionX &&
         layer.positionY === candidate.positionY &&
-        layer.fontName === candidate.fontName &&
-        (layer.fontAsset?.id ?? null) === (candidate.fontAsset?.id ?? null) &&
-        (layer.fontAsset?.fingerprint ?? null) === (candidate.fontAsset?.fingerprint ?? null) &&
-        layer.fontSize === candidate.fontSize &&
-        layer.color === candidate.color &&
-        layer.backgroundColor === candidate.backgroundColor &&
-        layer.backgroundOpacity === candidate.backgroundOpacity &&
-        layer.bold === candidate.bold &&
-        layer.outlineColor === candidate.outlineColor &&
-        layer.outlineWidth === candidate.outlineWidth)
+        layer.widthPct === candidate.widthPct &&
+        plainDataEqual(layer.style, candidate.style))
     );
   });
+}
+
+/** Deep equality of parsed JSON-shaped values (objects, arrays, primitives). */
+function plainDataEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  const rightRecord = right as Record<string, unknown>;
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => key in rightRecord && plainDataEqual((left as Record<string, unknown>)[key], rightRecord[key]));
 }
 
 function studioMusicBlocksEqual(
@@ -849,14 +835,16 @@ export const applyStudioEditsPatchSchema = z
     transition: studioTransitionSchema.optional(),
     background: studioBackgroundSchema.optional(),
     framing: studioFramingSchema.optional(),
+    /** Every clip's title gets this style, placement, width and timing (not a `studioEdits` key). */
+    title: textLayerTitlePatchSchema.optional(),
   })
   .strict()
   .refine(
     (patch) =>
-      [patch.transition, patch.background, patch.framing].filter(
+      [patch.transition, patch.background, patch.framing, patch.title].filter(
         (value) => value !== undefined,
       ).length === 1,
-    { message: "patch must contain exactly one of: transition, background, framing" },
+    { message: "patch must contain exactly one of: transition, background, framing, title" },
   );
 
 export type ApplyStudioEditsPatch = z.infer<typeof applyStudioEditsPatchSchema>;
@@ -882,7 +870,7 @@ const applyStudioEditsToAllSingleSchema = z
 
 const applyStudioEditsToAllGroupedSchema = z
   .object({
-    patches: z.array(applyStudioEditsPatchSchema).min(1).max(3),
+    patches: z.array(applyStudioEditsPatchSchema).min(1).max(4),
     excludeClipId: z.string().uuid().optional(),
   })
   .strict()

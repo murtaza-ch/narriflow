@@ -26,22 +26,22 @@ export function InteractiveTextLayer({
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const { selectedTextLayerId, selectTextLayer, setStudioEdits, endCoalesce } = useStudio("selectedTextLayerId", "selectTextLayer", "setStudioEdits", "endCoalesce");
-  const customFont = useBrandFont(layer.fontAsset);
+  const style = layer.style;
+  const customFont = useBrandFont(style.fontAsset);
   const isSelected = selectedTextLayerId === layer.id;
 
   const [hovered, setHovered] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isResizing, setIsResizing] = useState(false);
-  const initialFontSizeRef = useRef(layer.fontSize);
+  const initialFontSizeRef = useRef(style.fontSize);
   const motionX = useMotionValue(0);
   const motionY = useMotionValue(0);
 
   const displayFontSize = Math.max(
     9,
-    Math.round(layer.fontSize * ((previewWidth || 380) / 1080)),
+    Math.round(style.fontSize * ((previewWidth || 380) / 1080)),
   );
-  const outline =
-    layer.outlineWidth > 0 ? `${layer.outlineWidth}px ${layer.outlineColor}` : undefined;
+  const outline = style.stroke ? `${style.stroke.width}px ${style.stroke.color}` : undefined;
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -97,20 +97,20 @@ export function InteractiveTextLayer({
   }, [videoContainerRef, layer.id, layer.positionX, layer.positionY, motionX, motionY, setStudioEdits, endCoalesce]);
 
   const handleResizeStart = useCallback(() => {
-    initialFontSizeRef.current = layer.fontSize;
+    initialFontSizeRef.current = style.fontSize;
     setIsResizing(true);
-  }, [layer.fontSize]);
+  }, [style.fontSize]);
 
   const handleResize = useCallback(
     (scale: number) => {
-      // Schema clamp (studio-edits.ts): fontSize is 8-160.
+      // Schema clamp (text-layer.ts): fontSize is 8-240.
       const newSize = Math.round(
-        Math.max(8, Math.min(160, initialFontSizeRef.current * scale)),
+        Math.max(8, Math.min(240, initialFontSizeRef.current * scale)),
       );
       setStudioEdits((prev) => ({
         ...prev,
         textLayers: prev.textLayers.map((l) =>
-          l.id === layer.id ? { ...l, fontSize: newSize } : l,
+          l.id === layer.id ? { ...l, style: { ...l.style, fontSize: newSize } } : l,
         ),
       }), `text-layer-resize-${layer.id}`);
     },
@@ -176,22 +176,27 @@ export function InteractiveTextLayer({
           <Box
             borderRadius="6px"
             textAlign="center"
-            px={layer.backgroundColor ? "10px" : "0"}
-            py={layer.backgroundColor ? "5px" : "0"}
+            px={style.background ? "10px" : "0"}
+            py={style.background ? "5px" : "0"}
             style={{
-              color: layer.color,
-              fontFamily: `"${layer.fontName}", Arial, sans-serif`,
+              color: style.color,
+              fontFamily: `"${style.font}", Arial, sans-serif`,
               fontSize: `${displayFontSize}px`,
-              fontWeight: layer.bold ? 800 : 500,
+              fontWeight: style.bold ? 800 : 500,
+              fontStyle: style.italic ? "italic" : undefined,
+              textDecoration: style.underline ? "underline" : undefined,
+              textTransform: style.textCase === "uppercase" ? "uppercase" : undefined,
+              textAlign: style.align,
+              whiteSpace: "pre-line",
               ...(customFont ? brandFontStyle(customFont) : {}),
-              lineHeight: 1.08,
-              backgroundColor: layer.backgroundColor
-                ? `${layer.backgroundColor}${Math.round(layer.backgroundOpacity * 255)
+              lineHeight: style.lineHeight,
+              backgroundColor: style.background
+                ? `${style.background.color}${Math.round(style.background.opacity * 255)
                     .toString(16)
                     .padStart(2, "0")}`
                 : undefined,
               WebkitTextStroke: outline,
-              textShadow: layer.outlineWidth > 0 ? "0 2px 10px rgba(0,0,0,0.45)" : undefined,
+              textShadow: style.shadow ? `${style.shadow.offsetX}px ${style.shadow.offsetY}px ${style.shadow.blur}px ${style.shadow.color}` : undefined,
             }}
           >
             {layer.text}

@@ -621,22 +621,22 @@ function textLayerFilter(
  fonts?: Readonly<Record<string, string>>,
 ): string {
 	const value = layer.value;
-	const border =
-		value.outlineWidth > 0
-			? `:borderw=${value.outlineWidth}:bordercolor=0x${value.outlineColor.slice(1)}`
-			: "";
-	const box = value.backgroundColor
-		? `:box=1:boxcolor=0x${value.backgroundColor.slice(1)}@${value.backgroundOpacity.toFixed(3)}:boxborderw=10`
+	const style = value.style;
+	const border = style.stroke
+		? `:borderw=${style.stroke.width}:bordercolor=0x${style.stroke.color.slice(1)}`
+		: "";
+	const box = style.background
+		? `:box=1:boxcolor=0x${style.background.color.slice(1)}@${style.background.opacity.toFixed(3)}:boxborderw=10`
 		: "";
 	// drawtext parses Fontconfig patterns through fontfile; font only accepts
 	// a family name. Match Studio's 800/500 weight request on available faces.
-	const uploadedPath = value.fontAsset ? fonts?.[compositionAssetRef("brand_font", `${value.fontAsset.id}:${value.fontAsset.fingerprint}`)] : undefined;
- const fontPattern = uploadedPath ?? `${value.fontName}:weight=${value.bold ? "extrabold" : "medium"}`;
+	const uploadedPath = style.fontAsset ? fonts?.[compositionAssetRef("brand_font", `${style.fontAsset.id}:${style.fontAsset.fingerprint}`)] : undefined;
+ const fontPattern = uploadedPath ?? `${style.font}:weight=${style.bold ? "extrabold" : "medium"}`;
 	return (
 		`drawtext=fontfile=${escapeFilterOptionValue(fontPattern)}` +
 		`:${drawtextLiteralText(value.text)}` +
-		`:fontsize=${Math.round(value.fontSize)}` +
-		`:fontcolor=0x${value.color.slice(1)}` +
+		`:fontsize=${Math.round(style.fontSize)}` +
+		`:fontcolor=0x${style.color.slice(1)}` +
 		`:x=w*${(layer.anchor.xPct / 100).toFixed(4)}-text_w/2` +
 		`:y=h*${(layer.anchor.yPct / 100).toFixed(4)}-text_h/2` +
 		`:enable='between(t\\,${layer.activeRange.startSec.toFixed(3)}\\,${layer.activeRange.endSec.toFixed(3)})'` +

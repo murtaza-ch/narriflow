@@ -357,7 +357,10 @@ function planProjectSelectionDocument(
     if (!parsed.success) {
       persistenceError("editor_document_invalid", "Studio edit patch is malformed");
     }
-    studioEdits = { ...studioEdits, ...parsed.data };
+    const { title, ...edits } = parsed.data;
+    // Not a `studioEdits` key: the generic merge would drop it silently. Its own merge comes with title-text ticket 05.
+    if (title) persistenceError("editor_document_invalid", "Title patches are not supported yet");
+    studioEdits = { ...studioEdits, ...edits };
   }
   return canonicalizeDocument(
     { ...state.document, studioEdits },

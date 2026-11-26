@@ -29,7 +29,7 @@ import {
 import { Plus, X, Bold } from "lucide-react";
 import { BrandFontPicker, brandFontReference } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "../studio-shell";
-import { STUDIO_EDIT_LIMITS, type StudioTextLayer } from "@narriflow/validators";
+import { DEFAULT_TEXT_BACKGROUND, DEFAULT_TEXT_STROKE, STUDIO_EDIT_LIMITS, type StudioTextLayer, type TextLayerFontFamily, type TextLayerStyle, textLayerStyleSchema } from "@narriflow/validators";
 
 // Preview styles mirror the USER text-layer colors that get burned in —
 // they intentionally stay literal.
@@ -45,8 +45,8 @@ const PRESETS = [
 // Same font list captions-panel.tsx offers — kept as a separate local copy
 // since neither panel exports its constants and the two style engines
 // (caption cue vs. burned-in text layer) intentionally stay decoupled.
-const FONTS = [
-  "Bebas Neue", "Impact", "Arial", "Roboto",
+const FONTS: readonly TextLayerFontFamily[] = [
+  "Inter", "Bebas Neue", "Anton", "Roboto",
   "Montserrat", "Oswald", "Open Sans",
 ];
 
@@ -165,6 +165,13 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
     setStudioEdits((prev) => ({
       ...prev,
       textLayers: prev.textLayers.map((l) => (l.id === layer.id ? { ...l, ...patch } : l)),
+    }), coalesceKey);
+  };
+  const style = layer.style;
+  const updateStyle = (patch: Partial<TextLayerStyle>, coalesceKey?: string) => {
+    setStudioEdits((prev) => ({
+      ...prev,
+      textLayers: prev.textLayers.map((l) => (l.id === layer.id ? { ...l, style: { ...l.style, ...patch } } : l)),
     }), coalesceKey);
   };
 
@@ -292,14 +299,14 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font</Text>
         <Flex gap="6px" wrap="wrap">
           {FONTS.map((f) => {
-            const isActive = !layer.fontAsset && layer.fontName === f;
+            const isActive = !style.fontAsset && style.font === f;
             return (
               <Box
                 key={f}
                 as="button"
                 aria-pressed={isActive}
                 cursor="pointer"
-                onClick={() => update({ fontName: f, fontAsset: null })}
+                onClick={() => updateStyle({ font: f, fontAsset: null })}
                 {...insetChipProps(isActive)}
                 px="10px"
                 fontSize="12px"
@@ -312,7 +319,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         </Flex>
       </Box>
 
-<BrandFontPicker studio value={layer.fontAsset} onChange={(font) => update({ fontName: "Arial", fontAsset: font ? brandFontReference(font) : null })} />
+<BrandFontPicker studio value={style.fontAsset} onChange={(font) => updateStyle({ fontAsset: font ? brandFontReference(font) : null })} />
 
       <Flex gap="10px" align="flex-end">
         <Box flex="1">
@@ -320,11 +327,11 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
           <Flex align="center" gap="10px">
             <Slider.Root
               aria-label={["Font size"]}
-              value={[layer.fontSize]}
+              value={[style.fontSize]}
               min={8}
-              max={160}
+              max={240}
               step={1}
-              onValueChange={(e) => update({ fontSize: e.value[0]! }, `text-layer-fontsize-${layer.id}`)}
+              onValueChange={(e) => updateStyle({ fontSize: e.value[0]! }, `text-layer-fontsize-${layer.id}`)}
               onValueChangeEnd={endCoalesce}
               size="sm"
               css={studioSliderCss}
@@ -338,28 +345,28 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               </Slider.Control>
             </Slider.Root>
             <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="28px" textAlign="right">
-              {layer.fontSize}
+              {style.fontSize}
             </Text>
           </Flex>
         </Box>
-        {!layer.fontAsset ? <ToggleBtn
+        {!style.fontAsset ? <ToggleBtn
           icon={<Bold size={14} />}
           label="Bold"
-          active={layer.bold}
-          onClick={() => update({ bold: !layer.bold })}
+          active={style.bold}
+          onClick={() => updateStyle({ bold: !style.bold })}
         /> : null}
       </Flex>
 
       <Flex gap="12px">
         <ColorField
           label="Text"
-          value={layer.color}
-          onChange={(v) => update({ color: v }, `text-layer-color-${layer.id}`)}
+          value={style.color}
+          onChange={(v) => updateStyle({ color: v }, `text-layer-color-${layer.id}`)}
         />
         <ColorField
           label="Outline"
-          value={layer.outlineColor}
-          onChange={(v) => update({ outlineColor: v }, `text-layer-outline-color-${layer.id}`)}
+          value={(style.stroke ?? DEFAULT_TEXT_STROKE).color}
+          onChange={(v) => updateStyle({ stroke: { ...(style.stroke ?? DEFAULT_TEXT_STROKE), color: v } }, `text-layer-outline-color-${layer.id}`)}
         />
       </Flex>
 
@@ -368,11 +375,14 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         <Flex align="center" gap="10px">
           <Slider.Root
             aria-label={["Outline width"]}
-            value={[layer.outlineWidth]}
+            value={[style.stroke?.width ?? 0]}
             min={0}
-            max={8}
+            max={16}
             step={1}
-            onValueChange={(e) => update({ outlineWidth: e.value[0]! }, `text-layer-outline-${layer.id}`)}
+            onValueChange={(e) => {
+              const width = e.value[0]!;
+              updateStyle({ stroke: width > 0 ? { color: (style.stroke ?? DEFAULT_TEXT_STROKE).color, width } : null }, `text-layer-outline-${layer.id}`);
+            }}
             onValueChangeEnd={endCoalesce}
             size="sm"
             css={studioSliderCss}
@@ -386,7 +396,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
             </Slider.Control>
           </Slider.Root>
           <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="16px">
-            {layer.outlineWidth}
+            {style.stroke?.width ?? 0}
           </Text>
         </Flex>
       </Box>
@@ -396,34 +406,28 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         <Flex gap="6px" align="center" mb="8px">
           <ToggleBtn
             icon={<Box w="14px" h="14px" bg="studio.fgSubtle" borderRadius="2px" />}
-            label={layer.backgroundColor ? "On" : "Off"}
-            active={!!layer.backgroundColor}
-            onClick={() =>
-              update(
-                layer.backgroundColor
-                  ? { backgroundColor: null }
-                  : { backgroundColor: "#000000", backgroundOpacity: 0.72 },
-              )
-            }
+            label={style.background ? "On" : "Off"}
+            active={!!style.background}
+            onClick={() => updateStyle({ background: style.background ? null : DEFAULT_TEXT_BACKGROUND })}
           />
-          {layer.backgroundColor && (
+          {style.background && (
             <ColorField
               label="Color"
-              value={layer.backgroundColor}
-              onChange={(v) => update({ backgroundColor: v }, `text-layer-bg-color-${layer.id}`)}
+              value={style.background.color}
+              onChange={(v) => updateStyle({ background: { ...(style.background ?? DEFAULT_TEXT_BACKGROUND), color: v } }, `text-layer-bg-color-${layer.id}`)}
             />
           )}
         </Flex>
-        {layer.backgroundColor && (
+        {style.background && (
           <Flex align="center" gap="10px">
             <Text fontSize="11px" color="studio.fgMuted" w="50px">Opacity</Text>
             <Slider.Root
               aria-label={["Background opacity"]}
-              value={[layer.backgroundOpacity]}
+              value={[style.background.opacity]}
               min={0}
               max={1}
               step={0.05}
-              onValueChange={(e) => update({ backgroundOpacity: e.value[0]! }, `text-layer-bgopacity-${layer.id}`)}
+              onValueChange={(e) => updateStyle({ background: { ...(style.background ?? DEFAULT_TEXT_BACKGROUND), opacity: e.value[0]! } }, `text-layer-bgopacity-${layer.id}`)}
               onValueChangeEnd={endCoalesce}
               size="sm"
               css={studioSliderCss}
@@ -437,7 +441,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               </Slider.Control>
             </Slider.Root>
             <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="28px">
-              {layer.backgroundOpacity.toFixed(2)}
+              {style.background.opacity.toFixed(2)}
             </Text>
           </Flex>
         )}
@@ -672,16 +676,15 @@ export function TextPanel() {
           text,
           startSec,
           endSec: endSec > startSec + 0.5 ? endSec : null,
+          role: "body",
           positionX: 50,
           positionY: input.positionY ?? 18,
-          fontName: "Arial",
-          fontSize: input.fontSize ?? 44,
-          color: input.color ?? "#FFFFFF",
-          backgroundColor: null,
-          backgroundOpacity: 0.72,
-          bold: input.bold ?? true,
-          outlineColor: "#000000",
-          outlineWidth: 2,
+          widthPct: 86,
+          style: textLayerStyleSchema.parse({
+            fontSize: input.fontSize ?? 44,
+            color: input.color ?? "#FFFFFF",
+            bold: input.bold ?? true,
+          }),
         },
       ],
     }));

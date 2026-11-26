@@ -34,9 +34,9 @@ import {
   type StudioEdits,
   type StudioMusicBlock,
   type StudioSfxPlacement,
-  type StudioTextLayer,
   type StudioSpeakerLayoutOverride,
 } from "./studio-edits";
+import type { StudioTextLayer } from "./text-layer";
 import {
   SCENE_LAYOUT_MIN_DURATION_SEC,
   type StudioSceneLayoutSelection,
@@ -421,14 +421,16 @@ function insertSceneBlock(blocks: readonly SceneBlock[], scene: SceneBlock) {
 const REBASED_TEXT_LAYER_MIN_DURATION_SEC = 0.5;
 
 /**
- * Rebases every text layer's `startSec`/`endSec` from `oldMap`'s edited
+ * Rebases every body text layer's `startSec`/`endSec` from `oldMap`'s edited
  * timeline to `newMap`'s, via the one legitimate path (edited → absolute
  * source → edited): each timestamp is resolved to the absolute source
  * second it always meant, then re-projected onto the NEW edited timeline —
  * so a layer keeps pointing at the same underlying footage regardless of
- * what shifted around it. Returns the input array unchanged (same
- * reference) when nothing actually moves, so the no-op guards in
- * `applyEditorAction`'s callers keep working.
+ * what shifted around it. A title (`role: "title"`) is pinned to the clip
+ * instead: it keeps its edited-time start and end, clamped to the new
+ * duration. Returns the input array unchanged (same reference) when nothing
+ * actually moves, so the no-op guards in `applyEditorAction`'s callers keep
+ * working.
  */
 function rebaseTextLayers(
   layers: StudioTextLayer[],
@@ -440,18 +442,25 @@ function rebaseTextLayers(
 
   let changed = false;
   const rebased = layers.map((layer) => {
-    const sourceStartSec = editedToSource(oldMap, layer.startSec);
-    let nextStart = Math.min(newDurationSec, sourceToEdited(newMap, sourceStartSec));
+    const pinned = layer.role === "title";
+    let nextStart = Math.min(
+      newDurationSec,
+      pinned ? layer.startSec : sourceToEdited(newMap, editedToSource(oldMap, layer.startSec)),
+    );
 
     let nextEnd = layer.endSec;
     if (layer.endSec != null) {
-      const sourceEndSec = editedToSource(oldMap, layer.endSec);
-      nextEnd = Math.min(newDurationSec, sourceToEdited(newMap, sourceEndSec));
+      nextEnd = Math.min(
+        newDurationSec,
+        pinned ? layer.endSec : sourceToEdited(newMap, editedToSource(oldMap, layer.endSec)),
+      );
 
       // Collapsed entirely inside a new cut (or just squeezed too thin by
       // one) — clamp to the minimum floor, pulling the start back first if
-      // there isn't enough room ahead of it.
-      if (nextEnd - nextStart < REBASED_TEXT_LAYER_MIN_DURATION_SEC) {
+      // there isn't enough room ahead of it. A title the new duration does
+      // not touch keeps its own length, however short.
+      const moved = !pinned || nextStart !== layer.startSec || nextEnd !== layer.endSec;
+      if (moved && nextEnd - nextStart < REBASED_TEXT_LAYER_MIN_DURATION_SEC) {
         nextEnd = Math.min(newDurationSec, nextStart + REBASED_TEXT_LAYER_MIN_DURATION_SEC);
         nextStart = Math.max(0, nextEnd - REBASED_TEXT_LAYER_MIN_DURATION_SEC);
       }

@@ -151,7 +151,7 @@ async function resolveStudioAssets(
   const scenesEntitled = scenesRequirementOf(actor) === null;
   const fontReferences = [
     document.captionPreset.fontAsset,
-    ...document.studioEdits.textLayers.map((layer) => layer.fontAsset),
+    ...document.studioEdits.textLayers.map((layer) => layer.style.fontAsset),
   ].filter((ref): ref is NonNullable<typeof ref> => Boolean(ref));
 
   const [

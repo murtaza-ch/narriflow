@@ -3186,12 +3186,13 @@ function visualLayersForTarget(input: {
       Math.min(duration, layer.endSec ?? duration),
     );
     if (endSec <= startSec) continue;
+    // The layer as drawn: its clamped range. Its layout is built where it is painted (`layoutTextLayer`).
     const value = { ...layer, startSec, endSec };
     visualLayers.push({
       id: `layer:text:${layer.id}:${target.id}`,
       kind: "text",
       activeRange: { startSec, endSec },
-      anchor: { xPct: layer.positionX ?? 50, yPct: layer.positionY ?? 18 },
+      anchor: { xPct: layer.positionX, yPct: layer.positionY },
       destination,
       rotationDeg: 0,
       opacity: 1,

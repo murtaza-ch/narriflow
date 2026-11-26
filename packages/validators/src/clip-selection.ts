@@ -6,6 +6,7 @@ import { fillerTaggingOutcomeSchema } from "./filler-tagging";
 import { clipDetectionLlmResponseSchema } from "./clip";
 import { contentPackSchema } from "./content-pack";
 import { studioEditsSchema } from "./studio-edits";
+import { brandTitleSchema } from "./text-layer";
 import { transcriptUtteranceSchema } from "./transcript";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -24,7 +25,9 @@ export const clipSelectionInputSchema = z.strictObject({
       /** AI-tagged fillers frozen at preparation (non-English only); null when tagging did not run. */
       aiFillers: fillerTaggingOutcomeSchema.nullable() }),
     /** AI emoji picks over the whole source, frozen at preparation when the pack adds emojis; null when tagging did not run or did not fit. */
-    emojiPicks: captionEmojiPicksSchema.nullable().default(null) }),
+    emojiPicks: captionEmojiPicksSchema.nullable().default(null),
+    /** The project's brand title settings, frozen at preparation; null is the built-in default. */
+    title: brandTitleSchema.nullable().default(null) }),
   provider: z.strictObject({ model: z.string().min(1).max(100), reasoningEffort: z.string().min(1).max(40), maxOutputTokens: z.number().int().positive() }),
   systemPrompt: z.string().min(1), responseSchemaHash: hash,
 });

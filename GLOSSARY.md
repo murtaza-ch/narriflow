@@ -79,6 +79,18 @@ _Avoid_: Caption layer, caption animation
 One text run (a word, a letter, a label) or one vector shape of a Caption Scene, with a pivot, tracks for position, scale, turn, shear, opacity, blur and colour, an optional canvas-space clip, and paint layers (shadows, fill, outline).
 _Avoid_: Element, sprite, glyph
 
+**Text Layer**:
+Text the user places over a clip for a stretch of its edited timeline (`studioEdits.textLayers`): words, position, wrap width and a style (font, size, bold, italic, underline, case, alignment, line spacing, colour, stroke, shadow, background box). Drawn as a static Caption Scene built by `layoutTextLayer`, so the Studio and the export draw the same lines and boxes. A layer is a Title or Body text.
+_Avoid_: Overlay, text overlay, headline, drawtext
+
+**Title**:
+The Text Layer with `role: "title"` (the first one, where code needs one): the clip's own on-video title, seeded from the AI title on new clips in the brand template's title style. It is its own text (editing it does not rename the clip) and it stays pinned to the clip's edited time when the clip is trimmed or cut.
+_Avoid_: Headline (a Dynamic caption style), clip name, hook
+
+**Body text**:
+A Text Layer with `role: "body"`: any other text on the clip. It follows its footage when the clip is trimmed or cut.
+_Avoid_: Subtitle, caption, overlay
+
 **Word Key**:
 A word's source start time in whole milliseconds, as a string. It names a word for emphasis overrides and seeds its cue's look, and it survives cuts, trims and text corrections. A trim that clamps an edge word's start changes that one word's key.
 _Avoid_: Word ID, word index

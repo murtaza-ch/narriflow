@@ -85,6 +85,8 @@ function toSummary(template: BrandTemplate): BrandTemplateSummary {
     primaryColor: template.primaryColor,
     secondaryColor: template.secondaryColor,
     accentColor: template.accentColor,
+    // Stored per template from title-text ticket 05; until then every template has the built-in default.
+    title: null,
     createdAt: template.createdAt.toISOString(),
     updatedAt: template.updatedAt.toISOString(),
   };
@@ -182,6 +184,7 @@ export class BrandTemplateService {
       primaryColor: template.primaryColor,
       secondaryColor: template.secondaryColor,
       accentColor: template.accentColor,
+      title: null,
     };
   }
 

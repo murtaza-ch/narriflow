@@ -12,7 +12,7 @@ test("text layer bold control changes the rendered font weight", async () => {
         captionPreset: captionPresetSchema.parse({ visible: false }), transcriptSlice: [], brollUrl: null, deletedRanges: [],
         studioEdits: studioEditsSchema.parse({
           framing: { mode: "center" },
-          textLayers: [{ id: "title", text: "Bold sample", fontName: "Arial", fontSize: 40, positionY: 50, outlineWidth: 0, bold }],
+          textLayers: [{ id: "title", text: "Bold sample", positionY: 50, style: { font: "Roboto", fontSize: 40, stroke: null, bold } }],
         }),
       }),
       source: { identity: "source:text", kind: "video", width: 480, height: 270 },

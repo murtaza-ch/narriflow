@@ -144,6 +144,24 @@ describe("Clip Editor Document Persistence", () => {
     ).toEqual(document());
   });
 
+  test("a stored Text Layer of the old flat shape decodes in the default style and round-trips", () => {
+    const encoded = encodeClipEditorDocumentForStorage(document(), { durationSec: 300, wholeSource: false });
+    const oldLayer = {
+      id: "title", text: "Don't miss: 50% off", startSec: 0.3, endSec: 3.2, positionX: 50, positionY: 22,
+      fontName: "Montserrat", fontSize: 64, color: "#FFFFFF", backgroundColor: "#000000", backgroundOpacity: 0.5,
+      bold: true, outlineColor: "#000000", outlineWidth: 3,
+    };
+    const decoded = decodeClipEditorDocumentFromStorage(
+      { ...encoded, studioEdits: { ...(encoded.studioEdits as object), textLayers: [oldLayer] } },
+      { durationSec: 300, wholeSource: false },
+    );
+    const layer = decoded.studioEdits.textLayers[0]!;
+    expect(layer).toMatchObject({ id: "title", role: "body", text: oldLayer.text, startSec: 0.3, endSec: 3.2, positionY: 22, widthPct: 86 });
+    expect(layer.style).toEqual(studioEditsSchema.parse({ textLayers: [{ id: "x", text: "x" }] }).textLayers[0]!.style);
+    const again = encodeClipEditorDocumentForStorage(decoded, { durationSec: 300, wholeSource: false });
+    expect(decodeClipEditorDocumentFromStorage(again, { durationSec: 300, wholeSource: false })).toEqual(decoded);
+  });
+
   test("a whole-source clip runs to the exact end of its source, not the rounded second", () => {
     const whole = (endSec: number) => document({ clipStartSec: 0, clipEndSec: endSec, transcriptSlice: [] });
     // An 8.4 second source is stored as 8 seconds; its probe says 8.4, and the clip keeps all of it.

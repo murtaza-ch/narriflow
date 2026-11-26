@@ -6,11 +6,8 @@ import {
   CAPTION_PRESETS,
   matchCaptionPreset,
 } from "./caption-preset";
-import {
-  studioTextLayerSchema,
-  studioEditsSchema,
-  studioEditsEqual,
-} from "./studio-edits";
+import { studioEditsSchema, studioEditsEqual } from "./studio-edits";
+import { studioTextLayerSchema } from "./text-layer";
 
 const studioTextLayersEqual = (left: unknown[], right: unknown[]) =>
   studioEditsEqual(
@@ -52,7 +49,7 @@ describe("uploaded font document references", () => {
     const layer = studioTextLayerSchema.parse({
       id: "title",
       text: "Hello",
-      fontAsset,
+      style: { fontAsset },
     });
     expect(
       studioTextLayersEqual(
@@ -61,7 +58,7 @@ describe("uploaded font document references", () => {
       ),
     ).toBe(true);
     expect(
-      studioTextLayersEqual([layer], [{ ...layer, fontAsset: null }]),
+      studioTextLayersEqual([layer], [{ ...layer, style: { ...layer.style, fontAsset: null } }]),
     ).toBe(false);
     expect(
       studioTextLayersEqual(
@@ -69,9 +66,12 @@ describe("uploaded font document references", () => {
         [
           {
             ...layer,
-            fontAsset: {
-              ...fontAsset,
-              id: "16cd9143-9f5b-467f-b839-f635845e3b6c",
+            style: {
+              ...layer.style,
+              fontAsset: {
+                ...fontAsset,
+                id: "16cd9143-9f5b-467f-b839-f635845e3b6c",
+              },
             },
           },
         ],
@@ -88,7 +88,7 @@ describe("uploaded font document references", () => {
       studioTextLayerSchema.safeParse({
         id: "title",
         text: "Hello",
-        fontAsset: { ...fontAsset, fingerprint: "invalid" },
+        style: { fontAsset: { ...fontAsset, fingerprint: "invalid" } },
       }).success,
     ).toBe(false);
   });

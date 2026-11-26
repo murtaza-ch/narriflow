@@ -68,6 +68,7 @@ export * from "./social";
 export * from "./social-provider-capabilities";
 export * from "./standing-grant";
 export * from "./studio-edits";
+export * from "./text-layer";
 export * from "./supplied-captions";
 export * from "./timed-edits";
 export * from "./timeline-export";
