@@ -18,7 +18,7 @@ import {
 } from "@narriflow/composition-plan";
 import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-document-codec";
 import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
-import { hasFeature } from "@narriflow/validators";
+import { type FrameRate, hasFeature } from "@narriflow/validators";
 import type { RenderDub } from "@narriflow/validators/render-execution";
 import { rethrowWorkflowAttemptLost, WorkflowAttemptLost, WorkflowFailure, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
 import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, DownloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, PutFileFromPath as productionPutFileFromPath, DurableLayoutEvidenceReader } from "@narriflow/services";
@@ -88,6 +88,7 @@ import {
 	compileCompositionPlanAudioSchedule,
 	hdrColorOf,
 	renderOutputFrameRate,
+	compositionFrameRate,
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
 } from "../composition-ffmpeg-adapter";
@@ -1184,10 +1185,10 @@ function compileTextLayerTrack(
 	plan: Parameters<typeof compileCompositionPlanTextLayers>[0],
 	targetId: string,
 	context: Record<string, unknown>,
+	frameRate: FrameRate,
 	omitCodePoints?: ReadonlySet<number>,
-	fps?: number,
 ): TextLayerTrack {
-	const track = compileCompositionPlanTextLayers(plan, targetId, omitCodePoints, fps);
+	const track = compileCompositionPlanTextLayers(plan, targetId, omitCodePoints, frameRate);
 	for (const notice of track.notices) {
 		log("info", notice.code, { ...context, phase: "text_layer_glyphs", disposition: "degraded", cluster: notice.cluster, font: notice.font, sequenceSplit: notice.sequenceSplit });
 	}
@@ -3759,6 +3760,8 @@ async function renderClipGroup(input: {
 	// Scene Style captions are written for the frame times of the rate the render is delivered at.
 	const outputRate = renderOutputFrameRate(probe);
 	const captionFps = outputRate.numerator / outputRate.denominator;
+	// Text Layers are timed on the frames their `ass` stage sees (the audiogram's 25 fps for audio-only sources).
+	const textFrameRate = compositionFrameRate(probe);
 	const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
 	let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
 	let compositionPlan: ClipCompositionPlan | null = null;
@@ -3773,7 +3776,7 @@ async function renderClipGroup(input: {
 			output.captionOmitCodePoints = omit;
 			for (const codePoint of codePoints) omit.add(codePoint);
 			if (output.textAssPath) {
-				const text = compileTextLayerTrack(compositionPlan, output.clipRenderId, { workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId }, omit, captionFps);
+				const text = compileTextLayerTrack(compositionPlan, output.clipRenderId, { workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId }, textFrameRate, omit);
 				await currentRenderAdapters().workspace.writeFile(output.textAssPath, text.ass, "utf-8");
 			}
 			if (!output.subtitlePath) return;
@@ -3998,8 +4001,7 @@ async function renderClipGroup(input: {
 				compositionPlan,
 				output.clipRenderId,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
-				undefined,
-				captionFps,
+				textFrameRate,
 			);
 			if (text.ass.length > 0) {
 				const textAssPath = join(tempDir, `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}-text.ass`);

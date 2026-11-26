@@ -59,7 +59,7 @@ for (const canvas of CANVASES) {
       value,
     })),
   );
-  const track = renderTextLayerTrack({ layers, canvas, fps: FPS });
+  const track = renderTextLayerTrack({ layers, canvas, frameRate: { numerator: FPS, denominator: 1 } });
   if (track.omitted.length > 0) console.warn(JSON.stringify({ level: "warn", message: "text_layer_sheet_omitted", canvas: canvas.name, omitted: track.omitted }));
   const ass = `${track.ass.trimEnd()}\n${TEXT_LAYER_SAMPLES.map((sample, index) => labelEvent(index, sample.label, canvas.height)).join("\n")}\n`;
   const assPath = join(work, `${canvas.name}.ass`);

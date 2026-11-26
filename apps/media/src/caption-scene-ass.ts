@@ -24,6 +24,7 @@ import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan"
 import {
   type CaptionFontName,
   type CaptionSceneName,
+  type FrameRate,
   captionFontFace,
   languageDirection,
   captionTextDirection,
@@ -202,6 +203,11 @@ export interface SceneEventOptions {
   readonly canvas: { width: number; height: number };
   /** Sampling frame rate (clamped to 60). */
   readonly fps?: number;
+  /**
+   * The exact rate of the frames the `ass` filter sees (Text Layers). A still piece then starts and ends
+   * on those frames' exact presentation times (`stillPieceSpan`) instead of the rounded sampling grid.
+   */
+  readonly frameRate?: FrameRate;
 }
 
 /** What one piece's events are written with: the options and how the measurer read its text. */
@@ -354,6 +360,15 @@ function poseIsConstant(piece: Piece): boolean {
  * lasts the whole clip costs what a 5 second one does.
  */
 function constantPieceEvents(piece: Piece, metrics: SceneTextMetrics | null, options: PieceEventOptions): AssEvent[] {
+  if (options.frameRate) {
+    const span = stillPieceSpan(piece, options.frameRate);
+    if (!span) return [];
+    const pose = evaluatePiece(piece, span.firstMs);
+    if (!frameDrawn(pose)) return [];
+    const roundedClip = piece.clip?.radius === undefined ? undefined : `\\${pose.clip!.inverse ? "iclip" : "clip"}(4,${pathToAss(roundedClipPath(pose), 4)})`;
+    const geometry = pieceGeometry(piece, metrics);
+    return paintLayers(piece).map((layer) => layerEvent(piece, metrics, geometry, layer, { from: 0, to: 0 }, [span.firstMs], [pose], span.startMs, span.endMs, roundedClip, options.literalText));
+  }
   const fps = options.fps ?? 30;
   const rate = sceneSampleRate(fps);
   // The first and last of `exportFrameTimes(piece.fromMs, piece.toMs, fps)`, without listing the frames between.
@@ -370,6 +385,28 @@ function constantPieceEvents(piece: Piece, metrics: SceneTextMetrics | null, opt
   const startMs = csFloor(firstMs);
   const endMs = csFloor(exportFrameAfter(exportFrameTime(last, rate), fps));
   return paintLayers(piece).map((layer) => layerEvent(piece, metrics, geometry, layer, { from: 0, to: 0 }, [firstMs], [pose], startMs, endMs, roundedClip, options.literalText));
+}
+
+/**
+ * Event times of a still piece on frames of exactly `rate`. Frame k is presented at k * den / num s; the
+ * `ass` filter asks libass for that time in whole ms (truncated, after a floating-point multiply). The
+ * event starts at the first frame inside `[fromMs, toMs)` and ends at the first frame after it, each
+ * floored to a centisecond 0.5 ms early, so the first active frame is drawn and the first inactive one is
+ * not even when the filter's ms comes out a hair below an exact value. Holds for rates up to 90 fps.
+ */
+export function stillPieceSpan(piece: Pick<Piece, "fromMs" | "toMs">, rate: FrameRate): { firstMs: number; startMs: number; endMs: number } | null {
+  const { numerator: n, denominator: d } = rate;
+  const msAt = (frame: number) => (frame * d * 1000) / n;
+  const firstAtOrAfter = (ms: number) => {
+    let frame = Math.max(0, Math.floor((ms * n) / (d * 1000)) - 1);
+    while (msAt(frame) < ms) frame++;
+    return frame;
+  };
+  const first = firstAtOrAfter(piece.fromMs);
+  const after = firstAtOrAfter(piece.toMs);
+  if (after <= first) return null;
+  const early = (ms: number) => Math.max(0, csFloor(ms - 0.5));
+  return { firstMs: msAt(first), startMs: early(msAt(first)), endMs: early(msAt(after)) };
 }
 
 function paintLayers(piece: Piece): PaintLayer[] {

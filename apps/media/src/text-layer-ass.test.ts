@@ -4,7 +4,13 @@ import { layoutTextLayer, type Piece } from "@narriflow/caption-scene";
 import type { CompositionTextVisualLayer } from "@narriflow/composition-plan";
 import { DEFAULT_TITLE_STYLE, type StudioTextLayer, studioTextLayerSchema } from "@narriflow/validators";
 import { type RawFrame, renderAssRaw } from "../scripts/caption-scene-probe";
-import { SceneMeasurer, sceneEvents } from "./caption-scene-ass";
+import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SceneMeasurer, sceneEvents, stillPieceSpan } from "./caption-scene-ass";
+import { AUDIOGRAM_FPS, compositionFrameRate } from "./composition-ffmpeg-adapter";
+import { scenarioArgs, scenarioProbe } from "./composition-dub-fixture";
 import { renderTextLayerTrack } from "./text-layer-ass";
 
 /**
@@ -66,10 +72,57 @@ describe("the constant-pose fast path", () => {
   });
 });
 
+/** The rates of review item 4, and frame k's presentation time in seconds. */
+const RATES = [[24000, 1001], [30000, 1001], [60000, 1001], [25, 1], [30, 1]] as const;
+const frameSec = ([n, d]: readonly [number, number], k: number) => (k * d) / n;
+/** Windows that start and end 0.4 ms before frames 29 and 41, and 0.4 ms after them. */
+const edgeWindows = (rate: readonly [number, number]) => [
+  { startSec: frameSec(rate, 29) - 0.0004, endSec: frameSec(rate, 41) - 0.0004, frames: [29, 40] },
+  { startSec: frameSec(rate, 29) + 0.0004, endSec: frameSec(rate, 41) + 0.0004, frames: [30, 41] },
+  { startSec: frameSec(rate, 30), endSec: frameSec(rate, 42), frames: [30, 41] },
+];
+
+describe("still pieces start and end on the filter's frames (exact presentation times)", () => {
+  test("the event holds the first active frame and not the first inactive one, as the ass filter's truncated ms sees them", () => {
+    for (const rate of RATES) {
+      const [n, d] = rate;
+      // The ass filter asks libass for trunc(pts * time_base * 1000), computed in floating point.
+      const libassMs = (k: number) => Math.trunc(k * (d / n) * 1000);
+      for (const window of edgeWindows(rate)) {
+        const span = stillPieceSpan({ fromMs: window.startSec * 1000, toMs: window.endSec * 1000 }, { numerator: n, denominator: d })!;
+        const shown = (k: number) => span.startMs <= libassMs(k) && libassMs(k) < span.endMs;
+        expect({ rate, window, first: shown(window.frames[0]!), last: shown(window.frames[1]!) }).toEqual({ rate, window, first: true, last: true });
+        expect({ rate, window, before: shown(window.frames[0]! - 1), after: shown(window.frames[1]! + 1) }).toEqual({ rate, window, before: false, after: false });
+        expect(span.startMs % 10).toBe(0);
+        expect(span.endMs % 10).toBe(0);
+      }
+    }
+  });
+
+  test("a title starting at 1.209 s at 24000/1001 includes frame 29 (presented at 1.209542 s)", () => {
+    const span = stillPieceSpan({ fromMs: 1209, toMs: 3000 }, { numerator: 24000, denominator: 1001 })!;
+    expect(span.startMs).toBeLessThanOrEqual(1209);
+    expect(span.firstMs).toBeCloseTo(1209.5417, 3);
+  });
+});
+
+describe("the frames an audio-only render feeds the text stage", () => {
+  test("an audiogram times Text Layers on its own 25 fps frames, a video on its delivered rate", () => {
+    expect(compositionFrameRate(scenarioProbe({ builder: "audiogram" }))).toEqual({ numerator: AUDIOGRAM_FPS, denominator: 1 });
+    expect(scenarioArgs({ builder: "audiogram" }).join(" ")).toContain(`showwaves=s=1080x`);
+    expect(scenarioArgs({ builder: "audiogram" }).join(" ")).toContain(`rate=${AUDIOGRAM_FPS}[wave]`);
+    expect(compositionFrameRate(scenarioProbe({ builder: "single" }))).toEqual({ numerator: 30, denominator: 1 });
+    // A one-frame title at 25 fps: the 1000 ms frame and not the 1040 ms one (on a 30 fps grid it would not exist).
+    const track = renderTextLayerTrack({ layers: [planLayer(make("Blink"), 1, 1.04)], canvas: CANVAS, frameRate: compositionFrameRate(scenarioProbe({ builder: "audiogram" })) });
+    expect(track.ass).toMatch(/Dialogue: \d+,0:00:00\.99,0:00:01\.03,/);
+  });
+});
+
 describe("text and windows", () => {
   test("a layer at 0.7 s starts on the 700 ms frame", () => {
-    const track = renderTextLayerTrack({ layers: [planLayer(make("Late"), 0.7, 2.3)], canvas: CANVAS, fps: 30 });
-    expect(track.ass).toMatch(/Dialogue: \d+,0:00:00\.70,0:00:02\.30,/);
+    const track = renderTextLayerTrack({ layers: [planLayer(make("Late"), 0.7, 2.3)], canvas: CANVAS, frameRate: { numerator: 30, denominator: 1 } });
+    // Frames at 700 and 2300 ms: the event opens just before the first (the 667 ms frame stays out) and closes just before the second.
+    expect(track.ass).toMatch(/Dialogue: \d+,0:00:00\.69,0:00:02\.29,/);
   });
 
   test("braces are escaped and every backslash is followed by a word joiner", () => {
@@ -127,6 +180,26 @@ describe.skipIf(!hasLibass)("against real libass", () => {
       // Ink sits inside the measured advance, give or take the side bearings.
       expect(Math.abs(ink.x1 - line.x1)).toBeLessThan(6);
       expect(Math.abs(ink.x2 - line.x2)).toBeLessThan(6);
+    }
+  });
+
+  test("burned frames are exactly the frames inside the window at NTSC and integer rates", () => {
+    const dir = mkdtempSync(join(tmpdir(), "text-layer-frames-"));
+    const layer = make("TITLE", { fontSize: 200, background: { color: "#FFFFFF", opacity: 1, corners: "square", display: "block" } }, { positionY: 50 });
+    const [W, H] = [54, 96];
+    for (const rate of RATES) {
+      const [n, d] = rate;
+      for (const window of edgeWindows(rate)) {
+        const track = renderTextLayerTrack({ layers: [planLayer(layer, window.startSec, window.endSec)], canvas: CANVAS, frameRate: { numerator: n, denominator: d } });
+        const file = join(dir, "t.ass");
+        writeFileSync(file, track.ass);
+        const run = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:r=${n}/${d}`, "-frames:v", "44",
+          "-vf", `ass='${file}':fontsdir='${CAPTION_FONTS_DIRECTORY}'`, "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"], { maxBuffer: 1 << 24 });
+        const data = run.stdout as Buffer;
+        const lit: number[] = [];
+        for (let k = 0; k < data.length / (W * H); k++) if (data.subarray(k * W * H, (k + 1) * W * H).some((value) => value > 128)) lit.push(k);
+        expect({ rate, window, lit: [lit[0], lit.at(-1), lit.length] }).toEqual({ rate, window, lit: [window.frames[0], window.frames[1], window.frames[1]! - window.frames[0]! + 1] });
+      }
     }
   });
 

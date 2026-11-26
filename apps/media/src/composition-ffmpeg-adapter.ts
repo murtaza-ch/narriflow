@@ -1275,6 +1275,17 @@ function generatedFrameRateOf(probe: WorkerMediaInspection): GeneratedFrameRate 
 /** The rate a video render is delivered at: the source's own clock, or the
  *  constant rate a variable-rate source was normalized to. The encoder is told
  *  this rate and the output validator expects it, so they cannot drift apart. */
+/** The audiogram's frame rate: its `color` background (lavfi's default rate) and `showwaves` run at it. */
+export const AUDIOGRAM_FPS = 25;
+
+/**
+ * The rate of the frames a target's `ass` stages see: the delivered rate for video, the audiogram's for an
+ * audio-only source. Text Layer events are timed on these frames.
+ */
+export function compositionFrameRate(probe: WorkerMediaInspection): FrameRate {
+	return probe.hasVideo ? renderOutputFrameRate(probe) : { numerator: AUDIOGRAM_FPS, denominator: 1 };
+}
+
 export function renderOutputFrameRate(probe: WorkerMediaInspection): FrameRate {
 	return (
 		probe.videoClock?.constantRate ??
@@ -3708,7 +3719,7 @@ function buildAudiogramArgs(params: {
 		chain.push(
 			`${audioInputLabel}asplit=2[wavesrc][sceneaudiosrc]`,
 			`color=c=${bgColor}:s=${W}x${H}:d=${sourceVisualDurationSec.toFixed(3)}[bg]`,
-			`[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+			`[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=${AUDIOGRAM_FPS}[wave]`,
 			`[bg][wave]overlay=0:(H-h)/2[audiogram_source]`,
 		);
 		const sequence = compileCompositionPlanInsertedSceneSequence({
@@ -3716,7 +3727,7 @@ function buildAudiogramArgs(params: {
 			targetId: params.composition.targetId,
 			baseVideoLabel: "[audiogram_source]",
 			outputLabel: "[comp]",
-			fps: 25,
+			fps: AUDIOGRAM_FPS,
 			resolvedSceneAssets: params.resolvedSceneAssets,
 			resolvedSceneFonts: params.resolvedSceneFonts,
 			sceneInputStartIndex: sceneInputStartIndex ?? undefined,
@@ -3753,13 +3764,13 @@ function buildAudiogramArgs(params: {
 			...(hasMusicOrSfx
 				? [
 						`color=c=${bgColor}:s=${W}x${H}:d=${outputDurationSec.toFixed(3)}[bg]`,
-						`${waveSourceLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+						`${waveSourceLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=${AUDIOGRAM_FPS}[wave]`,
 						`[bg][wave]overlay=0:(H-h)/2[comp]`,
 					]
 				: [
 						`color=c=${bgColor}:s=${W}x${H}:d=${outputDurationSec.toFixed(3)}[bg]`,
 						`${audioInputLabel}asplit=2[wavesrc][fadesrc]`,
-						`[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+						`[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=${AUDIOGRAM_FPS}[wave]`,
 						`[fadesrc]${buildDialogueAudioFilter(dubAudio ?? params.audio)}[outa]`,
 						`[bg][wave]overlay=0:(H-h)/2[comp]`,
 					]),
