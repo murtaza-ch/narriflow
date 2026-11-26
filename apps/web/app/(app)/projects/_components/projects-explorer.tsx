@@ -415,9 +415,6 @@ export function ProjectsExplorer({
               key={project.id}
               draggable={canEdit}
               onDragStart={(event) => event.dataTransfer.setData(PROJECT_DRAG_TYPE, project.id)}
-              animation="fade-up"
-              animationFillMode="backwards"
-              style={{ animationDelay: `${Math.min(index, 11) * 60}ms` }}
             >
               <ProjectCard
                 project={project}
@@ -433,14 +430,11 @@ export function ProjectsExplorer({
         </Grid>
       ) : (
         <Stack gap="2">
-          {projects.map((project, index) => (
+          {projects.map((project) => (
             <Box
               key={project.id}
               draggable={canEdit}
               onDragStart={(event) => event.dataTransfer.setData(PROJECT_DRAG_TYPE, project.id)}
-              animation="fade-up"
-              animationFillMode="backwards"
-              style={{ animationDelay: `${Math.min(index, 11) * 40}ms` }}
             >
               <ProjectRow
                 project={project}

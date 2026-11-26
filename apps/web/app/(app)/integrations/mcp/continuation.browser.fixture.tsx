@@ -143,7 +143,12 @@ function assertIdentityRequests() {
 
 test("setup uses the API resource and preserves degraded configuration copy", async () => {
   verified = false;
-  const container = await mount((m) => <m.McpSetup />);
+  // Setup is an app screen: it reads the Workspace the app shell's gate admits.
+  const container = await mount((m) => (
+    <m.AdmittedWorkspaceScope scope={{ userId: USER, workspaceId: SELECTED }}>
+      <m.McpSetup />
+    </m.AdmittedWorkspaceScope>
+  ));
   await until(() => container.textContent?.includes("OAuth discovery is unavailable.") === true, "setup");
   expect(container.textContent).toContain("https://api.test/mcp");
   expect(container.textContent).toContain("Connector temporarily unavailable");

@@ -1,7 +1,7 @@
 "use client";
 
 import { track } from "@/lib/analytics";
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Box, chakra, Flex, RadioGroup, Stack, Text, type FlexProps } from "@chakra-ui/react";
 import { Check, Gem } from "lucide-react";
@@ -48,21 +48,30 @@ export function useUpgrade(): UpgradeContextValue {
 
 /**
  * Provided once by the app layout. Renders the one upgrade dialog every
- * prompt, locked button and runtime refusal opens.
+ * prompt, locked button and runtime refusal opens. A prompt belongs to the
+ * Workspace it was opened in (it can carry that Workspace's plan and billing
+ * rights), so it closes and is forgotten when the admitted Workspace changes
+ * or is lost; the provider itself stays mounted across Workspaces.
  */
 export function UpgradeProvider({
+  workspaceId = null,
   currentTier,
   billingMode,
   canManageBilling,
   children,
 }: {
+  /** The admitted Workspace, or null while it opens. */
+  workspaceId?: string | null;
   currentTier: PricingTier;
   billingMode: UpgradeBillingMode;
   canManageBilling: boolean;
   children: ReactNode;
 }) {
-  const [prompt, setPrompt] = useState<UpgradePrompt | null>(null);
-  const [open, setOpen] = useState(false);
+  const [stored, setStored] = useState<{ workspaceId: string | null; prompt: UpgradePrompt; open: boolean } | null>(null);
+  // Forgotten, not just hidden, so returning to that Workspace does not reopen it.
+  // Adjusting state while rendering: React re-renders before anything commits.
+  if (stored && stored.workspaceId !== workspaceId) setStored(null);
+  const current = stored && stored.workspaceId === workspaceId ? stored : null;
   const value = useMemo<UpgradeContextValue>(
     () => ({
       currentTier,
@@ -71,16 +80,19 @@ export function UpgradeProvider({
       openUpgrade: (next) => {
         if (!next.tier || next.tier === "free") return;
         track("upgrade_prompt_view", { target_tier: next.tier });
-        setPrompt(next);
-        setOpen(true);
+        setStored({ workspaceId, prompt: next, open: true });
       },
     }),
-    [currentTier, billingMode, canManageBilling],
+    [currentTier, billingMode, canManageBilling, workspaceId],
+  );
+  const onOpenChange = useCallback(
+    (open: boolean) => setStored((previous) => (previous ? { ...previous, open } : previous)),
+    [],
   );
   return (
     <UpgradeContext.Provider value={value}>
       {children}
-      <UpgradeDialog prompt={prompt} open={open} onOpenChange={setOpen} />
+      <UpgradeDialog prompt={current?.prompt ?? null} open={current?.open ?? false} onOpenChange={onOpenChange} />
     </UpgradeContext.Provider>
   );
 }

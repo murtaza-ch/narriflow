@@ -150,3 +150,15 @@ describe("single-line control consistency", () => {
     expect((segmented.item?.["@layer recipes"] as Record<string, unknown>).fontSize).toBe("13px");
   });
 });
+
+// ─── Root scrollbar on framed pages ─────────────────────────────────────────
+
+describe("framed pages always show the root scrollbar", () => {
+  test("only under a ShellPanel, on body, with the frame colour behind it", () => {
+    const base = (system.getGlobalCss() as Record<string, Record<string, Record<string, string>>>)["@layer base"];
+    expect(base?.["&html:has([data-shell-panel]) body"]?.overflowY).toBe("scroll");
+    expect(base?.["&html:has([data-shell-panel])"]?.background).toBe("var(--chakra-colors-bg-sidebar)");
+    // Elsewhere (marketing, Studio) the root keeps its own overflow.
+    expect(base?.["&html, &body"]?.overflowY).toBeUndefined();
+  });
+});

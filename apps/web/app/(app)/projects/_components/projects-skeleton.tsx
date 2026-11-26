@@ -1,5 +1,8 @@
 import { Flex, Grid, Stack } from "@chakra-ui/react";
+import { Button } from "@narriflow/ui/components/button";
+import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Bone } from "@narriflow/ui/components/page-loading";
+import { FolderPlus, Plus } from "lucide-react";
 
 /**
  * ProjectsGridSkeleton — mirror of the explorer below the page header: the
@@ -14,7 +17,7 @@ import { Bone } from "@narriflow/ui/components/page-loading";
  * placeholder held in reserved space, not an arrival — giving it the same
  * staggered fade-up as the real cards made the grid animate in twice per
  * navigation (once for the placeholder, once on resolve). The pulse is the
- * only motion it needs; the fade-up belongs to the content that replaces it.
+ * only motion it needs, and the content replaces it at once.
  */
 export function ProjectsGridSkeleton() {
   return (
@@ -30,6 +33,40 @@ export function ProjectsGridSkeleton() {
         ))}
       </Grid>
     </Stack>
+  );
+}
+
+/**
+ * The page header as an editor sees it: the title, then "New folder" and
+ * "New project" as hidden stand-ins inside bones, so the boxes are the
+ * buttons' own. On a phone the actions sit under the title, so leaving them
+ * out would move the grid when they arrive.
+ */
+export function ProjectsHeaderSkeleton() {
+  return (
+    <PageHeader
+      title="Projects"
+      actions={
+        <Flex align="center" gap="2" aria-hidden>
+          <Bone borderRadius="control">
+            <Button asChild size="sm" variant="subtle">
+              <span>
+                <FolderPlus size={16} />
+                New folder
+              </span>
+            </Button>
+          </Bone>
+          <Bone borderRadius="control">
+            <Button asChild size="sm">
+              <span>
+                <Plus size={16} />
+                New project
+              </span>
+            </Button>
+          </Bone>
+        </Flex>
+      }
+    />
   );
 }
 

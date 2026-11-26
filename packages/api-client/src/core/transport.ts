@@ -7,6 +7,7 @@ import {
 } from "./error";
 import type { IdentityScope, WorkspaceScope } from "./keys";
 import type { ApiScope, ScopeTarget, TrackedRequest } from "./scope";
+import { sessionTokenSubject } from "./session-token";
 
 export const AUTHORIZATION_HEADER = "Authorization";
 export const WORKSPACE_HEADER = "X-Workspace-Id";
@@ -170,6 +171,19 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
     if (tracked?.scopeAborted || !scope.isCurrent(target)) throw scopeChangedError();
   };
 
+  /**
+   * `getToken` answers for whoever the auth provider's live session is now,
+   * which can already be another user while the scope still holds the
+   * previous one (web applies a new Clerk identity in an effect). A token
+   * issued to someone else is refused as `scope_changed`, the answer a moved
+   * scope gets: superseded, never reported through the failure callbacks.
+   * A token whose subject cannot be read (not a JWT) is not checked.
+   */
+  const assertTokenOwner = (token: string, target: ScopeTarget): void => {
+    const subject = sessionTokenSubject(token);
+    if (subject !== null && subject !== target.userId) throw scopeChangedError();
+  };
+
   const requireToken = async (skipCache: boolean): Promise<string> => {
     let token: string | null;
     try {
@@ -210,6 +224,7 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
   ): Promise<Response> => {
     const token = await requireToken(skipCache);
     assertCurrent(target, tracked);
+    assertTokenOwner(token, target);
     return send(url.toString(), {
       ...init,
       headers: buildHeaders(init, target, token),

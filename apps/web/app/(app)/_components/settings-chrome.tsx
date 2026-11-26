@@ -7,6 +7,7 @@ import { ArrowLeft, Bell, Braces, Building2, ChartNoAxesCombined, CreditCard, Me
 import { Logo } from "@narriflow/ui/components/logo";
 import { NavLink } from "@narriflow/ui/components/nav-link";
 import { Button, IconButton } from "@narriflow/ui/components/button";
+import { LineBone } from "@narriflow/ui/components/page-loading";
 import { ShellHeader, ShellPanel } from "./shell-panel";
 
 const accountLinks = [
@@ -23,8 +24,14 @@ const workspaceLinks = [
   { label: "Developer access", href: "/settings/api", icon: Braces },
 ];
 
+/**
+ * The section list is real from the first byte. While the Workspace opens its
+ * heading holds one line and "Developer access" is listed (the owner's case);
+ * it collapses once for a person who cannot manage the API.
+ */
 export function SettingsChrome({ workspaceName, canManageApi, backHref, account, themeToggle, children }: {
-  workspaceName: string; canManageApi: boolean; backHref: string;
+  /** Null while the Workspace opens. */
+  workspaceName: string | null; canManageApi: boolean | null; backHref: string;
   account: ReactNode; themeToggle: ReactNode; children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -32,9 +39,14 @@ export function SettingsChrome({ workspaceName, canManageApi, backHref, account,
     <Stack as="nav" aria-label="Settings sections" gap="6" px="3" py="5" onClick={(event) => {
       if ((event.target as HTMLElement).closest("a")) setOpen(false);
     }}>
-      {[{ id: "account", label: "Your account", links: accountLinks }, { id: "workspace", label: workspaceName, links: workspaceLinks.filter((link) => canManageApi || link.href !== "/settings/api") }].map((group) => (
+      {[{ id: "account", label: "Your account", links: accountLinks }, { id: "workspace", label: workspaceName, links: workspaceLinks.filter((link) => canManageApi !== false || link.href !== "/settings/api") }].map((group) => (
         <Stack gap="1" key={group.id}>
-          <Text textStyle="eyebrow" color="fg.muted" px="3" mb="2" overflowWrap="anywhere">{group.label}</Text>
+          {/* One line either way (a long name truncates), and the bone starts where the text does. */}
+          {group.label === null ? (
+            <Box px="3" mb="2"><LineBone textStyle="eyebrow" boneWidth="32" /></Box>
+          ) : (
+            <Text textStyle="eyebrow" color="fg.muted" px="3" mb="2" truncate>{group.label}</Text>
+          )}
           {group.links.map(({ label, href, icon: Icon }) => <NavLink key={href} href={href} icon={<Icon size={16} />}>{label}</NavLink>)}
         </Stack>
       ))}

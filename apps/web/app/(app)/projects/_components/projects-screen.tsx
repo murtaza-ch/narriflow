@@ -4,36 +4,25 @@ import { HStack, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { projectListQuerySchema } from "@narriflow/validators/api/projects";
+import { LoadingScreen } from "@narriflow/ui/components/page-loading";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, FolderOpen } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { explorerQueryOptions, type LibraryApi, useLibraryApi } from "../_lib/api";
+import { explorerFiltersFromSearch, explorerQueryOptions, type LibraryApi, useLibraryApi } from "../_lib/api";
 import { FoldersPanel } from "./folders-panel";
 import { LoadFailure } from "./load-failure";
 import { ProjectsExplorer } from "./projects-explorer";
 import { ProjectsHeaderActions } from "./projects-header-actions";
-import { ProjectsGridSkeleton } from "./projects-skeleton";
+import { ProjectsGridSkeleton, ProjectsHeaderSkeleton } from "./projects-skeleton";
 import { RetentionBanner } from "./retention-banner";
 import { WorkspaceMismatchNotice } from "./workspace-mismatch-notice";
 
-/** The explorer's filters as the URL carries them; anything unrecognised means the default. */
+/** The explorer's filters as the URL carries them. */
 function useUrlFilters() {
-  const params = useSearchParams();
-  const text = params.toString();
-  return useMemo(() => {
-    const search = new URLSearchParams(text);
-    const parsed = projectListQuerySchema.parse({
-      q: search.get("q") ?? undefined,
-      status: search.get("status") ?? undefined,
-      source: search.get("source") ?? undefined,
-      sort: search.get("sort") ?? undefined,
-      folder: search.get("folder") ?? undefined,
-    });
-    return { q: parsed.q, status: parsed.status, source: parsed.source, sort: parsed.sort, folder: parsed.folder };
-  }, [text]);
+  const text = useSearchParams().toString();
+  return useMemo(() => explorerFiltersFromSearch(new URLSearchParams(text)), [text]);
 }
 
 /** The Projects page: header, Workspace-mismatch recovery, folders and the explorer. */
@@ -46,12 +35,13 @@ export function ProjectsScreen() {
   );
 }
 
+/** The same busy region as `loading.tsx`, so the route boundary hands over without a repaint. */
 function ProjectsPending() {
   return (
-    <>
-      <PageHeader title="Projects" />
+    <LoadingScreen label="Loading projects">
+      <ProjectsHeaderSkeleton />
       <ProjectsGridSkeleton />
-    </>
+    </LoadingScreen>
   );
 }
 
@@ -89,11 +79,11 @@ function ProjectsContent({ api }: { api: LibraryApi }) {
   }
   if (!explorer.data) {
     return (
-      <>
-        <PageHeader title="Projects" />
+      <LoadingScreen label="Loading projects">
+        <ProjectsHeaderSkeleton />
         <WorkspaceRecovery />
         <ProjectsGridSkeleton />
-      </>
+      </LoadingScreen>
     );
   }
 

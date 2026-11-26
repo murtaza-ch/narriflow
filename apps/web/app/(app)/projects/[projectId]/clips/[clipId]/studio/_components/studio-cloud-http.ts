@@ -1,4 +1,4 @@
-import { ApiError } from "@narriflow/api-client/core";
+import { ApiError, sessionTokenClaims, sessionTokenSubject } from "@narriflow/api-client/core";
 import { type StudioApi, apiFailureStatus, studioClientFor } from "./studio-api";
 
 /**
@@ -65,15 +65,8 @@ export interface TokenSnapshot {
 
 /** Expiry (ms since epoch) of a JWT, read without verifying it; null when unreadable. */
 export function tokenExpiryMs(token: string): number | null {
-  const payload = token.split(".")[1];
-  if (!payload) return null;
-  try {
-    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-    const exp = (JSON.parse(json) as { exp?: unknown }).exp;
-    return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;
-  } catch {
-    return null;
-  }
+  const exp = sessionTokenClaims(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;
 }
 
 /** A snapshot unusable within this long of expiry: the request would arrive after it. */
@@ -144,6 +137,10 @@ export function createStudioCloudHttp(options: {
       if (!token) return false;
       const target = api.runtime.scope.snapshot();
       if (target.userId !== api.scope.userId || target.workspaceId !== api.scope.workspaceId) return false;
+      // The snapshot is captured from Clerk's live session, which can already be
+      // another user's; the transport refuses such a token the same way.
+      const subject = sessionTokenSubject(token);
+      if (subject !== null && subject !== api.scope.userId) return false;
       const body = JSON.stringify({ baseRevision, document });
       if (byteLength(body) > KEEPALIVE_MAX_BODY_BYTES) return false;
       const url = client().$url({ param }).toString();

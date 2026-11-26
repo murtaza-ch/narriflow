@@ -8,7 +8,7 @@ import {
   createBillingActions,
   invalidateBillingDependents,
 } from "@narriflow/api-client/billing";
-import { Box, Grid, Stack, Text } from "@chakra-ui/react";
+import { Grid, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Button } from "@narriflow/ui/components/button";
 import {
@@ -27,14 +27,6 @@ import { useWorkspaceBootstrap } from "../../_components/usage";
 import { StatTile } from "../_components/settings-ui";
 import { BillingPlans, type BillingPlansApi } from "./billing-plans";
 import BillingLoading from "./loading";
-
-function reveal(index: number) {
-  return {
-    animation: "fade-up",
-    animationDelay: `${index * 60}ms`,
-    animationFillMode: "backwards",
-  } as const;
-}
 
 /** Billing & plans for the selected Workspace: scoped reads, no server data and no entitlement from navigation. */
 export function BillingScreen() {
@@ -130,11 +122,9 @@ function BillingContent({ scope }: { scope: WorkspaceScope }) {
 
   return (
     <Stack gap="8">
-      <Box {...reveal(0)}>
-        <PageHeader title="Billing & plans" description="Your plan, credits, and subscription." />
-      </Box>
+      <PageHeader title="Billing & plans" description="Your plan, credits, and subscription." />
 
-      <Grid {...reveal(1)} templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap="3">
+      <Grid templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap="3">
         <StatTile
           icon={<BadgeCheck size={14} />}
           label="Current plan"
@@ -164,22 +154,20 @@ function BillingContent({ scope }: { scope: WorkspaceScope }) {
         />
       </Grid>
 
-      <Box {...reveal(2)}>
-        <BillingPlans
-          initialView={billingView}
-          availableTiers={stateQuery.data.availableTiers}
-          isConfigured={stateQuery.data.isConfigured}
-          checkoutReturnSessionId={
-            params.get("checkout") === "return" ? params.get("session_id") : null
-          }
-          checkoutCancelled={params.get("checkout") === "cancelled"}
-          canManageBilling={capabilities["billing.manage"]}
-          focusTier={paidPricingTierSchema.safeParse(params.get("plan")).data ?? null}
-          requestedInterval={billingIntervalSchema.safeParse(params.get("interval")).data ?? null}
-          api={api}
-          onViewChange={onViewChange}
-        />
-      </Box>
+      <BillingPlans
+        initialView={billingView}
+        availableTiers={stateQuery.data.availableTiers}
+        isConfigured={stateQuery.data.isConfigured}
+        checkoutReturnSessionId={
+          params.get("checkout") === "return" ? params.get("session_id") : null
+        }
+        checkoutCancelled={params.get("checkout") === "cancelled"}
+        canManageBilling={capabilities["billing.manage"]}
+        focusTier={paidPricingTierSchema.safeParse(params.get("plan")).data ?? null}
+        requestedInterval={billingIntervalSchema.safeParse(params.get("interval")).data ?? null}
+        api={api}
+        onViewChange={onViewChange}
+      />
     </Stack>
   );
 }

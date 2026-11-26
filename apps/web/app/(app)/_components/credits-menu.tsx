@@ -5,7 +5,9 @@ import { Box, Flex, Popover, Portal, Stack, Text } from "@chakra-ui/react";
 import { BarChart3, CircleAlert, CreditCard, Sparkles } from "lucide-react";
 import { PLAN_CATALOG, PRICING_TIER_ORDER, lowestTier, type PricingTier } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
+import { Bone } from "@narriflow/ui/components/page-loading";
 import { UpgradeButton } from "./upgrade";
+import { CHROME_SLOT, chromeVar } from "@/lib/chrome-layout-hint";
 import { usagePalette } from "./usage-palette";
 
 /**
@@ -22,6 +24,33 @@ export function creditsUpgradeTier(tier: PricingTier, spentCredits: number): Pri
 
 // An explicit locale so the server render and the browser agree.
 const formatCredits = (credits: number) => credits.toLocaleString("en-US");
+
+/**
+ * The header balance in a box at least as wide as "0,000" in tabular figures,
+ * the same in the placeholder and the real pill, so balances up to four digits
+ * fill in without moving the search field and Invite beside it. The widest
+ * case sets the width: a hidden "0,000" and the balance share one grid cell.
+ */
+function BalanceBox({ children, placeholder = false }: { children: string; placeholder?: boolean }) {
+  return (
+    <Box
+      as="span"
+      display="inline-grid"
+      fontVariantNumeric="tabular-nums"
+      justifyItems="start"
+      // The placeholder takes the last ready balance's width (chrome-layout-hint);
+      // the real balance keeps its own and is what gets measured.
+      {...(placeholder ? { minW: chromeVar("balance", "0px") } : { [CHROME_SLOT]: "balance" })}
+    >
+      <Box as="span" gridArea="1 / 1" visibility="hidden" aria-hidden>
+        0,000
+      </Box>
+      <Box as="span" gridArea="1 / 1">
+        {children}
+      </Box>
+    </Box>
+  );
+}
 
 /**
  * What the menu says about this month's credits. Settled and reserved amounts
@@ -88,12 +117,12 @@ export function CreditsMenu({
   const reservedPct = Math.max(0, pct - usedPct);
 
   return (
-    <Flex align="center" gap="1" p="0.5" borderRadius="control" bg="bg.soft">
+    <Flex align="center" gap="1" p="0.5" borderRadius="control" bg="bg.soft" {...{ [CHROME_SLOT]: "credits" }}>
       <Popover.Root positioning={{ placement: "bottom-end", offset: { mainAxis: 8 } }}>
         <Popover.Trigger asChild>
-          <Button variant="ghost" size="xs" h="28px" px="2.5" fontWeight="500" color={palette === "accent" ? "fg" : `${palette}.fg`} aria-label={`${balance} credits left${status ? `. ${status}` : ""}`}>
+          <Button {...{ [CHROME_SLOT]: "credits-trigger" }} variant="ghost" size="xs" h="28px" px="2.5" fontWeight="500" color={palette === "accent" ? "fg" : `${palette}.fg`} aria-label={`${balance} credits left${status ? `. ${status}` : ""}`}>
             {status ? <CircleAlert size={13} aria-hidden /> : <Sparkles size={13} aria-hidden />}
-            <Text as="span" fontVariantNumeric="tabular-nums">{balance}</Text>
+            <BalanceBox>{balance}</BalanceBox>
             <Text as="span" color="fg.muted" fontWeight="400" display={{ base: "none", xl: "inline" }}>credits</Text>
           </Button>
         </Popover.Trigger>
@@ -165,6 +194,33 @@ export function CreditsMenu({
         </Portal>
       </Popover.Root>
       {upgradeTier ? <UpgradeButton tier={upgradeTier} size="xs" h="28px" px="2.5">Upgrade</UpgradeButton> : null}
+    </Flex>
+  );
+}
+
+/**
+ * The balance pill while the Workspace opens: the trigger's own box (a soft
+ * 32px pill around a 28px button) and the same balance box. It opens nothing.
+ * The balance box and the space after the trigger take the last ready
+ * render's widths (chrome-layout-hint): the gold Upgrade button and a long
+ * balance; without a hint they are "0,000" and nothing.
+ */
+export function CreditsMenuPlaceholder() {
+  return (
+    <Flex align="center" p="0.5" borderRadius="control" bg="bg.soft" aria-hidden>
+      <Bone borderRadius="control">
+        <Button asChild variant="ghost" size="xs" h="28px" px="2.5" fontWeight="500">
+          <span>
+            <Sparkles size={13} />
+            <BalanceBox placeholder>0</BalanceBox>
+            <Text as="span" fontWeight="400" display={{ base: "none", xl: "inline" }}>credits</Text>
+          </span>
+        </Button>
+      </Bone>
+      {/* The Upgrade button's gap, then its box. */}
+      <Flex flexShrink={0} justify="flex-end" w={chromeVar("upgrade", "0px")}>
+        <Bone h="28px" w="max(0px, calc(100% - 4px))" borderRadius="control" />
+      </Flex>
     </Flex>
   );
 }

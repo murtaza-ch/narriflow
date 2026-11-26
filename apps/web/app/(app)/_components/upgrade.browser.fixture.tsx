@@ -21,6 +21,7 @@ let UpgradeProvider: typeof import("./upgrade").UpgradeProvider;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let ApiProvider: typeof import("@/app/_components/api-provider").ApiProvider;
+let AdmittedWorkspaceScope: typeof import("@/app/_components/api-provider").AdmittedWorkspaceScope;
 let ReviewPanel: typeof import("../projects/[projectId]/review-panel").ReviewPanel;
 let ProjectShareButton: typeof import("../projects/[projectId]/project-share-button").ProjectShareButton;
 let root: Root | null = null;
@@ -83,7 +84,7 @@ beforeAll(async () => {
   ({ LockedButton, UpgradeProvider } = await import("./upgrade"));
   ({ ChakraProvider } = await import("@chakra-ui/react"));
   ({ system } = await import("@narriflow/ui/theme"));
-  ({ ApiProvider } = await import("@/app/_components/api-provider"));
+  ({ ApiProvider, AdmittedWorkspaceScope } = await import("@/app/_components/api-provider"));
   ({ ReviewPanel } = await import("../projects/[projectId]/review-panel"));
   ({ ProjectShareButton } = await import("../projects/[projectId]/project-share-button"));
 });
@@ -126,7 +127,10 @@ async function renderReview(node: React.ReactNode, currentTier: "business" | "cr
   await act(async () => root?.render(
     <ChakraProvider value={system}>
       <ApiProvider>
-        <UpgradeProvider currentTier={currentTier} billingMode="change_plan" canManageBilling>{node}</UpgradeProvider>
+        {/* Stands in for the app shell's gate, which admits the selected Workspace. */}
+        <AdmittedWorkspaceScope scope={{ userId: USER, workspaceId: WORKSPACE }}>
+          <UpgradeProvider currentTier={currentTier} billingMode="change_plan" canManageBilling>{node}</UpgradeProvider>
+        </AdmittedWorkspaceScope>
       </ApiProvider>
     </ChakraProvider>,
   ));
@@ -242,6 +246,46 @@ describe("upgrade dialog", () => {
     expect(cta?.textContent).toBe("Switch to Pro");
     expect(dialog?.textContent).toContain("Review the amount and timing in billing.");
     expect(cta?.getAttribute("href")).toBe("/settings/billing?plan=pro#plans");
+  });
+
+  test("an open prompt closes and is forgotten when the admitted Workspace changes or is lost", async () => {
+    const container = browser.document.createElement("div");
+    browser.document.body.append(container);
+    root = createRoot(container as unknown as HTMLDivElement);
+    const shell = (workspaceId: string | null) => (
+      <ChakraProvider value={system}>
+        <UpgradeProvider workspaceId={workspaceId} currentTier="creator" billingMode="checkout" canManageBilling>
+          <LockedButton prompt={{ tier: "pro", headline: "Upgrade to work with your team", canManageBilling: true }}>Invite</LockedButton>
+        </UpgradeProvider>
+      </ChakraProvider>
+    );
+    // A closing dialog can stay in the DOM for its exit, marked closed.
+    const dialog = () => browser.document.querySelector('[role="dialog"][data-state="open"]');
+    const open = async () => {
+      await act(async () => {
+        container.querySelector("button")?.click();
+        await browser.happyDOM.waitUntilComplete();
+      });
+    };
+    await act(async () => root?.render(shell("workspace-a")));
+    await open();
+    expect(dialog()?.textContent).toContain("Upgrade to work with your team");
+
+    // Another Workspace is admitted: A's prompt (and its billing rights) does not follow.
+    await act(async () => {
+      root?.render(shell("workspace-b"));
+      await browser.happyDOM.waitUntilComplete();
+    });
+    expect(dialog()).toBeNull();
+    // Nor does it come back on returning to A.
+    await act(async () => root?.render(shell("workspace-a")));
+    expect(dialog()).toBeNull();
+
+    // Revalidating (no admitted Workspace) closes it too.
+    await open();
+    expect(dialog()).not.toBeNull();
+    await act(async () => root?.render(shell(null)));
+    expect(dialog()).toBeNull();
   });
 
   test("anyone but the owner is told whom to ask and gets no purchase link", async () => {

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useAuth, useClerk } from "@clerk/nextjs";
+import { useClerk } from "@clerk/nextjs";
 import { Box, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { CircleHelp, LogOut, Menu as MenuIcon, Moon, Plus, Sparkles, Sun, X } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
@@ -11,57 +11,56 @@ import { NavLink } from "@narriflow/ui/components/nav-link";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Meter } from "@narriflow/ui/components/meter";
 import { Button, IconButton } from "@narriflow/ui/components/button";
+import { Bone, LineBone } from "@narriflow/ui/components/page-loading";
+import { chromeVar } from "@/lib/chrome-layout-hint";
 import { useColorMode } from "@narriflow/ui/components/color-mode";
 import { NAV_ITEMS } from "./nav-items";
-import { useApiRuntime } from "@/app/_components/api-provider";
-import { AccountAvatar } from "./account-menu";
+import { beginSignOut, useApiRuntime } from "@/app/_components/api-provider";
+import { AccountAvatar, AccountAvatarPlaceholder } from "./account-menu";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { isStudioRoute } from "./theme-toggle";
 import { hasFeature } from "@narriflow/validators";
 import { usagePalette } from "./usage-palette";
 import { UpgradeGem, useUpgrade } from "./upgrade";
-import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
+import { WorkspaceSwitcher, WorkspaceSwitcherPlaceholder } from "./workspace-switcher";
+import type { SidebarWorkspace } from "./sidebar";
 import { clearSignedInBrowserState } from "@/lib/sign-out-storage";
+import { useNavIntent } from "./route-reads";
 
-interface MobileNavProps {
+/** The signed-in person as the shell shows them. */
+export interface ShellAccount {
   email: string | null;
   firstName: string | null;
   lastName: string | null;
   imageUrl: string | null;
-  remainingCredits: number;
-  limitCredits: number;
-  activeWorkspaceId: string;
-  workspaces: WorkspaceSwitcherItem[];
-  canCreate: boolean;
-
-  workspaceMenu: WorkspaceMenuPresentation;
 }
 
-export function MobileNav({
-  email,
-  firstName,
-  lastName,
-  imageUrl,
-  remainingCredits,
-  limitCredits,
-  activeWorkspaceId,
-  workspaces,
-  canCreate,
+interface MobileNavProps {
+  /** Null while the Workspace opens: its slots hold their final box. */
+  workspace: SidebarWorkspace | null;
+  account: ShellAccount | null;
+}
 
-  workspaceMenu,
-}: MobileNavProps) {
+/**
+ * The mobile bar and its drawer. The bar, the nav links and sign-out are real
+ * from the first byte; the switcher, "New project", the usage meter and the
+ * account rows hold their box until the Workspace is open.
+ */
+export function MobileNav({ workspace, account }: MobileNavProps) {
   const [open, setOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const { colorMode, toggleColorMode } = useColorMode();
   const { signOut } = useClerk();
-  const { userId } = useAuth();
   const runtime = useApiRuntime();
   const pathname = usePathname();
   const { canManageBilling } = useUpgrade();
+  const intent = useNavIntent();
 
-  const displayName = getDisplayName(firstName, lastName);
-  const initials = getInitials(firstName, lastName, email);
-  const usagePct = limitCredits > 0 ? Math.min(100, ((limitCredits - remainingCredits) / limitCredits) * 100) : 0;
+  const displayName = account ? getDisplayName(account.firstName, account.lastName) : "";
+  const initials = account ? getInitials(account.firstName, account.lastName, account.email) : "";
+  const usagePct = workspace && workspace.limitCredits > 0
+    ? Math.min(100, ((workspace.limitCredits - workspace.remainingCredits) / workspace.limitCredits) * 100)
+    : 0;
   const palette = usagePalette(usagePct);
 
   // Close the drawer whenever navigation lands on a new route.
@@ -73,13 +72,12 @@ export function MobileNav({
   async function onSignOut() {
     if (isSigningOut) return;
     setIsSigningOut(true);
-    // Abort and clear everything cached for this person before their session ends.
-    runtime.setIdentity(null);
+    const restore = beginSignOut(runtime);
     clearSignedInBrowserState(window.localStorage, window.sessionStorage);
     try {
       await signOut({ redirectUrl: "/" });
     } catch {
-      runtime.setIdentity(userId ?? null);
+      restore();
     } finally {
       setIsSigningOut(false);
     }
@@ -148,17 +146,23 @@ export function MobileNav({
                 </Drawer.CloseTrigger>
               </Flex>
 
-              <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} />
+              {workspace ? (
+                <WorkspaceSwitcher activeWorkspaceId={workspace.activeWorkspaceId} items={workspace.workspaces} presentation={workspace.workspaceMenu} />
+              ) : (
+                <WorkspaceSwitcherPlaceholder />
+              )}
 
               {/* Navigation — single IA source */}
               <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto">
-                {canCreate ? (
+                {!workspace ? (
+                  <Bone h="9" w="full" mb="3" borderRadius="control" flexShrink={0} display={chromeVar("newProjectDisplay", "block")} aria-hidden />
+                ) : workspace.canCreate ? (
                   <Button asChild size="sm" mb="3" w="full">
                     <Link href="/upload"><Plus size={15} />New project</Link>
                   </Button>
                 ) : null}
                 {NAV_ITEMS.map(({ label, href, icon: Icon, feature }) => (
-                  <NavLink key={href} href={href} icon={<Icon size={16} />} badge={feature && !hasFeature(workspaceMenu.tier, feature) ? <UpgradeGem /> : undefined}>
+                  <NavLink key={href} href={href} intent={intent(href)} icon={<Icon size={16} />} badge={workspace && feature && !hasFeature(workspace.workspaceMenu.tier, feature) ? <UpgradeGem /> : undefined}>
                     {label}
                   </NavLink>
                 ))}
@@ -191,44 +195,66 @@ export function MobileNav({
               {/* Account block + sign out */}
               <Box px="4" py="4" flexShrink={0}>
                 {/* Compact usage meter — mirrors the sidebar's, mobile has no other home for it */}
-                <Box mb="3">
-                  <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
-                    <Link href={canManageBilling ? "/settings/billing" : "/settings/usage"}>
-                      <Text textStyle="eyebrow" color="fg.muted" textDecoration="underline" textUnderlineOffset="3px">
-                        {canManageBilling ? "Usage & billing" : "Usage"}
+                {workspace ? (
+                  <Box mb="3">
+                    <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
+                      <Link href={canManageBilling ? "/settings/billing" : "/settings/usage"}>
+                        <Text textStyle="eyebrow" color="fg.muted" textDecoration="underline" textUnderlineOffset="3px">
+                          {canManageBilling ? "Usage & billing" : "Usage"}
+                        </Text>
+                      </Link>
+                      <Text
+                        fontSize="12px"
+                        fontVariantNumeric="tabular-nums"
+                        color={palette === "accent" ? "fg.muted" : `${palette}.fg`}
+                      >
+                        {workspace.remainingCredits.toLocaleString()} of {workspace.limitCredits.toLocaleString()} left
                       </Text>
-                    </Link>
-                    <Text
-                      fontSize="12px"
-                      fontVariantNumeric="tabular-nums"
-                      color={palette === "accent" ? "fg.muted" : `${palette}.fg`}
-                    >
-                      {remainingCredits.toLocaleString()} of {limitCredits.toLocaleString()} left
-                    </Text>
+                    </Flex>
+                    <Meter
+                      value={usagePct}
+                      palette={palette}
+                      showValue={false}
+                      aria-label="Monthly credits used"
+                    />
+                  </Box>
+                ) : (
+                  <Box mb="3" aria-hidden>
+                    <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
+                      <LineBone textStyle="eyebrow" boneWidth="24" w="24" />
+                      {/* About "0,000 of 0,000 left" at 12px in tabular figures. */}
+                      <LineBone fontSize="12px" fontVariantNumeric="tabular-nums" boneWidth="14ch" w="14ch" />
+                    </Flex>
+                    <Bone h="3px" w="full" borderRadius="full" />
+                  </Box>
+                )}
+                {account ? (
+                  <Flex align="center" gap="2.5" mb="3">
+                    <AccountAvatar
+                      imageUrl={account.imageUrl}
+                      initials={initials}
+                      alt={displayName}
+                      size="sm"
+                    />
+                    <Stack gap="0" minW="0" flex="1">
+                      <Text fontSize="13px" fontWeight="550" color="fg" truncate>
+                        {displayName}
+                      </Text>
+                      {/* A missing email keeps its line, so the row is as tall as the placeholder. */}
+                      <Text fontSize="12px" color="fg.subtle" truncate>
+                        {account.email ?? "\u00a0"}
+                      </Text>
+                    </Stack>
                   </Flex>
-                  <Meter
-                    value={usagePct}
-                    palette={palette}
-                    showValue={false}
-                    aria-label="Monthly credits used"
-                  />
-                </Box>
-                <Flex align="center" gap="2.5" mb="3">
-                  <AccountAvatar
-                    imageUrl={imageUrl}
-                    initials={initials}
-                    alt={displayName}
-                    size="sm"
-                  />
-                  <Stack gap="0" minW="0">
-                    <Text fontSize="13px" fontWeight="550" color="fg" truncate>
-                      {displayName}
-                    </Text>
-                    <Text fontSize="12px" color="fg.subtle" truncate>
-                      {email ?? ""}
-                    </Text>
-                  </Stack>
-                </Flex>
+                ) : (
+                  <Flex align="center" gap="2.5" mb="3" aria-hidden>
+                    <AccountAvatarPlaceholder size="sm" />
+                    <Stack gap="0" minW="0" flex="1">
+                      <LineBone fontSize="13px" boneWidth="28" />
+                      <LineBone fontSize="12px" boneWidth="40" />
+                    </Stack>
+                  </Flex>
+                )}
                 <Flex
                   as="button"
                   onClick={onSignOut}

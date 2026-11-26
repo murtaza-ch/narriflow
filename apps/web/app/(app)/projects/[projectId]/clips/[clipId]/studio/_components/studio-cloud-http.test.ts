@@ -200,6 +200,30 @@ describe("close-time keepalive", () => {
     expect(sends).toBe(0);
   });
 
+  test("never sends a token captured for another user", () => {
+    const { api } = setup();
+    let sends = 0;
+    const encode = (value: unknown) => btoa(JSON.stringify(value)).replace(/=+$/, "");
+    const exp = Math.floor(Date.now() / 1000) + 60;
+    const tokenFor = (sub: string) => `${encode({ alg: "none" })}.${encode({ sub, exp })}.sig`;
+    let token = tokenFor("user_2");
+    const http = createStudioCloudHttp({
+      api,
+      projectId: PROJECT,
+      clipId: CLIP,
+      tokens: { current: () => token, refresh: async () => undefined },
+      fetchImpl: (async () => {
+        sends += 1;
+        return new Response(null);
+      }) as typeof fetch,
+    });
+    expect(http.keepalive({ baseRevision: 3, document })).toBe(false);
+    expect(sends).toBe(0);
+    token = tokenFor("user_1");
+    expect(http.keepalive({ baseRevision: 3, document })).toBe(true);
+    expect(sends).toBe(1);
+  });
+
   test("never replays into another Workspace after the selection moved", () => {
     const { api, runtime } = setup();
     let sends = 0;

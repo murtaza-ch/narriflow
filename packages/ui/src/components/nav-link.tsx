@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { HStack, Text } from "@chakra-ui/react"
-import type { ReactNode } from "react"
+import type { ComponentProps, ReactNode } from "react"
 
 interface NavLinkProps {
   href: string
@@ -11,16 +11,19 @@ interface NavLinkProps {
   collapsed?: boolean
   /** Trailing marker, e.g. the gem on a feature the plan doesn't include. */
   badge?: ReactNode
+  /** Focus and pointer handlers that start the destination's reads on intent. */
+  intent?: Pick<ComponentProps<"a">, "onFocus" | "onPointerEnter" | "onPointerLeave">
   children: ReactNode
 }
 
-export function NavLink({ href, icon, children, badge, collapsed = false }: NavLinkProps) {
+export function NavLink({ href, icon, children, badge, intent, collapsed = false }: NavLinkProps) {
   const pathname = usePathname()
   const isActive =
     pathname === href || (href !== "/settings" && pathname.startsWith(href + "/"))
 
   return (
     <Link
+      {...intent}
       href={href}
       title={collapsed && typeof children === "string" ? children : undefined}
       aria-label={collapsed && typeof children === "string" ? children : undefined}

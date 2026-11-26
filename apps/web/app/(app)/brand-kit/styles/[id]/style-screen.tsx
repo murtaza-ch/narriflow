@@ -15,10 +15,12 @@ import { BrandApiProvider, useBrandScope } from "../../_components/brand-api-pro
 import { BrandFontsProvider } from "../../_components/brand-fonts";
 import { TemplateForm } from "../../_components/template-form";
 import EditStyleLoading from "./loading";
+import { useParams } from "next/navigation";
 
 /** Edit a caption style: the style, the profile it belongs to and the fonts it can use, read together. */
-export function EditStyleScreen({ templateId }: { templateId: string }) {
+export function EditStyleScreen() {
   const scope = useBrandScope();
+  const { id: templateId } = useParams<{ id: string }>();
   if (!scope) return <EditStyleLoading />;
   return (
     <BrandApiProvider key={scope.workspaceId} scope={scope}>

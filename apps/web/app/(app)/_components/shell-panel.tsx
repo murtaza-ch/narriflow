@@ -6,11 +6,13 @@ import { Flex, type FlexProps } from "@chakra-ui/react";
 /**
  * The app shell's content sheet. On desktop it sits inset from the darker
  * frame (bg.sidebar) as one rounded panel — the fill alone separates it, no
- * border; on mobile it is full-bleed.
+ * border; on mobile it is full-bleed. `data-shell-panel` marks the page as
+ * framed: the global CSS reserves the root scrollbar gutter for it (theme.ts).
  */
 export function ShellPanel({ children, ...rest }: FlexProps) {
   return (
     <Flex
+      data-shell-panel=""
       direction="column"
       flex="1"
       minW="0"

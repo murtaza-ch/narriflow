@@ -156,6 +156,11 @@ function useWorkspaceSearch(term: string) {
   });
 }
 
+/** The search field's box (240 × 32 on desktop) while the Workspace opens. */
+export function GlobalSearchPlaceholder() {
+  return <Bone h="8" w="240px" borderRadius="l1" flexShrink={0} aria-hidden />;
+}
+
 export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);

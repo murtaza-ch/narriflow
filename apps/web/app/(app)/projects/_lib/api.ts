@@ -19,6 +19,7 @@ import {
   type ProjectListPage,
 } from "@narriflow/api-client/projects";
 import { hasUserErrorMessage, userErrorMessage } from "@narriflow/validators";
+import { projectListQuerySchema } from "@narriflow/validators/api/projects";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
@@ -50,6 +51,21 @@ export function useLibraryApi(): LibraryApi | null {
       clips: createClipsClient(transport),
     };
   }, [runtime, scope]);
+}
+
+/**
+ * The explorer's filters as a URL carries them; anything unrecognised means the
+ * default. The screen and the route prefetch share it, so their keys match.
+ */
+export function explorerFiltersFromSearch(search: URLSearchParams): ProjectListFilters {
+  const parsed = projectListQuerySchema.parse({
+    q: search.get("q") ?? undefined,
+    status: search.get("status") ?? undefined,
+    source: search.get("source") ?? undefined,
+    sort: search.get("sort") ?? undefined,
+    folder: search.get("folder") ?? undefined,
+  });
+  return { q: parsed.q, status: parsed.status, source: parsed.source, sort: parsed.sort, folder: parsed.folder };
 }
 
 /**

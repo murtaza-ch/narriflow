@@ -78,7 +78,7 @@ async function mount(view: (m: Awaited<ReturnType<typeof modules>>) => ReactNode
   return container;
 }
 async function modules() {
-  const [{ ChakraProvider }, { system }, { ColorModeProvider }, gate, shell, chrome, confirm] = await Promise.all([
+  const [{ ChakraProvider }, { system }, { ColorModeProvider }, gate, shell, chrome, confirm, provider] = await Promise.all([
     import("@chakra-ui/react"),
     import("@narriflow/ui/theme"),
     import("@narriflow/ui/components/color-mode"),
@@ -86,8 +86,9 @@ async function modules() {
     import("./continuation-shell"),
     import("@/app/(app)/_components/app-chrome"),
     import("./integrations/mcp/confirm/confirmation-screen"),
+    import("@/app/_components/api-provider"),
   ]);
-  return { ChakraProvider, system, ColorModeProvider, ...gate, ...shell, ...chrome, ...confirm };
+  return { ChakraProvider, system, ColorModeProvider, ...gate, ...shell, ...chrome, ...confirm, useWorkspaceScope: provider.useWorkspaceScope };
 }
 async function until(check: () => boolean, label: string) {
   for (let i = 0; i < 100; i++) {
@@ -149,13 +150,24 @@ test("a signed-out visitor is sent to sign in and back to the same link", async 
 });
 
 test("other app routes still go through the selected-Workspace gate", async () => {
-  const container = await mount((m) => (
-    <m.AppShell>
-      <p>app page</p>
-    </m.AppShell>
-  ));
+  // An app screen renders under the shell at once, but is never admitted a Workspace here.
+  const admitted: unknown[] = [];
+  const container = await mount((m) => {
+    function AppPage() {
+      const scope = m.useWorkspaceScope();
+      admitted.push(scope);
+      return scope ? <p>app page</p> : <p>app skeleton</p>;
+    }
+    return (
+      <m.AppShell>
+        <AppPage />
+      </m.AppShell>
+    );
+  });
   await until(() => replaced.length > 0, "the workspace-unavailable redirect");
   expect(replaced).toEqual(["/workspace-unavailable"]);
+  expect(container.textContent).toContain("app skeleton");
   expect(container.textContent).not.toContain("app page");
+  expect(admitted.every((scope) => scope === null)).toBe(true);
   expect(paths).not.toContain("/api/integrations/mcp/preparations");
 });

@@ -13,6 +13,7 @@ import { checkoutReturnWorkspace, rememberCheckoutWorkspace } from "@/lib/pendin
 import { Box, Flex, Image, Menu, Portal, Stack, Text } from "@chakra-ui/react";
 import { Building2, Check, ChevronDown, Plus, Settings, Users, Share2, Braces, Gem } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { Bone, LineBone } from "@narriflow/ui/components/page-loading";
 import { PLAN_CATALOG, resolvePricingTier } from "@narriflow/validators";
 import { apiErrorMessage } from "@/app/_components/query-mutation-form";
 import { useWorkspaceSwitch } from "@/app/_components/workspace-query-gate";
@@ -167,6 +168,26 @@ export function WorkspaceSwitcher({
         </Menu.Positioner>
       </Portal>
     </Menu.Root>
+  );
+}
+
+/**
+ * The switcher's box while the Workspace opens: the same padding, 32px tile
+ * and two text lines as the trigger, so the real one replaces it in place.
+ */
+export function WorkspaceSwitcherPlaceholder() {
+  return (
+    <Box px="3" aria-hidden>
+      <Flex w="full" align="center" gap="2.5" px="2.5" py="2.5">
+        <Bone boxSize="8" borderRadius="l2" flexShrink={0} />
+        <Stack gap="0" minW="0" flex="1">
+          <LineBone fontSize="14px" boneWidth="24" />
+          <LineBone fontSize="12px" boneWidth="20" />
+        </Stack>
+        {/* The chevron's place, so the text column is as wide as the real one. */}
+        <Box boxSize="14px" flexShrink={0} />
+      </Flex>
+    </Box>
   );
 }
 

@@ -58,6 +58,7 @@ function ProjectData({ api, projectId }: { api: ClipApi; projectId: string }) {
 	const searchParams = useSearchParams();
 	const activeTab = projectTabFromSearchParam(searchParams.get("tab"));
 	const reviewSelection = searchParams.get("reviewSelection") ?? undefined;
+	const clipView = searchParams.get("view") === "desk" ? "desk" : "gallery";
 	// Read by the app shell already; requested here too so neither waits for the other.
 	const bootstrap = useWorkspaceBootstrap(api.scope);
 	const detailQuery = useQuery({
@@ -102,6 +103,7 @@ function ProjectData({ api, projectId }: { api: ClipApi; projectId: string }) {
 			workspaceId={api.scope.workspaceId}
 			activeTab={activeTab}
 			reviewSelection={reviewSelection}
+			clipView={clipView}
 			detail={detail}
 			project={project}
 			user={user}
@@ -114,6 +116,7 @@ function ProjectBody({
 	workspaceId,
 	activeTab,
 	reviewSelection,
+	clipView,
 	detail,
 	project,
 	user,
@@ -122,6 +125,8 @@ function ProjectBody({
 	workspaceId: string;
 	activeTab: ProjectTab;
 	reviewSelection: string | undefined;
+	/** Gallery or desk; the workspace stylesheet lays the clips out by it. */
+	clipView: "gallery" | "desk";
 	detail: ProjectDetailData;
 	project: ProjectRecord;
 	user: SessionUser;
@@ -155,7 +160,7 @@ function ProjectBody({
 		detail.transcript.view === "full" ? (detail.transcript.data as TranscriptSnapshot | null) : null;
 
 	return (
-		<Stack data-project-page gap={{ base: "4", md: "6" }} maxW="1400px" mx="auto" w="full">
+		<Stack data-project-page data-project-view={clipView} gap={{ base: "4", md: "6" }} maxW="1400px" mx="auto" w="full">
 			<ProjectEventsProvider
 				projectId={projectId}
 				initialSeq={detail.snapshot.lastSeq}

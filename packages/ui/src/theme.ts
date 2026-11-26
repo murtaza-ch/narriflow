@@ -101,6 +101,24 @@ const config = defineConfig({
     "html[data-input-modality='pointer'] *:focus-visible": {
       outline: "none !important",
     },
+    // Pages in the app frame (they render the inset ShellPanel) always show the
+    // root scrollbar, so content that grows past the viewport does not move the
+    // frame. The styled scrollbar below is a classic 10px one in Chromium and
+    // Safari on every system (styling it opts out of overlay scrollbars), with a
+    // transparent track: a page that does not scroll shows 10px more of the
+    // frame's colour. `scrollbar-gutter: stable` on the root reserves nothing
+    // for a styled scrollbar in Chromium (measured), so the scrollbar itself
+    // holds the space. It is on body, whose overflow the viewport takes: a
+    // dialog's scroll lock sets body's overflow inline, which removes the
+    // scrollbar and pads by its width as on any scrolling page. The docs share
+    // the frame and get the same; Studio (a fixed full-screen overlay) and the
+    // marketing pages render no ShellPanel and are unaffected.
+    "html:has([data-shell-panel])": {
+      bg: "bg.sidebar",
+    },
+    "html:has([data-shell-panel]) body": {
+      overflowY: "scroll",
+    },
     "*::-webkit-scrollbar": {
       width: "10px",
       height: "10px",

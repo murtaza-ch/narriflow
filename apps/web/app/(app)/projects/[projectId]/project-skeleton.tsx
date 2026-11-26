@@ -4,7 +4,7 @@ import { Box, Flex, Stack } from "@chakra-ui/react";
 import { Bone } from "@narriflow/ui/components/page-loading";
 import { ChevronDown } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import type { ReactNode } from "react";
+import { type ReactNode, Suspense } from "react";
 
 /** The project tabs, in order; the page lands on Clips unless `?tab=` names another. */
 const TABS = ["Clips", "Transcript", "Repurpose", "Dubbing", "Review", "Posts", "Analytics", "Activity"];
@@ -20,14 +20,27 @@ const ACTION_WIDTHS = [70, 73, 93];
  * full-width desk rows. Static labels are real text; bones stand in for data.
  */
 export function ProjectSkeleton() {
+	// The URL picks the view and tab inside its own boundary, so the skeleton
+	// renders even where the URL is not known yet (the Clips gallery).
+	return (
+		<Suspense fallback={<ProjectSkeletonView isGallery current="Clips" />}>
+			<ProjectSkeletonForUrl />
+		</Suspense>
+	);
+}
+
+function ProjectSkeletonForUrl() {
 	const params = useSearchParams();
-	const isGallery = params.get("view") !== "desk";
 	// A link straight to a tab (e.g. Send for review) shows that tab loading.
 	const current = TABS.find((tab) => tab.toLowerCase() === params.get("tab")) ?? "Clips";
+	return <ProjectSkeletonView isGallery={params.get("view") !== "desk"} current={current} />;
+}
 
+function ProjectSkeletonView({ isGallery, current }: { isGallery: boolean; current: string }) {
 	return (
 		// Same root as the page: a 1400px column with a 24px rhythm.
 		<Stack
+			data-project-view={isGallery ? "gallery" : "desk"}
 			gap={{ base: "4", md: "6" }}
 			maxW="1400px"
 			mx="auto"

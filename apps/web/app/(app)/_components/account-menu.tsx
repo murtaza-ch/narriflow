@@ -6,6 +6,7 @@ import { Box, Flex, Image, Menu, Portal, Text } from "@chakra-ui/react";
 import Link from "next/link";
 import { BadgeDollarSign, CreditCard, LogOut, UserRound, ExternalLink } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { Bone } from "@narriflow/ui/components/page-loading";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { useUpgrade } from "./upgrade";
@@ -64,6 +65,11 @@ export function AccountAvatar({
       )}
     </Flex>
   );
+}
+
+/** The avatar's box (32px, 28px in the drawer) while the account is unknown. It opens nothing. */
+export function AccountAvatarPlaceholder({ size = "md" }: { size?: "sm" | "md" }) {
+  return <Bone boxSize={size === "sm" ? "7" : "8"} borderRadius="full" flexShrink={0} aria-hidden />;
 }
 
 const MENU_LINKS = [

@@ -8,7 +8,7 @@ import type { ClipExportDetail } from "@narriflow/validators/api/exports";
 import type { WorkspaceBootstrap } from "@narriflow/validators/api/workspace";
 import { planFeatureRequirement } from "@narriflow/validators";
 import { useQuery } from "@tanstack/react-query";
-import { notFound } from "next/navigation";
+import { notFound, useParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
@@ -22,9 +22,10 @@ interface ExportRoute {
   exportId: string;
 }
 
-/** The export delivery page for the selected Workspace: scoped reads, no server data. */
-export function ExportDeliveryScreen(route: ExportRoute) {
+/** The export delivery page for the selected Workspace: the ids come from the URL; scoped reads, no server data. */
+export function ExportDeliveryScreen() {
   const scope = useWorkspaceScope();
+  const route = useParams<{ projectId: string; clipId: string; exportId: string }>();
   if (!scope) return <ExportDeliveryLoading />;
   return <ExportDeliveryContent key={`${scope.workspaceId}:${route.exportId}`} scope={scope} {...route} />;
 }

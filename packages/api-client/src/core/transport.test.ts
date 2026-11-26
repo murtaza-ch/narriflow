@@ -293,6 +293,79 @@ describe("token handling", () => {
   });
 });
 
+/** An unsigned JWT for `sub`, base64url-encoded as Clerk issues it. */
+function sessionToken(sub: string): string {
+  const encode = (value: unknown) =>
+    btoa(JSON.stringify(value)).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return `${encode({ alg: "RS256" })}.${encode({ sub, sid: "sess_1", exp: 4_102_444_800 })}.sig`;
+}
+
+describe("the token belongs to the request's user", () => {
+  test("a token issued to the request's user is sent", async () => {
+    const { transport, calls } = setup({
+      handlers: [() => jsonResponse({ ok: true })],
+      getToken: async () => sessionToken(USER),
+    });
+    expect(await transport.scoped(scopeA).json("/a")).toEqual({ ok: true });
+    expect(calls[0]?.headers.get("Authorization")).toBe(`Bearer ${sessionToken(USER)}`);
+  });
+
+  test("another user's token is refused as scope_changed with no request and no failure callback", async () => {
+    const failures: string[] = [];
+    const { transport, calls } = setup({
+      handlers: [() => jsonResponse({})],
+      getToken: async () => sessionToken("user_other"),
+      onAuthenticationFailed: (e) => failures.push(e.code),
+      onWorkspaceSelectionChanged: (e) => failures.push(e.code),
+    });
+    for (const send of [
+      () => transport.scoped(scopeA).json("/a", { method: "POST", json: {}, idempotencyKey: "k" }),
+      () => transport.identity({ userId: USER }).fetch("/api/session/bootstrap"),
+    ]) {
+      const error = (await send().catch((e: unknown) => e)) as ApiError;
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+    }
+    expect(calls).toHaveLength(0);
+    expect(failures).toEqual([]);
+  });
+
+  test("a token whose subject cannot be read is sent unchecked", async () => {
+    const { transport, calls } = setup({
+      handlers: [() => jsonResponse({})],
+      getToken: async () => "a.!!!.c",
+    });
+    await transport.scoped(scopeA).json("/a");
+    expect(calls[0]?.headers.get("Authorization")).toBe("Bearer a.!!!.c");
+  });
+
+  test("the forced refresh after a 401 is checked too", async () => {
+    const failures: string[] = [];
+    const { transport, calls } = setup({
+      handlers: [() => errorResponse(401, "authentication_required"), () => jsonResponse({})],
+      getToken: async (opts) => sessionToken(opts?.skipCache ? "user_other" : USER),
+      onAuthenticationFailed: (e) => failures.push(e.code),
+    });
+    const error = (await transport
+      .scoped(scopeA)
+      .json("/a")
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+    expect(calls).toHaveLength(1);
+    expect(failures).toEqual([]);
+  });
+
+  test("a refreshed token for the same user replays after a 401", async () => {
+    let n = 0;
+    const { transport, calls } = setup({
+      handlers: [() => errorResponse(401, "authentication_required"), () => jsonResponse({ ok: 1 })],
+      getToken: async () => `${sessionToken(USER)}${++n}`,
+    });
+    expect(await transport.scoped(scopeA).json("/a")).toEqual({ ok: 1 });
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe("scope safety", () => {
   test("an A to B to A switch still discards an earlier request if fetch ignores abort", async () => {
     const gate = deferred<Response>();

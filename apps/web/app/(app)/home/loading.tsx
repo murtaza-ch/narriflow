@@ -88,6 +88,9 @@ export default function HomeLoading() {
         gap={{ base: "4", md: "6" }}
         p={{ base: "5", md: "6" }}
         bg="bg.panel"
+        // The card's own 1px edge, so its height matches.
+        borderWidth="1px"
+        borderColor="border.card"
         borderRadius="l3"
       >
         <Flex align="center" gap="2.5" flexShrink={0}>

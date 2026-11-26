@@ -4,7 +4,7 @@ import { Box, Flex, Grid, Heading, Image, Stack, Text } from "@chakra-ui/react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, AudioLines, Check, ImageIcon, LayoutTemplate, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { planUpgradeHighlight, sceneTemplateDefinitionSchema, type CaptionPreset } from "@narriflow/validators";
 import { IconButton } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
@@ -31,8 +31,9 @@ type Section = (typeof SECTIONS)[number];
 const SECTION_LABEL: Record<Section, string> = { identity: "Identity", styles: "Styles", assets: "Assets", scenes: "Scenes", audio: "Audio", voice: "Voice" };
 
 /** One Brand Profile: its header and the active section, read as one aggregate for that section. */
-export function BrandProfileScreen({ profileId }: { profileId: string }) {
+export function BrandProfileScreen() {
   const scope = useBrandScope();
+  const { id: profileId } = useParams<{ id: string }>();
   if (!scope) return <BrandProfileLoading />;
   return (
     <BrandApiProvider key={scope.workspaceId} scope={scope}>

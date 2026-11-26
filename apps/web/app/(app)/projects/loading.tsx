@@ -1,6 +1,5 @@
-import { PageHeader } from "@narriflow/ui/components/page-header";
 import { LoadingScreen } from "@narriflow/ui/components/page-loading";
-import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
+import { ProjectsGridSkeleton, ProjectsHeaderSkeleton } from "./_components/projects-skeleton";
 
 /**
  * The page's own static shell — the same root, the same header fallback and
@@ -10,7 +9,7 @@ import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
 export default function Loading() {
   return (
     <LoadingScreen label="Loading projects">
-      <PageHeader title="Projects" />
+      <ProjectsHeaderSkeleton />
       <ProjectsGridSkeleton />
     </LoadingScreen>
   );
