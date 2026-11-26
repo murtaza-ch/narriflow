@@ -427,8 +427,8 @@ const REBASED_TEXT_LAYER_MIN_DURATION_SEC = 0.5;
  * second it always meant, then re-projected onto the NEW edited timeline —
  * so a layer keeps pointing at the same underlying footage regardless of
  * what shifted around it. A title (`role: "title"`) is pinned to the clip
- * instead: it keeps its edited-time start and end, clamped to the new
- * duration. Returns the input array unchanged (same reference) when nothing
+ * instead: it keeps its edited-time start, and only its end is clamped to
+ * the new duration while it still touches the clip. Returns the input array unchanged (same reference) when nothing
  * actually moves, so the no-op guards in `applyEditorAction`'s callers keep
  * working.
  */
@@ -442,25 +442,24 @@ function rebaseTextLayers(
 
   let changed = false;
   const rebased = layers.map((layer) => {
-    const pinned = layer.role === "title";
-    let nextStart = Math.min(
-      newDurationSec,
-      pinned ? layer.startSec : sourceToEdited(newMap, editedToSource(oldMap, layer.startSec)),
-    );
+    if (layer.role === "title") {
+      // A title is pinned to the clip: it keeps its start. While it still touches the clip only its end is
+      // clamped to the new duration (no floor, open ends stay open); one that no longer touches the clip is
+      // left exactly as it is (the plan skips its empty range, and extending the clip brings it back).
+      if (layer.startSec >= newDurationSec || layer.endSec == null || layer.endSec <= newDurationSec) return layer;
+      changed = true;
+      return { ...layer, endSec: newDurationSec };
+    }
+    let nextStart = Math.min(newDurationSec, sourceToEdited(newMap, editedToSource(oldMap, layer.startSec)));
 
     let nextEnd = layer.endSec;
     if (layer.endSec != null) {
-      nextEnd = Math.min(
-        newDurationSec,
-        pinned ? layer.endSec : sourceToEdited(newMap, editedToSource(oldMap, layer.endSec)),
-      );
+      nextEnd = Math.min(newDurationSec, sourceToEdited(newMap, editedToSource(oldMap, layer.endSec)));
 
       // Collapsed entirely inside a new cut (or just squeezed too thin by
       // one) — clamp to the minimum floor, pulling the start back first if
-      // there isn't enough room ahead of it. A title the new duration does
-      // not touch keeps its own length, however short.
-      const moved = !pinned || nextStart !== layer.startSec || nextEnd !== layer.endSec;
-      if (moved && nextEnd - nextStart < REBASED_TEXT_LAYER_MIN_DURATION_SEC) {
+      // there isn't enough room ahead of it.
+      if (nextEnd - nextStart < REBASED_TEXT_LAYER_MIN_DURATION_SEC) {
         nextEnd = Math.min(newDurationSec, nextStart + REBASED_TEXT_LAYER_MIN_DURATION_SEC);
         nextStart = Math.max(0, nextEnd - REBASED_TEXT_LAYER_MIN_DURATION_SEC);
       }

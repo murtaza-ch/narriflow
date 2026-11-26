@@ -596,32 +596,34 @@ describe("text-layer ripple", () => {
     expect(trimmed.studioEdits.textLayers).toBe(pinned.studioEdits.textLayers);
   });
 
-  test("a title clamps to a shorter clip, keeping the 0.5s floor at the new end", () => {
+  test("a title keeps its start on a shorter clip; only its end is clamped, with no floor", () => {
     // window [10,40): edited duration 30. Trim to [10,13): duration 3.
-    const clamped = applyEditorAction(makeDocumentWithTextLayer(1, 5, "title"), {
-      type: "setClipBoundaries",
-      startSec: 10,
-      endSec: 13,
-    });
-    expect(clamped.studioEdits.textLayers[0]).toMatchObject({ startSec: 1, endSec: 3 });
-    const collapsed = applyEditorAction(makeDocumentWithTextLayer(4, 6, "title"), {
-      type: "setClipBoundaries",
-      startSec: 10,
-      endSec: 13,
-    });
-    expect(collapsed.studioEdits.textLayers[0]).toMatchObject({ startSec: 2.5, endSec: 3 });
-    const whole = applyEditorAction(makeDocumentWithTextLayer(0, null, "title"), {
-      type: "setClipBoundaries",
-      startSec: 10,
-      endSec: 13,
-    });
-    expect(whole.studioEdits.textLayers[0]).toMatchObject({ startSec: 0, endSec: null });
+    const trim = (doc: EditorDocument) => applyEditorAction(doc, { type: "setClipBoundaries", startSec: 10, endSec: 13 });
+    expect(trim(makeDocumentWithTextLayer(1, 5, "title")).studioEdits.textLayers[0]).toMatchObject({ startSec: 1, endSec: 3 });
+    // A start of 2.8 on a clip trimmed to 3 stays 2.8: no 0.5 s floor pulls it back.
+    expect(trim(makeDocumentWithTextLayer(2.8, 6, "title")).studioEdits.textLayers[0]).toMatchObject({ startSec: 2.8, endSec: 3 });
+    // An open end stays open.
+    expect(trim(makeDocumentWithTextLayer(0, null, "title")).studioEdits.textLayers[0]).toMatchObject({ startSec: 0, endSec: null });
+  });
+
+  test("a title that no longer touches the clip is left as it is, and extending the clip brings it back", () => {
+    const doc = makeDocumentWithTextLayer(4, 6, "title");
+    const trimmed = applyEditorAction(doc, { type: "setClipBoundaries", startSec: 10, endSec: 13 });
+    expect(trimmed.studioEdits.textLayers).toBe(doc.studioEdits.textLayers);
+    const extended = applyEditorAction(trimmed, { type: "setClipBoundaries", startSec: 10, endSec: 40 });
+    expect(extended.studioEdits.textLayers[0]).toMatchObject({ startSec: 4, endSec: 6 });
   });
 
   test("a short title the new duration does not touch keeps its own length", () => {
     const doc = makeDocumentWithTextLayer(1, 1.2, "title");
     const next = applyEditorAction(doc, { type: "deleteRange", range: { startSec: 20, endSec: 25 } });
     expect(next.studioEdits.textLayers).toBe(doc.studioEdits.textLayers);
+  });
+
+  test("a body layer keeps today's rebase and 0.5 s floor next to a pinned title", () => {
+    const doc = makeDocumentWithTextLayer(5, 8, "body");
+    const next = applyEditorAction(doc, { type: "deleteRange", range: { startSec: 14, endSec: 20 } });
+    expect(next.studioEdits.textLayers[0]).toMatchObject({ startSec: 4, endSec: 4.5 });
   });
 
   test("setClipBoundaries rebases layers against the new window, not just deletedRanges", () => {
