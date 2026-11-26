@@ -1,11 +1,13 @@
 import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
 import { randomUUID } from "node:crypto";
-import type { BrandTemplate, Prisma as PrismaTypes } from "@prisma/client";
+import { Prisma, type BrandTemplate } from "@prisma/client";
 import {
   applyBrandColorsToCaption,
   brandTemplateInputSchema,
+  brandTemplateSnapshotSchema,
   brandTemplateUpdateSchema,
+  brandTitleSchema,
   captionPresetSchema,
   logoPositionSchema,
   presignBrandLogoSchema,
@@ -13,6 +15,7 @@ import {
   type BrandTemplateSnapshot,
   type BrandTemplateSummary,
   type BrandTemplateUpdate,
+  type BrandTitle,
   type PresignBrandLogoInput,
 } from "@narriflow/validators";
 import {
@@ -70,6 +73,52 @@ export class BrandTemplateForbiddenError extends ExpectedDomainFailureError<"bra
   }
 }
 
+/** A stored title column: null (none stored, or unreadable) is the built-in default. */
+function storedTitle(value: unknown): BrandTitle | null {
+  if (value === null || value === undefined) return null;
+  const parsed = brandTitleSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** The title column value to write: SQL NULL for the built-in default. */
+function titleColumn(title: BrandTitle | null): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput {
+  return title === null ? Prisma.DbNull : (title as unknown as Prisma.InputJsonValue);
+}
+
+export type BrandTemplateSnapshotSource = Pick<
+  BrandTemplate,
+  | "id"
+  | "captionPreset"
+  | "logoStorageKey"
+  | "logoPosition"
+  | "logoOpacity"
+  | "logoScalePct"
+  | "primaryColor"
+  | "secondaryColor"
+  | "accentColor"
+  | "title"
+>;
+
+/**
+ * The one template snapshot builder. Projects freeze it as `brandSnapshot` and
+ * Brand Profiles as `style`; campaign checks compare the two as JSON, so both
+ * go through this function and the schema's key order.
+ */
+export function brandTemplateSnapshot(template: BrandTemplateSnapshotSource): BrandTemplateSnapshot {
+  return brandTemplateSnapshotSchema.parse({
+    templateId: template.id,
+    captionPreset: template.captionPreset,
+    logoStorageKey: template.logoStorageKey,
+    logoPosition: template.logoPosition,
+    logoOpacity: template.logoOpacity,
+    logoScalePct: template.logoScalePct,
+    primaryColor: template.primaryColor,
+    secondaryColor: template.secondaryColor,
+    accentColor: template.accentColor,
+    title: storedTitle(template.title),
+  });
+}
+
 function toSummary(template: BrandTemplate): BrandTemplateSummary {
   return {
     id: template.id,
@@ -85,8 +134,7 @@ function toSummary(template: BrandTemplate): BrandTemplateSummary {
     primaryColor: template.primaryColor,
     secondaryColor: template.secondaryColor,
     accentColor: template.accentColor,
-    // Stored per template from title-text ticket 05; until then every template has the built-in default.
-    title: null,
+    title: storedTitle(template.title),
     createdAt: template.createdAt.toISOString(),
     updatedAt: template.updatedAt.toISOString(),
   };
@@ -131,8 +179,8 @@ export class BrandTemplateService {
     scope: ActorScope,
     prepare: (
       actor: Awaited<ReturnType<typeof workspaceService.requireActor>>,
-      tx: PrismaTypes.TransactionClient,
-    ) => Promise<PrismaTypes.BrandTemplateUncheckedCreateInput>,
+      tx: Prisma.TransactionClient,
+    ) => Promise<Prisma.BrandTemplateUncheckedCreateInput>,
     receipt?: {
       mutation: IntegrationMutation;
       command: "create_brand_template" | "duplicate_brand_template";
@@ -140,7 +188,7 @@ export class BrandTemplateService {
     },
   ): Promise<BrandTemplateSummary> {
     const { workspaceId } = scope;
-    const createIn = async (tx: PrismaTypes.TransactionClient) => {
+    const createIn = async (tx: Prisma.TransactionClient) => {
       const actor = await workspaceService.requireActor(scope.actorUserId, workspaceId, "brand.manage");
       const data = await prepare(actor, tx);
       await lockBrandOwner(tx, "brand-templates", { userId: null, workspaceId });
@@ -172,20 +220,8 @@ export class BrandTemplateService {
     return accepted.value;
   }
 
-  buildSnapshot(template: BrandTemplate): BrandTemplateSnapshot {
-    const captionPreset = captionPresetSchema.parse(template.captionPreset);
-    return {
-      templateId: template.id,
-      captionPreset,
-      logoStorageKey: template.logoStorageKey,
-      logoPosition: logoPositionSchema.parse(template.logoPosition),
-      logoOpacity: template.logoOpacity,
-      logoScalePct: template.logoScalePct,
-      primaryColor: template.primaryColor,
-      secondaryColor: template.secondaryColor,
-      accentColor: template.accentColor,
-      title: null,
-    };
+  buildSnapshot(template: BrandTemplateSnapshotSource): BrandTemplateSnapshot {
+    return brandTemplateSnapshot(template);
   }
 
   async list(scope: ActorScope): Promise<{
@@ -265,7 +301,7 @@ export class BrandTemplateService {
         updatedByUserId: scope.actorUserId,
         name: parsed.name,
         isBuiltIn: false,
-        captionPreset: captionPreset as unknown as PrismaTypes.InputJsonValue,
+        captionPreset: captionPreset as unknown as Prisma.InputJsonValue,
         logoStorageKey: parsed.logoStorageKey ?? null,
         logoPosition: parsed.logoPosition,
         logoOpacity: parsed.logoOpacity,
@@ -273,6 +309,7 @@ export class BrandTemplateService {
         primaryColor: parsed.primaryColor,
         secondaryColor: parsed.secondaryColor,
         accentColor: parsed.accentColor ?? null,
+        title: titleColumn(parsed.title ?? null),
       };
     }, mutation && { mutation, command: "create_brand_template", input: parsed });
   }
@@ -304,7 +341,7 @@ export class BrandTemplateService {
       await brandFontService.assertSelection(actor, parsed.captionPreset.fontAsset);
     }
 
-    const data: PrismaTypes.BrandTemplateUpdateInput = { updatedByUserId: scope.actorUserId };
+    const data: Prisma.BrandTemplateUpdateInput = { updatedByUserId: scope.actorUserId };
     if (parsed.name !== undefined) data.name = parsed.name;
     if (parsed.logoStorageKey !== undefined) {
       assertOwnedLogoKey(assetOwnerUserId, parsed.logoStorageKey, context);
@@ -318,6 +355,7 @@ export class BrandTemplateService {
       data.secondaryColor = parsed.secondaryColor;
     }
     if (parsed.accentColor !== undefined) data.accentColor = parsed.accentColor;
+    if (parsed.title !== undefined) data.title = titleColumn(parsed.title);
 
     const nextPrimary = parsed.primaryColor ?? existing.primaryColor;
     const nextSecondary = parsed.secondaryColor ?? existing.secondaryColor;
@@ -329,7 +367,7 @@ export class BrandTemplateService {
       nextPrimary,
       nextSecondary,
     );
-    data.captionPreset = nextCaption as unknown as PrismaTypes.InputJsonValue;
+    data.captionPreset = nextCaption as unknown as Prisma.InputJsonValue;
 
     const updated = await prisma.brandTemplate.update({
       where: { id },
@@ -406,7 +444,7 @@ export class BrandTemplateService {
         updatedByUserId: scope.actorUserId,
         name: newName?.trim() || `${source.name} (Copy)`,
         isBuiltIn: false,
-        captionPreset: source.captionPreset as PrismaTypes.InputJsonValue,
+        captionPreset: source.captionPreset as Prisma.InputJsonValue,
         logoStorageKey: source.logoStorageKey,
         logoPosition: source.logoPosition,
         logoOpacity: source.logoOpacity,
@@ -414,6 +452,7 @@ export class BrandTemplateService {
         primaryColor: source.primaryColor,
         secondaryColor: source.secondaryColor,
         accentColor: source.accentColor,
+        title: titleColumn(storedTitle(source.title)),
       };
     }, mutation && { mutation, command: "duplicate_brand_template", input: { sourceId: id, name: newName?.trim() || null } });
   }

@@ -2347,6 +2347,9 @@ model BrandTemplate {
   secondaryColor String  @default("#00FF88")
   accentColor    String?
 
+  /// Title settings for new clips (`brandTitleSchema`); NULL is the built-in default.
+  title Json?
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
