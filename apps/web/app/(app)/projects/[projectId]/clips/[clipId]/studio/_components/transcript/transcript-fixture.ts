@@ -9,7 +9,7 @@ import {
   type TranscriptUtterance,
 } from "@narriflow/validators";
 
-// A podcast-like clip for the subtitle panel's prototype, tests and measurements: two speakers,
+// A podcast-like clip for the subtitle panel's tests and measurements: two speakers,
 // natural word lengths and pauses, about 180 s in English (or a shorter Urdu passage).
 
 const ENGLISH = [

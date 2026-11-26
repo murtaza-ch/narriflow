@@ -16,7 +16,7 @@ export interface CaptionRowActions {
   readonly mergeNext: (row: CaptionRowAddress, next: CaptionRowAddress) => void;
 }
 
-/** The row's emoji buttons; the panel supplies the Studio's, the prototype and tests their own. */
+/** The row's emoji buttons; the panel supplies the Studio's, the tests their own. */
 export type RowEmojiSlot = (row: CaptionRowModel, direction: "ltr" | "rtl") => React.ReactNode;
 
 function RowAction({ label, onClick, disabled = false, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {

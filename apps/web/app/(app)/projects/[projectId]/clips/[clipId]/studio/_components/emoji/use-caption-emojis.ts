@@ -25,7 +25,7 @@ import type { CaptionEmojiLook } from "./emoji-glyph";
 
 type Emojis = Readonly<Record<string, CaptionEmojiRef>>;
 
-/** What the emoji controls read and write; the Studio wires it to its editing session, the prototype to local state. */
+/** What the emoji controls read and write; the Studio wires it to its editing session, the tests to local state. */
 export interface CaptionEmojiSource {
   readonly clipId: string;
   readonly preset: CaptionPreset;

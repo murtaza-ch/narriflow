@@ -14,8 +14,7 @@ import type { CaptionEmojiRun } from "../../emoji/caption-emoji-runs";
 import type { CaptionEmojiWord } from "../../emoji/caption-emoji-words";
 import type { CaptionEmojiEditor } from "../../emoji/use-caption-emojis";
 
-// Mock Studio state for the AI tools panel: its static-markup tests and its prototype page
-// (`/prototype/ai-tools`) render the real rows over the same scenarios.
+// Mock Studio state for the AI tools panel: its static-markup tests render the real rows over these scenarios.
 
 export type AiToolsScenario =
   /** A fresh English clip: everything to offer, Auto-censor gated on Free, speaker analysis running. */

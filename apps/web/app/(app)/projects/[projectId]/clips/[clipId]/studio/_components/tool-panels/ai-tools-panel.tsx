@@ -27,7 +27,7 @@ export function AiToolsPanel() {
   return <AiToolsList emojiEditor={emojiEditor} />;
 }
 
-/** The rows over a given emoji editor (the prototype passes one over local state). */
+/** The rows over a given emoji editor (the tests pass one over mock state). */
 export function AiToolsList({ emojiEditor }: { emojiEditor: CaptionEmojiEditor }) {
   const { editingElsewhere } = useStudio("editingElsewhere");
   const rows = orderAiToolRows([
