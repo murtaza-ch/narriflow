@@ -23,6 +23,7 @@ import {
   Captions,
   Clapperboard,
   Type,
+  Heading,
   Music,
 } from "lucide-react";
 import {
@@ -68,6 +69,8 @@ import { labelForTimelineSegment } from "./subtitle-lines";
 import { manualBrollPreviewWindow } from "./broll-preview";
 import { studioSliderCss } from "./tool-panels/panel-ui";
 import { MUSIC_LANE_EMPTY_HEIGHT, MUSIC_LANE_HEIGHT, MusicLane } from "./music-lane";
+// The Text panel's timing fields use the same floor, so a chip retime cannot collapse a layer to a sliver.
+import { MIN_TEXT_LAYER_DURATION_SEC } from "./text-layer-commands";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -929,10 +932,6 @@ const CONTROL_BAR_HEIGHT = 52;
 const TIMELINE_OVERSCAN_PX = 900;
 const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
 const TEXT_TRACK_HEIGHT = 26;
-// Not schema-enforced — a UI-level floor (matches text-panel.tsx's own
-// TextLayerDetail timing fields) so a chip drag/edge-retime can't collapse a
-// layer to an unusably thin sliver.
-const MIN_TEXT_LAYER_DURATION_SEC = 0.5;
 
 function useTimelineViewport(ref: RefObject<HTMLDivElement | null>) {
   const [viewport, setViewport] = useState({ scrollLeft: 0, clientWidth: 0 });
@@ -1634,6 +1633,7 @@ interface TextLayerDragState {
 
 const TextLayerChip = memo(function TextLayerChip({
   id,
+  role,
   text,
   startSec,
   endSec,
@@ -1644,6 +1644,7 @@ const TextLayerChip = memo(function TextLayerChip({
   compositeToBaseEdited,
 }: {
   id: string;
+  role: "title" | "body";
   text: string;
   startSec: number;
   endSec: number | null;
@@ -1653,7 +1654,7 @@ const TextLayerChip = memo(function TextLayerChip({
   baseEditedToComposite: (timeSec: number) => number;
   compositeToBaseEdited: (timeSec: number) => number;
 }) {
-  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo } = useStudio("setStudioEdits", "endCoalesce", "selectTextLayer", "seekTo");
+  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo, playbackClock } = useStudio("setStudioEdits", "endCoalesce", "selectTextLayer", "seekTo", "playbackClock");
   const dragRef = useRef<TextLayerDragState | null>(null);
 
   const displayStartSec = baseEditedToComposite(startSec);
@@ -1724,10 +1725,12 @@ const TextLayerChip = memo(function TextLayerChip({
         );
         patch({ startSec: newStart });
       } else {
+        // On a clip shorter than the minimum the footage wins: never past the clip's end.
         const newEnd = Math.max(
-          drag.grabStartSec + MIN_TEXT_LAYER_DURATION_SEC,
+          Math.min(drag.grabStartSec + MIN_TEXT_LAYER_DURATION_SEC, duration),
           Math.min(compositeToBaseEdited(baseEditedToComposite(grabEndOrDuration) + deltaSec), duration),
         );
+        if (!(newEnd > drag.grabStartSec)) return;
         patch({ endSec: newEnd });
       }
     },
@@ -1745,11 +1748,13 @@ const TextLayerChip = memo(function TextLayerChip({
       dragRef.current = null;
       if (drag && !drag.moved) {
         selectTextLayer(id);
-        seekTo(displayStartSec);
+        // A layer that is not on screen: show it.
+        const now = playbackClock.getSnapshot();
+        if (now < displayStartSec || now >= displayEndSec) seekTo(displayStartSec);
       }
       if (drag) endCoalesce();
     },
-    [id, displayStartSec, selectTextLayer, seekTo, endCoalesce],
+    [id, displayStartSec, displayEndSec, selectTextLayer, seekTo, endCoalesce, playbackClock],
   );
 
   // Mirrors TrimHandle's onPointerCancel: without it, a canceled pointer
@@ -1777,30 +1782,35 @@ const TextLayerChip = memo(function TextLayerChip({
       style={{ left: `${x}px`, width: `${w}px`, touchAction: "none" }}
       h={`${TEXT_TRACK_HEIGHT}px`}
       borderRadius="6px"
-      border="2px solid"
-      borderColor={isSelected ? "studio.accent" : "transparent"}
-      bg="studio.raised"
+      bg={isSelected ? "studio.accentSubtle" : "studio.raised"}
       cursor="grab"
       overflow="hidden"
+      role="button"
+      aria-label={`${role === "title" ? "Title" : "Text"} "${text}", ${startSec.toFixed(1)} to ${endSec != null ? `${endSec.toFixed(1)} seconds` : "the clip end"}`}
+      aria-pressed={isSelected}
       onPointerDown={handlePointerDown("move")}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
-      transition="border-color 120ms, background 120ms"
-      _hover={{ bg: "studio.borderStrong" }}
+      transition="background 120ms"
+      _hover={{ bg: isSelected ? "studio.accentSubtle" : "studio.borderStrong" }}
     >
       <Text
+        display="flex"
+        alignItems="center"
+        gap="5px"
         fontSize="11px"
         fontWeight="500"
-        color={isSelected ? "studio.fg" : "studio.fgMuted"}
-        px="6px"
-        lineHeight={`${TEXT_TRACK_HEIGHT - 4}px`}
+        color={isSelected ? "studio.accentFg" : "studio.fgMuted"}
+        px="8px"
+        lineHeight={`${TEXT_TRACK_HEIGHT}px`}
         whiteSpace="nowrap"
         overflow="hidden"
         textOverflow="ellipsis"
         userSelect="none"
       >
-        {text}
+        {role === "title" ? <Heading size={11} style={{ flexShrink: 0 }} aria-hidden /> : <Type size={11} style={{ flexShrink: 0 }} aria-hidden />}
+        <Box as="span" overflow="hidden" textOverflow="ellipsis">{text}</Box>
       </Text>
 
       {/* Edge grips — retime start/end independently, same pattern as the
@@ -2237,18 +2247,18 @@ export function Timeline() {
   const hasSceneBlocks = sceneBlocks.length > 0;
   const sceneTrackTop = RULER_HEIGHT + TRACK_HEIGHT + 4;
   const brollTrackTop = sceneTrackTop + (hasSceneBlocks ? SCENE_TRACK_HEIGHT + 4 : 0);
-  const wordTrackTop =
+  // The text lane sits right above the subtitle lane (title-text spec section 6), as in Vizard.
+  const textTrackTop =
     brollTrackTop + (hasBrollLane ? BROLL_TRACK_HEIGHT + 4 : 0);
+  const wordTrackTop = textTrackTop + (hasTextLayers ? TEXT_TRACK_HEIGHT + 4 : 0);
   const waveformTrackTop = wordTrackTop + WORD_CHIPS_HEIGHT + 4;
   // The music lane is always there: a slim "Add music" slot until a block exists.
   const musicLaneHeight =
     studioEdits.music.blocks.length > 0 ? MUSIC_LANE_HEIGHT : MUSIC_LANE_EMPTY_HEIGHT;
   const musicTrackTop = waveformTrackTop + WAVEFORM_HEIGHT + 6;
-  const textTrackTop = musicTrackTop + musicLaneHeight + 6;
   const trackAreaHeight =
     waveformTrackTop + WAVEFORM_HEIGHT + 8 +
-    (musicLaneHeight + 6) +
-    (hasTextLayers ? TEXT_TRACK_HEIGHT + 6 : 0);
+    (musicLaneHeight + 6);
 
   return (
     <Box
@@ -2441,10 +2451,10 @@ export function Timeline() {
             { top: RULER_HEIGHT, height: TRACK_HEIGHT, icon: <Film size={13} /> },
             ...(hasSceneBlocks ? [{ top: sceneTrackTop, height: SCENE_TRACK_HEIGHT, icon: <Clapperboard size={13} /> }] : []),
             ...(hasBrollLane ? [{ top: brollTrackTop, height: BROLL_TRACK_HEIGHT, icon: <ImageIcon size={13} /> }] : []),
+            ...(hasTextLayers ? [{ top: textTrackTop, height: TEXT_TRACK_HEIGHT, icon: <Type size={13} /> }] : []),
             { top: wordTrackTop, height: WORD_CHIPS_HEIGHT, icon: <Captions size={13} /> },
             { top: waveformTrackTop, height: WAVEFORM_HEIGHT, icon: <AudioLines size={13} /> },
             { top: musicTrackTop, height: musicLaneHeight, icon: <Music size={13} /> },
-            ...(hasTextLayers ? [{ top: textTrackTop, height: TEXT_TRACK_HEIGHT, icon: <Type size={13} /> }] : []),
           ].map((lane) => (
             <Flex
               key={lane.top}
@@ -2924,6 +2934,7 @@ export function Timeline() {
                   <TextLayerChip
                     key={layer.id}
                     id={layer.id}
+                    role={layer.role}
                     text={layer.text}
                     startSec={layer.startSec}
                     endSec={layer.endSec ?? null}

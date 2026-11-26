@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
-import { studioEditsSchema } from "@narriflow/validators";
+import { studioEditsSchema, studioTextLayerSchema } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 
 let fields: Record<string, unknown> = {};
@@ -21,22 +21,33 @@ const render = (node: React.ReactNode) =>
 const clock = { getSnapshot: () => 0, getServerSnapshot: () => 0, subscribe: () => () => undefined };
 const noop = () => undefined;
 
-function textLayer(index: number) {
-  return {
+function textLayer(index: number, style: Record<string, unknown> = {}) {
+  return studioTextLayerSchema.parse({
     id: `layer-${index}`,
+    role: index === 0 ? "title" : "body",
     text: `Layer ${index}`,
     startSec: 0,
     endSec: null,
-    positionX: 50,
-    positionY: 18,
-    fontName: "Arial",
-    fontSize: 44,
-    color: "#FFFFFF",
-    backgroundColor: null,
-    backgroundOpacity: 0.72,
-    bold: true,
-    outlineColor: "#000000",
-    outlineWidth: 2,
+    style,
+  });
+}
+
+/** What the Text panel reads from the Studio. */
+function textPanelFields(layers: readonly ReturnType<typeof textLayer>[], selectedTextLayerId: string | null) {
+  return {
+    studioEdits: { textLayers: layers },
+    setStudioEdits: noop,
+    endCoalesce: noop,
+    playbackClock: clock,
+    selectedTextLayerId,
+    selectTextLayer: noop,
+    deselectTextLayer: noop,
+    setActiveTool: noop,
+    compositeToBaseEdited: (time: number) => time,
+    baseEditedToComposite: (time: number) => time,
+    editedTimeMap: { editedDurationSec: 30 },
+    clipInfo: { clipTitle: "A clip", title: "hook" },
+    seekTo: noop,
   };
 }
 
@@ -144,18 +155,33 @@ describe("Document caps the save would refuse", () => {
   });
 
   test("a full text layer list says why nothing more can be added", () => {
-    fields = {
-      studioEdits: { textLayers: Array.from({ length: MAX_TEXT_LAYERS }, (_, index) => textLayer(index)) },
-      setStudioEdits: noop,
-      playbackClock: clock,
-      duration: 30,
-      selectedTextLayerId: null,
-      selectTextLayer: noop,
-      deselectTextLayer: noop,
-      seekTo: noop,
-    };
+    fields = textPanelFields(Array.from({ length: MAX_TEXT_LAYERS }, (_, index) => textLayer(index + 1)), null);
     const markup = render(<TextPanel />);
     expect(markup).toContain(`up to ${MAX_TEXT_LAYERS} text layers`);
     expect(markup).toContain('aria-disabled="true"');
+  });
+});
+
+describe("Text panel Settings", () => {
+  test("an effect that is off offers + and hides its controls; Corners and Box display need a background", () => {
+    fields = textPanelFields([textLayer(1, { background: null, shadow: null, stroke: null })], "layer-1");
+    const markup = render(<TextPanel />);
+    expect(markup).toContain('aria-label="Add shadow"');
+    expect(markup).toContain('aria-label="Add stroke"');
+    expect(markup).toContain('aria-label="Add background"');
+    expect(markup).not.toContain("Corners");
+    expect(markup).not.toContain("Box display");
+    expect(markup).not.toContain("Apply to all clips");
+  });
+
+  test("an effect that is on offers − and its controls; a title offers Apply to all clips", () => {
+    fields = textPanelFields([textLayer(0, { background: { color: "#FFFFFF", opacity: 1, corners: "rounded", display: "line" } })], "layer-0");
+    const markup = render(<TextPanel />);
+    expect(markup).toContain('aria-label="Remove background"');
+    expect(markup).toContain('aria-label="Background colour"');
+    expect(markup).toContain('aria-label="Text colour"');
+    expect(markup).toContain("Corners");
+    expect(markup).toContain("Box display");
+    expect(markup).toContain("Apply to all clips");
   });
 });
