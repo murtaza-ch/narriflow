@@ -3,6 +3,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { createPendingBusinessWorkspaceService } from "./pending-business-workspace.service";
 import { randomUUID } from "node:crypto";
 import { logFailure } from "./log-failure";
+import { clearWorkspaceWatermarks } from "./watermark-clearance-runtime";
 import Stripe from "stripe";
 import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./workspace-plan-change-stripe";
 import {
@@ -531,7 +532,7 @@ export class BillingService {
     }
     return createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ clearWatermarks: clearWorkspaceWatermarks }),
       provider: this.stripeProviderAdapter(),
       clock: { now: () => new Date() },
       diagnostics: {

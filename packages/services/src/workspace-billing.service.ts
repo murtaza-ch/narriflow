@@ -19,6 +19,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { Prisma, type WorkspaceBillingAccount } from "@prisma/client";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { projectRetentionService } from "./project-retention.service";
+import { clearWatermarksAfterBillingCommit } from "./watermark-clearance-trigger";
 import { randomUUID } from "node:crypto";
 import { createWorkspacePlanChanges, type WorkspacePlanChangeStore, type WorkspacePlanChangeProvider } from "./workspace-plan-change";
 import { createPrismaWorkspacePlanChangeStore } from "./workspace-plan-change-store";
@@ -709,7 +710,12 @@ function toProjection(
   };
 }
 
-export function createPrismaWorkspaceBillingStore(options: { register?(ids: readonly string[]): Promise<void> } = {}): WorkspaceBillingStore {
+export function createPrismaWorkspaceBillingStore(options: {
+  register?(ids: readonly string[]): Promise<void>;
+  /** Renders a Workspace's Free-plan outputs again without the mark. Runs after
+   * every verified commit whose plan has `export.noWatermark`; never fails the commit. */
+  clearWatermarks?(workspaceId: string): Promise<void>;
+} = {}): WorkspaceBillingStore {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("DATABASE_URL is required for Workspace Billing");
 
@@ -1625,6 +1631,10 @@ export function createPrismaWorkspaceBillingStore(options: { register?(ids: read
         return toProjection({ ...row, pricingTier: input.tier, status: workspaceStatus }, account, null);
       });
       await deliverProgressAfterCommit(prisma, revocations);
+      // After commit, in its own transactions; it swallows and logs its failures.
+      if (options.clearWatermarks) {
+        await clearWatermarksAfterBillingCommit({ workspaceId: input.workspaceId, tier: input.tier }, options.clearWatermarks);
+      }
       return result;
     },
   };
