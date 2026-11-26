@@ -1,0 +1,8 @@
+# Orchestrator review of ticket 01 (commits 7c334bdac, 60f6b7ffc)
+
+Read: `packages/validators/src/text-layer.ts`, `packages/caption-scene/src/text-layer/layout.ts`, and the diffs to `studio-edits.ts`, `editor-document.ts`, `brand-template.ts`, `clip-selection.ts`. Tests run: validators 89 pass, layout 22 pass. The model and the builder are accepted. Fix these while finishing ticket 02:
+
+1. **Overlapping line boxes double-paint when the background is not opaque.** In `line` display each line gets its own `ShapePiece`, and with the default pitch (1.2) and plate height (1.3 em) neighbours overlap by 0.1 em. At `opacity < 1` the overlap is a darker stripe. Emit the line boxes of one layer as ONE `ShapePiece` whose path is the line rectangles one after another (same winding), so both renderers fill the union once (SVG `nonzero`, libass fills same-direction overlapping subpaths). Check the painter's `ShapeLayer` does not set `fill-rule: evenodd`. Add a layout test, and a sheet sample: three lines of unequal width on a 60% black `line` background, which must show no stripes in the export.
+2. **A sheet sample with a 60% opaque `block` background and a shadow**, to see that a shadow does not show through the text's own box in a surprising way. Report what it looks like; no change expected.
+3. **Low: `brandTitleSchema.style`** fills a partial stored style from the body defaults (a stored `{ color }` gains the black body stroke). The form always writes a whole style, so only document it on the schema, or merge onto `DEFAULT_TITLE_STYLE` if that is a one-liner.
+4. **Low: uppercase** uses `toUpperCase()`. If `applyCaptionTextTransform` (validators `caption-preset.ts`) does the same job for captions, use it so both follow one rule; otherwise leave it.
