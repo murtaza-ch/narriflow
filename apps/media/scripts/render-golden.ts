@@ -60,10 +60,12 @@ import {
   compileClipCompositionCommand,
   compileCompositionPlanAudioSchedule,
   compileCompositionPlanCaptions,
+  compositionFrameRate,
   hdrColorOf,
   type HdrColor,
 } from "../src/composition-ffmpeg-adapter";
 import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
+import { compileCompositionPlanTextLayers } from "../src/text-layer-ass";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
 import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection, withAudioTimestampGaps } from "../src/worker-process";
@@ -1011,6 +1013,15 @@ async function startInterruptedServer(filePath: string, failAtFraction: number) 
   return { url: `http://127.0.0.1:${port}/source.mp4`, stop: () => { for (const socket of sockets) socket.destroy(); server.close(); } };
 }
 
+/** A target's Text Layer script, written as the render attempt writes it; null when the target has none. */
+export async function writeGoldenTextScript(plan: ClipCompositionPlan, targetId: string, inspection: WorkerMediaInspection, workDir: string): Promise<string | null> {
+  const text = compileCompositionPlanTextLayers(plan, targetId, undefined, compositionFrameRate(inspection));
+  if (text.ass.length === 0) return null;
+  const path = join(workDir, `text-${targetId}.ass`);
+  await writeFile(path, text.ass, "utf8");
+  return path;
+}
+
 export async function runCase(context: CaseContext, id: string): Promise<CaseRecord> {
   const definition = context.inputs.cases[id];
   if (!definition) throw new Error(`unknown case ${id}`);
@@ -1082,6 +1093,14 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         await writeFile(subtitlePath, ass, "utf8");
         targetRecord.captions.assSha256 = sha256(ass);
       }
+      let textAssPath: string | null;
+      try {
+        textAssPath = await writeGoldenTextScript(planned.plan, target.id, planned.inspection, join(caseDir, "work"));
+      } catch (error) {
+        record.failure = { stage: "compile", code: failureCode(error), message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
+        targetRecord.measurements["render.ok"] = false;
+        continue;
+      }
       const outputPath = join(caseDir, `${target.id}.mp4`);
       let argv: string[];
       const compile = (mixPeakCeiling: number | null) => compileClipCompositionCommand({
@@ -1096,7 +1115,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         encoder: context.inputs.manifest.encoder,
         cutPlan: planned.cutPlan,
         ...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
-        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
+        assets: { subtitlePath, textAssPath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
       });
       try {
         argv = compile(null);
