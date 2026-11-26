@@ -2,16 +2,19 @@
   "cards": {
     "anime": {
       "hash": "16d5cf29b6de80794030458c0e80e9f12a071db969dd7913d985152cc2a2664c",
+      "assetHash": "6a9a85c0c8845df4bf4c2226d166f2cfe2f3db75fc1d33c78aa668ee8dd540c6",
       "faces": [
         "Pixelify Sans Bold"
       ]
     },
     "arc": {
       "hash": "50fe1ede001c0908771e3c8587e55fc2acb7ade89b4c17f70a9691981e0cf219",
+      "assetHash": "766905fbe22b471df28e5bb6cf981ada31d57b0b02e4943d83172098a98ef48a",
       "faces": []
     },
     "arthouse": {
       "hash": "d73047985b7130f774d28109a410c37474ba2b1c83fbd25127f6fb4043df8509",
+      "assetHash": "8ca0b229fe4a4f604667e94d7ecc5112910a9cdf2998e275b7f3aa91d4849227",
       "faces": [
         "Big Shoulders Display Black",
         "Shrikhand"
@@ -19,6 +22,7 @@
     },
     "aura": {
       "hash": "fcfa5c9707831ff545d7d7a6eccb0bf8e490ab0661187ea93e1da68a1c956517",
+      "assetHash": "a63bd23e1aeb51ae69458aeb926af5c6529a2555c110420a92c0439b14026dbb",
       "faces": [
         "Instrument Serif Regular",
         "Inter Tight Medium"
@@ -26,18 +30,21 @@
     },
     "barrel": {
       "hash": "dcc793d44347c059f11adab90fffa920e5e66d1c824b3f2a5c47a27884803be8",
+      "assetHash": "601c63acc5ce53eef233445fb75fd2fd7bf6238da7da5a134e4b7ad9d8c52297",
       "faces": [
         "Archivo Black"
       ]
     },
     "beat": {
       "hash": "00b533b05ff89388095e8a7beb079c3d865d944979b8f276aa6540687399ba47",
+      "assetHash": "08e6c01544e0aa09580de1c156f4d0b28916a8d0177ded9a7eacc2d746b1aa19",
       "faces": [
         "Archivo Black"
       ]
     },
     "bento": {
       "hash": "76851e3d750ccdc2fcc438d0b431fd23841502a02a3eb9b8a78c579223312ce9",
+      "assetHash": "970d4f680e7e289aa8269bffeeaa5eadd308da3837c48b9240c51539aef4400b",
       "faces": [
         "Plus Jakarta Sans Bold",
         "Plus Jakarta Sans ExtraBold"
@@ -45,12 +52,14 @@
     },
     "blinds": {
       "hash": "b2f72e4550416fb2c986da080f11bf21e16dbb745cc6bb2a9e43e89e28d43258",
+      "assetHash": "bfa8177df71d1b858dea348a974086abe27dbab17fe0c3bbe7746dd986ca5d1c",
       "faces": [
         "Anton"
       ]
     },
     "boom": {
       "hash": "9d2fb506aa3dd32e495531a199a7255f8c0334be657bd9d2c5412bb14410eca3",
+      "assetHash": "5fe5fa17874130377bc0015b967e1259e70fd1a85156b5541f31a65bb694b1ae",
       "faces": [
         "Lilita One",
         "Luckiest Guy"
@@ -58,12 +67,14 @@
     },
     "broadway": {
       "hash": "e74d8e640af280afc563a74b31d54a7a053c05afdcf90b0d724425124d0f2f90",
+      "assetHash": "006840a02d0955516428a8b46e2b5ed4b1c3a2db885233ca7ff53bfcc545dd35",
       "faces": [
         "Bebas Neue"
       ]
     },
     "brute": {
       "hash": "1a52a5e50e703502333d7322c65334f365e8b22a985e78318ee6f552f1b671a4",
+      "assetHash": "ddbaae57e537a3f482e9c7f63632696aed91f97ea1a4fc29f1e267e42b769b8c",
       "faces": [
         "Unbounded",
         "Unbounded Black"
@@ -71,6 +82,7 @@
     },
     "bubble": {
       "hash": "a4ee8e6240f9a3da825d43d8cfa8baa2082038d46a56c9f35cda1bcc8fb72c42",
+      "assetHash": "3c4ef789a9c4f308af29603ce027f4b0503581e60ee0b66ad33ac3da92b2b45e",
       "faces": [
         "Rubik Black",
         "Rubik ExtraBold"
@@ -78,6 +90,7 @@
     },
     "bulletin": {
       "hash": "98f2be64a501a50bc0eefb2d1fb217ed69524bbbcedf5900c0804a0ce7d1b321",
+      "assetHash": "476aad754143cd4ed687fd3df8c97cf910fd1aa10d9314573e90fbc7a663f743",
       "faces": [
         "Archivo Black",
         "Inter Tight Bold"
@@ -85,12 +98,14 @@
     },
     "cascade": {
       "hash": "6ec26660b3fa1fd937ccb8c0943f0fb4182e3fd1d874d9a20e2f103d72aa28a0",
+      "assetHash": "1b205d742bdce6e296e612471e18218c5a36080036c7b637db9804e46e2865f0",
       "faces": [
         "Archivo Black"
       ]
     },
     "chrome": {
       "hash": "0c843b11da4d9ecdea5f08c825d88db8815c6b97e883e45f95b94b509f0f3cd2",
+      "assetHash": "ffb95aff0de6049270cddd405cd40ec0907c3af57188384e327362601d6b850b",
       "faces": [
         "Unbounded Black",
         "Unbounded Medium"
@@ -98,6 +113,7 @@
     },
     "chronicle": {
       "hash": "4f2b3a9c42c5f15a6518e2cf3ad86dc5843121db70d70bdcd01f48f77b9b8038",
+      "assetHash": "a46761f8402064e8ffc7df4313ff762fbd808079b52e13f8a45ab385ce639b16",
       "faces": [
         "DM Serif Display",
         "Newsreader Medium",
@@ -106,12 +122,14 @@
     },
     "combo": {
       "hash": "48978ac7e6c91ea27236a32fbfabb9ed2a33908dc13bc553fef60d5277e819c8",
+      "assetHash": "5c5da330a8f400b533c003558b08d2864ff0ee5144039cd8883e6cea00e35eaa",
       "faces": [
         "Archivo Black"
       ]
     },
     "crosstape": {
       "hash": "e0dea066c194fd958b5739f7f82cb901ee3a14b5f3909e6a596edee1c3db0a6a",
+      "assetHash": "fef8b84f12bf0e30967af17a55210d9958f610fe660c852081983434c016bdb1",
       "faces": [
         "Inter Tight ExtraBold",
         "Inter Tight SemiBold"
@@ -119,6 +137,7 @@
     },
     "cursor": {
       "hash": "dd3908b27b16a4bc067046a0695e56698426d8a9fad324214ca48d94199f52d3",
+      "assetHash": "f0d4886d345c3dd81ff43f5cdc3adc42bab468bdf955761a97e00a03caa05af0",
       "faces": [
         "Instrument Serif",
         "Inter Tight ExtraBold"
@@ -126,10 +145,12 @@
     },
     "cutout": {
       "hash": "10ddc78df1c97842342a19f46b2434e51490949b8dbc26ee9872fb24c3ded22e",
+      "assetHash": "7291be572c1a54556fa01de52417c76d31dd8adab6bd8a82540d503271811f95",
       "faces": []
     },
     "dialogue": {
       "hash": "fe474455d79fad08ea8740a00400aa49f750aad07245f7739cba4c311a31570e",
+      "assetHash": "73c82f302bad2e77aa9fd166469320496b6cdb6feda5c916c5178d838245b66f",
       "faces": [
         "Inter",
         "Inter SemiBold"
@@ -137,12 +158,14 @@
     },
     "diecut": {
       "hash": "f21f9cd2fda5c2efcd7318c5eb14ba0256b25242fd77b9a100aa5038ef37af5b",
+      "assetHash": "75e79e6a7b7cbe2c113fb6ab77075a4f3182594b0920d1b4cf15a6109740a372",
       "faces": [
         "Titan One"
       ]
     },
     "doodle": {
       "hash": "e0d3b2fd56a0a1e5a050edea99852132b02a729ba809ceeea516b93c8a617ffb",
+      "assetHash": "73a77c56a1236b6f9e3c6f1adeba33359a9c1a4a3471f7f65848e37f73044164",
       "faces": [
         "Caveat Brush",
         "Permanent Marker"
@@ -150,22 +173,26 @@
     },
     "dossier": {
       "hash": "da5aa552044a29e43b703757484cd960d3d7c03472345cd4150f2994a0ee5455",
+      "assetHash": "08f764364d95b6be485ad2cff61cceba4331425bb0409afe0182efcb927bc7bf",
       "faces": [
         "Courier Prime"
       ]
     },
     "editorial": {
       "hash": "4703cb85bfe46e2e22a97c92b8a7929563df810aef05c6b002064daad33f8e90",
+      "assetHash": "a12793d56e0eb62bac7480ebf96afc125944cc9240bc3ad4f681722606856c9d",
       "faces": []
     },
     "flap": {
       "hash": "bbd6018c2ad53bbd2a23d6e7f5350a494dbf425b2fa87f92f5905b16a993c9db",
+      "assetHash": "833d1da25d584c651981d93969c90f05efaf2670f850d5bace2bb4c76fb31e59",
       "faces": [
         "Oswald"
       ]
     },
     "flowing": {
       "hash": "8d518b7e1f3cc30b3d302b906492d40cc404c9687ebba257c43e314bfa240e4d",
+      "assetHash": "690735f4f4781c827f150c404cf46318cfc2383c2754a51e981e6f96a3fd378e",
       "faces": [
         "Archivo Black",
         "Inter Tight SemiBold"
@@ -173,6 +200,7 @@
     },
     "funky": {
       "hash": "59ce7b9efb842d5867640e02b8a0b3389962865242488ced20715ac90326ee1c",
+      "assetHash": "46d284051ed718fbcb6efe9e5e9574bcb82ee7f242f6c6ac666437ab5a3380bc",
       "faces": [
         "Alfa Slab One",
         "Caprasimo",
@@ -184,38 +212,45 @@
     },
     "glint": {
       "hash": "6b76598e2d07cd1e2de970e54881b3cef28c3ac82a47212ec08341ca31df6469",
+      "assetHash": "66bc3f8ada6e6dcf6757347338ef81f16743b72667e6e3cb4c528efd30ac9e96",
       "faces": [
         "Titan One"
       ]
     },
     "googly": {
       "hash": "644113df5ca349c9b52258bf4afe72204b7fabc30bd4696851137afb9a96f317",
+      "assetHash": "6ff6d0af2c4444d56f3e198b5a36e90b17d86e852199855599bc48770da99c47",
       "faces": [
         "Luckiest Guy"
       ]
     },
     "groove": {
       "hash": "e7f2715095333a82f20da74124b5969a21334006cf684e65fc9bd7fc67c934b3",
+      "assetHash": "f4ff01546df8ab68dfc92e2c4dc561073266475cddfcda609ccc90ff00e46b5a",
       "faces": []
     },
     "gumdrop": {
       "hash": "115275302da12ce155a343898f88dd6b2c4b7cefcb23f7ca92b07c9e9c45654a",
+      "assetHash": "0e4249d5dcceb6ea533705fc07b3abb5889e9f551fc11b0545fc3cde8b7e97db",
       "faces": [
         "Bagel Fat One"
       ]
     },
     "halftone": {
       "hash": "dbcc5baaa15b3fe6a7234ffb5fcea35127f2d240978df4bb1a3ca5fd42183f54",
+      "assetHash": "518d7cf4742c1030f13fb3263e3709befff79380c2998f3a51301145779ef622",
       "faces": [
         "Pacifico"
       ]
     },
     "headline": {
       "hash": "f5b00a1c8c9174f11ad28abd4ed992b3d2df8ef864981744880ffd45b329e992",
+      "assetHash": "e1e72cbee31ebd8749445695e5c940245c4a430e41a9dfa3d98cb8d8cc0bdf72",
       "faces": []
     },
     "heft": {
       "hash": "97c5c5eec1389a8cd4448c082df3a477031ee6882eb2d2021d4464e97ec11766",
+      "assetHash": "e0f9e463a3906999e1663646b9d4ac1edf9516ca32eb1389874fa736455ae598",
       "faces": [
         "Lexend Exa Light",
         "Unbounded Black"
@@ -223,12 +258,14 @@
     },
     "hollow": {
       "hash": "3c3c4fddf7b3d2041d1fe9c749e308b81b9c827c3414f7098a70d76992fd415e",
+      "assetHash": "ea239840d9045444642bdd309e645ca21e226f2a0e8464858573f86b28c55aad",
       "faces": [
         "Anton"
       ]
     },
     "horizon": {
       "hash": "1b2e4f65213fa8aab302261e9f9e11fe25f391ab7608d4d52cbd1e4d95e27703",
+      "assetHash": "5df2a320108546f1730876e3e043f0b770d4c174f72ce86a2d2203654b91f776",
       "faces": [
         "Orbitron Black",
         "Racing Sans One"
@@ -236,12 +273,14 @@
     },
     "hype": {
       "hash": "a9834678f8168dbd0c737f7ae96621cd7bbf58286824f14831c84a5ea04fbe9e",
+      "assetHash": "6812362034f8a955c88b01a8ebb223c17aa2a393f0e764252dc205e575d80705",
       "faces": [
         "Barlow Condensed Black Italic"
       ]
     },
     "index": {
       "hash": "402ad4d744735f7518d81e0ad24e89603c071ce724ed0f2439c2c486441efb01",
+      "assetHash": "ac60313a1288795bc31db9947bffa92fad6c000aea5fbe87650afd22136887ce",
       "faces": [
         "Inter",
         "Inter SemiBold",
@@ -250,6 +289,7 @@
     },
     "inkup": {
       "hash": "82c30bd05c0d46e580adf15f34d121992899c24acffe423e9b23bc4b940cb68a",
+      "assetHash": "49e42faf06487eebb8aadf58ff1cf67307c7a6de4198b13e0a828f14bb586b36",
       "faces": [
         "Inter Tight ExtraBold",
         "Inter Tight ExtraBold Italic",
@@ -261,18 +301,21 @@
     },
     "labels": {
       "hash": "0807b096871a3b66d95d8f2670096ea150c3f1d9345b867250e9bee5d233bb76",
+      "assetHash": "20a8285f99b5a857752b995c05758ed45bc4bb6fa418b423d8799fcb3583b06e",
       "faces": [
         "Montserrat ExtraBold"
       ]
     },
     "ledge": {
       "hash": "d6a5218e3f741b908de28d79669d9c6c0bbec238e7ccf5bec5bfefb1630a5d52",
+      "assetHash": "99f130275817f1d3d1b9f7addac08429dd37e9e54a4c38070c71a50ebbc82d15",
       "faces": [
         "Anton"
       ]
     },
     "liquid": {
       "hash": "d1ccd83651adc2ee6574d73887e7d80efb9f151ee1b416a69f4d55ed40178b2e",
+      "assetHash": "a1fd3a5e7b37d4b961259fbadf26c509960f7b6113a92f6f08593e0d8b774075",
       "faces": [
         "Inter",
         "Inter SemiBold"
@@ -280,22 +323,26 @@
     },
     "lyrics": {
       "hash": "1ce3cee6c1b2cdcdaeffc85882b501c356057bfa434ca5e47a804646a9a005b2",
+      "assetHash": "5ab78a3aaf2a631f55a11fce58f1e6d55e7bc7b4d1a1550658b96c84403daf4e",
       "faces": [
         "Inter Tight Bold"
       ]
     },
     "manifesto": {
       "hash": "2b040fbef1d5c72ed6b755b41280c4a34e70ff8cd5cb8617e239ba32b06431c8",
+      "assetHash": "662b854cf6845541a92a9a3f6854c17677371e0ff0f05868d13a27beb9b727a2",
       "faces": [
         "Anton"
       ]
     },
     "marker": {
       "hash": "ff39a26559b9cdfbc9e789b41565657f0711f9387e7ca7da5ef8e9154ea252c0",
+      "assetHash": "a5b73ca73a9d98ade2b9ec8d87e2eaf26484eb0a22f48f3984c75a403fc3cd44",
       "faces": []
     },
     "marquee": {
       "hash": "818e6454a23db2101ffe3c5f1d6d8c9eb6b4b0327c2447b0c914e95ca9990b46",
+      "assetHash": "6681c8a7e6cb9014e629c026f893b1ce4373e8efe690f5d53d6a79a72810481e",
       "faces": [
         "Lilita One",
         "Oleo Script Bold"
@@ -303,6 +350,7 @@
     },
     "match": {
       "hash": "ac3da0164e7cc3f1d1413a152b3caef35d3f1da12c96eb16d9ad6a591584f66c",
+      "assetHash": "2b200e1768be8c4f9272421023cbd84bb8bd331fe3af395481e7bb784983d29a",
       "faces": [
         "Courier Prime",
         "Inter Tight Bold",
@@ -314,6 +362,7 @@
     },
     "mdrn": {
       "hash": "ebf0450678fe661a541c6880a485f3a53fa838098befb6aa3f25a6b193223c78",
+      "assetHash": "c892c603a44a76819a89ad185b7bc9aba12eb45de22290fa7140909a5cfd6123",
       "faces": [
         "Archivo Expanded Black",
         "Archivo Expanded ExtraBold"
@@ -321,6 +370,7 @@
     },
     "orbit": {
       "hash": "67df4b83573b2e51e591536dc5e2f8f7f3626ac6e9e1c5e551fe61da006d20ec",
+      "assetHash": "549802690ada80407cfdafbee9f330878fca48705b75b8e1f4436f948ef31a8a",
       "faces": [
         "Inter Tight Medium",
         "Inter Tight Regular"
@@ -328,6 +378,7 @@
     },
     "pills": {
       "hash": "c2559ba7cd3e367fdfbf7b94cdcb91edafa21ebac8bc4cb6bcc6643af7a570d8",
+      "assetHash": "d21d057d306450aadb783d90b229cd739f7cee4881c3de5db9ad674be9655101",
       "faces": [
         "Manrope Bold",
         "Manrope ExtraBold"
@@ -335,6 +386,7 @@
     },
     "pixel": {
       "hash": "d5b1cdd8b0abed7f258bb189fee2b2e58092310f533996c649f3636eab708cba",
+      "assetHash": "70980f041272ad19d0a140f6d1da02547598c04a092beab328a58b826164a1c4",
       "faces": [
         "Silkscreen Bold",
         "Space Mono Bold"
@@ -342,12 +394,14 @@
     },
     "pixelpop": {
       "hash": "53a8bf7300aa4c41ce82dee84ec7e0e607ebeb45ff09f229d463b6cea23f20b7",
+      "assetHash": "4faf090221753e5b3269f8a4d0e53875dc5e8b66f683e60d93570cff7e28b1b1",
       "faces": [
         "Pixelify Sans Bold"
       ]
     },
     "popup": {
       "hash": "7052b0f9c476466a6c2202e69b06538b10360403bed22ec8e1b39db7406cd9e2",
+      "assetHash": "fe4ebe3b13252219215830f3867335d79b8b7adfdc7e402d8389e0ddc3e09e34",
       "faces": [
         "Chango",
         "Lilita One"
@@ -355,6 +409,7 @@
     },
     "premiere": {
       "hash": "e2729e77c7e3b45b59fb820a9ac2c6962c18e3bb153ec70b846525fb122352b0",
+      "assetHash": "c3c6921cc0033fcef8970da7f5a005a964f6fb1c4a0f5c7bbe1f90ac8cf639fe",
       "faces": [
         "Anton",
         "Yesteryear"
@@ -362,18 +417,21 @@
     },
     "primer": {
       "hash": "e83256839f4056ede9911dda16a33dc5cc21e7561782909d628e9c1f7259bb05",
+      "assetHash": "4106fee46afd56f6cfc88487c9aa8251f89943d12e4753d9871626ea8bc85d6a",
       "faces": [
         "Archivo Black"
       ]
     },
     "punchline": {
       "hash": "a9a79c77632fd29866881759c000cc5e58017339ed3604774442658ad8d94338",
+      "assetHash": "5f2be76d91da34a1fc8a445dd6f16288e7658778633b946e1d73bb8f8c7f9d5d",
       "faces": [
         "Lilita One"
       ]
     },
     "rainbow": {
       "hash": "2a29b9e1e15c96f64fadc0a7b3f7d4481bdd8a7079ea05c90ff8c0c5f62d1293",
+      "assetHash": "659a79a33aa86b8f27eeb87cfde49e773fa532939bd1d4897dd0df73bdcb6451",
       "faces": [
         "Fredoka Bold",
         "Lobster"
@@ -381,6 +439,7 @@
     },
     "ransom": {
       "hash": "ec71222af971dfa203382ee705f70449c4f61ad126aa1b64f52f2d56f47ba1e6",
+      "assetHash": "1efde6deac35f6cbf14582ebcb1546e22df5b6a681b31612788b914b342fb200",
       "faces": [
         "Abril Fatface",
         "Alfa Slab One",
@@ -390,12 +449,14 @@
     },
     "receipt": {
       "hash": "36a4779966914b531583e647cf518bbd48cd59ac84260547a41735896bf84f81",
+      "assetHash": "601b59a9d25ca54773cd143487db99cd04035dc8fd25b9387f27067f9693985f",
       "faces": [
         "Space Mono Bold"
       ]
     },
     "reveal": {
       "hash": "a740e7db232a5efe76caa0efa683a9be4584bff2863391094f94ff82a9bca7b7",
+      "assetHash": "a9bd0de5b3135e88ec5f7726072b60be93d4c4f7e3d2cab1fd80463bfccb5304",
       "faces": [
         "Instrument Serif",
         "Inter Tight SemiBold"
@@ -403,12 +464,14 @@
     },
     "ripple": {
       "hash": "cc3dd73573cb8849ce7ef17fa04f4ba2ee755a9f86cb8d0f00d891d5d95b00cf",
+      "assetHash": "057b5d46c840d8775c29ed23b142e91bfc5dfdb01467e191c6d867298f11b8f3",
       "faces": [
         "Fredoka Bold"
       ]
     },
     "scribble": {
       "hash": "d7487708526fcf409c324d9a041b32f6b184c7a4d0d81c8ce6db0a28a143d624",
+      "assetHash": "faa908efc72fdf689b561344cf88d97d9eeacf93146434284ee4e9d0ec3e33a0",
       "faces": [
         "DM Sans Black",
         "DM Sans Bold"
@@ -416,6 +479,7 @@
     },
     "seventies": {
       "hash": "54e335c178660930052c2247d28b0602e5d6ff8a8640246c3975860ec7a5deb9",
+      "assetHash": "419bab74c5949db6faa075176d9b77c313f833e8127af0f840471d614f301265",
       "faces": [
         "DM Serif Display Italic",
         "Shrikhand"
@@ -423,12 +487,14 @@
     },
     "shuffle": {
       "hash": "3af848bea73835e017e11589ba1cb628ee22b707906f4cab1028651f0b009cf2",
+      "assetHash": "c87b462be2578c1b0394850aad1ae55c165ac6799bb0fb6abfaebce68658200c",
       "faces": [
         "Montserrat"
       ]
     },
     "signal": {
       "hash": "b92e5885c2eeda32ac84acd9eacd4e2ddd4c9a8d5f9d91327e9b8ed3d6ea01e1",
+      "assetHash": "d130d88934b687347705985a417b2613948eefac638c0fe6afaa18035ab7feef",
       "faces": [
         "Chakra Petch",
         "JetBrains Mono Medium"
@@ -436,30 +502,35 @@
     },
     "slab": {
       "hash": "50b02192129b95818045b68efbf47eb808dd3d4c44d0e62f5264bfe4232f551e",
+      "assetHash": "9c28841177921598d9bc92f76a6e7a575e3c878bcb428a1591f7c68086043e8b",
       "faces": [
         "Montserrat ExtraBold"
       ]
     },
     "slice": {
       "hash": "e55624d54fc8e89f35f4ff1c07d126533bcf703398ab8ad7d548f6e1fb0fe863",
+      "assetHash": "37ccc265cf10d1cdfc985f9749f0fa2c9ce9f0ce75dd3ecf976787667011c28c",
       "faces": [
         "Inter Tight ExtraBold"
       ]
     },
     "slot": {
       "hash": "d61fd2757b8e66c205ca041e22db6c5b787827ccd21d3c40602d1f5296754c61",
+      "assetHash": "5776c03840ed708e2bd7a79bdd0f3b5d50c751d6a8d6cae1e9e48526cb0665c5",
       "faces": [
         "Anton"
       ]
     },
     "snipsnap": {
       "hash": "8dfe2be78c51d796c875ebd80b523fbe77c2a489831b1ffb43f0c90ed93f63a0",
+      "assetHash": "aa02b895e57fcea47cab9800285256cc0ff6aa0a1dd18f65bb4dc01dae75e400",
       "faces": [
         "Londrina Solid Black"
       ]
     },
     "spine": {
       "hash": "c8654752308c9fc898f16f852f19b29772059843228261ad265b90bb5a035c14",
+      "assetHash": "07962871b02f30ef8c46bbe13585c86fcf010eebc8608f877dc3658703a971ea",
       "faces": [
         "Archivo Black",
         "Inter Tight Bold"
@@ -467,6 +538,7 @@
     },
     "squash": {
       "hash": "7b253132954cd603c30dbd848342f585c2cfc34112f8212bc22b994546a73ff0",
+      "assetHash": "54a66f04ccc17232b3d0f0b069d7716eaae8049562af45d8801f0b002f15f43d",
       "faces": [
         "Anton",
         "Montserrat"
@@ -474,28 +546,33 @@
     },
     "stack": {
       "hash": "d555f83291201a5051b4da9e3ed738fdbfd81c24586b05c55a4eee15b3122af3",
+      "assetHash": "1caebef011af910b5d4c4c7c8ba49181bec0e74bf064c1d0bb16ebef8e0bed9b",
       "faces": []
     },
     "sticky": {
       "hash": "de599a0af4837761f2f257dda85b42d6216e8399672dd6c68baa8aba253bdc8d",
+      "assetHash": "aae994c7aef5cef5f19f60b02d09a7368e1e75166bb668a31bc9426718bd1d78",
       "faces": [
         "Space Mono Bold"
       ]
     },
     "stretch": {
       "hash": "edc06193d5d1d2179b510d7debc50466834b310c6c6ec8a999e490b71d4603b8",
+      "assetHash": "c4070dc188e4ccf0115cb85e008ea8c4e33b38f16647f6ef13e791f8de075a45",
       "faces": [
         "Dela Gothic One"
       ]
     },
     "strike": {
       "hash": "9c670414d89f23c9f2462cceaafad48999e47181913e00c8989a4527a0deea1d",
+      "assetHash": "b35f68f1f8fa21b2895ce4280f8efa5e990b6dc1e57ab06ec4386067f348c24c",
       "faces": [
         "Montserrat ExtraBold"
       ]
     },
     "swipe": {
       "hash": "7a2c1def66476f7cdcbb2170d090ee5f3ec42adf5e299e99550fbb9f47d9c465",
+      "assetHash": "6892c511f91b837cdf17cb15caab174180c0653d898fb365592b8ce5467c1a9a",
       "faces": [
         "Barlow Condensed Bold",
         "Barlow Condensed Medium"
@@ -503,6 +580,7 @@
     },
     "tape": {
       "hash": "a29271485eee35425d8f5164147dff947c66eaa7f4416cfba209734ac1db5868",
+      "assetHash": "fc09f7fbcf95e8da9c4d395ad9ab132e4791ebe6d2c23dc870acc664f2a66aa8",
       "faces": [
         "Archivo Expanded Black",
         "Archivo ExtraBold Italic"
@@ -510,12 +588,14 @@
     },
     "thermal": {
       "hash": "c8a27df3506801720ddd9512d950e3363827c6e8a39d6823c848c14a265d56c3",
+      "assetHash": "7a18a26038b4b20d74e1f3dd29d201ba5dd8a332d38a1aef61e7d671040d50f9",
       "faces": [
         "Inter Tight Bold"
       ]
     },
     "ticker": {
       "hash": "0499df72e5cbeb8d16f72e1691291349a9bf78abfb93a52982ba47b139371b3d",
+      "assetHash": "e4dd4ba1c292432a81cf55affdb860ffdd74613a9131be9ddbb3a9c842b4d174",
       "faces": [
         "Archivo Black",
         "Inter Tight ExtraBold"
@@ -523,12 +603,14 @@
     },
     "tilt": {
       "hash": "b89d2db7eb35b53a8c0125297d05290a1e87268e0948ed5fe02c6dd2b421f20f",
+      "assetHash": "101692a5e9ee39ecaeea17ba9c0c4bec396c1aa30414ac06c7e93cbba48f00b9",
       "faces": [
         "Lilita One"
       ]
     },
     "trace": {
       "hash": "78298ed63141121e35156b15b1510cf706bafd54669d249f959903ffac69e94b",
+      "assetHash": "1b0146944e96c5f7c01f6a42f6054b187a5c3a363d4829b210851793a7229f7b",
       "faces": [
         "Barlow Condensed ExtraBold Italic",
         "Unbounded Black"
@@ -536,6 +618,7 @@
     },
     "track": {
       "hash": "f87d43f7c6727126bffbe8758967bb30440a813ff66b858e89f73515c3f39965",
+      "assetHash": "63c0be136bb1ed0cbdfa43ffe979c6d1c32928268ff091b81ed91feb2ef1c610",
       "faces": [
         "Inter",
         "Inter SemiBold",
@@ -544,24 +627,28 @@
     },
     "trail": {
       "hash": "9d1ba68f536ac71d2b94a9efd4f171ef67fccf0e47784500bee5dee32947c888",
+      "assetHash": "0ace9c43795fd28f92711cfa1b2f210b14149210c80c64e5550af5f7a2c35cb4",
       "faces": [
         "Lilita One"
       ]
     },
     "tunnel": {
       "hash": "088116cb096a1e2e1f357459f396c7eb7466658947127869781020a603aef81e",
+      "assetHash": "d435284259826c35ae13b4043021e622389ad83460b581af098770c4071c8f92",
       "faces": [
         "Bricolage Grotesque"
       ]
     },
     "velocity": {
       "hash": "6a2e2b8c6f6ce9892919758245fed66501da54f7e00a744eb656369de6364f50",
+      "assetHash": "4c21cee2c518a54f066fee7c9422d344ac2957e609229eae76e211d623a862fd",
       "faces": [
         "Anton"
       ]
     },
     "verified": {
       "hash": "d4fc14be02ac0243bc7f171ee4129bc73014e52b1f5d1832f351c17536497be0",
+      "assetHash": "2b27c27816c383137a8b57d1bf187da57e0acc2e86c12e44c8f21e659d468412",
       "faces": [
         "Archivo Expanded Black Italic",
         "Archivo Expanded ExtraBold Italic"
@@ -569,6 +656,7 @@
     },
     "vibes": {
       "hash": "1779f0e631a913a1029a05d7766097889437c15d56b2235105f68b93a00bf479",
+      "assetHash": "fe6e4f331fdd0c10e1c588a4db30cb1cf9cb8b5e29abc595252a5e856f4f401f",
       "faces": [
         "Archivo Black",
         "Oleo Script Bold"
@@ -576,18 +664,21 @@
     },
     "wallpaper": {
       "hash": "e026d71f65ee1d3c0d5e187ee8d1fa2b7b1db4e32b308546a266a59f1b9d431f",
+      "assetHash": "823282f45967cd1e0d06e686f4b30d1a1fd2fd5171ff96333eaa9275eabfd533",
       "faces": [
         "Archivo Expanded ExtraBold"
       ]
     },
     "wonky": {
       "hash": "ac42bdc221fe2cd7b3a57d5fb5d4db47b80e1d14cb7b92288a80f3b1c35a595a",
+      "assetHash": "51476a07a7b145fa61c303959f6e644b36bf23aa4a6cb8d0034df6e8995ed3db",
       "faces": [
         "Rubik Black"
       ]
     },
     "wordform": {
       "hash": "16df4ca9d8891b36e33129cfa4de9cbee82267d694464dff3ac985eab4d4af37",
+      "assetHash": "8ca16f20f625d9b6583f525d0b02b9ca1831010a50a8fb40a20aac90b12edb6d",
       "faces": [
         "Bricolage Grotesque",
         "Inter SemiBold"

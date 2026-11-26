@@ -4,7 +4,8 @@
  *
  * Each frame is the real painter's drawing on the dev-only `/prototype/caption-cards` page, stepped to an exact time,
  * so a clip shows what the live card drew. Needs the web dev server (`bun run --cwd apps/web dev`), Google Chrome and
- * ffmpeg with libx264 and libwebp.
+ * ffmpeg with libx264 and libwebp. Use a dedicated, unedited checkout and start its dev server with CI=1 to
+ * suppress informational devtools panels. Build/runtime error dialogs still abort the recording.
  *
  *   bun run --cwd apps/web cards:render -- --stale        presets whose clip is missing or out of date (the default)
  *   bun run --cwd apps/web cards:render -- --all          every carded preset
@@ -12,12 +13,14 @@
  *   options: --base http://localhost:3000  --jobs 2  CHROME=/path/to/chrome
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CAPTION_PRESETS, type NamedCaptionPreset } from "@narriflow/validators";
 import { presetHasCardClip, type CaptionCardClipEntry } from "../../app/(app)/_shared/caption-card-clips";
 import { CARD_FPS, CARD_WIDTH, captionCardSourceHash } from "./source-hash";
+import { captureCardFrame, PAINTED, Reloaded } from "./capture";
+import { captionCardAssetHash } from "./asset-hash";
 
 const WEB = join(import.meta.dir, "../..");
 const OUT = join(WEB, "public/caption-cards");
@@ -138,15 +141,6 @@ async function launchBrowser(): Promise<Browser> {
 
 // ─── Recording ───────────────────────────────────────────────────────────────
 
-const FRAMES = "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))";
-
-/** The page reloaded under a recording: its frames so far are not one take, so the card is recorded again. */
-class Reloaded extends Error {
-  constructor(id: string) {
-    super(`${id}: the page reloaded while recording`);
-  }
-}
-
 /** A reload, a page that navigated away, or one that never got ready (a reload mid-load) is retried; anything else is a real failure. */
 async function recordWithRetries(browser: Browser, named: NamedCaptionPreset): Promise<CaptionCardClipEntry> {
   for (let attempt = 1; ; attempt++) {
@@ -185,9 +179,9 @@ async function record(browser: Browser, named: NamedCaptionPreset): Promise<Capt
       }
       await Bun.sleep(100);
     }
-    // Next's dev overlay (build errors, the dev indicator) draws over the page without reloading it: never record it.
+    // Keep devtools out of the image. captureCardFrame still rejects errors inside the portal, even when hidden.
     await evaluate(`(() => { const style = document.createElement("style"); style.textContent = "nextjs-portal { display: none !important; }"; document.head.append(style); })()`);
-    await evaluate(`document.fonts.ready.then(() => ${FRAMES})`);
+    await evaluate(`document.fonts.ready.then(() => ${PAINTED})`);
     const { loopSec, stillSec, faces } = await evaluate<{ loopSec: number; stillSec: number; faces: string[] | null }>(
       "({ loopSec: window.__card.loopSec, stillSec: window.__card.stillSec, faces: window.__card.faces })",
     );
@@ -199,11 +193,7 @@ async function record(browser: Browser, named: NamedCaptionPreset): Promise<Capt
     const take = crypto.randomUUID();
     await evaluate(`(window.__card.run = "${take}")`);
     const shoot = async (seconds: number, file: string) => {
-      const same = await evaluate<boolean>(`window.__card?.run === "${take}" ? (window.__card.set(${seconds}), ${FRAMES}).then(() => true) : false`);
-      const { data } = await send<{ data: string }>("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { ...box, scale: 1 } });
-      const after = await evaluate<boolean>(`window.__card?.run === "${take}"`);
-      if (!same || !after) throw new Reloaded(named.id);
-      writeFileSync(file, Buffer.from(data, "base64"));
+      writeFileSync(file, await captureCardFrame(browser, named.id, take, seconds, box));
     };
     const count = Math.round(loopSec * CARD_FPS);
     for (let frame = 0; frame < count; frame++) await shoot(frame / CARD_FPS, join(frames, `${String(frame).padStart(5, "0")}.png`));
@@ -222,15 +212,20 @@ async function record(browser: Browser, named: NamedCaptionPreset): Promise<Capt
       await shoot(posterSec, join(frames, "still.png"));
     }
 
-    const video = join(OUT, `${named.id}.mp4`);
+    // Finish both encodes before replacing either published asset. A rejected take keeps the previous pair intact.
+    const video = join(frames, `${named.id}.mp4`);
+    const poster = join(frames, `${named.id}.webp`);
     await run("ffmpeg", [
       "-y", "-loglevel", "error", "-framerate", String(CARD_FPS), "-i", join(frames, "%05d.png"),
       "-c:v", "libx264", "-preset", "slow", "-crf", "26", "-pix_fmt", "yuv420p", "-profile:v", "high",
       "-g", String(count), "-movflags", "+faststart", "-an", video,
     ]);
-    await run("ffmpeg", ["-y", "-loglevel", "error", "-i", join(frames, "still.png"), "-c:v", "libwebp", "-quality", "82", join(OUT, `${named.id}.webp`)]);
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-i", join(frames, "still.png"), "-c:v", "libwebp", "-quality", "82", poster]);
+    const assetHash = captionCardAssetHash(video, poster);
     console.log(`${named.id}: ${count} frames, ${(statSync(video).size / 1024).toFixed(0)} KB clip`);
-    return { hash: captionCardSourceHash(named), faces: (faces ?? []) as CaptionCardClipEntry["faces"] };
+    renameSync(video, join(OUT, `${named.id}.mp4`));
+    renameSync(poster, join(OUT, `${named.id}.webp`));
+    return { hash: captionCardSourceHash(named), assetHash, faces: (faces ?? []) as CaptionCardClipEntry["faces"] };
   } finally {
     rmSync(frames, { recursive: true, force: true });
   }

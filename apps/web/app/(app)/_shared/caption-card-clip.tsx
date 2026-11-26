@@ -7,7 +7,7 @@ import { CAPTION_CARD_CLIPS, PRESET_CARD_FRAME } from "./caption-card-clips";
 
 function clipUrls(presetId: string) {
   const entry = CAPTION_CARD_CLIPS[presetId];
-  const version = entry ? `?v=${entry.hash.slice(0, 12)}` : "";
+  const version = entry ? `?v=${entry.assetHash.slice(0, 12)}` : "";
   return { video: `/caption-cards/${presetId}.mp4${version}`, poster: `/caption-cards/${presetId}.webp${version}` };
 }
 

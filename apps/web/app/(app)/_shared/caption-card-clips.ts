@@ -6,6 +6,8 @@ export { PRESET_CARD_FRAME } from "./caption-card-frame";
 export interface CaptionCardClipEntry {
   /** `captionCardSourceHash` of what the clip was rendered from; a mismatch means the clip is stale. */
   readonly hash: string;
+  /** Hash of the recorded video and poster bytes, used to invalidate repaired recordings in browser caches. */
+  readonly assetHash: string;
   /** The faces a Scene Style's sample draws with, loaded when a card is pointed at so its first build measures once. */
   readonly faces: readonly CaptionFontName[];
 }

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CAPTION_PRESETS } from "@narriflow/validators";
 import { captionCardSourceHash } from "../../../scripts/caption-cards/source-hash";
+import { captionCardAssetHash } from "../../../scripts/caption-cards/asset-hash";
 import { CAPTION_CARD_CLIPS, presetHasCardClip } from "./caption-card-clips";
 
 const PUBLIC = join(import.meta.dir, "../../../public/caption-cards");
@@ -24,5 +25,10 @@ describe("caption card clips", () => {
   test("the manifest lists no preset that is not carded", () => {
     const ids = new Set(carded.map((named) => named.id));
     expect(Object.keys(CAPTION_CARD_CLIPS).filter((id) => !ids.has(id))).toEqual([]);
+  });
+
+  test("cache versions match the recorded video and poster bytes", () => {
+    const mismatched = carded.filter((named) => CAPTION_CARD_CLIPS[named.id]?.assetHash !== captionCardAssetHash(join(PUBLIC, `${named.id}.mp4`), join(PUBLIC, `${named.id}.webp`)));
+    expect(mismatched.map((named) => named.id), `update the manifest: ${RENDER}`).toEqual([]);
   });
 });
