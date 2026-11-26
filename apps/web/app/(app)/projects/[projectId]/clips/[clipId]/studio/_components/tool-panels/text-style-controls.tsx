@@ -22,6 +22,7 @@ import {
   type TextLayerStyle,
   resolveTextLayerFace,
 } from "@narriflow/validators";
+import { brandFontReference, brandFontStyle, useBrandFontLibrary } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { captionFontStyle } from "../caption-style-engine";
 import { TEXT_LAYER_FONT_SIZE } from "../text-layer-gestures";
 import { softFieldProps, studioSliderCss } from "./panel-ui";
@@ -63,14 +64,31 @@ export function textFamilyFaceStyle(family: TextLayerFontFamily) {
   return captionFontStyle(resolveTextLayerFace({ font: family, bold: false, italic: false }).face);
 }
 
-/** The font menu: every family, each written in its own face. */
-export function TextFontMenu({ value, onChange, compact = false }: { value: TextLayerFontFamily; onChange: (font: TextLayerFontFamily) => void; compact?: boolean }) {
+const BRAND_ITEM = "brand:";
+
+/**
+ * The font menu: the brand's uploaded fonts (when the plan allows them), then every family, each
+ * written in its own face. Choosing an upload sets `fontAsset` and keeps `font` as the family it falls
+ * back to; choosing a family clears the upload.
+ */
+export function TextFontMenu({ value, onChange, compact = false }: { value: Pick<TextLayerStyle, "font" | "fontAsset">; onChange: TextStyleChange; compact?: boolean }) {
+  const library = useBrandFontLibrary();
+  const uploads = library.requirement ? [] : library.fonts.filter((font) => font.insertable !== false && font.accessUrl && font.face);
+  const selected = value.fontAsset ? library.fonts.find((font) => font.id === value.fontAsset?.id && font.fingerprint === value.fontAsset.fingerprint) : undefined;
+  const label = value.fontAsset ? (selected?.family ?? "Saved font") : value.font;
+  const labelStyle = selected?.face ? brandFontStyle(selected) : textFamilyFaceStyle(value.font);
+  const select = (next: string) => {
+    if (!next.startsWith(BRAND_ITEM)) return onChange({ font: next as TextLayerFontFamily, fontAsset: null });
+    const font = uploads.find((candidate) => candidate.id === next.slice(BRAND_ITEM.length));
+    if (font) onChange({ fontAsset: brandFontReference(font) });
+  };
+  const current = (family: TextLayerFontFamily) => !value.fontAsset && family === value.font;
   return (
-    <Menu.Root onSelect={({ value: next }) => onChange(next as TextLayerFontFamily)} positioning={{ placement: "bottom-start" }} lazyMount>
+    <Menu.Root onSelect={({ value: next }) => select(next)} positioning={{ placement: "bottom-start" }} lazyMount>
       <Menu.Trigger asChild>
         <Flex
           as="button"
-          aria-label={`Font: ${value}`}
+          aria-label={`Font: ${label}`}
           align="center"
           justify="space-between"
           gap="2"
@@ -82,8 +100,8 @@ export function TextFontMenu({ value, onChange, compact = false }: { value: Text
           cursor="pointer"
           transition="background 120ms ease"
         >
-          <Text as="span" truncate style={textFamilyFaceStyle(value)}>
-            {value}
+          <Text as="span" truncate style={labelStyle}>
+            {label}
           </Text>
           <ChevronDown size={14} />
         </Flex>
@@ -92,16 +110,40 @@ export function TextFontMenu({ value, onChange, compact = false }: { value: Text
         <Menu.Positioner>
           {/* Portaled: mode-invariant studio tokens only. */}
           <Menu.Content {...menuContentProps} minW="240px" maxH="min(420px, 60vh)" overflowY="auto">
-            {TEXT_LAYER_FONT_FAMILIES.map((family) => (
-              <Menu.Item key={family} value={family} {...menuItemProps} aria-label={family}>
-                <Text as="span" fontSize="16px" style={textFamilyFaceStyle(family)}>
-                  {family}
-                </Text>
-                <Box ms="auto" w="16px" color="studio.accentFg">
-                  {family === value ? <Check size={16} /> : null}
-                </Box>
-              </Menu.Item>
-            ))}
+            {uploads.length > 0 ? (
+              <Menu.ItemGroup>
+                <Menu.ItemGroupLabel px="2.5" py="1.5" fontSize="12px" fontWeight="500" color="studio.fgMuted">
+                  Brand fonts
+                </Menu.ItemGroupLabel>
+                {uploads.map((font) => (
+                  <Menu.Item key={font.id} value={`${BRAND_ITEM}${font.id}`} {...menuItemProps} aria-label={`${font.family} ${font.style}`}>
+                    <Text as="span" fontSize="16px" style={brandFontStyle(font)}>
+                      {font.family}
+                    </Text>
+                    <Box ms="auto" w="16px" color="studio.accentFg">
+                      {value.fontAsset?.id === font.id && value.fontAsset.fingerprint === font.fingerprint ? <Check size={16} /> : null}
+                    </Box>
+                  </Menu.Item>
+                ))}
+              </Menu.ItemGroup>
+            ) : null}
+            <Menu.ItemGroup>
+              {uploads.length > 0 ? (
+                <Menu.ItemGroupLabel px="2.5" py="1.5" fontSize="12px" fontWeight="500" color="studio.fgMuted">
+                  Fonts
+                </Menu.ItemGroupLabel>
+              ) : null}
+              {TEXT_LAYER_FONT_FAMILIES.map((family) => (
+                <Menu.Item key={family} value={family} {...menuItemProps} aria-label={family}>
+                  <Text as="span" fontSize="16px" style={textFamilyFaceStyle(family)}>
+                    {family}
+                  </Text>
+                  <Box ms="auto" w="16px" color="studio.accentFg">
+                    {current(family) ? <Check size={16} /> : null}
+                  </Box>
+                </Menu.Item>
+              ))}
+            </Menu.ItemGroup>
           </Menu.Content>
         </Menu.Positioner>
       </Portal>
@@ -404,7 +446,7 @@ export function TextStyleControls({ value, onChange, onGestureEnd }: TextStyleCo
   return (
     <Stack gap="2.5">
       <Flex gap="2">
-        <TextFontMenu value={style.font} onChange={(font) => onChange({ font })} />
+        <TextFontMenu value={style} onChange={onChange} />
         <TextSizeField value={style.fontSize} onChange={(fontSize) => onChange({ fontSize })} />
       </Flex>
       <Flex gap="2">

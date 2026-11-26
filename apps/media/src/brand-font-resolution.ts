@@ -109,3 +109,34 @@ export async function prepareCaptionFontsDirectory(
   await link(font.path, join(target, `uploaded.${font.path.split(".").pop()}`));
   return target;
 }
+
+/**
+ * The fonts directory of a Text Layer script: every vendored caption and fallback face, plus the
+ * uploads the script draws (`TextLayerTrack.uploads`, collision winners only, so no two files share
+ * an internal name and none shares a vendored face's: `textLayerFaces` draws such an upload as the
+ * vendored face). No uploads: the vendored directory itself.
+ */
+export async function prepareTextFontsDirectory(
+  directory: string,
+  fonts: RenderBrandFonts,
+  uploads: readonly { id: string; fingerprint: string }[],
+) {
+  const drawn = uploads.flatMap((upload) => {
+    const font = fonts.get(brandFontKey(upload));
+    return font ? [{ upload, font }] : [];
+  });
+  if (drawn.length === 0) return CAPTION_FONTS_DIRECTORY;
+  const target = join(directory, `text-fonts-${createHash("sha256").update(drawn.map(({ upload }) => brandFontKey(upload)).join("|")).digest("hex").slice(0, 16)}`);
+  await mkdir(target, { recursive: true });
+  const link = async (source: string, destination: string) => {
+    try {
+      await symlink(source, destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  };
+  for (const face of CAPTION_FONT_FACES) await link(join(CAPTION_FONTS_DIRECTORY, face.file), join(target, face.file));
+  for (const fallback of CAPTION_FALLBACK_FONTS) await link(join(CAPTION_FONTS_DIRECTORY, fallback.file), join(target, fallback.file));
+  for (const { upload, font } of drawn) await link(font.path, join(target, `uploaded-${upload.id}-${upload.fingerprint}.${font.path.split(".").pop()}`));
+  return target;
+}

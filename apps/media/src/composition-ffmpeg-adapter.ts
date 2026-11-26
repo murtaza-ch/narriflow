@@ -2160,6 +2160,8 @@ export interface ClipCompositionCommandInput {
 		>;
 		fonts?: Readonly<Record<string, string>>;
  captionFontsDirectory?: string;
+	/** libass fonts for the Text Layer script: the vendored faces and the uploads it draws (default: the vendored faces). */
+	textFontsDirectory?: string;
 	};
 }
 
@@ -2191,6 +2193,7 @@ export function compileClipCompositionCommand(
 		hdrAssets: input.assets.hdr,
 		resolvedSceneFonts: input.assets.fonts,
  captionFontsDirectory: input.assets.captionFontsDirectory,
+		...(input.assets.textFontsDirectory ? { textFontsDirectory: input.assets.textFontsDirectory } : {}),
 	};
 	if (!input.source.hasVideo)
 		return buildAudiogramArgs({
@@ -2959,6 +2962,8 @@ function buildSingleVideoArgs(params: {
 	subtitlePath: string | null;
 	textAssPath?: string | null;
  captionFontsDirectory?: string;
+	/** libass fonts for the Text Layer script: the vendored faces and the uploads it draws (default: the vendored faces). */
+	textFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	/** The sole versioned composition policy for every video render. */
 	composition: {
@@ -3116,6 +3121,7 @@ function buildSingleVideoArgs(params: {
 		subtitlePath: params.subtitlePath,
 		textAssPath: params.textAssPath,
  captionFontsDirectory: params.captionFontsDirectory,
+		...(params.textFontsDirectory ? { textFontsDirectory: params.textFontsDirectory } : {}),
 		logoInputIndex,
 	});
 	filterParts.push(...visual.filterParts);
@@ -3250,6 +3256,8 @@ function buildBrollVideoArgs(params: {
 	subtitlePath: string | null;
 	textAssPath?: string | null;
  captionFontsDirectory?: string;
+	/** libass fonts for the Text Layer script: the vendored faces and the uploads it draws (default: the vendored faces). */
+	textFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	composition: {
 		plan: ClipCompositionPlan;
@@ -3416,6 +3424,7 @@ function buildBrollVideoArgs(params: {
 		subtitlePath: params.subtitlePath,
 		textAssPath: params.textAssPath,
  captionFontsDirectory: params.captionFontsDirectory,
+		...(params.textFontsDirectory ? { textFontsDirectory: params.textFontsDirectory } : {}),
 		logoInputIndex,
 	});
 	parts.push(...visual.filterParts);
@@ -3577,6 +3586,8 @@ function buildAudiogramArgs(params: {
 	subtitlePath: string | null;
 	textAssPath?: string | null;
  captionFontsDirectory?: string;
+	/** libass fonts for the Text Layer script: the vendored faces and the uploads it draws (default: the vendored faces). */
+	textFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	audio: BoundCompositionAudioRenderRequest;
 	resolvedSceneAssets?: Readonly<
@@ -3785,6 +3796,7 @@ function buildAudiogramArgs(params: {
 		subtitlePath: params.subtitlePath,
 		textAssPath: params.textAssPath,
  captionFontsDirectory: params.captionFontsDirectory,
+		...(params.textFontsDirectory ? { textFontsDirectory: params.textFontsDirectory } : {}),
 		logoInputIndex,
 	});
 	chain.push(...visual.filterParts);

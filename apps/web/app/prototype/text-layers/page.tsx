@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { TextLayerSheet, TextLayersPlayground } from "./text-layers";
+import { SampleBrandFonts, TextLayerSheet, TextLayersPlayground } from "./text-layers";
 
 export const metadata = {
   title: "Text layer harness",
@@ -19,7 +19,15 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ s
   const { sheet, bg, select, tab } = await searchParams;
   if (sheet !== undefined) {
     if (sheet !== "vertical" && sheet !== "horizontal") notFound();
-    return <TextLayerSheet orientation={sheet} background={bg === "photo" ? "photo" : "flat"} />;
+    return (
+      <SampleBrandFonts>
+        <TextLayerSheet orientation={sheet} background={bg === "photo" ? "photo" : "flat"} />
+      </SampleBrandFonts>
+    );
   }
-  return <TextLayersPlayground initialSelected={select !== "none"} initialTab={tab === "presets" ? "presets" : "settings"} />;
+  return (
+    <SampleBrandFonts>
+      <TextLayersPlayground initialSelected={select !== "none"} initialTab={tab === "presets" ? "presets" : "settings"} />
+    </SampleBrandFonts>
+  );
 }

@@ -3,11 +3,12 @@
 // Text Layer harness (title-text tickets 03 and 04). The sheet draws the shared samples with the real
 // Scene painter, tiled like the export's contact sheet; the playground is the Studio's canvas pieces
 // (frame, grips, toolbar) and the Text panel's style controls on local state.
-import { useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { Box, Flex, SimpleGrid, Stack, Text, Textarea } from "@chakra-ui/react";
 import { Heading, Type } from "lucide-react";
-import { TEXT_LAYER_SAMPLES } from "@narriflow/caption-scene";
+import { TEXT_LAYER_SAMPLE_UPLOAD, TEXT_LAYER_SAMPLES } from "@narriflow/caption-scene";
 import { DEFAULT_BRAND_TITLE, type StudioTextLayer, TEXT_LAYER_STYLE_PRESETS, type TextLayerStyle, studioTextLayerSchema } from "@narriflow/validators";
+import { type BrandFontChoice, BrandFontsProvider } from "../../(app)/brand-kit/_components/brand-fonts";
 import { staticTimeSource } from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/caption-block-painter";
 import { CaptionSceneLayers } from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/caption-scene-painter";
 import { useTextLayerScene } from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/text-layer-scene";
@@ -19,6 +20,26 @@ import { PanelTabs, SectionLabel, SelectedCheck, softFieldProps, tileProps } fro
 import { TextStyleControls } from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/tool-panels/text-style-controls";
 
 const WHOLE = { fromMs: 0, toMs: 1_000_000 } as const;
+
+/**
+ * The samples' uploaded font (`TEXT_LAYER_SAMPLE_UPLOAD`, the file the export sheet loads as an
+ * upload), offered as a brand font: the page draws it the way the Studio draws a brand kit upload.
+ */
+const SAMPLE_BRAND_FONTS: readonly BrandFontChoice[] = [
+  {
+    id: TEXT_LAYER_SAMPLE_UPLOAD.id,
+    family: TEXT_LAYER_SAMPLE_UPLOAD.family,
+    style: TEXT_LAYER_SAMPLE_UPLOAD.style,
+    weight: TEXT_LAYER_SAMPLE_UPLOAD.weight,
+    fingerprint: TEXT_LAYER_SAMPLE_UPLOAD.fingerprint,
+    accessUrl: new URL("../../../assets/fonts/geist/Geist-SemiBold.ttf", import.meta.url).href,
+    face: TEXT_LAYER_SAMPLE_UPLOAD.face,
+  },
+];
+
+export function SampleBrandFonts({ children }: { children: ReactNode }) {
+  return <BrandFontsProvider fonts={SAMPLE_BRAND_FONTS}>{children}</BrandFontsProvider>;
+}
 const still = staticTimeSource(0);
 
 /** The export sheet's backgrounds (`BACKGROUNDS` in text-layer-sheet.ts); the photo is the same four colours as a CSS radial gradient. */

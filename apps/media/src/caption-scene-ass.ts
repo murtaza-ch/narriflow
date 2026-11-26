@@ -7,6 +7,7 @@ import {
   type PiecePose,
   type SceneInput,
   type TextMeasure,
+  type UploadedFace,
   buildCaptionScene,
   evaluatePiece,
   exportFrameAfter,
@@ -19,9 +20,11 @@ import {
   sceneCuesFromLayers,
   sceneInputFromPreset,
   sceneSampleRate,
+  uploadedFaceKey,
 } from "@narriflow/caption-scene";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
+  type CaptionFontFace,
   type CaptionFontName,
   type CaptionSceneName,
   type FrameRate,
@@ -38,6 +41,7 @@ import {
   type CaptionFace,
   type OmittedGlyph,
   type PlannedCluster,
+  brandCaptionFace,
   catalogCaptionFace,
 } from "./caption-glyphs";
 
@@ -98,9 +102,15 @@ export interface SceneGlyphReport {
   readonly omitted: Map<string, OmittedGlyph>;
 }
 
+/** An uploaded font the worker resolved: its file and the face metrics read from it. */
+export interface SceneUploadFont {
+  readonly face: CaptionFontFace;
+  readonly path: string;
+}
+
 /** HarfBuzz measurement of scene text, faces and fallbacks planned as every caption word is. */
 export class SceneMeasurer {
-  private readonly planners = new Map<CaptionFontName, CaptionGlyphPlanner>();
+  private readonly planners = new Map<string, CaptionGlyphPlanner>();
   private readonly cache = new Map<string, SceneTextMetrics>();
 
   constructor(
@@ -108,26 +118,37 @@ export class SceneMeasurer {
     private readonly forcedOmissions: ReadonlySet<number>,
     private readonly language: string | null,
     /**
-     * Braces and backslashes are measured and drawn as typed (Text Layers). Captions leave them out
-     * of both (`wordParts`, `escapeAssText`); `sceneEvents` writes the text the way it was measured.
+     * Text Layer measurement. Braces and backslashes are measured and drawn as typed: captions leave
+     * them out of both (`wordParts`, `escapeAssText`), and `sceneEvents` writes the text the way it
+     * was measured. Spaces, digits, `#` and `*` after an emoji go back to the line's face, as the
+     * Studio draws them (captions keep them in the picture face, whose space is about an em wide).
      */
     readonly literalText = false,
+    /** Uploaded fonts the worker resolved, by `uploadedFaceKey` (Text Layers). A piece whose upload is not here draws its catalog `face`. */
+    private readonly uploads: ReadonlyMap<string, SceneUploadFont> = new Map(),
   ) {}
 
-  private planner(fontName: CaptionFontName): CaptionGlyphPlanner {
-    let planner = this.planners.get(fontName);
+  private planner(fontName: CaptionFontName, upload: UploadedFace | undefined): CaptionGlyphPlanner {
+    const font = upload ? this.uploads.get(uploadedFaceKey(upload)) : undefined;
+    // A catalog face keeps its own key; a resolved upload is planned with the catalog face as its saved fallback.
+    const key = font ? `${fontName}\0${uploadedFaceKey(upload!)}` : fontName;
+    let planner = this.planners.get(key);
     if (!planner) {
-      planner = new CaptionGlyphPlanner(catalogCaptionFace(captionFontFace(fontName), "requested"), null, this.report, 0, this.forcedOmissions, this.language);
-      this.planners.set(fontName, planner);
+      const catalog = captionFontFace(fontName);
+      planner = font
+        ? new CaptionGlyphPlanner(brandCaptionFace(font.face, font.path), catalogCaptionFace(catalog, "saved"), this.report, 0, this.forcedOmissions, this.language, this.literalText)
+        : new CaptionGlyphPlanner(catalogCaptionFace(catalog, "requested"), null, this.report, 0, this.forcedOmissions, this.language, this.literalText);
+      this.planners.set(key, planner);
     }
     return planner;
   }
 
-  metrics(text: string, fontName: CaptionFontName, letterSpacingEm: number): SceneTextMetrics {
-    const key = `${fontName}\0${letterSpacingEm}\0${text}`;
+  metrics(text: string, fontName: CaptionFontName, letterSpacingEm: number, upload?: UploadedFace): SceneTextMetrics {
+    const resolved = upload && this.uploads.has(uploadedFaceKey(upload)) ? upload : undefined;
+    const key = `${fontName}\0${letterSpacingEm}\0${text}${resolved ? `\0${uploadedFaceKey(resolved)}` : ""}`;
     const cached = this.cache.get(key);
     if (cached) return cached;
-    const planner = this.planner(fontName);
+    const planner = this.planner(fontName, resolved);
     const planned = planner.plan(text);
     const direction = captionTextDirection(text, this.language ? languageDirection(this.language) : undefined);
     // Select the same paragraph level as Canvas, including LTR phrases that
@@ -162,8 +183,8 @@ export class SceneMeasurer {
   }
 
   /** The `Measure` scene programs call. */
-  readonly measure: Measure = (text, face, sizePx, letterSpacingEm): TextMeasure => {
-    const m = this.metrics(text, face, letterSpacingEm);
+  readonly measure: Measure = (text, face, sizePx, letterSpacingEm, upload): TextMeasure => {
+    const m = this.metrics(text, face, letterSpacingEm, upload);
     return {
       advance: m.advanceEm * sizePx,
       inkTop: -m.inkTopEm * sizePx,
@@ -632,7 +653,7 @@ function clipTags(piece: Piece, rel: readonly number[], clips: readonly NonNulla
 export function sceneEvents(scene: CaptionScene, measurer: SceneMeasurer, options: SceneEventOptions): AssEvent[] {
   const events: AssEvent[] = [];
   for (const piece of scene.pieces) {
-    const metrics = piece.kind === "text" ? measurer.metrics(piece.text, piece.face, piece.letterSpacingEm) : null;
+    const metrics = piece.kind === "text" ? measurer.metrics(piece.text, piece.face, piece.letterSpacingEm, piece.upload) : null;
     events.push(...pieceEvents(piece, metrics, { ...options, literalText: measurer.literalText }));
   }
   return events.map((event, index) => ({ event, index })).sort((a, b) => a.event.layer - b.event.layer || a.index - b.index).map(({ event }) => event);

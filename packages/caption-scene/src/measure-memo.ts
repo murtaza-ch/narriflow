@@ -1,4 +1,4 @@
-import type { Measure } from "./scene";
+import { type Measure, uploadedFaceKey } from "./scene";
 
 /**
  * `measure` remembered for one build. A program asks for the same word many times (fits bisect a
@@ -9,11 +9,12 @@ import type { Measure } from "./scene";
  */
 export function memoMeasure(measure: Measure): Measure {
   const memo = new Map<string, ReturnType<Measure>>();
-  return (text, face, sizePx, letterSpacingEm) => {
-    const key = `${face}\0${sizePx}\0${letterSpacingEm}\0${text}`;
+  return (text, face, sizePx, letterSpacingEm, upload) => {
+    // A catalog face keeps the key it always had; an upload adds its own.
+    const key = `${face}\0${sizePx}\0${letterSpacingEm}\0${text}${upload ? `\0${uploadedFaceKey(upload)}` : ""}`;
     let result = memo.get(key);
     if (!result) {
-      result = measure(text, face, sizePx, letterSpacingEm);
+      result = upload ? measure(text, face, sizePx, letterSpacingEm, upload) : measure(text, face, sizePx, letterSpacingEm);
       memo.set(key, result);
     }
     return result;

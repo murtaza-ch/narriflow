@@ -26,6 +26,7 @@ import {
   type ShapePiece,
   type TextMeasure,
   type TextPiece,
+  type UploadedFace,
   SCENE_PERSPECTIVE_PX,
   buildCaptionScene,
   evaluatePiece,
@@ -36,6 +37,7 @@ import {
   sceneBoundsAt,
   sceneBuildKey,
   sceneInputFromPreset,
+  uploadedFaceKey,
 } from "@narriflow/caption-scene";
 import { type CaptionFontName, type CaptionPreset, languageDirection, captionTextDirection } from "@narriflow/validators";
 import { CaptionText, hexToRgba } from "./caption-style-engine";
@@ -65,11 +67,24 @@ export interface CaptionSceneBuildInput {
   readonly fps?: number;
 }
 
+/** The face an uploaded brand font draws in, with `fallback` for what it lacks; null when it cannot be drawn. */
+export type UploadWordFace = (upload: UploadedFace, fallback: CaptionFontName, language: string | null) => WordFace | null;
+
+/** The face a text piece is drawn in: its upload when the scene resolves it, else its catalog face. */
+export function pieceWordFace(piece: TextPiece, language: string | null, uploadFace: UploadWordFace | null | undefined): WordFace | null {
+  return (piece.upload && uploadFace?.(piece.upload, piece.face, language)) || wordFace("text", piece.face, null, language);
+}
+
+/** One key per drawn face: a catalog name keeps its own key. */
+const pieceFaceKey = (piece: TextPiece) => (piece.upload ? `${piece.face}\0${uploadedFaceKey(piece.upload)}` : piece.face);
+
 /** A scene with the measurement that built it (the selection box and the painter read the same). */
 export interface MeasuredScene {
   readonly scene: CaptionScene;
   readonly measure: Measure;
   readonly language: string | null;
+  /** Resolves the uploaded fonts of Text Layer pieces (absent: every piece draws its catalog face). */
+  readonly uploadFace?: UploadWordFace;
   /** What the scene was built from (absent for a fixture): its cues, preset, canvas and anchor. */
   readonly input?: CaptionSceneBuildInput;
 }
@@ -83,12 +98,12 @@ type SceneResult =
  * loaded is cached (the browser-wide cache of `measureWord`); while faces are still loading (`wanted` collects them) the
  * answer comes from a fallback face and must not be remembered.
  */
-export function canvasMeasure(language: string | null, wanted: Map<string, () => Promise<unknown>> | null): Measure {
-  return (text, fontName, sizePx, letterSpacingEm): TextMeasure => {
-    const face = wordFace("text", fontName, null, language);
+export function canvasMeasure(language: string | null, wanted: Map<string, () => Promise<unknown>> | null, uploadFace: UploadWordFace | null = null): Measure {
+  return (text, fontName, sizePx, letterSpacingEm, upload): TextMeasure => {
+    const face = (upload && uploadFace?.(upload, fontName, language)) || wordFace("text", fontName, null, language);
     if (!face) return { advance: text.length * sizePx * 0.55, inkTop: -sizePx * 0.72, inkBottom: sizePx * 0.2, ascent: sizePx, descent: sizePx * 0.3 };
     const loaded = !wanted || facesLoaded(text, face, language);
-    if (wanted && !loaded) wanted.set(`${fontName}\0${text}`, () => loadFaces(text, face, language));
+    if (wanted && !loaded) wanted.set(`${upload ? face.requestedFamily : fontName}\0${text}`, () => loadFaces(text, face, language));
     const direction = captionTextDirection(text, language ? languageDirection(language) : undefined);
     const m = measureWord(text, face, letterSpacingEm, direction, language, loaded);
     return { advance: m.advanceEm * sizePx, inkTop: -m.inkTopEm * sizePx, inkBottom: m.inkBottomEm * sizePx, ascent: face.ascent * sizePx, descent: face.descent * sizePx };
@@ -429,7 +444,7 @@ const PieceView = memo(function PieceView({ piece, index, face, measure, scale, 
   const specs = layersOf(piece);
   const text = piece.kind === "text" ? piece : null;
   if (text && !face) return null;
-  const advance = text ? measure(text.text, text.face, text.sizePx, text.letterSpacingEm).advance : 0;
+  const advance = text ? (text.upload ? measure(text.text, text.face, text.sizePx, text.letterSpacingEm, text.upload) : measure(text.text, text.face, text.sizePx, text.letterSpacingEm)).advance : 0;
   const direction = text ? captionTextDirection(text.text, language ? languageDirection(language) : undefined) : "ltr";
   let content: ReactNode;
   if (text) {
@@ -456,17 +471,17 @@ export const CaptionSceneLayers = memo(function CaptionSceneLayers({ built, canv
   const rootRef = useRef<HTMLDivElement>(null);
   const [probes, setProbes] = useState(0);
   const [windowStart, setWindowStart] = useState(() => mountWindowStart(timeSource.getSnapshot() * 1000));
-  const { scene, measure, language } = built;
+  const { scene, measure, language, uploadFace } = built;
 
   const faces = useMemo(() => {
-    const map = new Map<CaptionFontName, WordFace>();
+    const map = new Map<string, WordFace>();
     for (const piece of scene.pieces) {
-      if (piece.kind !== "text" || map.has(piece.face)) continue;
-      const face = wordFace("text", piece.face, null, language);
-      if (face) map.set(piece.face, face);
+      if (piece.kind !== "text" || map.has(pieceFaceKey(piece))) continue;
+      const face = pieceWordFace(piece, language, uploadFace);
+      if (face) map.set(pieceFaceKey(piece), face);
     }
     return map;
-  }, [scene, language]);
+  }, [scene, language, uploadFace]);
 
   // The mounted pieces, in paint order (`z`, then array order, as the worker's ASS layers are).
   const mounted = useMemo(() => mountedPieceIndexes(scene.pieces, windowStart).sort((a, b) => scene.pieces[a]!.z - scene.pieces[b]!.z || a - b), [scene, windowStart]);
@@ -476,8 +491,8 @@ export const CaptionSceneLayers = memo(function CaptionSceneLayers({ built, canv
     const sizes = new Map<string, { face: WordFace; fontPx: number }>();
     for (const piece of scene.pieces) {
       if (piece.kind !== "text") continue;
-      const face = faces.get(piece.face);
-      if (face) sizes.set(`${piece.face}|${piece.sizePx}`, { face, fontPx: piece.sizePx * scale });
+      const face = faces.get(pieceFaceKey(piece));
+      if (face) sizes.set(`${pieceFaceKey(piece)}|${piece.sizePx}`, { face, fontPx: piece.sizePx * scale });
     }
     const requests = [...sizes.values()];
     if (probeBaselineOffsets(requests)) setProbes((count) => count + 1);
@@ -564,7 +579,7 @@ export const CaptionSceneLayers = memo(function CaptionSceneLayers({ built, canv
     >
       {mounted.map((index) => {
         const piece = scene.pieces[index]!;
-        return <PieceView key={piece.id} piece={piece} index={index} face={piece.kind === "text" ? faces.get(piece.face) : undefined} measure={measure} scale={scale} language={language} probes={probes} />;
+        return <PieceView key={piece.id} piece={piece} index={index} face={piece.kind === "text" ? faces.get(pieceFaceKey(piece)) : undefined} measure={measure} scale={scale} language={language} probes={probes} />;
       })}
     </div>
   );

@@ -90,6 +90,12 @@ export interface TextPiece extends PieceBase {
   text: string;
   /** The requested face; a word the face cannot draw falls back as every caption word does. */
   face: CaptionFontName;
+  /**
+   * An uploaded brand font drawn in place of `face` when the renderer has it (Text Layers only; a
+   * Scene Style owns its faces). `face` is then its fallback: the face for glyphs the upload lacks,
+   * and the whole face when the upload cannot be resolved.
+   */
+  upload?: UploadedFace;
   sizePx: number;
   letterSpacingEm: number;
   fill: string;
@@ -257,7 +263,20 @@ export interface TextMeasure {
   readonly descent: number;
 }
 
-export type Measure = (text: string, face: CaptionFontName, sizePx: number, letterSpacingEm: number) => TextMeasure;
+/** An uploaded brand font, by its upload id and the SHA-256 fingerprint of its bytes. */
+export interface UploadedFace {
+  readonly id: string;
+  readonly fingerprint: string;
+}
+
+/** The key of an upload in caches and font maps (the same `id:fingerprint` as the worker's `brandFontKey`). */
+export const uploadedFaceKey = (upload: UploadedFace): string => `${upload.id}:${upload.fingerprint}`;
+
+/**
+ * Measures a run of text in `face`, or in `upload` with `face` as its fallback when one is given.
+ * A renderer that cannot resolve the upload measures `face`, as it then draws it.
+ */
+export type Measure = (text: string, face: CaptionFontName, sizePx: number, letterSpacingEm: number, upload?: UploadedFace) => TextMeasure;
 
 /** The rest box of a piece's drawing in its own coordinates, relative to its anchor point. */
 export function pieceLocalBox(piece: Piece, measure: Measure): Box {
@@ -277,7 +296,7 @@ function restBox(piece: Piece, measure: Measure): Box {
     const reach = piece.stroke ? piece.stroke.widthPx : 0;
     return { x1: bounds.x1 - reach, y1: bounds.y1 - reach, x2: bounds.x2 + reach, y2: bounds.y2 + reach };
   }
-  const m = measure(piece.text, piece.face, piece.sizePx, piece.letterSpacingEm);
+  const m = piece.upload ? measure(piece.text, piece.face, piece.sizePx, piece.letterSpacingEm, piece.upload) : measure(piece.text, piece.face, piece.sizePx, piece.letterSpacingEm);
   const left = piece.anchor === "baseline-center" ? -m.advance / 2 : 0;
   const reach = piece.stroke ? piece.stroke.widthPx : 0;
   return { x1: left - reach, y1: m.inkTop - reach, x2: left + m.advance + reach, y2: m.inkBottom + reach };

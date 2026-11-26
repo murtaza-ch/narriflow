@@ -174,7 +174,7 @@ export const TEXT_LAYER_STYLE_PRESETS: readonly TextLayerStylePreset[] = [
 ];
 
 /** Degrees a shear italic leans to the right. */
-const TEXT_LAYER_SHEAR_DEG = 12;
+export const TEXT_LAYER_SHEAR_DEG = 12;
 
 /**
  * The one place the bold and italic toggles become a face. Bold takes the family's heavier face

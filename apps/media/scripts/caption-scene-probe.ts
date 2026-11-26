@@ -16,7 +16,7 @@ export interface RawFrame {
   readonly data: Uint8Array;
 }
 
-export function renderAssRaw(input: { readonly ass: string; readonly width: number; readonly height: number; readonly tMs: number; readonly background?: string }): RawFrame {
+export function renderAssRaw(input: { readonly ass: string; readonly width: number; readonly height: number; readonly tMs: number; readonly background?: string; readonly fontsDir?: string }): RawFrame {
   const dir = mkdtempSync(join(tmpdir(), "scene-ass-"));
   const file = join(dir, "t.ass");
   writeFileSync(file, input.ass);
@@ -25,7 +25,7 @@ export function renderAssRaw(input: { readonly ass: string; readonly width: numb
     [
       "-hide_banner", "-loglevel", "error", "-y",
       "-f", "lavfi", "-i", `color=c=${input.background ?? "black"}:s=${input.width}x${input.height}:r=30:d=1`,
-      "-vf", `format=rgb24,settb=1/1000000,setpts=${Math.round(input.tMs * 1000) + 300},ass='${file}':fontsdir='${CAPTION_FONTS_DIRECTORY}'`,
+      "-vf", `format=rgb24,settb=1/1000000,setpts=${Math.round(input.tMs * 1000) + 300},ass='${file}':fontsdir='${input.fontsDir ?? CAPTION_FONTS_DIRECTORY}'`,
       "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
     ],
     { maxBuffer: 1 << 28 },

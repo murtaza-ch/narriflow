@@ -187,7 +187,10 @@ export class BrandFontService {
         where: {
           deletedAt: null,
           workspaceId: scope.workspaceId,
-          captionPreset: { path: ["fontAsset", "id"], equals: id },
+          OR: [
+            { captionPreset: { path: ["fontAsset", "id"], equals: id } },
+            { title: { path: ["style", "fontAsset", "id"], equals: id } },
+          ],
         },
         select: { id: true },
       });
