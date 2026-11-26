@@ -287,6 +287,7 @@ export class BrandTemplateService {
     return this.createCounted(prisma, scope, async (actor) => {
       const assetOwnerUserId = actor.workspaceOwnerUserId;
       await brandFontService.assertSelection(actor, parsed.captionPreset.fontAsset);
+      await brandFontService.assertSelection(actor, parsed.title?.style.fontAsset);
       assertOwnedLogoKey(assetOwnerUserId, parsed.logoStorageKey, scope);
       const captionPreset = applyBrandColorsToCaption(
         parsed.captionPreset,
@@ -339,6 +340,11 @@ export class BrandTemplateService {
 
     if (parsed.captionPreset?.fontAsset && JSON.stringify(parsed.captionPreset.fontAsset) !== JSON.stringify(captionPresetSchema.parse(existing.captionPreset).fontAsset)) {
       await brandFontService.assertSelection(actor, parsed.captionPreset.fontAsset);
+    }
+    // The title's uploaded font, when it changes (a stored one may since have been deleted; it then draws its family).
+    const titleFont = parsed.title?.style.fontAsset;
+    if (titleFont && JSON.stringify(titleFont) !== JSON.stringify(storedTitle(existing.title)?.style.fontAsset ?? null)) {
+      await brandFontService.assertSelection(actor, titleFont);
     }
 
     const data: Prisma.BrandTemplateUpdateInput = { updatedByUserId: scope.actorUserId };

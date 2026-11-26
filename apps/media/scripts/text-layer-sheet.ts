@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
-import { TEXT_LAYER_SAMPLES } from "@narriflow/caption-scene";
+import { TEXT_LAYER_SAMPLE_UPLOAD, TEXT_LAYER_SAMPLES } from "@narriflow/caption-scene";
 import type { CompositionTextVisualLayer } from "@narriflow/composition-plan";
 import { assTime } from "../src/ass-format";
+import { brandFontRenderer } from "../src/brand-font-parser";
+import { prepareTextFontsDirectory, type RenderBrandFont } from "../src/brand-font-resolution";
 import { renderTextLayerTrack } from "../src/text-layer-ass";
 
 /**
@@ -17,6 +18,8 @@ import { renderTextLayerTrack } from "../src/text-layer-ass";
  *   bun apps/media/scripts/text-layer-sheet.ts [outDir]   (default .scratch/title-text/sheet)
  *
  * Each sample owns one 100 ms frame of a 10 fps clip; `tile` lays the frames out, half size.
+ * The samples' uploaded font (`TEXT_LAYER_SAMPLE_UPLOAD`) goes through the render's upload path:
+ * parsed from its bytes, resolved by id and fingerprint, staged in the script's fonts directory.
  */
 
 const FPS = 10;
@@ -44,6 +47,11 @@ function labelEvent(index: number, label: string, height: number): string {
 
 mkdirSync(outDir, { recursive: true });
 const work = mkdtempSync(join(tmpdir(), "text-layer-sheet-"));
+const uploadPath = join(work, `brand-font-${TEXT_LAYER_SAMPLE_UPLOAD.id}.ttf`);
+copyFileSync(join(ROOT, TEXT_LAYER_SAMPLE_UPLOAD.file), uploadPath);
+const fonts = new Map<string, RenderBrandFont>([
+  [`${TEXT_LAYER_SAMPLE_UPLOAD.id}:${TEXT_LAYER_SAMPLE_UPLOAD.fingerprint}`, { ...brandFontRenderer(readFileSync(uploadPath)), path: uploadPath }],
+]);
 const written: string[] = [];
 for (const canvas of CANVASES) {
   const layers: CompositionTextVisualLayer[] = TEXT_LAYER_SAMPLES.flatMap((sample, index) =>
@@ -59,7 +67,8 @@ for (const canvas of CANVASES) {
       value,
     })),
   );
-  const track = renderTextLayerTrack({ layers, canvas, frameRate: { numerator: FPS, denominator: 1 } });
+  const track = renderTextLayerTrack({ layers, canvas, frameRate: { numerator: FPS, denominator: 1 }, fonts });
+  const fontsDirectory = await prepareTextFontsDirectory(work, fonts, track.uploads);
   if (track.omitted.length > 0) console.warn(JSON.stringify({ level: "warn", message: "text_layer_sheet_omitted", canvas: canvas.name, omitted: track.omitted }));
   const ass = `${track.ass.trimEnd()}\n${TEXT_LAYER_SAMPLES.map((sample, index) => labelEvent(index, sample.label, canvas.height)).join("\n")}\n`;
   const assPath = join(work, `${canvas.name}.ass`);
@@ -74,7 +83,7 @@ for (const canvas of CANVASES) {
       [
         "-hide_banner", "-loglevel", "error", "-y",
         "-f", "lavfi", "-i", source(canvas.width, canvas.height, seconds),
-        "-vf", `ass='${assPath}':fontsdir='${CAPTION_FONTS_DIRECTORY}',scale=iw/2:ih/2,tile=${canvas.columns}x${rows}:padding=8:color=0x111111`,
+        "-vf", `ass='${assPath}':fontsdir='${fontsDirectory}',scale=iw/2:ih/2,tile=${canvas.columns}x${rows}:padding=8:color=0x111111`,
         "-frames:v", "1", out,
       ],
       { encoding: "utf8" },

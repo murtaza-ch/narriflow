@@ -4,7 +4,7 @@ import { executorProcessFailure } from "../worker-process";
 import { statfs } from "node:fs/promises";
 import { transportRenderCommand } from "../render-command-transport";
 import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
-import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
+import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, prepareTextFontsDirectory, brandFontKey, type RenderBrandFonts } from "../brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { basename, extname, join } from "node:path";
 import {
@@ -660,6 +660,8 @@ interface PendingRenderOutput {
 	subtitlePath?: string | null;
 	/** The target's Text Layer script, when it has Text Layers. */
 	textAssPath?: string | null;
+	/** The Text Layer script's fonts directory (`prepareTextFontsDirectory`). */
+	textFontsDirectory?: string;
 	/** Code points left out of the burned text. */
 	captionWarnings?: CaptionWarnings;
 	/** Code points forced out of the text after libass reported them. */
@@ -1186,9 +1188,14 @@ function compileTextLayerTrack(
 	targetId: string,
 	context: Record<string, unknown>,
 	frameRate: FrameRate,
+	fonts: RenderBrandFonts,
 	omitCodePoints?: ReadonlySet<number>,
 ): TextLayerTrack {
-	const track = compileCompositionPlanTextLayers(plan, targetId, omitCodePoints, frameRate);
+	const track = compileCompositionPlanTextLayers(plan, targetId, omitCodePoints, frameRate, fonts);
+	for (const collision of track.collisions) {
+		// Two faces with one internal name cannot both reach libass: the layer draws the face that won (textLayerFaces).
+		log("info", "text_layer_font_name_collision", { ...context, phase: "text_layer_fonts", disposition: "degraded", layerId: collision.layerId, fontId: collision.requested.id, name: collision.name, drawnAs: collision.drawnAs.kind === "upload" ? collision.drawnAs.upload.id : collision.drawnAs.face });
+	}
 	for (const notice of track.notices) {
 		log("info", notice.code, { ...context, phase: "text_layer_glyphs", disposition: "degraded", cluster: notice.cluster, font: notice.font, sequenceSplit: notice.sequenceSplit });
 	}
@@ -3776,7 +3783,7 @@ async function renderClipGroup(input: {
 			output.captionOmitCodePoints = omit;
 			for (const codePoint of codePoints) omit.add(codePoint);
 			if (output.textAssPath) {
-				const text = compileTextLayerTrack(compositionPlan, output.clipRenderId, { workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId }, textFrameRate, omit);
+				const text = compileTextLayerTrack(compositionPlan, output.clipRenderId, { workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId }, textFrameRate, customFonts, omit);
 				await currentRenderAdapters().workspace.writeFile(output.textAssPath, text.ass, "utf-8");
 			}
 			if (!output.subtitlePath) return;
@@ -4002,11 +4009,13 @@ async function renderClipGroup(input: {
 				output.clipRenderId,
 				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
 				textFrameRate,
+				customFonts,
 			);
 			if (text.ass.length > 0) {
 				const textAssPath = join(tempDir, `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}-text.ass`);
 				await currentRenderAdapters().workspace.writeFile(textAssPath, text.ass, "utf-8");
 				output.textAssPath = textAssPath;
+				output.textFontsDirectory = await prepareTextFontsDirectory(tempDir, customFonts, text.uploads);
 			}
 		}
 	}
@@ -4055,6 +4064,7 @@ async function renderClipGroup(input: {
 						assets: {
 							subtitlePath: output.subtitlePath ?? null,
 							textAssPath: output.textAssPath ?? null,
+							...(output.textFontsDirectory ? { textFontsDirectory: output.textFontsDirectory } : {}),
 							logo: logo,
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
@@ -4195,6 +4205,7 @@ async function renderClipGroup(input: {
 							hdr: hdrAssets,
 							subtitlePath: output.subtitlePath ?? null,
 							textAssPath: output.textAssPath ?? null,
+							...(output.textFontsDirectory ? { textFontsDirectory: output.textFontsDirectory } : {}),
 							logo,
 							background: backgroundPlan,
 							scenes: resolvedSceneAssets,

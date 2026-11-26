@@ -133,6 +133,8 @@ const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const emojiPresentation = (cluster: string): boolean =>
   EMOJI_PRESENTATION.test(cluster) || cluster.includes("\ufe0f") || cluster.includes("\u20e3");
 
+const isPictureFace = (face: CaptionFace): boolean => face.role === "symbols" || face.role === "monochrome-emoji";
+
 export interface PlannedPart {
   readonly text: string;
   readonly face: CaptionFace;
@@ -164,6 +166,12 @@ export class CaptionGlyphPlanner {
     private readonly forcedOmissions: ReadonlySet<number> = new Set(),
     /** The cue's effective caption language: picks the language-aware face for a script run. */
     private readonly language: string | null = null,
+    /**
+     * Neutral text (spaces, digits, `#`, `*`) after an emoji or symbol goes back to the face of the
+     * text before it, as the browser draws it, instead of staying in the picture face (whose space
+     * is about an em wide). Text Layers only for now: captions keep their tested behaviour.
+     */
+    private readonly neutralsLeavePictureFaces = false,
   ) {
     this.leading = [requested, ...(saved ? [saved] : [])];
   }
@@ -173,14 +181,18 @@ export class CaptionGlyphPlanner {
     const cached = this.plans.get(text);
     if (cached) return cached;
     let current: CaptionFace = this.requested;
+    // The face of the last text that is not an emoji or symbol picture.
+    let line: CaptionFace = this.requested;
     let spaced = true;
     const clusters = captionGraphemes(text).map((cluster) => {
-      const parts = this.partsFor(cluster, current).map((part) => {
+      const sticky = this.neutralsLeavePictureFaces && isPictureFace(current) ? line : current;
+      const parts = this.partsFor(cluster, sticky).map((part) => {
         const sensitivity = captionShapingSensitivity(part.text);
         spaced = part.face.letterSpacing !== "disabled" && (sensitivity === "neutral" ? spaced : sensitivity === "plain");
         return { ...part, spaced };
       });
       current = parts[parts.length - 1]?.face ?? current;
+      if (!isPictureFace(current)) line = current;
       return { text: cluster, parts };
     });
     this.plans.set(text, clusters);

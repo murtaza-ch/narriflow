@@ -1,7 +1,8 @@
 import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
-import { type StudioTextLayer, applyCaptionTextTransform, captionFontFace, resolveTextLayerFace } from "@narriflow/validators";
+import { type StudioTextLayer, applyCaptionTextTransform } from "@narriflow/validators";
 import type { Box, CaptionScene, Measure, Piece, SceneWindow, Shadow, ShapePiece, TextPiece } from "../scene";
 import { rectPath, roundedRectPath } from "../shapes";
+import { type TextLayerFace, type TextLayerFontCollision, type TextLayerUploadResolver, catalogTextLayerFace, textLayerFaces } from "./fonts";
 
 /**
  * The Text Layer layout (title-text spec section 4, ADR 0021). A layer is a static Caption Scene:
@@ -59,14 +60,15 @@ export interface TextLayerLayout {
 /**
  * A layer's pieces for `window` (clip ms), its frame and its lines. `zBase` is the first `z` of
  * the layer's band (`TEXT_LAYER_Z_BAND` values), so a later layer's boxes cover an earlier layer's text.
+ * `drawnFace` is what `textLayerFaces` chose for it (default: its `font` family).
  */
-export function layoutTextLayer(layer: TextLayerInput, canvas: TextLayerCanvas, measure: Measure, window: SceneWindow, zBase: number): TextLayerLayout {
+export function layoutTextLayer(layer: TextLayerInput, canvas: TextLayerCanvas, measure: Measure, window: SceneWindow, zBase: number, drawnFace: TextLayerFace = catalogTextLayerFace(layer.style)): TextLayerLayout {
   const { style } = layer;
   const u = Math.min(canvas.width, canvas.height) / 1080;
   const size = style.fontSize * u;
-  const { face, fauxBold, shearDeg } = resolveTextLayerFace(style);
-  const cap = captionFontFace(face).capHeight * size;
-  const advance = (text: string) => measure(text, face, size, 0).advance;
+  const { face, upload, fauxBold, shearDeg } = drawnFace;
+  const cap = drawnFace.capHeight * size;
+  const advance = (text: string) => (upload ? measure(text, face, size, 0, upload) : measure(text, face, size, 0)).advance;
 
   const frameWidth = (layer.widthPct / 100) * canvas.width;
   const centreX = (layer.positionX / 100) * canvas.width;
@@ -135,6 +137,7 @@ export function layoutTextLayer(layer: TextLayerInput, canvas: TextLayerCanvas, 
       track: { x: at(x), y: at(line.baselineY), ...(shearDeg !== 0 ? { skx: at(-shearDeg) } : {}) },
       text: line.text,
       face,
+      ...(upload ? { upload } : {}),
       sizePx: size,
       letterSpacingEm: 0,
       fill: style.color,
@@ -176,10 +179,19 @@ export interface TextLayerEntry {
   readonly window: SceneWindow;
 }
 
-/** The scene of a target's Text Layers, each in its own `z` band in document order. */
-export function buildTextLayerScene(entries: readonly TextLayerEntry[], canvas: TextLayerCanvas, measure: Measure): { scene: CaptionScene; layouts: TextLayerLayout[] } {
-  const layouts = entries.map((entry, index) => layoutTextLayer(entry.layer, canvas, measure, entry.window, index * TEXT_LAYER_Z_BAND));
-  return { scene: { pieces: layouts.flatMap((layout) => layout.pieces) }, layouts };
+/**
+ * The scene of a target's Text Layers, each in its own `z` band in document order. `uploads`
+ * resolves the layers' uploaded fonts (null: every layer draws its `font` family).
+ */
+export function buildTextLayerScene(
+  entries: readonly TextLayerEntry[],
+  canvas: TextLayerCanvas,
+  measure: Measure,
+  uploads: TextLayerUploadResolver | null = null,
+): { scene: CaptionScene; layouts: TextLayerLayout[]; collisions: TextLayerFontCollision[] } {
+  const { faces, collisions } = textLayerFaces(entries.map((entry) => entry.layer), uploads);
+  const layouts = entries.map((entry, index) => layoutTextLayer(entry.layer, canvas, measure, entry.window, index * TEXT_LAYER_Z_BAND, faces[index]));
+  return { scene: { pieces: layouts.flatMap((layout) => layout.pieces) }, layouts, collisions };
 }
 
 /** The text as drawn: the layer's case applied, line breaks normalised. */

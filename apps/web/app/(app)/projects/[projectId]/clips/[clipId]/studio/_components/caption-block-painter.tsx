@@ -36,7 +36,7 @@ import {
   type PlacedGradient,
   type PlacedWord,
 } from "@narriflow/caption-fonts/caption-block";
-import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
+import { captionGraphemes, isCaptionEmojiCluster } from "@narriflow/caption-fonts/graphemes";
 import type { CompositionCaptionBlock } from "@narriflow/composition-plan";
 import {
   CAPTION_EXTRUDE,
@@ -165,6 +165,28 @@ export function wordFace(
 }
 
 /**
+ * The face of an uploaded brand font in a Text Layer: the upload, then the layer's catalog face for
+ * glyphs the upload lacks, then the script fallbacks. The worker's planner tries the same faces in
+ * the same order (requested, saved, script faces). The upload's own metrics set its line box.
+ */
+export function uploadWordFace(font: BrandFontChoice, fallback: CaptionFontName, language: string | null): WordFace | null {
+  const variable = captionFontVariable(fallback);
+  const fallbackFamily = getComputedStyle(document.documentElement).getPropertyValue(variable).trim();
+  if (!font.face || !fallbackFamily) return null;
+  const upload = `"${brandFontFamily(font)}"`;
+  return {
+    requestedFamily: `${upload}, ${fallbackFamily}`,
+    css: { fontFamily: captionFontStack(`${upload}, var(${variable})`, language), fontWeight: font.weight, fontStyle: font.face.style, fontSynthesis: "none" },
+    weight: font.weight,
+    style: font.face.style,
+    ascent: font.face.ascent,
+    descent: font.face.descent,
+    // An upload's coverage is unknown: every cluster checks the whole stack.
+    ownScripts: [],
+  };
+}
+
+/**
  * Canvas font strings for one face: the face alone and its whole fallback stack (for loading),
  * and the stack to measure with. The DOM draws every caption word with `font-synthesis: none`
  * and libass never synthesizes, but Canvas has no such switch: at the role's weight (600 or
@@ -187,7 +209,10 @@ function canvasFonts(face: WordFace, language: string | null) {
 export function facesLoaded(text: string, face: WordFace, language: string | null): boolean {
   const fonts = canvasFonts(face, language);
   if (!document.fonts.check(fonts.requested, text)) return false;
-  const needsFallback = captionGraphemes(text).some((cluster) => !captionFaceDraws(cluster, face.ownScripts));
+  // An emoji is Common script, so `captionFaceDraws` counts it as the face's; it is drawn by the
+  // emoji fallback face, which must have loaded too, or a build whose own face is already in (an
+  // upload resolved after the page's other text) measures the emoji in a system face and keeps it.
+  const needsFallback = captionGraphemes(text).some((cluster) => isCaptionEmojiCluster(cluster) || !captionFaceDraws(cluster, face.ownScripts));
   return !needsFallback || document.fonts.check(fonts.stack, text);
 }
 

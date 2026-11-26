@@ -1,4 +1,4 @@
-import { DEFAULT_TEXT_SHADOW, DEFAULT_TITLE_STYLE, type StudioTextLayer, TEXT_LAYER_STYLE_PRESETS, studioTextLayerSchema } from "@narriflow/validators";
+import { type CaptionFontFace, DEFAULT_TEXT_SHADOW, DEFAULT_TITLE_STYLE, type StudioTextLayer, TEXT_LAYER_STYLE_PRESETS, studioTextLayerSchema } from "@narriflow/validators";
 
 /**
  * The fixed Text Layer samples the parity checks draw: the worker's contact sheet
@@ -18,6 +18,23 @@ const layer = (id: string, text: string, style: Partial<StudioTextLayer["style"]
 const sample = (id: string, label: string, ...layers: StudioTextLayer[]): TextLayerSample => ({ id, label, layers });
 
 const TITLE = "How I grew my channel to 1M subscribers";
+
+/**
+ * The uploaded brand font the samples use: Geist SemiBold (SIL OFL 1.1, `apps/web/assets/fonts/geist`),
+ * loaded by both sheets as an upload, not as a vendored face. `face` is what `parseBrandFont` reads
+ * from the file (a media test holds it to the bytes).
+ */
+export const TEXT_LAYER_SAMPLE_UPLOAD = {
+  id: "5f0c3c8e-7b3a-4d0e-9a51-08b7e3f2a6c1",
+  fingerprint: "8a096dff8c92054201f22475447a0ec02800d3f5eb391f3c936b96af3df94851",
+  /** Repository path of the file. */
+  file: "apps/web/assets/fonts/geist/Geist-SemiBold.ttf",
+  family: "Geist SemiBold",
+  style: "Regular",
+  weight: 600,
+  face: { name: "Geist SemiBold", file: "", assName: "Geist SemiBold", weight: 600, style: "normal", ascent: 1.088, descent: 0.262, capHeight: 0.71 } as CaptionFontFace,
+} as const;
+const uploaded = { kind: "brand_font" as const, id: TEXT_LAYER_SAMPLE_UPLOAD.id, fingerprint: TEXT_LAYER_SAMPLE_UPLOAD.fingerprint };
 
 export const TEXT_LAYER_SAMPLES: readonly TextLayerSample[] = [
   ...TEXT_LAYER_STYLE_PRESETS.map((preset) => sample(`preset-${preset.id}`, preset.name, layer("title", TITLE, preset.style))),
@@ -45,5 +62,11 @@ export const TEXT_LAYER_SAMPLES: readonly TextLayerSample[] = [
     "Two overlapping layers",
     layer("title", "First layer under", { background: { color: "#111111", opacity: 1, corners: "rounded", display: "line" }, color: "#FFFFFF" }, { positionY: 38 }),
     layer("body", "Second layer on top", {}, { positionY: 43, role: "body" }),
+  ),
+  sample("uploaded-font", "Uploaded font (Geist SemiBold)", layer("title", "Quick brown foxes jump at 9:41, quietly", { fontAsset: uploaded, bold: false })),
+  sample(
+    "uploaded-font-styled",
+    "Uploaded font, bold italic, emoji",
+    layer("title", "Brand fonts 🎉 2026 ready, shipped", { fontAsset: uploaded, bold: true, italic: true, color: "#FFFFFF", stroke: { color: "#000000", width: 4 }, background: null }),
   ),
 ];

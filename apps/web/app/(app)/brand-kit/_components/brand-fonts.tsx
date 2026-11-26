@@ -103,6 +103,12 @@ export function useBrandFontLibrary() {
   return { fonts, requirement, upgrade };
 }
 
+/** The provider's fonts whose files have loaded in this document (an upload draws only once it has). */
+export function useLoadedBrandFonts(): readonly BrandFontChoice[] {
+  const { fonts, loaded } = useContext(FontContext);
+  return useMemo(() => fonts.filter((font) => font.face && loaded.has(brandFontFamily(font))), [fonts, loaded]);
+}
+
 export function useBrandFont(reference: FontReference | null | undefined) {
   const { fonts, loaded } = useContext(FontContext);
   return (

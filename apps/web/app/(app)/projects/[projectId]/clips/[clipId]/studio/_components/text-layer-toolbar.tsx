@@ -52,7 +52,7 @@ export function TextLayerToolbar({ style, onChange, onGestureEnd, onDuplicate, o
   return (
     <Flex align="center" gap="0.5" p="1" bg="studio.surface" borderRadius="12px" color="studio.fg" data-compact={compact || undefined}>
       <Box w={compact ? "104px" : "132px"}>
-        <TextFontMenu value={style.font} onChange={(font) => onChange({ font })} compact />
+        <TextFontMenu value={style} onChange={onChange} compact />
       </Box>
       <Divider />
       <TextSizeField value={style.fontSize} onChange={(fontSize) => onChange({ fontSize })} compact />
