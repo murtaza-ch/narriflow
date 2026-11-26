@@ -12,6 +12,7 @@ const { MotionExportNotice } = await import("./studio-export-menu");
 const { canSubmitStudioExport, studioExportMotionLocked } = await import("./studio-export-policy");
 const { ScenesPanel } = await import("./tool-panels/scenes-panel");
 const { TextPanel, MAX_TEXT_LAYERS } = await import("./tool-panels/text-panel");
+const { showTextPanelTab } = await import("./text-panel-tab");
 const { MAX_VISUAL_BROLL } = await import("./tool-panels/generated-images-panel");
 const { studioUpgradePrompts } = await import("./studio-upgrade");
 
@@ -32,8 +33,9 @@ function textLayer(index: number, style: Record<string, unknown> = {}) {
   });
 }
 
-/** What the Text panel reads from the Studio. */
+/** What the Text panel reads from the Studio; a selection opens Settings, as the select command does. */
 function textPanelFields(layers: readonly ReturnType<typeof textLayer>[], selectedTextLayerId: string | null) {
+  showTextPanelTab(selectedTextLayerId ? "settings" : "presets");
   return {
     studioEdits: { textLayers: layers },
     setStudioEdits: noop,
@@ -183,5 +185,12 @@ describe("Text panel Settings", () => {
     expect(markup).toContain("Corners");
     expect(markup).toContain("Box display");
     expect(markup).toContain("Apply to all clips");
+  });
+
+  test("near the 280-character limit the text box shows its count", () => {
+    fields = textPanelFields([studioTextLayerSchema.parse({ id: "long", text: "x".repeat(250) })], "long");
+    expect(render(<TextPanel />)).toContain("250 / 280");
+    fields = textPanelFields([studioTextLayerSchema.parse({ id: "short", text: "Short" })], "short");
+    expect(render(<TextPanel />)).not.toContain("/ 280");
   });
 });

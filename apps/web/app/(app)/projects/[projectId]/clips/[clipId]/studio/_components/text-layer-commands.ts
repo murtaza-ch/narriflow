@@ -112,15 +112,55 @@ export interface ApplyTitleResult {
   readonly title: { readonly restyled: number; readonly created: number; readonly skipped: number };
 }
 
-/** The result in words: what changed, what was skipped. */
-export function applyTitleResultMessage(result: ApplyTitleResult): { title: string; description: string | null } {
+/** The result in words: what changed, with every count (zeros too); "already matches" only when nothing changed or was skipped. */
+export function applyTitleResultMessage(result: ApplyTitleResult): { title: string; description: string } {
   const { restyled, created, skipped } = result.title;
-  const clips = (count: number) => `${count} clip${count === 1 ? "" : "s"}`;
-  const parts: string[] = [];
-  if (restyled > 0) parts.push(`updated the title on ${clips(restyled)}`);
-  if (created > 0) parts.push(`added a title to ${clips(created)}`);
-  const title = parts.length > 0 ? `${parts.join(" and ").replace(/^./, (first) => first.toUpperCase())}` : "Every other clip already matches";
-  const description = skipped > 0 ? `${clips(skipped)} skipped: no title text, or no room for another text layer.` : null;
-  return { title, description };
+  const title = restyled + created > 0 ? "Title applied to the other clips" : skipped > 0 ? "No other clip changed" : "Every other clip already matches";
+  const counts = `Updated ${restyled} · Added ${created} · Skipped ${skipped}`;
+  return { title, description: skipped > 0 ? `${counts}. Skipped clips have no title text or no room for another text layer.` : counts };
 }
 
+/**
+ * Why Apply to all failed. `refused`: the server answered with a refusal, so nothing changed.
+ * `unknown`: no answer came back (network, timeout, a 5xx, a reply the client could not read), so
+ * some clips may have changed.
+ */
+export function applyFailureKind(error: unknown): "refused" | "unknown" {
+  const failure = error as { name?: unknown; status?: unknown; code?: unknown } | null;
+  if (failure?.name !== "ApiError" || typeof failure.status !== "number") return "unknown";
+  return failure.status >= 400 && failure.status < 500 && failure.code !== "scope_changed" ? "refused" : "unknown";
+}
+
+/** A composite-time range a layer is on screen. */
+export interface VisibleRange {
+  readonly startSec: number;
+  readonly endSec: number;
+}
+
+/**
+ * Where to seek to show a layer: nowhere when the playhead is inside one of its visible ranges
+ * (composite seconds, with inserted scenes cut out), else its first visible frame.
+ */
+export function textLayerSeekTarget(visible: readonly VisibleRange[], playheadSec: number): number | null {
+  if (visible.some((range) => playheadSec >= range.startSec && playheadSec < range.endSec)) return null;
+  return visible[0]?.startSec ?? null;
+}
+
+/**
+ * Rows of the timeline's text lane: each layer takes the first row where it overlaps no other
+ * (intervals start inclusive, end exclusive; an open end runs to the clip's end), in start order,
+ * ties in document order. `count` is at least 1.
+ */
+export function textChipRows(layers: readonly Pick<StudioTextLayer, "id" | "startSec" | "endSec">[], clipDurationSec: number): { rows: Map<string, number>; count: number } {
+  const ordered = layers.map((layer, index) => ({ layer, index })).sort((a, b) => a.layer.startSec - b.layer.startSec || a.index - b.index);
+  const rowEnds: number[] = [];
+  const rows = new Map<string, number>();
+  for (const { layer } of ordered) {
+    const end = Math.max(layer.startSec, layer.endSec ?? clipDurationSec);
+    let row = rowEnds.findIndex((rowEnd) => rowEnd <= layer.startSec);
+    if (row === -1) row = rowEnds.length;
+    rowEnds[row] = end;
+    rows.set(layer.id, row);
+  }
+  return { rows, count: Math.max(1, rowEnds.length) };
+}

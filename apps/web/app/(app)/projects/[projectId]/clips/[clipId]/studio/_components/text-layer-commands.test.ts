@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_BRAND_TITLE, DEFAULT_TITLE_STYLE, TEXT_LAYER_STYLE_PRESETS, studioTextLayerSchema } from "@narriflow/validators";
 import {
+  applyFailureKind,
   applyTitleResultMessage,
   duplicateTextLayer,
   newBodyLayer,
@@ -8,6 +9,8 @@ import {
   newTitleLayer,
   presetStyleFor,
   presetTarget,
+  textChipRows,
+  textLayerSeekTarget,
   titlePatchOf,
 } from "./text-layer-commands";
 
@@ -57,11 +60,46 @@ describe("Text Layer commands", () => {
     expect(titlePatchOf(title)).toEqual({ style: title.style, positionX: 50, positionY: 12, widthPct: 86, startSec: 1, endSec: null });
   });
 
-  test("the result reads as counts", () => {
+  test("the result reads as counts, zeros included", () => {
     expect(applyTitleResultMessage({ updated: 5, field: "title", title: { restyled: 3, created: 2, skipped: 1 } })).toEqual({
-      title: "Updated the title on 3 clips and added a title to 2 clips",
-      description: "1 clip skipped: no title text, or no room for another text layer.",
+      title: "Title applied to the other clips",
+      description: "Updated 3 · Added 2 · Skipped 1. Skipped clips have no title text or no room for another text layer.",
     });
-    expect(applyTitleResultMessage({ updated: 0, field: "title", title: { restyled: 0, created: 0, skipped: 0 } }).title).toBe("Every other clip already matches");
+    expect(applyTitleResultMessage({ updated: 0, field: "title", title: { restyled: 0, created: 0, skipped: 0 } })).toEqual({ title: "Every other clip already matches", description: "Updated 0 · Added 0 · Skipped 0" });
+    // Nothing changed but a clip was skipped: it does not "already match".
+    expect(applyTitleResultMessage({ updated: 0, field: "title", title: { restyled: 0, created: 0, skipped: 2 } }).title).toBe("No other clip changed");
+  });
+
+  test("a refusal is definite; a lost or unreadable answer is unknown", () => {
+    const apiError = (status: number, code = "editor_document_invalid") => Object.assign(new Error("x"), { name: "ApiError", status, code });
+    expect(applyFailureKind(apiError(400))).toBe("refused");
+    expect(applyFailureKind(apiError(409))).toBe("refused");
+    expect(applyFailureKind(apiError(0, "network_error"))).toBe("unknown");
+    expect(applyFailureKind(apiError(503))).toBe("unknown");
+    expect(applyFailureKind(apiError(409, "scope_changed"))).toBe("unknown");
+    expect(applyFailureKind(new TypeError("Failed to fetch"))).toBe("unknown");
+  });
+
+  test("a layer is shown from its first visible frame, skipping inserted scenes", () => {
+    // A layer from 2 s to 8 s with a 3 s scene inserted at 5 s: visible 2–5 and 8–11 (composite).
+    const visible = [{ startSec: 2, endSec: 5 }, { startSec: 8, endSec: 11 }];
+    expect(textLayerSeekTarget(visible, 3)).toBeNull();
+    expect(textLayerSeekTarget(visible, 9)).toBeNull();
+    // In the scene's gap, or outside the layer: its first visible frame.
+    expect(textLayerSeekTarget(visible, 6)).toBe(2);
+    expect(textLayerSeekTarget(visible, 0)).toBe(2);
+    expect(textLayerSeekTarget(visible, 11)).toBe(2);
+    expect(textLayerSeekTarget([], 4)).toBeNull();
+  });
+
+  test("overlapping chips stack into rows; a chip takes the first row it fits", () => {
+    const at = (id: string, startSec: number, endSec: number | null) => ({ id, startSec, endSec });
+    // A duplicate over its original goes to row 1; a later chip that fits after the first returns to row 0.
+    const { rows, count } = textChipRows([at("a", 0, 5), at("b", 0, 5), at("c", 5, 8), at("d", 4, null)], 30);
+    expect(Object.fromEntries(rows)).toEqual({ a: 0, b: 1, c: 0, d: 2 });
+    expect(count).toBe(3);
+    // Touching chips share a row; no layers still has one row.
+    expect(textChipRows([at("a", 0, 2), at("b", 2, 4)], 10).count).toBe(1);
+    expect(textChipRows([], 10).count).toBe(1);
   });
 });

@@ -10,7 +10,7 @@
  * mode-invariant `studio.*` tokens, which also holds for the portaled menus and colour pickers.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Box, ColorPicker, Flex, HStack, Input, Menu, Portal, Slider, Stack, Text, parseColor } from "@chakra-ui/react";
 import { AlignCenter, AlignLeft, AlignRight, Bold, Check, ChevronDown, Italic, Minus, Plus, Underline, UnfoldVertical } from "lucide-react";
 import {
@@ -109,31 +109,45 @@ export function TextFontMenu({ value, onChange, compact = false }: { value: Text
   );
 }
 
+/** A typed number, clamped and rounded to `decimals`; null when it is not a number. */
+export function parseNumberDraft(draft: string, { min, max, decimals }: { min: number; max: number; decimals: number }): number | null {
+  const parsed = Number(draft.trim().replace(",", "."));
+  if (draft.trim() === "" || !Number.isFinite(parsed)) return null;
+  const step = 10 ** decimals;
+  return clamp(Math.round(parsed * step) / step, min, max);
+}
+
 /** A number field that commits on Enter and blur, and returns to the stored value when what was typed is not a number. */
-function NumberField({ label, value, min, max, onCommit, width, suffix, compact = false }: { label: string; value: number; min: number; max: number; onCommit: (value: number) => void; width: string; suffix?: string; compact?: boolean }) {
+function NumberField({ label, value, min, max, onCommit, width, suffix, compact = false, decimals = 0 }: { label: string; value: number; min: number; max: number; onCommit: (value: number) => void; width: string; suffix?: string; compact?: boolean; decimals?: number }) {
   const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
+  // Only what was typed commits: leaving the field untouched never rewrites the stored value (a 56.5 from a resize stays 56.5).
+  // A ref, not state: Escape clears it and blurs in the same event, before a re-render.
+  const typed = useRef(false);
+  useEffect(() => {
+    setDraft(String(value));
+    typed.current = false;
+  }, [value]);
   const commit = () => {
-    const parsed = Number(draft);
-    if (draft.trim() === "" || !Number.isFinite(parsed)) {
-      setDraft(String(value));
-      return;
-    }
-    const next = clamp(Math.round(parsed), min, max);
-    setDraft(String(next));
-    if (next !== value) onCommit(next);
+    const next = typed.current ? parseNumberDraft(draft, { min, max, decimals }) : null;
+    typed.current = false;
+    setDraft(String(next ?? value));
+    if (next !== null && next !== value) onCommit(next);
   };
   return (
     <Flex align="center" gap="0.5" w={width}>
       <Input
         aria-label={label}
-        inputMode="numeric"
+        inputMode={decimals > 0 ? "decimal" : "numeric"}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          typed.current = true;
+        }}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === "Enter") event.currentTarget.blur();
           if (event.key === "Escape") {
+            typed.current = false;
             setDraft(String(value));
             event.currentTarget.blur();
           }
@@ -158,7 +172,7 @@ function NumberField({ label, value, min, max, onCommit, width, suffix, compact 
 export function TextSizeField({ value, onChange, compact = false }: { value: number; onChange: (size: number) => void; compact?: boolean }) {
   return (
     <Flex align="center" {...(compact ? { h: "32px" } : fieldSurface)} ps="1" pe="0.5">
-      <NumberField label="Font size" value={value} min={TEXT_LAYER_FONT_SIZE.min} max={TEXT_LAYER_FONT_SIZE.max} onCommit={onChange} width={compact ? "40px" : "52px"} compact={compact} />
+      <NumberField label="Font size" value={value} min={TEXT_LAYER_FONT_SIZE.min} max={TEXT_LAYER_FONT_SIZE.max} onCommit={onChange} width={compact ? "44px" : "56px"} compact={compact} decimals={1} />
       <Menu.Root onSelect={({ value: next }) => onChange(Number(next))} positioning={{ placement: "bottom-end" }} lazyMount>
         <Menu.Trigger asChild>
           <Flex as="button" aria-label="Choose a font size" align="center" justify="center" boxSize={compact ? "28px" : "32px"} borderRadius="8px" color="studio.fgMuted" cursor="pointer" _hover={{ bg: "studio.raised", color: "studio.fg" }}>
@@ -187,6 +201,8 @@ export function TextColorSwatch({ label, value, onChange, onGestureEnd, size = "
     <ColorPicker.Root
       value={parseColor(value)}
       onValueChange={(event) => onChange(event.value.toString("hex").toUpperCase())}
+      // Each drag in the picker is one undo step: the chain ends when the pointer lifts, and on close for typed values.
+      onValueChangeEnd={() => onGestureEnd?.()}
       onOpenChange={(event) => {
         if (!event.open) onGestureEnd?.();
       }}
@@ -206,7 +222,8 @@ export function TextColorSwatch({ label, value, onChange, onGestureEnd, size = "
             <ColorPicker.Area />
             <HStack>
               <ColorPicker.EyeDropper size="xs" variant="ghost" bg="studio.borderStrong" color="studio.fg" aria-label={`Pick ${label.toLowerCase()} from the screen`} />
-              <ColorPicker.Sliders />
+              {/* Hue only: a layer stores an opaque colour, so no alpha slider. */}
+              <ColorPicker.ChannelSlider channel="hue" flex="1" aria-label={`${label} hue`} />
             </HStack>
             <ColorPicker.ChannelInput channel="hex" aria-label={`${label} hex`} {...softFieldProps} bg="studio.subtle" h="32px" fontSize="13px" />
           </ColorPicker.Content>

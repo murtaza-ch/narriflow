@@ -16,28 +16,29 @@ import { TextStyleControls } from "./text-style-controls";
 import { TextStyleSample } from "../text-layer-sample";
 import { MAX_TEXT_LAYERS, MIN_TEXT_LAYER_DURATION_SEC, presetTarget } from "../text-layer-commands";
 import { requestApplyTitleToAll, useTextFieldFocusRequest, useTextLayerCommands } from "../studio-text-layers";
+import { showTextPanelTab, useTextPanelTab } from "../text-panel-tab";
 
 export { MAX_TEXT_LAYERS };
-
-type Tab = "presets" | "settings";
 
 /** Two styles look the same (size and brand font aside, which a preset keeps). */
 function sameLook(a: TextLayerStyle, b: TextLayerStyle): boolean {
   return JSON.stringify({ ...a, fontSize: 0, fontAsset: null }) === JSON.stringify({ ...b, fontSize: 0, fontAsset: null });
 }
 
+const TEXT_LIMIT = STUDIO_EDIT_LIMITS.textLayerChars;
 const capNote = `A clip holds up to ${MAX_TEXT_LAYERS} text layers. Delete one to add another.`;
 
 export function TextPanel() {
   const commands = useTextLayerCommands();
   const { layers, selectedId } = commands;
   const selected = selectedId ? (layers.find((layer) => layer.id === selectedId) ?? null) : null;
-  const [tab, setTab] = useState<Tab>(selected ? "settings" : "presets");
-  // Selecting a layer opens Settings; losing the selection (a delete, Escape) returns to Presets.
+  // Selecting opens Settings (the select command sets the tab, so selecting the selected layer again does too);
+  // losing the selection (a delete, Escape, a click off the video) returns to Presets.
+  const tab = useTextPanelTab();
   useEffect(() => {
-    setTab(selectedId ? "settings" : "presets");
+    if (!selectedId) showTextPanelTab("presets");
   }, [selectedId]);
-  const showing: Tab = selected ? tab : "presets";
+  const showing = selected ? tab : "presets";
 
   return (
     <Stack gap="0">
@@ -45,7 +46,7 @@ export function TextPanel() {
         ariaLabel="Text"
         items={selected ? [{ id: "presets", label: "Presets" }, { id: "settings", label: "Settings" }] : [{ id: "presets", label: "Presets" }]}
         value={showing}
-        onChange={setTab}
+        onChange={showTextPanelTab}
       />
       {showing === "settings" && selected ? <SettingsTab layer={selected} commands={commands} /> : <PresetsTab commands={commands} />}
     </Stack>
@@ -199,14 +200,20 @@ function SettingsTab({ layer, commands }: { layer: StudioTextLayer; commands: Co
  * an empty or blank draft is never committed and returns to the saved text on blur. Delete and
  * Backspace here edit characters (the Studio's shortcuts ignore text fields).
  */
+/** From this many characters the field shows its count against the limit. */
+const COUNT_FROM = TEXT_LIMIT - 40;
+
 function TextField({ layer, onChange, onEnd }: { layer: StudioTextLayer; onChange: (text: string, gesture?: string) => void; onEnd: () => void }) {
   const [draft, setDraft] = useState(layer.text);
+  const [shortened, setShortened] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const focus = useTextFieldFocusRequest();
   // biome-ignore lint/correctness/useExhaustiveDependencies: layer.id resets the draft when the selection changes even if the words match.
   useEffect(() => {
     setDraft(layer.text);
   }, [layer.id, layer.text]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another layer's field starts without the note.
+  useEffect(() => setShortened(false), [layer.id]);
   // A double-click on the canvas asked for this layer's words.
   useEffect(() => {
     if (focus.id !== layer.id || !ref.current) return;
@@ -221,12 +228,26 @@ function TextField({ layer, onChange, onEnd }: { layer: StudioTextLayer; onChang
         ref={ref}
         id={`text-layer-text-${layer.id}`}
         value={draft}
-        maxLength={STUDIO_EDIT_LIMITS.textLayerChars}
-        onChange={(event) => {
-          const next = event.target.value.slice(0, STUDIO_EDIT_LIMITS.textLayerChars);
+        aria-describedby={`text-layer-text-${layer.id}-note`}
+        onPaste={(event) => {
+          // The browser would cut a long paste silently (maxLength): cut it here and say so.
+          const field = event.currentTarget;
+          const pasted = event.clipboardData.getData("text/plain");
+          const room = TEXT_LIMIT - (field.value.length - (field.selectionEnd - field.selectionStart));
+          if (pasted.length <= room) return;
+          event.preventDefault();
+          const next = `${field.value.slice(0, field.selectionStart)}${pasted.slice(0, Math.max(0, room))}${field.value.slice(field.selectionEnd)}`;
           setDraft(next);
+          setShortened(true);
           if (next.trim()) onChange(next, "text");
         }}
+        onChange={(event) => {
+          const next = event.target.value.slice(0, TEXT_LIMIT);
+          setDraft(next);
+          if (next.length < TEXT_LIMIT) setShortened(false);
+          if (next.trim()) onChange(next, "text");
+        }}
+        maxLength={TEXT_LIMIT}
         onBlur={() => {
           const trimmed = draft.trim();
           if (!trimmed) setDraft(layer.text);
@@ -242,6 +263,14 @@ function TextField({ layer, onChange, onEnd }: { layer: StudioTextLayer; onChang
         {...softFieldProps}
         resize="vertical"
       />
+      <Flex id={`text-layer-text-${layer.id}-note`} justify="space-between" gap="3" mt="1.5" fontSize="12px" color="studio.fgMuted" minH={shortened || draft.length >= COUNT_FROM ? "18px" : "0"}>
+        <Text role={shortened ? "status" : undefined}>{shortened ? `The pasted text was cut to ${TEXT_LIMIT} characters, the most a text layer holds.` : ""}</Text>
+        {draft.length >= COUNT_FROM ? (
+          <Text flexShrink={0} fontVariantNumeric="tabular-nums" color={draft.length >= TEXT_LIMIT ? "studio.fg" : "studio.fgMuted"}>
+            {draft.length} / {TEXT_LIMIT}
+          </Text>
+        ) : null}
+      </Flex>
     </Box>
   );
 }

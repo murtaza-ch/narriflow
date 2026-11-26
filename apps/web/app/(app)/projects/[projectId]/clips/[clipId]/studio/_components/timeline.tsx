@@ -70,7 +70,8 @@ import { manualBrollPreviewWindow } from "./broll-preview";
 import { studioSliderCss } from "./tool-panels/panel-ui";
 import { MUSIC_LANE_EMPTY_HEIGHT, MUSIC_LANE_HEIGHT, MusicLane } from "./music-lane";
 // The Text panel's timing fields use the same floor, so a chip retime cannot collapse a layer to a sliver.
-import { MIN_TEXT_LAYER_DURATION_SEC } from "./text-layer-commands";
+import { MIN_TEXT_LAYER_DURATION_SEC, textChipRows, textLayerSeekTarget } from "./text-layer-commands";
+import { showTextPanelTab } from "./text-panel-tab";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -932,6 +933,7 @@ const CONTROL_BAR_HEIGHT = 52;
 const TIMELINE_OVERSCAN_PX = 900;
 const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
 const TEXT_TRACK_HEIGHT = 26;
+const TEXT_ROW_GAP = 3;
 
 function useTimelineViewport(ref: RefObject<HTMLDivElement | null>) {
   const [viewport, setViewport] = useState({ scrollLeft: 0, clientWidth: 0 });
@@ -1631,8 +1633,9 @@ interface TextLayerDragState {
   moved: boolean;
 }
 
-const TextLayerChip = memo(function TextLayerChip({
+export const TextLayerChip = memo(function TextLayerChip({
   id,
+  row,
   role,
   text,
   startSec,
@@ -1644,6 +1647,8 @@ const TextLayerChip = memo(function TextLayerChip({
   compositeToBaseEdited,
 }: {
   id: string;
+  /** The row of the text lane it sits on (`textChipRows`): overlapping chips never cover each other. */
+  row: number;
   role: "title" | "body";
   text: string;
   startSec: number;
@@ -1654,8 +1659,16 @@ const TextLayerChip = memo(function TextLayerChip({
   baseEditedToComposite: (timeSec: number) => number;
   compositeToBaseEdited: (timeSec: number) => number;
 }) {
-  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo, playbackClock } = useStudio("setStudioEdits", "endCoalesce", "selectTextLayer", "seekTo", "playbackClock");
+  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo, playbackClock, baseEditedRangeToComposite } = useStudio("setStudioEdits", "endCoalesce", "selectTextLayer", "seekTo", "playbackClock", "baseEditedRangeToComposite");
   const dragRef = useRef<TextLayerDragState | null>(null);
+
+  /** Selects the layer, opens its Settings, and seeks to its first visible frame when the playhead does not show it. */
+  const chooseAndShow = useCallback(() => {
+    selectTextLayer(id);
+    showTextPanelTab("settings");
+    const target = textLayerSeekTarget(baseEditedRangeToComposite(startSec, endSec ?? duration), playbackClock.getSnapshot());
+    if (target !== null) seekTo(target);
+  }, [id, startSec, endSec, duration, selectTextLayer, baseEditedRangeToComposite, playbackClock, seekTo]);
 
   const displayStartSec = baseEditedToComposite(startSec);
   const displayEndSec = baseEditedToComposite(endSec ?? duration);
@@ -1688,6 +1701,7 @@ const TextLayerChip = memo(function TextLayerChip({
         moved: false,
       };
       selectTextLayer(id);
+      showTextPanelTab("settings");
     },
     [id, startSec, endSec, selectTextLayer],
   );
@@ -1706,12 +1720,15 @@ const TextLayerChip = memo(function TextLayerChip({
       }
       const dxPx = e.clientX - drag.startClientX;
       if (Math.abs(dxPx) > 3) drag.moved = true;
+      // A press that wobbles a pixel or two is a click: nothing is written until the drag is real.
+      if (!drag.moved) return;
       const deltaSec = dxPx / pxPerSec;
       const grabEndOrDuration = drag.grabEndSec ?? duration;
 
       if (drag.mode === "move") {
         if (drag.grabEndSec == null) {
-          const newStart = Math.max(0, Math.min(compositeToBaseEdited(baseEditedToComposite(drag.grabStartSec) + deltaSec), duration));
+          // An open-ended layer dragged to the clip's end keeps the minimum visible length.
+          const newStart = Math.max(0, Math.min(compositeToBaseEdited(baseEditedToComposite(drag.grabStartSec) + deltaSec), duration - MIN_TEXT_LAYER_DURATION_SEC));
           patch({ startSec: newStart });
         } else {
           const layerDur = drag.grabEndSec - drag.grabStartSec;
@@ -1746,15 +1763,10 @@ const TextLayerChip = memo(function TextLayerChip({
       }
       const drag = dragRef.current;
       dragRef.current = null;
-      if (drag && !drag.moved) {
-        selectTextLayer(id);
-        // A layer that is not on screen: show it.
-        const now = playbackClock.getSnapshot();
-        if (now < displayStartSec || now >= displayEndSec) seekTo(displayStartSec);
-      }
+      if (drag && !drag.moved) chooseAndShow();
       if (drag) endCoalesce();
     },
-    [id, displayStartSec, displayEndSec, selectTextLayer, seekTo, endCoalesce, playbackClock],
+    [chooseAndShow, endCoalesce],
   );
 
   // Mirrors TrimHandle's onPointerCancel: without it, a canceled pointer
@@ -1778,13 +1790,24 @@ const TextLayerChip = memo(function TextLayerChip({
   return (
     <Box
       position="absolute"
-      top="0"
-      style={{ left: `${x}px`, width: `${w}px`, touchAction: "none" }}
+      style={{ left: `${x}px`, top: `${row * (TEXT_TRACK_HEIGHT + TEXT_ROW_GAP)}px`, width: `${w}px`, touchAction: "none" }}
+      data-text-chip={id}
+      data-row={row}
       h={`${TEXT_TRACK_HEIGHT}px`}
       borderRadius="6px"
       bg={isSelected ? "studio.accentSubtle" : "studio.raised"}
       cursor="grab"
       overflow="hidden"
+      tabIndex={0}
+      outline="none"
+      _focusVisible={{ boxShadow: "inset 0 0 0 1.5px var(--chakra-colors-studio-border-focus)" }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        // The Studio's shortcuts listen on the window: Space here selects the layer, it does not play.
+        event.preventDefault();
+        event.stopPropagation();
+        chooseAndShow();
+      }}
       role="button"
       aria-label={`${role === "title" ? "Title" : "Text"} "${text}", ${startSec.toFixed(1)} to ${endSec != null ? `${endSec.toFixed(1)} seconds` : "the clip end"}`}
       aria-pressed={isSelected}
@@ -2244,13 +2267,15 @@ export function Timeline() {
   }, [playbackRate, setPlaybackRate]);
 
   const hasTextLayers = studioEdits.textLayers.length > 0;
+  const textRows = useMemo(() => textChipRows(studioEdits.textLayers, editedTimeMap.editedDurationSec), [studioEdits.textLayers, editedTimeMap.editedDurationSec]);
+  const textLaneHeight = textRows.count * TEXT_TRACK_HEIGHT + Math.max(0, textRows.count - 1) * TEXT_ROW_GAP;
   const hasSceneBlocks = sceneBlocks.length > 0;
   const sceneTrackTop = RULER_HEIGHT + TRACK_HEIGHT + 4;
   const brollTrackTop = sceneTrackTop + (hasSceneBlocks ? SCENE_TRACK_HEIGHT + 4 : 0);
   // The text lane sits right above the subtitle lane (title-text spec section 6), as in Vizard.
   const textTrackTop =
     brollTrackTop + (hasBrollLane ? BROLL_TRACK_HEIGHT + 4 : 0);
-  const wordTrackTop = textTrackTop + (hasTextLayers ? TEXT_TRACK_HEIGHT + 4 : 0);
+  const wordTrackTop = textTrackTop + (hasTextLayers ? textLaneHeight + 4 : 0);
   const waveformTrackTop = wordTrackTop + WORD_CHIPS_HEIGHT + 4;
   // The music lane is always there: a slim "Add music" slot until a block exists.
   const musicLaneHeight =
@@ -2451,7 +2476,7 @@ export function Timeline() {
             { top: RULER_HEIGHT, height: TRACK_HEIGHT, icon: <Film size={13} /> },
             ...(hasSceneBlocks ? [{ top: sceneTrackTop, height: SCENE_TRACK_HEIGHT, icon: <Clapperboard size={13} /> }] : []),
             ...(hasBrollLane ? [{ top: brollTrackTop, height: BROLL_TRACK_HEIGHT, icon: <ImageIcon size={13} /> }] : []),
-            ...(hasTextLayers ? [{ top: textTrackTop, height: TEXT_TRACK_HEIGHT, icon: <Type size={13} /> }] : []),
+            ...(hasTextLayers ? [{ top: textTrackTop, height: textLaneHeight, icon: <Type size={13} /> }] : []),
             { top: wordTrackTop, height: WORD_CHIPS_HEIGHT, icon: <Captions size={13} /> },
             { top: waveformTrackTop, height: WAVEFORM_HEIGHT, icon: <AudioLines size={13} /> },
             { top: musicTrackTop, height: musicLaneHeight, icon: <Music size={13} /> },
@@ -2927,13 +2952,14 @@ export function Timeline() {
                 left={`${LEFT_GUTTER}px`}
                 style={{
                   width: `${totalWidth}px`,
-                  height: `${TEXT_TRACK_HEIGHT}px`,
+                  height: `${textLaneHeight}px`,
                 }}
               >
                 {studioEdits.textLayers.map((layer) => (
                   <TextLayerChip
                     key={layer.id}
                     id={layer.id}
+                    row={textRows.rows.get(layer.id) ?? 0}
                     role={layer.role}
                     text={layer.text}
                     startSec={layer.startSec}

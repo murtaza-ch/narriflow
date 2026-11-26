@@ -4,11 +4,12 @@
  * The floating toolbar under a selected Text Layer (title-text spec section 6): font, size,
  * alignment, case, text colour and a more menu (Duplicate, Delete, and Apply to all clips for a
  * title). It shows the same values as the Settings tab and changes the layer through the same
- * patches. Presentational; `TextLayerCanvas` places it.
+ * patches. Presentational; `TextLayerCanvas` places it. On a narrow preview (`compact`) it keeps
+ * font, size, colour and more, and alignment and case move into the more menu.
  */
 
 import { Box, Flex, Menu, Portal, Text } from "@chakra-ui/react";
-import { AlignCenter, AlignLeft, AlignRight, Check, Copy, Ellipsis, Layers, Trash2 } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, CaseSensitive, Check, Copy, Ellipsis, Layers, Trash2 } from "lucide-react";
 import type { TextLayerStyle } from "@narriflow/validators";
 import { TextColorSwatch, TextFontMenu, TextSizeField, type TextStyleChange } from "./tool-panels/text-style-controls";
 
@@ -42,16 +43,21 @@ export interface TextLayerToolbarProps {
   readonly onApplyToAll?: () => void;
   /** Why Duplicate cannot add a layer now (the clip is full); Duplicate says so instead of acting. */
   readonly duplicateBlockedReason?: string | null;
+  /** Narrow preview: alignment and case go into the more menu. */
+  readonly compact?: boolean;
 }
 
-export function TextLayerToolbar({ style, onChange, onGestureEnd, onDuplicate, onDelete, onApplyToAll, duplicateBlockedReason }: TextLayerToolbarProps) {
+export function TextLayerToolbar({ style, onChange, onGestureEnd, onDuplicate, onDelete, onApplyToAll, duplicateBlockedReason, compact = false }: TextLayerToolbarProps) {
+  const toggledCase = style.textCase === "uppercase" ? "none" : "uppercase";
   return (
-    <Flex align="center" gap="0.5" p="1" bg="studio.surface" borderRadius="12px" color="studio.fg">
-      <Box w="132px">
+    <Flex align="center" gap="0.5" p="1" bg="studio.surface" borderRadius="12px" color="studio.fg" data-compact={compact || undefined}>
+      <Box w={compact ? "104px" : "132px"}>
         <TextFontMenu value={style.font} onChange={(font) => onChange({ font })} compact />
       </Box>
       <Divider />
       <TextSizeField value={style.fontSize} onChange={(fontSize) => onChange({ fontSize })} compact />
+      {compact ? null : (
+        <>
       <Divider />
       <Menu.Root onSelect={({ value }) => onChange({ align: value as TextLayerStyle["align"] })} positioning={{ placement: "bottom" }} lazyMount>
         <Menu.Trigger asChild>
@@ -86,6 +92,8 @@ export function TextLayerToolbar({ style, onChange, onGestureEnd, onDuplicate, o
       >
         {style.textCase === "uppercase" ? "AB" : "Aa"}
       </Flex>
+        </>
+      )}
       <Box px="1">
         <TextColorSwatch label="Text colour" value={style.color} onChange={(color) => onChange({ color }, "color")} onGestureEnd={onGestureEnd} size="26px" />
       </Box>
@@ -94,6 +102,8 @@ export function TextLayerToolbar({ style, onChange, onGestureEnd, onDuplicate, o
           if (value === "duplicate") onDuplicate();
           else if (value === "delete") onDelete();
           else if (value === "apply-all") onApplyToAll?.();
+          else if (value === "case") onChange({ textCase: toggledCase });
+          else if (value.startsWith("align-")) onChange({ align: value.slice("align-".length) as TextLayerStyle["align"] });
         }}
         positioning={{ placement: "bottom-end" }}
         lazyMount
@@ -106,6 +116,29 @@ export function TextLayerToolbar({ style, onChange, onGestureEnd, onDuplicate, o
         <Portal>
           <Menu.Positioner>
             <Menu.Content {...menuContentProps} minW="220px">
+              {compact ? (
+                <>
+                  {(["left", "center", "right"] as const).map((align) => (
+                    <Menu.Item key={align} value={`align-${align}`} {...menuItemProps} aria-label={`Align ${ALIGN_LABEL[align].toLowerCase()}`}>
+                      <Box color="studio.fgMuted">{ALIGN_ICON[align]}</Box>
+                      <Text fontSize="14px">Align {ALIGN_LABEL[align].toLowerCase()}</Text>
+                      <Box ms="auto" w="16px" color="studio.accentFg">
+                        {style.align === align ? <Check size={16} /> : null}
+                      </Box>
+                    </Menu.Item>
+                  ))}
+                  <Menu.Item value="case" {...menuItemProps} aria-label={style.textCase === "uppercase" ? "Uppercase (on): switch to as typed" : "Uppercase (off): switch to uppercase"}>
+                    <Box color="studio.fgMuted">
+                      <CaseSensitive size={16} />
+                    </Box>
+                    <Text fontSize="14px">Uppercase</Text>
+                    <Box ms="auto" w="16px" color="studio.accentFg">
+                      {style.textCase === "uppercase" ? <Check size={16} /> : null}
+                    </Box>
+                  </Menu.Item>
+                  <Menu.Separator bg="studio.border" my="1" />
+                </>
+              ) : null}
               <Menu.Item value="duplicate" {...menuItemProps} {...(duplicateBlockedReason ? { h: "auto", py: "2", alignItems: "flex-start" } : {})}>
                 <Box color="studio.fgMuted" pt={duplicateBlockedReason ? "0.5" : "0"}>
                   <Copy size={15} />
