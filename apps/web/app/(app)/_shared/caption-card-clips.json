@@ -1,0 +1,597 @@
+{
+  "cards": {
+    "anime": {
+      "hash": "16d5cf29b6de80794030458c0e80e9f12a071db969dd7913d985152cc2a2664c",
+      "faces": [
+        "Pixelify Sans Bold"
+      ]
+    },
+    "arc": {
+      "hash": "50fe1ede001c0908771e3c8587e55fc2acb7ade89b4c17f70a9691981e0cf219",
+      "faces": []
+    },
+    "arthouse": {
+      "hash": "d73047985b7130f774d28109a410c37474ba2b1c83fbd25127f6fb4043df8509",
+      "faces": [
+        "Big Shoulders Display Black",
+        "Shrikhand"
+      ]
+    },
+    "aura": {
+      "hash": "fcfa5c9707831ff545d7d7a6eccb0bf8e490ab0661187ea93e1da68a1c956517",
+      "faces": [
+        "Instrument Serif Regular",
+        "Inter Tight Medium"
+      ]
+    },
+    "barrel": {
+      "hash": "dcc793d44347c059f11adab90fffa920e5e66d1c824b3f2a5c47a27884803be8",
+      "faces": [
+        "Archivo Black"
+      ]
+    },
+    "beat": {
+      "hash": "00b533b05ff89388095e8a7beb079c3d865d944979b8f276aa6540687399ba47",
+      "faces": [
+        "Archivo Black"
+      ]
+    },
+    "bento": {
+      "hash": "76851e3d750ccdc2fcc438d0b431fd23841502a02a3eb9b8a78c579223312ce9",
+      "faces": [
+        "Plus Jakarta Sans Bold",
+        "Plus Jakarta Sans ExtraBold"
+      ]
+    },
+    "blinds": {
+      "hash": "b2f72e4550416fb2c986da080f11bf21e16dbb745cc6bb2a9e43e89e28d43258",
+      "faces": [
+        "Anton"
+      ]
+    },
+    "boom": {
+      "hash": "9d2fb506aa3dd32e495531a199a7255f8c0334be657bd9d2c5412bb14410eca3",
+      "faces": [
+        "Lilita One",
+        "Luckiest Guy"
+      ]
+    },
+    "broadway": {
+      "hash": "e74d8e640af280afc563a74b31d54a7a053c05afdcf90b0d724425124d0f2f90",
+      "faces": [
+        "Bebas Neue"
+      ]
+    },
+    "brute": {
+      "hash": "1a52a5e50e703502333d7322c65334f365e8b22a985e78318ee6f552f1b671a4",
+      "faces": [
+        "Unbounded",
+        "Unbounded Black"
+      ]
+    },
+    "bubble": {
+      "hash": "a4ee8e6240f9a3da825d43d8cfa8baa2082038d46a56c9f35cda1bcc8fb72c42",
+      "faces": [
+        "Rubik Black",
+        "Rubik ExtraBold"
+      ]
+    },
+    "bulletin": {
+      "hash": "98f2be64a501a50bc0eefb2d1fb217ed69524bbbcedf5900c0804a0ce7d1b321",
+      "faces": [
+        "Archivo Black",
+        "Inter Tight Bold"
+      ]
+    },
+    "cascade": {
+      "hash": "6ec26660b3fa1fd937ccb8c0943f0fb4182e3fd1d874d9a20e2f103d72aa28a0",
+      "faces": [
+        "Archivo Black"
+      ]
+    },
+    "chrome": {
+      "hash": "0c843b11da4d9ecdea5f08c825d88db8815c6b97e883e45f95b94b509f0f3cd2",
+      "faces": [
+        "Unbounded Black",
+        "Unbounded Medium"
+      ]
+    },
+    "chronicle": {
+      "hash": "4f2b3a9c42c5f15a6518e2cf3ad86dc5843121db70d70bdcd01f48f77b9b8038",
+      "faces": [
+        "DM Serif Display",
+        "Newsreader Medium",
+        "Newsreader SemiBold Italic"
+      ]
+    },
+    "combo": {
+      "hash": "48978ac7e6c91ea27236a32fbfabb9ed2a33908dc13bc553fef60d5277e819c8",
+      "faces": [
+        "Archivo Black"
+      ]
+    },
+    "crosstape": {
+      "hash": "e0dea066c194fd958b5739f7f82cb901ee3a14b5f3909e6a596edee1c3db0a6a",
+      "faces": [
+        "Inter Tight ExtraBold",
+        "Inter Tight SemiBold"
+      ]
+    },
+    "cursor": {
+      "hash": "dd3908b27b16a4bc067046a0695e56698426d8a9fad324214ca48d94199f52d3",
+      "faces": [
+        "Instrument Serif",
+        "Inter Tight ExtraBold"
+      ]
+    },
+    "cutout": {
+      "hash": "10ddc78df1c97842342a19f46b2434e51490949b8dbc26ee9872fb24c3ded22e",
+      "faces": []
+    },
+    "dialogue": {
+      "hash": "fe474455d79fad08ea8740a00400aa49f750aad07245f7739cba4c311a31570e",
+      "faces": [
+        "Inter",
+        "Inter SemiBold"
+      ]
+    },
+    "diecut": {
+      "hash": "f21f9cd2fda5c2efcd7318c5eb14ba0256b25242fd77b9a100aa5038ef37af5b",
+      "faces": [
+        "Titan One"
+      ]
+    },
+    "doodle": {
+      "hash": "e0d3b2fd56a0a1e5a050edea99852132b02a729ba809ceeea516b93c8a617ffb",
+      "faces": [
+        "Caveat Brush",
+        "Permanent Marker"
+      ]
+    },
+    "dossier": {
+      "hash": "da5aa552044a29e43b703757484cd960d3d7c03472345cd4150f2994a0ee5455",
+      "faces": [
+        "Courier Prime"
+      ]
+    },
+    "editorial": {
+      "hash": "4703cb85bfe46e2e22a97c92b8a7929563df810aef05c6b002064daad33f8e90",
+      "faces": []
+    },
+    "flap": {
+      "hash": "bbd6018c2ad53bbd2a23d6e7f5350a494dbf425b2fa87f92f5905b16a993c9db",
+      "faces": [
+        "Oswald"
+      ]
+    },
+    "flowing": {
+      "hash": "8d518b7e1f3cc30b3d302b906492d40cc404c9687ebba257c43e314bfa240e4d",
+      "faces": [
+        "Archivo Black",
+        "Inter Tight SemiBold"
+      ]
+    },
+    "funky": {
+      "hash": "59ce7b9efb842d5867640e02b8a0b3389962865242488ced20715ac90326ee1c",
+      "faces": [
+        "Alfa Slab One",
+        "Caprasimo",
+        "Chango",
+        "Dela Gothic One",
+        "Luckiest Guy",
+        "Titan One"
+      ]
+    },
+    "glint": {
+      "hash": "6b76598e2d07cd1e2de970e54881b3cef28c3ac82a47212ec08341ca31df6469",
+      "faces": [
+        "Titan One"
+      ]
+    },
+    "googly": {
+      "hash": "644113df5ca349c9b52258bf4afe72204b7fabc30bd4696851137afb9a96f317",
+      "faces": [
+        "Luckiest Guy"
+      ]
+    },
+    "groove": {
+      "hash": "e7f2715095333a82f20da74124b5969a21334006cf684e65fc9bd7fc67c934b3",
+      "faces": []
+    },
+    "gumdrop": {
+      "hash": "115275302da12ce155a343898f88dd6b2c4b7cefcb23f7ca92b07c9e9c45654a",
+      "faces": [
+        "Bagel Fat One"
+      ]
+    },
+    "halftone": {
+      "hash": "dbcc5baaa15b3fe6a7234ffb5fcea35127f2d240978df4bb1a3ca5fd42183f54",
+      "faces": [
+        "Pacifico"
+      ]
+    },
+    "headline": {
+      "hash": "f5b00a1c8c9174f11ad28abd4ed992b3d2df8ef864981744880ffd45b329e992",
+      "faces": []
+    },
+    "heft": {
+      "hash": "97c5c5eec1389a8cd4448c082df3a477031ee6882eb2d2021d4464e97ec11766",
+      "faces": [
+        "Lexend Exa Light",
+        "Unbounded Black"
+      ]
+    },
+    "hollow": {
+      "hash": "3c3c4fddf7b3d2041d1fe9c749e308b81b9c827c3414f7098a70d76992fd415e",
+      "faces": [
+        "Anton"
+      ]
+    },
+    "horizon": {
+      "hash": "1b2e4f65213fa8aab302261e9f9e11fe25f391ab7608d4d52cbd1e4d95e27703",
+      "faces": [
+        "Orbitron Black",
+        "Racing Sans One"
+      ]
+    },
+    "hype": {
+      "hash": "a9834678f8168dbd0c737f7ae96621cd7bbf58286824f14831c84a5ea04fbe9e",
+      "faces": [
+        "Barlow Condensed Black Italic"
+      ]
+    },
+    "index": {
+      "hash": "402ad4d744735f7518d81e0ad24e89603c071ce724ed0f2439c2c486441efb01",
+      "faces": [
+        "Inter",
+        "Inter SemiBold",
+        "Unbounded"
+      ]
+    },
+    "inkup": {
+      "hash": "82c30bd05c0d46e580adf15f34d121992899c24acffe423e9b23bc4b940cb68a",
+      "faces": [
+        "Inter Tight ExtraBold",
+        "Inter Tight ExtraBold Italic",
+        "Inter Tight Light",
+        "Inter Tight Light Italic",
+        "Inter Tight Medium",
+        "Inter Tight Medium Italic"
+      ]
+    },
+    "labels": {
+      "hash": "0807b096871a3b66d95d8f2670096ea150c3f1d9345b867250e9bee5d233bb76",
+      "faces": [
+        "Montserrat ExtraBold"
+      ]
+    },
+    "ledge": {
+      "hash": "d6a5218e3f741b908de28d79669d9c6c0bbec238e7ccf5bec5bfefb1630a5d52",
+      "faces": [
+        "Anton"
+      ]
+    },
+    "liquid": {
+      "hash": "d1ccd83651adc2ee6574d73887e7d80efb9f151ee1b416a69f4d55ed40178b2e",
+      "faces": [
+        "Inter",
+        "Inter SemiBold"
+      ]
+    },
+    "lyrics": {
+      "hash": "1ce3cee6c1b2cdcdaeffc85882b501c356057bfa434ca5e47a804646a9a005b2",
+      "faces": [
+        "Inter Tight Bold"
+      ]
+    },
+    "manifesto": {
+      "hash": "2b040fbef1d5c72ed6b755b41280c4a34e70ff8cd5cb8617e239ba32b06431c8",
+      "faces": [
+        "Anton"
+      ]
+    },
+    "marker": {
+      "hash": "ff39a26559b9cdfbc9e789b41565657f0711f9387e7ca7da5ef8e9154ea252c0",
+      "faces": []
+    },
+    "marquee": {
+      "hash": "818e6454a23db2101ffe3c5f1d6d8c9eb6b4b0327c2447b0c914e95ca9990b46",
+      "faces": [
+        "Lilita One",
+        "Oleo Script Bold"
+      ]
+    },
+    "match": {
+      "hash": "ac3da0164e7cc3f1d1413a152b3caef35d3f1da12c96eb16d9ad6a591584f66c",
+      "faces": [
+        "Courier Prime",
+        "Inter Tight Bold",
+        "Inter Tight ExtraBold",
+        "Playfair Display Bold",
+        "Playfair Display Bold Italic",
+        "Space Grotesk Bold"
+      ]
+    },
+    "mdrn": {
+      "hash": "ebf0450678fe661a541c6880a485f3a53fa838098befb6aa3f25a6b193223c78",
+      "faces": [
+        "Archivo Expanded Black",
+        "Archivo Expanded ExtraBold"
+      ]
+    },
+    "orbit": {
+      "hash": "67df4b83573b2e51e591536dc5e2f8f7f3626ac6e9e1c5e551fe61da006d20ec",
+      "faces": [
+        "Inter Tight Medium",
+        "Inter Tight Regular"
+      ]
+    },
+    "pills": {
+      "hash": "c2559ba7cd3e367fdfbf7b94cdcb91edafa21ebac8bc4cb6bcc6643af7a570d8",
+      "faces": [
+        "Manrope Bold",
+        "Manrope ExtraBold"
+      ]
+    },
+    "pixel": {
+      "hash": "d5b1cdd8b0abed7f258bb189fee2b2e58092310f533996c649f3636eab708cba",
+      "faces": [
+        "Silkscreen Bold",
+        "Space Mono Bold"
+      ]
+    },
+    "pixelpop": {
+      "hash": "53a8bf7300aa4c41ce82dee84ec7e0e607ebeb45ff09f229d463b6cea23f20b7",
+      "faces": [
+        "Pixelify Sans Bold"
+      ]
+    },
+    "popup": {
+      "hash": "7052b0f9c476466a6c2202e69b06538b10360403bed22ec8e1b39db7406cd9e2",
+      "faces": [
+        "Chango",
+        "Lilita One"
+      ]
+    },
+    "premiere": {
+      "hash": "e2729e77c7e3b45b59fb820a9ac2c6962c18e3bb153ec70b846525fb122352b0",
+      "faces": [
+        "Anton",
+        "Yesteryear"
+      ]
+    },
+    "primer": {
+      "hash": "e83256839f4056ede9911dda16a33dc5cc21e7561782909d628e9c1f7259bb05",
+      "faces": [
+        "Archivo Black"
+      ]
+    },
+    "punchline": {
+      "hash": "a9a79c77632fd29866881759c000cc5e58017339ed3604774442658ad8d94338",
+      "faces": [
+        "Lilita One"
+      ]
+    },
+    "rainbow": {
+      "hash": "2a29b9e1e15c96f64fadc0a7b3f7d4481bdd8a7079ea05c90ff8c0c5f62d1293",
+      "faces": [
+        "Fredoka Bold",
+        "Lobster"
+      ]
+    },
+    "ransom": {
+      "hash": "ec71222af971dfa203382ee705f70449c4f61ad126aa1b64f52f2d56f47ba1e6",
+      "faces": [
+        "Abril Fatface",
+        "Alfa Slab One",
+        "Anton",
+        "Archivo Black"
+      ]
+    },
+    "receipt": {
+      "hash": "36a4779966914b531583e647cf518bbd48cd59ac84260547a41735896bf84f81",
+      "faces": [
+        "Space Mono Bold"
+      ]
+    },
+    "reveal": {
+      "hash": "a740e7db232a5efe76caa0efa683a9be4584bff2863391094f94ff82a9bca7b7",
+      "faces": [
+        "Instrument Serif",
+        "Inter Tight SemiBold"
+      ]
+    },
+    "ripple": {
+      "hash": "cc3dd73573cb8849ce7ef17fa04f4ba2ee755a9f86cb8d0f00d891d5d95b00cf",
+      "faces": [
+        "Fredoka Bold"
+      ]
+    },
+    "scribble": {
+      "hash": "d7487708526fcf409c324d9a041b32f6b184c7a4d0d81c8ce6db0a28a143d624",
+      "faces": [
+        "DM Sans Black",
+        "DM Sans Bold"
+      ]
+    },
+    "seventies": {
+      "hash": "54e335c178660930052c2247d28b0602e5d6ff8a8640246c3975860ec7a5deb9",
+      "faces": [
+        "DM Serif Display Italic",
+        "Shrikhand"
+      ]
+    },
+    "shuffle": {
+      "hash": "3af848bea73835e017e11589ba1cb628ee22b707906f4cab1028651f0b009cf2",
+      "faces": [
+        "Montserrat"
+      ]
+    },
+    "signal": {
+      "hash": "b92e5885c2eeda32ac84acd9eacd4e2ddd4c9a8d5f9d91327e9b8ed3d6ea01e1",
+      "faces": [
+        "Chakra Petch",
+        "JetBrains Mono Medium"
+      ]
+    },
+    "slab": {
+      "hash": "50b02192129b95818045b68efbf47eb808dd3d4c44d0e62f5264bfe4232f551e",
+      "faces": [
+        "Montserrat ExtraBold"
+      ]
+    },
+    "slice": {
+      "hash": "e55624d54fc8e89f35f4ff1c07d126533bcf703398ab8ad7d548f6e1fb0fe863",
+      "faces": [
+        "Inter Tight ExtraBold"
+      ]
+    },
+    "slot": {
+      "hash": "d61fd2757b8e66c205ca041e22db6c5b787827ccd21d3c40602d1f5296754c61",
+      "faces": [
+        "Anton"
+      ]
+    },
+    "snipsnap": {
+      "hash": "8dfe2be78c51d796c875ebd80b523fbe77c2a489831b1ffb43f0c90ed93f63a0",
+      "faces": [
+        "Londrina Solid Black"
+      ]
+    },
+    "spine": {
+      "hash": "c8654752308c9fc898f16f852f19b29772059843228261ad265b90bb5a035c14",
+      "faces": [
+        "Archivo Black",
+        "Inter Tight Bold"
+      ]
+    },
+    "squash": {
+      "hash": "7b253132954cd603c30dbd848342f585c2cfc34112f8212bc22b994546a73ff0",
+      "faces": [
+        "Anton",
+        "Montserrat"
+      ]
+    },
+    "stack": {
+      "hash": "d555f83291201a5051b4da9e3ed738fdbfd81c24586b05c55a4eee15b3122af3",
+      "faces": []
+    },
+    "sticky": {
+      "hash": "de599a0af4837761f2f257dda85b42d6216e8399672dd6c68baa8aba253bdc8d",
+      "faces": [
+        "Space Mono Bold"
+      ]
+    },
+    "stretch": {
+      "hash": "edc06193d5d1d2179b510d7debc50466834b310c6c6ec8a999e490b71d4603b8",
+      "faces": [
+        "Dela Gothic One"
+      ]
+    },
+    "strike": {
+      "hash": "9c670414d89f23c9f2462cceaafad48999e47181913e00c8989a4527a0deea1d",
+      "faces": [
+        "Montserrat ExtraBold"
+      ]
+    },
+    "swipe": {
+      "hash": "7a2c1def66476f7cdcbb2170d090ee5f3ec42adf5e299e99550fbb9f47d9c465",
+      "faces": [
+        "Barlow Condensed Bold",
+        "Barlow Condensed Medium"
+      ]
+    },
+    "tape": {
+      "hash": "a29271485eee35425d8f5164147dff947c66eaa7f4416cfba209734ac1db5868",
+      "faces": [
+        "Archivo Expanded Black",
+        "Archivo ExtraBold Italic"
+      ]
+    },
+    "thermal": {
+      "hash": "c8a27df3506801720ddd9512d950e3363827c6e8a39d6823c848c14a265d56c3",
+      "faces": [
+        "Inter Tight Bold"
+      ]
+    },
+    "ticker": {
+      "hash": "0499df72e5cbeb8d16f72e1691291349a9bf78abfb93a52982ba47b139371b3d",
+      "faces": [
+        "Archivo Black",
+        "Inter Tight ExtraBold"
+      ]
+    },
+    "tilt": {
+      "hash": "b89d2db7eb35b53a8c0125297d05290a1e87268e0948ed5fe02c6dd2b421f20f",
+      "faces": [
+        "Lilita One"
+      ]
+    },
+    "trace": {
+      "hash": "78298ed63141121e35156b15b1510cf706bafd54669d249f959903ffac69e94b",
+      "faces": [
+        "Barlow Condensed ExtraBold Italic",
+        "Unbounded Black"
+      ]
+    },
+    "track": {
+      "hash": "f87d43f7c6727126bffbe8758967bb30440a813ff66b858e89f73515c3f39965",
+      "faces": [
+        "Inter",
+        "Inter SemiBold",
+        "JetBrains Mono Bold"
+      ]
+    },
+    "trail": {
+      "hash": "9d1ba68f536ac71d2b94a9efd4f171ef67fccf0e47784500bee5dee32947c888",
+      "faces": [
+        "Lilita One"
+      ]
+    },
+    "tunnel": {
+      "hash": "088116cb096a1e2e1f357459f396c7eb7466658947127869781020a603aef81e",
+      "faces": [
+        "Bricolage Grotesque"
+      ]
+    },
+    "velocity": {
+      "hash": "6a2e2b8c6f6ce9892919758245fed66501da54f7e00a744eb656369de6364f50",
+      "faces": [
+        "Anton"
+      ]
+    },
+    "verified": {
+      "hash": "d4fc14be02ac0243bc7f171ee4129bc73014e52b1f5d1832f351c17536497be0",
+      "faces": [
+        "Archivo Expanded Black Italic",
+        "Archivo Expanded ExtraBold Italic"
+      ]
+    },
+    "vibes": {
+      "hash": "1779f0e631a913a1029a05d7766097889437c15d56b2235105f68b93a00bf479",
+      "faces": [
+        "Archivo Black",
+        "Oleo Script Bold"
+      ]
+    },
+    "wallpaper": {
+      "hash": "e026d71f65ee1d3c0d5e187ee8d1fa2b7b1db4e32b308546a266a59f1b9d431f",
+      "faces": [
+        "Archivo Expanded ExtraBold"
+      ]
+    },
+    "wonky": {
+      "hash": "ac42bdc221fe2cd7b3a57d5fb5d4db47b80e1d14cb7b92288a80f3b1c35a595a",
+      "faces": [
+        "Rubik Black"
+      ]
+    },
+    "wordform": {
+      "hash": "16df4ca9d8891b36e33129cfa4de9cbee82267d694464dff3ac985eab4d4af37",
+      "faces": [
+        "Bricolage Grotesque",
+        "Inter SemiBold"
+      ]
+    }
+  }
+}

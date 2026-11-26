@@ -25,7 +25,11 @@ export function sampleFrames(fn: (t: number) => number, edges: readonly number[]
   // `fn` is pure, so the value at each end of a segment is computed once and handed down (a build asks for thousands of curves).
   const split = (a: number, fa: number, b: number, fb: number, depth: number) => {
     const at = (u: number) => a + (b - a) * u;
-    const off = [0.25, 0.5, 0.75].some((u) => Math.abs(fn(at(u)) - (fa + (fb - fa) * u)) > tolerance);
+    // The quarter points in order, stopping at the first that is off (written out: this runs thousands of times per build).
+    const off =
+      Math.abs(fn(at(0.25)) - (fa + (fb - fa) * 0.25)) > tolerance ||
+      Math.abs(fn(at(0.5)) - (fa + (fb - fa) * 0.5)) > tolerance ||
+      Math.abs(fn(at(0.75)) - (fa + (fb - fa) * 0.75)) > tolerance;
     if (depth < maxDepth && b - a > 1 && off) {
       const mid = wholeMs ? Math.round(at(0.5)) : at(0.5);
       const fm = fn(mid);

@@ -163,17 +163,21 @@ export function mixColour(from: string, to: string, p: number): string {
 
 /** A colour track at `t`: the first colour before the first frame, the last after the last. */
 export function colourAt(frames: ColourFrames, t: number): string {
-  const first = frames[0];
-  if (!first) throw new Error("colourAt needs at least one frame");
-  if (t <= first[0]) return first[1];
-  for (let index = 1; index < frames.length; index++) {
-    const [at, colour, name] = frames[index]!;
+  const count = frames.length;
+  if (count === 0) throw new Error("colourAt needs at least one frame");
+  // Indexed, not destructured, for the reason `kf` gives.
+  let previous = frames[0]!;
+  if (t <= previous[0]) return previous[1];
+  for (let index = 1; index < count; index++) {
+    const frame = frames[index]!;
+    const at = frame[0];
     if (t <= at) {
-      const [previousAt, previousColour] = frames[index - 1]!;
-      return mixColour(previousColour, colour, ease(name, (t - previousAt) / (at - previousAt || 1)));
+      const previousAt = previous[0];
+      return mixColour(previous[1], frame[1], ease(frame[2], (t - previousAt) / (at - previousAt || 1)));
     }
+    previous = frame;
   }
-  return frames[frames.length - 1]![1];
+  return previous[1];
 }
 
 /** The piece's own fill: text fill, or a shape's fill colour. */
@@ -214,7 +218,7 @@ export interface Box {
 }
 
 /** Transform the local rounded clip to canvas coordinates for both renderers. */
-export function roundedClipPath(pose: PiecePose, scale = 1): PathCmd[] {
+export function roundedClipPath(pose: Pick<PiecePose, "x" | "y" | "sx" | "sy" | "rz" | "clip">, scale = 1): PathCmd[] {
   const clip = pose.clip;
   if (!clip || clip.radius === undefined || clip.x2 <= clip.x1 || clip.y2 <= clip.y1) return [];
   const angle = pose.rz * Math.PI / 180;
@@ -249,6 +253,17 @@ export type Measure = (text: string, face: CaptionFontName, sizePx: number, lett
 
 /** The rest box of a piece's drawing in its own coordinates, relative to its anchor point. */
 export function pieceLocalBox(piece: Piece, measure: Measure): Box {
+  // A piece's rest box is fixed for one measurement, and bounds sampling asks for it on every sample.
+  const cached = localBoxes.get(piece);
+  if (cached?.measure === measure) return cached.box;
+  const box = restBox(piece, measure);
+  localBoxes.set(piece, { measure, box });
+  return box;
+}
+
+const localBoxes = new WeakMap<Piece, { readonly measure: Measure; readonly box: Box }>();
+
+function restBox(piece: Piece, measure: Measure): Box {
   if (piece.kind === "shape") {
     const bounds = pathBounds(piece.path);
     const reach = piece.stroke ? piece.stroke.widthPx : 0;
@@ -266,29 +281,41 @@ export function pieceLocalBox(piece: Piece, measure: Measure): Box {
  * clip leaves nothing. A bound for the selection box and the safe-area shift, not a render.
  */
 export function pieceBounds(piece: Piece, ms: number, measure: Measure): Box | null {
-  const pose = evaluatePiece(piece, ms);
-  if (!pose.visible || pose.o <= 0) return null;
+  // The geometry part of `evaluatePiece`, the same numbers: fits and safe-area shifts sample bounds
+  // thousands of times per build, and colour, blur and the 3D turns do not move the box.
+  if (ms < piece.fromMs || ms >= piece.toMs) return null;
+  const { track } = piece;
+  if (track.o && kf(ms, track.o) <= 0) return null;
+  const clip = piece.clip
+    ? { x1: kf(ms, piece.clip.x1), y1: kf(ms, piece.clip.y1), x2: kf(ms, piece.clip.x2), y2: kf(ms, piece.clip.y2), inverse: piece.clip.inverse === true, ...(piece.clip.radius !== undefined ? { radius: piece.clip.radius } : {}) }
+    : null;
+  const pose = {
+    x: track.x ? kf(ms, track.x) : 0,
+    y: track.y ? kf(ms, track.y) : 0,
+    sx: track.sx ? kf(ms, track.sx) : 1,
+    sy: track.sy ? kf(ms, track.sy) : 1,
+    rz: track.rz ? kf(ms, track.rz) : 0,
+    clip,
+  };
   const local = pieceLocalBox(piece, measure);
   const origin = piece.origin ?? { dx: 0, dy: 0 };
   const angle = (pose.rz * Math.PI) / 180;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
-  let x1 = Number.POSITIVE_INFINITY;
-  let y1 = Number.POSITIVE_INFINITY;
-  let x2 = Number.NEGATIVE_INFINITY;
-  let y2 = Number.NEGATIVE_INFINITY;
-  for (const [cx, cy] of [[local.x1, local.y1], [local.x2, local.y1], [local.x2, local.y2], [local.x1, local.y2]] as const) {
-    // Relative to the pivot, scaled, then turned.
-    const ux = (cx - origin.dx) * pose.sx;
-    const uy = (cy - origin.dy) * pose.sy;
-    const rx = pose.x + ux * cos - uy * sin;
-    const ry = pose.y + ux * sin + uy * cos;
-    x1 = Math.min(x1, rx);
-    x2 = Math.max(x2, rx);
-    y1 = Math.min(y1, ry);
-    y2 = Math.max(y2, ry);
-  }
-  let box: Box = { x1, y1, x2, y2 };
+  // The four corners relative to the pivot, scaled, then turned (written out: this runs per sample).
+  const left = (local.x1 - origin.dx) * pose.sx;
+  const right = (local.x2 - origin.dx) * pose.sx;
+  const top = (local.y1 - origin.dy) * pose.sy;
+  const bottom = (local.y2 - origin.dy) * pose.sy;
+  const ax = pose.x + left * cos - top * sin;
+  const ay = pose.y + left * sin + top * cos;
+  const bx = pose.x + right * cos - top * sin;
+  const by = pose.y + right * sin + top * cos;
+  const cx = pose.x + right * cos - bottom * sin;
+  const cy = pose.y + right * sin + bottom * cos;
+  const dx = pose.x + left * cos - bottom * sin;
+  const dy = pose.y + left * sin + bottom * cos;
+  let box: Box = { x1: Math.min(ax, bx, cx, dx), y1: Math.min(ay, by, cy, dy), x2: Math.max(ax, bx, cx, dx), y2: Math.max(ay, by, cy, dy) };
   if (pose.clip && !pose.clip.inverse) {
     const path = pose.clip.radius === undefined ? undefined : roundedClipPath(pose);
     if (path?.length === 0) return null;
@@ -306,17 +333,110 @@ export function pieceBounds(piece: Piece, ms: number, measure: Measure): Box | n
 
 /** Union of the boxes of `pieces` visible at `ms` (only the pieces live then are looked at). */
 export function sceneBoundsAt(pieces: readonly Piece[], ms: number, measure: Measure): Box | null {
-  let union: Box | null = null;
+  let found = false;
+  let x1 = Number.POSITIVE_INFINITY;
+  let y1 = Number.POSITIVE_INFINITY;
+  let x2 = Number.NEGATIVE_INFINITY;
+  let y2 = Number.NEGATIVE_INFINITY;
   for (const at of livePieceIndexes(pieces, ms)) {
     const piece = pieces[at]!;
     if (piece.bleed) continue;
     const box = pieceBounds(piece, ms, measure);
     if (!box) continue;
-    union = union
-      ? { x1: Math.min(union.x1, box.x1), y1: Math.min(union.y1, box.y1), x2: Math.max(union.x2, box.x2), y2: Math.max(union.y2, box.y2) }
-      : box;
+    if (!found) {
+      found = true;
+      x1 = box.x1;
+      y1 = box.y1;
+      x2 = box.x2;
+      y2 = box.y2;
+      continue;
+    }
+    x1 = Math.min(x1, box.x1);
+    y1 = Math.min(y1, box.y1);
+    x2 = Math.max(x2, box.x2);
+    y2 = Math.max(y2, box.y2);
   }
-  return union;
+  return found ? { x1, y1, x2, y2 } : null;
+}
+
+/**
+ * The union of `sceneBoundsAt` over every time in `times`: the same box, computed piece by piece. A piece's geometry holds one
+ * pose up to its first keyframe and another after its last, so each hold is evaluated once instead of once per sample (fits
+ * and safe-area checks sample every few ms, and most of a piece's life is a hold).
+ */
+export function sceneBoundsOver(pieces: readonly Piece[], times: Iterable<number>, measure: Measure): Box | null {
+  const sorted = Float64Array.from(times).sort();
+  let found = false;
+  let x1 = Number.POSITIVE_INFINITY;
+  let y1 = Number.POSITIVE_INFINITY;
+  let x2 = Number.NEGATIVE_INFINITY;
+  let y2 = Number.NEGATIVE_INFINITY;
+  const add = (box: Box | null) => {
+    if (!box) return;
+    if (!found) {
+      found = true;
+      x1 = box.x1;
+      y1 = box.y1;
+      x2 = box.x2;
+      y2 = box.y2;
+      return;
+    }
+    x1 = Math.min(x1, box.x1);
+    y1 = Math.min(y1, box.y1);
+    x2 = Math.max(x2, box.x2);
+    y2 = Math.max(y2, box.y2);
+  };
+  for (const piece of pieces) {
+    if (piece.bleed) continue;
+    const { first, last } = geometryKeyframeSpan(piece);
+    let low = 0;
+    let high = sorted.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (sorted[mid]! < piece.fromMs) low = mid + 1;
+      else high = mid;
+    }
+    let before = false;
+    let after = false;
+    for (let at = low; at < sorted.length; at++) {
+      const t = sorted[at]!;
+      if (t >= piece.toMs) break;
+      // `kf` answers a track's first value exactly up to its first frame, and its last value exactly after its last.
+      if (t <= first) {
+        if (!before) add(pieceBounds(piece, t, measure));
+        before = true;
+      } else if (t > last) {
+        if (!after) add(pieceBounds(piece, t, measure));
+        after = true;
+      } else add(pieceBounds(piece, t, measure));
+    }
+  }
+  return found ? { x1, y1, x2, y2 } : null;
+}
+
+/** The earliest first frame and the latest last frame of the tracks `pieceBounds` reads. */
+function geometryKeyframeSpan(piece: Piece): { first: number; last: number } {
+  let first = Number.POSITIVE_INFINITY;
+  let last = Number.NEGATIVE_INFINITY;
+  const span = (frames: Frames | undefined) => {
+    if (!frames || frames.length === 0) return;
+    first = Math.min(first, frames[0]![0]);
+    last = Math.max(last, frames[frames.length - 1]![0]);
+  };
+  const { track, clip } = piece;
+  span(track.x);
+  span(track.y);
+  span(track.sx);
+  span(track.sy);
+  span(track.rz);
+  span(track.o);
+  if (clip) {
+    span(clip.x1);
+    span(clip.y1);
+    span(clip.x2);
+    span(clip.y2);
+  }
+  return { first, last };
 }
 
 /** The time range a scene covers: first piece start to last piece end. */

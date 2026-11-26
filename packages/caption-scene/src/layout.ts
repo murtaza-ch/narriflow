@@ -1,7 +1,7 @@
 import { captionWordVisualOrder, type CaptionDirection } from "@narriflow/caption-fonts/bidi-order";
 import { captionTextDirection, languageDirection, textDirection } from "@narriflow/validators";
 import type { SceneCue, SceneInput } from "./input";
-import { type Box, type Frames, type Measure, type Piece, sceneBoundsAt } from "./scene";
+import { type Box, type Frames, type Measure, type Piece, sceneBoundsOver } from "./scene";
 
 /**
  * Layout helpers a template builds on. Templates are written in the sample's 1080 x 1920
@@ -155,14 +155,9 @@ export function clampToSafeArea<P extends Piece>(pieces: readonly P[], safe: Box
   if (pieces.length === 0) return [];
   const from = Math.min(...pieces.map((piece) => piece.fromMs));
   const to = Math.max(...pieces.map((piece) => piece.toMs));
-  let union: Box | null = null;
-  for (let ms = from; ms < to; ms += 16) {
-    const box = sceneBoundsAt(pieces, ms, measure);
-    if (!box) continue;
-    union = union
-      ? { x1: Math.min(union.x1, box.x1), y1: Math.min(union.y1, box.y1), x2: Math.max(union.x2, box.x2), y2: Math.max(union.y2, box.y2) }
-      : box;
-  }
+  const times: number[] = [];
+  for (let ms = from; ms < to; ms += 16) times.push(ms);
+  const union = sceneBoundsOver(pieces, times, measure);
   if (!union) return [...pieces];
   const axis = (low: number, high: number, safeLow: number, safeHigh: number) => {
     if (high - low >= safeHigh - safeLow) return (safeLow + safeHigh) / 2 - (low + high) / 2;

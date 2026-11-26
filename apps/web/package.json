@@ -9,6 +9,7 @@
     "start": "next start -p 3000",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
+    "cards:render": "bun scripts/caption-cards/render.ts",
     "clean": "rm -rf .next",
     "dev:preview": "next dev"
   },

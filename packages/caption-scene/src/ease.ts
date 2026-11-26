@@ -31,17 +31,24 @@ export type Frames = readonly (readonly [number, number, Ease?])[];
 /**
  * Keyframes at `t`. The ease on a frame shapes the segment that arrives at it. Before the first
  * frame the first value holds, after the last the last.
+ *
+ * The hottest function of a scene build (every bounds sample of every piece lands here), so it
+ * indexes the frames instead of destructuring them: V8 runs array destructuring through the
+ * iterator protocol, which made this loop most of a heavy template's build time in Chrome.
  */
 export function kf(t: number, frames: Frames): number {
-  const first = frames[0];
-  if (!first) throw new Error("kf needs at least one frame");
-  if (t <= first[0]) return first[1];
-  for (let index = 1; index < frames.length; index++) {
-    const [at, value, name] = frames[index]!;
+  const count = frames.length;
+  if (count === 0) throw new Error("kf needs at least one frame");
+  let previous = frames[0]!;
+  if (t <= previous[0]) return previous[1];
+  for (let index = 1; index < count; index++) {
+    const frame = frames[index]!;
+    const at = frame[0];
     if (t <= at) {
-      const [previousAt, previousValue] = frames[index - 1]!;
-      return lerp(previousValue, value, ease(name, (t - previousAt) / (at - previousAt || 1)));
+      const previousAt = previous[0];
+      return lerp(previous[1], frame[1], ease(frame[2], (t - previousAt) / (at - previousAt || 1)));
     }
+    previous = frame;
   }
-  return frames[frames.length - 1]![1];
+  return previous[1];
 }

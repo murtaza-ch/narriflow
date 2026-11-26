@@ -13,9 +13,10 @@ import {
   CaptionBlockFrame,
   loopTimeSource,
   staticTimeSource,
+  type CaptionTimeSource,
 } from "../projects/[projectId]/clips/[clipId]/studio/_components/caption-block-painter";
 import { captionSceneDemo, captionSceneStillMs } from "@narriflow/caption-scene";
-import { CaptionSceneFrame } from "../projects/[projectId]/clips/[clipId]/studio/_components/caption-scene-painter";
+import { CaptionSceneFrame, type MeasuredScene } from "../projects/[projectId]/clips/[clipId]/studio/_components/caption-scene-painter";
 import { captionPresetBackdropSrc } from "./caption-preset-backdrops";
 import { CAPTION_SAMPLE_LOOP_SEC, CAPTION_SAMPLE_WORDS, captionSampleBlockCue } from "./caption-sample-cue";
 
@@ -69,6 +70,7 @@ function BlockSample({
   boost,
   animate,
   reducedMotion,
+  timeSource,
 }: {
   preset: CaptionPreset;
   width: number;
@@ -77,6 +79,8 @@ function BlockSample({
   boost: number;
   animate: boolean;
   reducedMotion: boolean;
+  /** Plays the sample from this clock instead of the shared loop (the card renderer steps it frame by frame). */
+  timeSource?: CaptionTimeSource;
 }) {
   const cue = useMemo(
     () => captionSampleBlockCue(preset, { xPct: preset.positionX ?? 50, yPct: captionTopPct }),
@@ -91,7 +95,7 @@ function BlockSample({
         cue={cue}
         canvas={canvas}
         scale={width / canvasWidth}
-        timeSource={animate ? loopTimeSource(CAPTION_SAMPLE_LOOP_SEC) : SETTLED_SAMPLE}
+        timeSource={timeSource ?? (animate ? loopTimeSource(CAPTION_SAMPLE_LOOP_SEC) : SETTLED_SAMPLE)}
         reducedMotion={reducedMotion}
       />
     </Box>
@@ -109,6 +113,8 @@ export function SceneSample({
   captionTopPct,
   boost,
   animate,
+  timeSource: clock,
+  onBuilt,
 }: {
   preset: CaptionPreset;
   width: number;
@@ -116,6 +122,9 @@ export function SceneSample({
   captionTopPct: number;
   boost: number;
   animate: boolean;
+  /** Plays the sample from this clock instead of the shared loop (the card renderer steps it frame by frame). */
+  timeSource?: CaptionTimeSource;
+  onBuilt?: (built: MeasuredScene) => void;
 }) {
   const demo = useMemo(() => captionSceneDemo(preset.scene!), [preset.scene]);
   const canvasWidth = 1080 / boost;
@@ -125,12 +134,12 @@ export function SceneSample({
     [preset, demo, canvas, captionTopPct],
   );
   const timeSource = useMemo(
-    () => (animate ? loopTimeSource(demo.duration / 1000) : staticTimeSource(captionSceneStillMs(preset.scene!) / 1000)),
-    [animate, demo, preset.scene],
+    () => clock ?? (animate ? loopTimeSource(demo.duration / 1000) : staticTimeSource(captionSceneStillMs(preset.scene!) / 1000)),
+    [clock, animate, demo, preset.scene],
   );
   return (
     <Box position="absolute" inset="0" pointerEvents="none">
-      <CaptionSceneFrame input={input} scale={width / canvasWidth} timeSource={timeSource} />
+      <CaptionSceneFrame input={input} scale={width / canvasWidth} timeSource={timeSource} onBuilt={onBuilt} />
     </Box>
   );
 }
@@ -151,6 +160,8 @@ export function CaptionPresetPreview({
   boost: number;
   imageSizes: string;
   backdropFocusYPct?: number;
+  timeSource?: CaptionTimeSource;
+  onSceneBuilt?: (built: MeasuredScene) => void;
 }) {
   return (
     <CaptionSamplePreview
@@ -170,6 +181,8 @@ export function CaptionSamplePreview({
   boost,
   imageSizes,
   backdropFocusYPct = 30,
+  timeSource,
+  onSceneBuilt,
   children,
 }: {
   preset: CaptionPreset;
@@ -180,6 +193,9 @@ export function CaptionSamplePreview({
   imageSizes: string;
   /** Vertical crop position of the backdrop; cards wider than the 9:16 frame pick which band of it shows. */
   backdropFocusYPct?: number;
+  /** A Dynamic or Scene Style's sample plays from this clock instead of the shared loop (the card renderer). */
+  timeSource?: CaptionTimeSource;
+  onSceneBuilt?: (built: MeasuredScene) => void;
   /** Overlays drawn above the caption, such as a logo. */
   children?: ReactNode;
 }) {
@@ -228,10 +244,11 @@ export function CaptionSamplePreview({
           boost={boost}
           animate={!reducedMotion && onScreen}
           reducedMotion={reducedMotion}
+          timeSource={timeSource}
         />
       )}
       {scene && width > 0 && height > 0 && (
-        <SceneSample preset={preset} width={width} height={height} captionTopPct={captionTopPct} boost={boost} animate={!reducedMotion && onScreen} />
+        <SceneSample preset={preset} width={width} height={height} captionTopPct={captionTopPct} boost={boost} animate={!reducedMotion && onScreen} timeSource={timeSource} onBuilt={onSceneBuilt} />
       )}
       {!dynamic && !scene && width > 0 && (
         <Box

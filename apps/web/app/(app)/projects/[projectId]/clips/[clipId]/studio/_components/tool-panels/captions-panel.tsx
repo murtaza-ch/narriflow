@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid, VisuallyHidden } from "@chakra-ui/react";
 import { PANEL_PX, PanelSegmented, PanelTabs, SectionLabel, chipProps, studioSliderCss } from "./panel-ui";
 import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote, ChevronDown, Link2, Unlink2 } from "lucide-react";
@@ -494,13 +494,16 @@ function PresetsGrid() {
   // through handleSelect, so a useState selection silently goes stale.
   const selectedPresetId = useMemo(() => matchCaptionPreset(captionPreset)?.id ?? null, [captionPreset]);
 
-  const handleSelect = (presetId: string) => {
-    const named = CAPTION_PRESETS.find((p) => p.id === presetId);
-    if (!named) return;
-    // A preset sets the whole look (font, size, motion, colours) but keeps
-    // where the user placed the captions and their display toggles.
-    setCaptionPreset((prev) => applyCaptionPresetLook(prev, named));
-  };
+  const handleSelect = useCallback(
+    (presetId: string) => {
+      const named = CAPTION_PRESETS.find((p) => p.id === presetId);
+      if (!named) return;
+      // A preset sets the whole look (font, size, motion, colours) but keeps
+      // where the user placed the captions and their display toggles.
+      setCaptionPreset((prev) => applyCaptionPresetLook(prev, named));
+    },
+    [setCaptionPreset],
+  );
 
   return (
     <Stack gap="6" px={PANEL_PX} pb="4">
@@ -513,7 +516,7 @@ function PresetsGrid() {
                 key={p.id}
                 namedPreset={p}
                 isSelected={selectedPresetId === p.id}
-                onClick={() => handleSelect(p.id)}
+                onSelect={handleSelect}
               />
             ))}
           </Grid>

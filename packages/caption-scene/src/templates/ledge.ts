@@ -5,7 +5,7 @@ import { SCENE_DEFAULT_FPS, exportFrameAtOrAfter, exportFrameAtOrBefore, painted
 import { sampleFrames } from "../frames";
 import type { SceneCue, SceneInput, SceneProgram } from "../input";
 import { balancedRows, cueDirection, rowVisualOrder, sceneSpace, shiftPiece } from "../layout";
-import { type Box, type Clip, type Frames, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, pieceBounds, sceneBoundsAt } from "../scene";
+import { type Box, type Clip, type Frames, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, pieceBounds, sceneBoundsOver } from "../scene";
 import { pathBounds, polygonPath, rectPath, roundedRectPath } from "../shapes";
 
 /**
@@ -937,7 +937,6 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   }
 
   // The shift into the safe area, looked for every 4 ms: the exit's drop is a fast ease-in whose last frames `clampToSafeArea`'s 16 ms grid can miss.
-  let union: Box | null = null;
   const from = Math.min(...pieces.map((piece) => piece.fromMs));
   const end = Math.max(...pieces.map((piece) => piece.toMs));
   // Every 4 ms, and every millisecond of the exit (a fast ease-in) and the last frame of each piece.
@@ -947,10 +946,7 @@ function buildCue(cue: SceneCue, cueNumber: number, input: SceneInput, counters:
   // The entrance's peak (a spring's overshoot, the reveal's) too, every millisecond of the first 450.
   for (let ms = from; ms <= from + 450; ms++) probes.add(ms);
   for (const piece of pieces) probes.add(piece.toMs - 1);
-  for (const ms of probes) {
-    const box = sceneBoundsAt(pieces, ms, input.measure);
-    if (box) union = union ? { x1: Math.min(union.x1, box.x1), y1: Math.min(union.y1, box.y1), x2: Math.max(union.x2, box.x2), y2: Math.max(union.y2, box.y2) } : box;
-  }
+  const union = sceneBoundsOver(pieces, probes, input.measure);
   if (!union) return pieces;
   const axis = (low: number, high: number, safeLow: number, safeHigh: number) => {
     if (high - low >= safeHigh - safeLow) return (safeLow + safeHigh) / 2 - (low + high) / 2;

@@ -15,7 +15,7 @@
  * never theme tokens.
  */
 
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { memo, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import {
   type CaptionScene,
@@ -104,6 +104,24 @@ function buildScene(input: CaptionSceneBuildInput, force: boolean): SceneResult 
   return { status: "ready", built: { scene, measure: wanted ? memoMeasure(canvasMeasure(input.language, null)) : measure, language: input.language } };
 }
 
+/**
+ * `buildScene`, once per input object and mode. React discards a deferred render that an urgent update interrupts, and
+ * the memo of a discarded render with it, so a build cached only in `useMemo` ran again from scratch on every
+ * interruption (a playing sample, a save badge): a heavy template rebuilt for seconds. Inputs are stable per content key
+ * (`stableByKey`), so this cache holds exactly one build per scene the hook asked for.
+ */
+const builds = new WeakMap<CaptionSceneBuildInput, Map<boolean, SceneResult | null>>();
+
+function buildSceneOnce(input: CaptionSceneBuildInput, force: boolean): SceneResult | null {
+  let byMode = builds.get(input);
+  if (!byMode) {
+    byMode = new Map();
+    builds.set(input, byMode);
+  }
+  if (!byMode.has(force)) byMode.set(force, buildScene(input, force));
+  return byMode.get(force) ?? null;
+}
+
 const unusedMeasure: Measure = () => {
   throw new Error("the build key never measures");
 };
@@ -134,14 +152,18 @@ const subscribeNothing = () => () => undefined;
  * during server rendering and hydration). It changes only when what the scene is built from changes (its
  * content key: cues, canvas, anchor, colours, size, language) or a face loads, never per frame and never because the
  * editor handed over equal inputs in new objects.
+ *
+ * A build is synchronous and a heavy template on a long clip takes a noticeable moment, so it runs in a deferred
+ * render: the edit that asked for it (a template picked, a colour changed) paints first, and the previous scene stays
+ * on screen until the new one is ready. A first build starts from null for the same reason.
  */
 export function useCaptionScene(rawInput: CaptionSceneBuildInput | null): MeasuredScene | null {
   const client = useSyncExternalStore(subscribeNothing, () => true, () => false);
   const stable = useRef<{ readonly key: string; readonly value: CaptionSceneBuildInput } | null>(null);
   stable.current = stableByKey(stable.current, rawInput ? captionSceneInputKey(rawInput) : null, rawInput);
-  const input = stable.current?.value ?? null;
+  const input = useDeferredValue(stable.current?.value ?? null, null);
   const [settledFor, setSettledFor] = useState<CaptionSceneBuildInput | null>(null);
-  const result = useMemo(() => (client && input ? buildScene(input, settledFor === input) : null), [client, input, settledFor]);
+  const result = useMemo(() => (client && input ? buildSceneOnce(input, settledFor === input) : null), [client, input, settledFor]);
   useEffect(() => {
     if (result?.status !== "pending" || !input) return;
     let live = true;
@@ -152,7 +174,11 @@ export function useCaptionScene(rawInput: CaptionSceneBuildInput | null): Measur
       live = false;
     };
   }, [result, input]);
-  return result?.status === "ready" ? result.built : null;
+  // While a new input's faces load, the last scene stays up (a template swap shows the old look, not a blank frame).
+  const last = useRef<MeasuredScene | null>(null);
+  if (result?.status === "ready") last.current = result.built;
+  else if (!input) last.current = null;
+  return result?.status === "ready" ? result.built : last.current;
 }
 
 /** A ready-made scene (a fixture) with its faces loaded: null until they have. For harnesses, not for plan cues. */

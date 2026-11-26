@@ -2,7 +2,7 @@ import { toCaptionUpperCase } from "@narriflow/validators";
 import { exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount, SCENE_DEFAULT_FPS } from "../frame-grid";
 import type { SceneCue, SceneInput, SceneProgram, SceneWord } from "../input";
 import { cueDirection, sceneSpace, shiftPiece } from "../layout";
-import { type Box, type Clip, type Frames, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, sceneBoundsAt } from "../scene";
+import { type Box, type Clip, type Frames, type PathCmd, type Piece, type ShapePiece, type TextPiece, type Track, sceneBoundsOver } from "../scene";
 import { ellipsePath, roundedRectPath } from "../shapes";
 import { hasTwoPaintedFrames, layoutSpeechWords, renderWithReadingHolds, type SpeechCell, type SpeechWindow, speechLaneSpace, speechWindows } from "./speech-layout";
 
@@ -172,19 +172,7 @@ function motionBounds(pieces: readonly Piece[], window: SpeechWindow, input: Sce
       for (const [at] of track) if (at >= from && at < to) times.add(at);
     }
   }
-  let x1 = Infinity;
-  let y1 = Infinity;
-  let x2 = -Infinity;
-  let y2 = -Infinity;
-  for (const t of times) {
-    const box = sceneBoundsAt(pieces, t, input.measure);
-    if (!box) continue;
-    x1 = Math.min(x1, box.x1);
-    y1 = Math.min(y1, box.y1);
-    x2 = Math.max(x2, box.x2);
-    y2 = Math.max(y2, box.y2);
-  }
-  return { x1, y1, x2, y2 };
+  return sceneBoundsOver(pieces, times, input.measure) ?? { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
 }
 
 /** Individual letters for effects that need them. Joined scripts and long words stay intact. */
