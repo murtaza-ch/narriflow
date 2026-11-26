@@ -50,6 +50,7 @@ import type { ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResul
 import { appendScribeCapacityWakesWithinTransaction } from "./transcription-admission";
 import { lockClipSelectionParent, clipSelectionTranscriptHash, cancelClipSelectionWindowsWithinTransaction } from "./clip-selection-window";
 import { admitCaptionedExportWithinTransaction, resolveClipExportOutput } from "./clip-export.service";
+import { clearProjectWatermarksWithinTransaction, type WatermarkClearanceResult } from "./watermark-clearance";
 import type { ClipSelectionFinalizationResult, PreparedClipSelectionFinalization } from "./clip-selection-finalization";
 /** An explicit release delays its next generation for physical process drain.
  * Ownership is already revoked; this delay never extends the old lease. */
@@ -827,7 +828,7 @@ export class WorkflowRunLifecycle {
           if (creates.length) await tx.clipRender.createMany({ data: creates });
           for (const [resolution, ids] of resets) await tx.clipRender.updateMany({ where: { id: { in: ids } }, data: {
             status: "pending", storageKey: null, sizeBytes: null, durationSec: null, errorCode: null, failureDisposition: null,
-            captionDiagnostics: Prisma.DbNull, workflowAttemptId: null, workflowRunId: null, startedAt: null, completedAt: null, resolution,
+            captionDiagnostics: Prisma.DbNull, workflowAttemptId: null, workflowRunId: null, startedAt: null, completedAt: null, resolution, watermark: false,
           } });
         }
         if (existing) return { id: existing.id, created: false };
@@ -911,7 +912,7 @@ export class WorkflowRunLifecycle {
         completedAt: null, storageKey: null, sizeBytes: null, durationSec: null };
       await tx.clipRender.updateMany({
         where: { exportVariantId: { in: ids }, status: "failed" },
-        data: { ...reset, workflowRunId: null, workflowAttemptId: null, failureDisposition: null },
+        data: { ...reset, workflowRunId: null, workflowAttemptId: null, failureDisposition: null, watermark: false },
       });
       await tx.clipExportVariant.updateMany({
         where: { id: { in: ids }, status: "failed" }, data: reset,
@@ -933,6 +934,28 @@ export class WorkflowRunLifecycle {
       await syncClipExportAggregates(tx, ids);
       await this.dispatchRunWithinTransaction(tx, admitted.id);
       return true;
+    });
+  }
+
+  /** After an upgrade gains `export.noWatermark`: resets the Project's marked
+   * outputs and hands them to the live render run, or admits one, as a manual
+   * export retry does. Admission closed or a lost entitlement does nothing. */
+  async clearProjectWatermarks(input: { projectId: string; workspaceId: string }): Promise<WatermarkClearanceResult> {
+    return this.transaction(async (tx) => {
+      await this.lockRenderAdmissionWithinTransaction(tx, input.projectId, input.workspaceId);
+      const cleared = await clearProjectWatermarksWithinTransaction(tx, { ...input, lineageRunId: null });
+      if (cleared.kind !== "cleared" || !cleared.renderIds.length) return cleared;
+      const active = await tx.workflowRun.findFirst({
+        where: { projectId: input.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } },
+        select: { id: true },
+      });
+      // An unfrozen run adopts the pending rows; a frozen one's settlement drains them.
+      const run = active ?? await this.admitWithinTransaction(tx, {
+        projectId: input.projectId, stage: "clip_rendering", idempotencyKey: `watermark-clearance:${randomUUID()}`,
+      });
+      if (cleared.exportIds.length) await tx.clipExport.updateMany({ where: { id: { in: cleared.exportIds } }, data: { workflowRunId: run.id } });
+      await this.dispatchRunWithinTransaction(tx, run.id);
+      return cleared;
     });
   }
 
@@ -2549,8 +2572,13 @@ export class WorkflowRunLifecycle {
     const variants = await tx.clipRender.findMany({ where: { id: { in: members.map(member => member.clipRenderId) }, workflowRunId: ref.workflowRunId }, select: { id: true, status: true, exportVariantId: true } });
     const terminal = await this.settleTerminalRenderLineage(tx, event, { requestedCount: decision.requested, variants, failureErrorCode: "render_work_set_failed" });
     await this.appendEvent(tx, { ...event, status: terminal.status, progress: 100, errorCode: terminal.errorCode, transition: `terminal:${terminal.status}`, notification: decision.notify ? terminal.notification : undefined });
-    const followUpWorkflowRunId = await this.admitLateRenderFollowUp(tx, event);
+    // Finished events first: they report this run's outcome, which the reset below
+    // would hide by detaching the rows and moving each export's retryCount on.
     await this.emitFinishedOperations(tx, event);
+    // A work set frozen with the Free-plan mark before an upgrade: its marked
+    // outputs reset to pending here, and the late-work drain renders them clean.
+    await clearProjectWatermarksWithinTransaction(tx, { projectId: ref.projectId, lineageRunId: ref.workflowRunId });
+    const followUpWorkflowRunId = await this.admitLateRenderFollowUp(tx, event);
     return { status: terminal.status, requested: terminal.requested, succeeded: terminal.succeeded, failed: terminal.failed, superseded: terminal.superseded, followUpWorkflowRunId };
   }
 

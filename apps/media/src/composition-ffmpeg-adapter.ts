@@ -35,8 +35,12 @@ import {
 	type CompositionRect,
 	type CompositionSourceVideoLayer,
 	type CompositionTargetPlan,
+	type CompositionVisualLayer,
+	NARRIFLOW_WATERMARK_ART,
+	compositionOutputSize,
 } from "@narriflow/composition-plan";
 import { drawtextLiteralText, escapeFilterOptionValue } from "./ffmpeg-text";
+import { verifiedWatermarkArtPath } from "./watermark-art";
 
 export function compileOptionalMediaValidationCommand(
 	filePath: string,
@@ -615,6 +619,37 @@ function logoOverlayPosition(position: string, marginPx: number) {
 	return { x, y };
 }
 
+/** An enabled watermark draws only the known badge, inside the frame the
+ *  output scale produces. Anything else fails closed. */
+function assertWatermarkPlacement(
+	watermark: Extract<
+		Extract<CompositionVisualLayer, { kind: "output-treatment" }>["watermark"],
+		{ enabled: true }
+	>,
+	canvas: { width: number; height: number },
+	resolution: "720p" | "1080p",
+): void {
+	if (watermark.art !== NARRIFLOW_WATERMARK_ART.id) {
+		throw new Error("invalid_clip_composition_watermark_art");
+	}
+	const frame = compositionOutputSize(canvas, resolution);
+	const { outputPx, rectPx } = watermark;
+	if (outputPx.width !== frame.width || outputPx.height !== frame.height) {
+		throw new Error("invalid_clip_composition_watermark_frame");
+	}
+	if (
+		![rectPx.x, rectPx.y, rectPx.width, rectPx.height].every(Number.isInteger) ||
+		rectPx.x < 0 ||
+		rectPx.y < 0 ||
+		rectPx.width <= 0 ||
+		rectPx.height <= 0 ||
+		rectPx.x + rectPx.width > outputPx.width ||
+		rectPx.y + rectPx.height > outputPx.height
+	) {
+		throw new Error("invalid_clip_composition_watermark_rect");
+	}
+}
+
 /** Translates the target's already-ordered visual schedule into FFmpeg syntax.
  * It does not inspect the editor document or select timing, precedence,
  * entitlement, geometry, or optional-media fallbacks. */
@@ -630,6 +665,8 @@ export function compileCompositionPlanVisualLayers(input: {
 	/** Fonts the text script draws with; the vendored caption faces by default. */
 	textFontsDirectory?: string;
 	logoInputIndex?: number | null;
+	/** Tests only: another copy of the badge to verify and draw. */
+	watermarkArtPath?: string;
 }): {
 	filterParts: string[];
 	logoInput: { sourceRef: string; inputIndex: number } | null;
@@ -743,23 +780,34 @@ export function compileCompositionPlanVisualLayers(input: {
 				};
 			});
 		} else if (layer.kind === "output-treatment") {
-			if (layer.resolution === "1080p" && !layer.watermark.enabled) continue;
-			stages.push((source, output) => {
-				const filters = [
-					layer.resolution === "720p"
-						? "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2"
-						: "",
-					layer.watermark.enabled
-						? `drawtext=${drawtextLiteralText(layer.watermark.text)}` +
-							`:font=${escapeFilterOptionValue(`${layer.watermark.fontFamily} Bold`)}` +
-							`:fontcolor=0x${layer.watermark.color.slice(1)}@${layer.watermark.opacity.toFixed(2)}` +
-							`:borderw=${layer.watermark.outline.widthPx}` +
-							`:bordercolor=0x${layer.watermark.outline.color.slice(1)}@${layer.watermark.outline.opacity.toFixed(2)}` +
-							`:fontsize=${layer.watermark.fontSizePx}` +
-							`:x=w-tw-${layer.watermark.marginPx.x}:y=${layer.watermark.marginPx.y}`
-						: "",
-				].filter(Boolean);
-				return { parts: [`${source}${filters.join(",")}${output}`] };
+			const downscale =
+				layer.resolution === "720p"
+					? "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2"
+					: null;
+			const watermark = layer.watermark;
+			if (!watermark.enabled) {
+				if (downscale) {
+					stages.push((source, output) => ({
+						parts: [`${source}${downscale}${output}`],
+					}));
+				}
+				continue;
+			}
+			assertWatermarkPlacement(watermark, target.canvas, layer.resolution);
+			const artPath = verifiedWatermarkArtPath(input.watermarkArtPath);
+			stages.push((source, output, stageIndex) => {
+				const badgeLabel = `[composition_watermark_${stageIndex}]`;
+				const frameLabel = downscale
+					? `[composition_output_${stageIndex}]`
+					: source;
+				const { x, y, width, height } = watermark.rectPx;
+				return {
+					parts: [
+						`movie=filename=${escapeFilterOptionValue(artPath)},scale=${width}:${height}:flags=lanczos,format=rgba${badgeLabel}`,
+						...(downscale ? [`${source}${downscale}${frameLabel}`] : []),
+						`${frameLabel}${badgeLabel}overlay=x=${x}:y=${y}:eof_action=repeat${output}`,
+					],
+				};
 			});
 		}
 	}

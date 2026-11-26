@@ -254,6 +254,8 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
         if (!account) unavailable("social_account_unavailable", "Reconnect the selected publishing account", "unavailable");
         const variant = exportSnapshot?.variants.find((variant) => variant.id === input.clipExportVariantId && variant.aspectRatio === input.aspectRatio && variant.resolution === input.resolution);
         if (clip.editorRevision !== input.expectedEditorRevision || exportSnapshot?.editorRevision !== input.expectedEditorRevision || !variant) unavailable("publication_export_mismatch", "Review the current clip revision and select its exact export variant");
+        // Scheduling refuses this export; refuse before asking the person to confirm a post that cannot be scheduled.
+        if (exportSnapshot?.watermark && schemas.hasFeature(actor.pricingTier, "export.noWatermark")) unavailable("publication_export_mismatch", "This export was made on the Free plan and carries its watermark. Create a new export of the clip and prepare that one.");
         accountDisplayName = account.displayName;
       }, mutate: async () => ({ resourceType: "project", resourceId: input.projectId,
         value: { intent: input, accountDisplayName, digest: mcpPreparationDigest(input), expiresAtMs: Date.now() + MCP_CONTINUATION_TTL_MS } }),

@@ -81,7 +81,7 @@ const actor: PublicationSchedulingActor = {
 };
 const readyExport: PublicationExportFacts = {
 	id: "export-1", workspaceId: "workspace-1", projectId: "project-1", clipId: "clip-1",
-	editorRevision: 7, resolution: "1080p", fingerprint: "fingerprint-1",
+	editorRevision: 7, resolution: "1080p", watermark: false, fingerprint: "fingerprint-1",
 	variants: [{ id: "variant-1", aspectRatio: "9:16", resolution: "1080p", status: "completed", storageKey: readyState.storageKey, sizeBytes: readyState.sizeBytes, durationSec: readyState.durationSec }],
 };
 const preparingExport: PublicationExportFacts = { ...readyExport, variants: readyExport.variants.map((variant) => ({ ...variant, status: "queued", storageKey: null, sizeBytes: null, durationSec: null })) };
@@ -471,6 +471,14 @@ describe("publication freeze policy through admission", () => {
 	])("rejects $code without committing a Social Post", async ({ code, ports }) => {
 		const h = policyHarness(ports);
 		await expect(h.module.schedule(baseInput)).rejects.toMatchObject({ code });
+		expect(await h.store.count()).toBe(0);
+	});
+
+	test("a paid plan never posts an export made with the Free-plan watermark", async () => {
+		const watermarked = { ...readyExport, watermark: true };
+		const h = policyHarness({ readExport: async () => watermarked });
+		await expect(h.module.schedule({ ...baseInput, clipExportId: readyExport.id, clipExportVariantId: "variant-1" }))
+			.rejects.toMatchObject({ code: "publication_export_mismatch" });
 		expect(await h.store.count()).toBe(0);
 	});
 

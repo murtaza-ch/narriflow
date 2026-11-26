@@ -31,7 +31,7 @@ import { accessibleProjectWhere } from "./project-access";
 import type { PublicationSlotQueue } from "./social-publication-scheduling";
 import { createProductionSocialPublicationScheduling, socialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import { workspaceService } from "./workspace.service";
-import { requirePlanFeature } from "./plan-features";
+import { hasFeature, requirePlanFeature } from "./plan-features";
 import { readPublishableSocialAccountIds, requirePublishableSocialAccount, socialAccountBeyondPlanError } from "./social-account-eligibility";
 import { isSocialProviderPublishingEnabled } from "./social-publication-config";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
@@ -246,6 +246,7 @@ export const publishingQueue = {
 					select: {
 						projectId: true,
 						editorRevision: true,
+						watermark: true,
 						clip: { select: { editorRevision: true } },
 						variants: { select: { id: true, aspectRatio: true, status: true, storageKey: true, sizeBytes: true, durationSec: true } },
 					},
@@ -253,6 +254,10 @@ export const publishingQueue = {
 				if (!exported) throw new PublishingQueueError("clip_export_not_found", "This export doesn't exist for that clip in the Workspace. Use the export ID returned when it was requested.");
 				if (exported.clip.editorRevision !== exported.editorRevision) {
 					throw new ExpectedDomainFailureError({ code: "editor_revision_conflict", kind: "conflict", message: "The clip changed after this export. Export its current revision and propose that." });
+				}
+				// Scheduling refuses this too; refuse here so no proposal waits that can never be accepted.
+				if (exported.watermark && hasFeature(tier, "export.noWatermark")) {
+					throw new PublishingQueueError("social_proposal_variant_unavailable", "This export was made on the Free plan and carries its watermark. Export the clip again and propose that export.");
 				}
 				// The first format the platform lists that this export finished.
 				const capability = SOCIAL_PROVIDER_CAPABILITIES[account.platform];

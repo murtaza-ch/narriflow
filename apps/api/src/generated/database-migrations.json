@@ -171,5 +171,6 @@
   "20261120120000_audio_library_catalog",
   "20261123160000_upload_session_thumbnail",
   "20261126120000_content_pack_add_emojis",
-  "20261127120000_brand_template_title"
+  "20261127120000_brand_template_title",
+  "20261127120000_clip_render_watermark"
 ]

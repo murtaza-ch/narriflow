@@ -1627,6 +1627,8 @@ export class ClipService {
                   startedAt: render.startedAt,
                   completedAt: render.completedAt,
                   resolution: render.resolution,
+                  // A copied marked file stays marked, so an upgrade clears it too.
+                  watermark: render.watermark,
                 })),
               });
             }

@@ -19,6 +19,7 @@ import {
   deriveRenderGroupSettlement,
   deriveRenderParentSettlement,
   renderGroupChargeTransition,
+  renderGroupConfigurationFromIdentity,
   renderGroupExportIdentity,
   retryableTransactionFailure,
 } from "./render-group-contract";
@@ -958,7 +959,7 @@ export class RenderGroupLifecycle {
         render.durationSec === input.durationSec
       );
     }
-    const { variant, parent, now } = await this.member(tx, attempt, id);
+    const { variant, parent, group, now } = await this.member(tx, attempt, id);
     const execution = await tx.renderGroupExecution.findUniqueOrThrow({
       where: { token: attempt.token },
     });
@@ -975,7 +976,9 @@ export class RenderGroupLifecycle {
     };
     await tx.clipRender.update({
       where: { id },
-      data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics), brollCredits: input.brollCredits ?? Prisma.DbNull },
+      data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics), brollCredits: input.brollCredits ?? Prisma.DbNull,
+        // The file carries the mark exactly when its sealed group configuration did.
+        watermark: renderGroupConfigurationFromIdentity(group.clipId, group.exportIdentity).watermark },
     });
     await this.exportMutation(tx, variant.exportVariantId, data);
     await tx.renderGroupVariantOutcome.create({
@@ -1139,6 +1142,7 @@ export class RenderGroupLifecycle {
             startedAt: null,
             completedAt: null,
             errorCode: null,
+            watermark: false,
           },
         });
       await this.exportMutation(

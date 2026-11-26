@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -36,7 +36,8 @@ import {
 import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import { renderCaptionTrack } from "./caption-ass";
 import { compileCompositionPlanTextLayers } from "./text-layer-ass";
-import { drawtextLiteralText } from "./ffmpeg-text";
+import { drawtextLiteralText, escapeFilterOptionValue } from "./ffmpeg-text";
+import { verifiedWatermarkArtPath } from "./watermark-art";
 import { productionWorkerProcessModule } from "./worker-process";
 import { compositionOutputExpectation, validateRenderOutput } from "./render-output-validation";
 
@@ -1593,7 +1594,9 @@ describe("composition FFmpeg adapter", () => {
 				"[1:v]scale=130:-1,format=rgba,colorchannelmixer=aa=0.800[composition_logo_1]",
 				"[composition_visual_0][composition_logo_1]overlay=W-w-24:24[composition_visual_1]",
 				"[composition_visual_1]fade=t=in:st=0.000:d=0.500:color=white,fade=t=out:st=4.500:d=0.500:color=white[composition_visual_2]",
-				"[composition_visual_2]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2,drawtext=text=Made with Narriflow:expansion=none:font=Arial Bold:fontcolor=0xFFFFFF@0.85:borderw=2:bordercolor=0x000000@0.60:fontsize=46:x=w-tw-32:y=32[outv]",
+				`movie=filename=${escapeFilterOptionValue(verifiedWatermarkArtPath())},scale=188:90:flags=lanczos,format=rgba[composition_watermark_3]`,
+				"[composition_visual_2]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2[composition_output_3]",
+				"[composition_output_3][composition_watermark_3]overlay=x=50:y=300:eof_action=repeat[outv]",
 			],
 			logoInput: { sourceRef: "logo:brand", inputIndex: 1 },
 		});
@@ -3945,4 +3948,197 @@ test("compiles 128 tracked two-up shots for four targets within the independent 
     expect(bytes).toBeLessThanOrEqual(512 * 1024);
     expect(args[args.indexOf("-filter_complex") + 1]).toContain("concat=n=128");
   }
+});
+
+describe("Free-plan watermark badge", () => {
+	const OUTPUTS = [
+		{ aspectRatio: "9:16", width: 1080, height: 1920, resolution: "720p", out: [720, 1280], rect: [188, 90, 50, 300] },
+		{ aspectRatio: "9:16", width: 1080, height: 1920, resolution: "1080p", out: [1080, 1920], rect: [280, 132, 76, 452] },
+		{ aspectRatio: "1:1", width: 1080, height: 1080, resolution: "720p", out: [720, 720], rect: [188, 90, 50, 170] },
+		{ aspectRatio: "1:1", width: 1080, height: 1080, resolution: "1080p", out: [1080, 1080], rect: [280, 132, 76, 254] },
+		{ aspectRatio: "16:9", width: 1920, height: 1080, resolution: "720p", out: [1280, 720], rect: [188, 90, 50, 170] },
+		{ aspectRatio: "16:9", width: 1920, height: 1080, resolution: "1080p", out: [1920, 1080], rect: [280, 132, 76, 254] },
+		{ aspectRatio: "4:5", width: 1080, height: 1350, resolution: "720p", out: [720, 900], rect: [188, 90, 50, 212] },
+		{ aspectRatio: "4:5", width: 1080, height: 1350, resolution: "1080p", out: [1080, 1350], rect: [280, 132, 76, 318] },
+	] as const;
+
+	function planOutput(
+		target: { aspectRatio: "9:16" | "1:1" | "16:9" | "4:5"; width: number; height: number },
+		resolution: "720p" | "1080p",
+		watermark: boolean,
+	) {
+		const result = planClipComposition({
+			document: editorDocumentSchema.parse({
+				version: 1,
+				clipStartSec: 0,
+				clipEndSec: 1,
+				captionPreset: captionPresetSchema.parse({ visible: false }),
+				transcriptSlice: [],
+				studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+				brollUrl: null,
+				deletedRanges: [],
+			}),
+			source: { identity: "source:watermark", kind: "video", width: 1920, height: 1080 },
+			evidence: { automaticLayout: { state: "missing" } },
+			assets: { backgroundImage: { state: "missing" } },
+			capabilities: {
+				automaticSpeakerLayout: true,
+				automaticSpeakerEngineVersion: "shot-layout-v1",
+			},
+			targets: [{ id: "target", ...target, outputTreatment: { resolution, watermark } }],
+		});
+		if (result.status === "invalid") throw new Error(result.error.code);
+		return result.plan;
+	}
+
+	function withWatermark(
+		plan: ReturnType<typeof planOutput>,
+		change: (watermark: Record<string, unknown>) => Record<string, unknown>,
+	) {
+		return {
+			...plan,
+			targets: plan.targets.map((target) => ({
+				...target,
+				visualLayers: target.visualLayers.map((layer) =>
+					layer.kind === "output-treatment"
+						? { ...layer, watermark: change(layer.watermark as unknown as Record<string, unknown>) }
+						: layer,
+				),
+			})),
+		} as unknown as ReturnType<typeof planOutput>;
+	}
+
+	const compile = (plan: ReturnType<typeof planOutput>, watermarkArtPath?: string) =>
+		compileCompositionPlanVisualLayers({
+			plan,
+			targetId: "target",
+			inputLabel: "[composition_base]",
+			outputLabel: "[outv]",
+			watermarkArtPath,
+		}).filterParts;
+	const movie = () => `movie=filename=${escapeFilterOptionValue(verifiedWatermarkArtPath())}`;
+
+	test("overlays the badge after the 720p downscale", () => {
+		expect(compile(planOutput({ aspectRatio: "9:16", width: 1080, height: 1920 }, "720p", true))).toEqual([
+			`${movie()},scale=188:90:flags=lanczos,format=rgba[composition_watermark_0]`,
+			"[composition_base]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2[composition_output_0]",
+			"[composition_output_0][composition_watermark_0]overlay=x=50:y=300:eof_action=repeat[outv]",
+		]);
+	});
+
+	test("overlays the badge on the 1080p frame without scaling it", () => {
+		expect(compile(planOutput({ aspectRatio: "9:16", width: 1080, height: 1920 }, "1080p", true))).toEqual([
+			`${movie()},scale=280:132:flags=lanczos,format=rgba[composition_watermark_0]`,
+			"[composition_base][composition_watermark_0]overlay=x=76:y=452:eof_action=repeat[outv]",
+		]);
+	});
+
+	test("a clean 1080p export has no overlay and no scale", () => {
+		expect(compile(planOutput({ aspectRatio: "9:16", width: 1080, height: 1920 }, "1080p", false))).toEqual([
+			"[composition_base]null[outv]",
+		]);
+	});
+
+	test("a clean 720p export only scales", () => {
+		expect(compile(planOutput({ aspectRatio: "9:16", width: 1080, height: 1920 }, "720p", false))).toEqual([
+			"[composition_base]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2[outv]",
+		]);
+	});
+
+	test("missing or altered art fails permanently before FFmpeg starts", async () => {
+		const plan = planOutput({ aspectRatio: "1:1", width: 1080, height: 1080 }, "720p", true);
+		const directory = await mkdtemp(join(tmpdir(), "narriflow-watermark-art-"));
+		try {
+			const altered = join(directory, "watermark-badge.png");
+			const bytes = await readFile(verifiedWatermarkArtPath());
+			bytes[bytes.length - 1] ^= 0xff;
+			await writeFile(altered, bytes);
+			for (const path of [join(directory, "missing.png"), altered]) {
+				let failure: unknown;
+				try {
+					compile(plan, path);
+				} catch (error) {
+					failure = error;
+				}
+				expect(failure).toMatchObject({ code: "watermark_art_invalid", disposition: "permanent" });
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("refuses an unknown art id or a badge outside the output frame", () => {
+		const plan = planOutput({ aspectRatio: "16:9", width: 1920, height: 1080 }, "720p", true);
+		expect(() => compile(withWatermark(plan, (w) => ({ ...w, art: "other-badge" })))).toThrow(
+			"invalid_clip_composition_watermark_art",
+		);
+		expect(() =>
+			compile(withWatermark(plan, (w) => ({ ...w, rectPx: { x: 1200, y: 170, width: 188, height: 90 } }))),
+		).toThrow("invalid_clip_composition_watermark_rect");
+		expect(() =>
+			compile(withWatermark(plan, (w) => ({ ...w, rectPx: { x: 50, y: -2, width: 188, height: 90 } }))),
+		).toThrow("invalid_clip_composition_watermark_rect");
+		expect(() =>
+			compile(withWatermark(plan, (w) => ({ ...w, outputPx: { width: 1920, height: 1080 } }))),
+		).toThrow("invalid_clip_composition_watermark_frame");
+	});
+
+	/** The last of three frames: the badge is a one-frame source, so the frames
+	 *  after the first prove it is held for the whole clip. */
+	async function renderLastFrame(filterParts: string[], width: number, height: number, frameBytes: number) {
+		const process = Bun.spawn(
+			[
+				"ffmpeg", "-v", "error",
+				"-f", "lavfi", "-i", `color=c=0x336699:s=${width}x${height}:r=10:d=0.3`,
+				"-filter_complex", filterParts.join(";"),
+				"-map", "[outv]",
+				"-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+			],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		const [frame, stderr, exitCode] = await Promise.all([
+			new Response(process.stdout).bytes(),
+			new Response(process.stderr).text(),
+			process.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(frame.byteLength).toBe(frameBytes * 3);
+		return frame.subarray(frameBytes * 2);
+	}
+
+	test("draws the badge inside its rect on all eight outputs in real FFmpeg", async () => {
+		// The art is copied under a name full of filtergraph syntax to prove the
+		// path survives both escaping levels of the -filter_complex argument.
+		const directory = await mkdtemp(join(tmpdir(), "narriflow-watermark-render-"));
+		try {
+			const oddDirectory = join(directory, "it's a:b,c [d];e\\f");
+			await mkdir(oddDirectory);
+			const artPath = join(oddDirectory, "watermark-badge.png");
+			await copyFile(verifiedWatermarkArtPath(), artPath);
+			for (const output of OUTPUTS) {
+				const target = { aspectRatio: output.aspectRatio, width: output.width, height: output.height };
+				const [outW, outH] = output.out;
+				const [rectW, rectH, rectX, rectY] = output.rect;
+				const marked = await renderLastFrame(compile(planOutput(target, output.resolution, true), artPath), output.width, output.height, outW * outH * 3);
+				const clean = await renderLastFrame(compile(planOutput(target, output.resolution, false)), output.width, output.height, outW * outH * 3);
+				const differs = (x: number, y: number) => {
+					const offset = (y * outW + x) * 3;
+					return [0, 1, 2].some((channel) => Math.abs(marked[offset + channel]! - clean[offset + channel]!) > 24);
+				};
+				let changed = 0;
+				for (let y = rectY; y < rectY + rectH; y += 1) {
+					for (let x = rectX; x < rectX + rectW; x += 1) if (differs(x, y)) changed += 1;
+				}
+				expect(changed / (rectW * rectH), `${output.aspectRatio} ${output.resolution}`).toBeGreaterThan(0.3);
+				for (let y = outH - 8; y < outH; y += 1) {
+					for (let x = outW - 8; x < outW; x += 1) expect(differs(x, y)).toBe(false);
+				}
+				// Nothing is drawn outside the rect: the shadow is baked into the art.
+				expect(differs(rectX - 2, rectY + rectH / 2)).toBe(false);
+				expect(differs(rectX + rectW + 1, rectY + rectH / 2)).toBe(false);
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}, 60_000);
 });

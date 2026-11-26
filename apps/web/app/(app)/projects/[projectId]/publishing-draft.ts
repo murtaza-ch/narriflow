@@ -2,8 +2,10 @@ import {
 	type PublishingDraft,
 	type ClipSnapshot,
 	type ClipExportSnapshot,
+	type PricingTier,
 	type SocialPlatform,
 	SOCIAL_PROVIDER_CAPABILITIES,
+	hasFeature,
 } from "@narriflow/validators";
 
 // Access storage only when the client session opens, never during rendering.
@@ -61,6 +63,17 @@ export function applyGeneratedDescription(
 		generated: true,
 		edited: false,
 	};
+}
+/** The exports this plan may post. An export made while Free keeps its
+ * watermark and the server refuses to post it for a plan whose exports are
+ * clean, so the composer leaves it out and offers to prepare the video. */
+export function postableExports(
+	exports: ClipExportSnapshot[],
+	tier: PricingTier,
+): ClipExportSnapshot[] {
+	return hasFeature(tier, "export.noWatermark")
+		? exports.filter((item) => !item.watermark)
+		: exports;
 }
 export function currentPublicationExport(
 	clip: ClipSnapshot,

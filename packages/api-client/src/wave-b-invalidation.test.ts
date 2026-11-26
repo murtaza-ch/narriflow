@@ -42,13 +42,16 @@ describe("billing change refreshes the plan-dependent aggregates (Sol B04)", () 
     studioBootstrap: scopedKey(scope, "studio", "bootstrap", { projectId: PID, clipId: "c1" }),
     autopilot: scopedKey(scope, "automation", "overview"),
     otherWorkspace: scopedKey(other, "brand", "profiles"),
-    unrelated: scopedKey(scope, "exports", "workspace-list"),
+    // A plan that gains clean exports renders Free-plan files again.
+    exports: scopedKey(scope, "exports", "workspace-list"),
+    clips: scopedKey(scope, "clips", "list", PID),
+    unrelated: scopedKey(scope, "publishing", "calendar"),
   };
 
   test("upgrade or downgrade invalidates them, never the Editing Session's document or another Workspace", async () => {
     const { queryClient, stale } = cache(keys);
     await invalidateBillingDependents(queryClient, scope);
-    for (const name of ["billing", "bootstrap", "identity", "projectDetail", "brandKit", "intakeConfiguration", "studioAssets", "autopilot"]) {
+    for (const name of ["billing", "bootstrap", "identity", "projectDetail", "brandKit", "intakeConfiguration", "studioAssets", "autopilot", "exports", "clips"]) {
       expect(stale(name)).toBe(true);
     }
     for (const name of ["studioBootstrap", "otherWorkspace", "unrelated"]) expect(stale(name)).toBe(false);

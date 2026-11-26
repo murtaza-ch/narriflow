@@ -430,7 +430,7 @@ export function createProductionSocialPublicationScheduling(options: {beforeWrit
 				const row = await requirePrisma().clipExport.findFirst({
 					where: { id: exportId, dubId: null },
 					select: {
-						id: true, workspaceId: true, projectId: true, clipId: true, editorRevision: true, resolution: true, fingerprint: true,
+						id: true, workspaceId: true, projectId: true, clipId: true, editorRevision: true, resolution: true, watermark: true, fingerprint: true,
 						variants: { select: { id: true, aspectRatio: true, resolution: true, status: true, storageKey: true, sizeBytes: true, durationSec: true } },
 					},
 				});

@@ -14,7 +14,9 @@ import { PROJECT_RESOURCES } from "../projects/queries";
  * entitlements, seat billing), the identity memberships (tier chips), and the
  * aggregates that gate by plan: Brand Kit, Recipes, intake configuration and the
  * Studio's retained assets (all via `invalidateBrand`), Project detail/snapshot
- * tabs, and Autopilot. The Studio's working document stays with its Editing
+ * tabs, and Autopilot. Clip lists and exports refresh too: a plan that gains
+ * clean exports renders Free-plan files again without the watermark. The
+ * Studio's working document stays with its Editing
  * Session; its bootstrap is never invalidated here.
  * Navigating back from Checkout proves nothing, so callers do not run this
  * for the return itself, only for a state that was read from the provider.
@@ -36,5 +38,7 @@ export async function invalidateBillingDependents(
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.snapshot),
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.dubsAllowance),
     invalidateScoped(queryClient, scope, "automation", "overview"),
+    invalidateScoped(queryClient, scope, "clips"),
+    invalidateScoped(queryClient, scope, "exports"),
   ]);
 }

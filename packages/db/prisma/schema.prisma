@@ -1840,6 +1840,10 @@ model ClipRender {
   captionDiagnostics Json?
   /// Actual used stock-media attribution, derived from the frozen render plan.
   brollCredits       Json?
+  /// The file this row points at carries the Free-plan mark. Written from the
+  /// sealed group configuration when a render completes; every reset that
+  /// clears storageKey sets it back to false.
+  watermark          Boolean                       @default(false)
 
   // Export-bound rows are immutable render jobs. They carry a frozen clip
   // snapshot and survive later editor saves; ordinary rows keep acting as the

@@ -3,6 +3,7 @@
 import { useRef, useState, useCallback, useEffect, useMemo, useLayoutEffect } from "react";
 import { Box, Flex, Menu, Portal, Text } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import watermarkBadge from "@narriflow/composition-plan/watermark-badge.png";
 import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
@@ -60,7 +61,6 @@ import { HeldCueEmojis } from "./emoji/held-cue-emojis";
 import { emojiFollowingCue } from "./emoji/held-cue-boxes";
 import { InteractiveSceneOverlay } from "./interactive-scene-overlay";
 import { classicCaptionLayerOf } from "./caption-cue-at";
-import { hexToRgba } from "./caption-style-engine";
 import { StudioTextLayers } from "./studio-text-layers";
 import { PREVIEW_Z } from "./preview-stacking";
 import { MusicPreviewTrack } from "./music-preview-track";
@@ -2341,26 +2341,24 @@ export function VideoPreview() {
           ) : null}
 
           {plannedOutputTreatment?.watermark.enabled ? (
-            <Box
-              position="absolute"
-              top={`${(plannedOutputTreatment.watermark.marginPx.y / (compositionPreview!.canvas.height * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)) * 100}%`}
-              right={`${(plannedOutputTreatment.watermark.marginPx.x / (compositionPreview!.canvas.width * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)) * 100}%`}
-              color={plannedOutputTreatment.watermark.color}
-              opacity={plannedOutputTreatment.watermark.opacity}
-              fontSize={`${previewWidth * plannedOutputTreatment.watermark.fontSizePx / (compositionPreview!.canvas.width * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)}px`}
-              fontFamily={plannedOutputTreatment.watermark.fontFamily}
-              fontWeight={plannedOutputTreatment.watermark.fontWeight}
-              textShadow="none"
-              style={{
-                WebkitTextStroke: `${previewWidth * plannedOutputTreatment.watermark.outline.widthPx / (compositionPreview!.canvas.width * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)}px ${hexToRgba(plannedOutputTreatment.watermark.outline.color, plannedOutputTreatment.watermark.outline.opacity)}`,
-                paintOrder: "stroke fill",
-              }}
-              pointerEvents="none"
-              zIndex={PREVIEW_Z.watermark}
+            // The export's badge file, placed in the planned output frame.
+            <img
+              src={watermarkBadge.src}
+              alt=""
               aria-hidden="true"
-            >
-              {plannedOutputTreatment.watermark.text}
-            </Box>
+              draggable={false}
+              style={{
+                position: "absolute",
+                left: `${(plannedOutputTreatment.watermark.rectPx.x / plannedOutputTreatment.watermark.outputPx.width) * 100}%`,
+                top: `${(plannedOutputTreatment.watermark.rectPx.y / plannedOutputTreatment.watermark.outputPx.height) * 100}%`,
+                width: `${(plannedOutputTreatment.watermark.rectPx.width / plannedOutputTreatment.watermark.outputPx.width) * 100}%`,
+                height: "auto",
+                maxWidth: "none",
+                pointerEvents: "none",
+                userSelect: "none",
+                zIndex: PREVIEW_Z.watermark,
+              }}
+            />
           ) : null}
         </Box>
       </Box>

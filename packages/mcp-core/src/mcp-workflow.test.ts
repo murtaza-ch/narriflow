@@ -227,6 +227,26 @@ describe("Compact MCP workflow", () => {
     });
   }));
 
+  test("a plan with clean exports is not asked to confirm an export that carries the Free-plan watermark", bindServiceTestEnvironment(async () => {
+    await withSecret(async () => {
+      admitActor();
+      const executor = services.createOperationReceiptExecutor<null>({
+        read: async () => null, transaction: (run) => run(null), lock: async () => {},
+        readInTransaction: async () => null, create: async () => {},
+      });
+      mocks.push(spyOn(services, "getOperationReceiptExecutor").mockReturnValue(executor));
+      const intent = publicationIntent();
+      mocks.push(spyOn(clipService, "getClipReviewFacts").mockResolvedValue({ editorRevision: 3 } as never));
+      mocks.push(spyOn(clipExportService, "getOwned").mockResolvedValue({ editorRevision: 3, watermark: true, variants: [{ id: intent.clipExportVariantId, aspectRatio: "9:16", resolution: "1080p" }] } as never));
+      mocks.push(spyOn(services.socialOAuthService, "listAccounts").mockResolvedValue([{ id: intent.accountId, platform: intent.platform, status: "active", displayName: "Channel" }] as never));
+      const principal = { kind: "api_key" as const, userId, clientId: "key-a", apiKeyId: "00000000-0000-4000-8000-0000000000a1", workspaceId, scopes: ["publishing:write"] };
+      const result = await (await connect(principal)).callTool({ name: "narriflow_prepare_social_post", arguments: intent });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ data: { error: "publication_export_mismatch" } });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("preparationToken");
+    });
+  }));
+
   test("modern elicitation schedules the exact intent only after the client's accepted response", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       admitActor();
