@@ -4,7 +4,7 @@
 
 **Blocked by:** [01 - Text Layer model and shared layout](01-model-and-layout.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 Read `../spec.md` sections 2, 3 and 7. No PostgreSQL gates exist for this (AGENTS.md): review every Postgres-facing change closely and keep database test files typechecking without running them.
 
@@ -18,6 +18,17 @@ Read `../spec.md` sections 2, 3 and 7. No PostgreSQL gates exist for this (AGENT
 
 ## Acceptance
 
-- [ ] Two runs of `prepareDetectedClipSeed` on the same input produce equal seeds (no random id).
-- [ ] An Apply-to-all title patch changes other clips' documents (not `updated: 0`).
-- [ ] `bun run lint`, `bun run typecheck`, `bun run test`, `bun run --cwd apps/api test:inventory`, `bun run --cwd apps/api openapi:check`, `bun run --cwd apps/api build:worker` pass.
+- [x] Two runs of `prepareDetectedClipSeed` on the same input produce equal seeds (no random id).
+- [x] An Apply-to-all title patch changes other clips' documents (not `updated: 0`).
+- [x] `bun run lint`, `bun run typecheck`, `bun run test`, `bun run --cwd apps/api test:inventory`, `bun run --cwd apps/api openapi:check`, `bun run --cwd apps/api build:worker` pass.
+
+## Evidence (2026-11-27)
+
+Branch `feat/title-text-services` (from `feat/title-text-core` 3f1e23756): 7b70caa8f (brand template title), 3f68475d3 (auto title seed), 6e0322887 (Apply to all title merge).
+
+- Migration `20261127120000_brand_template_title`: `ALTER TABLE "BrandTemplate" ADD COLUMN "title" JSONB;` Not applied anywhere. `apps/api/src/generated/database-migrations.json` regenerated; `migrations:check` passes.
+- Brand template: `brandTemplateSnapshot()` in `brand-template.service.ts` is the one snapshot builder (parsed through `brandTemplateSnapshotSchema`); `buildSnapshot` and the Brand Profile `style` both use it. `toSummary`, `create`, `update` (only when `title` is sent), `duplicate` carry it; null is written as `Prisma.DbNull`. Tests: `packages/services/src/brand-template-title.test.ts` (round trip through create, update, summary, snapshot and duplicate; null as SQL NULL; profile style JSON equals project snapshot JSON).
+- Seed: `prepareDetectedClipSeed` carries `title` from `project.brandSnapshot` (`safeParse`, unreadable = null = default); `clipStudioEdits` adds the "title" layer per clip from the title, else hook text, clamped to the edited duration (`buildClipCutPlan`). Tests: `packages/services/src/clip-detection-title.test.ts`, 10 pass (default, unreadable snapshot, brand settings, off switch, caption-only, blank title to hook text, long title cut, clamp and null duration, silence cleanup, seed equality with brand music and capsule fit).
+- Found and fixed: `seedBrandMusic` put `crypto.randomUUID()` into the hashed seed, so a project whose brand profile had music could never pass the final capsule hash check. The seed now uses the fixed block id `"brand-music"` (block ids only need to be unique within one clip).
+- Apply to all: `applyTitlePatch` in `clip-title-text.ts`; persistence counts restyled/created only when the document changed, skipped for the layer limit, no words, or a failed canonicalize, never failing other clips. Route returns `{ updated, field: "title", title: { restyled, created, skipped } }` whenever the patches carry a title. Tests: `clip-editor-document-persistence.test.ts` "Apply to all clips: title", 4 pass.
+- Verification: `bun run lint` (0 errors; 20 warnings, all in files this ticket does not touch), `bun run typecheck -- --force` (17/17), `bun run test` (16/16 tasks, 0 fail), `test:inventory` (302 routes, 0 problems), `openapi:check` (32 operations match), `build:worker` (audit passed).
