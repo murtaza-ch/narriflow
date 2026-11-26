@@ -253,9 +253,12 @@ export function sceneBuildKey(name: CaptionSceneName, input: Omit<SceneInput, "m
   ]);
 }
 
-/** A time (ms into the sample) at which the still of a Scene Style reads best: its first hero cue once that cue's last word is spoken. */
+/** A time (ms into the sample) near the end of its first hero word, while that word is still being spoken. */
 export function captionSceneStillMs(name: CaptionSceneName): number {
   const { cues } = captionSceneDemo(name);
   const cue = cues.find((candidate) => candidate.words.some((word) => word.role === "hero")) ?? cues[0]!;
-  return Math.min(cue.endMs - 60, cue.words[cue.words.length - 1]!.endMs + 450);
+  const word = cue.words.find((candidate) => candidate.role === "hero") ?? cue.words[0]!;
+  // The last quarter of the spoken word lets its entrance land without reaching the cue's exit. Waiting until
+  // after the cue's last word can capture an already-empty scene (Premiere, Tape and Cursor clear early).
+  return Math.round(word.startMs + (word.endMs - word.startMs) * 0.75);
 }

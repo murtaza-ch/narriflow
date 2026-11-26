@@ -197,20 +197,14 @@ async function record(browser: Browser, named: NamedCaptionPreset): Promise<Capt
     };
     const count = Math.round(loopSec * CARD_FPS);
     for (let frame = 0; frame < count; frame++) await shoot(frame / CARD_FPS, join(frames, `${String(frame).padStart(5, "0")}.png`));
-    // The poster is the sample's still (what the live card showed with reduced motion). A few templates have already
-    // cleared the cue at that moment (`captionSceneStillMs` lands in their exit), so it steps back to the latest
-    // earlier frame that draws a caption.
+    // The shared still time serves both reduced-motion previews and recorded posters. Fail if it is empty so a
+    // timing regression is fixed at the shared rule instead of silently choosing a different frame for posters.
     const drawnNow = () =>
       evaluate<boolean>(
         `[...document.querySelectorAll("[data-scene-piece], [data-caption-block-word]")].some((el) => getComputedStyle(el).visibility !== "hidden" && el.getBoundingClientRect().width > 0 && Number(getComputedStyle(el).opacity) > 0)`,
       );
-    let posterSec = stillSec;
-    await shoot(posterSec, join(frames, "still.png"));
-    while (!(await drawnNow())) {
-      posterSec -= 1 / CARD_FPS;
-      if (posterSec < stillSec - 1.5 || posterSec < 0) throw new Error(`${named.id}: nothing is drawn near the still (${stillSec}s)`);
-      await shoot(posterSec, join(frames, "still.png"));
-    }
+    await shoot(stillSec, join(frames, "still.png"));
+    if (!(await drawnNow())) throw new Error(`${named.id}: nothing is drawn at the shared still (${stillSec}s)`);
 
     // Finish both encodes before replacing either published asset. A rejected take keeps the previous pair intact.
     const video = join(frames, `${named.id}.mp4`);
