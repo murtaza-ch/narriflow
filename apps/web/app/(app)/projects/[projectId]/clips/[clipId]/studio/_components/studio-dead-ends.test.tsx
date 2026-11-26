@@ -1,11 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
-import { studioEditsSchema, studioTextLayerSchema } from "@narriflow/validators";
+import { DEFAULT_BRAND_TITLE, studioEditsSchema, studioTextLayerSchema } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 
 let fields: Record<string, unknown> = {};
 mock.module("./studio-shell", () => ({ useStudio: () => fields }));
+mock.module("./project-brand-title", () => ({ useProjectBrandTitle: () => DEFAULT_BRAND_TITLE }));
 
 const { ReadOnlyPanelNotice } = await import("./tool-sidebar");
 const { MotionExportNotice } = await import("./studio-export-menu");

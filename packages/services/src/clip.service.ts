@@ -320,6 +320,7 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     // payload should degrade to keyword-derived B-roll, never fail the clip.
     brollCues: brollCuesArraySchema.safeParse(clip.brollCues).data ?? [],
     studioEdits: editorDocument.studioEdits,
+    deletedRanges: editorDocument.deletedRanges,
     // Presence-only signal — never the storage key itself. See the schema
     // doc comment in packages/validators/src/clip.ts for why this exists.
     hasPreview: Boolean(clip.previewStorageKey),

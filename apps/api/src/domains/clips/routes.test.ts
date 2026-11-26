@@ -412,3 +412,30 @@ describe("apply caption preset to all", () => {
     expect(await apply(true, {})).toEqual({ status: 200, error: null, calls: 1 });
   });
 });
+
+describe("apply studio edits to all clips", () => {
+  const url = `${base}/apply-studio-edits`;
+  const title = { style: {}, positionX: 50, positionY: 12, widthPct: 86, startSec: 0, endSec: 5 };
+  const appFor = (result: Record<string, unknown>) => {
+    const mutateProjectSelection = mock(async () => result);
+    return { app: appWith({ clipEditorDocumentPersistence: { mutateProjectSelection } as never }), mutateProjectSelection };
+  };
+
+  test("a title request always answers field title with counts, zeros included", async () => {
+    const { app } = appFor({ updated: 0, captionEmojisAdded: 0, captionEmojisStale: 0 });
+    const response = await app.request(url, post({ patches: [{ title }], excludeClipId: CLIP_ID }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ updated: 0, field: "title", title: { restyled: 0, created: 0, skipped: 0 } });
+
+    const counted = appFor({ updated: 2, captionEmojisAdded: 0, captionEmojisStale: 0, title: { restyled: 1, created: 1, skipped: 3 } });
+    const grouped = await counted.app.request(url, post({ patches: [{ background: { mode: "color", color: "#112233" } }, { title }] }));
+    expect(await grouped.json()).toEqual({ updated: 2, field: "title", title: { restyled: 1, created: 1, skipped: 3 } });
+  });
+
+  test("other patch kinds keep their response", async () => {
+    const { app, mutateProjectSelection } = appFor({ updated: 1, unreadable: 1, captionEmojisAdded: 0, captionEmojisStale: 0 });
+    const response = await app.request(url, post({ patches: [{ transition: { type: "fade", durationSec: 0.4 } }] }));
+    expect(await response.json()).toEqual({ updated: 1, field: "transition" });
+    expect(mutateProjectSelection).toHaveBeenCalledTimes(1);
+  });
+});

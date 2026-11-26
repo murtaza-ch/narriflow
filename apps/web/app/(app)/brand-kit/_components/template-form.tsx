@@ -1,7 +1,7 @@
 "use client";
 
 import { brandFontReference, useBrandFontLibrary } from "./brand-fonts";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -24,11 +24,13 @@ import {
   applyBrandColorsToCaption,
   applyCaptionPresetLook,
   brandColorsFromCaption,
+  brandTitleOrDefault,
   brandTemplateInputSchema,
   captionPresetSchema,
   matchCaptionPreset,
   type BrandTemplateInput,
   type BrandTemplateSummary,
+  type BrandTitle,
   type CaptionAnimation,
   type CaptionFontName,
   type CaptionPreset,
@@ -40,6 +42,7 @@ import { CAPTION_BACKDROPS, captionBackdropSrc, captionStyleBackdrop, type Capti
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { Panel } from "./brand-kit-ui";
 import { failureMessage, useBrandApi, useIntent } from "./brand-api";
+import { TitlePreviewLayer, TitleSettingsPanel, titlePreviewLayer } from "./title-settings";
 
 type LogoContentType = Parameters<ReturnType<typeof useBrandApi>["mutations"]["presignLogoUpload"]>[0]["contentType"];
 
@@ -115,6 +118,8 @@ function defaultInput(): BrandTemplateInput {
     primaryColor: "#FFFFFF",
     secondaryColor: "#00FF88",
     accentColor: null,
+    // Null is the built-in title default until the form changes it.
+    title: null,
   };
 }
 
@@ -139,6 +144,7 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
         primaryColor: initialTemplate.primaryColor,
         secondaryColor: initialTemplate.secondaryColor,
         accentColor: initialTemplate.accentColor,
+        title: initialTemplate.title,
       };
     }
     return defaultInput();
@@ -192,6 +198,11 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
       ...prev,
       captionPreset: { ...prev.captionPreset, [key]: value },
     }));
+  }
+
+  /** A title change; the first one turns the built-in default (null) into the template's own settings. */
+  function updateTitle(patch: Partial<BrandTitle>) {
+    setState((prev) => ({ ...prev, title: { ...brandTitleOrDefault(prev.title), ...patch } }));
   }
 
   function setLogoPreview(url: string | null) {
@@ -336,11 +347,11 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
         style={{ animationDelay: "60ms" }}
       >
         <Stack gap="5" minW="0">
-          <Panel title="Look" action={<Text fontSize="12px" color={matched ? "fg.muted" : "accent.fg"} fontWeight="500">{matched ? matched.name : "Custom"}</Text>}>
+          <Panel title="Caption look" action={<Text fontSize="12px" color={matched ? "fg.muted" : "accent.fg"} fontWeight="500">{matched ? matched.name : "Custom"}</Text>}>
             <LookRail value={matched?.id ?? null} onChange={applyLook} />
           </Panel>
 
-          <Panel title="Text">
+          <Panel title="Caption text">
             <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5">
               {/* A Scene Style's template draws its own faces, which the list below does not carry. */}
               {preset.scene ? null : <FontField preset={preset} onChange={(next) => update("captionPreset", next)} />}
@@ -438,6 +449,8 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
               />
             </Flex>
           </Panel>
+
+          <TitleSettingsPanel value={brandTitleOrDefault(state.title)} onChange={updateTitle} />
 
           <Panel title="Logo">
             <Grid templateColumns={{ base: "1fr", md: "minmax(0, 1fr) auto" }} gap="6" alignItems="start">
@@ -739,6 +752,8 @@ function TemplatePreview({
 }) {
   const { captionPreset } = input;
   const placement = LOGO_PLACEMENT[input.logoPosition];
+  const title = brandTitleOrDefault(input.title);
+  const titleLayer = useMemo(() => (title.enabled ? titlePreviewLayer(title) : null), [title]);
   const frame = backdrop ?? captionStyleBackdrop(captionPreset, input.name);
 
   return (
@@ -753,6 +768,8 @@ function TemplatePreview({
             boost={1}
             imageSizes="300px"
           >
+            {/* The clip title as a new clip opens with it, drawn by the real painter */}
+            <TitlePreviewLayer layer={titleLayer} />
             {/* Logo composited at its chosen position / opacity / scale */}
             {input.logoStorageKey ? (
               <Flex position="absolute" inset="0" p="3" pt="7" align={placement.align} justify={placement.justify} pointerEvents="none">
@@ -803,6 +820,7 @@ function TemplatePreview({
         </Flex>
         <Text fontSize="12px" color="fg.subtle">
           {CAPTION_MOTIONS[captionPreset.animation].label} · {captionPreset.position} · {captionPreset.fontAsset ? "custom font" : captionPreset.fontName}
+          {title.enabled ? " · with title" : ""}
           {input.logoStorageKey ? " · with logo" : ""}
         </Text>
       </Stack>
