@@ -12,7 +12,7 @@ import { Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { Layers } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { DEFAULT_BRAND_TITLE, type StudioTextLayer, type TextLayerStyle, findTitleLayer } from "@narriflow/validators";
+import { type StudioTextLayer, type TextLayerStyle, findTitleLayer } from "@narriflow/validators";
 import type { CompositionTextVisualLayer } from "@narriflow/composition-plan";
 import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
@@ -20,6 +20,7 @@ import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "./studio-shell";
 import { apiFailureBody, requireStudioApi } from "./studio-api";
 import { useStudioApi } from "./use-studio-api";
+import { useProjectBrandTitle } from "./project-brand-title";
 import { TextLayerCanvas, type TextLayerGesture, type TextLayerGesturePatch } from "./text-layer-canvas";
 import { TextLayerToolbar } from "./text-layer-toolbar";
 import {
@@ -79,13 +80,14 @@ export function requestApplyTitleToAll(layerId: string) {
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 /**
- * The Text Layer commands of the open clip. The title's settings come from the built-in default: the
- * Studio's loaded data has no brand template snapshot (ticket 04 note), so `DEFAULT_BRAND_TITLE`.
+ * The Text Layer commands of the open clip. "Add a title" places, times and styles the title from the
+ * project's brand title settings (`useProjectBrandTitle`: the built-in default until they load).
  */
 export function useTextLayerCommands() {
   const { studioEdits, setStudioEdits, endCoalesce, selectedTextLayerId, selectTextLayer, deselectTextLayer, setActiveTool, playbackClock, compositeToBaseEdited, baseEditedToComposite, editedTimeMap, clipInfo, seekTo } = useStudio(
     "studioEdits", "setStudioEdits", "endCoalesce", "selectedTextLayerId", "selectTextLayer", "deselectTextLayer", "setActiveTool", "playbackClock", "compositeToBaseEdited", "baseEditedToComposite", "editedTimeMap", "clipInfo", "seekTo",
   );
+  const brandTitle = useProjectBrandTitle(clipInfo.projectId);
   const layers = studioEdits.textLayers;
   const clipDurationSec = editedTimeMap.editedDurationSec;
   const atLayerCap = layers.length >= MAX_TEXT_LAYERS;
@@ -137,9 +139,9 @@ export function useTextLayerCommands() {
         return;
       }
       if (atLayerCap) return;
-      insert(newTitleLayer({ id: crypto.randomUUID(), clipTitle: clipInfo.clipTitle, hookText: clipInfo.title, clipDurationSec, settings: DEFAULT_BRAND_TITLE, ...(style ? { style } : {}) }));
+      insert(newTitleLayer({ id: crypto.randomUUID(), clipTitle: clipInfo.clipTitle, hookText: clipInfo.title, clipDurationSec, settings: brandTitle, ...(style ? { style } : {}) }));
     },
-    [title, atLayerCap, select, insert, clipInfo.clipTitle, clipInfo.title, clipDurationSec],
+    [title, atLayerCap, select, insert, clipInfo.clipTitle, clipInfo.title, clipDurationSec, brandTitle],
   );
 
   const addBody = useCallback(() => {
