@@ -6,6 +6,7 @@ import { usePublishing } from "./publishing-provider";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, invalidateScoped, type Intent } from "@narriflow/api-client";
@@ -51,9 +52,13 @@ import {
 import { CaptionOmissionNoteButton } from "./caption-omission-note";
 import { ClipActionsMenu } from "./clip-actions-menu";
 import { ClipVideo } from "./clip-video";
+import { clipTitleOverlayModel } from "./clip-title-overlay-model";
 import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 import { renderFailureMessage } from "./render-status";
 import { LockedButton } from "../../_components/upgrade";
+
+// The title painter (and the caption faces it measures) loads only for a card that draws a title.
+const ClipTitleOverlay = dynamic(() => import("./clip-title-overlay").then((m) => m.ClipTitleOverlay), { ssr: false });
 
 /** Width/height of the tallest preview format — the media stage's shape. */
 // Only opened clips need the editor. Its code is fetched when the button is
@@ -375,6 +380,12 @@ export function ClipRow({
 	const previewIsProxy = preview.isProxy;
 	const previewOffsetSec = preview.offsetSec;
 	const previewLoading = previews.isPending && previews.fetchStatus !== "idle";
+	// The proxy is raw footage: the card draws the clip's title over it. A finished render has it burned in.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the model reads only these fields of the clip.
+	const titleOverlay = useMemo(
+		() => (previewIsProxy ? clipTitleOverlayModel(clip, previewOffsetSec) : null),
+		[previewIsProxy, previewOffsetSec, clip.startSec, clip.endSec, clip.studioEdits, clip.deletedRanges],
+	);
 	const previewPending = preview.pending;
 	const previewError = preview.error;
 	useEffect(() => {
@@ -661,6 +672,11 @@ export function ClipRow({
 								<ClipVideo
 									src={previewUrl}
 									onMediaError={renewPreviewGrant}
+									overlay={
+										titleOverlay
+											? (clock) => <ClipTitleOverlay model={titleOverlay} canvas={selectedOption} clock={clock} />
+											: undefined
+									}
 									startSec={
 										previewIsProxy
 											? Math.max(0, clip.startSec - previewOffsetSec)
