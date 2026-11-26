@@ -235,16 +235,31 @@ describe("bold, italic, underline, stroke and shadow", () => {
 
   test("underline: a bar the line's measured advance wide below the baseline, under the text", () => {
     const result = layout(make("ab cd\nlonger line", { underline: true, background: null, stroke: STROKE, shadow: DEFAULT_TEXT_SHADOW }));
-    const bars = shapes(result.pieces, "underline");
+    const bars = shapes(result.pieces, "underline:");
     expect(bars).toHaveLength(2);
     const bar = boxesOf(bars[0]!)[0]!;
     expect(bar.x1).toBeCloseTo(result.lines[0]!.x1, 6);
     expect(bar.x2 - bar.x1).toBeCloseTo(5 * CHAR, 6);
     expect(bar.y1).toBeGreaterThan(result.lines[0]!.baselineY);
     expect(bars[0]!.fill).toEqual({ colour: DEFAULT_TITLE_STYLE.color });
-    expect(bars[0]!.stroke).toEqual({ widthPx: 8, colour: "#000000" });
-    expect(bars[0]!.shadows).toHaveLength(1);
+    expect(bars[0]!.stroke).toBeUndefined();
+    expect(bars[0]!.shadows).toBeUndefined();
     expect(bars[0]!.z).toBeLessThan(texts(result.pieces)[0]!.z);
+    // The outline is a larger bar under it, the stroke's width all round, so the bar keeps the text colour.
+    const edges = shapes(result.pieces, "underline-edge:");
+    expect(edges).toHaveLength(2);
+    const edge = boxesOf(edges[0]!)[0]!;
+    expect(edge.x1).toBeCloseTo(bar.x1 - 4, 6);
+    expect(edge.y2).toBeCloseTo(bar.y2 + 4, 6);
+    expect(edges[0]!.fill).toEqual({ colour: "#000000" });
+    expect(edges[0]!.shadows).toHaveLength(1);
+    expect(result.pieces.indexOf(edges[0]!)).toBeLessThan(result.pieces.indexOf(bars[0]!));
+  });
+
+  test("underline without a stroke: one bar, which carries the shadow", () => {
+    const result = layout(make("ab cd", { underline: true, background: null, stroke: null, shadow: DEFAULT_TEXT_SHADOW }));
+    expect(shapes(result.pieces, "underline-edge:")).toHaveLength(0);
+    expect(shapes(result.pieces, "underline:")[0]!.shadows).toHaveLength(1);
   });
 });
 

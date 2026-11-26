@@ -152,16 +152,19 @@ export function layoutTextLayer(layer: TextLayerInput, canvas: TextLayerCanvas, 
     }
     if (style.underline) {
       const thickness = UNDERLINE_THICKNESS_EM * size;
-      pieces.push({
-        ...base(`underline:${index}`, Z.underline),
+      const y = line.baselineY + UNDERLINE_OFFSET_EM * size;
+      const bar = (id: string, grow: number, colour: string, withShadows: boolean): ShapePiece => ({
+        ...base(`${id}:${index}`, Z.underline),
         kind: "shape",
-        track: { x: at(line.x1), y: at(line.baselineY + UNDERLINE_OFFSET_EM * size) },
-        path: rectPath(0, 0, line.x2 - line.x1, thickness),
-        fill: { colour: style.color },
-        // A shape's stroke is centred on its edge: twice the text's outline reaches as far outside.
-        ...(userStroke ? { stroke: { widthPx: 2 * userStroke.widthPx, colour: userStroke.colour } } : {}),
-        ...(shadows.length > 0 ? { shadows } : {}),
+        track: { x: at(line.x1 - grow), y: at(y - grow) },
+        path: rectPath(0, 0, line.x2 - line.x1 + 2 * grow, thickness + 2 * grow),
+        fill: { colour },
+        ...(withShadows && shadows.length > 0 ? { shadows } : {}),
       });
+      // The outline is its own bar, the stroke's width larger all round and under the bar: a stroke
+      // on the bar itself is centred on its edge and would cover a bar thinner than the stroke.
+      if (userStroke) pieces.push(bar("underline-edge", userStroke.widthPx, userStroke.colour, true));
+      pieces.push(bar("underline", 0, style.color, !userStroke));
     }
   }
   return { pieces, frame, lines };
