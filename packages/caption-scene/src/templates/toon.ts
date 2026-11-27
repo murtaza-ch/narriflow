@@ -1,8 +1,7 @@
-import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { clamp, type Ease, type Frames, kf } from "../ease";
-import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
+import { exportFrameAtOrAfter, paintedFrameCount } from "../frame-grid";
 import type { SceneCue } from "../input";
 import { balancedRows, rowVisualOrder } from "../layout";
 import type { Box, PathCmd, Piece, ShapePiece, TextPiece, Track } from "../scene";
@@ -20,40 +19,57 @@ import { caps, galleryScene, rotatePoint } from "./gallery-layout";
  * Changes from the sample, and why:
  * - **Split face without an engine change.** The sample clipped the mint copy with a slanted CSS polygon. Here the
  *   readable face (`w…`) is the whole word in the lower colour with the navy outline and drop; a mint copy of the same
- *   word sits on it under a rectangular `\clip` whose lower edge is a level seam at half the word's own measured ink.
- *   The word's pivot is on the seam, so the pop's squash and swing turn about the seam and the clip only follows the
- *   pivot's rise (the same frames). Body words tilt 1-2 degrees and the key word 2.5, so the level seam crosses the
- *   letters a little off level, like the sample's slanted one.
+ *   word sits on it under an inverse rectangular clip that removes everything below a level seam at half the word's own
+ *   measured ink. The word's pivot is on the seam, so the pop's squash and swing turn about the seam and the clip only
+ *   follows the pivot's rise (the same frames). Body words tilt 1-2 degrees and the key word 2.5, so the level seam
+ *   crosses the letters a little off level, like the sample's slanted one.
  * - **Rows from the words.** The sample's " / " rows and cue-indexed tilts are gone. Each key word has a row of its own
  *   (the sample's hero rows also held small words; on real cues they stood alone on the row before the key word was
  *   spoken, Sol's round 2 finding, so they join the row before instead). Other words wrap into balanced rows of at most
- *   800 sample px, shrinking up to 28% to pack into two rows before stacking more (the sample fitted each row). A word wider than its column shrinks to a floor (140 px key word, 96 px others), then breaks between
- *   glyph clusters into the fewest even rows (Latin, Cyrillic, Greek and CJK; a joined script shrinks instead). Row
- *   pitch comes from each row's measured ink plus the rim and drop, and a key word's row also reserves the ribbon's
- *   measured crest and lower strokes and the ball, so the rows above and below keep a visible gap from the ribbon.
+ *   800 sample px, shrinking up to 28% to pack into two rows before stacking more (the sample fitted each row). Row pitch
+ *   comes from each row's measured ink plus the rim and drop, and a key word's row also reserves the ribbon's measured
+ *   crest and lower strokes and the ball, so the rows above and below keep a visible gap from the ribbon.
+ * - **Fit by repacking, floors kept.** A cue taller than the band is laid out again at smaller sizes (down to half),
+ *   never under the floors (140 px key word, 96 px others, 64 px small words), so its rows get wider rather than its
+ *   letters thinner. A word wider than its column shrinks to its floor, then breaks between whole graphemes across the
+ *   full lane width into the fewest even rows (Latin, Cyrillic, Greek and CJK; a joined script takes the lane, then
+ *   shrinks). A token that still does not fit the band at its floor (90 Han characters) pages through it: groups of rows
+ *   follow one another within the word's time, at the floor. A cue never draws more than 150 pieces (shadows counted):
+ *   past that, decorations go first, then the rims, then the upper colour; the faces always stay.
  * - **Small words by rule, not by an English list.** A word is drawn small (0.46 em of its row, never under 64 sample
- *   px) and tilted 4 degrees when the emphasis scorer marks it minor and it is at most four glyph clusters long, in any
- *   script. A row made only of such words ("it's been that") draws them at 0.7 of the row size, so no cue is all tiny.
- * - **Real speech timing.** Words pop 40 ms before they are spoken (the key word and a cue's first word 60 ms, the cue's
- *   whole lead), and are near opaque from their first frame. The pop compresses into the word's own time; when it gets under
- *   200 ms it settles without the spring's overshoot. Rows keep room for the overshoot and the swing so an entering word
- *   never touches a neighbour or another row; the exit levels each word's tilt as it flattens, for the same reason. The ribbon wipes and the ball compress into the time before the
- *   exit, and a wipe with fewer than two painted frames shows its section whole. The exit squash runs only after the
- *   last word has read for 150 ms and when it gets two painted frames; otherwise the cue cuts at the next one.
+ *   px) and tilted 4 degrees when the emphasis scorer marks it minor and it is at most four graphemes long, in any
+ *   script. A joined-script word (Arabic, Devanagari, Thai …) qualifies only when its measured ink is at least as wide
+ *   and tall as a short Latin word's (Urdu "یہ" and Hindi "तो" keep the normal size), and joined words keep extra space
+ *   between outlines. A row made only of small words draws them at 0.7 of the row size, so no cue is all tiny.
+ * - **Real speech timing.** A word's pop (squash, swing, rise, quick fade-in) happens in the time before it is spoken:
+ *   up to 220 ms (300 ms for the key word), from the previous word's onset, and for a cue's first word within the
+ *   cue's 100 ms lead. On its first spoken frame the word is whole, opaque and settled in its slot; with fewer than two
+ *   frames of lead it simply appears there. A wide row swings less (its ends lift at most a quarter em) and overscales
+ *   only into the room it has. Rows keep room for the spring's overshoot, the rest of the rise and the swing, so an
+ *   entering word never touches a neighbour or another row; the exit levels each word's tilt as it flattens, for the
+ *   same reason. The ribbon wipes and the ball compress into the time before the exit (the ball lands before it), and a
+ *   wipe with fewer than two painted frames shows its section whole. The exit squash runs only after the last word has
+ *   read for 150 ms and when it gets two painted frames; otherwise the cue cuts at the next one.
  * - **Ribbon and ball** are the sample's six fixed polygons and two circles, behind every letter and every rim, fitted
  *   to the lane; right-to-left cues mirror the ribbon and wipe it from the right. A wipe clip opens fully once its wipe
- *   is done, so the exit squash never cuts a section.
+ *   is done, so the exit squash never cuts a section. The ball's lower edge tucks behind the key word's outline, so it
+ *   peeks out of the word.
  * - **Copies.** Three per word: the indigo rim (no drop copy of its own: the sample's rim drop was a second wide-bordered
  *   copy on every frame and the budget's largest cost), the face with its navy outline and hard navy drop, and the
- *   clipped upper colour.
+ *   upper colour. The upper colour is whole to the bounds (its clip is inverse), so it is named as a part of its word
+ *   (`w<n>l1000`). On a cue that paints a single frame, the rim, ribbon and ball are named as parts too (`l2000…`,
+ *   `l3000…`) and drawn in their settled pose: the shared one-frame filter keeps parts of words, so a one-frame key
+ *   word keeps its whole look on that frame and clears with it.
  * - **Extra recurring beats** in the reference's comic language: on every cue three tapered gold pop lines (white on
  *   alternate cues) burst out of a free corner of the key word as it lands (of the last word on a cue without one), and
- *   a gold sparkle with a navy edge pops beside a free end of the first row (else the last; a top corner, else a lower one), twinkling (a quarter turn
- *   and a dip) every second while the cue holds. Both are placed only where they touch no word, ribbon or ball, inside the lane.
- * - **Every language.** Whole words only, so joined scripts are never split. Upper case only for cased scripts; letter
- *   spacing only for Latin, Cyrillic and Greek. Bangers draws Latin only: other scripts use the fallback face at the same
- *   size (its letters stand about as tall as Bangers caps), with seam, outline, rows and ribbon taken from their
- *   measured ink. Right-to-left rows read right to left and the forward slant mirrors.
+ *   a gold sparkle with a navy edge pops beside a free end of a row (first row, then last, then the others; a top
+ *   corner, else a lower one), twinkling (a quarter turn and a dip) every second while the cue holds; where none has
+ *   room, a smaller still sparkle takes the first free pocket. Both touch no word, ribbon or ball, inside the lane.
+ * - **Every language.** Whole words only, so joined scripts are never split. Text is composed (NFC) before it is
+ *   measured, broken or hashed, so decomposed accents and Hangul jamo lay out like their composed forms. Upper case only
+ *   for cased scripts; letter spacing only for Latin, Cyrillic and Greek. Bangers draws Latin only: other scripts use the
+ *   fallback face at the same size (its letters stand about as tall as Bangers caps), with seam, outline, rows and
+ *   ribbon taken from their measured ink. Right-to-left rows read right to left and the forward slant mirrors.
  * - **Brand colours.** The upper face takes the primary colour, the lower face the accent colour (the brand
  *   template's secondary), the ribbon body the highlight colour; each is checked at 3:1 against the navy outline it
  *   is drawn with and falls back to the default.
@@ -99,9 +115,26 @@ const GAP_EM = 0.13;
 const ROW_GAP = 0.12;
 /** The pop's spring overshoots the rest height by up to this share about the seam; rows keep room for it. */
 const POP_ROOM = 0.1;
+/** The share of the rise still left when the spring peaks (the rise lands on \`outExpo\`); rows keep room for it below. */
+const RISE_LEFT = 0.15;
+/** The pop's swing lifts a word's ends at most this far, em. */
+const SWING_LIFT = 0.25;
 /** The seam sits this far down the word's measured ink. */
 const SEAM = 0.5;
-const LEAD = 60;
+/** A cue opens at most this long before its first word: its first word's pop happens in it. */
+const LEAD = 100;
+/** Sizes tried, as shares of the sample's, before a cue that does not fit pages or shrinks (floors hold throughout). */
+const FIT_SCALES = [0.9, 0.8, 0.7, 0.6, 0.5] as const;
+/** Pieces one cue may draw, shadow copies counted (the scene budget is 150). */
+const PIECE_CAP = 148;
+/** Part numbers of a word's other copies, named as parts so the shared one-frame filter keeps them with the face. */
+const UPPER_PART = 1000;
+const RIM_PART = 2000;
+const RIBBON_PART = 3000;
+/** How far the ball's centre sits above the key word's ink top, em: its lower edge tucks behind the outline. */
+const BALL_LIFT = 0.16;
+/** The sparkle's size where the full one has no room (drawn still). */
+const SPARKLE_SMALL = 0.6;
 const EXIT_SQUASH = 0.08;
 /** The caption band of the sample (y 860..1650 of 1920), above and below the anchor line. */
 const BAND_ABOVE = ANCHOR - 860;
@@ -114,6 +147,17 @@ const GOLD = "#FFC93C";
 const BALL = "#FF5FA2";
 const BALL_HI = "#FF9CC6";
 const DEFAULT = { primary: "#4DF5B8", highlight: "#C99BFF", accent: "#1FA3F2" } as const;
+
+/** Scripts whose letters join or stack (a short word in them reads small only when its measured ink allows). */
+const JOINED = /[\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Hebrew}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Tibetan}]/u;
+/** A short joined-script word is drawn small only when its ink is at least this wide and tall, at 100 px (a short Latin word's). */
+const JOINED_SMALL = { advance: 90, ink: 85 } as const;
+/** Extra clear space each side of a joined-script word, em: its strokes overhang the advance. */
+const JOINED_GAP = 0.06;
+const SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const graphemes = (text: string) => [...SEGMENTER.segment(text)].map((part) => part.segment);
+/** The part number of a piece named as a part of a word (`w3l1000`), or -1. */
+const partOf = (piece: { readonly id: string }) => Number(/:w\d+l(\d+)$/.exec(piece.id)?.[1] ?? -1);
 
 /** Scripts that take letter spacing (never a joined script). */
 const SPACED = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Common}\p{Script=Inherited}]+$/u;
@@ -274,12 +318,12 @@ export const toonProgram = galleryScene(
       ribbon: keep(ctx.input.colours.highlight, DEFAULT.highlight),
     };
     const ord = ordinalOf(ctx.input.cues, cueIndex);
-    const textSeed = textHash(words.map((word) => word.text).join(" "));
     const isHero = (at: number) => words[at]!.role === "hero";
     const heroAt = words.findIndex((word) => word.role === "hero");
     const heroed = heroAt >= 0;
-    const display = words.map((word) => caps(word, cue));
-    const isSmall = (at: number) => !isHero(at) && words[at]!.role === "minor" && words.length > 1 && captionTextClusters(display[at]!).length <= 4;
+    // Canonically equivalent input lays out the same: decomposed accents and Hangul jamo are composed first.
+    const display = words.map((word) => caps(word, cue).normalize("NFC"));
+    const textSeed = textHash(display.join(" "));
     const slant = rtl ? -SLANT : SLANT;
     const shear = Math.tan((slant * Math.PI) / 180);
 
@@ -298,17 +342,37 @@ export const toonProgram = galleryScene(
     };
     const widthOf = (text: string, size: number) => (at100(text).advance * size) / 100;
 
-    // Columns, sample px: the sample's, or what the lane leaves (the key word keeps room for the ribbon each side).
+    /** Short minor words are drawn small; a joined-script word only when its measured ink stays as readable as a short Latin word's. */
+    const isSmall = (at: number) => {
+      const text = display[at]!;
+      if (isHero(at) || words[at]!.role !== "minor" || words.length < 2 || graphemes(text).length > 4) return false;
+      if (!JOINED.test(text)) return true;
+      const m = at100(text);
+      return m.advance >= JOINED_SMALL.advance && m.inkBottom - m.inkTop >= JOINED_SMALL.ink;
+    };
+    /** Clear space each side of a word; joined scripts overhang their advance, so they keep a little more. */
+    const sideGap = (item: { readonly text: string; readonly size: number }) => (GAP_EM + (JOINED.test(item.text) ? JOINED_GAP : 0)) * item.size;
+
+    // Columns, sample px: the sample's, or what the lane leaves (the key word keeps room for the ribbon each side). A word
+    // that has to break uses the whole lane.
     const laneW = (bounds.x2 - bounds.x1) / space.u;
     const column = Math.min(COLUMN, laneW - 60);
     const heroColumn = Math.max(laneW * 0.55, Math.min(HERO_COLUMN, laneW - 230));
+    const longRoom = Math.max(column, laneW - 60);
 
-    /** The fewest pieces, cut between clusters at even widths, that each fit `room` at `size`. */
+    /** The fewest pieces, cut between whole graphemes at even widths, that each fit `room` at `size`. */
     const split = (text: string, size: number, room: number): string[] => {
-      const clusters = captionTextClusters(text);
-      const prefix = clusters.map((_, c) => widthOf(clusters.slice(0, c + 1).join(""), size));
+      const clusters = graphemes(text);
+      const prefix: number[] = [];
+      let joined = "";
+      for (const cluster of clusters) {
+        joined += cluster;
+        prefix.push(widthOf(joined, size));
+      }
       const full = prefix.at(-1)!;
-      for (let k = 2; k <= clusters.length; k++) {
+      // The least count that can fit, then up from there (a long token tries few counts).
+      const start = Math.max(2, Math.ceil(full / room));
+      for (let k = start; k <= clusters.length; k++) {
         const cuts = [0];
         for (let j = 1; j < k; j++) {
           let best = cuts.at(-1)! + 1;
@@ -318,7 +382,7 @@ export const toonProgram = galleryScene(
             if (e < error) {
               error = e;
               best = c;
-            }
+            } else if (e > error) break;
           }
           cuts.push(best);
         }
@@ -329,79 +393,84 @@ export const toonProgram = galleryScene(
       return clusters;
     };
 
-    /** A word's size and pieces: the sample size, fitted to its column down to the floor, then broken. */
-    const rowBase = heroed ? BODY : SOLO;
-    const sized = words.map((_, at) => {
-      const text = display[at]!;
-      const hero = isHero(at);
-      const small = isSmall(at);
-      const base = hero ? HERO : small ? Math.max(SMALL_FLOOR, SMALL_EM * rowBase) : rowBase;
-      const floor = hero ? HERO_FLOOR : small ? SMALL_FLOOR : BODY_FLOOR;
-      const room = hero ? heroColumn : column;
-      const width = widthOf(text, base);
-      if (width <= room) return { size: base, parts: [text], small };
-      const fit = (base * room) / width;
-      if (fit >= floor || !SPLITTABLE.test(text) || captionTextClusters(text).length < 2) return { size: fit, parts: [text], small };
-      const parts = split(text, floor, room);
-      const widest = Math.max(...parts.map((part) => widthOf(part, 100)));
-      return { size: Math.min(base, (100 * room) / widest), parts, small };
-    });
-
-    // Lines: every key word on its own row(s); the words between them wrap into balanced rows.
     interface Line {
       readonly items: Item[];
       readonly hero: boolean;
     }
-    const lines: Line[] = [];
-    let run: Item[] = [];
-    const itemsOf = (at: number) => {
-      const { size, parts, small } = sized[at]!;
-      return parts.map((text, part) => ({ word: at, part, parts: parts.length, text, size, small, ls: lsOf(text), m: at100(text) }));
-    };
-    // A run packs into fewer rows at a slightly smaller size before it stacks more (the sample fitted each row to 800 px).
-    const flush = () => {
-      if (!run.length) return;
-      const packs = PACK_SCALES.map((scale) => {
-        const items = run.map((item) => ({ ...item, size: item.small ? Math.max(SMALL_FLOOR, item.size * scale) : item.size * scale }));
-        const widths = items.map((item) => widthOf(item.text, item.size));
-        const gap = 2 * GAP_EM * Math.max(...items.map((item) => item.size));
-        return { items, rows: balancedRows(widths, gap, column) };
-      });
-      const fewest = Math.min(...packs.map((pack) => pack.rows.length));
-      const target = Math.max(fewest, Math.min(2, packs[0]!.rows.length));
-      const pack = packs.find((candidate) => candidate.rows.length <= target)!;
-      for (const row of pack.rows) {
-        let items = row.map((at) => pack.items[at]!);
-        // Small words read small beside a bigger word; a row of nothing but small words takes a middle size instead.
-        if (items.every((item) => item.small)) {
-          const lifted = items.map((item) => ({ ...item, size: Math.max(item.size, SMALL_ALONE * rowBase) }));
-          const width = lifted.reduce((sum, item, i) => sum + widthOf(item.text, item.size) + (i ? GAP_EM * (item.size + lifted[i - 1]!.size) : 0), 0);
-          if (width <= column) items = lifted;
-        }
-        lines.push({ items, hero: false });
-      }
-      run = [];
-    };
-    for (const [at] of words.entries()) {
-      const items = itemsOf(at);
-      if (isHero(at)) {
-        flush();
-        for (const item of items) lines.push({ items: [item], hero: true });
-      } else if (items.length > 1) {
-        flush();
-        for (const item of items) lines.push({ items: [item], hero: false });
-      } else run.push(items[0]!);
-    }
-    flush();
+    const rowBase = heroed ? BODY : SOLO;
 
-    // The ribbon goes around the first key word (all its rows).
-    const ribbonLines = heroed ? lines.flatMap((line, i) => (line.hero && line.items[0]!.word === heroAt ? [i] : [])) : [];
+    /** The rows with every size at `f` of the sample's, never under its floor: a cue that does not fit repacks smaller, not thinner. */
+    const planLines = (f: number): Line[] => {
+      const sized = words.map((_, at) => {
+        const text = display[at]!;
+        const hero = isHero(at);
+        const small = isSmall(at);
+        const base = hero ? HERO : small ? Math.max(SMALL_FLOOR, SMALL_EM * rowBase) : rowBase;
+        const floor = hero ? HERO_FLOOR : small ? SMALL_FLOOR : BODY_FLOOR;
+        const want = Math.min(base, Math.max(floor, base * f));
+        const room = hero ? heroColumn : column;
+        const width = widthOf(text, want);
+        if (width <= room) return { size: want, parts: [text], small };
+        const fit = (want * room) / width;
+        if (fit >= floor) return { size: fit, parts: [text], small };
+        // A joined script never breaks: it takes the whole lane, then shrinks.
+        if (!SPLITTABLE.test(text) || graphemes(text).length < 2) return { size: Math.min(want, (want * longRoom) / width), parts: [text], small };
+        const parts = split(text, floor, longRoom);
+        const widest = Math.max(...parts.map((part) => widthOf(part, 100)));
+        return { size: Math.max(floor, Math.min(want, (100 * longRoom) / widest)), parts, small };
+      });
+      const lines: Line[] = [];
+      let run: Item[] = [];
+      const itemsOf = (at: number) => {
+        const { size, parts, small } = sized[at]!;
+        return parts.map((text, part) => ({ word: at, part, parts: parts.length, text, size, small, ls: lsOf(text), m: at100(text) }));
+      };
+      // A run packs into fewer rows at a slightly smaller size before it stacks more (the sample fitted each row to 800 px).
+      const flush = () => {
+        if (!run.length) return;
+        const packs = PACK_SCALES.map((scale) => {
+          const items = run.map((item) => ({ ...item, size: Math.max(item.small ? SMALL_FLOOR : BODY_FLOOR, item.size * scale) }));
+          const widths = items.map((item) => widthOf(item.text, item.size));
+          const gap = 2 * Math.max(...items.map(sideGap));
+          return { items, rows: balancedRows(widths, gap, column) };
+        });
+        const fewest = Math.min(...packs.map((pack) => pack.rows.length));
+        const target = Math.max(fewest, Math.min(2, packs[0]!.rows.length));
+        const pack = packs.find((candidate) => candidate.rows.length <= target)!;
+        for (const row of pack.rows) {
+          let items = row.map((at) => pack.items[at]!);
+          // Small words read small beside a bigger word; a row of nothing but small words takes a middle size instead.
+          if (items.every((item) => item.small)) {
+            const lifted = items.map((item) => ({ ...item, size: Math.max(item.size, SMALL_ALONE * rowBase * Math.max(f, BODY_FLOOR / rowBase)) }));
+            const width = lifted.reduce((sum, item, i) => sum + widthOf(item.text, item.size) + (i ? sideGap(item) + sideGap(lifted[i - 1]!) : 0), 0);
+            if (width <= column) items = lifted;
+          }
+          lines.push({ items, hero: false });
+        }
+        run = [];
+      };
+      for (const [at] of words.entries()) {
+        const items = itemsOf(at);
+        if (isHero(at)) {
+          flush();
+          for (const item of items) lines.push({ items: [item], hero: true });
+        } else if (items.length > 1) {
+          flush();
+          for (const item of items) lines.push({ items: [item], hero: false });
+        } else run.push(items[0]!);
+      }
+      flush();
+      return lines;
+    };
 
     // Natural size: the band at the user's position (a larger size shrinks to fit it), inside the lane.
     const natural = space.u / ctx.input.scale;
     const anchorY = space.y(ANCHOR);
     const band = { y1: Math.max(bounds.y1 + 3, anchorY - BAND_ABOVE * natural), y2: Math.min(bounds.y2 - 3, anchorY + BAND_BELOW * natural) };
     const laneHalf = (bounds.x2 - bounds.x1) / 2;
+
+    /** How far a word rises into its slot as it pops, sample px. */
+    const riseOf = (item: Item) => (isHero(item.word) ? 40 : 20);
 
     /** Rest tilt per word: small words lean 4 degrees, others 1-2, the key word 2.5; signs alternate by counter. */
     const restOf = (item: Item, order: number) => {
@@ -427,16 +496,16 @@ export const toonProgram = galleryScene(
       return boundsOf(pts);
     };
 
-    /** The rows at size factor `f`, block-local px centred on the block. */
-    const arrange = (f: number) => {
-      const k = space.u * f;
+    /** Rows laid out at `g` times their size (1 unless the cue still has to shrink), block-local px centred on the block. */
+    const arrange = (lines: readonly Line[], g: number, withRibbon: boolean) => {
+      const k = space.u * g;
       const metrics = lines.map((line) => {
         const visual = rtl ? rowVisualOrder(line.items.map((item) => item.text), "rtl") : line.items.map((_, i) => i);
         const ordered = visual.map((i) => line.items[i]!);
         let x = 0;
         const xs: number[] = [];
         ordered.forEach((item, i) => {
-          if (i > 0) x += GAP_EM * (item.size + ordered[i - 1]!.size) * k;
+          if (i > 0) x += (sideGap(item) + sideGap(ordered[i - 1]!)) * k;
           const w = (item.m.advance * item.size * k) / 100;
           xs.push(x + w / 2);
           x += w;
@@ -448,7 +517,7 @@ export const toonProgram = galleryScene(
           const bottom = (Math.max(item.m.inkBottom, 0) * px) / 100;
           const seam = top + (bottom - top) * SEAM;
           const box = paintedBox((item.m.advance * px) / 100, px, top, bottom, seam, restOf(item, i), 0);
-          return { ...box, y1: seam + (box.y1 - seam) * (1 + POP_ROOM), y2: seam + (box.y2 - seam) * (1 + POP_ROOM) };
+          return { ...box, y1: seam + (box.y1 - seam) * (1 + POP_ROOM), y2: seam + (box.y2 - seam) * (1 + POP_ROOM) + RISE_LEFT * riseOf(item) * k };
         });
         const above = Math.max(...boxes.map((box) => -box.y1));
         const below = Math.max(...boxes.map((box) => box.y2));
@@ -456,7 +525,8 @@ export const toonProgram = galleryScene(
       });
       const gapAfter = (i: number) => ROW_GAP * Math.max(metrics[i]!.px, metrics[i + 1]!.px);
 
-      // The ribbon around the key word's rows, relative to the first of them (baseline 0).
+      // The ribbon around the first key word's rows, relative to the first of them (baseline 0).
+      const ribbonLines = withRibbon && heroed ? lines.flatMap((line, i) => (line.hero && line.items[0]!.word === heroAt ? [i] : [])) : [];
       let ribbon: { sections: ToonRibbonSection[]; ball: { x: number; y: number; r: number }; box: Box; first: number; last: number } | null = null;
       if (ribbonLines.length) {
         const first = ribbonLines[0]!;
@@ -475,8 +545,9 @@ export const toonProgram = galleryScene(
         const ry = fs * 0.5 + W * 0.4 + (rel.at(-1)! - rel[0]!) / 2;
         const sections = toonRibbon(fs, rx, ry, rtl).map((sec) => ({ ...sec, points: sec.points.map(([x, y]) => [x, y + cy] as const) }));
         const r = fs * 0.19;
-        // The ball sits on the key word's top, a third of the way in from its reading end, its lower edge behind the letters.
-        const ball = { x: (rtl ? -1 : 1) * Math.min(hw * 0.3, rx - r), y: inkTop - 0.28 * fs, r };
+        // The ball sits on the key word's top, a third of the way in from its reading end; its lower edge tucks behind the
+        // letters' outline so it peeks out of the word rather than floating over it.
+        const ball = { x: (rtl ? -1 : 1) * Math.min(hw * 0.3, rx - r), y: inkTop - BALL_LIFT * fs, r };
         const box = sections.map((sec) => boundsOf(sec.points)).reduce(union);
         ribbon = { sections, ball, box: union(box, { x1: ball.x - r, x2: ball.x + r, y1: ball.y - r, y2: ball.y + r }), first, last };
         metrics[first]!.above = Math.max(metrics[first]!.above, -ribbon.box.y1);
@@ -502,278 +573,363 @@ export const toonProgram = galleryScene(
           const x = line.xs[j]! - line.width / 2;
           const rest = restOf(item, j);
           const rested = paintedBox(width, px, baseline + top, baseline + bottom, seam, rest, x);
-          cells.push({ ...item, line: i, x, baseline, seam, width, px, rest, box: { ...rested, y1: seam + (rested.y1 - seam) * (1 + POP_ROOM), y2: seam + (rested.y2 - seam) * (1 + POP_ROOM) } });
+          cells.push({ ...item, line: i, x, baseline, seam, width, px, rest, box: { ...rested, y1: seam + (rested.y1 - seam) * (1 + POP_ROOM), y2: seam + (rested.y2 - seam) * (1 + POP_ROOM) + RISE_LEFT * riseOf(item) * k } });
         });
       });
-      const ribbonPlaced = ribbon
-        ? {
-            ...ribbon,
-            dy: baselines[ribbon.first]! - height / 2,
-          }
-        : null;
+      const ribbonPlaced = ribbon ? { ...ribbon, dy: baselines[ribbon.first]! - height / 2 } : null;
       let box = cells.map((cell) => cell.box).reduce(union);
       if (ribbonPlaced) box = union(box, { ...ribbonPlaced.box, y1: ribbonPlaced.box.y1 + ribbonPlaced.dy, y2: ribbonPlaced.box.y2 + ribbonPlaced.dy });
-      return { cells, metrics, ribbon: ribbonPlaced, k, box };
+      // Each row's own height with its share of the gaps, for paging.
+      const heights = metrics.map((line, i) => line.above + line.below + (i < metrics.length - 1 ? gapAfter(i) : 0));
+      return { cells, ribbon: ribbonPlaced, k, box, heights };
     };
 
-    let f = 1;
-    let arranged = arrange(f);
-    for (let tries = 0; tries < 8; tries++) {
-      const { box } = arranged;
-      const fit = Math.min(1, (band.y2 - band.y1) / (box.y2 - box.y1), (bounds.x2 - bounds.x1 - 12) / (box.x2 - box.x1));
-      if (fit >= 1) break;
-      f *= Math.min(0.97, fit * 0.98);
-      arranged = arrange(f);
+    // Fit: smaller sizes repack into fewer, wider rows (floors held); a token too long for the band at its floor pages
+    // through it; anything else that still does not fit shrinks as a whole.
+    const bandH = band.y2 - band.y1;
+    const laneFit = bounds.x2 - bounds.x1 - 12;
+    const fits = (a: ReturnType<typeof arrange>) => a.box.y2 - a.box.y1 <= bandH && a.box.x2 - a.box.x1 <= laneFit;
+    let lines = planLines(1);
+    let arranged = arrange(lines, 1, true);
+    for (const f of FIT_SCALES) {
+      if (fits(arranged)) break;
+      lines = planLines(f);
+      arranged = arrange(lines, 1, true);
     }
-    const { cells, k, box: blockBox } = arranged;
-    // Where the block centre sits on the canvas: on the anchor, moved into the band and the lane.
-    const cx0 = clamp(space.x(540), bounds.x1 + 6 - blockBox.x1, bounds.x2 - 6 - blockBox.x2);
-    const cy0 = clamp(anchorY, band.y1 - blockBox.y1, Math.max(band.y1 - blockBox.y1, band.y2 - blockBox.y2));
-    const toCanvasBox = (b: Box): Box => ({ x1: b.x1 + cx0, x2: b.x2 + cx0, y1: b.y1 + cy0, y2: b.y2 + cy0 });
-    // Beats stay inside the lane and the caption band.
-    const lane: Box = { x1: bounds.x1 + 4, x2: bounds.x2 - 4, y1: Math.max(bounds.y1 + 4, band.y1), y2: Math.min(bounds.y2 - 4, band.y2) };
-    const Y0 = cy0 + (blockBox.y1 + blockBox.y2) / 2;
-    const liveEnd = exit ? exitAt : to;
-
-    /** Adds the cue's exit (vertical squash toward the block's middle and a fade) to a track. */
-    const withExit = (track: Track, from: number, y: number): Track => {
-      if (!exit) return track;
-      const sy = track.sy ?? [[from, 1]];
-      const o = track.o ?? [[from, 1]];
-      const ys = track.y ?? [[from, y]];
-      const syAt = kf(exitAt, sy);
-      const yAt = kf(exitAt, ys);
-      // A tilted word squashed in its own frame keeps its tilt's height; it levels as it flattens, so rows never meet.
-      const rz = track.rz ? { rz: [...track.rz, [exitAt, kf(exitAt, track.rz)], [to, 0, "in"]] as Frames } : {};
-      return {
-        ...track,
-        ...rz,
-        y: [...ys, [exitAt, yAt], [to, Y0 + (yAt - Y0) * EXIT_SQUASH, "in"]],
-        sy: [...sy, [exitAt, syAt], [to, syAt * EXIT_SQUASH, "in"]],
-        o: [...o, [exitAt, kf(exitAt, o)], [to, 0, "in"]],
-      };
-    };
-
-    // Words: the rim, the readable face (lower colour, navy outline and drop), and the upper colour clipped to the seam.
-    for (const cell of cells) {
-      const at = cell.word;
-      const word = words[at]!;
-      const hero = isHero(at);
-      // The cue's first word takes the whole cue lead, so the incoming cue paints on the frame after the outgoing one.
-      const pop = ctx.enter(word, hero ? 430 : cell.small ? 280 : 250, hero || at === 0 ? LEAD : 40);
-      const from = cell.part === 0 ? pop.from : Math.max(cueFrom, pop.from);
-      const last = Math.max(from, exportFrameAtOrBefore(word.endMs - 1, fps));
-      const X = cx0 + cell.x;
-      const Y = cy0 + cell.seam;
-      const springy = pop.settled - from >= 200;
-      const settleEase: Ease = springy ? "spring" : "out";
-      const swing = (hero ? 8 : 6) * ((ord.n + at) % 2 ? 1 : -1);
-      const rise = (hero ? 40 : 20) * k;
-      const opaque = Math.min(from + 35, last);
-      const base: Track = pop.motion
-        ? {
-            x: [[from, X]],
-            y: [[from, Y + rise], [pop.settled, Y, "out"]],
-            sx: [[from, 1.03], [pop.settled, 1, settleEase]],
-            sy: [[from, hero ? 0.3 : 0.5], [pop.settled, 1, settleEase]],
-            rz: [[from, cell.rest + swing], [pop.settled, cell.rest, settleEase]],
-            skx: [[from, slant]],
-            o: opaque > from ? [[from, 0.4], [opaque, 1]] : [[from, 1]],
+    let pages: Line[][] = [lines];
+    let g = 1;
+    if (!fits(arranged)) {
+      if (lines.some((line) => line.items.some((item) => item.parts > 1))) {
+        const flat = arrange(lines, 1, false);
+        pages = [];
+        let page: Line[] = [];
+        let height = 0;
+        lines.forEach((line, i) => {
+          const h = flat.heights[i]!;
+          if (page.length && height + h > bandH) {
+            pages.push(page);
+            page = [];
+            height = 0;
           }
-        : { x: [[from, X]], y: [[from, Y]], rz: [[from, cell.rest]], skx: [[from, slant]], o: [[from, 1]] };
-      const track = withExit(base, from, Y);
-      const id = cell.parts > 1 ? `${ctx.id}:w${at}l${cell.part}` : `${ctx.id}:w${at}`;
-      const origin = { dx: 0, dy: cell.seam - cell.baseline };
-      const text = {
-        kind: "text" as const,
-        fromMs: from,
-        toMs: to,
-        text: cell.text,
-        face: FACE,
-        sizePx: cell.px,
-        letterSpacingEm: cell.ls,
-        anchor: "baseline-center" as const,
-        language: cue.language,
-        origin,
-        track,
+          page.push(line);
+          height += h;
+        });
+        pages.push(page);
+      } else {
+        for (let tries = 0; tries < 8 && !fits(arranged); tries++) {
+          const { box } = arranged;
+          g *= Math.min(0.97, Math.min(bandH / (box.y2 - box.y1), laneFit / (box.x2 - box.x1)) * 0.98);
+          arranged = arrange(lines, g, true);
+        }
+      }
+    }
+    const paged = pages.length > 1;
+
+    // A page shows from its first word (or, inside one long word, its first piece's share of the word) to the next page.
+    const pageStart = (page: readonly Line[], index: number) => {
+      if (index === 0) return cueFrom;
+      const item = page[0]!.items[0]!;
+      const word = words[item.word]!;
+      return exportFrameAtOrAfter(word.startMs + ((word.endMs - word.startMs) * item.part) / item.parts, fps);
+    };
+    const starts = pages.map(pageStart);
+    // A key word whose cue paints on a single frame keeps its whole look on that frame: its copies and its ribbon are named
+    // as parts of the word (`w<word>l…`), the one name the shared one-frame filter leaves.
+    const oneFrame = paintedFrameCount(cueFrom, to, fps) < 2;
+
+    for (const [pageAt, page] of pages.entries()) {
+      const last = pageAt === pages.length - 1;
+      const pageFrom = starts[pageAt]!;
+      const pageTo = last ? to : starts[pageAt + 1]!;
+      const placedPage = paged ? arrange(page, 1, false) : arranged;
+      const { cells, k, box: blockBox } = placedPage;
+      // Where the block centre sits on the canvas: on the anchor, moved into the band and the lane.
+      const cx0 = clamp(space.x(540), bounds.x1 + 6 - blockBox.x1, bounds.x2 - 6 - blockBox.x2);
+      const cy0 = clamp(anchorY, band.y1 - blockBox.y1, Math.max(band.y1 - blockBox.y1, band.y2 - blockBox.y2));
+      const toCanvasBox = (b: Box): Box => ({ x1: b.x1 + cx0, x2: b.x2 + cx0, y1: b.y1 + cy0, y2: b.y2 + cy0 });
+      // Beats stay inside the lane and the caption band.
+      const lane: Box = { x1: bounds.x1 + 4, x2: bounds.x2 - 4, y1: Math.max(bounds.y1 + 4, band.y1), y2: Math.min(bounds.y2 - 4, band.y2) };
+      const Y0 = cy0 + (blockBox.y1 + blockBox.y2) / 2;
+      const pageExit = last && exit;
+      const liveEnd = pageExit ? exitAt : pageTo;
+
+      /** Adds the cue's exit (vertical squash toward the block's middle and a fade) to a track. */
+      const withExit = (track: Track, from: number, y: number): Track => {
+        if (!pageExit) return track;
+        const sy = track.sy ?? [[from, 1]];
+        const o = track.o ?? [[from, 1]];
+        const ys = track.y ?? [[from, y]];
+        const syAt = kf(exitAt, sy);
+        const yAt = kf(exitAt, ys);
+        // A tilted word squashed in its own frame keeps its tilt's height; it levels as it flattens, so rows never meet.
+        const rz = track.rz ? { rz: [...track.rz, [exitAt, kf(exitAt, track.rz)], [to, 0, "in"]] as Frames } : {};
+        return {
+          ...track,
+          ...rz,
+          y: [...ys, [exitAt, yAt], [to, Y0 + (yAt - Y0) * EXIT_SQUASH, "in"]],
+          sy: [...sy, [exitAt, syAt], [to, syAt * EXIT_SQUASH, "in"]],
+          o: [...o, [exitAt, kf(exitAt, o)], [to, 0, "in"]],
+        };
       };
-      const drop = (colour: string) => [{ dx: DROP_X * cell.px, dy: DROP_Y * cell.px, blur: 0, colour, alpha: 1 }];
-      pieces.push(
-        { ...text, id: `${id}rim`, z: 3, fill: RIM_COLOUR, stroke: { widthPx: RIM * cell.px, colour: RIM_COLOUR } } satisfies TextPiece,
-        { ...text, id, z: 6, fill: colours.lower, stroke: { widthPx: OUTLINE * cell.px, colour: NAVY }, shadows: drop(NAVY) } satisfies TextPiece,
-        {
-          ...text,
-          id: `${id}hi`,
-          z: 7,
-          fill: colours.upper,
-          clip: { x1: [[from, bounds.x1 - 400]], x2: [[from, bounds.x2 + 400]], y1: [[from, bounds.y1 - 400]], y2: track.y! },
-        } satisfies TextPiece,
-      );
-    }
 
-    const placed = (cell: Cell) => toCanvasBox(cell.box);
-    const ribbon = arranged.ribbon;
-    const obstacles: Box[] = cells.map(placed);
-    let ribbonBox: Box | null = null;
-
-    // The ribbon and the ball behind the first key word.
-    if (ribbon) {
-      const hs = words[heroAt]!.startMs;
-      const start = hs - 30;
-      const c = clamp((liveEnd - start - 20) / 400, 0.25, 1);
-      const RX = cx0;
-      const RY = cy0 + ribbon.dy;
-      ribbonBox = toCanvasBox({ ...ribbon.box, y1: ribbon.box.y1 + ribbon.dy, y2: ribbon.box.y2 + ribbon.dy });
-      const fillOf = { highlight: colours.ribbon, white: RIBBON_WHITE, gold: GOLD } as const;
-      ribbon.sections.forEach((sec, j) => {
-        const a = Math.max(cueFrom, start + sec.t0 * c);
-        const b = a + sec.span * c;
-        const wipe = paintedFrameCount(a, b, fps) >= 2;
-        const sb = boundsOf(sec.points);
-        const box = { x1: RX + sb.x1 - 2, x2: RX + sb.x2 + 2, y1: RY + sb.y1 - 2, y2: RY + sb.y2 + 2 };
-        // Only the wiping edge is near the section; the clip opens fully once the wipe is done, so the exit squash
-        // (which moves the section toward the block's middle) is never cut by it.
+      // Words: the rim, the readable face (lower colour, navy outline and drop), and the upper colour above the seam.
+      for (const cell of cells) {
+        const at = cell.word;
+        const word = words[at]!;
+        const hero = isHero(at);
+        // The pop happens in the time before the word is spoken (from the previous word's onset, at most the cue's lead
+        // for its first word) and has settled on the first spoken frame: the word is whole, opaque and in its slot when it
+        // is heard. With fewer than two frames before that, the word appears settled.
+        const onset = exportFrameAtOrAfter(word.startMs, fps);
+        const want = hero ? 300 : cell.small ? 200 : 220;
+        const previous = at > 0 ? words[at - 1]!.startMs : Number.NEGATIVE_INFINITY;
+        const from = Math.max(pageFrom, Math.min(onset, Math.max(word.startMs - want, previous)));
+        const motion = !paged && paintedFrameCount(from, onset, fps) >= 2;
+        const X = cx0 + cell.x;
+        const Y = cy0 + cell.seam;
+        const settleEase: Ease = onset - from >= 200 ? "spring" : "out";
+        // A wide row swings less (its ends lift at most a quarter em) and overscales only into the room it has.
+        const maxSwing = (Math.atan((SWING_LIFT * cell.px) / Math.max(1, cell.width / 2)) * 180) / Math.PI;
+        const swing = Math.min(hero ? 8 : 6, maxSwing) * ((ord.n + at) % 2 ? 1 : -1);
+        const cellBox = toCanvasBox(cell.box);
+        const room = Math.min(X - (bounds.x1 + 4), bounds.x2 - 4 - X) / Math.max(1, Math.max(X - cellBox.x1, cellBox.x2 - X));
+        const over = clamp(room, 1, 1.03);
+        const rise = riseOf(cell) * k;
+        const opaque = Math.min(from + 35, onset);
+        const base: Track = motion
+          ? {
+              x: [[from, X]],
+              y: [[from, Y + rise], [onset, Y, "outExpo"]],
+              sx: [[from, over], [onset, 1, settleEase]],
+              sy: [[from, hero ? 0.3 : 0.5], [onset, 1, settleEase]],
+              rz: [[from, cell.rest + swing], [onset, cell.rest, settleEase]],
+              skx: [[from, slant]],
+              o: [[from, 0.4], [opaque, 1]],
+            }
+          : { x: [[from, X]], y: [[from, Y]], rz: [[from, cell.rest]], skx: [[from, slant]], o: [[from, 1]] };
+        const track = withExit(base, from, Y);
+        const id = cell.parts > 1 ? `${ctx.id}:w${at}l${cell.part}` : `${ctx.id}:w${at}`;
+        const text = {
+          kind: "text" as const,
+          fromMs: from,
+          toMs: pageTo,
+          text: cell.text,
+          face: FACE,
+          sizePx: cell.px,
+          letterSpacingEm: cell.ls,
+          anchor: "baseline-center" as const,
+          language: cue.language,
+          origin: { dx: 0, dy: cell.seam - cell.baseline },
+          track,
+        };
+        const drop = (colour: string) => [{ dx: DROP_X * cell.px, dy: DROP_Y * cell.px, blur: 0, colour, alpha: 1 }];
+        // The upper colour keeps everything outside a rectangle below the seam (an inverse clip that follows the pivot): the
+        // copy is the whole word to the bounds, so it is named as a part of its word and kept on a one-frame cue.
         const FAR = 4000;
-        const still = (v: number): Frames => [[a, v]];
-        const grow = (v0: number, v1: number, open: number): Frames => (wipe ? [[a, v0], [b, v1, "outQuint"], [b + 1, open]] : [[a, open]]);
-        const clip =
-          sec.dir === "y"
-            ? { x1: still(box.x1 - FAR), x2: still(box.x2 + FAR), y1: still(box.y1 - FAR), y2: grow(box.y1, box.y2, box.y2 + FAR) }
-            : rtl
-              ? { x1: grow(box.x2, box.x1, box.x1 - FAR), x2: still(box.x2 + FAR), y1: still(box.y1 - FAR), y2: still(box.y2 + FAR) }
-              : { x1: still(box.x1 - FAR), x2: grow(box.x1, box.x2, box.x2 + FAR), y1: still(box.y1 - FAR), y2: still(box.y2 + FAR) };
-        pieces.push({
-          id: `${ctx.id}:rib${j}`,
-          kind: "shape",
-          z: 1,
-          fromMs: a,
-          toMs: to,
-          path: polygon(sec.points),
-          fill: { colour: fillOf[sec.fill] },
-          clip,
-          track: withExit({ x: [[a, RX]], y: [[a, RY]] }, a, RY),
-        } satisfies ShapePiece);
-      });
-      // The ball pops up from behind the letters.
-      const { ball } = ribbon;
-      const pa = Math.max(cueFrom, hs + 40 * c);
-      const pb = pa + 360 * c;
-      const moves = paintedFrameCount(pa, pb, fps) >= 2;
-      const bx = cx0 + ball.x;
-      const by = cy0 + ribbon.dy + ball.y;
-      const ballEase: Ease = pb - pa >= 200 ? "spring" : "out";
-      const ballTrack: Track = moves
-        ? { x: [[pa, bx]], y: [[pa, by + 26 * k], [pb, by, "out"]], sx: [[pa, 0.05], [pb, 1, ballEase]], sy: [[pa, 0.05], [pb, 1, ballEase]] }
-        : { x: [[pa, bx]], y: [[pa, by]] };
-      const track = withExit(ballTrack, pa, by);
-      pieces.push(
-        { id: `${ctx.id}:ball`, kind: "shape", z: 2, fromMs: pa, toMs: to, path: ellipsePath(0, 0, ball.r), fill: { colour: BALL }, track } satisfies ShapePiece,
-        { id: `${ctx.id}:ballhi`, kind: "shape", z: 2, fromMs: pa, toMs: to, path: ellipsePath(-ball.r * 0.34, -ball.r * 0.36, ball.r * 0.3), fill: { colour: BALL_HI }, track } satisfies ShapePiece,
-      );
-    }
+        pieces.push(
+          { ...text, id: oneFrame ? `${ctx.id}:w${at}l${RIM_PART + cell.part}` : `${id}rim`, z: 3, fill: RIM_COLOUR, stroke: { widthPx: RIM * cell.px, colour: RIM_COLOUR } } satisfies TextPiece,
+          { ...text, id, z: 6, fill: colours.lower, stroke: { widthPx: OUTLINE * cell.px, colour: NAVY }, shadows: drop(NAVY) } satisfies TextPiece,
+          {
+            ...text,
+            id: `${ctx.id}:w${at}l${UPPER_PART + cell.part}`,
+            z: 7,
+            fill: colours.upper,
+            clip: { x1: [[from, bounds.x1 - FAR]], x2: [[from, bounds.x2 + FAR]], y1: track.y!, y2: [[from, bounds.y2 + FAR]], inverse: true },
+          } satisfies TextPiece,
+        );
+      }
 
-    // Beat: three tapered pop lines burst out of a free corner of the key word as it lands (the last word without one).
-    const target = heroed ? cells.find((cell) => cell.word === heroAt && cell.part === 0)! : cells.filter((cell) => cell.word === words.length - 1).at(-1)!;
-    {
-      const word = words[target.word]!;
-      const start = Math.max(cueFrom, word.startMs + 20);
-      const end = Math.min(start + 300, liveEnd - 10);
-      if (paintedFrameCount(start, end, fps) >= 2) {
-        const tb = placed(target);
-        const fs = target.px;
-        const towardStart = heroed !== rtl;
-        // Corners in order of preference: the top corner at the reading start for a key word, at the reading end otherwise.
-        const corners: { x: number; y: number; angles: number[] }[] = [];
-        const top = (left: boolean) => ({ x: left ? tb.x1 : tb.x2, y: tb.y1 + 0.12 * fs, angles: left ? [-165, -135, -105] : [-15, -45, -75] });
-        const bottom = (left: boolean) => ({ x: left ? tb.x1 : tb.x2, y: tb.y2 - 0.12 * fs, angles: left ? [165, 135, 105] : [15, 45, 75] });
-        corners.push(top(towardStart), top(!towardStart), bottom(towardStart), bottom(!towardStart));
-        const d0 = 0.06 * fs;
-        const lens = [0.22, 0.3, 0.22].map((l) => l * fs);
-        const wOut = 0.075 * fs;
-        const others = cells.filter((cell) => cell.word !== target.word).map(placed);
-        for (const corner of corners) {
-          const pts: (readonly [number, number])[] = [];
-          const path: PathCmd[] = [];
-          corner.angles.forEach((deg, i) => {
-            const a = (deg * Math.PI) / 180;
-            const [dx, dy] = [Math.cos(a), Math.sin(a)];
-            const tip = [dx * d0, dy * d0] as const;
-            const o1 = [dx * (d0 + lens[i]!) - dy * wOut * 0.5, dy * (d0 + lens[i]!) + dx * wOut * 0.5] as const;
-            const o2 = [dx * (d0 + lens[i]!) + dy * wOut * 0.5, dy * (d0 + lens[i]!) - dx * wOut * 0.5] as const;
-            path.push(["M", tip[0], tip[1]], ["L", o1[0], o1[1]], ["L", o2[0], o2[1]], ["Z"]);
-            pts.push(tip, o1, o2);
-          });
-          const reach = boundsOf(pts);
-          const box = { x1: corner.x + reach.x1 - 3 * k, x2: corner.x + reach.x2 + 3 * k, y1: corner.y + reach.y1 - 3 * k, y2: corner.y + reach.y2 + 3 * k };
-          if (!inside(box, lane) || others.some((other) => meets(box, other))) continue;
-          const grow = Math.min(110, (end - start) * 0.4);
-          const fade = end - Math.min(100, (end - start) * 0.35);
+      // Decorations only on a cue that fits in one page.
+      if (paged) continue;
+      const placed = (cell: Cell) => toCanvasBox(cell.box);
+      const ribbon = placedPage.ribbon;
+      const obstacles: Box[] = cells.map(placed);
+      let ribbonBox: Box | null = null;
+
+      // The ribbon and the ball behind the first key word.
+      if (ribbon) {
+        const hs = words[heroAt]!.startMs;
+        const start = hs - 30;
+        const c = clamp((liveEnd - start - 20) / 400, 0.25, 1);
+        const RX = cx0;
+        const RY = cy0 + ribbon.dy;
+        ribbonBox = toCanvasBox({ ...ribbon.box, y1: ribbon.box.y1 + ribbon.dy, y2: ribbon.box.y2 + ribbon.dy });
+        const fillOf = { highlight: colours.ribbon, white: RIBBON_WHITE, gold: GOLD } as const;
+        const heroFrom = Math.max(cueFrom, Math.min(...pieces.filter((piece) => piece.id === `${ctx.id}:w${heroAt}` || piece.id === `${ctx.id}:w${heroAt}l0`).map((piece) => piece.fromMs)));
+        ribbon.sections.forEach((sec, j) => {
+          // On a one-frame cue the section is drawn whole, still, for the key word's frame.
+          const a = oneFrame ? heroFrom : Math.max(cueFrom, start + sec.t0 * c);
+          const b = a + sec.span * c;
+          const wipe = !oneFrame && paintedFrameCount(a, b, fps) >= 2;
+          const sb = boundsOf(sec.points);
+          const box = { x1: RX + sb.x1 - 2, x2: RX + sb.x2 + 2, y1: RY + sb.y1 - 2, y2: RY + sb.y2 + 2 };
+          // Only the wiping edge is near the section; the clip opens fully once the wipe is done, so the exit squash
+          // (which moves the section toward the block's middle) is never cut by it.
+          const FAR = 4000;
+          const still = (v: number): Frames => [[a, v]];
+          const grow = (v0: number, v1: number, open: number): Frames => [[a, v0], [b, v1, "outQuint"], [b + 1, open]];
+          const clip = !wipe
+            ? undefined
+            : sec.dir === "y"
+              ? { x1: still(box.x1 - FAR), x2: still(box.x2 + FAR), y1: still(box.y1 - FAR), y2: grow(box.y1, box.y2, box.y2 + FAR) }
+              : rtl
+                ? { x1: grow(box.x2, box.x1, box.x1 - FAR), x2: still(box.x2 + FAR), y1: still(box.y1 - FAR), y2: still(box.y2 + FAR) }
+                : { x1: still(box.x1 - FAR), x2: grow(box.x1, box.x2, box.x2 + FAR), y1: still(box.y1 - FAR), y2: still(box.y2 + FAR) };
           pieces.push({
-            id: `${ctx.id}:pop${target.word}`,
+            id: oneFrame ? `${ctx.id}:w${heroAt}l${RIBBON_PART + j}` : `${ctx.id}:rib${j}`,
+            kind: "shape",
+            z: 1,
+            fromMs: a,
+            toMs: to,
+            path: polygon(sec.points),
+            fill: { colour: fillOf[sec.fill] },
+            ...(clip ? { clip } : {}),
+            track: withExit({ x: [[a, RX]], y: [[a, RY]] }, a, RY),
+          } satisfies ShapePiece);
+        });
+        // The ball pops up from behind the letters, settled before the exit starts.
+        const { ball } = ribbon;
+        const pa = oneFrame ? heroFrom : Math.max(cueFrom, hs + 40 * c);
+        const pb = Math.min(pa + 360 * c, liveEnd - 1);
+        const moves = !oneFrame && paintedFrameCount(pa, pb, fps) >= 2;
+        const bx = cx0 + ball.x;
+        const by = cy0 + ribbon.dy + ball.y;
+        const ballEase: Ease = pb - pa >= 200 ? "spring" : "out";
+        const ballTrack: Track = moves
+          ? { x: [[pa, bx]], y: [[pa, by + 26 * k], [pb, by, "out"]], sx: [[pa, 0.05], [pb, 1, ballEase]], sy: [[pa, 0.05], [pb, 1, ballEase]] }
+          : { x: [[pa, bx]], y: [[pa, by]] };
+        const track = withExit(ballTrack, pa, by);
+        const ballId = (n: number, plain: string) => (oneFrame ? `${ctx.id}:w${heroAt}l${RIBBON_PART + 6 + n}` : `${ctx.id}:${plain}`);
+        pieces.push(
+          { id: ballId(0, "ball"), kind: "shape", z: 2, fromMs: pa, toMs: to, path: ellipsePath(0, 0, ball.r), fill: { colour: BALL }, track } satisfies ShapePiece,
+          { id: ballId(1, "ballhi"), kind: "shape", z: 2, fromMs: pa, toMs: to, path: ellipsePath(-ball.r * 0.34, -ball.r * 0.36, ball.r * 0.3), fill: { colour: BALL_HI }, track } satisfies ShapePiece,
+        );
+      }
+
+      // Beat: three tapered pop lines burst out of a free corner of the key word as it lands (the last word without one).
+      const target = heroed ? cells.find((cell) => cell.word === heroAt && cell.part === 0)! : cells.filter((cell) => cell.word === words.length - 1).at(-1)!;
+      {
+        const word = words[target.word]!;
+        const start = Math.max(cueFrom, word.startMs + 20);
+        const end = Math.min(start + 300, liveEnd - 10);
+        if (paintedFrameCount(start, end, fps) >= 2) {
+          const tb = placed(target);
+          const fs = target.px;
+          const towardStart = heroed !== rtl;
+          // Corners in order of preference: the top corner at the reading start for a key word, at the reading end otherwise.
+          const corners: { x: number; y: number; angles: number[] }[] = [];
+          const top = (left: boolean) => ({ x: left ? tb.x1 : tb.x2, y: tb.y1 + 0.12 * fs, angles: left ? [-165, -135, -105] : [-15, -45, -75] });
+          const bottom = (left: boolean) => ({ x: left ? tb.x1 : tb.x2, y: tb.y2 - 0.12 * fs, angles: left ? [165, 135, 105] : [15, 45, 75] });
+          corners.push(top(towardStart), top(!towardStart), bottom(towardStart), bottom(!towardStart));
+          const d0 = 0.06 * fs;
+          const lens = [0.22, 0.3, 0.22].map((l) => l * fs);
+          const wOut = 0.075 * fs;
+          const others = cells.filter((cell) => cell.word !== target.word).map(placed);
+          for (const corner of corners) {
+            const pts: (readonly [number, number])[] = [];
+            const path: PathCmd[] = [];
+            corner.angles.forEach((deg, i) => {
+              const a = (deg * Math.PI) / 180;
+              const [dx, dy] = [Math.cos(a), Math.sin(a)];
+              const tip = [dx * d0, dy * d0] as const;
+              const o1 = [dx * (d0 + lens[i]!) - dy * wOut * 0.5, dy * (d0 + lens[i]!) + dx * wOut * 0.5] as const;
+              const o2 = [dx * (d0 + lens[i]!) + dy * wOut * 0.5, dy * (d0 + lens[i]!) - dx * wOut * 0.5] as const;
+              path.push(["M", tip[0], tip[1]], ["L", o1[0], o1[1]], ["L", o2[0], o2[1]], ["Z"]);
+              pts.push(tip, o1, o2);
+            });
+            const reach = boundsOf(pts);
+            const box = { x1: corner.x + reach.x1 - 3 * k, x2: corner.x + reach.x2 + 3 * k, y1: corner.y + reach.y1 - 3 * k, y2: corner.y + reach.y2 + 3 * k };
+            if (!inside(box, lane) || others.some((other) => meets(box, other))) continue;
+            const grow = Math.min(110, (end - start) * 0.4);
+            const fade = end - Math.min(100, (end - start) * 0.35);
+            pieces.push({
+              id: `${ctx.id}:pop${target.word}`,
+              kind: "shape",
+              z: 4,
+              fromMs: start,
+              toMs: end,
+              path,
+              fill: { colour: ord.n % 2 ? RIBBON_WHITE : GOLD },
+              stroke: { widthPx: 2.5 * k, colour: NAVY },
+              track: {
+                x: [[start, corner.x]],
+                y: [[start, corner.y]],
+                sx: [[start, 0.35], [start + grow, 1, "out"]],
+                sy: [[start, 0.35], [start + grow, 1, "out"]],
+                o: [[start, 1], [fade, 1], [end, 0, "in"]],
+              },
+            } satisfies ShapePiece);
+            obstacles.push(box);
+            break;
+          }
+        }
+      }
+
+      // Beat: a gold sparkle pops beside a free end of the first row (else of the last; a top corner, else a lower one)
+      // and twinkles every second while the cue holds. Where a full sparkle has no room, a smaller still one goes in the
+      // first free pocket.
+      {
+        const lastLine = Math.max(...cells.map((cell) => cell.line));
+        const rowOf = (line: number) => ({ box: cells.filter((cell) => cell.line === line).map(placed).reduce(union), px: Math.max(...cells.filter((cell) => cell.line === line).map((cell) => cell.px)) });
+        const preferEnd = (ord.n + Math.floor(textSeed * 4)) % 2 === 0;
+        const sides = [preferEnd !== rtl, preferEnd === rtl];
+        const lineList = [...new Set([0, lastLine, ...cells.map((cell) => cell.line)])];
+        const spots = [1, SPARKLE_SMALL].flatMap((scale) => lineList.flatMap((line) => [false, true].flatMap((low) => sides.map((right) => ({ ...rowOf(line), right, low, scale })))));
+        const all = ribbonBox ? [...obstacles, ribbonBox] : obstacles;
+        const s0 = words[0]!.startMs;
+        const from = Math.max(cueFrom, s0 + 60);
+        for (const { box: row, px, right, low, scale } of spots) {
+          if (paintedFrameCount(from, to, fps) < 2) break;
+          const full = scale === 1;
+          const r = clamp(0.24 * px, 22 * k, 46 * k) * scale;
+          // Its reach while it turns and springs (a turned box is up to 1.42x wider, the spring overshoots about 13%); a
+          // small sparkle is still and unturned.
+          const reach = full ? 1.6 * (r + 3 * k) : r + 3 * k;
+          const x = right ? row.x2 + 0.1 * px + reach : row.x1 - 0.1 * px - reach;
+          const y = low ? Math.min(row.y2 - r * 1.1, lane.y2 - reach) : Math.max(row.y1 + r * 1.1, lane.y1 + reach);
+          const box = { x1: x - reach, x2: x + reach, y1: y - reach, y2: y + reach };
+          if (!inside(box, lane) || all.some((other) => meets(box, other))) continue;
+          const popEnd = Math.min(from + 280, liveEnd - 20);
+          const moves = full && paintedFrameCount(from, popEnd, fps) >= 2;
+          const sc: [number, number, Ease?][] = moves ? [[from, 0.05], [popEnd, 1, popEnd - from >= 200 ? "spring" : "out"]] : [[from, 1]];
+          const rz: [number, number, Ease?][] = moves ? [[from, -40], [popEnd, 0, "out"]] : [[from, 0]];
+          if (full) {
+            for (let t = from + 1000, turn = 90; t + 300 <= liveEnd - 40; t += 1000, turn += 90) {
+              sc.push([t, 1], [t + 130, 0.6, "inOut"], [t + 260, 1, "inOut"]);
+              rz.push([t, turn - 90], [t + 260, turn, "inOut"]);
+            }
+          }
+          pieces.push({
+            id: `${ctx.id}:star`,
             kind: "shape",
             z: 4,
-            fromMs: start,
-            toMs: end,
-            path,
-            fill: { colour: ord.n % 2 ? RIBBON_WHITE : GOLD },
-            stroke: { widthPx: 2.5 * k, colour: NAVY },
-            track: {
-              x: [[start, corner.x]],
-              y: [[start, corner.y]],
-              sx: [[start, 0.35], [start + grow, 1, "out"]],
-              sy: [[start, 0.35], [start + grow, 1, "out"]],
-              o: [[start, 1], [fade, 1], [end, 0, "in"]],
-            },
+            fromMs: from,
+            toMs: to,
+            path: sparklePath(r, 0, 0, 0.2),
+            fill: { colour: GOLD },
+            stroke: { widthPx: 3 * k * scale, colour: NAVY },
+            track: withExit({ x: [[from, x]], y: [[from, y]], sx: sc, sy: sc, rz }, from, y),
           } satisfies ShapePiece);
-          obstacles.push(box);
           break;
         }
       }
     }
 
-    // Beat: a gold sparkle pops beside a free end of the first row (else of the last) and twinkles every second while
-    // the cue holds.
-    {
-      const lastLine = Math.max(...cells.map((cell) => cell.line));
-      const rowOf = (line: number) => ({ box: cells.filter((cell) => cell.line === line).map(placed).reduce(union), px: Math.max(...cells.filter((cell) => cell.line === line).map((cell) => cell.px)) });
-      const preferEnd = (ord.n + Math.floor(textSeed * 4)) % 2 === 0;
-      const sides = [preferEnd !== rtl, preferEnd === rtl];
-      const spots = [...new Set([0, lastLine])].flatMap((line) => [false, true].flatMap((low) => sides.map((right) => ({ ...rowOf(line), right, low }))));
-      const all = ribbonBox ? [...obstacles, ribbonBox] : obstacles;
-      for (const { box: row, px, right, low } of spots) {
-        const r = clamp(0.24 * px, 22 * k, 46 * k);
-        // Its reach while it turns and springs (a turned box is up to 1.42x wider, the spring overshoots about 13%).
-        const reach = 1.6 * (r + 3 * k);
-        const x = right ? row.x2 + 0.1 * px + reach : row.x1 - 0.1 * px - reach;
-        const y = low ? Math.min(row.y2 - r * 1.1, lane.y2 - reach) : Math.max(row.y1 + r * 1.1, lane.y1 + reach);
-        const box = { x1: x - reach, x2: x + reach, y1: y - reach, y2: y + reach };
-        if (!inside(box, lane) || all.some((other) => meets(box, other))) continue;
-        const s0 = words[0]!.startMs;
-        const from = Math.max(cueFrom, s0 + 60);
-        if (paintedFrameCount(from, to, fps) < 2) break;
-        const popEnd = Math.min(from + 280, liveEnd - 20);
-        const moves = paintedFrameCount(from, popEnd, fps) >= 2;
-        const sc: [number, number, Ease?][] = moves ? [[from, 0.05], [popEnd, 1, popEnd - from >= 200 ? "spring" : "out"]] : [[from, 1]];
-        const rz: [number, number, Ease?][] = moves ? [[from, -40], [popEnd, 0, "out"]] : [[from, 0]];
-        for (let t = from + 1000, turn = 90; t + 300 <= liveEnd - 40; t += 1000, turn += 90) {
-          sc.push([t, 1], [t + 130, 0.6, "inOut"], [t + 260, 1, "inOut"]);
-          rz.push([t, turn - 90], [t + 260, turn, "inOut"]);
-        }
-        pieces.push({
-          id: `${ctx.id}:star`,
-          kind: "shape",
-          z: 4,
-          fromMs: from,
-          toMs: to,
-          path: sparklePath(r, 0, 0, 0.2),
-          fill: { colour: GOLD },
-          stroke: { widthPx: 3 * k, colour: NAVY },
-          track: withExit({ x: [[from, x]], y: [[from, y]], sx: sc, sy: sc, rz }, from, y),
-        } satisfies ShapePiece);
-        break;
-      }
+    // The piece budget counts shadow copies. Over it (a pathological token), decorations go first, then the rims, then the
+    // upper colour; the readable faces always stay.
+    const cost = (list: readonly Piece[]) => list.reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+    let kept = pieces;
+    const drops: ((piece: Piece) => boolean)[] = [
+      (piece) => /:(star|pop\d+)$/.test(piece.id),
+      (piece) => /:(rib\d|ball|ballhi)$/.test(piece.id),
+      (piece) => /rim$/.test(piece.id) || partOf(piece) >= RIM_PART && partOf(piece) < RIBBON_PART,
+      (piece) => partOf(piece) >= UPPER_PART && partOf(piece) < RIM_PART,
+    ];
+    for (const drop of drops) {
+      if (cost(kept) <= PIECE_CAP) break;
+      kept = kept.filter((piece) => !drop(piece));
     }
-    return pieces;
+    return kept;
   },
   undefined,
   LEAD,

@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { kf } from "./ease";
-import { exportFrameTimes } from "./frame-grid";
+import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
 import type { SceneCue, SceneInput } from "./input";
-import { type Box, evaluatePiece, type Piece, pieceBounds } from "./scene";
+import { type Box, evaluatePiece, type Piece, pieceBounds, SCENE_PIECE_BUDGET } from "./scene";
 import { toonProgram } from "./templates/toon";
 import { fakeMeasure, sceneInput } from "./test-support";
+import type { Measure } from "./scene";
 
 describeSpeechConformance("toon", toonProgram, { anchorLineY: 1290 });
 
@@ -18,7 +19,9 @@ const build = (lines: string[], options: { language?: string; cueGap?: number; i
   return { cues, pieces: toonProgram.build(sceneInput(cues, { fps: 30, colours, anchor, ...options.input })).pieces };
 };
 
-const FACE = /^toon:(\d+):w(\d+)(?:l(\d+))?$/;
+/** A word's readable face (its pieces when it breaks); its other copies are parts 1000 and up. */
+const FACE = /^toon:(\d+):w(\d+)(?:l(\d{1,3}))?$/;
+const upperOf = (face: Piece) => face.id.replace(/:w(\d+)(?:l(\d+))?$/, (_, w, part) => `:w${w}l${1000 + Number(part ?? 0)}`);
 const isFace = (piece: Piece) => FACE.test(piece.id);
 const cueOf = (piece: Piece) => Number(piece.id.split(":")[1]);
 const wordOf = (piece: Piece) => Number(FACE.exec(piece.id)?.[2] ?? -1);
@@ -79,8 +82,9 @@ function expectSplitFaceTogether(pieces: readonly Piece[], label: string) {
   const faces = pieces.filter(isFace);
   expect(faces.length).toBeGreaterThan(0);
   for (const face of faces) {
-    const upper = pieces.find((piece) => piece.id === `${face.id}hi`);
+    const upper = pieces.find((piece) => piece.id === upperOf(face));
     if (!upper) continue;
+    expect(upper.clip?.inverse).toBe(true);
     expect(upper.kind === "text" && face.kind === "text" && upper.text === face.text && upper.sizePx === face.sizePx).toBe(true);
     for (const t of exportFrameTimes(face.fromMs, face.toMs, 30)) {
       const a = evaluatePiece(face, t);
@@ -89,7 +93,7 @@ function expectSplitFaceTogether(pieces: readonly Piece[], label: string) {
       expect(b.y, `${label}: ${upper.id} y at ${t}`).toBeCloseTo(a.y, 3);
       expect(b.sy).toBeCloseTo(a.sy, 5);
       expect(b.rz).toBeCloseTo(a.rz, 5);
-      expect(b.clip!.y2, `${label}: ${upper.id} seam at ${t}`).toBeCloseTo(a.y, 3);
+      expect(b.clip!.y1, `${label}: ${upper.id} seam at ${t}`).toBeCloseTo(a.y, 3);
     }
   }
 }
@@ -100,7 +104,7 @@ describe("toon", () => {
     for (const [at, word] of cues[0]!.words.entries()) {
       const face = pieces.find((piece) => piece.id === `toon:0:w${at}`)!;
       const rim = pieces.find((piece) => piece.id === `toon:0:w${at}rim`)!;
-      const upper = pieces.find((piece) => piece.id === `toon:0:w${at}hi`)!;
+      const upper = pieces.find((piece) => piece.id === `toon:0:w${at}l1000`)!;
       expect(face.kind === "text" && face.text).toBe(word.text.toUpperCase());
       expect(face.kind === "text" && face.fill).toBe("#1FA3F2");
       expect(face.kind === "text" && face.stroke?.colour).toBe("#1A1250");
@@ -112,7 +116,7 @@ describe("toon", () => {
       // The seam sits inside the word's ink, near its middle.
       const t = settledAt(face);
       const ink = box(face, t)!;
-      const seam = evaluatePiece(upper, t).clip!.y2;
+      const seam = evaluatePiece(upper, t).clip!.y1;
       expect(seam).toBeGreaterThan(ink.y1 + (ink.y2 - ink.y1) * 0.25);
       expect(seam).toBeLessThan(ink.y2 - (ink.y2 - ink.y1) * 0.25);
     }
@@ -232,11 +236,11 @@ describe("toon", () => {
       return piece.kind === "text" ? piece.fill : piece.fill?.colour;
     };
     const dark = build(["just:b start:h@520"], { input: { colours: { primary: "#666666", highlight: "#1A1250", accent: "#000000", shadow: "#000000" } } }).pieces;
-    expect(face(dark, "toon:0:w0hi")).toBe("#4DF5B8");
+    expect(face(dark, "toon:0:w0l1000")).toBe("#4DF5B8");
     expect(face(dark, "toon:0:w0")).toBe("#1FA3F2");
     expect(face(dark, "toon:0:rib0")).toBe("#C99BFF");
     const branded = build(["just:b start:h@520"], { input: { colours: { primary: "#858585", highlight: "#FFB3D9", accent: "#FF7A00", shadow: "#000000" } } }).pieces;
-    expect(face(branded, "toon:0:w0hi")).toBe("#858585");
+    expect(face(branded, "toon:0:w0l1000")).toBe("#858585");
     expect(face(branded, "toon:0:w0")).toBe("#FF7A00");
     expect(face(branded, "toon:0:rib0")).toBe("#FFB3D9");
   });
@@ -312,7 +316,7 @@ describe("toon", () => {
     test("a CJK cue with no spaces wraps into rows at a readable size, never shrinking below the floor", () => {
       const text = "我们今天要讨论的是人工智能在未来十年里的发展方向";
       const { cues, pieces } = build([`${text}:b@2400`], { language: "zh" });
-      const parts = pieces.filter((piece) => /^toon:0:w0l\d+$/.test(piece.id));
+      const parts = pieces.filter((piece) => /^toon:0:w0l\d{1,3}$/.test(piece.id));
       expect(parts.length).toBeGreaterThanOrEqual(2);
       expect(parts.map((piece) => (piece.kind === "text" ? piece.text : "")).join("")).toBe(text);
       for (const piece of parts) expect(piece.kind === "text" && piece.sizePx).toBeGreaterThanOrEqual(96 - 0.5);
@@ -347,7 +351,7 @@ describe("toon", () => {
     for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
       for (const word of ["CONTEMPORANEOUSNESS", "abdominohysterectomy"]) {
         const { pieces } = build([`${word}:h@1200`], { input: { canvas } });
-        const parts = pieces.filter((piece) => /^toon:0:w0(l\d+)?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece : null)!);
+        const parts = pieces.filter((piece) => /^toon:0:w0(l\d{1,3})?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece : null)!);
         expect(parts.map((piece) => piece.text).join("")).toBe(word.toUpperCase());
         const natural = Math.min(canvas.width, canvas.height) / 1080;
         for (const piece of parts) {
@@ -357,7 +361,7 @@ describe("toon", () => {
       }
       const cjk = "我们今天要讨论的是人工智能在未来十年里的发展方向".repeat(4).slice(0, 90);
       const { pieces } = build([`${cjk}:b@4000`], { language: "zh", input: { canvas } });
-      const parts = pieces.filter((piece) => /^toon:0:w0(l\d+)?$/.test(piece.id));
+      const parts = pieces.filter((piece) => /^toon:0:w0(l\d{1,3})?$/.test(piece.id));
       expect(parts.map((piece) => (piece.kind === "text" ? piece.text : "")).join("")).toBe(cjk);
       expect(pieces.length).toBeLessThanOrEqual(150);
     }
@@ -379,5 +383,152 @@ describe("toon", () => {
         }
       }
     }
+  });
+});
+
+describe("toon review round 1", () => {
+  /** Shadow copies count against the 150-piece budget too. */
+  const cost = (pieces: readonly Piece[], cue: number) => pieces.filter((piece) => cueOf(piece) === cue).reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+  const staccatoKey = (fps: number, offset: number) => {
+    const lines = ["go@70", "on@70", "then@120", "we@100 stop:h@120", "we@70 stop:h@100", "one@70 more@70 step@80", "yes:h@100", "no:h@70", "right@90 now:h@100", "ok@70"];
+    const { cues } = demoCues({ lines, options: { lead: 311 + offset, gap: 0, cueGap: 0, tail: 400 } });
+    return { cues, pieces: toonProgram.build(sceneInput(cues, { fps, colours, anchor })).pieces };
+  };
+
+  test("a word is whole, opaque and settled in its slot on its first spoken frame (no fade, squash or travel through the onset)", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const [name, run] of [["fast 0", fastRun(0)], ["fast 60", fastRun(60)], ["staccato 0", staccatoRun(0)], ["staccato 60", staccatoRun(60)]] as const) {
+        const pieces = toonProgram.build(sceneInput(run, { fps, colours, anchor })).pieces;
+        for (const cue of run) {
+          for (const [at, word] of cue.words.entries()) {
+            const onset = exportFrameAtOrAfter(word.startMs, fps);
+            for (const piece of pieces.filter((p) => p.id === `toon:${cue.index}:w${at}` || p.id === `toon:${cue.index}:w${at}l1000`)) {
+              const pose = evaluatePiece(piece, onset);
+              const label = `${name} ${fps} fps ${piece.id} at ${onset}`;
+              expect(pose.o, label).toBeCloseTo(1, 6);
+              expect(pose.sx, label).toBeCloseTo(1, 6);
+              expect(pose.sy, label).toBeCloseTo(1, 6);
+              // Nothing moves between the onset and the spoken end (the exit starts after it).
+              for (const track of [piece.track.y, piece.track.rz, piece.track.sx, piece.track.sy, piece.track.o]) {
+                for (const [t] of track ?? []) if (t > onset) expect(t, `${label} keyed at ${t}`).toBeGreaterThanOrEqual(word.endMs);
+              }
+            }
+          }
+        }
+      }
+    }
+    // With time before the word, it still pops: squashed and swung before the onset.
+    const { cues, pieces } = build(["just:b start:h@520"], { cueGap: 700 });
+    const hero = pieces.find((piece) => piece.id === "toon:0:w1")!;
+    expect(evaluatePiece(hero, hero.fromMs).sy).toBeLessThan(0.5);
+    expect(hero.fromMs).toBeLessThanOrEqual(cues[0]!.words[1]!.startMs - 200);
+  });
+
+  test("a key word that paints on a single frame keeps its upper colour, rim, ribbon and ball on that frame, cleared with it", () => {
+    let seen = 0;
+    for (const offset of [0, 2, 7, 13, 23, 31]) {
+      const { cues, pieces } = staccatoKey(25, offset);
+      for (const cue of cues) {
+        const heroAt = cue.words.findIndex((word) => word.role === "hero");
+        if (heroAt < 0) continue;
+        const face = pieces.find((piece) => piece.id === `toon:${cue.index}:w${heroAt}`)!;
+        const frames = exportFrameTimes(face.fromMs, face.toMs, 25).filter((t) => box(face, t));
+        if (frames.length !== 1) continue;
+        seen++;
+        const own = pieces.filter((piece) => piece.id.startsWith(`toon:${cue.index}:w${heroAt}l`));
+        const parts = own.map((piece) => Number(/l(\d+)$/.exec(piece.id)![1]));
+        expect(parts, `offset ${offset} cue ${cue.index}`).toContain(1000);
+        expect(parts.some((part) => part >= 2000 && part < 3000), "rim").toBe(true);
+        expect(parts.filter((part) => part >= 3000 && part < 3006).length, "ribbon").toBe(6);
+        expect(parts.filter((part) => part >= 3006).length, "ball").toBe(2);
+        for (const piece of own) {
+          expect(box(piece, frames[0]!), `${piece.id} on the frame`).not.toBeNull();
+          expect(evaluatePiece(piece, frames[0]!).o).toBeGreaterThan(0.99);
+          for (const t of exportFrameTimes(piece.fromMs - 200, piece.toMs + 200, 25)) if (t !== frames[0]) expect(box(piece, t), `${piece.id} at ${t}`).toBeNull();
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
+
+  test("a short joined-script word keeps a readable size and a visible gap when its measured ink is small", () => {
+    // Real ink of the fallback faces at 100 px (HarfBuzz): Nastaliq "یہ" is narrow and low, "ہے" is not.
+    const real: Record<string, readonly [number, number, number]> = { "یہ": [47, -22, 40], "ہے": [134, -57, 45], "بہت": [183, -70, 18], "اچھا": [150, -95, 30], "तो": [83, -90, 1], "देखो": [150, -95, 5], "इतना": [160, -95, 10] };
+    const measure: Measure = (text, face, size, ls) => {
+      const m = real[text];
+      return m ? { advance: (m[0] * size) / 100, inkTop: (m[1] * size) / 100, inkBottom: (m[2] * size) / 100, ascent: 1.1 * size, descent: 0.3 * size } : fakeMeasure(text, face, size, ls);
+    };
+    const size = (pieces: readonly Piece[], id: string) => (pieces.find((p) => p.id === id) as { sizePx: number }).sizePx;
+    const ur = build(["یہ:m بہت:b اچھا:h@600"], { language: "ur", input: { measure } }).pieces;
+    expect(size(ur, "toon:0:w0")).toBeCloseTo(size(ur, "toon:0:w1"), 3);
+    const t = 900;
+    const a = pieceBounds(ur.find((p) => p.id === "toon:0:w0rim")!, t, measure)!;
+    const b = pieceBounds(ur.find((p) => p.id === "toon:0:w1rim")!, t, measure)!;
+    expect(Math.max(b.x1 - a.x2, a.x1 - b.x2), "outline gap").toBeGreaterThan(0.04 * size(ur, "toon:0:w0"));
+    const roomy = build(["ہے:m بہت:b اچھا:h@600"], { language: "ur", input: { measure } }).pieces;
+    expect(size(roomy, "toon:0:w0")).toBeLessThan(size(roomy, "toon:0:w1") * 0.6);
+    const hi = build(["देखो:b तो:m इतना:b"], { language: "hi", input: { measure } }).pieces;
+    expect(size(hi, "toon:0:w1")).toBeCloseTo(size(hi, "toon:0:w0"), 3);
+  });
+
+  test("NFC and NFD input spell the same caption: same rows, sizes and text, never a syllable cut across rows", () => {
+    for (const [text, language] of [["한글로쓴문장에는음절이많이들어갑니다한글로쓴문장입니다", "ko"], ["électroencéphalographiquement", "fr"]] as const) {
+      const layouts = ["NFC", "NFD"].map((form) => {
+        const { pieces } = build([`${text.normalize(form)}:b@2000`], { language });
+        return pieces.filter((piece) => /^toon:0:w0(l\d{1,3})?$/.test(piece.id)).map((piece) => ({ text: piece.kind === "text" ? piece.text : "", size: (piece as { sizePx: number }).sizePx, y: Math.round(evaluatePiece(piece, 1500).y) }));
+      });
+      expect(layouts[1]).toEqual(layouts[0]!);
+      for (const part of layouts[0]!) expect(/^(?:\p{M}|[ᅠ-ᇿ])/u.test(part.text), part.text).toBe(false);
+    }
+  });
+
+  test("long tokens keep their floor after the final fit by paging through the band; ordinary small words keep theirs; every cue stays in budget", () => {
+    const han = "我们今天要讨论的是人工智能在未来十年里的发展方向".repeat(4).slice(0, 90);
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+      const natural = Math.min(canvas.width, canvas.height) / 1080;
+      const { pieces } = build([`${han}:b@4000`], { language: "zh", input: { canvas } });
+      const parts = pieces.filter((piece) => /^toon:0:w0(l\d{1,3})?$/.test(piece.id));
+      expect(parts.map((piece) => (piece.kind === "text" ? piece.text : "")).join("")).toBe(han);
+      for (const piece of parts) expect((piece as { sizePx: number }).sizePx, `${canvas.width}x${canvas.height}`).toBeGreaterThanOrEqual(96 * natural - 0.5);
+      expect(cost(pieces, 0)).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
+      expectInsideBand(pieces, `han ${canvas.width}x${canvas.height}`, canvas);
+      // Pages follow one another: every frame of the word shows some of it, never two pages at once.
+      for (const t of exportFrameTimes(1000, 4800, 30)) {
+        const live = parts.filter((piece) => box(piece, t));
+        expect(live.length, `frame ${t}`).toBeGreaterThan(0);
+        expect(new Set(live.map((piece) => piece.fromMs)).size).toBe(1);
+      }
+    }
+    for (const [lines, label] of [[[`${"漢".repeat(480)}:b@6000`], "480 han"], [["so:m i:m quit:b my:m job:b and:m the:m whole:b team", `${"a".repeat(400)}:h@3000`], "nine words + 400 letters"]] as const) {
+      const { cues, pieces } = build([...lines], { language: label.includes("han") ? "zh" : "en" });
+      for (const cue of cues) expect(cost(pieces, cue.index), `${label} cue ${cue.index}`).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
+      for (const piece of pieces.filter(isFace)) expect((piece as { sizePx: number }).sizePx, `${label} ${piece.id}`).toBeGreaterThanOrEqual(64 - 0.5);
+    }
+    const { cues } = sceneEdgeDemo("nine-words");
+    const nine = toonProgram.build(sceneInput(cues, { fps: 30, colours, anchor })).pieces;
+    for (const piece of nine.filter(isFace)) expect((piece as { sizePx: number }).sizePx, piece.id).toBeGreaterThanOrEqual(64 - 0.5);
+  });
+
+  test("the sparkle recurs on nearly every cue of ordinary speech", () => {
+    const run = fastRun(60);
+    const pieces = toonProgram.build(sceneInput(run, { fps: 30, colours, anchor })).pieces;
+    expect(new Set(pieces.filter((piece) => /:star$/.test(piece.id)).map(cueOf)).size).toBeGreaterThanOrEqual(run.length - 1);
+  });
+
+  test("the ball has landed before the exit starts, and peeks out from behind the key word's outline", () => {
+    // Short cues compress the ball's pop; it still lands before the squash starts (time-ordered tracks).
+    for (const run of [fastRun(0), fastRun(60), staccatoRun(60)]) {
+      const pieces = toonProgram.build(sceneInput(run, { fps: 30, colours, anchor })).pieces;
+      for (const ball of pieces.filter((piece) => /:ball(hi)?$/.test(piece.id))) {
+        for (const track of [ball.track.y, ball.track.sy, ball.track.sx]) {
+          for (let i = 1; i < (track?.length ?? 0); i++) expect(track![i]![0], `${ball.id} keys out of order`).toBeGreaterThanOrEqual(track![i - 1]![0]);
+        }
+      }
+    }
+    const { pieces } = build(["just:b start:h@520"], { cueGap: 700 });
+    const ball = pieces.find((piece) => piece.id === "toon:0:ball")!;
+    const hero = pieces.find((piece) => piece.id === "toon:0:w1")!;
+    const t = settledAt(hero);
+    expect(box(ball, t)!.y2).toBeGreaterThan(box(hero, t)!.y1);
   });
 });
