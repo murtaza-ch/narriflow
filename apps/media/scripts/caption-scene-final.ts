@@ -91,6 +91,7 @@ export const MOMENTS: Record<string, number[]> = {
   horizon: [450, 750, 1100, 3000, 4350, 6000],
   funky: [450, 1000, 1500, 2300, 3300, 4208],
   marquee: [520, 1050, 1350, 2408, 3758, 4500],
+  keycap: [467, 1300, 2600, 3000, 4500, 6900, 7400],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;

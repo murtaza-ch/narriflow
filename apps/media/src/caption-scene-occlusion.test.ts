@@ -39,6 +39,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "funky",
   "horizon",
   "marquee",
+  "keycap",
 ];
 
 const LINES = [
