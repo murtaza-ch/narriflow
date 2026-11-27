@@ -425,4 +425,28 @@ describe("helium", () => {
     expect(ru.pieces.some((piece) => /^helium:0:w1l\d+$/.test(piece.id))).toBe(false);
     expect(ru.pieces.filter((piece) => piece.id === "helium:0:w1g").length).toBe(1);
   });
+
+  // --- review round 2 ---
+
+  test("the rows of a wrapped word rise as one block: no two rows of it meet on any lead-in frame (Latin and a 90-character CJK token)", () => {
+    const cjk = "我们今天要讨论的是一个非常重要而且非常有意思的问题".repeat(4).slice(0, 90);
+    for (const built of [
+      build([`${cjk}:h@1200`], { language: "zh" }),
+      build([`${cjk}:b`], { language: "zh" }),
+      build(["pneumonoultramicroscopicsilicovolcanoconiosis:b"]),
+      build(["contemporaneousness:h@900"], { input: { canvas: { width: 1920, height: 1080 } } }),
+      build(["it's:m abdominohysterectomy:h@900 hard:b"], { input: { canvas: { width: 1080, height: 1080 } } }),
+    ]) {
+      const cue = built.cues[0]!;
+      const word = cue.words.findIndex((item) => [...item.text].length >= 15);
+      const rows = built.pieces.filter((piece) => new RegExp(`^helium:0:w${word}l\\d+[srd]?$`).test(piece.id));
+      const part = (piece: Piece) => Number(/l(\d+)/.exec(piece.id)![1]);
+      expect(new Set(rows.map(part)).size).toBeGreaterThan(1);
+      const onset = cue.words[word]!.startMs;
+      for (const t of exportFrameTimes(Math.min(...rows.map((piece) => piece.fromMs)), onset + 450, 30)) {
+        const live = rows.map((piece) => ({ part: part(piece), box: pieceBounds(piece, t, built.input.measure) })).filter((item) => item.box !== null);
+        for (const [i, a] of live.entries()) for (const b of live.slice(i + 1)) if (a.part !== b.part) expect(meets(a.box!, b.box!)).toBe(false);
+      }
+    }
+  });
 });

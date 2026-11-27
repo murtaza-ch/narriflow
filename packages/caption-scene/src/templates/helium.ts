@@ -377,8 +377,9 @@ interface Unit {
   /** The first painted moment at or after the spoken start: the word is opaque and in its slot here. */
   readonly onset: number;
   readonly row: number;
-  /** Rise distance, canvas px: the sample's share of the lead the word really has, never past the band's bottom. */
-  readonly rise: number;
+  /** Rise distance, canvas px: the sample's share of the lead the word really has, never past the band's bottom. One per word:
+   * the rows of a wrapped word (and the letters of a key word) rise together as one block. */
+  rise: number;
   readonly box: Box;
   nudge?: { readonly at: number; readonly dir: number };
   puff?: boolean;
@@ -553,6 +554,14 @@ export const heliumProgram = galleryScene("helium", CY, (ctx) => {
     } else add(cell, `${ctx.id}:w${w}`, 0, 1, cell.x, Number.NaN);
   });
 
+  // A word rises as one block: every row and letter of it takes the smallest clearance any of them has, so a wrapped word's
+  // rows keep their spacing through the entrance.
+  for (const w of words.keys()) {
+    const own = units.filter((unit) => unit.word === w);
+    const rise = Math.min(...own.map((unit) => unit.rise));
+    for (const unit of own) unit.rise = rise;
+  }
+
   // --- a landing word nudges its neighbour on the row outward and back; the last word of a cue with no key word inflates ---
   const rowUnits = rows.map((_, r) => units.filter((unit) => unit.row === r && unit.letter === 0 && !unit.fragment));
   for (const list of rowUnits) {
@@ -573,10 +582,11 @@ export const heliumProgram = galleryScene("helium", CY, (ctx) => {
   const move = (t: number) => (exitOn ? EASES.in(prog(t, exitFrom, to - exitFrom)) : 0);
   const fade = (t: number) => (exitOn ? prog(t, fadeFrom, to - fadeFrom) : 0);
 
-  const bob = (t: number, s: number, phase: number) => {
+  // A wrapped word's rows bob together without the turn: turned about their own middles, wide rows would tip into each other.
+  const bob = (t: number, s: number, phase: number, fragment = false) => {
     const settle = EASES.out(prog(t, s + 320, 400));
     const a = ((t - s) / 1700) * Math.PI * 2 + phase;
-    return { y: Math.sin(a) * 3.2 * lu * settle, r: Math.sin(a * 0.8 + 1) * 0.7 * settle };
+    return { y: Math.sin(a) * 3.2 * lu * settle, r: fragment ? 0 : Math.sin(a * 0.8 + 1) * 0.7 * settle };
   };
   const stagger = (unit: Unit) => (unit.letters > 1 ? Math.min(STAGGER, STAGGER_TOTAL / (unit.letters - 1)) : 0);
   const waveEnd = (unit: Unit) => unit.onset + (unit.letters - 1) * stagger(unit) + 300;
@@ -602,7 +612,7 @@ export const heliumProgram = galleryScene("helium", CY, (ctx) => {
   /** A hero group's pose applied to a point at rest (`x`, `y` plus a rise `dy`), with the point's own scale. */
   const heroPose = (unit: Unit, t: number, x: number, y: number, dy: number, own: number): Pose => {
     const swell = unit.fragment ? 1 : kf(t - (waveEnd(unit) - 120), [[0, 1], [190, 1.08, "out"], [SWELL_MS, 1, "inOut"]]);
-    const b = bob(t, unit.spoken, 0.6);
+    const b = bob(t, unit.spoken, 0.6, unit.fragment);
     const m = move(t);
     const gs = swell * (1 - 0.05 * m);
     const angle = (b.r * Math.PI) / 180;
@@ -623,7 +633,7 @@ export const heliumProgram = galleryScene("helium", CY, (ctx) => {
   const pose = (unit: Unit, t: number): Pose => {
     const keys = keysOf.get(unit)!;
     if (unit.hero) return heroPose(unit, t, unit.px, unit.py, kf(t, keys.y), kf(t, keys.s));
-    const b = bob(t, unit.spoken, unit.word * 1.7 + index);
+    const b = bob(t, unit.spoken, unit.word * 1.7 + index, unit.fragment);
     const m = move(t);
     const nudge = unit.nudge ? unit.nudge.dir * 5 * lu * Math.sin(Math.PI * prog(t, unit.nudge.at, 280)) : 0;
     const puff = unit.puff ? kf(t - unit.onset, [[0, 1], [150, 1.06, "out"], [380, 1, "inOut"]]) : 1;
