@@ -3,7 +3,8 @@ import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-s
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameAfter, exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
 import type { SceneCue, SceneInput } from "./input";
-import { type Box, type Measure, type Piece, type TextPiece, evaluatePiece, pieceBounds } from "./scene";
+import { captionColourContrast } from "@narriflow/validators";
+import { type Box, type Measure, type Piece, type ShapePiece, type TextPiece, evaluatePiece, mixColour, pieceBounds } from "./scene";
 import { fakeMeasure, sceneInput } from "./test-support";
 import { HANDHELD_DEMO, handheldProgram } from "./templates/handheld";
 
@@ -238,7 +239,7 @@ describe("handheld motion", () => {
     const lastPaint = exportFrameTimes(face.fromMs, face.toMs, 30).at(-1)!;
     const next = Math.min(...faces(pieces, 2).map((piece) => exportFrameAtOrAfter(piece.fromMs, 30)));
     expect(exportFrameAfter(lastPaint, 30)).toBe(next);
-    const frames = exportFrameTimes(face.toMs - 80, face.toMs, 30);
+    const frames = exportFrameTimes(face.toMs - 120, face.toMs, 30);
     const xs = frames.map((t) => evaluatePiece(face, t).x);
     expect(xs.at(-1)!).toBeLessThan(xs.at(-2)!);
     expect(xs.at(-2)!).toBeLessThan(xs[0]!);
@@ -270,10 +271,10 @@ describe("handheld motion", () => {
     const paused = demoCues({ lines: ["stop:b waiting:b", "press:b start:h@500", "now:b"], options: { lead: 400, gap: 30, cueGap: 900, tail: 300 } }).cues;
     const apart = handheldProgram.build(input(paused, { measure: fakeMeasure })).pieces;
     expect(apart.filter((piece) => /:lcd$/.test(piece.id)).length).toBe(3);
+    // A short pause keeps one lit glass across both cues.
     const close = demoCues({ lines: ["stop:b waiting:b", "press:b start:h@500"], options: { lead: 400, gap: 30, cueGap: 400, tail: 300 } }).cues;
     const bridged = handheldProgram.build(input(close, { measure: fakeMeasure })).pieces.filter((piece) => /:lcd$/.test(piece.id));
-    expect(bridged.length).toBe(2);
-    expect(bridged[0]!.toMs).toBe(bridged[1]!.fromMs);
+    expect(bridged.length).toBe(1);
   });
 
   test("the scan band and the status pips come back on every cue of a long clip; the cursor and ghost on every key-word cue", () => {
@@ -300,11 +301,11 @@ describe("handheld motion", () => {
 });
 
 describe("handheld colours", () => {
-  test("ink that cannot read on the glass falls back to the style's own colours (#858585 does not, #666666 does)", () => {
+  test("ink that cannot read on the glass falls back to the style's own colours (#858585 and #666666 do not, #333333 does)", () => {
     const grey = build(["it:m starts:b now:h@400"], undefined, { colours: { ...COLOURS, primary: "#858585" } }).pieces;
     expect(faces(grey, 0)[0]!.fill).toBe("#2B4220");
-    const dark = build(["it:m starts:b now:h@400"], undefined, { colours: { ...COLOURS, primary: "#666666", highlight: "#333333" } }).pieces;
-    expect(faces(dark, 0)[0]!.fill).toBe("#666666");
+    const dark = build(["it:m starts:b now:h@400"], undefined, { colours: { ...COLOURS, primary: "#333333", highlight: "#222222" } }).pieces;
+    expect(faces(dark, 0)[0]!.fill).toBe("#333333");
     const lcd = dark.find((piece) => piece.id === "handheld:0:lcd")!;
     expect(lcd.kind === "shape" && lcd.fill?.colour).toBe("#B8D18B");
   });
@@ -317,3 +318,145 @@ describe("handheld colours", () => {
     expect(ring.kind === "shape" && ring.stroke?.colour).not.toBe("#93AE66");
   });
 });
+
+describe("handheld: review round 1", () => {
+  /** Cue ends as the product makes them: a 650 ms tail after the last word, or the next cue's start when that comes first. */
+  const realEnds = (cues: readonly SceneCue[]): SceneCue[] =>
+    cues.map((cue, i) => {
+      const last = Math.max(...cue.words.map((word) => word.endMs));
+      return { ...cue, endMs: Math.min(last + 650, cues[i + 1]?.startMs ?? Number.POSITIVE_INFINITY) };
+    });
+  const lcds = (pieces: readonly Piece[]) => pieces.filter((piece) => /:lcd$/.test(piece.id));
+  const lit = (pieces: readonly Piece[], t: number, measure: Measure = fakeMeasure) => lcds(pieces).some((piece) => box(piece, t, measure));
+  const inked = (pieces: readonly Piece[], t: number, measure: Measure = fakeMeasure) => pieces.some((piece) => isFace(piece) && box(piece, t, measure));
+
+  test("the glass is never lit without ink: every lit frame shows a word, at every gap and frame rate", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const cueGap of [0, 60, 360, 690, 900, 1240, 2000]) {
+        const cues = realEnds(demoCues({ ...HANDHELD_DEMO, options: { ...HANDHELD_DEMO.options, cueGap } }).cues);
+        const pieces = handheldProgram.build(input(cues, { fps, measure: fakeMeasure })).pieces;
+        for (const t of exportFrameTimes(0, cues.at(-1)!.endMs + 200, fps)) {
+          if (lit(pieces, t)) expect(inked(pieces, t), `bare glass at ${t} (gap ${cueGap}, ${fps} fps)`).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("a long spoken pause powers the glass off and the next run opens on its first ink frame; a short one keeps it lit", () => {
+    const lines = ["stop:b waiting:b for:m it", "press:b start:h@500"];
+    const pause = realEnds(demoCues({ lines, options: { lead: 400, gap: 30, cueGap: 1240, tail: 400 } }).cues);
+    const pieces = handheldProgram.build(input(pause, { measure: fakeMeasure })).pieces;
+    const frames = exportFrameTimes(pause[0]!.words.at(-1)!.endMs, pause[1]!.startMs, 30);
+    expect(frames.some((t) => !lit(pieces, t)), "a dark frame in the pause").toBe(true);
+    const opening = exportFrameAtOrAfter(Math.min(...lcds(pieces).filter((piece) => cueOf(piece) === 1).map((piece) => piece.fromMs)), 30);
+    expect(faces(pieces, 1).some((piece) => box(piece, opening, fakeMeasure)), `ink on the opening frame ${opening}`).toBe(true);
+    const short = realEnds(demoCues({ lines, options: { lead: 400, gap: 30, cueGap: 600, tail: 400 } }).cues);
+    const kept = handheldProgram.build(input(short, { measure: fakeMeasure })).pieces;
+    for (const t of exportFrameTimes(Math.min(...kept.filter(isFace).map((piece) => exportFrameAtOrAfter(piece.fromMs, 30))), short[1]!.words[0]!.startMs, 30)) {
+      expect(lit(kept, t), `lit at ${t}`).toBe(true);
+    }
+  });
+
+  test("an outlier cue gets a taller window for its own time only, top edge fixed; another run keeps its own height", () => {
+    // Four rows: taller than the run's three-row window, short enough to keep its top edge.
+    const token = "我们今天要讨论的是一个非常重要的问题".repeat(2);
+    const { cues } = demoCues({ lines: ["press:b start:h@560", `${token}:h@3000`, "是的:b@400", "好的:b@400"], language: "zh", options: { lead: 400, gap: 30, cueGap: 60, tail: 500 } });
+    const run = realEnds(cues).map((cue, i) => (i === 3 ? shiftCue(cue, 3000) : cue));
+    const pieces = handheldProgram.build(input(run)).pieces;
+    const g = run.map((cue) => glassAt(pieces, settled(cue))[0]!);
+    const h = g.map((b) => b.y2 - b.y1);
+    expect(h[1]!).toBeGreaterThan(h[0]! + 100);
+    expect(h[2]!).toBeCloseTo(h[0]!, 3);
+    expect(g[1]!.y1).toBeCloseTo(g[0]!.y1, 3);
+    expect(h[3]!).toBeCloseTo(340, 0);
+    // Inside a cue the window never moves or resizes (apart from the one-frame power slits at a run's first and last frame).
+    for (const cue of run) {
+      const own = faces(pieces, cue.index);
+      const from = Math.min(...own.map((piece) => exportFrameAtOrAfter(piece.fromMs, 30)));
+      const until = Math.max(...own.map((piece) => piece.toMs));
+      const first = glassAt(pieces, settled(cue))[0]!;
+      for (const t of exportFrameTimes(from, until, 30).slice(1, -1)) {
+        const now = glassAt(pieces, t);
+        if (now.length) expect(now[0]!, `window of cue ${cue.index} at ${t}`).toEqual(first);
+      }
+    }
+  });
+
+  test("accepted colours keep 3:1 on the glass, the grid and the grid under the scan; others fall back", () => {
+    const { cues } = demoCues(HANDHELD_DEMO);
+    for (const [colours, kept] of [
+      [{ ...COLOURS, primary: "#666666" }, false],
+      [{ ...COLOURS, highlight: "#666666" }, false],
+      [{ ...COLOURS, primary: "#333333", highlight: "#222222" }, true],
+      [COLOURS, true],
+    ] as const) {
+      const pieces = handheldProgram.build(input(cues, { colours, measure: fakeMeasure })).pieces;
+      const words = pieces.filter(isFace);
+      if (!kept) expect(words.every((piece) => piece.fill === COLOURS.primary || piece.fill === COLOURS.highlight)).toBe(true);
+      const lcd = pieces.find((piece) => /:lcd$/.test(piece.id)) as ShapePiece;
+      const grid = pieces.find((piece) => /:lcdgrid$/.test(piece.id)) as ShapePiece;
+      const scan = pieces.find((piece) => /:scan$/.test(piece.id)) as ShapePiece;
+      const under = mixColour(lcd.fill!.colour, grid.fill!.colour, grid.fill!.alpha ?? 1);
+      const scanned = mixColour(under, scan.fill!.colour, scan.fill!.alpha ?? 1);
+      for (const word of words) for (const backing of [lcd.fill!.colour, under, scanned]) expect(captionColourContrast(word.fill, backing), `${word.fill} on ${backing}`).toBeGreaterThanOrEqual(3);
+      // The scan really crosses words.
+      const crossing = exportFrameTimes(scan.fromMs, scan.toMs, 30).some((t) => {
+        const b = box(scan, t, fakeMeasure);
+        return b !== null && words.some((word) => {
+          const ink = box(word, t, fakeMeasure);
+          return ink !== null && meets(b, ink);
+        });
+      });
+      expect(crossing).toBe(true);
+    }
+  });
+
+  test("long key words take two rows at the floor at 9:16, 1:1 and 16:9 (the cursor counted at the size tried, on its own row)", () => {
+    // Silkscreen's real width: about 0.875 em a letter (CONTEMPORA at 80 px is 700 px).
+    const wide: Measure = (text, face, size, spacing) => ({ ...fakeMeasure(text, face, size, spacing), advance: [...text].length * (face === "Silkscreen Bold" ? 0.875 : 0.6) * size });
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+      for (const word of ["contemporaneousness", "abdominohysterectomy"]) {
+        const { cues, pieces } = build([`${word}:h@900`], undefined, { canvas, measure: wide });
+        const parts = faces(pieces, 0);
+        expect(parts.map((piece) => piece.text), `${word} on ${canvas.width}x${canvas.height}`).toHaveLength(2);
+        for (const part of parts) expect(part.sizePx).toBeGreaterThanOrEqual(80 - 0.01);
+        checkCue(pieces, cues[0]!, { x1: 0.05 * canvas.width, y1: 0.05 * canvas.height, x2: 0.95 * canvas.width, y2: 0.95 * canvas.height }, wide);
+      }
+    }
+  });
+
+  test("NFC and NFD spell the same layout; a mark with no precomposed form stays on its letter", () => {
+    const nfc = "désinstitutionnalisation".normalize("NFC");
+    const shapeOf = (word: string) => faces(build([`${word}:h@900`], "fr").pieces, 0).map((piece) => `${piece.text}@${piece.sizePx.toFixed(2)}`);
+    expect(shapeOf(nfc).length).toBeGreaterThanOrEqual(2);
+    expect(shapeOf(nfc.normalize("NFD"))).toEqual(shapeOf(nfc));
+    const parts = faces(build([`${"x\u0303".repeat(40)}:b@900`]).pieces, 0);
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    for (const part of parts) expect(part.text.startsWith("\u0303")).toBe(false);
+  });
+
+  test("at most 150 layers a cue, shadows counted, with every word kept: nine short words and a 600-letter key word", () => {
+    const token = "a".repeat(600);
+    const { pieces } = build([`so:m the:m real:b reason:b most:b people:b never:b get:b there:m ${token}:h@3000`]);
+    const layers = pieces.filter((piece) => cueOf(piece) === 0).reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0) + (piece.kind === "shape" && piece.fill && piece.stroke ? 1 : 0), 0);
+    expect(layers).toBeLessThanOrEqual(150);
+    const own = faces(pieces, 0);
+    for (let word = 0; word < 10; word++) expect(own.some((piece) => faceRe.exec(piece.id)![2] === String(word))).toBe(true);
+    expect(own.filter((piece) => piece.id.startsWith("handheld:0:w9")).map((piece) => piece.text).join("")).toBe(token.toUpperCase());
+  });
+
+  test("short cues keep a compact scan and a still cursor: staccato speech at 25 fps", () => {
+    const run = staccatoRun(0);
+    const pieces = handheldProgram.build(input(run, { fps: 25, measure: fakeMeasure })).pieces;
+    const paints = (re: RegExp, cue: number) => pieces.some((piece) => re.test(piece.id) && cueOf(piece) === cue && exportFrameTimes(piece.fromMs, piece.toMs, 25).filter((t) => box(piece, t, fakeMeasure)).length >= 2);
+    const scanned = run.filter((cue) => paints(/:scan$/, cue.index)).length;
+    const heroCues = run.filter((cue) => cue.words.some((word) => word.role === "hero"));
+    const cursors = heroCues.filter((cue) => paints(/cursor$/, cue.index)).length;
+    expect(scanned).toBeGreaterThanOrEqual(run.length / 2);
+    expect(cursors).toBeGreaterThanOrEqual(Math.ceil(heroCues.length / 2));
+  });
+});
+
+function shiftCue(cue: SceneCue, by: number): SceneCue {
+  return { ...cue, startMs: cue.startMs + by, endMs: cue.endMs + by, words: cue.words.map((word) => ({ ...word, startMs: word.startMs + by, endMs: word.endMs + by })) };
+}
