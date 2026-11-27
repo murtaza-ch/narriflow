@@ -73,3 +73,14 @@ describe("Preview stacking", () => {
     expect(PREVIEW_Z.textFrame).toBeLessThan(PREVIEW_Z.status);
   });
 });
+
+describe("floating text toolbar stacking", () => {
+  test("sits above the Studio's fixed shell and under its dialogs", async () => {
+    const { TEXT_TOOLBAR_Z } = await import("./text-layer-canvas");
+    const layout = await Bun.file(new URL("../layout.tsx", import.meta.url)).text();
+    const shell = Number(/zIndex=\{(\d+)\}/.exec(layout)?.[1]);
+    expect(shell).toBeGreaterThan(0);
+    expect(TEXT_TOOLBAR_Z).toBeGreaterThan(shell);
+    expect(TEXT_TOOLBAR_Z).toBeLessThan(300);
+  });
+});

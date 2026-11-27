@@ -315,6 +315,9 @@ export function TextLayerCanvas({ entries, canvas, scale, timeSource, timeSec, s
  * The toolbar under the frame (above it without room), kept inside the bounds. Portaled with fixed
  * positioning so the preview's clipping never cuts it; placed from the canvas's screen position.
  */
+/** The floating toolbar's stacking: above the Studio shell (z 200), below Studio dialogs (z 300). */
+export const TEXT_TOOLBAR_Z = 210;
+
 function FloatingToolbar({ rootRef, boundsRef, frame, children }: { rootRef: React.RefObject<HTMLDivElement | null>; boundsRef?: React.RefObject<HTMLElement | null>; frame: { left: number; top: number; right: number; bottom: number }; children: (compact: boolean) => ReactNode }) {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
@@ -356,7 +359,9 @@ function FloatingToolbar({ rootRef, boundsRef, frame, children }: { rootRef: Rea
         role="toolbar"
         aria-label="Text"
         position="fixed"
-        zIndex={40}
+        // Portaled to the body: it must sit above the Studio's own fixed shell (studio/layout.tsx, z 200),
+        // and under dialogs (z 300) and the toolbar's own menus.
+        zIndex={TEXT_TOOLBAR_Z}
         style={{ left: `${place?.left ?? -9999}px`, top: `${place?.top ?? -9999}px`, visibility: place ? "visible" : "hidden" }}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
