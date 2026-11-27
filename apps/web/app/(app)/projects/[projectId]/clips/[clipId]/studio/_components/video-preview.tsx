@@ -476,6 +476,8 @@ export function VideoPreview() {
 			: { state: "failed" as const };
 	}, [studioEdits.visualBroll, visualAssets]);
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Whether the current press began on the empty preview background (see the area's onClick). */
+  const backgroundPressRef = useRef(false);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const transitionOverlayRef = useRef<HTMLDivElement>(null);
   const mainVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1808,11 +1810,17 @@ export function VideoPreview() {
         overflow="hidden"
         bg="studio.canvas"
         position="relative"
+        onPointerDownCapture={(e) => {
+          backgroundPressRef.current = e.target === e.currentTarget;
+        }}
         onClick={(e) => {
-          if (e.target === e.currentTarget) {
+          // Only a press that began on the empty background deselects. Selecting a layer opens its
+          // panel and narrows the preview, so the release can land on the background under the pointer.
+          if (e.target === e.currentTarget && backgroundPressRef.current) {
             deselectCaption();
             deselectTextLayer();
           }
+          backgroundPressRef.current = false;
         }}
       >
         {/* Video container with aspect ratio */}
