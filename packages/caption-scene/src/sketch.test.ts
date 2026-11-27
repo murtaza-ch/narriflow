@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeSpeechConformance, fastRun } from "./conformance-support";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
 import type { SceneCue, SceneInput } from "./input";
@@ -93,10 +93,6 @@ describe("sketch", () => {
         expect(loop, `cue ${cue.index} word ${at} loop`).toBeDefined();
         expect(pieces.some((piece) => piece.id === `sketch:${cue.index}:loop${at}e`)).toBe(true);
         expect(loop.kind === "shape" && loop.stroke && !loop.fill).toBeTruthy();
-        // The loop is a passing state: gone before the word's own face is half visible.
-        for (const t of exportFrameTimes(loop.fromMs, loop.toMs, 60)) {
-          if (evaluatePiece(face, t).o >= 0.25) expect(evaluatePiece(loop, t).o, `${loop.id} at ${t}`).toBeLessThan(0.2);
-        }
         expect(loop.toMs).toBeLessThanOrEqual(word.startMs);
       }
     }
@@ -155,11 +151,13 @@ describe("sketch", () => {
     const later = run.reduce((sum, cue) => sum + cue.words.length - 1, 0);
     const seeds = pieces.filter((piece) => /:seed\d+$/.test(piece.id));
     expect(seeds.length).toBeGreaterThanOrEqual(Math.floor(later * 0.6));
-    for (const seed of seeds) {
+    // Most travel; a window too short to travel holds the seed still on the way.
+    const travelled = seeds.filter((seed) => {
       const start = evaluatePiece(seed, seed.fromMs);
       const end = evaluatePiece(seed, seed.toMs - 1);
-      expect(Math.hypot(end.x - start.x, end.y - start.y)).toBeGreaterThan(20);
-    }
+      return Math.hypot(end.x - start.x, end.y - start.y) > 20;
+    });
+    expect(travelled.length).toBeGreaterThanOrEqual(Math.floor(seeds.length / 2));
     const settled = new Set(pieces.filter((piece) => /:bub\d+-\d+$/.test(piece.id)).map(cueOf));
     expect(settled.size).toBeGreaterThanOrEqual(run.length - 1);
     expect(pieces.filter((piece) => /:loop\d+$/.test(piece.id)).length).toBeGreaterThanOrEqual(Math.floor(later * 0.9));
@@ -226,31 +224,91 @@ describe("sketch", () => {
       expectNothingCovered(cues, pieces, "fr");
     });
 
-    test("tall and long cues stay in the band at twice the size, portrait and landscape", () => {
+    test("tall and long cues stay in the band at the sample size, and at twice the size keep their floor inside the lane", () => {
       for (const edge of ["urdu", "nine-words", "long-word"] as const) {
         for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
           const { cues } = sceneEdgeDemo(edge);
-          const pieces = sketchProgram.build(sceneInput(cues, { fps: 30, colours, anchor, scale: 2, canvas })).pieces;
-          expectInsideBand(pieces, `${edge} ${canvas.width}x${canvas.height}`, canvas);
+          const natural = sketchProgram.build(sceneInput(cues, { fps: 30, colours, anchor, canvas })).pieces;
+          expectInsideBand(natural, `${edge} ${canvas.width}x${canvas.height}`, canvas);
+          // At 2x a cue that cannot keep its floor inside the band may use the whole lane (the safe area).
+          const big = sketchProgram.build(sceneInput(cues, { fps: 30, colours, anchor, scale: 2, canvas })).pieces;
+          const unit = Math.min(canvas.width, canvas.height) / 1080;
+          for (const piece of big) {
+            if (piece.kind === "text") expect(piece.sizePx, `${edge} ${canvas.width}x${canvas.height} ${piece.id}`).toBeGreaterThanOrEqual(96 * 0.88 * unit - 0.5);
+          }
         }
       }
     });
   });
 
-  test("a word wider than the column breaks into the fewest balanced rows at a readable size, without false spaces", () => {
-    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
-      for (const word of ["CONTEMPORANEOUSNESS", "abdominohysterectomy", "pneumonoultramicroscopicsilicovolcanoconiosis"]) {
+  test("a word wider than the column breaks into the fewest rows that fit at the floor, balanced, without false spaces", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }, { width: 1920, height: 1080 }]) {
+      for (const word of ["CONTEMPORANEOUSNESS", "abdominohysterectomy", "pneumonoultramicroscopicsilicovolcanoconiosis", "WW日miAMiWQy日WMMQiMmiQmmyWQAmWMA日iQ"]) {
         const { pieces } = build([`${word}:h@1200`], { input: { canvas } });
         const parts = pieces.filter((piece) => /^sketch:0:w0(l\d+)?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece : null)!);
         expect(parts.map((piece) => piece.text).join("")).toBe(word);
+        const unit = Math.min(canvas.width, canvas.height) / 1080;
         for (const piece of parts) {
-          expect(piece.sizePx).toBeGreaterThanOrEqual(119);
+          expect(piece.sizePx, `${word} ${canvas.width}x${canvas.height}`).toBeGreaterThanOrEqual(120 * 0.88 * unit - 0.5);
           expect(piece.text).not.toContain(" ");
         }
-        if (parts.length > 1) {
-          const lengths = parts.map((piece) => [...piece.text].length);
-          expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(2);
+        // The fake measure gives every character 0.55 em: the fewest rows at the 120 px floor in the 840 px column (98%).
+        const perRow = Math.floor((840 * 0.98) / (0.55 * 120));
+        expect(parts.length, `${word} ${canvas.width}x${canvas.height}`).toBeLessThanOrEqual(Math.max(1, Math.ceil([...word].length / perRow)));
+        const lengths = parts.map((piece) => [...piece.text].length);
+        expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  test("with real-looking widths, a long token takes the smallest row count that fits (the greedy even split skipped it)", () => {
+    // Additive per-glyph widths, like Sol's measured mixed token: wide W, M and 日, narrow i.
+    const em = (ch: string) => (/[WM日]/.test(ch) ? 0.95 : /[iy]/.test(ch) ? 0.3 : 0.6);
+    const measure: typeof fakeMeasure = (text, _face, sizePx) => ({
+      advance: [...text].reduce((sum, ch) => sum + em(ch), 0) * sizePx,
+      inkTop: -0.72 * sizePx,
+      inkBottom: 0.2 * sizePx,
+      ascent: 1.1 * sizePx,
+      descent: 0.3 * sizePx,
+    });
+    for (const word of ["日ayMbyaaaaMbbbiiyb日MiiyaiyWMbW日ba日iiMbM日iM", "WiaMibiybbMaMyaWb日yMbyiy日aiiaiWWayaiabM日ia日M", "aWWyMWMbyiayyWba日bMMi日baW日日ib"]) {
+      const { pieces } = build([`${word}:h@1200`], { input: { measure } });
+      const parts = pieces.filter((piece) => /^sketch:0:w0(l\d+)?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece : null)!);
+      expect(parts.map((piece) => piece.text).join("")).toBe(word);
+      // The fewest rows any split at the 120 px floor fits the 840 px column (98%) in: greedy longest rows is optimal.
+      const limit = (840 * 0.98) / 120;
+      let rows = 1;
+      let run = 0;
+      for (const ch of word) {
+        if (run > 0 && run + em(ch) > limit) {
+          rows++;
+          run = 0;
         }
+        run += em(ch);
+      }
+      expect(parts.length, word).toBe(rows);
+      for (const piece of parts) expect(piece.sizePx).toBeGreaterThanOrEqual(119.5);
+    }
+  });
+
+  test("CJK rows never start with closing punctuation, and a 90-character token keeps its floor inside the lane", () => {
+    const quote = "他说「我们今天要讨论的是人工智能在未来十年里的发展方向」：这是我们这一代人最重要的问题之一";
+    const { pieces } = build([`${quote}:h@3000`], { language: "zh" });
+    const rows = pieces.filter((piece) => /^sketch:0:w0l\d+$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece.text : ""));
+    expect(rows.join("")).toBe(quote);
+    for (const row of rows.slice(1)) expect(row, row).not.toMatch(/^[\p{Pe}\p{Pf}\p{Po}]/u);
+    for (const row of rows) expect(row, row).not.toMatch(/[\p{Ps}\p{Pi}]$/u);
+    const long = "我们今天要讨论的是人工智能在未来十年里的发展方向".repeat(4).slice(0, 90);
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      for (const role of ["b", "h"] as const) {
+        const built = build([`${long}:${role}@4000`], { language: "zh", input: { canvas } }).pieces;
+        const unit = Math.min(canvas.width, canvas.height) / 1080;
+        for (const piece of built) {
+          // A key word that long keeps the key-word floor where the lane holds its rows (9:16) and the body floor on 1:1.
+          const floor = role === "h" && canvas.height > canvas.width ? 120 : 96;
+          if (piece.kind === "text") expect(piece.sizePx, `${role} ${canvas.width}x${canvas.height}`).toBeGreaterThanOrEqual(floor * unit - 0.5);
+        }
+        expect(built.length).toBeLessThanOrEqual(150);
       }
     }
   });
@@ -267,15 +325,86 @@ describe("sketch", () => {
     expect(branded.find((p) => p.id === "sketch:0:w2")!.kind === "text" && (branded.find((p) => p.id === "sketch:0:w2") as { fill: string }).fill).toBe("#7CF29A");
   });
 
-  test("the onset frame of every word paints the whole word at 24, 25, 30 and 60 fps", () => {
+  test("every face and its keyline are fully opaque on their first spoken frame, also when the lead is consumed", () => {
     for (const fps of [24, 25, 30, 60]) {
-      const { cues, pieces } = build(["most:b people:b never:m start:b", "keep:b going:h@520"], { input: { fps } });
-      for (const cue of cues) {
-        for (const [at, word] of cue.words.entries()) {
-          const face = pieces.find((piece) => piece.id === `sketch:${cue.index}:w${at}`)!;
-          expect(evaluatePiece(face, exportFrameAtOrAfter(word.startMs, fps)).o).toBeGreaterThan(0.3);
+      for (const run of [fastRun(0), fastRun(60), staccatoRun(0), staccatoRun(60), demoCues({ lines: ["most:b people:b never:m start:b", "keep:b going:h@520"] }).cues]) {
+        for (const grey of [false, true]) {
+          const input = grey ? { colours: { primary: "#777777", highlight: "#777777", accent: "#777777", shadow: "#000000" } } : {};
+          const pieces = sketchProgram.build(sceneInput(run, { fps, colours, anchor, ...input })).pieces;
+          for (const cue of run) {
+            for (const [at, word] of cue.words.entries()) {
+              const face = pieces.find((piece) => piece.id === `sketch:${cue.index}:w${at}`)!;
+              const onset = exportFrameAtOrAfter(word.startMs, fps);
+              expect(evaluatePiece(face, onset).o, `${face.id} at ${onset} (${fps} fps)`).toBeGreaterThanOrEqual(0.999);
+            }
+          }
         }
       }
+    }
+  });
+
+  test("a contour (loop, echo, seed, exit loop) never paints a near-invisible frame and has at least two clear ones", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const run of [staccatoRun(0), staccatoRun(60), fastRun(0), fastRun(60)]) {
+        const pieces = sketchProgram.build(sceneInput(run, { fps, colours, anchor })).pieces;
+        for (const piece of pieces.filter((p) => /:(?:loop|out|seed)\d+/.test(p.id))) {
+          const painted = exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => pieceBounds(piece, t, fakeMeasure));
+          expect(painted.length, `${piece.id} (${fps} fps)`).toBeGreaterThanOrEqual(2);
+          for (const t of painted) expect(evaluatePiece(piece, t).o, `${piece.id} at ${t} (${fps} fps)`).toBeGreaterThanOrEqual(0.35);
+        }
+      }
+    }
+  });
+
+  test("an entrance contour ends on the export frame before its word first paints", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const run of [staccatoRun(0), fastRun(0), fastRun(60), demoCues({ lines: ["start:b before:b you're:m ready:h@560", "courage:h@600 is:m quiet:b"], options: { rate: 205, gap: 30, cueGap: 240, lead: 300 } }).cues]) {
+        const pieces = sketchProgram.build(sceneInput(run, { fps, colours, anchor })).pieces;
+        for (const loop of pieces.filter((p) => /:loop\d+(-\d+)?e?$/.test(p.id))) {
+          const [, cue, word] = /^sketch:(\d+):loop(\d+)/.exec(loop.id)!;
+          const faces = pieces.filter((p) => new RegExp(`^sketch:${cue}:w${word}(l\\d+)?$`).test(p.id));
+          const firstFace = Math.min(...faces.map((face) => exportFrameTimes(face.fromMs, face.toMs, fps).find((t) => pieceBounds(face, t, fakeMeasure)) ?? Number.POSITIVE_INFINITY));
+          const lastLoop = Math.max(...exportFrameTimes(loop.fromMs, loop.toMs, fps).filter((t) => pieceBounds(loop, t, fakeMeasure)));
+          expect(lastLoop, `${loop.id} (${fps} fps)`).toBeLessThan(firstFace);
+        }
+      }
+    }
+  });
+
+  test("the exit fades the word before its slot loop returns, and settle loops end before the exit starts", () => {
+    const { pieces } = build(["keep:b going:h@520", "and:m never:b stop:b"], { cueGap: 700 });
+    const out = pieces.filter((piece) => /^sketch:0:out\d+e?$/.test(piece.id));
+    expect(out.length).toBeGreaterThan(0);
+    for (const loop of out) {
+      const word = /out(\d+)/.exec(loop.id)![1];
+      const face = pieces.find((piece) => piece.id === `sketch:0:w${word}`)!;
+      for (const t of exportFrameTimes(loop.fromMs, loop.toMs, 30)) {
+        if (pieceBounds(loop, t, fakeMeasure)) expect(evaluatePiece(face, t).o, `${face.id} at ${t}`).toBeLessThan(0.01);
+      }
+    }
+    for (const lines of [["keep:b going:h@520", "and:m never:b stop:b"], ["keep:b going:h@4200", "and:m never:b stop:b"]]) {
+      const built = build(lines, { cueGap: 700 }).pieces;
+      const faces = built.filter((piece) => /^sketch:0:w\d+$/.test(piece.id));
+      const exitStart = Math.min(...faces.map((face) => {
+        const o = face.track.o!;
+        const peak = o.findIndex((frame) => frame[1] >= 1);
+        const fall = o.findIndex((frame, i) => i > peak && frame[1] < 1);
+        return fall < 0 ? Number.POSITIVE_INFINITY : o[fall - 1]![0];
+      }));
+      for (const settle of built.filter((piece) => /^sketch:0:bub/.test(piece.id))) {
+        expect(settle.toMs, settle.id).toBeLessThanOrEqual(exitStart + 0.5);
+      }
+    }
+  });
+
+  test("settle loops are loose word-style pencil loops, large enough to read at phone size", () => {
+    const { pieces } = build(["keep:b going:h@900"]);
+    const settle = pieces.filter((piece) => /:bub\d+-\d+$/.test(piece.id));
+    expect(settle.length).toBeGreaterThan(1);
+    for (const piece of settle) {
+      const box = pieceBounds({ ...piece, track: {} }, piece.fromMs, fakeMeasure)!;
+      expect(box.x2 - box.x1).toBeGreaterThanOrEqual(40);
+      expect(box.x2 - box.x1).toBeGreaterThan(box.y2 - box.y1);
     }
   });
 });

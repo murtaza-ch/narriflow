@@ -2,11 +2,11 @@ import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { clamp, EASES, type Frames, prog } from "../ease";
-import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
+import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import type { SceneWord } from "../input";
 import { balancedRows, rowVisualOrder } from "../layout";
-import type { PathCmd, Piece, ShapePiece, TextPiece } from "../scene";
+import type { PathCmd, Piece, TextPiece } from "../scene";
 import { pathBounds } from "../shapes";
 import { galleryScene, rotatePoint } from "./gallery-layout";
 
@@ -23,25 +23,32 @@ import { galleryScene, rotatePoint } from "./gallery-layout";
  *   (balanced), each stepping in further, the step shrinking when the staircase would not fit. Row pitch comes from the
  *   measured ink of each line (so a Devanagari matra or a Caveat descender never touches the next line), not the
  *   sample's fixed pitch. A word wider than the column shrinks to a floor (120 px key word, 96 px other words), then
- *   breaks into the fewest pieces that fit, one row each (Latin, Cyrillic, Greek and CJK; a joined script is never
- *   split and shrinks instead).
+ *   breaks into the fewest rows any split at the floor fits (measured cluster widths), balanced (least squared row
+ *   widths); closing punctuation stays on the row before it and opening punctuation on the row after it. Latin,
+ *   Cyrillic, Greek and CJK only; a joined script is never split and shrinks instead. When the caption band cannot
+ *   hold the cue at its floor (a long CJK sentence, a tall cue at 2x) the cue uses the whole lane before it gives up
+ *   size; a key word whose rows do not fit the lane at 120 px takes the body floor; one word breaks into at most ten rows.
  * - **Loops never sit on a readable word.** The loop is the word's passing state, not its face (like Strike's ghosts):
  *   the readable word carries the `w…` id and paints whole on its spoken onset frame. Each loop is measured against its
  *   slot: its widest pose stays inside half the gap to each neighbour on its line, half the row gap above and below,
- *   and the safe area, and it has faded out by the time its word is a fifth visible.
+ *   and the safe area, and it ends on the export frame before its word first paints (Sol and Astra, round 1).
  * - **Real speech timing.** A cue opens at most 100 ms before its first word, so the first word's loop gets what that
  *   lead allows (none when the previous cue hands off at once); later words get the sample's 230 ms (260 ms for the key
- *   word). Loop growth, contraction and the face crossfade compress into the time there is; a loop with fewer than two
- *   painted frames is left out. A face is opaque by its last painted frame before its spoken end; the key word's rise
- *   and scale finish 35 ms after onset (sooner for a short word) and never move again.
+ *   word). Every contour is planned on the export frames: at least two painted frames, clearly visible on each (the
+ *   last at half strength holds the key word's contracted pose, so the hand-off never blinks), else none. The face and
+ *   its keyline fade in before the word and are fully opaque on its first spoken frame; when the lead is short the
+ *   loop keeps its two frames and the face appears opaque at onset. The key word's rise and scale finish 35 ms after
+ *   onset (sooner for a short word) and never move again.
  * - **Exit.** The staggered fade (earlier words first) runs only when two painted frames fit after the last word's
- *   reading hold; the loops flash back (the reference's exit) only when 120 ms fit. Otherwise the cue cuts at the next
- *   cue's first paint, so the outgoing words read up to the moment the next sentence starts.
+ *   reading hold, and ends at the window's end (a one-word cue hands off without a blank frame). The loops flash back
+ *   (the reference's exit) only after each word has faded, when two painted frames remain. Otherwise the cue cuts at
+ *   the next cue's first paint, so the outgoing words read up to the moment the next sentence starts.
  * - **Extra recurring beats, from the reference's small pencil circles.** A tiny seed loop leaves each word's slot and
  *   travels through free space (the gap after the word, under its ink) to the next word's slot, arriving as the next
- *   loop starts to grow around it. When a cue's last word lands, two small loops (three on a key-word cue, one gold) pop out under the
- *   last line, drift down and shrink away; a long hold repeats them every 1.6 s. Both are behind the text and never
- *   cross a readable word.
+ *   loop starts to grow around it (a window too short to travel holds it still on the way for two frames). When a cue's
+ *   last word lands, loose word-style pencil loops (40-56 px wide; two, three on a key-word cue with one gold, fewer
+ *   on a short last line) pop out under the last line, drift down and shrink away; a long hold repeats them every
+ *   1.6 s, and they finish before the exit starts. Both are behind the text and never cross a readable word.
  * - **Edge and shadow.** Caveat is thin, so the charcoal edge is 0.04 em (the sample's 0.075 em centred stroke drew
  *   about 0.0375 em outside the glyph) and the soft drop shadow stays; Sol's settled 230 px-wide legibility holds.
  *   Loops keep their drop shadow; the echo stroke has none (it is half-transparent and short-lived).
@@ -89,7 +96,8 @@ const LEAD = 100;
 const GROW = 230;
 const HERO_GROW = 260;
 const FACE_IN = 90;
-const FACE_FADE = 140;
+/** How long a word takes to fade out before its slot flashes back to a loop. */
+const FACE_OUT = 60;
 const LOOP_W = 4;
 /** The loop starts this small and grows to its rest size. */
 const LOOP_FROM = 0.35;
@@ -97,13 +105,18 @@ const SEED_MS = 160;
 const BUBBLE_MS = 360;
 const BUBBLE_EVERY = 1600;
 /** Room under the last line for the settle loops, sample px. */
-const BUBBLE_ROOM = 62;
+const BUBBLE_ROOM = 72;
 /** The caption band of the sample (y 860..1650 of 1920), above and below the anchor line. */
 const BAND_ABOVE = ANCHOR - 860;
 const BAND_BELOW = 1650 - ANCHOR;
 const DEFAULT = { primary: "#FFF1D2", highlight: "#FFC93C", accent: "#FFF1D2" } as const;
 
 /** Words that may break between glyph clusters when one is wider than the column (CJK has no spaces to break at). */
+/** Glyphs a row may not start with (closing and trailing punctuation) or end with (opening punctuation). */
+const NO_ROW_START = /^[\p{Pe}\p{Pf}\p{Po}]/u;
+const NO_ROW_END = /^[\p{Ps}\p{Pi}]$/u;
+/** The most rows one word breaks into before it gives up size instead. */
+const MAX_ROWS = 10;
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{M}\p{N}\p{P}\p{S}]+$/u;
 
 /** Words in a script Caveat draws; anything else goes to the fallback face, whose letters stand taller at one size. */
@@ -167,6 +180,8 @@ interface Item {
   readonly text: string;
   /** Sample px. */
   readonly size: number;
+  /** The smallest this word may be drawn, sample px at the natural size. */
+  readonly floor: number;
   readonly m: Metrics;
 }
 
@@ -217,43 +232,103 @@ export const sketchProgram = galleryScene(
     // The column, in sample px: the sample's 840, or what the lane leaves.
     const column = Math.min(COLUMN, (bounds.x2 - bounds.x1) / space.u - 48);
 
-    /** The fewest pieces, cut between clusters at even widths, that each fit `room` at `size`. */
-    const split = (text: string, size: number, room: number): string[] => {
-      const clusters = captionTextClusters(text);
-      const prefix = clusters.map((_, c) => widthOf(clusters.slice(0, c + 1).join(""), size));
-      const full = prefix.at(-1)!;
-      for (let k = 2; k <= clusters.length; k++) {
-        const cuts = [0];
-        for (let j = 1; j < k; j++) {
-          let best = cuts.at(-1)! + 1;
-          let error = Number.POSITIVE_INFINITY;
-          for (let c = cuts.at(-1)! + 1; c <= clusters.length - (k - j); c++) {
-            const e = Math.abs(prefix[c - 1]! - (full * j) / k);
-            if (e < error) {
-              error = e;
-              best = c;
+    /**
+     * Breakable units of a word: glyph clusters, with closing and other trailing punctuation kept on the unit before it
+     * and opening punctuation on the unit after it, so no row starts with `」` or `，` and none ends with `「`.
+     */
+    const unitsOf = (text: string): string[] => {
+      const units: string[] = [];
+      let pending = "";
+      for (const cluster of captionTextClusters(text)) {
+        if (units.length > 0 && !pending && NO_ROW_START.test(cluster)) units[units.length - 1] += cluster;
+        else if (NO_ROW_END.test(cluster)) pending += cluster;
+        else {
+          units.push(pending + cluster);
+          pending = "";
+        }
+      }
+      if (pending) {
+        if (units.length > 0) units[units.length - 1] += pending;
+        else units.push(pending);
+      }
+      return units;
+    };
+
+    /** Greedy rows of units no wider than `limit` (unit widths summed, sample px at size 100). */
+    const greedy = (widths: readonly number[], limit: number): number[] => {
+      const cuts: number[] = [];
+      let run = 0;
+      widths.forEach((width, i) => {
+        if (run > 0 && run + width > limit) {
+          cuts.push(i);
+          run = 0;
+        }
+        run += width;
+      });
+      return cuts;
+    };
+
+    /**
+     * The fewest rows a word breaks into at `size` within `room` (measured cluster widths: the smallest feasible count),
+     * then the most even split with that count (least sum of squared row widths, no row over the room). Null when it
+     * needs more than `MAX_ROWS`.
+     */
+    const split = (text: string, size: number, room: number): string[] | null => {
+      const units = unitsOf(text);
+      const widths = units.map((unit) => widthOf(unit, 100));
+      const limit = (room * 0.98 * 100) / size;
+      const rows = greedy(widths, limit).length + 1;
+      if (rows > MAX_ROWS) return null;
+      const count = units.length;
+      const prefix = [0];
+      for (const width of widths) prefix.push(prefix.at(-1)! + width);
+      const best = Array.from({ length: rows + 1 }, () => new Array<number>(count + 1).fill(Number.POSITIVE_INFINITY));
+      const from = Array.from({ length: rows + 1 }, () => new Array<number>(count + 1).fill(0));
+      best[0]![0] = 0;
+      for (let r = 1; r <= rows; r++) {
+        for (let i = r; i <= count; i++) {
+          for (let j = i - 1; j >= r - 1; j--) {
+            const width = prefix[i]! - prefix[j]!;
+            if (width > limit && i - j > 1) break;
+            const cost = best[r - 1]![j]! + width * width;
+            if (cost < best[r]![i]!) {
+              best[r]![i] = cost;
+              from[r]![i] = j;
             }
           }
-          cuts.push(best);
         }
-        cuts.push(clusters.length);
-        const parts = cuts.slice(1).map((end, j) => clusters.slice(cuts[j], end).join(""));
-        if (parts.every((part) => widthOf(part, size) <= room)) return parts;
       }
-      return clusters;
+      const cuts = [count];
+      for (let r = rows; r >= 1; r--) cuts.unshift(from[r]![cuts[0]!]!);
+      return cuts.slice(1).map((cut, j) => units.slice(cuts[j], cut).join(""));
     };
 
     /** A word's size and pieces: the sample size, fitted to the column down to the floor, then broken. */
     const sized = words.map((word, at) => {
       const base = (isHero(at) ? HERO : heroed ? BODY : SOLO) * (CAVEAT_SCRIPT.test(word.text) ? 1 : FALLBACK_SCALE);
-      const floor = isHero(at) ? MIN_HERO : MIN_BODY;
+      let floor = Math.min(base, isHero(at) ? MIN_HERO : MIN_BODY);
       const width = widthOf(word.text, base);
-      if (width <= column) return { size: base, parts: [word.text] };
+      if (width <= column) return { size: base, floor, parts: [word.text] };
       const fit = (base * column) / width;
-      if (fit >= floor || !SPLITTABLE.test(word.text) || captionTextClusters(word.text).length < 2) return { size: fit, parts: [word.text] };
-      const parts = split(word.text, floor, column);
-      const widest = Math.max(...parts.map((part) => widthOf(part, 100)));
-      return { size: Math.min(base, (100 * column) / widest), parts };
+      if (fit >= floor || !SPLITTABLE.test(word.text) || captionTextClusters(word.text).length < 2) return { size: fit, floor: Math.min(floor, fit), parts: [word.text] };
+      // A key word whose rows at the key-word floor are taller than the lane (a 90-character token on 1:1) is a
+      // sentence, not a key word: it takes the body floor.
+      if (isHero(at)) {
+        const rows = split(word.text, floor, column)?.length ?? MAX_ROWS + 1;
+        const lane = (bounds.y2 - bounds.y1) / (space.u / ctx.input.scale);
+        if (rows * (floor * 1.12 + ROW_GAP) + BUBBLE_ROOM > lane * 0.95) floor = Math.min(base, MIN_BODY);
+      }
+      // A token too long for the row cap at the floor (hundreds of characters) gives up size until it fits the cap.
+      let trySize = floor;
+      let parts = split(word.text, trySize, column);
+      while (!parts && trySize > 12) {
+        trySize *= 0.9;
+        parts = split(word.text, trySize, column);
+      }
+      const pieces = parts ?? [word.text];
+      const widest = Math.max(...pieces.map((part) => widthOf(part, 100)));
+      const size = Math.min(base, (100 * column) / widest);
+      return { size, floor: Math.min(floor, size), parts: pieces };
     });
 
     // The sample's staircase: the words before the key word, then the key word and the rest; no key word, two halves.
@@ -279,8 +354,8 @@ export const sketchProgram = galleryScene(
         run = [];
       };
       for (const at of group) {
-        const { size, parts } = sized[at]!;
-        const items = parts.map((text, part) => ({ word: at, part, parts: parts.length, text, size, m: at100(text) }));
+        const { size, floor, parts } = sized[at]!;
+        const items = parts.map((text, part) => ({ word: at, part, parts: parts.length, text, size, floor, m: at100(text) }));
         if (items.length > 1) {
           flush();
           for (const item of items) lines.push([item]);
@@ -292,7 +367,7 @@ export const sketchProgram = galleryScene(
     // Natural size: the band at the user's position (a larger size shrinks to fit it), inside the lane.
     const natural = space.u / ctx.input.scale;
     const anchorY = space.y(ANCHOR);
-    const band = { y1: Math.max(bounds.y1 + 3, anchorY - BAND_ABOVE * natural), y2: Math.min(bounds.y2 - 3, anchorY + BAND_BELOW * natural) };
+    let band = { y1: Math.max(bounds.y1 + 3, anchorY - BAND_ABOVE * natural), y2: Math.min(bounds.y2 - 3, anchorY + BAND_BELOW * natural) };
     const tilt = rtl ? -TILT : TILT;
 
     /** The staircase at size factor `f` (block-local px, centred on the block, before the tilt). */
@@ -368,14 +443,26 @@ export const sketchProgram = galleryScene(
       return { cells, metrics, baselines, k, x1, x2, y1, y2 };
     };
 
-    let f = 1;
-    let arranged = arrange(f);
-    for (let tries = 0; tries < 8; tries++) {
-      const fit = Math.min(1, (band.y2 - band.y1) / (arranged.y2 - arranged.y1), (bounds.x2 - bounds.x1 - 12) / (arranged.x2 - arranged.x1));
-      if (fit >= 1) break;
-      f *= Math.min(0.97, fit * 0.98);
-      arranged = arrange(f);
+    // Fit the band; when that would draw a word under its floor, the block may use the whole lane instead (a long CJK
+    // sentence, a tall Devanagari cue at 2x), and only shrinks under the floor when even the lane is too small.
+    const fFloor = Math.max(...lines.flat().map((item) => (item.floor * natural) / (item.size * space.u)));
+    const fitInto = (area: { y1: number; y2: number }) => {
+      let f = 1;
+      let laid = arrange(f);
+      for (let tries = 0; tries < 10; tries++) {
+        const fit = Math.min(1, (area.y2 - area.y1) / (laid.y2 - laid.y1), (bounds.x2 - bounds.x1 - 12) / (laid.x2 - laid.x1));
+        if (fit >= 1) break;
+        f *= Math.min(0.97, fit * 0.98);
+        laid = arrange(f);
+      }
+      return { f, laid };
+    };
+    let fitted = fitInto(band);
+    if (fitted.f < fFloor - 1e-6) {
+      band = { y1: bounds.y1 + 3, y2: bounds.y2 - 3 };
+      fitted = fitInto(band);
     }
+    const arranged = fitted.laid;
     const { metrics, k } = arranged;
     // Where the block centre sits on the canvas: on the anchor, moved into the band and the lane.
     const cx0 = clamp(space.x(540), bounds.x1 + 6 - arranged.x1, bounds.x2 - 6 - arranged.x2);
@@ -421,39 +508,59 @@ export const sketchProgram = galleryScene(
       sampleFrames(fn, edges, error, { range, simplify: true });
 
 
-    // The exit: earlier words start and finish fading first; the loops flash back only when there is room.
-    const exitSpan = Math.max(0, to - exitAt);
-    const stagger = words.length > 1 ? Math.min(22, (exitSpan * 0.25) / (words.length - 1)) : 0;
-    const fadeSpan = exitSpan - stagger * (words.length - 1);
-    const loopsOut = exit && exitSpan >= 120;
+    /**
+     * Opacity planned on the export frames a piece paints in `[from, until)`: `first` on its first frame, full in the
+     * middle, `last` on its last, so a short contour shows two clearly visible poses and never a near-invisible tail.
+     * Null when fewer than two frames paint.
+     */
+    const gridOpacity = (from: number, until: number, first: number, last: number): { o: Frames; times: number[] } | null => {
+      const times = exportFrameTimes(from, until, fps);
+      if (times.length < 2) return null;
+      const o: [number, number][] = times.map((t, i) => [t, i === 0 ? first : i === times.length - 1 ? last : 1]);
+      return { o, times };
+    };
 
-    /** Per word: when its face starts, when its loop starts and ends (null when there is no room for one). */
+    // The exit. With room, each word fades first (earlier words a little ahead), then its slot flashes back to a small
+    // loop that shrinks away over at least two painted frames; otherwise the words fade in a short stagger to the cut.
+    const exitSpan = exit ? Math.max(0, to - exitAt) : 0;
+    const n = words.length;
+    const loopsOut = exit && exitSpan >= FACE_OUT + 70;
+    const stagger = n > 1 ? (loopsOut ? Math.min(10, (exitSpan - FACE_OUT - 70) / (n - 1)) : Math.min(22, (exitSpan * 0.25) / (n - 1))) : 0;
+    const fadeSpan = loopsOut ? FACE_OUT : exitSpan - stagger * (n - 1);
+
+    /**
+     * Per word: its loop runs `[a, b)` and ends on the frame before the face first paints (`b`); the face fades in from
+     * `fs` and is opaque on the first export frame at or after its spoken start (`on`).
+     */
     const timing = words.map((word, at) => {
       const s = word.startMs;
       const pre = at === 0 ? LEAD : isHero(at) ? HERO_GROW : GROW;
       const a = Math.max(cueFrom, s - pre);
       const lead = s - a;
-      const faceIn = clamp(lead * 0.4, 0, FACE_IN);
+      const faceIn = lead >= 160 ? FACE_IN : lead * 0.3;
+      const on = exportFrameAtOrAfter(s, fps);
       const fs = Math.max(cueFrom, s - faceIn);
-      const b = fs + 25 - 15 * clamp((lead - 100) / 100);
-      return { s, a, fs, b, loop: b - a >= 50 };
+      // When the lead fits the loop's two frames only without the face's fade-in frame, the loop keeps them and the
+      // face appears opaque on its onset frame.
+      if (faceIn > 0 && exportFrameTimes(a, exportFrameAtOrAfter(fs, fps), fps).length < 2 && exportFrameTimes(a, on, fps).length >= 2) return { s, a, fs: s, on, b: on };
+      return { s, a, fs, on, b: exportFrameAtOrAfter(fs, fps) };
     });
 
     for (const cell of cells) {
       const at = cell.word;
       const word = words[at]!;
       const hero = isHero(at);
-      const { s, a, fs, b, loop } = timing[at]!;
+      const { s, a, fs, on, b } = timing[at]!;
       const last = Math.max(fs, lastFrameOf(word));
       const fill = hero ? colours.highlight : colours.primary;
       const [x, y] = toCanvas(cell.x, cell.baseline);
       const id = cell.parts > 1 ? `${ctx.id}:w${at}l${cell.part}` : `${ctx.id}:w${at}`;
 
-      // The face: fades in from `fs` (opaque by its last painted frame before its spoken end); the key word rises and
-      // grows into place by 35 ms after onset, an ordinary word by 50 ms, then never moves again.
-      const fadeEnd = Math.min(fs + FACE_FADE, last);
-      const o0 = fs > s - 34 ? 0.4 : 0;
-      const o: [number, number, ("out" | "in")?][] = fadeEnd - fs >= 20 ? [[fs, o0], [fadeEnd, 1, "out"]] : [[fs, 1]];
+      // The face, with its keyline: fades in before the word is spoken and is fully opaque on its first spoken frame
+      // (at once when there is no lead); the key word rises and grows into place by 35 ms after onset, an ordinary
+      // word by 50 ms, then never moves again.
+      const fades = exportFrameTimes(fs, on, fps).some((t) => t > fs);
+      const o: [number, number, ("out" | "in")?][] = fades ? [[fs, 0], [on, 1, "out"]] : [[fs, 1]];
       const out0 = exitAt + at * stagger;
       if (exit) o.push([out0, 1], [out0 + fadeSpan, 0, "in"]);
       const poseEnd = Math.min(fs + (hero ? 125 : 140), last, s + (hero ? 35 : 50));
@@ -504,7 +611,7 @@ export const sketchProgram = galleryScene(
       const restY = Math.min(1, maxSy);
       const [lx, ly] = toCanvas(cell.x, box.cy);
       const loopColour = hero ? colours.highlight : colours.primary;
-      const addLoop = (suffix: string, from: number, until: number, sx: (t: number) => number, sy: (t: number) => number, rot: (t: number) => number, alpha: (t: number) => number, echoAlpha: (t: number) => number, edges: readonly number[]) => {
+      const addLoop = (suffix: string, from: number, until: number, o: Frames, sx: (t: number) => number, sy: (t: number) => number, rot: (t: number) => number, edges: readonly number[]) => {
         const range = [from, until] as const;
         const track = {
           x: [[from, lx]] as Frames,
@@ -512,44 +619,27 @@ export const sketchProgram = galleryScene(
           sx: frames(sx, edges, range, 0.004),
           sy: frames(sy, edges, range, 0.004),
           rz: frames((t) => tilt + rot(t), edges, range, 0.1),
+          o,
         };
-        const main: ShapePiece = {
-          id: `${ctx.id}:${suffix}${at}${cell.parts > 1 ? `-${cell.part}` : ""}`,
-          kind: "shape",
-          z: 2,
-          fromMs: from,
-          toMs: until,
-          path: mainPath,
-          stroke: { widthPx: LOOP_W * k, colour: loopColour },
-          shadows: loopShadow,
-          track: { ...track, o: frames(alpha, edges, range, 0.004) },
-        };
-        const echo: ShapePiece = {
-          id: `${ctx.id}:${suffix}${at}${cell.parts > 1 ? `-${cell.part}` : ""}e`,
-          kind: "shape",
-          z: 2,
-          fromMs: from,
-          toMs: until,
-          path: echoPath,
-          stroke: { widthPx: LOOP_W * 0.6 * k, colour: loopColour, alpha: 0.55 },
-          track: { ...track, o: frames(echoAlpha, edges, range, 0.004) },
-        };
-        pieces.push(main, echo);
+        const name = `${ctx.id}:${suffix}${at}${cell.parts > 1 ? `-${cell.part}` : ""}`;
+        pieces.push(
+          { id: name, kind: "shape", z: 2, fromMs: from, toMs: until, path: mainPath, stroke: { widthPx: LOOP_W * k, colour: loopColour }, shadows: loopShadow, track },
+          { id: `${name}e`, kind: "shape", z: 2, fromMs: from, toMs: until, path: echoPath, stroke: { widthPx: LOOP_W * 0.6 * k, colour: loopColour, alpha: 0.55 }, track },
+        );
       };
 
-      if (loop) {
-        const span = b - a;
-        const fadeIn = Math.min(55, span * 0.3);
-        const fadeOut = Math.min(62, span * 0.45);
-        const alpha = (t: number) => Math.min(1, prog(t, a, fadeIn)) * (1 - EASES.inOut(prog(t, b - fadeOut, fadeOut)));
-        const echoAlpha = (t: number) => alpha(t) * (1 - prog(t, Math.max(a, b - fadeOut - 10), 40));
+      // The entrance loop paints on at least two export frames before the face's first frame, clearly visible on each
+      // (the last keeps half its strength, so the hand-off to the word never blinks); otherwise there is no loop.
+      const entrance = gridOpacity(a, b, 0.85, 0.55);
+      if (entrance) {
+        const end = entrance.times.at(-1)!;
         if (hero) {
-          // Grows wider than the word, then contracts onto it as it fades.
-          const growEnd = a + clamp(span - 90, Math.min(30, span * 0.4), span - 40);
-          const contract = Math.max(growEnd, b - 90);
+          // Grows wider than the word, then contracts onto it; the last loop frame is the contracted pose.
+          const growEnd = a + clamp(end - a - 70, Math.min(20, (end - a) * 0.4), Math.max(1, end - a - 1));
+          const contract = Math.max(growEnd, end - 80);
           const tight = Math.min(1, maxSx) * 0.97;
           const g = (t: number) => EASES.outExpo(prog(t, a, growEnd - a));
-          const c = (t: number) => EASES.inOut(prog(t, contract, b - 10 - contract));
+          const c = (t: number) => EASES.inOut(prog(t, contract, end - contract));
           const sx = (t: number) => {
             const grown = LOOP_FROM + (maxSx - LOOP_FROM) * g(t);
             return grown + (tight - grown) * c(t);
@@ -558,46 +648,47 @@ export const sketchProgram = galleryScene(
             const grown = LOOP_FROM + (maxSy - LOOP_FROM) * g(t);
             return grown + (Math.min(1, maxSy) - grown) * c(t);
           };
-          addLoop("loop", a, b, sx, sy, (t) => -8 * (1 - g(t)), alpha, echoAlpha, [a, a + fadeIn, growEnd, contract, b - 10, b - fadeOut, b]);
+          addLoop("loop", a, b, entrance.o, sx, sy, (t) => -8 * (1 - g(t)), [a, growEnd, contract, end, b]);
         } else {
-          const growEnd = a + clamp(span * 0.6, Math.min(30, span * 0.5), 170);
+          const growEnd = a + clamp((end - a) * 0.6, Math.min(20, (end - a) * 0.5), 170);
           const g = (t: number) => EASES.outExpo(prog(t, a, growEnd - a));
           const sx = (t: number) => LOOP_FROM + (rest - LOOP_FROM) * g(t);
           const sy = (t: number) => LOOP_FROM + (restY - LOOP_FROM) * g(t);
-          addLoop("loop", a, b, sx, sy, (t) => -6 * (1 - g(t)), alpha, echoAlpha, [a, a + fadeIn, growEnd, b - fadeOut, b]);
+          addLoop("loop", a, b, entrance.o, sx, sy, (t) => -6 * (1 - g(t)), [a, growEnd, end, b]);
         }
       }
 
-      // The exit: the slot flashes back to a small loop that shrinks away while the word fades.
+      // The exit: once the word has faded, its slot flashes back to a small loop that shrinks away.
       if (loopsOut) {
-        const from = out0 + fadeSpan * 0.25;
-        const until = out0 + fadeSpan;
-        const p = (t: number) => prog(t, from, until - from);
-        const q = (t: number) => EASES.inOut(p(t));
-        const alpha = (t: number) => Math.min(1, p(t) * 8) * (1 - EASES.in(p(t))) * 0.65;
-        addLoop("out", from, until, (t) => rest + (0.4 - rest) * q(t), (t) => restY + (0.4 - restY) * q(t), (t) => 7 * q(t), alpha, alpha, [from, from + (until - from) / 8, until]);
+        const from = exportFrameAtOrAfter(out0 + fadeSpan, fps);
+        const flash = gridOpacity(from, to, 0.7, 0.4);
+        if (flash) {
+          const q = (t: number) => EASES.inOut(prog(t, from, flash.times.at(-1)! - from));
+          addLoop("out", from, to, flash.o, (t) => rest + (0.4 - rest) * q(t), (t) => restY + (0.4 - restY) * q(t), (t) => 7 * q(t), [from, flash.times.at(-1)!, to]);
+        }
       }
 
-      // A seed drops off the word before and travels through free space to this slot, where the loop grows from it.
+      // A seed leaves the slot before and travels through free space to this slot, arriving as the loop starts to grow
+      // around it. A window too short to travel holds it still on the way for two frames instead.
       const prevCell = cells.filter((other) => other.word === at - 1).at(-1);
-      if (loop && prevCell && cell.part === 0) {
-        // It arrives as the loop starts to grow around it (the loop starts small), then fades into it.
+      if (entrance && prevCell && cell.part === 0) {
         const arrive = Math.max(a, Math.min(a + 40, b - 20));
-        const seedStart = Math.max(cueFrom, arrive - SEED_MS);
         const seedEnd = Math.min(b, arrive + 30);
-        if (paintedFrameCount(seedStart, seedEnd, fps) >= 2 && arrive - seedStart >= 60) {
+        const travels = arrive - Math.max(cueFrom, arrive - SEED_MS) >= 60;
+        const seedStart = travels ? Math.max(cueFrom, arrive - SEED_MS) : Math.max(cueFrom, seedEnd - 75);
+        const plan = gridOpacity(seedStart, seedEnd, 0.9, 0.6);
+        if (plan) {
           const edge = EDGE_EM * prevCell.px;
           const gapX = rtl ? prevCell.x - prevCell.width / 2 - edge - 0.5 * GAP_EM * prevCell.size * k : prevCell.x + prevCell.width / 2 + edge + 0.5 * GAP_EM * prevCell.size * k;
           const below = prevCell.baseline + (Math.max(prevCell.m.inkBottom, 8) * prevCell.px) / 100 + edge + 10 * k;
           const [x0, y0] = [gapX, below];
           const [x1, y1] = [cell.x, box.cy];
           const r = clamp(0.075 * cell.size, 7, 12) * k;
-          const travel = (t: number) => EASES.inOut(prog(t, seedStart, arrive - seedStart));
+          const travel = (t: number) => (travels ? EASES.inOut(prog(t, seedStart, arrive - seedStart)) : 0.5);
           const arc = (t: number) => Math.sin(Math.PI * travel(t)) * 10 * k;
           const pos = (t: number) => toCanvas(x0 + (x1 - x0) * travel(t), y0 + (y1 - y0) * travel(t) + arc(t));
-          const edges = [seedStart, seedStart + 30, arrive, seedEnd];
+          const edges = [seedStart, arrive, seedEnd];
           const range = [seedStart, seedEnd] as const;
-          const alpha = (t: number) => Math.min(1, prog(t, seedStart, 30)) * (1 - prog(t, arrive, seedEnd - arrive)) * 0.9;
           const scale = (t: number) => 0.6 + 0.4 * travel(t);
           pieces.push({
             id: `${ctx.id}:seed${at}`,
@@ -614,43 +705,48 @@ export const sketchProgram = galleryScene(
               sx: frames(scale, edges, range, 0.01),
               sy: frames(scale, edges, range, 0.01),
               rz: [[seedStart, tilt]],
-              o: frames(alpha, edges, range, 0.01),
+              o: plan.o,
             },
           });
         }
       }
     }
 
-    // When the last word lands, small loops pop out under the last line, drift down and shrink away; a long hold
-    // repeats them. A window too short to animate them holds a compact still pose.
+    // When the last word lands, small loose pencil loops (word loops in miniature) pop out under the last line, drift
+    // down and shrink away; a long hold repeats them. They finish before the exit starts, compressed into the time
+    // there is; a window too short to animate them holds a still pose for its frames.
     const lastWord = words.at(-1)!;
     const lastLineCells = cells.filter((cell) => cell.line === metrics.length - 1);
     const lineLeft = Math.min(...lastLineCells.map((cell) => cell.x - cell.width / 2));
     const lineRight = Math.max(...lastLineCells.map((cell) => cell.x + cell.width / 2));
     const lineBottom = Math.max(...lastLineCells.map((cell) => cell.baseline + (Math.max(cell.m.inkBottom, 10) * cell.px) / 100 + EDGE_EM * cell.px));
-    const landed = Math.max(timing.at(-1)!.fs + 60, lastWord.startMs + 30);
+    const landed = Math.max(timing.at(-1)!.on + 40, lastWord.startMs + 30);
+    const settleEnd = exit ? exitAt : to;
     const textSeed = textHash(words.map((word) => word.text).join(" "));
     for (let burst = 0; burst < 4; burst++) {
       const t0 = landed + burst * BUBBLE_EVERY;
-      if (burst > 0 && t0 + BUBBLE_MS > exitAt) break;
-      const count = heroed ? 3 : 2;
+      if (burst > 0 && t0 + BUBBLE_MS + 80 > settleEnd) break;
+      // As many as the last line spaces out (each loop needs about 70 px of it), at least one.
+      const count = Math.max(1, Math.min(heroed ? 3 : 2, Math.floor((lineRight - lineLeft) / (70 * k))));
       for (let j = 0; j < count; j++) {
         const h = hash(cueIndex * 31 + burst * 7 + j * 3 + textSeed * 50);
         const from = t0 + j * 40;
-        const until = Math.min(to, from + BUBBLE_MS);
+        const until = Math.min(settleEnd, from + BUBBLE_MS);
         const painted = paintedFrameCount(from, until, fps);
         if (painted < 2) continue;
         const still = painted < 5;
-        const r = (5 + 5 * hash(h * 91 + 3)) * k;
-        const u = (j + 0.5) / count + (h - 0.5) * 0.25 / count;
+        const w = (40 + 16 * hash(h * 91 + 3)) * k;
+        const ht = w * 0.55;
+        const u = (j + 0.5) / count + ((h - 0.5) * 0.25) / count;
         const bx = lineLeft + (lineRight - lineLeft) * (rtl ? 1 - u : u);
-        const by = lineBottom + (14 + 10 * hash(h * 13 + 1)) * k + r;
+        const by = lineBottom + (14 + 6 * hash(h * 13 + 1)) * k + ht / 2;
         const side = (hash(h * 7 + 5) - 0.5) * 12 * k;
-        const p = (t: number) => prog(t, from, BUBBLE_MS);
-        const pos = (t: number) => (still ? toCanvas(bx, by) : toCanvas(bx + side * EASES.out(p(t)), by + 16 * k * EASES.out(p(t))));
-        const scale = (t: number) => (still ? 0.8 : 0.5 + 0.5 * Math.min(1, p(t) * 4) - 0.3 * EASES.in(p(t)));
-        const alpha = (t: number) => (still ? 0.75 : Math.min(1, p(t) * 6) * (1 - EASES.in(p(t))) * 0.85);
-        const edges = [from, from + BUBBLE_MS / 6, from + BUBBLE_MS / 4, until];
+        const p = (t: number) => prog(t, from, until - from);
+        const pos = (t: number) => (still ? toCanvas(bx, by) : toCanvas(bx + side * EASES.out(p(t)), by + 12 * k * EASES.out(p(t))));
+        const scale = (t: number) => (still ? 0.85 : 0.55 + 0.45 * EASES.outExpo(Math.min(1, p(t) * 3)) - 0.25 * EASES.in(p(t)));
+        const alpha = (t: number) => (still ? 0.8 : Math.min(1, p(t) * 6) * (1 - EASES.in(p(t))) * 0.9);
+        const turn = (t: number) => tilt + (still ? 0 : (hash(h * 3 + 9) - 0.5) * 16 * p(t));
+        const edges = [from, from + (until - from) / 6, from + (until - from) / 3, until];
         const range = [from, until] as const;
         pieces.push({
           id: `${ctx.id}:bub${burst}-${j}`,
@@ -658,15 +754,15 @@ export const sketchProgram = galleryScene(
           z: 2,
           fromMs: from,
           toMs: until,
-          path: sketchLoopPath(2 * r, 2 * r, h * 100),
-          stroke: { widthPx: 2.5 * k, colour: heroed && j === 1 ? colours.highlight : colours.accent },
+          path: sketchLoopPath(w, ht, h * 100),
+          stroke: { widthPx: 3.5 * k, colour: heroed && j === Math.min(1, count - 1) ? colours.highlight : colours.accent },
           shadows: loopShadow,
           track: {
             x: frames((t) => pos(t)[0], edges, range, 0.3),
             y: frames((t) => pos(t)[1], edges, range, 0.3),
             sx: frames(scale, edges, range, 0.01),
             sy: frames(scale, edges, range, 0.01),
-            rz: [[from, tilt]],
+            rz: frames(turn, edges, range, 0.2),
             o: frames(alpha, edges, range, 0.01),
           },
         });
