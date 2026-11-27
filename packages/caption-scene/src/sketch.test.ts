@@ -407,4 +407,70 @@ describe("sketch", () => {
       expect(box.x2 - box.x1).toBeGreaterThan(box.y2 - box.y1);
     }
   });
+  test("every frame of a loop-to-word hand-off carries ink, and a face never paints nearly invisible (60 fps grid hits included)", () => {
+    const shifted = (cues: readonly SceneCue[], by: number): SceneCue[] =>
+      cues.map((cue) => ({ ...cue, startMs: cue.startMs + by, endMs: cue.endMs + by, words: cue.words.map((w) => ({ ...w, startMs: w.startMs + by, endMs: w.endMs + by })) }));
+    const demo = demoCues({ lines: ["most:b people:b never:m start:b", "oh.:b", "and,:b we:m didn't:h@300 want:b"], options: { lead: 300, gap: 30, cueGap: 240 } }).cues;
+    for (const fps of [60, 30, 25, 24]) {
+      for (let by = 0; by < 17; by++) {
+        for (const base of [demo, fastRun(60), staccatoRun(60)]) {
+          const run = shifted(base, by);
+          const pieces = sketchProgram.build(sceneInput(run, { fps, colours, anchor })).pieces;
+          for (const cue of run) {
+            for (const [at, word] of cue.words.entries()) {
+              const face = pieces.find((piece) => piece.id === `sketch:${cue.index}:w${at}`)!;
+              const firstFace = exportFrameTimes(face.fromMs, face.toMs, fps).find((t) => pieceBounds(face, t, fakeMeasure))!;
+              expect(evaluatePiece(face, firstFace).o, `${face.id} first frame ${firstFace} (${fps} fps, +${by})`).toBeGreaterThanOrEqual(0.3);
+              const loop = pieces.find((piece) => piece.id === `sketch:${cue.index}:loop${at}`);
+              if (!loop) continue;
+              const onset = exportFrameAtOrAfter(word.startMs, fps);
+              for (const t of exportFrameTimes(loop.fromMs, onset + 1, fps)) {
+                const inked = [loop, face].some((piece) => pieceBounds(piece, t, fakeMeasure) && evaluatePiece(piece, t).o >= 0.3);
+                expect(inked, `${cue.index}:${at} blank at ${t} (${fps} fps, +${by})`).toBe(true);
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("every face is in its slot at its settled scale on its first spoken frame, also a key word with no lead", () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const run of [fastRun(0), staccatoRun(0), demoCues({ lines: ["it's:b been:b that:b long.:h@300", "all:h@300 right"], options: { lead: 300, gap: 0, cueGap: 0 } }).cues]) {
+        const pieces = sketchProgram.build(sceneInput(run, { fps, colours, anchor })).pieces;
+        for (const cue of run) {
+          for (const [at, word] of cue.words.entries()) {
+            const face = pieces.find((piece) => piece.id === `sketch:${cue.index}:w${at}`)!;
+            const onset = exportFrameAtOrAfter(word.startMs, fps);
+            const pose = evaluatePiece(face, onset);
+            const settled = face.track.y!.at(-1)![1];
+            expect(pose.y, `${face.id} y at ${onset} (${fps} fps)`).toBeCloseTo(settled, 3);
+            expect(pose.sx, `${face.id} scale at ${onset} (${fps} fps)`).toBeCloseTo(1, 4);
+          }
+        }
+      }
+    }
+  });
+
+  test("a cue stays within 150 pieces with every shadow layer counted, keeping all its text", () => {
+    // Real CJK advances are about one em: a long key word takes several rows.
+    const measure: typeof fakeMeasure = (text, _face, sizePx) => ({
+      advance: [...text].reduce((sum, ch) => sum + (/\p{Script=Han}/u.test(ch) ? 1 : 0.55), 0) * sizePx,
+      inkTop: -0.72 * sizePx,
+      inkBottom: 0.2 * sizePx,
+      ascent: 1.1 * sizePx,
+      descent: 0.3 * sizePx,
+    });
+    const token = "我们今天要讨论的是人工智能在未来十年里的发展方向我";
+    for (const lines of [[`a very long word can make the caption wrap ${token}:h@7200`], ["a very long word can make the caption wrap", `${token}:h@7200`]]) {
+      const { cues, pieces } = build(lines, { language: "zh", input: { measure } });
+      for (const cue of cues) {
+        const own = pieces.filter((piece) => cueOf(piece) === cue.index);
+        const cost = own.reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+        expect(cost, `cue ${cue.index}`).toBeLessThanOrEqual(150);
+        for (const [at] of cue.words.entries()) expect(own.some((piece) => isFace(piece) && wordOf(piece) === at)).toBe(true);
+      }
+    }
+  });
 });

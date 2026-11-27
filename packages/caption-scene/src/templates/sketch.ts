@@ -2,9 +2,8 @@ import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { clamp, EASES, type Frames, prog } from "../ease";
-import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount } from "../frame-grid";
+import { exportFrameAtOrAfter, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
-import type { SceneWord } from "../input";
 import { balancedRows, rowVisualOrder } from "../layout";
 import type { PathCmd, Piece, TextPiece } from "../scene";
 import { pathBounds } from "../shapes";
@@ -117,6 +116,8 @@ const NO_ROW_START = /^[\p{Pe}\p{Pf}\p{Po}]/u;
 const NO_ROW_END = /^[\p{Ps}\p{Pi}]$/u;
 /** The most rows one word breaks into before it gives up size instead. */
 const MAX_ROWS = 10;
+/** The most pieces a cue draws, each shadow layer counted as a piece. */
+const PIECE_BUDGET = 150;
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{M}\p{N}\p{P}\p{S}]+$/u;
 
 /** Words in a script Caveat draws; anything else goes to the fallback face, whose letters stand taller at one size. */
@@ -503,7 +504,6 @@ export const sketchProgram = galleryScene(
 
     const shadowOf = (px: number) => [{ dx: 0, dy: 0.04 * px, blur: 0.05 * px, colour: colours.shadow, alpha: 0.55 }];
     const loopShadow = [{ dx: 0, dy: 2 * k, blur: 1.5 * k, colour: colours.shadow, alpha: 0.65 }];
-    const lastFrameOf = (word: SceneWord) => exportFrameAtOrBefore(word.endMs - 1, fps);
     const frames = (fn: (t: number) => number, edges: readonly number[], range: readonly [number, number], error: number): Frames =>
       sampleFrames(fn, edges, error, { range, simplify: true });
 
@@ -539,32 +539,32 @@ export const sketchProgram = galleryScene(
       const lead = s - a;
       const faceIn = lead >= 160 ? FACE_IN : lead * 0.3;
       const on = exportFrameAtOrAfter(s, fps);
-      const fs = Math.max(cueFrom, s - faceIn);
-      // When the lead fits the loop's two frames only without the face's fade-in frame, the loop keeps them and the
-      // face appears opaque on its onset frame.
-      if (faceIn > 0 && exportFrameTimes(a, exportFrameAtOrAfter(fs, fps), fps).length < 2 && exportFrameTimes(a, on, fps).length >= 2) return { s, a, fs: s, on, b: on };
-      return { s, a, fs, on, b: exportFrameAtOrAfter(fs, fps) };
+      // The face's fade-in frames: export frames before its onset frame. The face starts on the first of them at a
+      // visible opacity, and the loop ends on the frame before it, so every frame of the hand-off carries ink.
+      let fades = exportFrameTimes(Math.max(cueFrom, s - faceIn), on, fps);
+      // When the lead fits the loop's two frames only without the fade-in frames, the loop keeps them and the face
+      // appears opaque, in its slot, on its onset frame.
+      if (fades.length > 0 && exportFrameTimes(a, fades[0]!, fps).length < 2 && exportFrameTimes(a, on, fps).length >= 2) fades = [];
+      const fs = fades[0] ?? on;
+      return { s, a, fs, on, b: fs, fades };
     });
 
     for (const cell of cells) {
       const at = cell.word;
-      const word = words[at]!;
       const hero = isHero(at);
-      const { s, a, fs, on, b } = timing[at]!;
-      const last = Math.max(fs, lastFrameOf(word));
+      const { a, fs, on, b, fades } = timing[at]!;
       const fill = hero ? colours.highlight : colours.primary;
       const [x, y] = toCanvas(cell.x, cell.baseline);
       const id = cell.parts > 1 ? `${ctx.id}:w${at}l${cell.part}` : `${ctx.id}:w${at}`;
 
-      // The face, with its keyline: fades in before the word is spoken and is fully opaque on its first spoken frame
-      // (at once when there is no lead); the key word rises and grows into place by 35 ms after onset, an ordinary
-      // word by 50 ms, then never moves again.
-      const fades = exportFrameTimes(fs, on, fps).some((t) => t > fs);
-      const o: [number, number, ("out" | "in")?][] = fades ? [[fs, 0], [on, 1, "out"]] : [[fs, 1]];
+      // The face, with its keyline: fades in on the export frames before the word is spoken (from a visible first
+      // frame), rising and growing into its slot, and is fully opaque and settled on its first spoken frame; with no
+      // fade-in frames it simply appears there. It never moves again.
+      const o: [number, number, ("out" | "in")?][] = [...fades.map((t, i): [number, number] => [t, 0.35 + (0.5 * i) / fades.length]), [on, 1]];
       const out0 = exitAt + at * stagger;
       if (exit) o.push([out0, 1], [out0 + fadeSpan, 0, "in"]);
-      const poseEnd = Math.min(fs + (hero ? 125 : 140), last, s + (hero ? 35 : 50));
-      const moves = paintedFrameCount(fs, poseEnd, fps) >= 2;
+      const poseEnd = on;
+      const moves = fades.length > 0;
       const drop = (hero ? 12 : 8) * k;
       const grow = hero ? 0.9 : 0.95;
       const face: TextPiece = {
@@ -768,7 +768,28 @@ export const sketchProgram = galleryScene(
         });
       }
     }
-    return pieces;
+    // One budget per cue: text, decoration and every shadow layer together stay within PIECE_BUDGET. The text is always
+    // kept; decoration goes in this order: repeated settle strokes (the latest first), exit loops, entrance echoes, the
+    // first settle strokes, seeds, then entrance loops.
+    const cost = (list: readonly Piece[]) => list.reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+    const tiers: ((id: string) => boolean)[] = [
+      (id) => /:bub[1-9]\d*-\d+$/.test(id),
+      (id) => /:out\d+(-\d+)?e?$/.test(id),
+      (id) => /:loop\d+(-\d+)?e$/.test(id),
+      (id) => /:bub0-\d+$/.test(id),
+      (id) => /:seed\d+$/.test(id),
+      (id) => /:loop\d+(-\d+)?$/.test(id),
+    ];
+    let kept = pieces;
+    for (const tier of tiers) {
+      while (cost(kept) > PIECE_BUDGET) {
+        let at = kept.length - 1;
+        while (at >= 0 && !tier(kept[at]!.id)) at--;
+        if (at < 0) break;
+        kept = kept.filter((_, i) => i !== at);
+      }
+    }
+    return kept;
   },
   undefined,
   LEAD,
