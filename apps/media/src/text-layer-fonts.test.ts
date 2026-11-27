@@ -142,9 +142,9 @@ describe("the space after a typed emoji", () => {
     expect(Math.abs(advance("Big news 🎉 today") - (advance("Big news 🎉") + advance(" today")))).toBeLessThan(0.5);
   });
 
-  test("captions keep their planning (the picture face keeps neutrals; unchanged by this ticket)", () => {
+  test("captions plan it the same way (one planner for every text)", () => {
     const planner = new CaptionGlyphPlanner(catalogCaptionFace(captionFontFace("Inter"), "requested"), null, report(), 0);
-    expect(planner.plan("🎉 1").map((cluster) => cluster.parts[0]!.face.role)).toEqual(["monochrome-emoji", "monochrome-emoji", "monochrome-emoji"]);
+    expect(planner.plan("🎉 1").map((cluster) => cluster.parts[0]!.face.role)).toEqual(["monochrome-emoji", "requested", "requested"]);
   });
 });
 

@@ -120,8 +120,7 @@ export class SceneMeasurer {
     /**
      * Text Layer measurement. Braces and backslashes are measured and drawn as typed: captions leave
      * them out of both (`wordParts`, `escapeAssText`), and `sceneEvents` writes the text the way it
-     * was measured. Spaces, digits, `#` and `*` after an emoji go back to the line's face, as the
-     * Studio draws them (captions keep them in the picture face, whose space is about an em wide).
+     * was measured.
      */
     readonly literalText = false,
     /** Uploaded fonts the worker resolved, by `uploadedFaceKey` (Text Layers). A piece whose upload is not here draws its catalog `face`. */
@@ -136,8 +135,8 @@ export class SceneMeasurer {
     if (!planner) {
       const catalog = captionFontFace(fontName);
       planner = font
-        ? new CaptionGlyphPlanner(brandCaptionFace(font.face, font.path), catalogCaptionFace(catalog, "saved"), this.report, 0, this.forcedOmissions, this.language, this.literalText)
-        : new CaptionGlyphPlanner(catalogCaptionFace(catalog, "requested"), null, this.report, 0, this.forcedOmissions, this.language, this.literalText);
+        ? new CaptionGlyphPlanner(brandCaptionFace(font.face, font.path), catalogCaptionFace(catalog, "saved"), this.report, 0, this.forcedOmissions, this.language)
+        : new CaptionGlyphPlanner(catalogCaptionFace(catalog, "requested"), null, this.report, 0, this.forcedOmissions, this.language);
       this.planners.set(key, planner);
     }
     return planner;

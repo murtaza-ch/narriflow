@@ -30,6 +30,15 @@ describe("caption glyph planner", () => {
     expect(facesOf("สวัสดี")[0]![1]).toBe("Noto Sans Thai Regular");
   });
 
+  test("digits and spaces after an emoji go back to the caption's face, as the Studio draws them", () => {
+    expect(facesOf("🔥100 wins")).toEqual([
+      ["🔥", "Noto Emoji Regular"],
+      ...[..."100 wins"].map((character) => [character, "Montserrat Black"]),
+    ]);
+    // After a script run neutrals stay in the script face (they are inside the run).
+    expect(facesOf("🔥 مرحبا 1").map(([, face]) => face).slice(1)).not.toContain("Noto Emoji Regular");
+  });
+
   test("emoji clusters go to the monochrome face as one cluster and are reported", () => {
     const { planner: chain, report } = planner();
     const [family] = chain.plan("👨‍👩‍👧");
