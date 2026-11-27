@@ -210,6 +210,7 @@ export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionO
   "Pixelify Sans Bold": ["Cyrillic"],
   Lobster: ["Cyrillic"],
   Pacifico: ["Cyrillic"],
+  "Caveat Bold": ["Cyrillic"],
   "Montserrat ExtraBold": ["Cyrillic"],
   "Rubik ExtraBold": ["Cyrillic"],
   "Inter Tight Light": ["Cyrillic", "Greek"],

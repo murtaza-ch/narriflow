@@ -194,7 +194,7 @@ describe("captionEmojiPalette", () => {
       note("rimDetail", named.id, rimDetail);
       note("rimWhite", named.id, rimWhite);
     }
-    expect(CAPTION_PRESETS.length).toBe(115);
+    expect(CAPTION_PRESETS.length).toBe(125);
     if (process.env.CAPTION_EMOJI_PALETTE_REPORT) console.log(JSON.stringify(worst));
   });
 

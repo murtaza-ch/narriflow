@@ -65,6 +65,11 @@ const TEMPLATE_FACES = [
   "Racing Sans One",
   "Orbitron Black",
   "Pacifico",
+  "Kaushan Script",
+  "Chewy",
+  "Caveat Bold",
+  "Bangers",
+  "Knewave",
 ];
 
 describe("template-only caption faces", () => {

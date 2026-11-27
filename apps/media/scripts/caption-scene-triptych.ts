@@ -72,6 +72,16 @@ export const SAMPLE_FILES: Readonly<Record<CaptionSceneName, string>> = {
   marquee: "m73-vintage",
   horizon: "m74-synthwave",
   halftone: "m75-halftone",
+  swoosh: "m77-swoosh",
+  keycap: "m78-keycap",
+  splat: "m79-splat",
+  sketch: "m80-sketch",
+  handheld: "m81-handheld",
+  helium: "m82-helium",
+  capsule: "m83-capsule",
+  pentool: "m84-pentool",
+  toon: "m85-toon",
+  drip: "m86-drip",
 };
 
 export function studioShot(input: { readonly url: string; readonly output: string; readonly width?: number; readonly height?: number }): void {

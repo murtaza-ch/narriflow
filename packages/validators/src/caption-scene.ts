@@ -92,6 +92,16 @@ export const CAPTION_SCENE_NAMES = [
   "marquee",
   "horizon",
   "halftone",
+  "swoosh",
+  "keycap",
+  "splat",
+  "sketch",
+  "handheld",
+  "helium",
+  "capsule",
+  "pentool",
+  "toon",
+  "drip",
 ] as const;
 
 export type CaptionSceneName = (typeof CAPTION_SCENE_NAMES)[number];
@@ -233,6 +243,16 @@ export const CAPTION_SCENES: Readonly<Record<CaptionSceneName, CaptionSceneMeta>
   marquee: { name: "Marquee", bodyPx: 150, anchorLineY: 1280, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#F5E0B6", highlight: "#D8382B", accent: "#2A7A6C" }, brand: { primary: { slot: "primaryColor", readsOn: ["#222838", "highlightColor", "accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["primaryColor"] } }, fontName: "Oleo Script Bold", backdrop: "dark" },
   horizon: { name: "Horizon", bodyPx: 104, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#F7EEFF", highlight: "#FF52D6", accent: "#7DF3FF" }, brand: { primary: { slot: "primaryColor", readsOn: ["#13072E"] }, secondary: { slot: "highlightColor", readsOn: ["#13072E"] } }, fontName: "Racing Sans One", backdrop: "dark" },
   halftone: { name: "Halftone", bodyPx: 140, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#FFD23F", highlight: "#FFF1CF", accent: "#E8402A" }, brand: { primary: { slot: "primaryColor", readsOn: ["#581718"] }, secondary: { slot: "highlightColor", readsOn: ["#581718"] } }, fontName: "Pacifico", backdrop: "bright" },
+  swoosh: { name: "Swoosh", bodyPx: 100, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE21A", accent: "#FF4672" }, brand: { primary: { slot: "primaryColor", readsOn: ["#15110E"] }, secondary: { slot: "highlightColor", readsOn: ["#15110E"] } }, fontName: "Kaushan Script", backdrop: "busy" },
+  keycap: { name: "Keycap", bodyPx: 72, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#17171C", highlight: "#FF5A12", accent: "#F6F1E4" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["primaryColor"] } }, fontName: "Inter Tight ExtraBold", backdrop: "bright" },
+  splat: { name: "Splat", bodyPx: 118, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE11A", accent: "#FF4FC3" }, brand: { primary: { slot: "primaryColor", readsOn: ["#2A0C5E"] }, secondary: { slot: "highlightColor", readsOn: ["#2A0C5E"] } }, fontName: "Chewy", backdrop: "busy" },
+  sketch: { name: "Sketch", bodyPx: 132, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#FFF1D2", highlight: "#FFC93C", accent: "#FFF1D2" }, brand: { primary: { slot: "primaryColor", readsOn: ["#2B2623"] }, secondary: { slot: "highlightColor", readsOn: ["#2B2623"] } }, fontName: "Caveat Bold", backdrop: "dark" },
+  handheld: { name: "Handheld", bodyPx: 88, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#2B4220", highlight: "#223719", accent: "#B8D18B" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Silkscreen Bold", backdrop: "busy" },
+  helium: { name: "Helium", bodyPx: 120, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#2456F5", highlight: "#FF5A48", accent: "#0FBF94" }, brand: { primary: { slot: "primaryColor", readsOn: ["#FFFFFF"] }, secondary: { slot: "highlightColor", readsOn: ["#FFFFFF"] } }, fontName: "Fredoka Bold", backdrop: "bright" },
+  capsule: { name: "Capsule", bodyPx: 78, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#16286E", highlight: "#F2472F", accent: "#FFD42E" }, brand: { primary: { slot: "primaryColor", readsOn: ["#FFFFFF"] }, secondary: { slot: "highlightColor", readsOn: ["#FFFFFF"] } }, fontName: "Poppins", backdrop: "bright" },
+  pentool: { name: "Pen Tool", bodyPx: 92, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FF6B57", accent: "#C3C8D2" }, brand: { primary: { slot: "primaryColor", readsOn: ["#15121F"] }, secondary: { slot: "highlightColor", readsOn: ["#15121F"] } }, fontName: "Archivo Expanded ExtraBold", backdrop: "busy" },
+  toon: { name: "Toon", bodyPx: 140, anchorLineY: 1290, wordsPerCue: 3, emphasis: "auto", colours: { primary: "#4DF5B8", highlight: "#C99BFF", accent: "#1FA3F2" }, brand: { primary: { slot: "primaryColor", readsOn: ["#1A1250"] }, secondary: { slot: "highlightColor", readsOn: ["#1A1250"] } }, fontName: "Bangers", backdrop: "dark" },
+  drip: { name: "Drip", bodyPx: 104, anchorLineY: 1290, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#1FE6B4", accent: "#FF3B4E" }, brand: { primary: { slot: "primaryColor", readsOn: ["accentColor"] }, secondary: { slot: "highlightColor", readsOn: ["accentColor"] } }, fontName: "Knewave", backdrop: "busy" },
   reveal: { name: "Reveal", bodyPx: 72, anchorLineY: 1300, wordsPerCue: 4, emphasis: "auto", colours: { primary: "#FFFFFF", highlight: "#FFE9A8", accent: "#FFFFFF" }, brand: { primary: { slot: "primaryColor" }, secondary: { slot: "highlightColor" } }, fontName: "Inter Tight SemiBold", backdrop: "dark" },
 };
 

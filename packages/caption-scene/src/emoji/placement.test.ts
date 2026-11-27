@@ -112,7 +112,7 @@ describe("emoji placement on every Scene Style", () => {
 
   test("phrase badges (every other emoji) place without covering text, demo and fast, on every canvas", () => {
     // Measured (fake measure): demo 1 of 1,221 for want of room, fast 4 of 3,024; with the real measure 4 and 5.
-    expect(badges.cues).toBe(1221 + 3024);
+    expect(badges.cues).toBe(1389 + 3384);
     expect(badges.dropped / badges.cues).toBeLessThan(0.01);
   });
 

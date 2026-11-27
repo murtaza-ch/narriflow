@@ -88,6 +88,16 @@ import { GLINT_DEMO, glintProgram } from "./templates/glint";
 import { MARQUEE_DEMO, marqueeProgram } from "./templates/marquee";
 import { HORIZON_DEMO, horizonProgram } from "./templates/horizon";
 import { HALFTONE_DEMO, halftoneProgram } from "./templates/halftone";
+import { SWOOSH_DEMO, swooshProgram } from "./templates/swoosh";
+import { KEYCAP_DEMO, keycapProgram } from "./templates/keycap";
+import { SPLAT_DEMO, splatProgram } from "./templates/splat";
+import { SKETCH_DEMO, sketchProgram } from "./templates/sketch";
+import { HANDHELD_DEMO, handheldProgram } from "./templates/handheld";
+import { HELIUM_DEMO, heliumProgram } from "./templates/helium";
+import { CAPSULE_DEMO, capsuleProgram } from "./templates/capsule";
+import { PENTOOL_DEMO, pentoolProgram } from "./templates/pentool";
+import { TOON_DEMO, toonProgram } from "./templates/toon";
+import { DRIP_DEMO, dripProgram } from "./templates/drip";
 
 /** One Scene Style: the program that draws it and the sample script its thumbnail and fixtures play. */
 export interface SceneDefinition {
@@ -180,6 +190,16 @@ export const CAPTION_SCENE_PROGRAMS: Readonly<Record<CaptionSceneName, SceneDefi
   marquee: { program: marqueeProgram, demo: MARQUEE_DEMO },
   horizon: { program: horizonProgram, demo: HORIZON_DEMO },
   halftone: { program: halftoneProgram, demo: HALFTONE_DEMO },
+  swoosh: { program: swooshProgram, demo: SWOOSH_DEMO },
+  keycap: { program: keycapProgram, demo: KEYCAP_DEMO },
+  splat: { program: splatProgram, demo: SPLAT_DEMO },
+  sketch: { program: sketchProgram, demo: SKETCH_DEMO },
+  handheld: { program: handheldProgram, demo: HANDHELD_DEMO },
+  helium: { program: heliumProgram, demo: HELIUM_DEMO },
+  capsule: { program: capsuleProgram, demo: CAPSULE_DEMO },
+  pentool: { program: pentoolProgram, demo: PENTOOL_DEMO },
+  toon: { program: toonProgram, demo: TOON_DEMO },
+  drip: { program: dripProgram, demo: DRIP_DEMO },
 };
 
 /** The cues a program may see: no word without text, no cue without words (the planner never makes them; a template would write NaN for one). */

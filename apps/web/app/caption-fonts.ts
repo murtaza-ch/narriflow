@@ -1122,6 +1122,81 @@ const captionPacifico = localFont({
   ],
 });
 
+const captionKaushanScript = localFont({
+  src: "../../../packages/caption-fonts/fonts/KaushanScript-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-kaushan-script",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "108.4%" },
+    { prop: "descent-override", value: "36.7%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionChewy = localFont({
+  src: "../../../packages/caption-fonts/fonts/Chewy-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-chewy",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "97.95%" },
+    { prop: "descent-override", value: "30.27%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionCaveatBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Caveat-Bold.ttf",
+  weight: "700",
+  style: "normal",
+  variable: "--font-caption-caveat-bold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "97.4%" },
+    { prop: "descent-override", value: "31.5%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionBangers = localFont({
+  src: "../../../packages/caption-fonts/fonts/Bangers-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-bangers",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "140.1%" },
+    { prop: "descent-override", value: "35.6%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionKnewave = localFont({
+  src: "../../../packages/caption-fonts/fonts/Knewave-Regular.ttf",
+  weight: "400",
+  style: "normal",
+  variable: "--font-caption-knewave",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "116.9%" },
+    { prop: "descent-override", value: "38.5%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 const captionSpaceMonoRegular = localFont({
   src: "../../../packages/caption-fonts/fonts/SpaceMono-Regular.ttf",
   weight: "400",
@@ -1358,4 +1433,9 @@ export const captionFontVariables = [
   captionRacingSansOne.variable,
   captionOrbitronBlack.variable,
   captionPacifico.variable,
+  captionKaushanScript.variable,
+  captionChewy.variable,
+  captionCaveatBold.variable,
+  captionBangers.variable,
+  captionKnewave.variable,
 ].join(" ");

@@ -117,6 +117,11 @@ export const CAPTION_FONT_FACES = [
   { name: "Racing Sans One", file: "RacingSansOne-Regular.ttf", assName: "Racing Sans One", weight: 400, style: "normal", ascent: 0.976, descent: 0.284, capHeight: 0.635, templateOnly: true },
   { name: "Orbitron Black", file: "Orbitron-Black.ttf", assName: "Orbitron Black", weight: 900, style: "normal", ascent: 1.011, descent: 0.243, capHeight: 0.72, templateOnly: true },
   { name: "Pacifico", file: "Pacifico-Regular.ttf", assName: "Pacifico Regular", weight: 400, style: "normal", ascent: 1.478, descent: 0.457, capHeight: 0.877, templateOnly: true },
+  { name: "Kaushan Script", file: "KaushanScript-Regular.ttf", assName: "Kaushan Script", weight: 400, style: "normal", ascent: 1.084, descent: 0.367, capHeight: 0.742, templateOnly: true },
+  { name: "Chewy", file: "Chewy-Regular.ttf", assName: "Chewy Regular", weight: 400, style: "normal", ascent: 0.9795, descent: 0.3027, capHeight: 0.7344, templateOnly: true },
+  { name: "Caveat Bold", file: "Caveat-Bold.ttf", assName: "Caveat Bold", weight: 700, style: "normal", ascent: 0.974, descent: 0.315, capHeight: 0.7195, templateOnly: true },
+  { name: "Bangers", file: "Bangers-Regular.ttf", assName: "Bangers Regular", weight: 400, style: "normal", ascent: 1.401, descent: 0.356, capHeight: 0.74, templateOnly: true },
+  { name: "Knewave", file: "Knewave-Regular.ttf", assName: "Knewave", weight: 400, style: "normal", ascent: 1.169, descent: 0.385, capHeight: 0.786, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];
