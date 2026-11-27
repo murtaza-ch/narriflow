@@ -94,6 +94,7 @@ export const MOMENTS: Record<string, number[]> = {
   keycap: [467, 1300, 2600, 3000, 4500, 6900, 7400],
   sketch: [233, 400, 1230, 2166, 2450, 3150, 4700, 5200, 6560],
   pentool: [700, 1000, 1467, 2300, 3300, 4400, 5600, 6300],
+  swoosh: [567, 2067, 2400, 3433, 3533, 5400, 6533, 8000],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
