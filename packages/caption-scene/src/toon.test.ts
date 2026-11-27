@@ -417,11 +417,12 @@ describe("toon review round 1", () => {
         }
       }
     }
-    // With time before the word, it still pops: squashed and swung before the onset.
+    // With time before the word, it still pops (squashed and swung) inside the last 100 ms before the onset.
     const { cues, pieces } = build(["just:b start:h@520"], { cueGap: 700 });
     const hero = pieces.find((piece) => piece.id === "toon:0:w1")!;
     expect(evaluatePiece(hero, hero.fromMs).sy).toBeLessThan(0.5);
-    expect(hero.fromMs).toBeLessThanOrEqual(cues[0]!.words[1]!.startMs - 200);
+    expect(hero.fromMs).toBeGreaterThanOrEqual(cues[0]!.words[1]!.startMs - 100);
+    expect(exportFrameTimes(hero.fromMs, exportFrameAtOrAfter(cues[0]!.words[1]!.startMs, 30), 30).length).toBeGreaterThanOrEqual(2);
   });
 
   test("a key word that paints on a single frame keeps its upper colour, rim, ribbon and ball on that frame, cleared with it", () => {
@@ -530,5 +531,35 @@ describe("toon review round 1", () => {
     const hero = pieces.find((piece) => piece.id === "toon:0:w1")!;
     const t = settledAt(hero);
     expect(box(ball, t)!.y2).toBeGreaterThan(box(hero, t)!.y1);
+  });
+});
+
+describe("toon review round 2", () => {
+  /** Sol's measure: a face reads once it is opaque enough (≥ 0.6) and big enough (both scales ≥ 0.8). */
+  const reads = (piece: Piece, t: number) => {
+    const pose = evaluatePiece(piece, t);
+    return pose.visible && pose.o >= 0.6 && pose.sx >= 0.8 && pose.sy >= 0.8 && box(piece, t) !== null;
+  };
+
+  test("no word reads more than 100 ms before it is spoken, and words with room still pop", () => {
+    const slow = demoCues({ lines: ["stop:b waiting:b for:m a:m perfect:h@560 moment:b", "nobody:b is:m watching:b you:b that:m closely:b", "consistency:h@720 wins:b"], options: { rate: 120, gap: 200, cueGap: 600, tail: 600, lead: 400 } }).cues;
+    for (const fps of [24, 25, 30, 60]) {
+      let popped = 0;
+      for (const [name, run] of [["fast 0", fastRun(0)], ["fast 60", fastRun(60)], ["staccato 0", staccatoRun(0)], ["slow", slow]] as const) {
+        const pieces = toonProgram.build(sceneInput(run, { fps, colours, anchor })).pieces;
+        for (const cue of run) {
+          for (const [at, word] of cue.words.entries()) {
+            for (const piece of pieces.filter((p) => new RegExp(`^toon:${cue.index}:w${at}(l\\d+)?$`).test(p.id))) {
+              const first = exportFrameTimes(piece.fromMs, piece.toMs, fps).find((t) => reads(piece, t));
+              expect(first, `${name} ${fps} fps ${piece.id} never reads`).toBeDefined();
+              expect(word.startMs - first!, `${name} ${fps} fps ${piece.id} reads at ${first}, spoken ${word.startMs}`).toBeLessThanOrEqual(100);
+            }
+            const face = pieces.find((p) => p.id === `toon:${cue.index}:w${at}`);
+            if (face && exportFrameTimes(face.fromMs, exportFrameAtOrAfter(word.startMs, fps), fps).filter((t) => box(face, t) && Math.abs(evaluatePiece(face, t).sy - 1) > 0.05).length >= 2) popped++;
+          }
+        }
+      }
+      expect(popped, `${fps} fps words with a visible pop`).toBeGreaterThan(20);
+    }
   });
 });

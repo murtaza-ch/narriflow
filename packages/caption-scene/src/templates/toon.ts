@@ -42,8 +42,8 @@ import { caps, galleryScene, rotatePoint } from "./gallery-layout";
  *   and tall as a short Latin word's (Urdu "یہ" and Hindi "तो" keep the normal size), and joined words keep extra space
  *   between outlines. A row made only of small words draws them at 0.7 of the row size, so no cue is all tiny.
  * - **Real speech timing.** A word's pop (squash, swing, rise, quick fade-in) happens in the time before it is spoken:
- *   up to 220 ms (300 ms for the key word), from the previous word's onset, and for a cue's first word within the
- *   cue's 100 ms lead. On its first spoken frame the word is whole, opaque and settled in its slot; with fewer than two
+ *   at most 100 ms before it (captions reveal words as they are spoken: no word reads earlier than that), never before
+ *   the previous word's onset or the cue's window. On its first spoken frame the word is whole, opaque and settled in its slot; with fewer than two
  *   frames of lead it simply appears there. A wide row swings less (its ends lift at most a quarter em) and overscales
  *   only into the room it has. Rows keep room for the spring's overshoot, the rest of the rise and the swing, so an
  *   entering word never touches a neighbour or another row; the exit levels each word's tilt as it flattens, for the
@@ -123,6 +123,8 @@ const SWING_LIFT = 0.25;
 const SEAM = 0.5;
 /** A cue opens at most this long before its first word: its first word's pop happens in it. */
 const LEAD = 100;
+/** A word's pop starts at most this long before it is spoken, so no word reads earlier than that. */
+const POP_LEAD = 100;
 /** Sizes tried, as shares of the sample's, before a cue that does not fit pages or shrinks (floors hold throughout). */
 const FIT_SCALES = [0.9, 0.8, 0.7, 0.6, 0.5] as const;
 /** Pieces one cue may draw, shadow copies counted (the scene budget is 150). */
@@ -677,11 +679,11 @@ export const toonProgram = galleryScene(
         const at = cell.word;
         const word = words[at]!;
         const hero = isHero(at);
-        // The pop happens in the time before the word is spoken (from the previous word's onset, at most the cue's lead
-        // for its first word) and has settled on the first spoken frame: the word is whole, opaque and in its slot when it
-        // is heard. With fewer than two frames before that, the word appears settled.
+        // The pop happens in the 100 ms before the word is spoken (never before the previous word's onset or the cue's
+        // window) and has settled on the first spoken frame: no word reads more than 100 ms early, and it is whole, opaque
+        // and in its slot when it is heard. With fewer than two frames before that, the word appears settled.
         const onset = exportFrameAtOrAfter(word.startMs, fps);
-        const want = hero ? 300 : cell.small ? 200 : 220;
+        const want = POP_LEAD;
         const previous = at > 0 ? words[at - 1]!.startMs : Number.NEGATIVE_INFINITY;
         const from = Math.max(pageFrom, Math.min(onset, Math.max(word.startMs - want, previous)));
         const motion = !paged && paintedFrameCount(from, onset, fps) >= 2;
