@@ -3,7 +3,7 @@ import type { CaptionEmojiArt } from "@narriflow/caption-emoji/art";
 import * as captionScene from "@narriflow/caption-scene";
 import {
   CAPTION_EMOJI_LATE_HOLD_MS,
-  CAPTION_EMOJI_MIN_HOLD_MS,
+  CAPTION_EMOJI_MIN_SHOWN_MS,
   CAPTION_EMOJI_PIECE_CAP,
   CAPTION_EMOJI_Z,
   CAPTION_SCENE_PROGRAMS,
@@ -299,11 +299,10 @@ describe("the export places as the Studio does", () => {
 });
 
 describe("a late word's emoji holds past its cue and leaves, the same on both feeders", () => {
-  // Words 250 ms apart, each 150 ms long: the fourth word ends the first cue, under 250 ms before its last paint; the fifth
-  // opens the next cue.
-  const pitch = 0.25;
-  const atMs = Math.round((0.2 + 3 * pitch) * 1000);
-  const nextAtMs = Math.round((0.2 + 4 * pitch) * 1000);
+  // Words 250 ms apart, each 150 ms long: the fourth word ends the first cue, under 340 ms before its last paint; the fifth
+  // opens the next cue. To yield, words 360 ms apart: the next cue's emoji starts inside the hold, late enough to leave the
+  // held emoji its least window (`CAPTION_EMOJI_MIN_SHOWN_MS`).
+  const pitchOf = (yields: boolean) => (yields ? 0.36 : 0.25);
   const clock = (time: string) => {
     const [h, m, s] = time.split(":").map(Number);
     return Math.round(((h! * 60 + m!) * 60 + s!) * 1000);
@@ -316,6 +315,9 @@ describe("a late word's emoji holds past its cue and leaves, the same on both fe
   for (const [kind, presetId] of [["classic", "electric"], ["Dynamic", "headline"], ["Scene", "reveal"]] as const) {
     for (const yields of [false, true]) {
       test(`${kind} (${presetId})${yields ? ", yielding to the next cue's emoji" : ""}`, () => {
+        const pitch = pitchOf(yields);
+        const atMs = Math.round((0.2 + 3 * pitch) * 1000);
+        const nextAtMs = Math.round((0.2 + 4 * pitch) * 1000);
         const plan = planFor(presetId, { [String(atMs)]: { id: "rocket" }, ...(yields ? { [String(nextAtMs)]: { id: "flame" } } : {}) }, { words: SHORT, pitchSec: pitch, wordSec: 0.15 });
         const layers = plan.targets[0]!.visualLayers.flatMap((layer): CompositionCaptionVisualLayer[] => (layer.kind === "caption" ? [layer] : []));
         const owner = layers.find((layer) => layer.emojis.some((emoji) => emoji.id === "rocket"))!;
@@ -330,7 +332,7 @@ describe("a late word's emoji holds past its cue and leaves, the same on both fe
         }
         expect(track.emojis).toEqual({ placed: yields ? 2 : 1, dropped: {} });
         const cue = worker.cueBoxes.find((box) => box.cueIndex === owner.cueIndex)!;
-        expect(cue.toMs - atMs).toBeLessThan(CAPTION_EMOJI_MIN_HOLD_MS);
+        expect(cue.toMs - atMs).toBeLessThan(CAPTION_EMOJI_MIN_SHOWN_MS);
         const endMs = yields ? nextAtMs : atMs + CAPTION_EMOJI_LATE_HOLD_MS;
         // The export: one event per piece (the exit is a `\t` chain, not one event per frame), from the word, past the
         // cue's last paint, to the late hold or the next cue's emoji (the writer snaps to the render's frames).

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { Flex, Popover, Portal } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import type { CaptionEmojiRef } from "@narriflow/validators";
@@ -73,9 +73,27 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+/** The picker's height, px: fixed, so typing a search (fewer results) never resizes or moves it. */
+export const EMOJI_PICKER_HEIGHT = 408;
+const PICKER_GUTTER = 6;
+
+/**
+ * Below the chip when the picker fits there, else above when it fits there, else the roomier side.
+ * Chosen once when the picker opens: a placement that re-flipped on every layout pass jumped from
+ * above the chip to below it as soon as a search started (owner report, ticket 34).
+ */
+export function emojiPickerPlacement(anchor: { readonly top: number; readonly bottom: number }, viewportHeight: number): "bottom-start" | "top-start" {
+  const need = EMOJI_PICKER_HEIGHT + PICKER_GUTTER;
+  const below = viewportHeight - anchor.bottom;
+  const above = anchor.top;
+  if (below >= need) return "bottom-start";
+  if (above >= need) return "top-start";
+  return below >= above ? "bottom-start" : "top-start";
+}
+
 function PickerPending() {
   return (
-    <Flex h="408px" maxH="full" align="center" justify="center" role="status" aria-label="Loading emojis">
+    <Flex h="full" align="center" justify="center" role="status" aria-label="Loading emojis">
       <Spinner size="sm" />
     </Flex>
   );
@@ -100,15 +118,18 @@ export function warmEmojiPicker(): void {
 export function CaptionEmojiPickerHost() {
   const current = useSyncExternalStore(subscribe, () => request, () => null);
   const EmojiPicker = loadedPicker ?? LazyEmojiPicker;
+  const anchor = current?.anchor ?? null;
+  const placement = useMemo(() => (anchor ? emojiPickerPlacement(anchor.getBoundingClientRect(), window.innerHeight) : "bottom-start"), [anchor]);
   return (
     <Popover.Root
       open={current !== null}
       autoFocus={false}
       lazyMount
       unmountOnExit
-      // Flips above the chip or shifts to stay in the window; `fitViewport` caps the height to the
-      // space there (`--available-height`) and the grid scrolls inside.
-      positioning={{ placement: "bottom-start", gutter: 6, flip: true, slide: true, fitViewport: true, getAnchorElement: () => current?.anchor ?? null }}
+      // The side is chosen once per open (`emojiPickerPlacement`), never re-flipped while it is open; it
+      // shifts to stay in the window, and `fitViewport` caps the height to the space there
+      // (`--available-height`) with the grid scrolling inside.
+      positioning={{ placement, gutter: PICKER_GUTTER, flip: false, slide: true, fitViewport: true, getAnchorElement: () => current?.anchor ?? null }}
       onEscapeKeyDown={() => closeEmojiPicker(true)}
       onInteractOutside={() => closeEmojiPicker(false)}
       onOpenChange={(details) => {
@@ -130,6 +151,7 @@ export function CaptionEmojiPickerHost() {
             overflow="hidden"
             display="flex"
             flexDirection="column"
+            h={`${EMOJI_PICKER_HEIGHT}px`}
             maxH="var(--available-height)"
             aria-label={current?.label ?? "Emoji picker"}
           >

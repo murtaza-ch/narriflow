@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CAPTION_EMOJI_GROUPS, CAPTION_EMOJI_INDEX, emojiRefForGlyph } from "@narriflow/caption-emoji/index";
+import { EMOJI_PICKER_HEIGHT, emojiPickerPlacement } from "./emoji-picker-host";
 import {
   buildEmojiSearch,
   captionEmojiPickerGroups,
@@ -136,5 +137,19 @@ describe("picked refs and recents", () => {
     const many = Array.from({ length: 16 }, (_, at) => `e${at}`);
     expect(withRecentEmoji(many, "e5").slice(0, 2)).toEqual(["e5", "e0"]);
     expect(withRecentEmoji(many, "new")).toHaveLength(16);
+  });
+});
+
+describe("emojiPickerPlacement", () => {
+  const h = EMOJI_PICKER_HEIGHT + 6;
+  test("below when it fits below", () => {
+    expect(emojiPickerPlacement({ top: 100, bottom: 130 }, 130 + h)).toBe("bottom-start");
+  });
+  test("above when only above fits", () => {
+    expect(emojiPickerPlacement({ top: h, bottom: h + 30 }, h + 30 + h - 1)).toBe("top-start");
+  });
+  test("the roomier side when neither fits", () => {
+    expect(emojiPickerPlacement({ top: 300, bottom: 330 }, 600)).toBe("top-start");
+    expect(emojiPickerPlacement({ top: 200, bottom: 230 }, 600)).toBe("bottom-start");
   });
 });

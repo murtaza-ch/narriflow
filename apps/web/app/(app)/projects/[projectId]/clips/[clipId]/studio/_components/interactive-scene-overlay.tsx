@@ -22,11 +22,14 @@ export function InteractiveSceneOverlay({
   videoContainerRef,
   layers,
   insertedScenes,
+  endMs,
 }: {
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
   layers: readonly CompositionCaptionVisualLayer[];
   /** The target's inserted scenes (`insertedSceneRanges`): the scene is cut at them. */
   insertedScenes: readonly CompositionActiveRange[];
+  /** Where the clip ends, ms (the plan's edited duration): no emoji shows past it, as in the export. */
+  endMs?: number | undefined;
 }) {
   const { setCaptionPreset, captionSelected, selectCaption, deselectCaption, endCoalesce, playbackClock, clipInfo } = useStudio(
     "setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "endCoalesce", "playbackClock", "clipInfo",
@@ -142,7 +145,7 @@ export function InteractiveSceneOverlay({
       <SnapGuideLines guides={snapGuides} />
       <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: PREVIEW_Z.caption, pointerEvents: "none" }}>
         <CaptionSceneLayers built={built} canvas={canvas} scale={scale} timeSource={playbackClock} />
-        <SceneCaptionEmojis built={built} layers={layers} scale={scale} timeSource={playbackClock} />
+        <SceneCaptionEmojis built={built} layers={layers} scale={scale} timeSource={playbackClock} endMs={endMs} />
       </div>
       {bounds ? (
         <div

@@ -52,6 +52,14 @@ function loadShard(key: string): Promise<Record<string, ShardEntry>> {
  * that failed to load (each shard settles on its own, and a failed one is asked again next time).
  */
 export async function loadCaptionEmojiArt(ids: Iterable<string>): Promise<Map<string, CaptionEmojiArt>> {
+  return (await loadCaptionEmojiArtSettled(ids)).art;
+}
+
+/**
+ * `loadCaptionEmojiArt`, and which ids were left out because their shard failed to load (`failed`): a
+ * cache keeps those to ask again, and treats the other missing ids (not in the catalog) as answered.
+ */
+export async function loadCaptionEmojiArtSettled(ids: Iterable<string>): Promise<{ readonly art: Map<string, CaptionEmojiArt>; readonly failed: ReadonlySet<string> }> {
   const wanted = new Map<string, string[]>();
   for (const id of new Set(ids)) {
     const entry = captionEmojiById(id);
@@ -60,9 +68,16 @@ export async function loadCaptionEmojiArt(ids: Iterable<string>): Promise<Map<st
     wanted.set(key, [...(wanted.get(key) ?? []), id]);
   }
   const result = new Map<string, CaptionEmojiArt>();
+  const failed = new Set<string>();
   await Promise.allSettled(
     [...wanted].map(async ([key, shardIds]) => {
-      const shard = await loadShard(key);
+      let shard: Record<string, ShardEntry>;
+      try {
+        shard = await loadShard(key);
+      } catch (error) {
+        for (const id of shardIds) failed.add(id);
+        throw error;
+      }
       for (const id of shardIds) {
         let art = decoded.get(id);
         if (!art) {
@@ -84,5 +99,5 @@ export async function loadCaptionEmojiArt(ids: Iterable<string>): Promise<Map<st
       }
     }),
   );
-  return result;
+  return { art: result, failed };
 }

@@ -283,15 +283,24 @@ export function captionEmojisNeedConfirm(clipId: string, current: Emojis | undef
   return Object.keys(current ?? {}).length > 0 && !sameCaptionEmojis(clip(clipId).baseline, current);
 }
 
+/** The longest an AI run waits for its answer's art before committing without it, ms. */
+export const CAPTION_EMOJI_ART_WAIT_MS = 6000;
+
 export interface CaptionEmojiRunRequest {
   /** Saves pending edits; false when the save could not finish (the route tags the saved document). */
   readonly save: () => Promise<boolean>;
   readonly suggest: (density: CaptionEmojiDensity) => Promise<CaptionEmojiAnswer>;
   /** The typed error code of a failed request, or null when it had none (offline, aborted). */
   readonly failureCode: (error: unknown) => string | null;
+  /** Loads the art of these emoji ids (`preloadCaptionEmojiArt`), so the answer shows drawn, never as empty boxes. */
+  readonly loadArt: (ids: readonly string[]) => Promise<void>;
 }
 
-/** One AI run: save, ask, merge against the live source, replace every emoji in one undo step. A start while one runs is ignored. */
+/**
+ * One AI run: save, ask, load the answer's art, merge against the live source, replace every emoji in
+ * one undo step. A failed art load still commits (the edit must not be lost); its glyphs draw once
+ * their art arrives. A start while one runs is ignored.
+ */
 export async function runCaptionEmojiSuggestion(clipId: string, density: CaptionEmojiDensity, request: CaptionEmojiRunRequest): Promise<void> {
   const state = clip(clipId);
   if (captionEmojiRunBusy(state.session.run)) return;
@@ -316,6 +325,20 @@ export async function runCaptionEmojiSuggestion(clipId: string, density: Caption
     answer = await request.suggest(density);
   } catch (error) {
     return dispatch(clipId, { type: "failed", failure: { reason: "request", code: request.failureCode(error) } });
+  }
+  let waited: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // A stalled shard must not hold the run: after CAPTION_EMOJI_ART_WAIT_MS it commits anyway.
+    await Promise.race([
+      request.loadArt([...new Set(Object.values(answer.emojis).map((ref) => ref.id))]),
+      new Promise<void>((resolve) => {
+        waited = setTimeout(resolve, CAPTION_EMOJI_ART_WAIT_MS);
+      }),
+    ]);
+  } catch {
+    // Committed without art: each glyph keeps its empty box until its shard loads.
+  } finally {
+    clearTimeout(waited);
   }
 
   const now = liveSource(clipId);

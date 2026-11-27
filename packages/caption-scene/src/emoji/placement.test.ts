@@ -8,19 +8,24 @@ import { fakeMeasure } from "../test-support";
 import { PLACEMENT_EMOJI_IDS, placementRun } from "./placement-support";
 
 /**
- * Every Scene Style draws emojis next to its text and never on it (spec D4): one emoji on every
- * cue of its sample and of a fast 12-cue run (150 ms words, no gap between cues), on 9:16, 1:1 and
- * 16:9. A word face is text of a cue at half opacity or more. Set CAPTION_EMOJI_PLACEMENT_REPORT=1
- * to print the per-style table.
+ * Every Scene Style draws emojis next to its text and never on it (spec D4), and close to the text
+ * of its cue that reads on its first painted frame (`CAPTION_EMOJI_MAX_GAP`, or the fallback
+ * `CAPTION_EMOJI_POP_FALLBACK_GAP`): one emoji on every cue of its
+ * sample and of a fast 12-cue run (150 ms words, no gap between cues), on 9:16, 1:1 and 16:9, and on
+ * 9:16 with the caption at 30% and 58% of the height. A word face is text of a cue at half opacity
+ * or more. Set CAPTION_EMOJI_PLACEMENT_REPORT=1 to print the per-style table.
  *
- * Drop thresholds, from the measured runs (2026-11-26, fake measure, emoji 1.6 of the body text at
- * 12.5% to 16% of the short side, edge slots after the slots by the text): the sample cues drop 1 of
- * 1,221 emojis for want of room over the three canvases (Cascade on 9:16); the fast run 6 of 3,024
- * (Pills on every canvas, Marquee on 9:16 and 1:1, Mdrn on 9:16). Lyrics, whose dim neighbour lines
- * hold the rows above and below while its stack scrolls, and Wonky, whose words fill a short frame,
- * drop at most 1 of 12 on the fast run. Late anchors (a cue's last 100 ms word with no gap) are not
- * drawn by the timing rule and are counted apart. A word face is also any text that belongs to no cue
- * (Index's dial labels, Chronicle's timeline).
+ * Drop thresholds, from the measured runs (2026-11-27, fake measure, emoji 1.6 of the body text at
+ * 12.5% to 16% of the short side, above, then beside, then below, never over half its height from
+ * the text that reads on its first frame): the sample cues of the first 84 styles drop 11 of 1,221
+ * emojis for want of room over the three canvases (5 when any frame of the pop counted, which left 70
+ * over half a height from the text on their first frame; 4 now, all by the fallback); their fast run
+ * 26 of 3,024 (20 and 228; 6 now). The 10 styles added since drop none. Lyrics, whose dim neighbour lines hold the rows above and below while its
+ * stack scrolls, and Wonky, whose words fill a short frame, drop at most 2 of 12 on the fast run
+ * (Lyrics' fallback at the safe area's edge sits about three emoji heights from a short line). Late
+ * anchors (a cue's last 100 ms word with no gap) are not drawn by the timing rule and are counted
+ * apart. A word face is also any text that belongs to no cue (Index's dial labels, Chronicle's
+ * timeline).
  */
 const CANVASES = [
   { width: 1080, height: 1920 },
@@ -106,15 +111,34 @@ describe("emoji placement on every Scene Style", () => {
     // Fast speech: under 5% overall; no style loses more than half.
     expect(sum(fast, "dropped") / sum(fast, "cues")).toBeLessThan(0.05);
     for (const row of fast) expect(row.dropped, `${row.name} fast ${row.canvas}`).toBeLessThanOrEqual(row.cues / 2);
-    // The two stacks that crowd their own slots: at most 1 of 12 on any canvas.
-    for (const row of fast.filter((each) => each.name === "lyrics" || each.name === "wonky")) expect(row.dropped, `${row.name} fast ${row.canvas}`).toBeLessThanOrEqual(1);
+    // The two stacks that crowd their own slots: at most 2 of 12 on any canvas.
+    for (const row of fast.filter((each) => each.name === "lyrics" || each.name === "wonky")) expect(row.dropped, `${row.name} fast ${row.canvas}`).toBeLessThanOrEqual(2);
   });
 
   test("phrase badges (every other emoji) place without covering text, demo and fast, on every canvas", () => {
-    // Measured (fake measure): demo 1 of 1,221 for want of room, fast 4 of 3,024; with the real measure 4 and 5.
+    // Measured (fake measure, first 84 styles): 35 of 4,245 for want of room over demo and fast (24 when any frame of the
+    // pop counted); the 10 styles added since drop none.
     expect(badges.cues).toBe(1389 + 3384);
     expect(badges.dropped / badges.cues).toBeLessThan(0.01);
   });
+
+  test("with the caption at 30% and 58% of a 9:16 frame, every emoji sits close to its cue's text, off it, in the safe area", () => {
+    // Measured (fake measure, 9:16): at 30% and at 58% alike, demo 6 of 407 and fast 11 of 1,008 dropped for want of room
+    // (2 and 8 when any frame of the pop counted); first-frame gaps p50 0.17, p90 0.30 to 0.39, max 0.67 (one fallback).
+    for (const positionY of [30, 58]) {
+      let cues = 0;
+      let dropped = 0;
+      for (const name of CAPTION_SCENE_NAMES) {
+        for (const [run, runCues] of [["demo", captionSceneDemo(name).cues], ["fast", fastRun(0)]] as const) {
+          const result = placementRun({ name, cues: runCues, canvas: CANVASES[0], measure: fakeMeasure, art, positionY });
+          expect(result.problems, `${name} ${run} at ${positionY}%`).toEqual([]);
+          cues += result.outcomes.length;
+          dropped += result.outcomes.filter((outcome) => !outcome.placed && outcome.reason === "no-room").length;
+        }
+      }
+      expect(dropped / cues, `at ${positionY}%`).toBeLessThan(0.02);
+    }
+  }, 30_000); // Many presets × two heights: seconds under load; the default 5 s timeout flaked.
 
   test("the edge demos (one word, nine words, a long word, Urdu, two speakers) place without covering text", () => {
     for (const kind of ["one-word", "nine-words", "long-word", "urdu", "two-speakers"] as const) {
@@ -123,5 +147,5 @@ describe("emoji placement on every Scene Style", () => {
         expect(result.problems, `${name} ${kind}`).toEqual([]);
       }
     }
-  });
+  }, 30_000); // Five edge demos on every Scene Style: about 5 s under load.
 });

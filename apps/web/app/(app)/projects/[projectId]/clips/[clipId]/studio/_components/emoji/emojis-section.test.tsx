@@ -55,7 +55,7 @@ beforeEach(() => resetCaptionEmojiSessions());
 function run(suggest: () => Promise<CaptionEmojiAnswer>, save: () => Promise<boolean> = async () => true) {
   const model = captionEmojiWords(withoutEmojis(), buildEditedTimeMap([], { startSec: 0, endSec: 100 }));
   registerCaptionEmojiSource("clip-section", () => ({ entries: undefined, model, readOnly: false, replace: (value) => value }));
-  return runCaptionEmojiSuggestion("clip-section", "balanced", { save, suggest, failureCode: () => null });
+  return runCaptionEmojiSuggestion("clip-section", "balanced", { save, suggest, failureCode: () => null, loadArt: async () => undefined });
 }
 
 const primaryButton = (markup: string) => markup.match(/<button[^>]*>(?:(?!<\/button>).)*(?:Add with AI|Adding emojis)(?:(?!<\/button>).)*<\/button>/)?.[0] ?? "";
@@ -88,7 +88,7 @@ describe("Emojis panel states", () => {
     expect(markup).not.toContain("Regenerate");
     expect(markup).toContain("No emojis yet. Add with AI, or tap a word below.");
     expect(markup).not.toContain("Remove all");
-    expect(markup).toContain("Words on screen now. Tap one to add an emoji.");
+    expect(markup).toContain("Select a word in the current caption to add an emoji.");
   });
 
   test("on with emojis: the count, Regenerate, Remove all, style controls and word chips", () => {
@@ -189,12 +189,14 @@ describe("Emojis panel layout", () => {
     expect(order).toEqual([...order].sort((left, right) => left - right));
   });
 
-  test("the density is described in words, with no numbers", () => {
+  test("the densities are described only in their tooltips, in words with no numbers", () => {
     const markup = render(withEmojis());
-    expect(markup).toContain("Clear matches at an easy pace.");
-    expect(markup).toContain('title="Only the surest matches, spaced well apart."');
-    const line = markup.match(/<p[^>]*>(Clear matches[^<]*)<\/p>/)?.[1] ?? "";
-    expect(line).not.toMatch(/\d/);
+    const titles = ["Fewer emojis, on the key words.", "An emoji every few seconds.", "As many as fit, close together."];
+    for (const title of titles) {
+      expect(markup).toContain(`title="${title}"`);
+      expect(markup).not.toContain(`>${title}<`);
+      expect(title).not.toMatch(/\d/);
+    }
   });
 
   test("subtitles hidden: the note stands under the switch", () => {

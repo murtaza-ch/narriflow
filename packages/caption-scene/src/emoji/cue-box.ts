@@ -33,6 +33,18 @@ export interface CaptionEmojiCueBox {
   readonly endBox?: Box;
   /** Live boxes the emoji must miss at `atMs` (export frame times). Absent = `box` alone. */
   readonly obstacles?: (atMs: number) => readonly CaptionEmojiObstacle[];
+  /**
+   * The boxes of the cue's text that reads at `atMs` (export frame times) and of the plates it is written on; empty when
+   * none reads. A Scene Style's stack reveals rows after the emoji pops, which `box` (one late sample) already holds: an
+   * emoji is kept close to what is on screen when it pops, and a `below` slot sits under it. Absent = `box` (a classic
+   * line and a Caption Block show their whole text at once).
+   */
+  readonly shownAt?: (atMs: number) => readonly Box[];
+  /**
+   * What `shownAt` reads, when it is data: a Caption Block's words, tiles and decorations, each with the time it is drawn
+   * from. A one-cue layer's memo key names it, since a word's onset moves an emoji without moving the box.
+   */
+  readonly shownParts?: readonly { readonly box: Box; readonly fromMs: number }[];
 }
 
 /**
@@ -48,38 +60,48 @@ export type CaptionEmojiCueTiming = Pick<CaptionEmojiCueBox, "cueIndex" | "fromM
  * A Dynamic Style cue's box from the layout both painters share (ADR 0020): every word's rest ink,
  * turned with the word, its tile, and the drawn details. Not the layout's `bounds`, which also
  * reserve the entrance travel and would hold the emoji off the text. Null when nothing is placed.
+ * With `startsMs` (each word's spoken onset, parallel to the layout's words: both painters draw a
+ * word from it), the box says which words are on screen at a time (`shownAt`).
  */
-export function blockCueBox(layout: CaptionBlockLayout, measured: readonly MeasuredWord[], cue: CaptionEmojiCueTiming): CaptionEmojiCueBox | null {
-  const boxes: Box[] = [];
+export function blockCueBox(
+  layout: CaptionBlockLayout,
+  measured: readonly MeasuredWord[],
+  cue: CaptionEmojiCueTiming,
+  startsMs?: readonly (number | undefined)[],
+): CaptionEmojiCueBox | null {
+  const parts: { readonly box: Box; readonly fromMs: number }[] = [];
   let tilt = 0;
   layout.words.forEach((word, index) => {
     const m = measured[index];
     if (!m) return;
+    const fromMs = startsMs?.[index] ?? Number.NEGATIVE_INFINITY;
     tilt += word.rotationDeg;
     if (word.clusters) {
       // A curved row: each cluster is drawn at its own place and turn; its ink is the word's, at the cluster's size.
       for (const cluster of word.clusters) {
         const half = cluster.centerX - cluster.baselineX;
         const ink = { x1: cluster.baselineX, y1: cluster.baselineY - m.inkTopEm * cluster.px, x2: cluster.baselineX + 2 * half, y2: cluster.baselineY + m.inkBottomEm * cluster.px };
-        boxes.push(turnedBox(ink, cluster.rotationDeg, { x: cluster.centerX, y: cluster.centerY }));
+        parts.push({ box: turnedBox(ink, cluster.rotationDeg, { x: cluster.centerX, y: cluster.centerY }), fromMs });
       }
     } else {
       const ink = { x1: word.baselineX, y1: word.baselineY - m.inkTopEm * word.px, x2: word.baselineX + m.advanceEm * word.px, y2: word.baselineY + m.inkBottomEm * word.px };
-      boxes.push(turnedBox(ink, word.rotationDeg, { x: word.centerX, y: word.centerY }));
+      parts.push({ box: turnedBox(ink, word.rotationDeg, { x: word.centerX, y: word.centerY }), fromMs });
     }
     const tile = word.tile;
     if (tile) {
       const rect = { x1: tile.centerX - tile.width / 2, y1: tile.centerY - tile.height / 2, x2: tile.centerX + tile.width / 2 + tile.shadowOffset, y2: tile.centerY + tile.height / 2 + tile.shadowOffset };
-      boxes.push(turnedBox(rect, word.rotationDeg, { x: word.centerX, y: word.centerY }));
+      parts.push({ box: turnedBox(rect, word.rotationDeg, { x: word.centerX, y: word.centerY }), fromMs });
     }
   });
   for (const decoration of layout.decorations) {
     const { x, y, width, height } = decoration.bounds;
-    boxes.push({ x1: x, y1: y, x2: x + width, y2: y + height });
+    parts.push({ box: { x1: x, y1: y, x2: x + width, y2: y + height }, fromMs: startsMs ? decoration.startSec * 1000 : Number.NEGATIVE_INFINITY });
   }
-  const box = unionBox(boxes);
+  const box = unionBox(parts.map((part) => part.box));
   if (!box) return null;
-  return { ...cue, box, tiltDeg: layout.words.length > 0 ? tilt / layout.words.length : 0 };
+  const tiltDeg = layout.words.length > 0 ? tilt / layout.words.length : 0;
+  if (!startsMs) return { ...cue, box, tiltDeg };
+  return { ...cue, box, tiltDeg, shownAt: (atMs) => parts.filter((part) => part.fromMs <= atMs).map((part) => part.box), shownParts: parts };
 }
 
 /**
@@ -159,13 +181,19 @@ export function classicLineReachBox(cue: CaptionEmojiPlanCue, heightEm: number, 
 /**
  * A Caption Block's cue box from the layout its renderer drew (`blockCueBox`): the body size is the
  * body role's drawn size (the preset's size, the block's fit scale and the role's size), the
- * direction the block's own, as the layout ordered its rows.
+ * direction the block's own, as the layout ordered its rows, and what is on screen from each word's
+ * onset.
  */
 export function captionBlockCueBox(
-  cue: Pick<CaptionEmojiPlanCue, "cueIndex" | "activeRange" | "language" | "preset"> & { readonly block: Pick<CaptionBlock, "style" | "texts"> },
+  cue: Pick<CaptionEmojiPlanCue, "cueIndex" | "activeRange" | "language" | "preset"> & {
+    readonly block: Pick<CaptionBlock, "style" | "texts">;
+    /** The words the layout was made from (`layout.words` is parallel to them): each is drawn from its `startSec`. */
+    readonly words?: readonly { readonly startSec?: number }[];
+  },
   layout: CaptionBlockLayout,
   measured: readonly MeasuredWord[],
 ): CaptionEmojiCueBox | null {
   const bodyPx = cue.preset.fontSize * layout.scale * captionDynamicStyle(cue.block.style).roles.body.sizeEm;
-  return blockCueBox(layout, measured, planCueTiming(cue, bodyPx, captionBlockDirection(cue.block.texts, cue.language)));
+  const startsMs = cue.words?.map((word) => (word.startSec === undefined ? undefined : word.startSec * 1000));
+  return blockCueBox(layout, measured, planCueTiming(cue, bodyPx, captionBlockDirection(cue.block.texts, cue.language)), startsMs);
 }

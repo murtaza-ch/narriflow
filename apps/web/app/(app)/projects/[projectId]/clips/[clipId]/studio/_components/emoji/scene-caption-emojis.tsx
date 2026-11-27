@@ -69,11 +69,14 @@ export const SceneCaptionEmojis = memo(function SceneCaptionEmojis({
   layers,
   scale,
   timeSource,
+  endMs,
 }: {
   built: MeasuredScene;
   layers: readonly CompositionCaptionVisualLayer[];
   scale: number;
   timeSource: CaptionTimeSource;
+  /** Where the clip ends, ms: no emoji shows past it. */
+  endMs?: number | undefined;
 }) {
   const emojis = useMemo(() => captionEmojiLayerEmojis(layers), [layers]);
   const preset = layers[0]!.preset;
@@ -82,5 +85,5 @@ export const SceneCaptionEmojis = memo(function SceneCaptionEmojis({
   const source = useMemo(() => (hasEmojis ? sceneEmojiCueSource(built) : null), [built, hasEmojis]);
   const input = built.input;
   if (!input || !hasEmojis) return null;
-  return <CaptionEmojiLayer source={source} emojis={emojis} style={style} canvas={input.canvas} anchorYPct={sceneEmojiGeometry(input).anchorYPct} fps={input.fps} scale={scale} timeSource={timeSource} />;
+  return <CaptionEmojiLayer source={source} emojis={emojis} style={style} canvas={input.canvas} anchorYPct={sceneEmojiGeometry(input).anchorYPct} fps={input.fps} endMs={endMs} scale={scale} timeSource={timeSource} />;
 });

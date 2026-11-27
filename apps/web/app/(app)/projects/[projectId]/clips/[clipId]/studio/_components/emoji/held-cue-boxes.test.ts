@@ -4,7 +4,7 @@ import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan"
 import { NO_FOLLOWING_CUE, emojiFollowingCue, heldEmojiCues, rememberHeldCue } from "./held-cue-boxes";
 
 const box: CaptionEmojiCueBox = { cueIndex: 0, box: { x1: 240, y1: 1200, x2: 840, y2: 1290 }, fromMs: 1000, toMs: 2000, bodyPx: 80, tiltDeg: 0, direction: "ltr" };
-const input = { boxes: [box, { ...box, cueIndex: 1, fromMs: 2000, toMs: 3000 }], nextEmojiAtMs: 2400 };
+const input = { boxes: [box, { ...box, cueIndex: 1, fromMs: 2000, toMs: 3000 }], nextEmojiAtMs: 2400, endMs: undefined };
 const layer = (patch: Partial<CompositionCaptionVisualLayer>) =>
   ({ id: "cue", activeRange: { startSec: 1, endSec: 2 }, emojis: [{ id: "rocket", atSec: 1.85, order: 0 }], ...patch }) as CompositionCaptionVisualLayer;
 

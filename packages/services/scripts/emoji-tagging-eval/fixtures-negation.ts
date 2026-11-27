@@ -43,6 +43,21 @@ I didn't expect the beach to be this beautiful.`,
 मैंने आज तक कभी sushi नहीं खाई है।
 चाय के बिना मेरा दिन शुरू ही नहीं होता।`,
   },
+  {
+    // Ticket 34: words that reverse an idea (🤝 on "disagree" was the owner's), discourse "like" and
+    // "just", and danger that is not death (💀 on "carbon"). No targets: read the picks in the report.
+    id: "en-reversal", language: "en", genre: "office and home talk (negation)", title: "Office talk and home safety",
+    text: `Honestly, I strongly disagree with that plan.
+Some people really dislike the new update.
+My boss was really unhappy with the report yesterday.
+It is impossible to finish all of this today.
+That old ladder is unsafe, so stay off it.
+Like, it was the weirdest meeting ever.
+Just think about what that means for your money.
+The real danger is carbon monoxide in your house.
+That is a huge warning sign for any small business.
+We finally agree on the price, so let's shake on it.`,
+  },
 ];
 
 /**

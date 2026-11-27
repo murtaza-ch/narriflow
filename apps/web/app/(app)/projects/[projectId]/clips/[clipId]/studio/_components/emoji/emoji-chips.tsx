@@ -132,7 +132,7 @@ export function LiveCueEmojiChips({ editor, live }: { editor: CaptionEmojiEditor
   if (!row) {
     return (
       <Text fontSize="12px" color="studio.fgMuted">
-        Move the playhead onto a caption to add emojis to its words.
+        Move the playhead to a caption to choose a word.
       </Text>
     );
   }

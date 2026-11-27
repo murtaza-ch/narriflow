@@ -1039,6 +1039,8 @@ export function VideoPreview() {
     const layers = target?.visualLayers.filter((layer): layer is CompositionTextVisualLayer => layer.kind === "text") ?? [];
     return target && layers.length > 0 ? { layers, canvas: target.canvas } : null;
   }, [aspectRatio, compositionPlanResult]);
+  // Where the clip ends: no emoji shows past it (the worker reads the same plan duration).
+  const plannedEndMs = compositionPlanResult && compositionPlanResult.status !== "invalid" ? compositionPlanResult.plan.editedDurationSec * 1000 : undefined;
   // A Scene Style draws every cue of the target at once, not the one under the playhead.
   const sceneCaptionLayers = useMemo(() => plannedCaptionLayers.filter((layer) => layer.scene !== undefined), [plannedCaptionLayers]);
   // Where the scene is cut: the worker reads the same ranges off the same target.
@@ -1213,8 +1215,8 @@ export function VideoPreview() {
   const plannedCaptionLayer = compositionPreview ? classicCaptionLayerOf(compositionPreview.layers) : undefined;
   // The cue after it: the one cue's held emoji gives way to its text and its emoji, as in the export.
   const plannedEmojiFollowing = useMemo(
-    () => (plannedCaptionLayer ? emojiFollowingCue(plannedCaptionLayers, plannedCaptionLayer) : undefined),
-    [plannedCaptionLayers, plannedCaptionLayer],
+    () => (plannedCaptionLayer ? emojiFollowingCue(plannedCaptionLayers, plannedCaptionLayer, plannedEndMs) : undefined),
+    [plannedCaptionLayers, plannedCaptionLayer, plannedEndMs],
   );
   const plannedLogoLayer = compositionPreview?.layers.find(
     (layer): layer is CompositionLogoVisualLayer => layer.kind === "logo",
@@ -2295,7 +2297,7 @@ export function VideoPreview() {
           ) : null}
 
           {sceneCaptionLayers.length > 0 ? (
-            <InteractiveSceneOverlay videoContainerRef={videoContainerRef} layers={sceneCaptionLayers} insertedScenes={plannedInsertedScenes} />
+            <InteractiveSceneOverlay videoContainerRef={videoContainerRef} layers={sceneCaptionLayers} insertedScenes={plannedInsertedScenes} endMs={plannedEndMs} />
           ) : null}
           {plannedCaptionLayer ? (
             <InteractiveCaptionOverlay

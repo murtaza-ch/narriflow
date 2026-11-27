@@ -184,12 +184,7 @@ export function sceneCueBoxes(scene: CaptionScene, cues: readonly SceneCue[], op
       // A shape with text written on it is a plate; any other shape (a ray, a streak, a spark) is a decoration, and a short
       // flash of text the cue draws far longer elsewhere is an echo: an emoji covers those only when no clean slot is left.
       const live: CaptionEmojiObstacle[] = [...texts, ...flashes.map((box) => ({ ...box, soft: true }))];
-      const holds = (shape: Box) => texts.some((text) => {
-        const x = (text.x1 + text.x2) / 2;
-        const y = (text.y1 + text.y2) / 2;
-        return x > shape.x1 && x < shape.x2 && y > shape.y1 && y < shape.y2;
-      });
-      const plates = shapes.filter(holds);
+      const plates = shapes.filter((shape) => texts.some((text) => holdsCentre(shape, text)));
       for (const shape of shapes) {
         // A plate's own edge (Receipt's torn paper, a card's shadow) is part of the plate.
         const plate = plates.includes(shape) || plates.some((other) => overlaps(shape, other));
@@ -198,7 +193,29 @@ export function sceneCueBoxes(scene: CaptionScene, cues: readonly SceneCue[], op
       cache.set(atMs, live);
       return live;
     };
-    boxes.push({ cueIndex: cue.index, box, endBox, fromMs, toMs, bodyPx: options.bodyPx, tiltDeg, direction: options.direction(cue), obstacles });
+    const shown = new Map<number, readonly Box[]>();
+    const shownAt = (atMs: number): readonly Box[] => {
+      const found = shown.get(atMs);
+      if (found) return found;
+      // The cue's own text that reads (bleed text cut to the canvas), the shapes it is written on, and a plate of another cue.
+      const texts: Box[] = [];
+      const shapes: Box[] = [];
+      for (const at of livePieceIndexes(pieces, atMs)) {
+        const piece = pieces[at]!;
+        if (piece.kind === "shape" && piece.bleed) continue;
+        if (opacityAt(piece, atMs) < (piece.kind === "text" ? OTHER_CUE_TEXT_OPACITY : OTHER_CUE_SHAPE_OPACITY)) continue;
+        const bounds = pieceBounds(piece, atMs, measure);
+        const kept = bounds && (piece.bleed ? cut(bounds, canvas) : bounds);
+        if (kept) (piece.kind === "text" ? texts : shapes).push(kept);
+      }
+      const plates = shapes.filter((shape) => texts.some((text) => holdsCentre(shape, text)));
+      const own = unionBox(texts);
+      const grown = own && withPlate(own, atMs, cue.index, plateCandidates, measure);
+      const boxes = [...texts, ...plates, ...(grown && grown !== own ? [grown] : [])];
+      shown.set(atMs, boxes);
+      return boxes;
+    };
+    boxes.push({ cueIndex: cue.index, box, endBox, fromMs, toMs, bodyPx: options.bodyPx, tiltDeg, direction: options.direction(cue), obstacles, shownAt });
   }
   return boxes;
 }
@@ -243,6 +260,13 @@ function withPlate(box: Box, ms: number, cueIndex: number, pieces: readonly Piec
     grown = unionBox([grown, plate])!;
   }
   return grown;
+}
+
+/** Whether `shape` holds the centre of `text`: text written on it. */
+function holdsCentre(shape: Box, text: Box): boolean {
+  const x = (text.x1 + text.x2) / 2;
+  const y = (text.y1 + text.y2) / 2;
+  return x > shape.x1 && x < shape.x2 && y > shape.y1 && y < shape.y2;
 }
 
 const overlaps = (a: Box, b: Box) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;

@@ -66,6 +66,13 @@ describe("emojiTaggingLines", () => {
     expect(shape(emojiTaggingLines([spoken("all of them are unplugged")], null))).toEqual(["a=all of them are e=unplugged"]);
   });
 
+  test("\"like\" and \"just\" lose their letter beside another eligible word, and keep it when they are the only one", () => {
+    expect(shape(emojiTaggingLines([spoken("Like, it was weird.")], "en"))).toEqual(["Like, it was d=weird."]);
+    expect(shape(emojiTaggingLines([spoken("Just think about it")], "en"))).toEqual(["Just b=think about it"]);
+    expect(shape(emojiTaggingLines([spoken("I just like it")], "en"))).toEqual(["I b=just c=like it"]);
+    expect(shape(emojiTaggingLines([spoken("یار like یہ گاڑی")], "ur"))).toEqual(["a=یار like یہ d=گاڑی"]);
+  });
+
   test("RTL and Devanagari: their own punctuation ends a line, and words keep their text and order", () => {
     expect(shape(emojiTaggingLines([spoken("یار، یہ گاڑی بہت تیز ہے؟ واہ")], "ur"))).toEqual(["a=یار، یہ c=گاڑی d=بہت", "a=تیز ہے؟ c=واہ"]);
     expect(shape(emojiTaggingLines([spoken("یہ بریانی بہت مزیدار ہے۔ the phone")], "ur"))).toEqual(["یہ b=بریانی c=بہت d=مزیدار", "ہے۔ the c=phone"]);

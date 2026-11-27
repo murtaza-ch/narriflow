@@ -2320,6 +2320,7 @@ export function compileCompositionPlanCaptions(
 		...(fps && fps > 0 ? { fps } : {}),
 		...(emojiArt ? { emojiArt } : {}),
 		insertedScenes: insertedSceneRanges(target),
+		endSec: plan.editedDurationSec,
 	});
 }
 /** #RRGGBB -> 0xRRGGBB for the ffmpeg `color` / `showwaves` filters. */

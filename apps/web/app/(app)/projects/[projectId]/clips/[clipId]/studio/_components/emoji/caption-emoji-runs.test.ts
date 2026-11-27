@@ -9,6 +9,7 @@ import {
 } from "@narriflow/validators";
 import { emojiFixtureDocument, emojiFixtureManyLines } from "./caption-emoji-fixture";
 import {
+  CAPTION_EMOJI_ART_WAIT_MS,
   captionEmojiFingerprint,
   captionEmojiRunTransition,
   captionEmojiSession,
@@ -90,7 +91,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function request(answer: Promise<CaptionEmojiAnswer>, save: () => Promise<boolean> = async () => true) {
+function request(answer: Promise<CaptionEmojiAnswer>, save: () => Promise<boolean> = async () => true, loadArt: (ids: readonly string[]) => Promise<void> = async () => undefined) {
   let calls = 0;
   return {
     calls: () => calls,
@@ -101,6 +102,7 @@ function request(answer: Promise<CaptionEmojiAnswer>, save: () => Promise<boolea
         return answer;
       },
       failureCode: (error: unknown) => (error as { code?: string }).code ?? null,
+      loadArt,
     },
   };
 }
@@ -320,6 +322,54 @@ describe("AI runs against the live sources", () => {
     await run;
     expect(source.replaced).toEqual([]);
     expect(captionEmojiSession("clip").run).toEqual({ status: "failed", failure: { reason: "read_only" } });
+  });
+
+  test("the answer is committed only once its art has loaded, so no glyph shows empty", async () => {
+    const art = deferred<void>();
+    const asked: (readonly string[])[] = [];
+    const source = fakeSource({ ...base, studioEdits: replaceCaptionEmojis(base.studioEdits, {})! });
+    registerCaptionEmojiSource("clip", source.read);
+    const answer = { emojis: { [keyOf(1, 3)]: { id: "money-bag" }, [keyOf(2, 4)]: { id: "money-bag" }, [keyOf(0, 2)]: { id: "party" } } };
+    const run = runCaptionEmojiSuggestion("clip", "balanced", request(Promise.resolve(answer), undefined, (ids) => {
+      asked.push(ids);
+      return art.promise;
+    }).deps);
+    await flush();
+    expect(asked.map((ids) => [...ids].sort())).toEqual([["money-bag", "party"]]);
+    expect(source.replaced).toEqual([]);
+    expect(captionEmojiSession("clip").run).toEqual({ status: "running", density: "balanced" });
+    art.resolve();
+    await run;
+    expect(source.replaced).toHaveLength(1);
+    expect(captionEmojiSession("clip").run).toMatchObject({ status: "done", added: 3 });
+  });
+
+  test("an art load that fails still commits the answer (the edit is never lost)", async () => {
+    const source = fakeSource({ ...base, studioEdits: replaceCaptionEmojis(base.studioEdits, {})! });
+    registerCaptionEmojiSource("clip", source.read);
+    const answer = Promise.resolve({ emojis: { [keyOf(1, 3)]: { id: "money-bag" } } });
+    await runCaptionEmojiSuggestion("clip", "balanced", request(answer, undefined, () => Promise.reject(new Error("shard failed"))).deps);
+    expect(source.document.studioEdits.captionEmojis).toEqual({ [keyOf(1, 3)]: { id: "money-bag" } });
+    expect(captionEmojiSession("clip").run).toEqual({ status: "done", added: 1, leftOut: 0, partial: false });
+  });
+
+  test("an art load that never settles commits after the wait cap", async () => {
+    const source = fakeSource({ ...base, studioEdits: replaceCaptionEmojis(base.studioEdits, {})! });
+    registerCaptionEmojiSource("clip", source.read);
+    const answer = Promise.resolve({ emojis: { [keyOf(1, 3)]: { id: "money-bag" } } });
+    const realTimeout = globalThis.setTimeout;
+    const caps: number[] = [];
+    globalThis.setTimeout = ((run: () => void, ms?: number) => {
+      if (ms === CAPTION_EMOJI_ART_WAIT_MS) caps.push(ms);
+      return realTimeout(run, ms === CAPTION_EMOJI_ART_WAIT_MS ? 0 : ms);
+    }) as typeof setTimeout;
+    try {
+      await runCaptionEmojiSuggestion("clip", "balanced", request(answer, undefined, () => new Promise<void>(() => {})).deps);
+    } finally {
+      globalThis.setTimeout = realTimeout;
+    }
+    expect(caps).toEqual([CAPTION_EMOJI_ART_WAIT_MS]);
+    expect(source.document.studioEdits.captionEmojis).toEqual({ [keyOf(1, 3)]: { id: "money-bag" } });
   });
 
   test("a failed request keeps its typed code; a second start while one runs is ignored", async () => {

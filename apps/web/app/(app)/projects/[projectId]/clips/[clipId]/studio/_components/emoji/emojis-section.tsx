@@ -20,9 +20,9 @@ import type { CaptionEmojiEditor } from "./use-caption-emojis";
 
 // No numbers here: the spacing behind each density belongs to the suggest route.
 const DENSITIES: readonly { value: CaptionEmojiDensity; label: string; title: string }[] = [
-  { value: "light", label: "Light", title: "Only the surest matches, spaced well apart." },
-  { value: "balanced", label: "Balanced", title: "Clear matches at an easy pace." },
-  { value: "expressive", label: "Expressive", title: "Every good match, close together." },
+  { value: "light", label: "Light", title: "Fewer emojis, on the key words." },
+  { value: "balanced", label: "Balanced", title: "An emoji every few seconds." },
+  { value: "expressive", label: "Expressive", title: "As many as fit, close together." },
 ];
 
 /** What the section shows besides the run's own state. */
@@ -203,7 +203,6 @@ export function EmojisSection({ editor, live, timeline, ColourField }: { editor:
   };
   const regenerate = () => (editor.confirmRegenerate ? setConfirming(true) : generate());
   const subtitlesHidden = editor.preset.visible === false;
-  const density = DENSITIES.find((item) => item.value === editor.density) ?? DENSITIES[1]!;
   const shown = editor.placement.shown;
 
   return (
@@ -236,7 +235,6 @@ export function EmojisSection({ editor, live, timeline, ColourField }: { editor:
                 onChange={editor.setDensity}
                 items={DENSITIES.map((item) => ({ ...item, disabled: running }))}
               />
-              <Note>{density.title}</Note>
               {confirming ? (
                 <RegenerateConfirm onReplace={generate} onCancel={() => setConfirming(false)} />
               ) : view === "some" ? (
@@ -273,7 +271,7 @@ export function EmojisSection({ editor, live, timeline, ColourField }: { editor:
           <Box>
             <SectionLabel>Add to a word</SectionLabel>
             <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5" mb="2.5">
-              Words on screen now. Tap one to add an emoji.
+              Select a word in the current caption to add an emoji.
             </Text>
             <LiveCueEmojiChips editor={editor} live={live} />
           </Box>

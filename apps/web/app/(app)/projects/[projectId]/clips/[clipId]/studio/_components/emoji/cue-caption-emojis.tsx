@@ -42,10 +42,11 @@ function useOneCueSource(boxes: readonly CaptionEmojiCueBox[] | null): CaptionEm
   return useMemo(() => (boxes && key ? { key, cueBoxes: () => boxes } : null), [key]);
 }
 
-function OneCueEmojis({ layer, box, next, nextEmojiAtMs, ...props }: OneCueProps & { readonly box: CaptionEmojiCueBox | null; readonly next: CaptionEmojiCueBox | null; readonly nextEmojiAtMs: number | undefined }) {
+function OneCueEmojis({ layer, box, next, following, ...props }: OneCueProps & { readonly box: CaptionEmojiCueBox | null; readonly next: CaptionEmojiCueBox | null; readonly following: EmojiFollowingCue }) {
   const key = box ? JSON.stringify([oneCueSourceKey(box), next ? oneCueSourceKey(next) : null]) : null;
+  const { emojiAtMs: nextEmojiAtMs, endMs } = following;
   // biome-ignore lint/correctness/useExhaustiveDependencies: the key stands for the boxes
-  const input = useMemo((): OneCueEmojiInput | null => (box ? { boxes: next ? [box, next] : [box], nextEmojiAtMs } : null), [key, nextEmojiAtMs]);
+  const input = useMemo((): OneCueEmojiInput | null => (box ? { boxes: next ? [box, next] : [box], nextEmojiAtMs, endMs } : null), [key, nextEmojiAtMs, endMs]);
   useEffect(() => {
     if (input) rememberHeldCue(layer, input);
   }, [layer, input]);
@@ -62,7 +63,7 @@ export function CueEmojiLayer({ layer, scale, timeSource, fps, dragOffset, input
   if (emojis.length === 0) return null;
   return (
     <motion.div style={{ x: dragOffset?.x ?? 0, y: dragOffset?.y ?? 0, position: "absolute", left: 0, top: 0, width: "100%", height: "100%", zIndex: PREVIEW_Z.captionEmoji, pointerEvents: "none" }}>
-      <CaptionEmojiLayer source={source} emojis={emojis} style={style} canvas={canvas} anchorYPct={layer.anchor.yPct} fps={fps} nextEmojiAtMs={input?.nextEmojiAtMs} scale={scale} timeSource={timeSource} />
+      <CaptionEmojiLayer source={source} emojis={emojis} style={style} canvas={canvas} anchorYPct={layer.anchor.yPct} fps={fps} nextEmojiAtMs={input?.nextEmojiAtMs} endMs={input?.endMs} scale={scale} timeSource={timeSource} />
     </motion.div>
   );
 }
@@ -87,7 +88,7 @@ export const ClassicCaptionEmojis = memo(function ClassicCaptionEmojis({ line, f
   const nextLayer = following.layer;
   const { width, height } = props.layer.destination;
   const next = nextLayer ? classicLineReachBox(nextLayer, classicLineBoxEm(nextLayer.words, face, nextLayer.language), { width, height }) : null;
-  return <OneCueEmojis {...props} box={box} next={next} nextEmojiAtMs={following.emojiAtMs} />;
+  return <OneCueEmojis {...props} box={box} next={next} following={following} />;
 });
 
 /**
@@ -101,5 +102,5 @@ export const BlockCaptionEmojis = memo(function BlockCaptionEmojis({ paint, foll
   const canvas = useMemo(() => ({ width, height }), [width, height]);
   const nextPaint = useCaptionBlockPaint(nextLayer as CaptionBlockCueInput | null, canvas);
   const next = useMemo(() => (nextPaint && nextLayer ? blockEmojiCueBox(nextPaint, nextLayer.cueIndex) : null), [nextPaint, nextLayer]);
-  return <OneCueEmojis {...props} box={box} next={next} nextEmojiAtMs={following.emojiAtMs} />;
+  return <OneCueEmojis {...props} box={box} next={next} following={following} />;
 });

@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { loadCaptionEmojiArt } from "@narriflow/caption-emoji/art";
+import type { CaptionBlockLayout } from "@narriflow/caption-fonts/caption-block";
 import * as captionScene from "@narriflow/caption-scene";
 import {
   type Measure,
@@ -98,6 +99,27 @@ describe("classic line box (the browser's advance, the faces' line box)", () => 
     const a = classicLineEmojiCueBox(layer, { width: 150, scale: 0.5 }, face)!;
     expect(oneCueSourceKey(a)).toBe(oneCueSourceKey(classicLineEmojiCueBox(layer, { width: 300, scale: 1 }, face)!));
     expect(oneCueSourceKey(a)).not.toBe(oneCueSourceKey(classicLineEmojiCueBox(layer, { width: 151, scale: 0.5 }, face)!));
+  });
+});
+
+describe("a Dynamic block's source key", () => {
+  // Two words of a block and a decoration; the box is the same whatever their onsets, but what reads at a time is not.
+  const word = (baselineX: number) => ({
+    px: 80, baselineX, baselineY: 1300, centerX: baselineX + 80, centerY: 1280, scaleOriginX: baselineX + 80, scaleOriginY: 1280,
+    rotationDeg: 0, motionSign: 1 as const, entranceTimeScale: 1, tile: null, keyframes: [], clusters: null,
+  });
+  const decoration = (startSec: number) => ({ bounds: { x: 300, y: 1340, width: 400, height: 20 }, startSec }) as unknown as CaptionBlockLayout["decorations"][number];
+  const layout = (startSec: number): CaptionBlockLayout =>
+    ({ scale: 1, words: [word(300), word(500)], bounds: { x: 200, y: 1100, width: 700, height: 400 }, decorations: [decoration(startSec)], gradient: null, curve: 0, shift: { x: 0, y: 0 } }) as unknown as CaptionBlockLayout;
+  const measured = [{ advanceEm: 2, inkTopEm: 0.7, inkBottomEm: 0.2 }, { advanceEm: 2, inkTopEm: 0.7, inkBottomEm: 0.2 }];
+  const timing = { cueIndex: 0, fromMs: 1000, toMs: 3000, bodyPx: 80, direction: "ltr" as const };
+  const key = (starts: readonly number[], decorationSec = 1) => oneCueSourceKey(captionScene.blockCueBox(layout(decorationSec), measured, timing, starts)!);
+
+  test("changes with a word's onset or a decoration's start, which decide what reads when an emoji pops", () => {
+    expect(key([1000, 1080])).toBe(key([1000, 1080]));
+    // The second word's onset moves from 80 to 250 ms after the first: the export may place the emoji elsewhere.
+    expect(key([1000, 1250])).not.toBe(key([1000, 1080]));
+    expect(key([1000, 1080], 1.5)).not.toBe(key([1000, 1080]));
   });
 });
 
@@ -208,7 +230,7 @@ describe("emoji art cache", () => {
     const requests: string[][] = [];
     const cache = createCaptionEmojiArtCache(async (ids) => {
       requests.push([...ids]);
-      return new Map(ids.filter((id) => id !== "unknown").map((id) => [id, art(id)]));
+      return { art: new Map(ids.filter((id) => id !== "unknown").map((id) => [id, art(id)])), failed: new Set<string>() };
     });
     expect(cache.pending(["flame", "rocket"])).toBe(true);
     await Promise.all([cache.load(["flame", "rocket", "flame"]), cache.load(["rocket", "crown"]), cache.load(["unknown"])]);
@@ -225,7 +247,7 @@ describe("emoji art cache", () => {
     const cache = createCaptionEmojiArtCache(async (ids) => {
       calls++;
       if (fail) throw new Error("offline");
-      return new Map(ids.map((id) => [id, art(id)]));
+      return { art: new Map(ids.map((id) => [id, art(id)])), failed: new Set<string>() };
     });
     await cache.load(["flame"]);
     expect(cache.pending(["flame"])).toBe(true);
@@ -233,6 +255,23 @@ describe("emoji art cache", () => {
     await cache.load(["flame"]);
     expect(calls).toBe(2);
     expect(cache.artFor(["flame"]).has("flame")).toBe(true);
+  });
+
+  test("ids whose shard failed stay unanswered and are asked again; the rest are answered", async () => {
+    const requests: string[][] = [];
+    let shardDown = true;
+    const cache = createCaptionEmojiArtCache(async (ids) => {
+      requests.push([...ids]);
+      const failed = new Set(shardDown ? ids.filter((id) => id === "heart-eyes") : []);
+      return { art: new Map(ids.filter((id) => id !== "unknown" && !failed.has(id)).map((id) => [id, art(id)])), failed };
+    });
+    await cache.load(["rocket", "heart-eyes", "unknown"]);
+    expect(cache.pending(["rocket", "unknown"])).toBe(false);
+    expect(cache.pending(["heart-eyes"])).toBe(true);
+    shardDown = false;
+    await cache.load(["rocket", "heart-eyes", "unknown"]);
+    expect(requests).toEqual([["rocket", "heart-eyes", "unknown"], ["heart-eyes"]]);
+    expect(cache.artFor(["heart-eyes"]).has("heart-eyes")).toBe(true);
   });
 
   describe("the Studio's load", () => {
@@ -247,7 +286,7 @@ describe("emoji art cache", () => {
       const cache = createCaptionEmojiArtCache(async (ids) => {
         calls++;
         if (calls === 1) throw new Error("shard failed");
-        return new Map(ids.map((id) => [id, art(id)]));
+        return { art: new Map(ids.map((id) => [id, art(id)])), failed: new Set<string>() };
       });
       const { pending, timers } = fakeTimers();
       let answers = 0;
@@ -258,6 +297,22 @@ describe("emoji art cache", () => {
       await settle();
       expect([calls, answers, pending.length]).toEqual([2, 2, 0]);
       expect(cache.artFor(["flame"]).has("flame")).toBe(true);
+    });
+
+    test("a shard that failed inside a request that settled is asked once more after the wait, and then the art draws", async () => {
+      let calls = 0;
+      const cache = createCaptionEmojiArtCache(async (ids) => {
+        calls++;
+        const failed = new Set(calls === 1 ? ids : []);
+        return { art: new Map(ids.filter((id) => !failed.has(id)).map((id) => [id, art(id)])), failed };
+      });
+      const { pending, timers } = fakeTimers();
+      loadCaptionEmojiArtWithRetry(cache, ["flame"], () => undefined, 3000, timers);
+      await settle();
+      expect([calls, pending.length, cache.artFor(["flame"]).size]).toEqual([1, 1, 0]);
+      pending.shift()!.run();
+      await settle();
+      expect([calls, cache.artFor(["flame"]).has("flame")]).toEqual([2, true]);
     });
 
     test("no retry loop: a load that keeps failing is asked twice; a later mount asks again; a cancelled one never", async () => {

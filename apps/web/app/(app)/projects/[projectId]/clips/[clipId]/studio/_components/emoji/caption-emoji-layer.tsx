@@ -86,6 +86,8 @@ export interface CaptionEmojiLayerProps {
   readonly fps?: number | undefined;
   /** Where held emojis yield (`CaptionEmojiLayerInput.nextEmojiAtMs`): a one-cue layer's, from the cues after it. */
   readonly nextEmojiAtMs?: number | undefined;
+  /** Where the clip ends, ms (`CaptionEmojiLayerInput.endMs`, the plan's edited duration). */
+  readonly endMs?: number | undefined;
   /** Display px per canvas px. */
   readonly scale: number;
   readonly timeSource: CaptionTimeSource;
@@ -96,15 +98,15 @@ export interface CaptionEmojiLayerProps {
  * runs once per layer key in a deferred render (the edit paints first; the previous layer stays up
  * meanwhile), never per frame.
  */
-export const CaptionEmojiLayer = memo(function CaptionEmojiLayer({ source, emojis, style, canvas, anchorYPct, fps, nextEmojiAtMs, scale, timeSource }: CaptionEmojiLayerProps) {
+export const CaptionEmojiLayer = memo(function CaptionEmojiLayer({ source, emojis, style, canvas, anchorYPct, fps, nextEmojiAtMs, endMs, scale, timeSource }: CaptionEmojiLayerProps) {
   const ids = useMemo(() => emojis.map((emoji) => emoji.id), [emojis]);
   const { art } = useCaptionEmojiArt(ids);
   const plan = useMemo(
     (): CaptionEmojiLayerPlan | null =>
       source && emojis.length > 0 && art.size > 0
-        ? { source, input: { emojis, art, style, canvas, anchorYPct, ...(fps ? { fps } : {}), ...(nextEmojiAtMs === undefined ? {} : { nextEmojiAtMs }) } }
+        ? { source, input: { emojis, art, style, canvas, anchorYPct, ...(fps ? { fps } : {}), ...(nextEmojiAtMs === undefined ? {} : { nextEmojiAtMs }), ...(endMs === undefined ? {} : { endMs }) } }
         : null,
-    [source, emojis, art, style, canvas, anchorYPct, fps, nextEmojiAtMs],
+    [source, emojis, art, style, canvas, anchorYPct, fps, nextEmojiAtMs, endMs],
   );
   const stable = useRef<{ readonly key: string; readonly value: CaptionEmojiLayerPlan } | null>(null);
   stable.current = stableByKey(stable.current, plan ? captionEmojiPlanKey(plan) : null, plan);

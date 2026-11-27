@@ -22,6 +22,7 @@ import {
 } from "./caption-emoji-runs";
 import { placeCaptionEmojis, type CaptionEmojiPlacement, type CaptionEmojiTarget, type CaptionEmojiWords } from "./caption-emoji-words";
 import type { CaptionEmojiLook } from "./emoji-glyph";
+import { preloadCaptionEmojiArt } from "./use-caption-emoji-art";
 
 type Emojis = Readonly<Record<string, CaptionEmojiRef>>;
 
@@ -123,7 +124,12 @@ export function useCaptionEmojiEditor(source: CaptionEmojiSource): CaptionEmojiE
   const generate = useCallback((density: CaptionEmojiDensity) => {
     const current = latest.current;
     if (current.readOnly) return;
-    void runCaptionEmojiSuggestion(current.clipId, density, { save: current.save, suggest: current.suggest, failureCode: current.failureCode });
+    void runCaptionEmojiSuggestion(current.clipId, density, {
+      save: current.save,
+      suggest: current.suggest,
+      failureCode: current.failureCode,
+      loadArt: preloadCaptionEmojiArt,
+    });
   }, []);
 
   const dismissRun = useCallback(() => dismissCaptionEmojiRun(clipId), [clipId]);

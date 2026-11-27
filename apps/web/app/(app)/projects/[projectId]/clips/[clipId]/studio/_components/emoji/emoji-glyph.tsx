@@ -62,17 +62,17 @@ export function captionEmojiSvgMarkup(art: CaptionEmojiArt, palette: CaptionEmoj
   return markup;
 }
 
-/** A soft disc in the glyph's place while its art loads. */
-export function EmojiGlyphPlaceholder({ size }: { size: number }) {
-  return <Box w={`${size}px`} h={`${size}px`} flexShrink={0} borderRadius="full" bg="studio.raised" aria-hidden />;
+/** An empty box the glyph's size while its art loads: nothing drawn (never a placeholder disc), the layout kept. */
+export function EmojiGlyphSpace({ size }: { size: number }) {
+  return <Box w={`${size}px`} h={`${size}px`} flexShrink={0} aria-hidden />;
 }
 
 /**
- * Loads one design's art (session cache, its shard only) and draws it; a placeholder until it
+ * Loads one design's art (session cache, its shard only) and draws it; an empty box until it
  * arrives. `tone` is the stored emoji's own; without it the emoji takes the look's Skin tone.
  */
 export function EmojiGlyph({ id, tone, palette, size }: { id: string; tone?: number; palette: CaptionEmojiLook; size: number }) {
   const { art } = useCaptionEmojiArt([id]);
   const entry = art.get(id);
-  return entry ? <EmojiArtSvg art={entry} palette={palette} tone={tone ?? palette.tone ?? 0} size={size} /> : <EmojiGlyphPlaceholder size={size} />;
+  return entry ? <EmojiArtSvg art={entry} palette={palette} tone={tone ?? palette.tone ?? 0} size={size} /> : <EmojiGlyphSpace size={size} />;
 }

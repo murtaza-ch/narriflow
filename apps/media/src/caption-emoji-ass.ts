@@ -84,6 +84,8 @@ export function captionEmojiEvents(input: {
   readonly art: CaptionEmojiArtMap;
   readonly canvas: { readonly width: number; readonly height: number };
   readonly fps?: number;
+  /** Where the target ends, clip ms (the plan's edited duration): no emoji shows past it (`CaptionEmojiLayerInput.endMs`). */
+  readonly endMs?: number;
 }): { readonly events: AssEvent[]; readonly summary: CaptionEmojiLayerSummary } {
   try {
     const outcomes = input.groups.flatMap((group) => {
@@ -100,6 +102,7 @@ export function captionEmojiEvents(input: {
         anchorYPct: first.anchor.yPct,
         ...(nextEmojiAtMs === undefined ? {} : { nextEmojiAtMs }),
         ...(input.fps ? { fps: input.fps } : {}),
+        ...(input.endMs === undefined ? {} : { endMs: input.endMs }),
       });
     });
     if (outcomes.length === 0) return { events: [], summary: NO_CAPTION_EMOJIS };

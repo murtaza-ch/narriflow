@@ -13,20 +13,29 @@ export interface OneCueEmojiInput {
   readonly boxes: readonly CaptionEmojiCueBox[];
   /** Where the cue's held emojis yield: the first emoji of a later cue (`captionEmojiNextAtMs`). */
   readonly nextEmojiAtMs: number | undefined;
+  /** Where the clip ends, ms (the plan's edited duration): a held emoji never shows past it. */
+  readonly endMs: number | undefined;
 }
 
-/** What a one-cue emoji layer needs of the cues after it: the next cue (its box) and the first later emoji's time. */
+/**
+ * What a one-cue emoji layer needs of what comes after its cue: the next cue (its box), the first later emoji's time, and
+ * where the clip ends.
+ */
 export interface EmojiFollowingCue {
   readonly layer: CompositionCaptionVisualLayer | null;
   readonly emojiAtMs: number | undefined;
+  readonly endMs: number | undefined;
 }
 
-export const NO_FOLLOWING_CUE: EmojiFollowingCue = Object.freeze({ layer: null, emojiAtMs: undefined });
+export const NO_FOLLOWING_CUE: EmojiFollowingCue = Object.freeze({ layer: null, emojiAtMs: undefined, endMs: undefined });
 
-/** The cue after `layer` among the target's caption layers, and where its held emojis yield; as the export reads them. */
-export function emojiFollowingCue(layers: readonly CompositionCaptionVisualLayer[], layer: CompositionCaptionVisualLayer): EmojiFollowingCue {
+/**
+ * The cue after `layer` among the target's caption layers, where its held emojis yield, and the clip's end (`endMs`, the
+ * plan's edited duration); as the export reads them.
+ */
+export function emojiFollowingCue(layers: readonly CompositionCaptionVisualLayer[], layer: CompositionCaptionVisualLayer, endMs?: number): EmojiFollowingCue {
   if (layer.emojis.length === 0) return NO_FOLLOWING_CUE;
-  return { layer: layers.find((other) => other.cueIndex === layer.cueIndex + 1) ?? null, emojiAtMs: captionEmojiNextAtMs(layers, layer.cueIndex) };
+  return { layer: layers.find((other) => other.cueIndex === layer.cueIndex + 1) ?? null, emojiAtMs: captionEmojiNextAtMs(layers, layer.cueIndex), endMs };
 }
 
 const inputs = new WeakMap<CompositionCaptionVisualLayer, OneCueEmojiInput>();

@@ -3,7 +3,7 @@ import { SHARD_LOADERS } from "./generated/shards";
 
 // A fresh copy of the art module: the shared one caches every shard once the other art tests have loaded them.
 const fresh = "shard-failure";
-const { loadCaptionEmojiArt } = (await import(`./art?${fresh}`)) as typeof import("./art");
+const { loadCaptionEmojiArt, loadCaptionEmojiArtSettled } = (await import(`./art?${fresh}`)) as typeof import("./art");
 
 test("a shard that fails to load drops only its own ids, and is asked again next time", async () => {
   const loaders = SHARD_LOADERS as Record<string, () => Promise<{ default: string }>>;
@@ -15,6 +15,8 @@ test("a shard that fails to load drops only its own ids, and is asked again next
   };
   try {
     // heart-eyes is a smiley; rocket is in travel-and-places.
+    const settled = await loadCaptionEmojiArtSettled(["heart-eyes", "rocket", "not-an-emoji"]);
+    expect([[...settled.art.keys()], [...settled.failed]]).toEqual([["rocket"], ["heart-eyes"]]);
     const art = await loadCaptionEmojiArt(["heart-eyes", "rocket"]);
     expect([...art.keys()]).toEqual(["rocket"]);
     loaders["smileys-0"] = () => {
@@ -23,7 +25,7 @@ test("a shard that fails to load drops only its own ids, and is asked again next
     };
     const again = await loadCaptionEmojiArt(["heart-eyes", "rocket"]);
     expect([...again.keys()].sort()).toEqual(["heart-eyes", "rocket"]);
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   } finally {
     loaders["smileys-0"] = real;
   }

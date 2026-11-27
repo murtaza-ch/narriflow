@@ -68,7 +68,11 @@ export function blockEmojiCueBox(paint: CaptionBlockPaint, cueIndex: number): Ca
   return captionBlockCueBox({ ...paint.cue, cueIndex }, paint.layout, paint.words.map((word) => word.measured));
 }
 
-/** A one-cue source key: the box and timing are the whole of what the layer reads of the cue. */
+/**
+ * A one-cue source key: the box, its timing and, for a Caption Block, what reads when (`shownParts`: each word's onset
+ * decides the text an emoji is kept close to) are the whole of what the layer reads of the cue.
+ */
 export function oneCueSourceKey(box: CaptionEmojiCueBox): string {
-  return JSON.stringify(["cue", box.cueIndex, box.box.x1, box.box.y1, box.box.x2, box.box.y2, box.fromMs, box.toMs, box.bodyPx, box.tiltDeg, box.direction]);
+  const shown = box.shownParts?.map((part) => [part.box.x1, part.box.y1, part.box.x2, part.box.y2, part.fromMs]) ?? null;
+  return JSON.stringify(["cue", box.cueIndex, box.box.x1, box.box.y1, box.box.x2, box.box.y2, box.fromMs, box.toMs, box.bodyPx, box.tiltDeg, box.direction, shown]);
 }

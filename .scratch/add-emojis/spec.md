@@ -88,7 +88,9 @@ Emoji pieces are outside `SCENE_PIECE_BUDGET` and have their own cap (24 pieces 
 ### D4. Placement: next to the text, never on it
 
 - Default slot: centred above the cue's box, gap 0.18 of the emoji height. `emojiPosition` is
-  `auto`, `above` or `below`. Auto is above, or below when the caption anchor is in the top 30%.
+  `auto`, `above` or `below`. Auto is above, then beside the cue, then below; below first when the
+  caption anchor is in the top 30% or the emoji above would reach into the face zone. Every slot
+  stays within half the emoji's height of the cue's text on screen when it pops (ticket 33).
 - Each Scene Style declares a static `emojiSlot` in `packages/validators/src/caption-scene.ts`
   (ADR 0021: static facts are data) for templates whose shape needs another default (a stack that
   keeps neighbour cues on screen, a ticker, a full-height layout). Every style must draw emojis;
@@ -112,8 +114,11 @@ Emoji pieces are outside `SCENE_PIECE_BUDGET` and have their own cap (24 pieces 
 
 An emoji takes its cue's slot when its anchor word starts and holds it until the next emoji in that
 cue or until the cue's own pieces stop painting (not `SceneCue.endMs`: templates shorten windows).
-Entrance: scale 0.4 to 1 with `outBack` over 180 ms. Exit: 90 ms fade. If the anchor word leaves
-less than 450 ms, the emoji shows from the cue's start. Overlapping speakers each have a slot.
+Entrance: scale 0.4 to 1 with `outBack` over 180 ms. Exit: 90 ms fade. An emoji never shows before
+its word: an anchor word that leaves less than 450 ms of its cue enters at its word with the quick
+entrance (0.7 to 1 over 90 ms, no overshoot). Overlapping speakers each have a slot.
+(As built, ticket 33: every drawn emoji shows at least 340 ms, 250 of them at full strength; a late
+word holds past its cue, never past the clip's end, and a later emoji of the cue waits for that.)
 
 ### D6. Colour: follows the template, overridable
 
@@ -446,6 +451,36 @@ Tickets 01 to 12 record the evidence. Where they differ from sections 3 and 4:
   word is kept only when it pictures "no"; a reply that silences more than half of a block is asked once more and the
   one with fewer silent lines stands; the badge rule is back in the prompt. Shipped code, 34 clips, 3 runs: ordinary
   12.2 / 19.1 / 26.9 a minute, lowest ordinary clip at Balanced 11.0.
+
+- **Close to its caption (33).** The owner saw emojis a full emoji height or more under a stacked caption, and one on a
+  cue's last word for about 150 ms. Auto on an above slot now tries above (full size, then 0.7), then level with the cue
+  at its reading end and its other end, then below; the face zone (top of the emoji above `CAPTION_EMOJI_FACE_ZONE`,
+  now 0.30 of the height, was 0.42) and a caption in the top 30% flip it to below first, above last. Explicit positions
+  and the `beside-end` and `below` slots keep their order. Every slot must sit within `CAPTION_EMOJI_MAX_GAP` (0.5) of
+  the emoji's height from its cue's text that reads during its pop (its first 180 ms, and again at the start it waited
+  for): a Scene cue box reports it (`shownAt`: its own text over 0.1 opacity, the plates that text is written on, and
+  another cue's plate), and so does a Dynamic block (each word from its onset); a classic line is its box. Below sits
+  under that text and must stay clear of the rows revealed after it on every frame; above and beside also try it after
+  the late box. Timing: every drawn emoji shows at least `CAPTION_EMOJI_MIN_SHOWN_MS` (340 ms: 250 at full strength, then
+  the 90 ms fade). A word leaving under 340 ms of its cue holds past it (was under 250, so a 250 to 340 ms window lost
+  its full strength to the fade); the next emoji of the same cue no longer cuts it shorter: the later one starts when the
+  earlier one's 340 ms end, or draws nothing when that leaves it under 340 ms (it keeps both emojis on most fast lines;
+  the later one shows up to 340 ms after its word, still in its cue). A slot that waited or left early still shows 340 ms.
+  Synthetic all-preset run (4 lines, 8 picks, export feeders): Scene placements over 0.5 h from the text at the pop went
+  84 to 2 of 669 (default), 193 to 2 (58%), 201 to 1 (30%), all within measurement noise (max 0.51 h); drops 3 of 672
+  before and after; no emoji under 250 ms at full strength (was 221 of 917). Placement suite (fake measure): demo drops
+  1 to 5 of 1,221, fast 6 to 20 of 3,024, Lyrics fast 2 of 12 on 9:16 and 1:1 (its edge fallback sat about three emoji
+  heights from a short line). The classic box stays the faces' line box (pixel gaps 0.3 to 0.74 h on libass frames): a
+  glyph-ink box needs ink extents from both measurers and is not a small shared change. Evidence in ticket 33.
+
+- **Polish after the live test (34).** An AI run (Regenerate, Add with AI, the AI tools row's Apply) loads its answer's
+  art before it commits, waiting at most `CAPTION_EMOJI_ART_WAIT_MS` (6 s); a failed or slow load still commits. A glyph
+  or picker cell whose art is still loading is an empty box of the same size, never a disc. Density hints: Light "Fewer
+  emojis, on the key words.", Balanced "An emoji every few seconds.", Expressive "As many as fit, close together." The
+  prompt says a word that rejects or reverses an idea never takes that idea's emoji, a discourse word is never pictured
+  itself, and danger is ⚠️ or 🚨 (💀 only for death or a clear joke); English "like" and "just" lose their letter beside
+  another eligible word. 34 clips, 3 runs: ordinary 12.3 / 19.0 / 26.6 a minute (was 12.2 / 19.1 / 26.6), lowest
+  ordinary clip at Balanced 15.3 (was 12.6). Evidence in ticket 34.
 
 Open at hand-off: the `ContentPack.addEmojis` migration is not applied; the media image changed,
 so the Worker's `MEDIA_*_TOOLCHAIN_FINGERPRINT` must be updated at deploy; golden render baselines

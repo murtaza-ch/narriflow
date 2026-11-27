@@ -11,7 +11,7 @@ import {
   emojiRefForGlyph,
   type CaptionEmojiEntry,
 } from "@narriflow/caption-emoji/index";
-import { EmojiArtSvg, EmojiGlyphPlaceholder } from "./emoji-glyph";
+import { EmojiArtSvg, EmojiGlyphSpace } from "./emoji-glyph";
 import { COLUMNS, EmojiPickerGrid, HEADER, ROW } from "./emoji-picker-parts";
 import { SkinTones } from "./emoji-skin-tones";
 import type { EmojiPickerRequest } from "./emoji-picker-host";
@@ -322,7 +322,8 @@ export function EmojiPicker({ request, onClose }: { request: EmojiPickerRequest;
       <Box
         ref={scrollRef}
         mt="1.5"
-        flex={`0 1 ${VIEWPORT}px`}
+        // Fills the picker's fixed height (`EMOJI_PICKER_HEIGHT`), so the footer stays put while results change.
+        flex={`1 1 ${VIEWPORT}px`}
         minH={`${ROW * 2}px`}
         overflowY="auto"
         overflowX="hidden"
@@ -367,7 +368,7 @@ export function EmojiPicker({ request, onClose }: { request: EmojiPickerRequest;
         <Flex align="center" gap="2" minW="0" aria-live="polite">
           {activeEntry ? (
             <>
-              {art.get(activeEntry.id) ? <EmojiArtSvg art={art.get(activeEntry.id)!} palette={request.palette} tone={activeTone} size={22} /> : <EmojiGlyphPlaceholder size={22} />}
+              {art.get(activeEntry.id) ? <EmojiArtSvg art={art.get(activeEntry.id)!} palette={request.palette} tone={activeTone} size={22} /> : <EmojiGlyphSpace size={22} />}
               <Text fontSize="12px" color="studio.fg" truncate>
                 {activeEntry.name}
               </Text>

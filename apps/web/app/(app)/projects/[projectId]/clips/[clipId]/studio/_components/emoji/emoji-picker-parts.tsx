@@ -43,10 +43,8 @@ const GRID_CSS = {
   },
   "& [role=gridcell][data-current]": { background: "var(--chakra-colors-studio-accent-subtle)" },
   "& [role=gridcell][aria-selected=true]": { background: "var(--chakra-colors-studio-raised)" },
-  "& [data-placeholder]": { width: `${GLYPH - 6}px`, height: `${GLYPH - 6}px`, borderRadius: "999px", background: "var(--chakra-colors-studio-raised)" },
+  // A cell whose art is still loading stays empty (no placeholder disc); the cell keeps its size.
 } as const;
-
-const PLACEHOLDER = "<span data-placeholder></span>";
 
 function cellIndex(target: EventTarget): number | null {
   const cell = (target as Element).closest?.("[role=gridcell]");
@@ -80,7 +78,7 @@ const GridCell = memo(function GridCell({ id, index, name, toned, active, curren
       aria-label={name}
       title={name}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: compiled art path data and checked hex colours only
-      dangerouslySetInnerHTML={{ __html: art ? captionEmojiSvgMarkup(art, palette, tone, GLYPH) : PLACEHOLDER }}
+      dangerouslySetInnerHTML={{ __html: art ? captionEmojiSvgMarkup(art, palette, tone, GLYPH) : "" }}
     />
   );
 });

@@ -272,6 +272,8 @@ export function renderCaptionTrack(input: {
 	emojiArt?: CaptionEmojiArtMap;
 	/** The target's inserted scenes (`insertedSceneRanges`): a Scene Style's pieces are cut at them. */
 	insertedScenes?: readonly { readonly startSec: number; readonly endSec: number }[];
+	/** Where the target ends, seconds (the plan's edited duration): no emoji shows past it. */
+	endSec?: number;
 }): CaptionTrack {
 	const first = input.layers[0];
 	if (!first) return { ass: "", notices: [], omitted: [], geometryUnavailable: [], emojis: NO_CAPTION_EMOJIS };
@@ -291,7 +293,14 @@ export function renderCaptionTrack(input: {
 	const sceneLayers = input.layers.filter(isSceneLayer);
 	const events = [...input.layers.filter((cue) => !isSceneLayer(cue)).flatMap(classic), ...sceneEvents(sceneLayers, input, collector, classic)];
 	const emojiLayer = collector.emojiGroups
-		? captionEmojiEvents({ groups: collector.emojiGroups, layers: input.layers, art: input.emojiArt ?? new Map(), canvas: input.canvas, ...(input.fps ? { fps: input.fps } : {}) })
+		? captionEmojiEvents({
+				groups: collector.emojiGroups,
+				layers: input.layers,
+				art: input.emojiArt ?? new Map(),
+				canvas: input.canvas,
+				...(input.fps ? { fps: input.fps } : {}),
+				...(input.endSec === undefined ? {} : { endMs: input.endSec * 1000 }),
+			})
 		: { events: [], summary: NO_CAPTION_EMOJIS };
 	const ass = assScript([...events, ...emojiLayer.events], input.canvas, first.preset, face);
 	return {

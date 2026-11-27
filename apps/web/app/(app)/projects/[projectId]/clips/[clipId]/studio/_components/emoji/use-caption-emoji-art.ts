@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CaptionEmojiArt } from "@narriflow/caption-emoji/art";
 
-type LoadArt = (ids: readonly string[]) => Promise<ReadonlyMap<string, CaptionEmojiArt>>;
+/** The art of `ids`, and those left out because their shard failed to load (`loadCaptionEmojiArtSettled`). */
+type LoadArt = (ids: readonly string[]) => Promise<{ readonly art: ReadonlyMap<string, CaptionEmojiArt>; readonly failed: ReadonlySet<string> }>;
 
 export interface CaptionEmojiArtCache {
   /** The loaded art of `ids`; an id still loading, or not in the catalog, is left out. */
@@ -16,8 +17,8 @@ export interface CaptionEmojiArtCache {
 
 /**
  * A session cache of emoji art. Each id is requested once: ids already answered (art or unknown id)
- * are not asked again, and an id in flight joins its request. A failed request leaves its ids
- * unanswered so the next `load` tries again.
+ * are not asked again, and an id in flight joins its request. A failed request, or a shard of it that
+ * failed (`failed`), leaves those ids unanswered so the next `load` tries again.
  */
 export function createCaptionEmojiArtCache(loadArt: LoadArt): CaptionEmojiArtCache {
   const art = new Map<string, CaptionEmojiArt>();
@@ -38,8 +39,8 @@ export function createCaptionEmojiArtCache(loadArt: LoadArt): CaptionEmojiArtCac
       if (missing.length > 0) {
         const request = loadArt(missing)
           .then((loaded) => {
-            for (const [id, entry] of loaded) art.set(id, entry);
-            for (const id of missing) answered.add(id);
+            for (const [id, entry] of loaded.art) art.set(id, entry);
+            for (const id of missing) if (!loaded.failed.has(id)) answered.add(id);
           })
           .catch(() => undefined)
           .finally(() => {
@@ -53,7 +54,7 @@ export function createCaptionEmojiArtCache(loadArt: LoadArt): CaptionEmojiArtCac
 }
 
 // The art (and the catalog index it reads) is a dynamic import: neither is in the Studio's first chunks.
-const sessionArt = createCaptionEmojiArtCache((ids) => import("@narriflow/caption-emoji/art").then((module) => module.loadCaptionEmojiArt(ids)));
+const sessionArt = createCaptionEmojiArtCache((ids) => import("@narriflow/caption-emoji/art").then((module) => module.loadCaptionEmojiArtSettled(ids)));
 
 /** Loads art into the session cache ahead of need (the picker's first screen while the section is idle). */
 export function preloadCaptionEmojiArt(ids: readonly string[]): Promise<void> {

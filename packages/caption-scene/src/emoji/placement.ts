@@ -6,9 +6,10 @@ import type { CaptionEmojiCueBox, CaptionEmojiObstacle } from "./cue-box";
 import { CAPTION_EMOJI_POP_PEAK, type CaptionEmojiEntrance, captionEmojiScale } from "./timing";
 
 /**
- * Where an emoji goes against its cue (spec D4): a slot next to the text, never on it. A slot is
- * tried on its own side, then the other, then both at 0.7 of the size; an emoji that fits none is
- * dropped. A slot fits when, on every export frame of the emoji's window, the emoji's ink stays in
+ * Where an emoji goes against its cue (spec D4): a slot next to the text, never on it, and close to
+ * the text that reads on its first painted frame (`CAPTION_EMOJI_MAX_GAP`, else
+ * `CAPTION_EMOJI_POP_FALLBACK_GAP`). Sides are tried in order
+ * (`captionEmojiSides`), each at full size and at 0.7; an emoji that fits none is dropped. A slot fits when, on every export frame of the emoji's window, the emoji's ink stays in
  * the safe area and meets nothing the cue box names as an obstacle, nor an emoji placed before it.
  * A slot may sit a little further from the text than its own distance (`CAPTION_EMOJI_NUDGES`).
  * Only when no slot at either size is clear of everything may an emoji cover soft obstacles
@@ -26,19 +27,46 @@ export const CAPTION_EMOJI_SAFE_MARGIN = 0.05;
 
 /**
  * The face zone, as a fraction of the frame's height from the top: an auto emoji whose ink would
- * reach higher than this above its caption tries below first.
+ * reach higher than this above its caption tries below first. Talking-head faces fill the upper
+ * part of a vertical frame (chins at 32% to 40% of the height on the real footage of ticket 04b);
+ * a caption at the default height or at 58% keeps its emoji above, one at 38% or higher does not.
  */
-export const CAPTION_EMOJI_FACE_ZONE = 0.42;
+export const CAPTION_EMOJI_FACE_ZONE = 0.3;
+
+/**
+ * The furthest an emoji's ink may be from its cue's text that reads on its first painted frame, as a
+ * fraction of the emoji's ink height: further, it reads as belonging to nothing.
+ */
+export const CAPTION_EMOJI_MAX_GAP = 0.5;
+
+/**
+ * The fallback before an emoji is dropped: when no slot is within `CAPTION_EMOJI_MAX_GAP` of the text on
+ * its first frame, one within it of the text that reads by the end of its pop (a bubble or a frame that
+ * grows in with the word) and no further than this from the first frame's text, as a fraction of its ink
+ * height. A row a stack reveals later stays out of reach of the strict rule; this only trades a drop.
+ */
+export const CAPTION_EMOJI_POP_FALLBACK_GAP = 1;
 
 export type CaptionEmojiSide = "above" | "below" | "end" | "start";
 
-/** Sides in the order they are tried. Auto puts an above-slot emoji below a caption in the top 30% of the frame. */
+/**
+ * Sides in the order they are tried. Auto on an above slot (classic, Dynamic and most Scene Styles)
+ * tries above, then level with the cue at its reading end and its other end, and below last; in a
+ * caption in the top 30% of the frame, below first and above last. Each of those sides is tried at
+ * every size before the next (`captionEmojiSideFirst`). An explicit position and the other slots
+ * keep their order, at full size on every side before 0.7.
+ */
 export function captionEmojiSides(slot: CaptionSceneEmojiSlot, position: "auto" | "above" | "below", anchorYPct: number): readonly CaptionEmojiSide[] {
   if (position === "above") return ["above", "below"];
   if (position === "below") return ["below", "above"];
   if (slot === "beside-end") return ["end", "start", "above", "below"];
   if (slot === "below") return ["below", "above"];
-  return anchorYPct < 30 ? ["below", "above"] : ["above", "below"];
+  return anchorYPct < 30 ? ["below", "end", "start", "above"] : ["above", "end", "start", "below"];
+}
+
+/** Whether every size of a side is tried before the next side: auto on an above slot. */
+export function captionEmojiSideFirst(slot: CaptionSceneEmojiSlot, position: "auto" | "above" | "below"): boolean {
+  return position === "auto" && slot === "above";
 }
 
 /** Turned ink bounds of an emoji relative to its pivot, at rest scale. */
@@ -115,8 +143,11 @@ function inkAt(x: number, y: number, ink: Box, scale: number): Box {
  * cue settling), and how early it may leave for the cue's own exit, ms.
  */
 export const CAPTION_EMOJI_MAX_TRIM_MS = 300;
-/** The least an emoji that waited or left early still shows, ms (less when its whole window is shorter). */
-export const CAPTION_EMOJI_MIN_SHOW_MS = 300;
+/**
+ * The least an emoji that waited or left early still shows, ms (less when its whole window is shorter): 250 ms at full
+ * strength and its 90 ms fade, as every emoji (`CAPTION_EMOJI_MIN_SHOWN_MS`).
+ */
+export const CAPTION_EMOJI_MIN_SHOW_MS = 340;
 
 /**
  * When an emoji at `(x, y)` can show inside `[fromMs, toMs)`, or null: the longest window from

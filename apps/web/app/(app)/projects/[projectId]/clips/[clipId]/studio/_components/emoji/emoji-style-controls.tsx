@@ -117,7 +117,6 @@ export function EmojiStyleControls({
   return (
     <Flex direction="column" gap="4">
       <Box>
-        <SubLabel>Colors</SubLabel>
         <Grid templateColumns="repeat(3, minmax(0, 1fr))" gap="6px" role="radiogroup" aria-label="Emoji colors">
           {options.map((option) => {
             const selected = option.id === choice;

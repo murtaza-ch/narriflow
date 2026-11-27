@@ -13,6 +13,7 @@ import {
 import { emojiFixtureDocument } from "./caption-emoji-fixture";
 import { captionEmojiSession, registerCaptionEmojiSource, resetCaptionEmojiSessions } from "./caption-emoji-runs";
 import { captionEmojiTarget, captionEmojiWords } from "./caption-emoji-words";
+import { preloadCaptionEmojiArt } from "./use-caption-emoji-art";
 import { useCaptionEmojiEditor, type CaptionEmojiEditor, type CaptionEmojiSource } from "./use-caption-emojis";
 
 const modelOf = (document: EditorDocument) =>
@@ -99,6 +100,8 @@ describe("emoji editor wiring", () => {
     const key = captionWordKey(document.transcriptSlice[1]!.words[3]!.startSec);
     const h = harness({ ...document, studioEdits: { ...document.studioEdits, captionEmojis: undefined } }, async () => ({ emojis: { [key]: { id: "money-bag" } } }));
     const before = h.history().present;
+    // The run commits once the answer's art is loaded; warm, it commits on the next turn.
+    await preloadCaptionEmojiArt(["money-bag"]);
     h.render().generate("light");
     await Bun.sleep(0);
     expect(h.dispatched).toEqual([{ type: "replaceCaptionEmojis", value: { [key]: { id: "money-bag" } } }]);
@@ -135,6 +138,7 @@ describe("emoji editor wiring", () => {
     const h = harness(document, async () => ({ emojis: { [key]: { id: "money-bag" } } }));
     let editor = h.render();
     expect(editor.confirmRegenerate).toBe(true);
+    await preloadCaptionEmojiArt(["money-bag"]);
     editor.generate("balanced");
     await Bun.sleep(0);
     editor = h.render();

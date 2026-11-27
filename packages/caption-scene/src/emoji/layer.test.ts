@@ -13,6 +13,7 @@ import {
   CAPTION_EMOJI_LATE_MIN_MS,
   CAPTION_EMOJI_MAX_HOLD_MS,
   CAPTION_EMOJI_MIN_HOLD_MS,
+  CAPTION_EMOJI_MIN_SHOWN_MS,
   CAPTION_EMOJI_PIECE_CAP,
   CAPTION_EMOJI_TILT_DEG,
   type CaptionEmojiLayerInput,
@@ -21,13 +22,16 @@ import {
   captionEmojiSizePx,
   placeCaptionEmojis,
 } from "./layer";
+import { captionSceneDemo } from "../registry";
 import { captionEmojiSides } from "./placement";
+import { placementScene } from "./placement-support";
 import { CAPTION_EMOJI_FADE_MS, CAPTION_EMOJI_LEAVE_SCALE, CAPTION_EMOJI_POP_FROM, CAPTION_EMOJI_POP_MS, CAPTION_EMOJI_QUICK_FROM, CAPTION_EMOJI_QUICK_MS } from "./timing";
 
 const art = await loadCaptionEmojiArt(["rocket", "thumbs-up", "astronaut", "heart-eyes"]);
 /** "hundred" fits above a tall cue near the top where "flame" never does (the late-emoji test). */
 const bigArt = await loadCaptionEmojiArt(["hundred", "flame"]);
 const CANVAS = { width: 1080, height: 1920 };
+const sceneArt = await loadCaptionEmojiArt(["party"]);
 
 function cue(overrides: Partial<CaptionEmojiCueBox> = {}): CaptionEmojiCueBox {
   return { cueIndex: 0, box: { x1: 240, y1: 1200, x2: 840, y2: 1290 }, fromMs: 1000, toMs: 3000, bodyPx: 80, tiltDeg: 0, direction: "ltr", ...overrides };
@@ -138,25 +142,29 @@ describe("emoji timing", () => {
     expect(windowOf(placed(input())[0]!.pieces)).toEqual([1200, 3000]);
   });
 
-  test("a late anchor shows its emoji at the word with a quick entrance; under 250 ms left it holds past the cue when clear; never before its word", () => {
-    // 300 ms left: at the word, 90 ms to full size, no overshoot.
-    const late = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 2700 }] }))[0]!.pieces[0]!;
-    expect(windowOf([late])).toEqual([2700, 3000]);
-    expect(evaluatePiece(late, 2700).sx).toBeCloseTo(CAPTION_EMOJI_QUICK_FROM, 6);
-    for (let t = 2700; t < 3000; t += 5) expect(evaluatePiece(late, t).sx).toBeLessThanOrEqual(1);
-    expect(evaluatePiece(late, 2700 + CAPTION_EMOJI_QUICK_MS).sx).toBe(1);
+  test("a late anchor shows its emoji at the word with a quick entrance; under 340 ms left it holds past the cue when clear; never before its word", () => {
+    expect(CAPTION_EMOJI_MIN_SHOWN_MS).toBe(CAPTION_EMOJI_MIN_HOLD_MS + CAPTION_EMOJI_FADE_MS);
+    // 360 ms left: at the word, 90 ms to full size, no overshoot.
+    const late = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 2640 }] }))[0]!.pieces[0]!;
+    expect(windowOf([late])).toEqual([2640, 3000]);
+    expect(evaluatePiece(late, 2640).sx).toBeCloseTo(CAPTION_EMOJI_QUICK_FROM, 6);
+    for (let t = 2640; t < 3000; t += 5) expect(evaluatePiece(late, t).sx).toBeLessThanOrEqual(1);
+    expect(evaluatePiece(late, 2640 + CAPTION_EMOJI_QUICK_MS).sx).toBe(1);
     expect(evaluatePiece(late, 3000 - CAPTION_EMOJI_FADE_MS).o).toBe(1);
     // 450 ms or more left: the full pop.
     const early = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 2550 }] }))[0]!.pieces[0]!;
     expect(evaluatePiece(early, 2550 + CAPTION_EMOJI_POP_MS * 0.6).sx).toBeGreaterThan(1);
-    // Exactly the minimum left: shown, at the word.
-    const edge = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 3000 - CAPTION_EMOJI_MIN_HOLD_MS }] }))[0]!.pieces[0]!;
-    expect(windowOf([edge])).toEqual([3000 - CAPTION_EMOJI_MIN_HOLD_MS, 3000]);
-    // Less left: it holds past the cue's last paint to 400 ms from its word, with the quick entrance.
-    for (const atMs of [2760, 2850, 2880]) {
+    // Exactly the minimum left: shown, at the word, 250 ms at full strength before its fade.
+    const edge = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 3000 - CAPTION_EMOJI_MIN_SHOWN_MS }] }))[0]!.pieces[0]!;
+    expect(windowOf([edge])).toEqual([3000 - CAPTION_EMOJI_MIN_SHOWN_MS, 3000]);
+    expect(edge.track.o).toEqual([[3000 - CAPTION_EMOJI_FADE_MS, 1], [3000, 0]]);
+    // Less left (a 250 to 340 ms window once lost its full strength to the fade): it holds past the cue's last paint to
+    // 400 ms from its word, with the quick entrance, at full strength for 250 ms.
+    for (const atMs of [2700, 2740, 2760, 2850, 2880]) {
       const held = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs }] }))[0]!.pieces[0]!;
       expect(windowOf([held])).toEqual([atMs, atMs + CAPTION_EMOJI_LATE_HOLD_MS]);
       expect(evaluatePiece(held, atMs).sx).toBeCloseTo(CAPTION_EMOJI_QUICK_FROM, 6);
+      expect(evaluatePiece(held, atMs + CAPTION_EMOJI_MIN_HOLD_MS).o).toBe(1);
     }
     // When what follows the cue covers its slot, or the word leaves under 120 ms, it draws nothing.
     const next = cue({ obstacles: (t) => [cue().box, ...(t >= 3000 ? [{ x1: 0, y1: 0, x2: 1080, y2: 1920 }] : [])] });
@@ -218,8 +226,8 @@ describe("emoji timing", () => {
     // The earlier one fits, so it keeps the slot.
     const both = placeCaptionEmojis(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 1100 }, { cueIndex: 0, id: "thumbs-up", atMs: 1110 }] }));
     expect(both.map((outcome) => [outcome.emoji.id, outcome.placed ? windowOf(outcome.pieces) : outcome.reason])).toEqual([["rocket", [1100, 3000]], ["thumbs-up", "no-time"]]);
-    // The earlier one cannot fit (the flame above the tall cue): the later one draws.
-    const tall = cue({ box: { x1: 0, y1: 248, x2: 1080, y2: 1890 }, bodyPx: 130 });
+    // The earlier one cannot fit (the flame above the tall cue, even at Small's shrunk size): the later one draws.
+    const tall = cue({ box: { x1: 0, y1: 220, x2: 1080, y2: 1890 }, bodyPx: 130 });
     const outcomes = placeCaptionEmojis(
       input({ cueBoxes: [tall], art: bigArt, style: { ...input().style, position: "above" }, anchorYPct: 65, emojis: [{ cueIndex: 0, id: "flame", atMs: 1100 }, { cueIndex: 0, id: "hundred", atMs: 1110 }] }),
     );
@@ -236,6 +244,150 @@ describe("emoji timing", () => {
     expect(Math.abs(bottom(outcomes[0]!) - bottom(outcomes[1]!))).toBeLessThan(1);
   });
 
+  test("a slot is kept close to the text that reads when the emoji pops, not to a late box that reaches further", () => {
+    // A Scene Style's box is one late sample: here it reaches 300 px past the row on screen when the emoji pops.
+    const row = { x1: 240, y1: 1200, x2: 840, y2: 1290 };
+    const withRow = (box: typeof row, more: Partial<CaptionEmojiCueBox> = {}) => cue({ box, obstacles: () => [row], shownAt: () => [row], ...more });
+    const inkGap = (outcome: ReturnType<typeof placed>[number]) => {
+      const ink = pieceBounds({ ...outcome.pieces[1]!, path: outcome.pieces[1]!.path.slice(2) }, 2000, fakeMeasure)!;
+      return { gap: Math.max(row.y1 - ink.y2, ink.y1 - row.y2), height: ink.y2 - ink.y1 };
+    };
+    // Above: the box's top is far over the row, so the slot is measured from the row.
+    const tallAbove = placed(input({ cueBoxes: [withRow({ ...row, y1: 900 })] }))[0]!;
+    expect(tallAbove.side).toBe("above");
+    expect(inkGap(tallAbove).gap).toBeLessThanOrEqual(0.5 * inkGap(tallAbove).height);
+    // Below (a caption high in the frame tries below first): under the row, not under the box's late bottom.
+    const high = { x1: 240, y1: 380, x2: 840, y2: 470 };
+    const highCue = cue({ box: { ...high, y2: 770 }, obstacles: () => [high], shownAt: () => [high] });
+    const below = placed(input({ anchorYPct: 20, cueBoxes: [highCue] }))[0]!;
+    expect(below.side).toBe("below");
+    const ink = pieceBounds({ ...below.pieces[1]!, path: below.pieces[1]!.path.slice(2) }, 2000, fakeMeasure)!;
+    expect(ink.y1 - high.y2).toBeLessThanOrEqual(0.5 * (ink.y2 - ink.y1));
+    // Nothing close is clear (the rows on screen are boxed in on every side but far above): not drawn.
+    const far = cue({ box: row, obstacles: () => [{ x1: 0, y1: 0, x2: 1080, y2: 1195 }, { x1: 0, y1: 1195, x2: 235, y2: 1920 }, { x1: 845, y1: 1195, x2: 1080, y2: 1920 }, { x1: 0, y1: 1295, x2: 1080, y2: 1500 }], shownAt: () => [row] });
+    expect(placeCaptionEmojis(input({ cueBoxes: [far] }))[0]).toMatchObject({ placed: false, reason: "no-room" });
+  });
+
+  test("back to back in one cue: the first keeps 250 ms at full strength and its fade; the second waits for it, or draws nothing", () => {
+    // 150 ms apart: the rocket shows its least window, and the thumbs-up starts where it ends.
+    const outcomes = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 1100 }, { cueIndex: 0, id: "thumbs-up", atMs: 1250 }] }));
+    expect(outcomes.map((outcome) => [outcome.emoji.id, ...windowOf(outcome.pieces)])).toEqual([["rocket", 1100, 1100 + CAPTION_EMOJI_MIN_SHOWN_MS], ["thumbs-up", 1100 + CAPTION_EMOJI_MIN_SHOWN_MS, 3000]]);
+    for (const outcome of outcomes) {
+      const piece = outcome.pieces[0]!;
+      expect(piece.track.o![0]![0] - piece.fromMs).toBeGreaterThanOrEqual(CAPTION_EMOJI_MIN_HOLD_MS);
+    }
+    // In a cue that ends 500 ms after the rocket, waiting leaves the thumbs-up 160 ms: it draws nothing, and the rocket keeps
+    // the cue to its end (it is not cut for an emoji that does not draw).
+    const short = placeCaptionEmojis(input({ cueBoxes: [cue({ toMs: 1600 })], emojis: [{ cueIndex: 0, id: "rocket", atMs: 1100 }, { cueIndex: 0, id: "thumbs-up", atMs: 1250 }] }));
+    expect(short.map((outcome) => (outcome.placed ? windowOf(outcome.pieces) : outcome.reason))).toEqual([[1100, 1600], "no-time"]);
+    // Far enough apart, nothing changes: the first gives way when the second starts.
+    const apart = placed(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 1100 }, { cueIndex: 0, id: "thumbs-up", atMs: 1100 + CAPTION_EMOJI_MIN_SHOWN_MS }] }));
+    expect(apart.map((outcome) => windowOf(outcome.pieces))).toEqual([[1100, 1100 + CAPTION_EMOJI_MIN_SHOWN_MS], [1100 + CAPTION_EMOJI_MIN_SHOWN_MS, 3000]]);
+  });
+
+  test("closeness is judged on the emoji's first painted frame, not on a row that appears later in its pop", () => {
+    // The row on screen when the emoji pops, and a row far above that appears 100 ms later (a stack's next line).
+    const row = { x1: 240, y1: 1500, x2: 840, y2: 1590 };
+    const later = { x1: 240, y1: 1000, x2: 840, y2: 1090 };
+    const rows = (t: number) => (t < 1300 ? [row] : [row, later]);
+    const stack = cue({ box: { ...row, y1: 1000 }, obstacles: rows, shownAt: rows });
+    const [emoji] = placed(input({ cueBoxes: [stack] }));
+    expect(emoji!.side).toBe("above");
+    const ink = pieceBounds({ ...emoji!.pieces[1]!, path: emoji!.pieces[1]!.path.slice(2) }, 2000, fakeMeasure)!;
+    // Above the row on screen at 1200, not above the later row (about 2.5 emoji heights from it).
+    expect(row.y1 - ink.y2).toBeGreaterThanOrEqual(0);
+    expect(row.y1 - ink.y2).toBeLessThanOrEqual(0.5 * (ink.y2 - ink.y1));
+    // An emoji that waits for its slot is judged on the frame it does pop: here only the far row reads then, so it is
+    // measured from that row, and placed close to it.
+    const leaving = (t: number) => (t < 1300 ? [row] : [later]);
+    const moved = placed(input({ cueBoxes: [cue({ box: { ...row, y1: 1000 }, obstacles: (t) => [...leaving(t), ...(t < 1300 ? [{ x1: 0, y1: 0, x2: 1080, y2: 1920 }] : [])], shownAt: leaving })] }))[0]!;
+    const movedInk = pieceBounds({ ...moved.pieces[1]!, path: moved.pieces[1]!.path.slice(2) }, 2000, fakeMeasure)!;
+    const gap = Math.max(later.y1 - movedInk.y2, movedInk.y1 - later.y2, 0);
+    expect(moved.pieces[0]!.fromMs).toBeGreaterThanOrEqual(1300);
+    expect(gap).toBeLessThanOrEqual(0.5 * (movedInk.y2 - movedInk.y1));
+  });
+
+  test("when nothing close to the first frame's text stays clear, a slot by the text that grows in during the pop, within one height of the first frame's", () => {
+    // One glyph on the first frame (1200); from the next frame a bubble grows round it, over every slot close to the glyph.
+    const glyph = { x1: 500, y1: 1500, x2: 560, y2: 1590 };
+    const grows = (top: number) => {
+      const bubble = { x1: 300, y1: top, x2: 780, y2: 1700 };
+      const shown = (t: number) => (t < 1233 ? [glyph] : [glyph, bubble]);
+      return cue({ box: bubble, obstacles: shown, shownAt: shown });
+    };
+    const [near] = placeCaptionEmojis(input({ cueBoxes: [grows(1440)] }));
+    expect(near!.placed && near!.side).toBe("above");
+    const ink = near!.placed ? pieceBounds({ ...near!.pieces[1]!, path: near!.pieces[1]!.path.slice(2) }, 2000, fakeMeasure)! : null;
+    const gap = (glyph.y1 - ink!.y2) / (ink!.y2 - ink!.y1);
+    expect(gap).toBeGreaterThan(0.5);
+    expect(gap).toBeLessThanOrEqual(1);
+    // A bubble whose top is over two emoji heights from the glyph: nothing is close enough, so no emoji.
+    expect(placeCaptionEmojis(input({ cueBoxes: [grows(1250)] }))[0]).toMatchObject({ placed: false, reason: "no-room" });
+  });
+
+  test("three emojis in a short cue: when the middle one draws nothing, the first and third never show at once", () => {
+    for (const [fromMs, toMs, anchors] of [[1000, 1500, [1000, 1100, 1200]], [0, 500, [0, 100, 180]]] as const) {
+      const ids = ["rocket", "thumbs-up", "heart-eyes"];
+      const outcomes = placeCaptionEmojis(input({ cueBoxes: [cue({ fromMs, toMs })], emojis: anchors.map((atMs, at) => ({ cueIndex: 0, id: ids[at]!, atMs })) }));
+      // The first keeps the cue (the others' time is given back to it), the others are too late for 340 ms of their own.
+      expect(outcomes.map((outcome) => (outcome.placed ? windowOf(outcome.pieces) : outcome.reason))).toEqual([[fromMs, toMs], "no-time", "no-time"]);
+      const windows = outcomes.flatMap((outcome) => (outcome.placed ? [windowOf(outcome.pieces)] : []));
+      for (const [a, b] of windows.flatMap((one, at) => windows.slice(at + 1).map((other) => [one, other] as const))) expect(a[1]! <= b[0]! || b[1]! <= a[0]!).toBe(true);
+    }
+  });
+
+  test("no two drawn emojis of one cue ever show at once, and each draws its least window inside its cue and the clip", () => {
+    const ids = ["rocket", "thumbs-up", "heart-eyes", "astronaut"];
+    // Dense clusters (a frame or two apart, the 30 fps case that once drew 1000–3000 and 1050–3000), then spaced ones.
+    const patterns: number[][] = [
+      [1000, 1025, 1050],
+      [1000, 1025, 1050, 1075],
+      [1000, 1030, 1060, 1090, 1120, 1150],
+      [1000, 1040, 1080, 1120, 1160, 1200],
+      [1000, 1010, 1020, 1100, 1110, 1200],
+      [1000, 1050, 1100, 1150, 1200],
+      [1100, 1133, 1166, 1199],
+      [1000, 1200, 1400, 1600],
+      [1000, 1500, 2000, 2500, 2800],
+      [1000, 1340, 1680, 2020, 2360, 2700],
+      [1200, 1250, 2600, 2650, 2900],
+    ];
+    for (const fps of [24, 30, 60]) {
+      for (const toMs of [1500, 3000]) {
+        for (const endMs of [undefined, toMs + 100]) {
+          for (const anchors of patterns) {
+            const label = `${fps} fps, cue to ${toMs}, end ${endMs}, anchors ${anchors.join("/")}`;
+            const layer = input({ fps, cueBoxes: [cue({ toMs })], ...(endMs === undefined ? {} : { endMs }), emojis: anchors.map((atMs, at) => ({ cueIndex: 0, id: ids[at % ids.length]!, atMs })) });
+            const windows = placeCaptionEmojis(layer).flatMap((outcome) => (outcome.placed ? [{ atMs: outcome.emoji.atMs, window: windowOf(outcome.pieces) }] : []));
+            for (const { atMs, window } of windows) {
+              const [from, to] = window as [number, number];
+              expect(from, label).toBeGreaterThanOrEqual(atMs);
+              expect(to - from, label).toBeGreaterThanOrEqual(CAPTION_EMOJI_MIN_SHOWN_MS);
+              expect(to, label).toBeLessThanOrEqual(Math.min(endMs ?? Number.POSITIVE_INFINITY, Math.max(toMs, atMs + CAPTION_EMOJI_LATE_HOLD_MS)));
+            }
+            for (const [a, b] of windows.flatMap((one, at) => windows.slice(at + 1).map((other) => [one.window, other.window] as const))) {
+              expect(a[1]! <= b[0]! || b[1]! <= a[0]!, `${label}: ${a.join("–")} and ${b.join("–")}`).toBe(true);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("a hold never runs past the clip's end: what is left of it is the window, and under 340 ms it draws nothing", () => {
+    // The cue's last paint is 3000 and its emoji's word at 2850 holds to 3250; the clip ends at 3100 (150 ms visible).
+    const ends = (endMs: number, atMs = 2850) => placeCaptionEmojis(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs }], endMs }));
+    expect(ends(3100).map((outcome) => outcome.placed || outcome.reason)).toEqual(["no-time"]);
+    // Enough left before the end: the window stops at it.
+    const early = ends(3150, 2700)[0]!;
+    expect(early.placed && windowOf(early.pieces)).toEqual([2700, 3100]);
+    const cut = ends(3050, 2700)[0]!;
+    expect(cut.placed && windowOf(cut.pieces)).toEqual([2700, 3050]);
+    // An end past the hold changes nothing; the layer key follows the end.
+    expect(ends(4000)).toEqual(placeCaptionEmojis(input({ emojis: [{ cueIndex: 0, id: "rocket", atMs: 2850 }] })));
+    expect(captionEmojiLayerKey(input({ endMs: 3100 }), "s")).not.toBe(captionEmojiLayerKey(input(), "s"));
+  });
+
   test("overlapping speakers each keep a slot, and the two emojis never meet", () => {
     const left = cue({ cueIndex: 0, box: { x1: 100, y1: 1200, x2: 500, y2: 1290 } });
     const right = cue({ cueIndex: 1, box: { x1: 580, y1: 1200, x2: 980, y2: 1290 }, fromMs: 1500, toMs: 3500 });
@@ -247,10 +399,13 @@ describe("emoji timing", () => {
     }
   });
 
-  test("a slot taken for the whole window by another cue moves the emoji to the other side", () => {
+  test("a slot taken for the whole window by another cue moves the emoji beside the cue, then below", () => {
     const blocker = { x1: 0, y1: 0, x2: 1080, y2: 1195 };
-    const [emoji] = placed(input({ cueBoxes: [cue({ obstacles: () => [blocker] })] }));
-    expect(emoji!.side).toBe("below");
+    const [beside] = placed(input({ cueBoxes: [cue({ obstacles: () => [blocker] })] }));
+    expect(beside!.side).toBe("end");
+    const sides = { x1: 0, y1: 0, x2: 1080, y2: 1290 };
+    const [below] = placed(input({ cueBoxes: [cue({ obstacles: () => [sides] })] }));
+    expect(below!.side).toBe("below");
   });
 
   test("a slot still being vacated at the anchor is waited for", () => {
@@ -263,9 +418,12 @@ describe("emoji timing", () => {
 
   test("a soft obstacle (a decoration) is covered only when no slot clear of everything is left", () => {
     const ray = { x1: 0, y1: 1000, x2: 1080, y2: 1195, soft: true };
-    expect(placed(input({ cueBoxes: [cue({ obstacles: () => [ray] })] }))[0]!.side).toBe("below");
+    expect(placed(input({ cueBoxes: [cue({ obstacles: () => [ray] })] }))[0]!.side).toBe("end");
     const floor = { x1: 0, y1: 1295, x2: 1080, y2: 1920 };
-    expect(placed(input({ cueBoxes: [cue({ obstacles: () => [ray, floor] })] }))[0]).toMatchObject({ side: "above", shrunk: false });
+    // A clear slot at any size, down to Small's shrunk one (S <= M on one side), comes before covering the ray.
+    expect(placed(input({ cueBoxes: [cue({ obstacles: () => [ray, floor] })] }))[0]).toMatchObject({ side: "end", shrunk: true });
+    const walls = [{ x1: 0, y1: 1195, x2: 239, y2: 1295 }, { x1: 841, y1: 1195, x2: 1080, y2: 1295 }];
+    expect(placed(input({ cueBoxes: [cue({ obstacles: () => [ray, floor, ...walls] })] }))[0]).toMatchObject({ side: "above", shrunk: false });
   });
 });
 
@@ -298,7 +456,7 @@ describe("a held emoji leaves with its caption", () => {
   });
 
   test("an emoji that ends with its cue keeps its entrance and 90 ms fade; under 120 ms left it is still not drawn", () => {
-    for (const atMs of [1200, 2700, 3000 - CAPTION_EMOJI_MIN_HOLD_MS]) {
+    for (const atMs of [1200, 2640, 3000 - CAPTION_EMOJI_MIN_SHOWN_MS]) {
       const piece = placed(input({ cueBoxes: [cue(), next], emojis: [{ cueIndex: 0, id: "rocket", atMs }], nextEmojiAtMs: 3050 }))[0]!.pieces[0]!;
       expect(piece.toMs).toBe(3000);
       expect(piece.track.o).toEqual([[3000 - CAPTION_EMOJI_FADE_MS, 1], [3000, 0]]);
@@ -308,40 +466,40 @@ describe("a held emoji leaves with its caption", () => {
   });
 
   test("it yields to the first emoji of a later cue, whether the input holds that cue or a one-cue feeder passes its time", () => {
-    const together = placeCaptionEmojis(input({ cueBoxes: [cue(), next], emojis: [{ cueIndex: 0, id: "rocket", atMs: 2850 }, { cueIndex: 1, id: "thumbs-up", atMs: 3150 }] }));
-    const alone = held({ cueBoxes: [cue(), next], nextEmojiAtMs: 3150 });
+    const together = placeCaptionEmojis(input({ cueBoxes: [cue(), next], emojis: [{ cueIndex: 0, id: "rocket", atMs: 2850 }, { cueIndex: 1, id: "thumbs-up", atMs: 3200 }] }));
+    const alone = held({ cueBoxes: [cue(), next], nextEmojiAtMs: 3200 });
     expect(alone[0]).toEqual(together[0]!);
     const pieces = alone[0]!.placed ? alone[0]!.pieces : [];
-    expect(windowOf(pieces)).toEqual([2850, 3150]);
+    expect(windowOf(pieces)).toEqual([2850, 3200]);
     // Never two emojis at once: the next one starts where the held one ends.
-    expect(together[1]!.placed && windowOf(together[1]!.pieces)[0]).toBe(3150);
-    // Still leaving: a fade of at least 90 ms, at full strength before it.
-    expect(pieces[0]!.track.o).toEqual([[3150 - CAPTION_EMOJI_FADE_MS, 1], [3150, 0]]);
-    // Left under 250 ms from its word by the next emoji: it draws nothing rather than flash.
-    expect(held({ nextEmojiAtMs: 3050 }).map((outcome) => outcome.placed || outcome.reason)).toEqual(["no-time"]);
+    expect(together[1]!.placed && windowOf(together[1]!.pieces)[0]).toBe(3200);
+    // Still leaving: 250 ms at full strength, then a fade of at least 90 ms.
+    expect(pieces[0]!.track.o).toEqual([[2850 + CAPTION_EMOJI_MIN_HOLD_MS, 1], [3200, 0]]);
+    // Left under 340 ms from its word by the next emoji: it draws nothing rather than flash.
+    for (const nextEmojiAtMs of [3050, 3150]) expect(held({ nextEmojiAtMs }).map((outcome) => outcome.placed || outcome.reason)).toEqual(["no-time"]);
     // A later emoji past the hold changes nothing; the layer key follows the time.
     expect(held({ nextEmojiAtMs: 3600 })).toEqual(held());
     expect(captionEmojiLayerKey(input({ nextEmojiAtMs: 3150 }), "s")).not.toBe(captionEmojiLayerKey(input(), "s"));
   });
 
   test("it stays off the next cue's box that a one-cue feeder passes beside its own: another slot, or not drawn", () => {
-    // The next cue is taller and reaches over the slot above this one; there is room below.
+    // The next cue is taller and reaches over the slot above this one; there is room beside it, past the next cue's end.
     const taller = cue({ cueIndex: 1, fromMs: 3000, toMs: 4500, box: { x1: 200, y1: 1000, x2: 880, y2: 1290 } });
     const [outcome] = held({ cueBoxes: [cue(), taller] });
-    expect(outcome!.placed && outcome!.side).toBe("below");
+    expect(outcome!.placed && outcome!.side).toBe("end");
     const pieces = outcome!.placed ? outcome!.pieces : [];
     for (let t = 3000; t < 3250; t += 1000 / 30) {
       for (const piece of pieces) {
         const ink = pieceBounds({ ...piece, path: piece.path.slice(2) }, t, fakeMeasure)!;
-        expect(ink.y1 >= taller.box.y2 || ink.y2 <= taller.box.y1).toBe(true);
+        expect(ink.y1 >= taller.box.y2 || ink.y2 <= taller.box.y1 || ink.x1 >= taller.box.x2 || ink.x2 <= taller.box.x1).toBe(true);
       }
     }
     // Without the next box, or for an emoji that ends with its cue, the slot above is kept.
     expect(held()[0]!.placed && (held()[0] as { side: string }).side).toBe("above");
-    const ends = placed(input({ cueBoxes: [cue(), taller], emojis: [{ cueIndex: 0, id: "rocket", atMs: 2700 }] }))[0]!;
+    const ends = placed(input({ cueBoxes: [cue(), taller], emojis: [{ cueIndex: 0, id: "rocket", atMs: 2640 }] }))[0]!;
     expect(ends.side).toBe("above");
-    // Covered above and below: not drawn.
-    const around = cue({ cueIndex: 1, fromMs: 3000, toMs: 4500, box: { x1: 200, y1: 900, x2: 880, y2: 1700 } });
+    // Covered above, below and on both sides: not drawn.
+    const around = cue({ cueIndex: 1, fromMs: 3000, toMs: 4500, box: { x1: 100, y1: 900, x2: 980, y2: 1700 } });
     expect(held({ cueBoxes: [cue(), around] }).map((each) => each.placed || each.reason)).toEqual(["no-room"]);
   });
 });
@@ -369,7 +527,8 @@ describe("emoji pose and slot", () => {
     expect(cue().box.y1 - ink(above).y2).toBeGreaterThan(0.1 * sizePx);
     const top = placed(input({ anchorYPct: 20, cueBoxes: [cue({ box: { x1: 240, y1: 380, x2: 840, y2: 470 } })] }))[0]!;
     expect(top.side).toBe("below");
-    expect(captionEmojiSides("above", "auto", 20)).toEqual(["below", "above"]);
+    expect(captionEmojiSides("above", "auto", 20)).toEqual(["below", "end", "start", "above"]);
+    expect(captionEmojiSides("above", "auto", 67)).toEqual(["above", "end", "start", "below"]);
     expect(captionEmojiSides("above", "above", 20)).toEqual(["above", "below"]);
     expect(captionEmojiSides("beside-end", "auto", 50)[0]).toBe("end");
   });
@@ -416,8 +575,9 @@ describe("emoji pose and slot", () => {
     expect(ink.y2).toBeLessThan(1244);
   });
 
-  test("a short line whose longer neighbours crowd its end: the emoji sits level with it at the safe area's edge", () => {
-    // A 300 ms cue of fast speech; the stack scrolls 74 px up while it paints.
+  test("a short line whose longer neighbours crowd its end: the safe area's edge is too far from it, so no emoji is drawn", () => {
+    // A 300 ms cue of fast speech; the stack scrolls 74 px up while it paints. Level with the line at the safe area's edge
+    // (past the longer neighbours) is about three emoji heights from its text: it would belong to nothing.
     const line = { x1: 96, y1: 1248, x2: 411, y2: 1332 };
     const neighbours = [{ x1: 96, y1: 1140, x2: 810, y2: 1214 }, { x1: 96, y1: 1397, x2: 647, y2: 1468 }];
     const scrolled = (boxes: readonly { x1: number; y1: number; x2: number; y2: number }[]) => (atMs: number) => {
@@ -427,17 +587,16 @@ describe("emoji pose and slot", () => {
     const fast = { fromMs: 2750, toMs: 3100, bodyPx: 92 };
     const style = { ...input().style, slot: "beside-end" as const };
     const emojis = [{ cueIndex: 0, id: "rocket", atMs: 2850 }];
-    const outcome = placed(input({ style, emojis, cueBoxes: [cue({ ...fast, box: line, endBox: line, obstacles: scrolled([line, ...neighbours]) })] }))[0];
-    expect(outcome?.side).toBe("end");
-    const ink = inkOf(outcome!);
-    expect(ink.x1).toBeGreaterThan(810);
+    const outcome = placeCaptionEmojis(input({ style, emojis, cueBoxes: [cue({ ...fast, box: line, endBox: line, obstacles: scrolled([line, ...neighbours]) })] }))[0];
+    expect(outcome).toMatchObject({ placed: false, reason: "no-room" });
+    // A line about as long as its neighbours: level with its end, close to it, inside the safe area.
+    const near = [{ ...neighbours[0]!, x2: 880 }, neighbours[1]!];
+    const long = { ...line, x2: 850 };
+    const edged = placed(input({ style, emojis, cueBoxes: [cue({ ...fast, box: long, endBox: long, obstacles: scrolled([long, ...near]) })] }))[0];
+    expect(edged?.side).toBe("end");
+    const ink = inkOf(edged!);
+    expect(ink.x1 - long.x2).toBeLessThanOrEqual(0.5 * (ink.y2 - ink.y1));
     expect(ink.x2).toBeLessThanOrEqual(0.95 * CANVAS.width);
-    // RTL mirrors it to the left edge.
-    const mirror = (box: { x1: number; y1: number; x2: number; y2: number }) => ({ ...box, x1: CANVAS.width - box.x2, x2: CANVAS.width - box.x1 });
-    const rtlLine = mirror(line);
-    const rtl = placed(input({ style, emojis, cueBoxes: [cue({ ...fast, box: rtlLine, endBox: rtlLine, direction: "rtl", obstacles: scrolled([rtlLine, ...neighbours.map(mirror)]) })] }))[0];
-    expect(rtl?.side).toBe("end");
-    expect(inkOf(rtl!).x2).toBeLessThan(CANVAS.width - 810);
   });
 
   test("an emoji that fits by the text keeps that slot; the edge slots come after", () => {
@@ -491,30 +650,113 @@ describe("emoji pose and slot", () => {
     expect(captionEmojiSizePx(400, 1.25, CANVAS)).toBeCloseTo(1.25 * 0.16 * 1080, 6);
   });
 
-  test("auto goes below a mid-frame caption when the emoji above would reach into the face zone", () => {
-    // Caption top at 47% of the height: the emoji above would centre near 43% and reach 39%.
-    const mid = cue({ box: { x1: 240, y1: 900, x2: 840, y2: 990 } });
-    expect(placed(input({ anchorYPct: 47, cueBoxes: [mid] }))[0]!.side).toBe("below");
+  test("auto goes below a caption high in the frame when the emoji above would reach into the face zone", () => {
+    // Caption top at 38.5% of the height: the emoji above would reach about 28%, past the face zone's 30%.
+    const mid = cue({ box: { x1: 240, y1: 740, x2: 840, y2: 830 } });
+    expect(placed(input({ anchorYPct: 40, cueBoxes: [mid] }))[0]!.side).toBe("below");
     // The owner's explicit position wins.
-    expect(placed(input({ anchorYPct: 47, cueBoxes: [mid], style: { ...input().style, position: "above" } }))[0]!.side).toBe("above");
+    expect(placed(input({ anchorYPct: 40, cueBoxes: [mid], style: { ...input().style, position: "above" } }))[0]!.side).toBe("above");
     // Below is taken: level with the cue at its reading end, then its other end, before going back above into the face zone.
-    const narrow = { x1: 340, y1: 900, x2: 740, y2: 990 };
-    const under = { x1: 300, y1: 1000, x2: 760, y2: 1400 };
-    expect(placed(input({ anchorYPct: 47, cueBoxes: [cue({ box: narrow, obstacles: () => [narrow, under] })] }))[0]!.side).toBe("end");
-    expect(placed(input({ anchorYPct: 47, cueBoxes: [cue({ box: narrow, direction: "rtl", obstacles: () => [narrow, under] })] }))[0]!.side).toBe("end");
+    const narrow = { x1: 340, y1: 740, x2: 740, y2: 830 };
+    const under = { x1: 300, y1: 840, x2: 760, y2: 1240 };
+    expect(placed(input({ anchorYPct: 40, cueBoxes: [cue({ box: narrow, obstacles: () => [narrow, under] })] }))[0]!.side).toBe("end");
+    expect(placed(input({ anchorYPct: 40, cueBoxes: [cue({ box: narrow, direction: "rtl", obstacles: () => [narrow, under] })] }))[0]!.side).toBe("end");
     const right = { x1: 745, y1: 0, x2: 1080, y2: 1920 };
-    expect(placed(input({ anchorYPct: 47, cueBoxes: [cue({ box: narrow, obstacles: () => [narrow, under, right] })] }))[0]!.side).toBe("start");
+    expect(placed(input({ anchorYPct: 40, cueBoxes: [cue({ box: narrow, obstacles: () => [narrow, under, right] })] }))[0]!.side).toBe("start");
     const left = { x1: 0, y1: 0, x2: 335, y2: 1920 };
-    expect(placed(input({ anchorYPct: 47, cueBoxes: [cue({ box: narrow, obstacles: () => [narrow, under, right, left] })] }))[0]!.side).toBe("above");
+    expect(placed(input({ anchorYPct: 40, cueBoxes: [cue({ box: narrow, obstacles: () => [narrow, under, right, left] })] }))[0]!.side).toBe("above");
     // Below at 0.7 is taken before above at full size.
-    const tight = cue({ box: mid.box, obstacles: () => [mid.box, { x1: 0, y1: 1125, x2: 1080, y2: 1400 }] });
-    const shrunk = placed(input({ anchorYPct: 47, cueBoxes: [tight] }))[0]!;
+    const tight = cue({ box: mid.box, obstacles: () => [mid.box, { x1: 0, y1: 965, x2: 1080, y2: 1240 }] });
+    const shrunk = placed(input({ anchorYPct: 40, cueBoxes: [tight] }))[0]!;
     expect([shrunk.side, shrunk.shrunk]).toEqual(["below", true]);
+    // A caption at 47% (the emoji above reaching about 37%) keeps above: an emoji close above its caption, not on the face.
+    expect(placed(input({ anchorYPct: 47, cueBoxes: [cue({ box: { x1: 240, y1: 900, x2: 840, y2: 990 } })] }))[0]!.side).toBe("above");
     // A lower caption keeps above.
     expect(placed(input())[0]!.side).toBe("above");
     // Other slots keep their order.
     const style = { ...input().style, slot: "beside-end" as const };
     expect(placed(input({ anchorYPct: 47, cueBoxes: [{ ...mid, box: { x1: 240, y1: 900, x2: 600, y2: 990 } }], style }))[0]!.side).toBe("end");
+  });
+
+  test("the Size choice never changes the side, and a larger choice never draws smaller (S <= M <= L)", () => {
+    const at = (size: number, cueBoxes: CaptionEmojiLayerInput["cueBoxes"]) => {
+      const [outcome] = placeCaptionEmojis(input({ cueBoxes, anchorYPct: 40, style: { ...input().style, size } }));
+      if (!outcome?.placed) return { side: "none", height: 0 };
+      const ink = pieceBounds({ ...outcome.pieces[1]!, path: outcome.pieces[1]!.path.slice(2) }, 2500, fakeMeasure)!;
+      return { side: outcome.side, height: Math.round(ink.y2 - ink.y1) };
+    };
+    // A three-row stack at heights around the face zone's line: the side is judged at the default size for every choice.
+    for (let top = 560; top <= 860; top += 20) {
+      const stack = [cue({ box: { x1: 240, y1: top, x2: 840, y2: top + 300 } })];
+      const [s, m, l] = [0.8, 1, 1.25].map((size) => at(size, stack));
+      expect([s!.side, l!.side], `top ${top}`).toEqual([m!.side, m!.side]);
+      expect(s!.height <= m!.height && m!.height <= l!.height, `top ${top}: ${s!.height} ${m!.height} ${l!.height}`).toBe(true);
+    }
+    // Room above for the default size, not for Large: Large draws at the default size, never at 0.7 of its own (0.875).
+    const roof = [cue({ obstacles: () => [cue().box, { x1: 0, y1: 0, x2: 1080, y2: 1010 }] })];
+    const [s, m, l] = [0.8, 1, 1.25].map((size) => at(size, roof));
+    expect([s!.side, m!.side, l!.side]).toEqual(["above", "above", "above"]);
+    expect(l!.height).toBe(m!.height);
+    expect(s!.height).toBeLessThan(m!.height);
+  });
+
+  test("across classic, Dynamic and Scene captions at three heights: S <= M <= L drawn, on the smaller choice's side", () => {
+    type Scenario = { readonly label: string; readonly layer: (size: number) => CaptionEmojiLayerInput };
+    const scenarios: Scenario[] = [];
+    const sizesOf = (layer: (size: number) => CaptionEmojiLayerInput) =>
+      [0.8, 1, 1.25].map((size) => {
+        const [outcome] = placeCaptionEmojis(layer(size));
+        if (!outcome?.placed) return null;
+        const piece = outcome.pieces[1]!;
+        const ink = pieceBounds({ ...piece, path: piece.path.slice(2) }, Math.min(piece.fromMs + CAPTION_EMOJI_POP_MS + 10, piece.toMs - 1), fakeMeasure)!;
+        return { side: outcome.side, height: Math.round(ink.y2 - ink.y1) };
+      });
+    // Classic lines (one flat, one that tilts), a short and a full-width line, at the preset's height, 30% and 58%.
+    const tilting = Object.entries(CAPTION_MOTIONS).find(([, motion]) => motion.tilt)![0] as CaptionAnimationName;
+    const boldPop = getCaptionPresetById("bold-pop")!.preset;
+    for (const preset of [boldPop, { ...boldPop, animation: tilting }]) {
+      for (const yPct of [preset.positionY ?? 67, 30, 58]) {
+        for (const widthEm of [3, 9]) {
+          const line = classicLineCueBox({ cueIndex: 1, activeRange: { startSec: 1, endSec: 3 }, anchor: { xPct: 50, yPct }, words: [{ text: "more" }, { text: "money" }], language: "en", preset }, { widthEm, heightEm: 1.4, px: preset.fontSize }, CANVAS);
+          for (const slot of ["above", "beside-end"] as const) {
+            scenarios.push({ label: `classic ${preset.animation} ${widthEm}em at ${yPct}% ${slot}`, layer: (size) => input({ cueBoxes: [line], emojis: [{ cueIndex: 1, id: "rocket", atMs: 1500 }], anchorYPct: yPct, style: { ...input().style, size, slot } }) });
+          }
+        }
+      }
+    }
+    // A Dynamic-like block: three rows, each drawn from its word's onset, so the emoji pops by the first row alone.
+    for (const yPct of [67, 30, 58]) {
+      const top = (yPct / 100) * CANVAS.height - 200;
+      const rows = [0, 1, 2].map((row) => ({ x1: 300 - row * 40, y1: top + row * 140, x2: 780 + row * 40, y2: top + row * 140 + 120 }));
+      const block = cue({ cueIndex: 0, box: { x1: rows[2]!.x1, y1: rows[0]!.y1, x2: rows[2]!.x2, y2: rows[2]!.y2 }, shownAt: (atMs) => rows.filter((_, row) => atMs >= 1000 + row * 300) });
+      scenarios.push({ label: `Dynamic block at ${yPct}%`, layer: (size) => input({ cueBoxes: [block], emojis: [{ cueIndex: 0, id: "heart-eyes", atMs: 1000 }], anchorYPct: yPct, style: { ...input().style, size } }) });
+    }
+    // Scene Styles: one emoji on each sample cue's hero (else middle) word, alone.
+    for (const name of ["bubble", "pills", "tilt", "cascade", "lyrics"] as const) {
+      const cues = captionSceneDemo(name).cues;
+      for (const positionY of [undefined, 30, 58]) {
+        const scene = placementScene({ name, cues, canvas: CANVAS, measure: fakeMeasure, ...(positionY === undefined ? {} : { positionY }) });
+        for (const sceneCue of cues) {
+          const word = sceneCue.words.find((candidate) => candidate.role === "hero") ?? sceneCue.words[Math.floor((sceneCue.words.length - 1) / 2)]!;
+          scenarios.push({
+            label: `${name} at ${positionY ?? "default"}, cue ${sceneCue.index}`,
+            layer: (size) => ({ cueBoxes: scene.cueBoxes, emojis: [{ cueIndex: sceneCue.index, id: "party", atMs: word.startMs }], art: sceneArt, style: scene.style(size), canvas: CANVAS, anchorYPct: scene.anchorYPct, fps: 30 }),
+          });
+        }
+      }
+    }
+    // The owner's report: Bubble at 30%, a 🎉 on "and it costs nothing" drew S at 0.8 on the reading-start side and M at 0.7 at its end.
+    expect(scenarios.some((scenario) => scenario.label === "bubble at 30, cue 3")).toBe(true);
+    for (const { label, layer } of scenarios) {
+      const drawn = sizesOf(layer);
+      for (let at = 1; at < drawn.length; at++) {
+        const [smaller, bigger] = [drawn[at - 1], drawn[at]];
+        if (!smaller) continue;
+        expect(bigger, `${label}: the larger choice draws whenever the smaller does`).not.toBeNull();
+        expect(bigger!.side, `${label}: side`).toBe(smaller.side);
+        expect(bigger!.height, `${label}: ${drawn.map((one) => one?.height ?? "none").join(" ")}`).toBeGreaterThanOrEqual(smaller.height);
+      }
+    }
   });
 
   test("the layer key changes with what the layer depends on and not otherwise", () => {
