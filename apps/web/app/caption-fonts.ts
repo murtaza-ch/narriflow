@@ -1197,6 +1197,36 @@ const captionKnewave = localFont({
   ],
 });
 
+const captionGabaritoExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Gabarito-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-gabarito-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "99.8%" },
+    { prop: "descent-override", value: "29.5%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
+const captionSoraExtraBold = localFont({
+  src: "../../../packages/caption-fonts/fonts/Sora-ExtraBold.ttf",
+  weight: "800",
+  style: "normal",
+  variable: "--font-caption-sora-extrabold",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [
+    { prop: "ascent-override", value: "122%" },
+    { prop: "descent-override", value: "32%" },
+    { prop: "line-gap-override", value: "0%" },
+  ],
+});
+
 const captionSpaceMonoRegular = localFont({
   src: "../../../packages/caption-fonts/fonts/SpaceMono-Regular.ttf",
   weight: "400",
@@ -1438,4 +1468,6 @@ export const captionFontVariables = [
   captionCaveatBold.variable,
   captionBangers.variable,
   captionKnewave.variable,
+  captionGabaritoExtraBold.variable,
+  captionSoraExtraBold.variable,
 ].join(" ");

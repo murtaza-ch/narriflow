@@ -70,6 +70,8 @@ const TEMPLATE_FACES = [
   "Caveat Bold",
   "Bangers",
   "Knewave",
+  "Gabarito ExtraBold",
+  "Sora ExtraBold",
 ];
 
 describe("template-only caption faces", () => {

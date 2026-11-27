@@ -122,6 +122,8 @@ export const CAPTION_FONT_FACES = [
   { name: "Caveat Bold", file: "Caveat-Bold.ttf", assName: "Caveat Bold", weight: 700, style: "normal", ascent: 0.974, descent: 0.315, capHeight: 0.7195, templateOnly: true },
   { name: "Bangers", file: "Bangers-Regular.ttf", assName: "Bangers Regular", weight: 400, style: "normal", ascent: 1.401, descent: 0.356, capHeight: 0.74, templateOnly: true },
   { name: "Knewave", file: "Knewave-Regular.ttf", assName: "Knewave", weight: 400, style: "normal", ascent: 1.169, descent: 0.385, capHeight: 0.786, templateOnly: true },
+  { name: "Gabarito ExtraBold", file: "Gabarito-ExtraBold.ttf", assName: "Gabarito ExtraBold", weight: 800, style: "normal", ascent: 0.998, descent: 0.295, capHeight: 0.681, templateOnly: true },
+  { name: "Sora ExtraBold", file: "Sora-ExtraBold.ttf", assName: "Sora ExtraBold", weight: 800, style: "normal", ascent: 1.22, descent: 0.32, capHeight: 0.73, templateOnly: true },
 ] as const satisfies readonly CaptionFontFace[];
 
 export type CaptionFontName = (typeof CAPTION_FONT_FACES)[number]["name"];
