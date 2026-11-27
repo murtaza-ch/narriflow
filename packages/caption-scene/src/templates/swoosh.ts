@@ -250,14 +250,14 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
   const heroColour = keep(c.highlight, defaults.highlight);
   const brush = heroColour.toUpperCase() === defaults.highlight.toUpperCase() ? LIME : heroColour;
   const coral = captionColourContrast(c.accent, heroColour) >= 1.4 ? c.accent : defaults.accent;
-  // Animated colours are checked as drawn: a mix in sRGB can dip in luminance between its ends (red toward green does), so
-  // every step of the transition must keep 3:1 on the edge. The wet-paint tint takes the strongest share of the brush colour
-  // whose whole path to the face does; the key word starts at the first point of its brush-to-highlight path from which
-  // every later point does.
-  const steps = Array.from({ length: 21 }, (_, at) => at / 20);
-  const tintShare = [TINT, 0.4, 0.2].find((share) => steps.every((p) => reads(mixColour(faceColour, brush, share * p)))) ?? 0;
+  // Animated colours are checked as drawn: a mix in sRGB can dip in luminance between its ends (red toward green, purple
+  // toward grey), so every step of the transition must keep 3:1 on the edge. The wet-paint tint takes the strongest share of
+  // the brush colour whose drawn path to the face does; the key word animates from the brush colour only when its path does.
+  // The colours drawn are the keyframed track's: an sRGB mix between its two rounded end colours (both renderers interpolate
+  // between the keyframes), so that exact path is what must keep 3:1, checked at every 1% of the way.
+  const pathReads = (from: string, to: string) => Array.from({ length: 101 }, (_, at) => at / 100).every((p) => reads(mixColour(from, to, p)));
+  const tintShare = [TINT, 0.4, 0.2].find((share) => pathReads(mixColour(faceColour, brush, share), faceColour)) ?? 0;
   const tintOf = (colour: string) => mixColour(colour, brush, tintShare);
-  const heroFrom0 = steps.find((p0) => steps.filter((p) => p >= p0).every((p) => reads(mixColour(brush, heroColour, p)))) ?? 1;
 
   // Counters over the clip: hero cues and cues without one cycle their variants independently.
   const heroed = (k: number) => ctx.input.cues[k]!.words.some((word) => word.role === "hero");
@@ -592,12 +592,16 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
       sy: frames((t) => 0.88 + 0.12 * e(t), 0.004),
       o,
     };
-    const tintAt = (t: number) => mixColour(brush, heroColour, heroFrom0 + (1 - heroFrom0) * EASES.out(prog(t, s - 40, 240)));
-    const colour: ColourFrames = heroFrom0 >= 1 ? [[heroFrom, heroColour]] : [[heroFrom, tintAt(heroFrom)], [Math.max(heroFrom + 1, s + 200), heroColour, "out"]];
+    // From the brush colour to the highlight as it settles, when that drawn path keeps 3:1 on the edge; else the highlight.
+    const startColour = mixColour(brush, heroColour, EASES.out(prog(heroFrom, s - 40, 240)));
+    const colour: ColourFrames = pathReads(startColour, heroColour) ? [[heroFrom, startColour], [Math.max(heroFrom + 1, s + 200), heroColour, "out"]] : [[heroFrom, heroColour]];
     const finished = withExit(track, px, heroFrom);
     const d = item.offset;
+    // A key word that paints on a single frame keeps its signature: its coral offset and a still brush are named as parts of
+    // the word (`w<word>l6x`, `w<word>l9x`), the one name the shared one-frame filter keeps, and live as long as the word.
+    const oneFrame = paintedFrameCount(heroFrom, to, fps) < 2;
     pieces.push(
-      textPiece(item, `${id}o`, 5, heroFrom, coral, finished, { stroke: { widthPx: item.edge, colour: coral }, origin: { dx: -d, dy: (item.inkTop + item.inkBottom) / 2 - d } }),
+      textPiece(item, oneFrame ? `${ctx.id}:w${item.word}l${60 + item.part}` : `${id}o`, 5, heroFrom, coral, finished, { stroke: { widthPx: item.edge, colour: coral }, origin: { dx: -d, dy: (item.inkTop + item.inkBottom) / 2 - d } }),
       textPiece(item, id, 6, heroFrom, heroColour, { ...finished, colour }, { shadows: [shadow] }),
     );
 
@@ -611,6 +615,17 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
     // no room for that it is a compact full pose that appears with the word.
     const lead0 = Math.max(windowFrom, s - SWOOSH_LEAD);
     const flies = paintedFrameCount(lead0, s - 10, fps) >= 3;
+    if (oneFrame) {
+      const [hx, hy] = brushAnchor(item, brushLift, dir);
+      for (const [n, path] of swooshPaths(swooshL, swooshHw, u, index, dir < 0).entries()) {
+        pieces.push({
+          id: `${ctx.id}:w${item.word}l${90 + n}`, kind: "shape", z: path.coral ? 2 : 3, fromMs: heroFrom, toMs: to,
+          path: polygonPath(path.points), fill: { colour: path.coral ? coral : brush },
+          track: { x: [[heroFrom, hx]], y: [[heroFrom, hy]], rz: [[heroFrom, dir * theta]], sx: [[heroFrom, 0.8]], sy: [[heroFrom, 0.8]] },
+        });
+      }
+      continue;
+    }
     const A = flies ? lead0 : heroFrom;
     const F = flies ? Math.max(heroFrom, A + 67) : A;
     let E0 = Math.max(F + (flies ? 0 : 1000 / fps), s - 10);

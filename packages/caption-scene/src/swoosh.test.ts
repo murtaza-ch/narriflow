@@ -6,7 +6,7 @@ import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
 import { evaluatePiece, pieceBounds } from "./scene";
 import { SWOOSH_REAL_EN, SWOOSH_REAL_EN_LANGUAGE, SWOOSH_REAL_HI, SWOOSH_REAL_HI_LANGUAGE } from "./swoosh-real-cues";
-import { swooshProgram } from "./templates/swoosh";
+import { SWOOSH_DEMO, swooshProgram } from "./templates/swoosh";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 describeSpeechConformance("swoosh", swooshProgram, { anchorLineY: 1290 });
@@ -393,6 +393,45 @@ describe("swoosh review round 1", () => {
         const flicked = plain.filter((cue) => pieces.some((piece) => new RegExp(`^swoosh:${cue.index}:fl\\d+$`).test(piece.id)));
         expect(sprayed.length / heroCues.length, `spray ${sprayed.length}/${heroCues.length} at ${fps}`).toBeGreaterThanOrEqual(0.75);
         expect(flicked.length / plain.length, `flick ${flicked.length}/${plain.length} at ${fps}`).toBeGreaterThanOrEqual(0.8);
+      }
+    }
+  });
+});
+
+describe("swoosh review round 2", () => {
+  test("a key word that paints on a single frame keeps its brush and coral offset on that frame", () => {
+    const shift = (cues: SceneCue[], by: number) => cues.map((cue) => ({ ...cue, startMs: cue.startMs + by, endMs: cue.endMs + by, words: cue.words.map((word) => ({ ...word, startMs: word.startMs + by, endMs: word.endMs + by })) }));
+    const runs: { cues: SceneCue[]; fps: number }[] = [{ cues: demoCues({ lines: ["and:b@100", "go:h@70", "right:b@150"], options: { lead: 301, gap: 0, cueGap: 0, tail: 400 } }).cues, fps: 25 }];
+    for (const fps of [24, 25, 30, 60]) for (const by of [0, 7, 13, 23, 31]) runs.push({ cues: shift(staccatoRun(0), by), fps });
+    let found = 0;
+    for (const { cues, fps } of runs) {
+      const pieces = swooshProgram.build(sceneInput(cues, { fps, colours })).pieces;
+      for (const cue of cues) {
+        const k = cue.words.findIndex((word) => word.role === "hero");
+        if (k < 0) continue;
+        const face = pieces.find((piece) => piece.id === `swoosh:${cue.index}:w${k}`)!;
+        const frames = exportFrameTimes(face.fromMs, face.toMs, fps).filter((t) => pieceBounds(face, t, fakeMeasure));
+        if (frames.length !== 1) continue;
+        found++;
+        const t = frames[0]!;
+        const own = pieces.filter((piece) => piece.id.startsWith(`swoosh:${cue.index}:`) && piece.id !== face.id && pieceBounds(piece, t, fakeMeasure));
+        expect(own.some((piece) => piece.kind === "shape" && piece.fill?.colour === "#C8F02A"), `cue ${cue.index} at ${fps} fps: brush at ${t}`).toBe(true);
+        expect(own.some((piece) => piece.kind === "text" && piece.fill === colours.accent), `cue ${cue.index} at ${fps} fps: coral offset at ${t}`).toBe(true);
+      }
+    }
+    expect(found).toBeGreaterThan(0);
+  });
+
+  test("the tint that is rendered keeps 3:1: every colour the keyframed track passes through, at 60 fps", () => {
+    const pairs = [{ primary: "#8D429C", highlight: "#666663" }, { primary: "#C80000", highlight: "#007500" }, { primary: "#858585", highlight: "#666666" }];
+    for (const pair of pairs) {
+      const { cues } = demoCues({ lines: SWOOSH_DEMO.lines, options: SWOOSH_DEMO.options });
+      const pieces = swooshProgram.build(sceneInput(cues, { fps: 60, colours: { ...colours, ...pair } })).pieces;
+      for (const face of pieces.filter((piece) => /^swoosh:\d+:w\d+(l\d+)?$/.test(piece.id) && piece.kind === "text")) {
+        for (let t = face.fromMs; t < face.toMs; t += 1) {
+          const colour = evaluatePiece(face, t).colour;
+          expect(captionColourContrast(colour, "#15110E"), `${JSON.stringify(pair)} ${face.id} ${colour} at ${t}`).toBeGreaterThanOrEqual(3);
+        }
       }
     }
   });
