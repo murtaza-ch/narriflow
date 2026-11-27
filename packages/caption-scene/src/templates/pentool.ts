@@ -41,6 +41,14 @@ import type { SpeechCell } from "./speech-layout";
  *   side with room and the curve comes from the other. The chip is pinned on the spoken key word, never before it, so the
  *   tag never gives the word away; a key word at the start of a cue lets the pen keep drawing into the word's own time.
  *   Short cues get a compact static pose (curve, anchors, chip) instead of the full draw.
+ * - **Chip timing (review round 1).** The pin lands inside the key word's spoken window: the pen starts during the words
+ *   before it, and a key word that opens its cue gets a shorter draw from the cue's lead. The chip itself never paints before
+ *   its key word's onset at any frame rate, and is left out (curve and anchors kept) when it could not stay 300 ms before
+ *   the cue ends. A word typed letter by letter is first checked row by row: if any row of a wrapped word would be missing
+ *   on the onset frame, the whole word lands white at once. The curve, handles and closing path carry explicit position
+ *   tracks so a lane or safe-area shift moves them with their anchors; handle tips are filled dots so libass and the Studio
+ *   draw them alike. The text outline is solid, so the 3:1 guard is against the ink as drawn. One word breaks into at most
+ *   8 rows (a 90-character CJK token takes 6 at the floor); a longer paragraph-token shrinks just enough to fit 8.
  * - **No-hero cues** keep the sample's lighter motion (typing and caret) and the two new beats below.
  * - **Cue handoff.** The window logic is the shared gallery one (lanes per speaker, reading holds, incoming lead shrinks
  *   first); the exit is the sample's short fade with a small drop, only when two painted frames fit after the reading hold.
@@ -77,6 +85,8 @@ const SPACING = -0.012;
 /** Smaller scales tried when a cue would stack three rows or more. */
 const SCALES = [0.92, 0.85, 0.78] as const;
 const BODY_FLOOR = BODY * 0.64;
+/** The most rows one word may break into (a 90-character CJK token takes 6 at the floor). */
+const MAX_FRAGMENTS = 8;
 /** How early a cue's window opens before its first word (the conformance limit is 100). */
 const LEAD = 96;
 const GREY_LEAD = 40;
@@ -95,6 +105,12 @@ const CHIP_H = 66;
 const CHIP_PAD = 26;
 const PIN_GAP = 20;
 const PEN_AWAY = 24;
+/** Ideal time from the pen's drop to its click on the second anchor: plant (110 ms) and draw (200 ms). */
+const DRAW_LEAD = 310;
+/** The shortest drop-to-click that still reads as drawing (five frames at 30 fps): the pin waits for it only past the onset. */
+const DRAW_MIN = 150;
+/** A chip that cannot stay this long before its cue ends is left out (the curve keeps a still pose). */
+const CHIP_MIN_SHOW = 300;
 
 /** Scripts typed letter by letter; everything else types a whole word at a time. They can also break across rows. */
 const TYPED = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{S}\p{M}]+$/u;
@@ -237,9 +253,23 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
       // CJK wraps anywhere, so a long run wraps at its own size; other words shrink to the floor before they break.
       const cjk = CJK.test(word.text);
       if (natural <= COLUMN || (!cjk && fitted >= BODY_FLOOR) || !TYPED.test(word.text)) return [flat.push({ word: at, part: 0, text: word.text, size: fitted }) - 1];
-      const chunks = chunkAt(word.text, cjk ? base : BODY_FLOOR);
+      let chunks = chunkAt(word.text, cjk ? base : BODY_FLOOR);
+      // A pathological token (a paragraph with no spaces) is capped at MAX_FRAGMENTS rows: the rows take the largest size
+      // at which it fits that many, below the floor only then, so the whole text still shows inside the piece budget.
+      let least = BODY_FLOOR;
+      if (chunks.length > MAX_FRAGMENTS) {
+        let lo = 8;
+        let hi = BODY_FLOOR;
+        for (let i = 0; i < 12; i++) {
+          const mid = (lo + hi) / 2;
+          if (chunkAt(word.text, mid).length <= MAX_FRAGMENTS) lo = mid;
+          else hi = mid;
+        }
+        least = lo;
+        chunks = chunkAt(word.text, lo);
+      }
       const widest = Math.max(...chunks.map((chunk) => at100(chunk)));
-      const size = clamp((COLUMN * 0.97 * 100) / widest, BODY_FLOOR, Math.max(BODY_FLOOR, base));
+      const size = clamp((COLUMN * 0.97 * 100) / widest, least, Math.max(least, base));
       return chunks.map((text, part) => flat.push({ word: at, part, text, size }) - 1);
     });
     const groups: number[][] = [];
@@ -310,8 +340,14 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
     wd = Math.min(wd, lastFrame - wStart);
     const kW = (t: number) => Math.ceil(n * clamp((t - wStart) / Math.max(1, wd)) - 1e-6);
     let whole = exportFrameTimes(onset, lastFrame + 1, fps).find((t) => kW(t) >= n) ?? onset;
-    // The white pass types only when the grey word under it paints on at least two frames before it is whole.
-    const typing = typed && n > 1 && whole > onset && paintedFrameCount(greyFrom, whole, fps) >= 2;
+    // The white pass types only when every fragment's grey copy is whole on the onset frame and paints on at least two
+    // frames before the white word is whole (a late row would otherwise be missing on the first spoken frame).
+    const kG = (t: number) => (t < g0 ? 0 : gs <= 0 ? n : Math.min(n, Math.floor((t - g0) / gs + 1e-6) + 1));
+    const greyFrames = exportFrameTimes(greyFrom, whole, fps);
+    const typing = typed && n > 1 && whole > onset && kG(onset) >= n && fragments.every((fragment) => {
+      const first = greyFrames.find((t) => kG(t) > fragment.from);
+      return first !== undefined && first <= onset && paintedFrameCount(first, whole, fps) >= 2;
+    });
     if (!typing) whole = onset;
     plans.push({ at, word, hero: word.role === "hero", typed, fragments, n, greyFrom, g0, gs, onset, wStart, wd, whole, typing });
   }
@@ -356,7 +392,8 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
         exportFrameTimes(from, until, fps).find((t) => count(t) > fragment.from);
       const id = plan.fragments.length > 1 ? `${ctx.id}:w${plan.at}l${fragment.part}` : `${ctx.id}:w${plan.at}`;
       const sizeTrack = pop ? { sx: pop, sy: pop } : {};
-      const stroke = { widthPx: 0.035 * cell.size, colour: INK, alpha: 0.85 };
+      // Solid: the colour guard checks the face against this ink, so the outline must be drawn at full strength.
+      const stroke = { widthPx: 0.035 * cell.size, colour: INK };
 
       // The grey preview: typed before the word is spoken, kept under the white pass until the white word is whole.
       const greyUntil = plan.typing ? plan.whole : plan.onset;
@@ -495,30 +532,30 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
     };
 
     // Timeline: the pen drops onto A, draws the curve, clicks B just before the spoken key word, the chip is pinned on it.
+    // The pin lands on the spoken key word: on its onset when the words before it leave time to draw (the pen starts during
+    // them), otherwise as early inside the key word as a short draw allows, and never after its last spoken frame.
     const hs = exportFrameAtOrAfter(heroPlan.word.startMs, fps);
+    const heroLast = Math.max(hs, exportFrameAtOrBefore(heroPlan.word.endMs - 1, fps));
     const td0 = Math.max(ctx.window.from, hs - 30 - 640);
-    let arrive = Math.max(hs - 30, td0 + 110 + 200);
-    let tA = td0 + 70;
-    let drawFrom = td0 + 110;
-    let leaveFrom = arrive + 60;
-    let leaveTo = arrive + 360;
-    const full = leaveTo <= decoLimit && paintedFrameCount(drawFrom, arrive, fps) >= 4;
-    if (!full && decoLimit - td0 > 330) {
-      // Compress the draw into the time this cue has.
-      const s = (decoLimit - td0) / (leaveTo - td0);
-      tA = td0 + 70 * s;
-      drawFrom = td0 + 110 * s;
-      arrive = td0 + (arrive - td0) * s;
-      leaveFrom = td0 + (leaveFrom - td0) * s;
-      leaveTo = decoLimit;
-    }
-    const animated = paintedFrameCount(drawFrom, arrive, fps) >= 3 && leaveTo <= decoLimit;
+    const arrive = clamp(td0 + DRAW_MIN, hs - 30, heroLast - 20);
+    const span = arrive - td0;
+    const tA = td0 + (span >= DRAW_LEAD ? 70 : 0.22 * span);
+    const drawFrom = td0 + (span >= DRAW_LEAD ? 110 : 0.35 * span);
+    const leaveTo = Math.min(decoLimit, arrive + 360);
+    const leaveFrom = Math.min(arrive + 60, arrive + 0.2 * (leaveTo - arrive));
+    // The chip never reads before its key word is spoken (the onset floor holds on the chip itself), and is left out when it
+    // could not stay on screen for a useful time before its cue ends; then the curve keeps a still pose (no pen draws to an
+    // empty pin).
+    const drawn = paintedFrameCount(drawFrom, arrive, fps) >= 3 && paintedFrameCount(arrive, leaveTo, fps) >= 2;
+    const pinAt = drawn ? Math.max(hs, exportFrameAtOrAfter(arrive - 20, fps)) : hs;
+    const chipOn = showChip && label.length > 1 && to - pinAt >= CHIP_MIN_SHOW;
+    const animated = drawn && chipOn;
     const staticFrom = Math.max(ctx.window.from, Math.min(hs, decoLimit - 2 * frame));
     const deco = (suffix: string, z: number, from: number, path: readonly PathCmd[], fill: string | undefined, extra: Partial<ShapePiece> = {}, track: ShapePiece["track"] = {}): void => {
       if (paintedFrameCount(from, to, fps) < 2) return;
-      pieces.push({ ...ctx.shape(suffix, from, path, track, fill), z, ...extra });
+      // Explicit position tracks: the shared lane and safe-area shift only moves an axis that has one.
+      pieces.push({ ...ctx.shape(suffix, from, path, { x: [[from, 0]], y: [[from, 0]], ...track }, fill), z, ...extra });
     };
-    const handlePath = (a: { x: number; y: number }, b: { x: number; y: number }): PathCmd[] => [["M", a.x, a.y], ["L", b.x, b.y], ...ellipsePath(b.x, b.y, 6 * u * cs)];
     const wipeOf = (from: number, until: number): Clip => {
       const x = (t: number) => bez(EASES.inOut(prog(t, drawFrom, arrive - drawFrom))).x;
       const times = exportFrameTimes(from, until, fps);
@@ -540,9 +577,11 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
     const pop = (from: number, dur: number): Key[] => (animated ? [[from, 0.2], [from + dur, 1, "spring"]] : [[from, 1]]);
     for (const [suffix, a, b, from] of [["handleA", P0, P1, handleFrom], ["handleB", P3, P2, bFrom]] as const) {
       const fade = withExit(animated ? [[from, 0], [from + 180, 1, "out"]] : [[from, 1]]);
-      const path = handlePath(a, b);
-      deco(`${suffix}k`, 7, from, path, INK, { stroke: { widthPx: 6.5 * u * cs, colour: INK, alpha: 0.6 } }, { o: fade });
-      deco(suffix, 7, from, path, WHITE, { stroke: { widthPx: 2.6 * u * cs, colour: WHITE } }, { o: fade });
+      // The line is a stroke on its own; the round tip is a filled dot with a keyline, so both renderers draw it solid.
+      const line: PathCmd[] = [["M", a.x, a.y], ["L", b.x, b.y]];
+      deco(`${suffix}k`, 7, from, line, undefined, { stroke: { widthPx: 6.5 * u * cs, colour: INK, alpha: 0.6 } }, { o: fade });
+      deco(suffix, 7, from, line, undefined, { stroke: { widthPx: 2.6 * u * cs, colour: WHITE } }, { o: fade });
+      deco(`${suffix}tip`, 7, from, ellipsePath(0, 0, 6 * u * cs), WHITE, { stroke: { widthPx: 3.5 * u * cs, colour: INK } }, { x: [[from, b.x]], y: [[from, b.y]], o: fade });
     }
     for (const [suffix, point, from, dur] of [["anchorA", P0, handleFrom, 260], ["anchorB", P3, bFrom, 280]] as const) {
       const scale = pop(from, dur);
@@ -550,8 +589,7 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
     }
 
     // The chip, its pinned corner on the anchor, tilted about that corner.
-    if (showChip && label.length > 1) {
-      const pinAt = animated ? Math.max(hs, exportFrameAtOrAfter(arrive - 20, fps)) : staticFrom;
+    if (chipOn) {
       const cornerX = hangRight ? bx + PIN_GAP * u : bx - PIN_GAP * u;
       const cornerY = by + vs * 10 * u * cs;
       const tilt = vs * (hangRight ? 1 : -1) * tiltMag;
@@ -677,7 +715,7 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
           ? { x1: span, x2: [[from, reach.x2]], y1: [[from, top]], y2: [[from, bottom]] }
           : { x1: [[from, reach.x1]], x2: span, y1: [[from, top]], y2: [[from, bottom]] }
         : rectClipOf(from, { x1: reach.x1, x2: reach.x2, y1: top, y2: bottom });
-      pieces.push({ ...ctx.shape("path", from, path, { y: ctx.drift(from, 0, 0, from, 10 * u) }, WHITE), z: 3, clip, stroke: { widthPx: 2.5 * u, colour: INK, alpha: 0.85 } });
+      pieces.push({ ...ctx.shape("path", from, path, { x: [[from, 0]], y: ctx.drift(from, 0, 0, from, 10 * u) }, WHITE), z: 3, clip, stroke: { widthPx: 2.5 * u, colour: INK, alpha: 0.85 } });
     }
   }
   return pieces;
