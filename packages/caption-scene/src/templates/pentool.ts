@@ -109,8 +109,10 @@ const PEN_AWAY = 24;
 const DRAW_LEAD = 310;
 /** The shortest drop-to-click that still reads as drawing (five frames at 30 fps): the pin waits for it only past the onset. */
 const DRAW_MIN = 150;
-/** A chip that cannot stay this long before its cue ends is left out (the curve keeps a still pose). */
-const CHIP_MIN_SHOW = 300;
+/** The pen draws to the chip only when the chip then stays this long before its cue ends (six frames at 30 fps). */
+const CHIP_MIN_SHOW = 200;
+/** Otherwise the chip is pinned still on the key word's onset when this many painted frames remain, else left out. */
+const CHIP_MIN_FRAMES = 4;
 
 /** Scripts typed letter by letter; everything else types a whole word at a time. They can also break across rows. */
 const TYPED = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{S}\p{M}]+$/u;
@@ -543,13 +545,16 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
     const drawFrom = td0 + (span >= DRAW_LEAD ? 110 : 0.35 * span);
     const leaveTo = Math.min(decoLimit, arrive + 360);
     const leaveFrom = Math.min(arrive + 60, arrive + 0.2 * (leaveTo - arrive));
-    // The chip never reads before its key word is spoken (the onset floor holds on the chip itself), and is left out when it
-    // could not stay on screen for a useful time before its cue ends; then the curve keeps a still pose (no pen draws to an
-    // empty pin).
+    // The chip never paints before its key word is spoken (the onset floor holds on the chip itself). The pen draws to it
+    // when the chip then stays CHIP_MIN_SHOW before the cue ends; otherwise (a key word that ends a fast cue) the chip is
+    // pinned still on the onset with the still pose of the curve, for whatever is left, and dropped only when fewer than
+    // CHIP_MIN_FRAMES painted frames remain. A cue without a chip keeps the still curve (no pen draws to an empty pin).
     const drawn = paintedFrameCount(drawFrom, arrive, fps) >= 3 && paintedFrameCount(arrive, leaveTo, fps) >= 2;
-    const pinAt = drawn ? Math.max(hs, exportFrameAtOrAfter(arrive - 20, fps)) : hs;
-    const chipOn = showChip && label.length > 1 && to - pinAt >= CHIP_MIN_SHOW;
-    const animated = drawn && chipOn;
+    const drawnPin = Math.max(hs, exportFrameAtOrAfter(arrive - 20, fps));
+    const canChip = showChip && label.length > 1;
+    const animated = drawn && canChip && to - drawnPin >= CHIP_MIN_SHOW;
+    const pinAt = animated ? drawnPin : hs;
+    const chipOn = canChip && (animated || paintedFrameCount(hs, to, fps) >= CHIP_MIN_FRAMES);
     const staticFrom = Math.max(ctx.window.from, Math.min(hs, decoLimit - 2 * frame));
     const deco = (suffix: string, z: number, from: number, path: readonly PathCmd[], fill: string | undefined, extra: Partial<ShapePiece> = {}, track: ShapePiece["track"] = {}): void => {
       if (paintedFrameCount(from, to, fps) < 2) return;

@@ -138,13 +138,25 @@ describe("pentool", () => {
     expect(paths).toBeGreaterThanOrEqual(cues.length - 1);
   });
 
-  test("a key word that ends its cue too soon for the chip to be read keeps the curve and anchors but no chip", () => {
+  test("a key word that ends a fast cue keeps its chip, pinned still on the onset, while four painted frames remain", () => {
     const cues = script(["so:m here:b is:m the:m thing:h@100", "nobody:b tells:b you:m this"], "en", { gap: 0, cueGap: 60 });
     const own = build(cues).filter((piece) => cueOf(piece) === 0);
+    const hero = cues[0]!.words[4]!;
     expect(own.some((piece) => /:curve$/.test(piece.id))).toBe(true);
     expect(own.filter((piece) => /:anchor[AB]$/.test(piece.id))).toHaveLength(2);
+    const chip = own.find((piece) => /:chip$/.test(piece.id))!;
+    expect(chip).toBeDefined();
+    expect(chip.fromMs).toBe(exportFrameAtOrAfter(hero.startMs, 30));
+    // The still pose: no pen travel, no spring.
+    expect(own.some((piece) => /:pen$/.test(piece.id))).toBe(false);
+    expect(chip.track.sx).toEqual([[chip.fromMs, 1]]);
+  });
+
+  test("the chip is dropped only when fewer than four painted frames remain; the curve and anchors stay", () => {
+    const cues = script(["so:m here:b is:m the:m thing:h@70", "nobody:b tells:b you:m this"], "en", { gap: 0, cueGap: 0 });
+    const own = build(cues).filter((piece) => cueOf(piece) === 0);
+    expect(own.some((piece) => /:curve$/.test(piece.id))).toBe(true);
     expect(own.some((piece) => /:chip$/.test(piece.id))).toBe(false);
-    // The still pose: no pen draws to an empty pin.
     expect(own.some((piece) => /:pen$/.test(piece.id))).toBe(false);
   });
 
