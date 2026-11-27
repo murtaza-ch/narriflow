@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { CAPTION_EMOJI_AI_BADGES, CAPTION_EMOJI_AI_GLYPHS } from "@narriflow/caption-emoji/index";
-import { DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, editorDocumentSchema, type EditorDocument, type TranscriptUtterance, type TranscriptWord } from "@narriflow/validators";
-import { EMOJI_TAGGING_SYSTEM_PROMPT, tagCaptionEmojis, type CaptionEmojiTaggingConfig } from "./clip-emoji-tagging";
+import { CAPTION_EMOJI_AI_BADGES, CAPTION_EMOJI_AI_GLYPHS, captionEmojiById, emojiRefForGlyph } from "@narriflow/caption-emoji/index";
+import { CAPTION_EMOJI_NEGATION_IDS, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, editorDocumentSchema, type EditorDocument, type TranscriptUtterance, type TranscriptWord } from "@narriflow/validators";
+import { EMOJI_TAGGING_EMPTY_RETRY_WORDS, EMOJI_TAGGING_SYSTEM_PROMPT, tagCaptionEmojis, type CaptionEmojiTaggingConfig } from "./clip-emoji-tagging";
 import { clipEmojiSuggestionFailure, suggestClipEmojis, type ClipEmojiTagger } from "./clip-emoji-suggestion";
 
 const w = (startSec: number, text: string): TranscriptWord => ({ word: text, startSec, endSec: startSec + 0.2, confidence: null });
@@ -10,6 +10,9 @@ const utterances = (count: number): TranscriptUtterance[] => Array.from({ length
   index: i, speaker: 0, speakerLabel: "S", startSec: i * 200, endSec: i * 200 + 100, text: "x", confidence: null,
   words: Array.from({ length: 500 }, (_, k) => w(i * 200 + k * 0.3, k % 10 === 9 ? "word." : "word")),
 }));
+/** One utterance of `count` words in sentences of 10: a single chunk. */
+const shortUtterance = (count: number): TranscriptUtterance[] => [{ index: 0, speaker: 0, speakerLabel: "S", startSec: 0, endSec: count * 0.3, text: "x", confidence: null,
+  words: Array.from({ length: count }, (_, k) => w(k * 0.3, k % 10 === 9 ? "word." : "word")) }];
 
 function sse(report: unknown, tokens = 120, text = JSON.stringify(report)): Response {
   const completed = { type: "response.completed", response: { status: "completed", usage: { total_tokens: tokens },
@@ -55,7 +58,7 @@ describe("tagCaptionEmojis", () => {
     const bodies: { model: string; reasoning: unknown; input: { role: string; content: string }[]; text: { format: { name: string; strict: boolean } } }[] = [];
     await tagCaptionEmojis({ utterances: utterances(2), languageCode: "ur", title: "شادی", deadline: 60_000 }, config(async (_url, init) => {
       bodies.push(JSON.parse(String(init!.body)));
-      return sse({ serious: [], picks: [] });
+      return sse({ serious: [], picks: [{ k: 0, w: "word", p: "yes", e: "😂", s: 3 }] });
     }));
     expect(bodies).toHaveLength(2);
     for (const body of bodies) {
@@ -91,6 +94,59 @@ describe("tagCaptionEmojis", () => {
       expect(outcome).toMatchObject({ chunks: 1, tagged: 1, failed: 0, retried: 1 });
       expect(outcome.picks).toEqual([{ key: "1200", ref: { id: "laugh-tears", word: "word" }, strength: 3 }]);
     }
+  });
+
+  test("every negation emoji is a catalog design the AI can pick", () => {
+    for (const id of CAPTION_EMOJI_NEGATION_IDS) {
+      const entry = captionEmojiById(id);
+      expect(entry?.kind).toBe("single");
+      expect(CAPTION_EMOJI_AI_GLYPHS).toContain(entry!.glyph);
+      expect(emojiRefForGlyph(entry!.glyph)).toEqual({ id });
+    }
+  });
+
+  test("an ordinary chunk of at least 30 words with no pick is sent once more, never a third time", async () => {
+    expect(EMOJI_TAGGING_EMPTY_RETRY_WORDS).toBe(30);
+    const picked = { serious: [], picks: [{ k: 4, w: "word", p: "yes", e: "😂", s: 3 }] };
+    // Empty, then a pick; empty twice; a pick the rules drop (absent), then empty.
+    for (const [replies, picks] of [[[{ serious: [], picks: [] }, picked], 1], [[{ serious: [], picks: [] }, { serious: [], picks: [] }], 0],
+      [[{ serious: [], picks: [{ k: 4, w: "word", p: "no", e: "📷", s: 3 }] }, { serious: [], picks: [] }], 0]] as const) {
+      let calls = 0;
+      const outcome = await tagCaptionEmojis({ utterances: shortUtterance(30), languageCode: "en", deadline: 60_000 }, config(async () => sse(replies[calls++])));
+      expect(calls).toBe(2);
+      expect(outcome).toMatchObject({ chunks: 1, tagged: 1, failed: 0, retried: 1 });
+      expect(outcome.picks).toHaveLength(picks);
+    }
+  });
+
+  test("a failed second try after an empty reply keeps the empty answer", async () => {
+    let calls = 0;
+    const outcome = await tagCaptionEmojis({ utterances: shortUtterance(40), languageCode: "en", deadline: 60_000 }, config(async () =>
+      ++calls === 1 ? sse({ serious: [], picks: [] }) : new Response("nope", { status: 500 })));
+    expect(calls).toBe(2);
+    expect(outcome).toMatchObject({ tagged: 1, failed: 0, retried: 1, picks: [] });
+  });
+
+  test("an empty reply is the answer for a chunk under 30 words or one whose report lists a serious passage", async () => {
+    for (const [count, reply] of [[29, { serious: [], picks: [] }], [500, { serious: [{ from: 0, to: 40 }], picks: [] }],
+      [500, { serious: [{ from: 0, to: 40 }], picks: [{ k: 4, w: "word", p: "yes", e: "😂", s: 3 }] }]] as const) {
+      let calls = 0;
+      const outcome = await tagCaptionEmojis({ utterances: shortUtterance(count), languageCode: "en", deadline: 60_000 }, config(async () => { calls++; return sse(reply); }));
+      expect(calls).toBe(1);
+      expect(outcome).toMatchObject({ tagged: 1, failed: 0, retried: 0, picks: [] });
+    }
+  });
+
+  test("no retry of an empty reply when the deadline is too near", async () => {
+    let clock = 0;
+    let calls = 0;
+    const outcome = await tagCaptionEmojis({ utterances: shortUtterance(30), languageCode: "en", deadline: 60_000 }, config(async () => {
+      calls++;
+      clock += 56_000;
+      return sse({ serious: [], picks: [] });
+    }, { now: () => clock }));
+    expect(calls).toBe(1);
+    expect(outcome).toMatchObject({ tagged: 1, retried: 0 });
   });
 
   test("no retry when the deadline is too near for another request", async () => {

@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import type { CaptionEmojiRef } from "./caption-emojis";
 import {
   acceptEmojiPicks,
+  CAPTION_EMOJI_NEGATION_IDS,
   captionEmojiPicksSchema,
   chunkTranscriptForEmojiTagging,
   collectEmojiPicks,
   EMOJI_TAG_MAX_PICKS,
   EMOJI_TAGGING_CHUNK_WORDS,
   EMOJI_TAGGING_SCHEMA,
+  emojiReportListsSerious,
   emojiTaggingSystemPrompt,
   suggestClipEmojisSchema,
 } from "./emoji-tagging";
@@ -16,7 +18,7 @@ import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 const w = (startSec: number, text: string): TranscriptWord => ({ word: text, startSec, endSec: startSec + 0.2, confidence: null });
 const utterance = (index: number, words: TranscriptWord[]): TranscriptUtterance => ({ index, speaker: 0, speakerLabel: "S1", startSec: words[0]!.startSec,
   endSec: words.at(-1)!.endSec, text: words.map((word) => word.word).join(" "), confidence: null, words });
-const glyphs: Record<string, CaptionEmojiRef> = { "😂": { id: "laugh-tears" }, "🍜": { id: "steaming-bowl" }, "👍🏽": { id: "thumbs-up", tone: 3 } };
+const glyphs: Record<string, CaptionEmojiRef> = { "😂": { id: "laugh-tears" }, "🍜": { id: "steaming-bowl" }, "👍🏽": { id: "thumbs-up", tone: 3 }, "❌": { id: "cross" }, "🤷": { id: "person-shrugging" } };
 const refForGlyph = (glyph: string) => glyphs[glyph] ?? null;
 
 describe("emojiTaggingSystemPrompt", () => {
@@ -93,18 +95,47 @@ describe("acceptEmojiPicks", () => {
     expect(accept(picks)).toEqual([]);
   });
 
-  test("keeps one pick per sentence: the strongest, the first on a tie", () => {
-    expect(accept([{ k: 6, w: "pizzas", p: "yes", e: "🍜", s: 2 }, { k: 7, w: "lol", p: "yes", e: "😂", s: 3 }, { k: 6, w: "pizzas", p: "yes", e: "😂", s: 3 }])).toEqual([{ key: "4500", ref: { id: "laugh-tears", word: "lol." }, strength: 3 }]);
-    expect(accept([{ k: 7, w: "lol", p: "yes", e: "😂", s: 2 }, { k: 6, w: "pizzas", p: "yes", e: "🍜", s: 2 }])).toEqual([{ key: "4500", ref: { id: "laugh-tears", word: "lol." }, strength: 2 }]);
+  test("drops English function words when the transcript has no language or one without a word list", () => {
+    const words = [w(0, "all"), w(0.4, "of"), w(0.8, "them"), w(1.2, "are"), w(1.6, "unplugged.")];
+    const report = { serious: [], picks: [{ k: 2, w: "them", p: "yes", e: "😂", s: 2 }, { k: 3, w: "are", p: "yes", e: "😂", s: 2 }, { k: 4, w: "unplugged.", p: "yes", e: "😂", s: 3 }] };
+    for (const language of [null, "en-US", "es"]) {
+      const [unlisted] = chunkTranscriptForEmojiTagging([utterance(0, words)], language, null);
+      expect(acceptEmojiPicks(unlisted!, report, refForGlyph, language)).toEqual([{ key: "1600", ref: { id: "laugh-tears", word: "unplugged." }, strength: 3 }]);
+    }
+  });
+
+  test("keeps several picks in one sentence; spacing them is the density's job", () => {
+    expect(accept([{ k: 6, w: "pizzas", p: "yes", e: "🍜", s: 2 }, { k: 7, w: "lol", p: "yes", e: "😂", s: 3 }])).toEqual([
+      { key: "4000", ref: { id: "steaming-bowl", word: "pizzas," }, strength: 2 },
+      { key: "4500", ref: { id: "laugh-tears", word: "lol." }, strength: 3 },
+    ]);
+  });
+
+  test("two picks on one word keep the stronger, the first on a tie", () => {
+    expect(accept([{ k: 6, w: "pizzas", p: "yes", e: "😂", s: 2 }, { k: 6, w: "pizzas", p: "yes", e: "🍜", s: 3 }])).toEqual([{ key: "4000", ref: { id: "steaming-bowl", word: "pizzas," }, strength: 3 }]);
+    expect(accept([{ k: 6, w: "pizzas", p: "yes", e: "🍜", s: 2 }, { k: 6, w: "pizzas", p: "yes", e: "😂", s: 2 }])).toEqual([{ key: "4000", ref: { id: "steaming-bowl", word: "pizzas," }, strength: 2 }]);
+    // A dropped pick never takes the word: a stronger absent one leaves the present one standing.
+    expect(accept([{ k: 6, w: "pizzas", p: "no", e: "😂", s: 3 }, { k: 6, w: "pizzas", p: "yes", e: "🍜", s: 2 }])).toEqual([{ key: "4000", ref: { id: "steaming-bowl", word: "pizzas," }, strength: 2 }]);
   });
 
   test("drops a pick whose line the model says does not have the thing; keeps one only imagined", () => {
     expect(accept([{ k: 4, w: "ramen.", p: "no", e: "🍜", s: 3 }, { k: 6, w: "pizzas,", p: "if", e: "🍜", s: 2 }])).toEqual([{ key: "4000", ref: { id: "steaming-bowl", word: "pizzas," }, strength: 2 }]);
-    // A stronger absent pick does not take the sentence from a present one.
-    expect(accept([{ k: 6, w: "pizzas,", p: "no", e: "🍜", s: 3 }, { k: 7, w: "lol.", p: "yes", e: "😂", s: 2 }])).toEqual([{ key: "4500", ref: { id: "laugh-tears", word: "lol." }, strength: 2 }]);
     // An absent pick still names its word, so a reply of only absent picks is an answer, not a failure.
     expect(accept([{ k: 4, w: "ramen.", p: "no", e: "🍜", s: 3 }])).toEqual([]);
     expect(accept([{ k: 4, w: "ramen.", p: "maybe", e: "🍜", s: 3 }])).toEqual([]);
+  });
+
+  test("keeps a pick marked absent when its emoji itself pictures \"no\", and only then", () => {
+    // "it doesn't work" → ❌ on "work", "nobody knew" → 🤷 on "knew": the model answers p by the grammar.
+    expect(accept([{ k: 4, w: "ramen.", p: "no", e: "❌", s: 2 }, { k: 7, w: "lol.", p: "no", e: "🤷", s: 2 }, { k: 6, w: "pizzas,", p: "no", e: "🍜", s: 3 }])).toEqual([
+      { key: "3000", ref: { id: "cross", word: "ramen." }, strength: 2 },
+      { key: "4500", ref: { id: "person-shrugging", word: "lol." }, strength: 2 },
+    ]);
+    // The other rules still hold for it.
+    expect(accept([{ k: 4, w: "ramen.", p: "no", e: "❌", s: 1 }, { k: 5, w: "Five", p: "no", e: "❌", s: 3 }])).toEqual([]);
+    expect(accept([{ k: 4, w: "ramen.", p: "no", e: "❌", s: 3 }], [{ from: 3, to: 5 }])).toEqual([]);
+    expect([...CAPTION_EMOJI_NEGATION_IDS].sort()).toEqual(["cross", "cross-mark-button", "man-gesturing-no", "no-entry", "person-gesturing-no", "person-shrugging",
+      "prohibited", "thumbs-down", "woman-gesturing-no", "zipped-lips"]);
   });
 
   test("drops picks inside a passage the report marks serious, in either id order", () => {
@@ -130,6 +161,16 @@ describe("acceptEmojiPicks", () => {
     expect(acceptEmojiPicks(urdu!, { serious: [], picks: [{ k: 2, w: "بریانی", p: "yes", e: "🍜", s: 3 }] }, refForGlyph, "ur")).toEqual([{ key: "600", ref: { id: "steaming-bowl", word: "بریانی۔" }, strength: 3 }]);
     const [hindi] = chunkTranscriptForEmojiTagging([utterance(0, [w(0, "बहुत"), w(0.3, "मज़ा")])], "hi", null);
     expect(acceptEmojiPicks(hindi!, { serious: [], picks: [{ k: 1, w: "मजा", p: "yes", e: "😂", s: 3 }] }, refForGlyph, "hi")).toBeNull();
+  });
+});
+
+describe("emojiReportListsSerious", () => {
+  test("is true only when the report lists a passage of integer word ids", () => {
+    expect(emojiReportListsSerious({ serious: [{ from: 3, to: 1 }], picks: [] })).toBe(true);
+    expect(emojiReportListsSerious({ serious: [], picks: [] })).toBe(false);
+    expect(emojiReportListsSerious({ serious: [{ from: 1.5, to: 2 }], picks: [] })).toBe(false);
+    expect(emojiReportListsSerious({ picks: [] })).toBe(false);
+    expect(emojiReportListsSerious(null)).toBe(false);
   });
 });
 

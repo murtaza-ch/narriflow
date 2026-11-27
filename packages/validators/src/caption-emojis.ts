@@ -311,11 +311,12 @@ export type CaptionEmojiDensity = z.infer<typeof captionEmojiDensitySchema>;
 export const DEFAULT_CAPTION_EMOJI_DENSITY: CaptionEmojiDensity = "balanced";
 
 /**
- * The least strength a pick needs per density: Light keeps only the model's strong picks (3),
- * Balanced its clear ones too (2), Expressive everything. Fewer emojis come from this gate first,
- * not from spacing, so a lighter density keeps the picks most plainly about their word.
+ * The least strength a pick needs per density: Light keeps only picks that picture their word
+ * itself (3), Balanced and Expressive also those that picture what their phrase says (2).
+ * Strength 1 ("only related") never reaches here: acceptance drops it. Light has fewer emojis
+ * from this gate and its wider gap; Expressive differs from Balanced by its gap only.
  */
-export const CAPTION_EMOJI_DENSITY_MIN_STRENGTH = { light: 3, balanced: 2, expressive: 1 } as const satisfies Record<CaptionEmojiDensity, number>;
+export const CAPTION_EMOJI_DENSITY_MIN_STRENGTH = { light: 3, balanced: 2, expressive: 2 } as const satisfies Record<CaptionEmojiDensity, number>;
 
 /**
  * The same emoji id does not repeat within this many seconds of edited time. At 10 s a 75 s clip
@@ -339,7 +340,8 @@ export interface CaptionEmojiPickWord {
 /**
  * The picks a clip keeps at `density`. Picks on a word the clip does not keep,
  * and picks under the density's strength (`CAPTION_EMOJI_DENSITY_MIN_STRENGTH`),
- * are dropped. Strongest first and earliest on a tie, a pick is taken when no
+ * are dropped. Acceptance keeps several picks a sentence, so this is the only
+ * spacing rule. Strongest first and earliest on a tie, a pick is taken when no
  * taken pick is within the density's gap and no taken pick of the same id is
  * within `CAPTION_EMOJI_REPEAT_GAP_SEC`. The opening (hook) pick has no other privilege: it wins only a
  * tie, because it is the earliest; a weaker pick never displaces a stronger

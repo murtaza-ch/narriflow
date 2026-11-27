@@ -4,6 +4,7 @@ import {
   chunkTranscriptForEmojiTagging,
   collectEmojiPicks,
   EMOJI_TAGGING_SCHEMA,
+  emojiReportListsSerious,
   emojiTaggingSystemPrompt,
   type CaptionEmojiPick,
   type TranscriptUtterance,
@@ -26,24 +27,29 @@ export const EMOJI_TAGGING_SYSTEM_PROMPT = emojiTaggingSystemPrompt({ glyphs: CA
 export const EMOJI_TAGGING_MODEL = { model: OPENAI_TEXT_MODEL, reasoningEffort: "low" };
 
 /**
- * Measured 2026-11-26 (gpt-6-luna, no reasoning, 500-word chunks, 16 in
- * flight): about 3 s per chunk (first uncached request up to 6.8 s); 2,128
- * words in 3.1-3.8 s wall. Per 1,000 words about 12,100 input tokens (about
- * 7,800 of them the cacheable vocabulary prefix) and 880 output tokens: about
- * $0.0017 at list price before caching, $0.05 for a 3-hour source.
+ * Measured 2026-11-27 (ticket 30: gpt-6-luna, low reasoning, 16 in flight). A Studio clip
+ * (34 real clips, 3 runs) is one request: about 8,800 tokens, of which about 7,800 are the cached
+ * prefix, in 4.1 s (at most 7.0 s). The written fixtures joined per language (733 to 1,317 words,
+ * 500-word chunks): per 1,000 words 2.4 requests, 23,700 input and 3,700 output tokens, about
+ * $0.0042 at list price before caching ($0.11 for a 3-hour source); 9 to 16 s wall.
  */
 export const EMOJI_TAGGING_DEFAULTS = {
   /** Requests in flight at once. Import runs it beside filler tagging's 24. */
   concurrency: 16,
   /**
-   * Reasoning counts toward it. On 500-word chunks (ticket 27) replies are median 1,704 tokens and
-   * up to 3,943 on short-sentence Arabic, which draws up to 129 picks, since every pick says `p`
-   * and absent or loose picks are written too (before ticket 27: median 1,078, and 2,000 was
-   * already exceeded on 2 of 42 chunks). At about 185 tokens a second, 4,000 stays inside the
-   * request's 30 s timeout.
+   * Reasoning counts toward it. On 500-word chunks replies averaged about 1,550 tokens and reached
+   * 2,823 at most (ticket 30, 30 chunks in four languages; ticket 27's longer prompt reached 3,943
+   * on short-sentence Arabic, and 2,000 was exceeded before it). At about 185 tokens a second,
+   * 4,000 stays inside the request's 30 s timeout.
    */
   maxOutputTokens: 4_000,
 } as const;
+
+/**
+ * A chunk of at least this many words whose report lists no serious passage and keeps no pick is
+ * sent once more (ticket 30). A shorter chunk can honestly have nothing to picture.
+ */
+export const EMOJI_TAGGING_EMPTY_RETRY_WORDS = 30;
 
 export interface CaptionEmojiTaggingInput {
   utterances: TranscriptUtterance[];
@@ -67,7 +73,7 @@ export interface CaptionEmojiTaggingOutcome {
   tagged: number;
   /** Chunks that failed, or whose report was not the schema's shape (after their one retry, when there was time for it). */
   failed: number;
-  /** Chunks sent a second time after a failed or invalid reply that was not a 429. */
+  /** Chunks sent a second time: after a failed or invalid reply that was not a 429, or an empty one (EMOJI_TAGGING_EMPTY_RETRY_WORDS). */
   retried: number;
   /** Failed chunks whose last reply was a 429. */
   rateLimited: number;
@@ -80,7 +86,7 @@ export interface CaptionEmojiTaggingOutcome {
   picks: CaptionEmojiPick[];
 }
 
-/** Suggests emojis for `utterances` in any language. Every chunk is one request, sent once more if it fails. */
+/** Suggests emojis for `utterances` in any language. Every chunk is one request, sent once more if it fails or comes back empty. */
 export async function tagCaptionEmojis(input: CaptionEmojiTaggingInput, config: CaptionEmojiTaggingConfig): Promise<CaptionEmojiTaggingOutcome> {
   const now = config.now ?? Date.now;
   const chunks = chunkTranscriptForEmojiTagging(input.utterances, input.languageCode, input.title ?? null);
@@ -106,15 +112,23 @@ export async function tagCaptionEmojis(input: CaptionEmojiTaggingInput, config: 
         const result = await send();
         outcome.tokensUsed += result.tokens;
         const picks = result.kind === "ok" ? acceptEmojiPicks(chunk, result.report, emojiRefForGlyph, input.languageCode) : null;
-        return { picks, rateLimited: result.kind !== "ok" && result.rateLimited === true };
+        const serious = result.kind === "ok" && emojiReportListsSerious(result.report);
+        return { picks, serious, rateLimited: result.kind !== "ok" && result.rateLimited === true };
       };
+      const canRetry = () => input.deadline - now() >= TAGGING_REQUEST_DEFAULTS.minStartMs && !input.signal?.aborted;
       let result = await attempt();
       // About one request in 30 to 60 ends `response.failed` or completes as text that is not JSON
       // (measured 2026-11-26, ticket 11): one more try while the deadline allows. Not after a 429,
       // which the request already retried.
-      if (result.picks === null && !result.rateLimited && input.deadline - now() >= TAGGING_REQUEST_DEFAULTS.minStartMs && !input.signal?.aborted) {
+      if (result.picks === null && !result.rateLimited && canRetry()) {
         outcome.retried++;
         result = await attempt();
+      } else if (result.picks !== null && result.picks.length === 0 && !result.serious && chunk.tokens.length >= EMOJI_TAGGING_EMPTY_RETRY_WORDS && canRetry()) {
+        // An ordinary chunk with no pick is the model's variance (about 1 run in 200, ticket 30), not
+        // an answer: the same one more try. A failed second reply keeps the first, empty answer.
+        outcome.retried++;
+        const again = await attempt();
+        if (again.picks !== null) result = again;
       }
       if (result.picks === null) {
         outcome.failed++;

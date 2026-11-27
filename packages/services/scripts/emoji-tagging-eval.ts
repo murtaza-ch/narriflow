@@ -27,7 +27,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { captionEmojiById, emojiRefForGlyph } from "@narriflow/caption-emoji/index";
 import {
+  acceptEmojiPicks,
   CAPTION_EMOJI_DENSITIES,
+  CAPTION_EMOJI_NEGATION_IDS,
   captionWordComparable,
   captionWordKey,
   chunkTranscriptForEmojiTagging,
@@ -72,10 +74,11 @@ export interface EvalRun {
   retried: number;
   wallMs: number;
   tokens: { input: number; cached: number; output: number; reasoning: number };
-  /** Model picks before acceptance: how many, and how many were dropped for each reason. */
+  /** Model picks before acceptance: how many, and how many were dropped for each reason (`rule`: a number, filler or
+   *  function word, or a second pick on a word that kept a stronger or earlier one). */
   raw: number;
   dropped: { malformed: number; unknownGlyph: number; serious: number; absent: number; loose?: number; rule: number };
-  /** Well-formed picks the model itself marked absent (`p: "no"`) or only related (`s: 1`), which acceptance drops. */
+  /** Well-formed picks the model itself marked absent (`p: "no"`, unless the emoji pictures "no") or only related (`s: 1`), which acceptance drops. */
   absentDrops?: { key: string; word: string; glyph: string; sentence: string }[];
   looseDrops?: { key: string; word: string; glyph: string; sentence: string }[];
   /** Glyphs the catalog has no design for, with the word each sat on. */
@@ -166,7 +169,8 @@ async function tagOnce(transcript: EvalTranscript, run: number, apiKey: string, 
       sentences.push({ text: tokens.map((token) => token.word.word).join(" "), keys });
     }
     if (chunk.prompt === null) continue;
-    const reply = captured.findLast((item) => item.user === chunk.prompt)?.report as { serious?: { from: number; to: number }[]; picks?: { k: number; w: string; p?: string; e: string; s: number }[] } | null | undefined;
+    // The reply the tagger used: the last one it could accept (a failed retry after an empty reply keeps the first).
+    const reply = captured.findLast((item) => item.user === chunk.prompt && acceptEmojiPicks(chunk, item.report, emojiRefForGlyph, transcript.languageCode) !== null)?.report as { serious?: { from: number; to: number }[]; picks?: { k: number; w: string; p?: string; e: string; s: number }[] } | null | undefined;
     const ranges = (reply?.serious ?? []).map((range) => [range.from, range.to].sort((a, b) => a - b) as [number, number]);
     for (const [from, to] of ranges) serious.push(chunk.tokens.slice(from, to + 1).map((token) => token.word.word).join(" "));
     for (const pick of reply?.picks ?? []) {
@@ -174,7 +178,7 @@ async function tagOnce(transcript: EvalTranscript, run: number, apiKey: string, 
       const token = Number.isInteger(pick.k) ? chunk.tokens[pick.k] : undefined;
       if (!token || captionWordComparable(pick.w) !== captionWordComparable(token.word.word) || captionWordComparable(pick.w) === "") dropped.malformed++;
       else if (ranges.some(([from, to]) => pick.k >= from && pick.k <= to)) dropped.serious++;
-      else if (pick.p === "no") {
+      else if (pick.p === "no" && !CAPTION_EMOJI_NEGATION_IDS.has(emojiRefForGlyph(pick.e)?.id ?? "")) {
         dropped.absent++;
         const key = captionWordKey(token.word.startSec);
         absentDrops.push({ key, word: token.word.word, glyph: pick.e, sentence: sentences[at.get(key) ?? -1]?.text ?? "" });
@@ -214,9 +218,9 @@ async function tagOnce(transcript: EvalTranscript, run: number, apiKey: string, 
 export const EMOJI_JUDGE_MODEL = { model: EMOJI_TAGGING_MODEL.model, reasoningEffort: "medium" };
 export const EMOJI_JUDGE_PROMPT = `You check emojis that were placed on single words of a video's captions, in any language.
 Each item gives the sentence, the sentences before and after it, the word the emoji sits on, the emoji and the name of its design. Grade each item:
-A: the picture plainly depicts that exact word as it is meant in this sentence (a thing, an action or a feeling the word names, or the concrete meaning of a short fixed expression containing it), and its tone suits the moment. A viewer who hears the word sees at once why it has this emoji.
+A: the picture plainly depicts that exact word as it is meant in this sentence (a thing, an action or a feeling the word names, or the concrete meaning of a short fixed expression containing it), or plainly shows what the short phrase around the word says and sits on the word that completes that meaning (❌ on "work" in "it doesn't work", 🤷 on "know" in "nobody knew", 🐢 on "slowly" in "it moves so slowly", 📈 on "growing" in "sales keep growing"), and its tone suits the moment. A viewer who reads the phrase sees at once why it has this emoji.
 B: the picture fits another word of the same sentence, not the word it sits on.
-C: it does not fit the word: a topic association, a loose metaphor or pun, a literal picture of an idiom, a face on a word that names no feeling, or a name, number, filler or function word.
+C: it fits neither the word nor what its phrase says: a topic association, a loose metaphor or pun, a literal picture of an idiom, a similar object standing in for the one named, a thing the phrase says is absent shown as present, a face on a word that names no feeling, or a name, number, filler or function word.
 A face that shows the feeling or reaction a word names is A on that word (😕 on "strange", 😠 on "fight", 😍 on "beautiful"). When the feeling is named by a describing word, a face on the verb before it is B (a face on "felt" in "I felt nervous").
 An object on the word that names it is A even when the word is part of a longer description (🔌 on "unplugged", 📱 on "screen" of a phone).
 D: it depicts the word, but its tone is wrong for the moment (playful about something serious, celebrating something sad).
@@ -337,7 +341,7 @@ function negationMarkdown(report: EvalReport): string[] {
     ["real clips", report.transcripts.filter((transcript) => transcript.genre.includes("(real)"))],
   ];
   const out = ["", "## Negation: picks kept on a word the line says is absent", "",
-    "| Set | Absent kept L/B/E | Absent kept at B per run | Advised kept L/B/E | Present targets kept at B | Other B picks: A of graded |", "| --- | --- | --- | --- | --- | --- |"];
+    "| Set | Absent kept L/B/E | Absent kept at B per run | Of those, an emoji of \"no\" | Advised kept L/B/E | Present targets kept at B | Other B picks: A of graded |", "| --- | --- | --- | --- | --- | --- | --- |"];
   const listed: string[] = [];
   for (const [name, transcripts] of sets) {
     if (transcripts.length === 0) continue;
@@ -357,7 +361,8 @@ function negationMarkdown(report: EvalReport): string[] {
     }
     const others = transcripts.flatMap((transcript) => transcript.picks.filter((pick) => pick.kept.balanced && negationOf(transcript.id, pick.key) === null));
     const graded = others.filter((pick) => gradeOf(pick) !== null);
-    out.push(`| ${name} | ${DENSITIES.map((density) => on("absent", density).length).join(" / ")} | ${absentByRun.join(", ")} | ${DENSITIES.map((density) => on("advised", density).length).join(" / ")} | ${presentTargets > 0 ? `${presentKept} of ${presentTargets}` : "-"} | ${graded.filter((pick) => gradeOf(pick) === "A").length} of ${graded.length} (${others.length} picks) |`);
+    const pictured = on("absent", "balanced").filter(({ pick }) => CAPTION_EMOJI_NEGATION_IDS.has(pick.id)).length;
+    out.push(`| ${name} | ${DENSITIES.map((density) => on("absent", density).length).join(" / ")} | ${absentByRun.join(", ")} | ${pictured} | ${DENSITIES.map((density) => on("advised", density).length).join(" / ")} | ${presentTargets > 0 ? `${presentKept} of ${presentTargets}` : "-"} | ${graded.filter((pick) => gradeOf(pick) === "A").length} of ${graded.length} (${others.length} picks) |`);
     for (const kind of ["absent", "advised"] as const) for (const { transcript, pick } of on(kind, "balanced")) {
       listed.push(`- ${kind} r${pick.run} ${transcript.id} **${pick.word}** → ${pick.glyph} (s${pick.strength}) · ${pick.sentence}`);
     }

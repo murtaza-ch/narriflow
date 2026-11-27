@@ -228,17 +228,17 @@ describe("selectCaptionEmojiPicks", () => {
     expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 2), pick(18, "rocket", 3)], words, "balanced"))).toEqual([words[18]!.key]);
     expect(Object.keys(selectCaptionEmojiPicks([pick(18, "rocket", 2), pick(16, "fire", 2)], words, "balanced"))).toEqual([words[16]!.key]);
     // Expressive (1.5 s) keeps both.
-    expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 1), pick(19, "rocket", 3)], words, "expressive"))).toHaveLength(2);
+    expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 2), pick(19, "rocket", 3)], words, "expressive"))).toHaveLength(2);
     // Light (5 s) keeps one of 8 s and 12 s.
     expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 3), pick(24, "rocket", 3)], words, "light"))).toEqual([words[16]!.key]);
   });
 
-  test("density is a strength gate first: Light keeps strength 3, Balanced 2 and 3, Expressive all", () => {
+  test("density is a strength gate first: Light keeps strength 3, Balanced and Expressive 2 and 3", () => {
     // 2 s, 8 s and 14 s: far enough apart for every density's gap.
     const picks = [pick(4, "wave", 1), pick(16, "fire", 2), pick(28, "rocket", 3)];
     expect(Object.values(selectCaptionEmojiPicks(picks, words, "light")).map((ref) => ref.id)).toEqual(["rocket"]);
     expect(Object.values(selectCaptionEmojiPicks(picks, words, "balanced")).map((ref) => ref.id)).toEqual(["fire", "rocket"]);
-    expect(Object.values(selectCaptionEmojiPicks(picks, words, "expressive")).map((ref) => ref.id)).toEqual(["wave", "fire", "rocket"]);
+    expect(Object.values(selectCaptionEmojiPicks(picks, words, "expressive")).map((ref) => ref.id)).toEqual(["fire", "rocket"]);
     // The gate holds with nothing near: a lone strength-2 pick is not kept at Light.
     expect(selectCaptionEmojiPicks([pick(14, "wave", 2)], words, "light")).toEqual({});
   });

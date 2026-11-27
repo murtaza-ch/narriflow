@@ -326,7 +326,7 @@ Tickets 01 to 12 record the evidence. Where they differ from sections 3 and 4:
     line, and dim when their emoji does not draw. Chips use the shared bidi word order.
 
 - **Relevance (20).** The tagger reasons (low), echoes the word it tags, and code rejects a pick whose echo, id, word
-  class (number, filler, function word) or sentence (one per sentence) is wrong; a reply none of whose picks names a
+  class (number, filler, function word) or sentence (one per sentence, until ticket 30) is wrong; a reply none of whose picks names a
   word is a failed chunk. An emoji never shows before its word: under 250 ms of its cue left it is not drawn; it holds
   at most 2 s from its word. Entries store their word's text (`CaptionEmojiRef.word`) and re-attach only to that word.
   The hook pick wins only ties. Real clips: 60% to 97% of emojis depict their word at Balanced (ticket 20).
@@ -337,7 +337,7 @@ Tickets 01 to 12 record the evidence. Where they differ from sections 3 and 4:
   template; named and Custom palettes coloured them fully. Ticket 26 removed this face exception on the owner's decision. A
   word leaving 120 to 250 ms of its cue holds its emoji to 400 ms from the word, past the cue, when the slot stays clear;
   the Studio keeps drawing a classic or Dynamic cue's emojis from its box for that time (`HeldCueEmojis`). Density gates
-  strength first (Light 3, Balanced 2 and 3). Eleven designs that read as something else were kept out of the AI vocabulary; ticket 23
+  strength first (Light 3, Balanced 2 and 3; Expressive took every strength until ticket 30, now 2 and 3). Eleven designs that read as something else were kept out of the AI vocabulary; ticket 23
   put them back on the owner's instruction. The prompt states principles with invented examples, never anchors
   a unit of measure, and gives an absent thing no emoji (obeyed only partly).
 
@@ -397,7 +397,7 @@ Tickets 01 to 12 record the evidence. Where they differ from sections 3 and 4:
 - **Negated and loose picks (27).** Each pick is `{ k, w, p, e, s }`: `p` says whether the line has the thing the word
   names (`"yes"`, `"no"` for absent, lacking, not needed, not happening or to be avoided, `"if"` for imagined or
   conditional), written before the emoji, and `s` may be 1, "only related" (topic, a nearby thing, a metaphor or another
-  word). Code drops `p: "no"` and strength 1; a reply without `p` is malformed (the chunk is retried). The prompt's
+  word). Code drops `p: "no"` (since ticket 30, unless the emoji itself pictures "no") and strength 1; a reply without `p` is malformed (the chunk is retried). The prompt's
   "skip absent things" line is gone. On the negation fixtures (6 runs, Balanced), picks on absent words fall from 28
   to 12 on ticket 21's nine, 13 to 4 on new ones, 4 to 0 on the real clips ("no telephoto camera"). That is not the
   ticket's "at most 1 in 3 runs": "not short of customers but short of profit" in Urdu, Hindi and Arabic still gets 💰
@@ -405,6 +405,22 @@ Tickets 01 to 12 record the evidence. Where they differ from sections 3 and 4:
   Relevance rose (written 93% to 96%, real 95% to 97%) at 8% fewer emojis per minute on written fixtures, 3% on the
   real clips. Double negatives ("my day doesn't start without tea") are now marked absent and dropped. Replies are about 30% longer, so
   `maxOutputTokens` is 4,000 (500-word chunks hit 2,000). $0.0070 to $0.0076 per 1,000 words; prefix 7,015 tokens.
+
+- **Coverage (30).** Tickets 20 to 27 tuned only the share of picks that fit, and a clip got 3.1 to 3.4 emojis a
+  minute at Balanced, with none on 9 to 12% of runs. The prompt now asks for what a short-form editor would put on
+  each phrase of three to six words, about one candidate per 8 words, and allows two fits: the emoji pictures its
+  word (strength 3), or it pictures what the phrase says, on the word that completes it (strength 2: ❌ on "work"
+  in "it doesn't work", 🤷 on "know" in "nobody knew"); 1 is "only related", dropped. It forbids a similar object
+  standing in for one the lists lack and an idiom pictured word by word. A sentence may keep several picks; two on
+  one word keep the stronger. A pick marked `p: "no"` is kept when its emoji pictures "no" itself
+  (`CAPTION_EMOJI_NEGATION_IDS`: ❌ 🚫 ⛔ 🙅 🙅‍♂️ 🙅‍♀️ 🤷 👎 ❎ 🤐), since the model answers `p` by the line's grammar.
+  Expressive keeps strengths 2 and 3, as Balanced; gaps stay 5 / 2.5 / 1.5 s. A chunk of at least 30 words whose
+  report lists no serious passage and keeps no pick is sent once more (`EMOJI_TAGGING_EMPTY_RETRY_WORDS`), within
+  the one retry a chunk has. On 34 real dev clips (3 runs): Balanced 8.0 a minute (English 9.6, Hindi 11.4, Urdu
+  5.4), Light 3.3, Expressive 9.3; none on 6 of 102 runs, all on Urdu clips the model marked serious (a death,
+  an extortion, an addiction breakdown). The strict relevance judge rates 73% of real-clip Balanced picks A
+  (ticket 27: 97%), mostly because it grades phrase pictures C; read by hand about 88% fit. About $0.0042 per
+  1,000 words on 500-word chunks; a Studio clip takes about 4 s.
 
 Open at hand-off: the `ContentPack.addEmojis` migration is not applied; the media image changed,
 so the Worker's `MEDIA_*_TOOLCHAIN_FINGERPRINT` must be updated at deploy; golden render baselines
