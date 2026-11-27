@@ -291,6 +291,7 @@ export interface CaptionEmphasisChange {
 }
 export type ToolId =
   "ai"
+  | "emojis"
   | "captions"
   | "brand"
   | "broll"

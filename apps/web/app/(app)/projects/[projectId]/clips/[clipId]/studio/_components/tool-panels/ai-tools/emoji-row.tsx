@@ -8,8 +8,8 @@ import type { CaptionEmojiEditor } from "../../emoji/use-caption-emojis";
 import { emojiRowView, type AiToolRowState } from "./ai-tools-model";
 
 /**
- * Add emojis: the same AI run the Captions panel's Emojis section runs, through the shared per-clip
- * run, so both surfaces show the same state. Once emojis exist the row opens that section instead.
+ * Add emojis: the same AI run the Emojis panel runs, through the shared per-clip run, so both
+ * surfaces show the same state. Once emojis exist, or a run found none, the row opens that panel.
  */
 export function useEmojiToolRow(editor: CaptionEmojiEditor): AiToolRowState | null {
   const { openTool } = useStudio("openTool");
@@ -33,10 +33,10 @@ export function useEmojiToolRow(editor: CaptionEmojiEditor): AiToolRowState | nu
     description: view.description,
     control:
       view.kind === "open"
-        ? { kind: "open", onOpen: () => openTool({ tool: "captions", section: "emojis" }) }
+        ? { kind: "open", onOpen: () => openTool("emojis") }
         : { kind: "apply", onApply: apply, busy: view.busy },
-    // Retry here only while the clip has no emojis: replacing existing ones may need the section's
-    // Regenerate confirmation, which lives in Captions.
+    // Retry here only while the clip has no emojis: replacing existing ones may need the panel's
+    // Regenerate confirmation.
     error: failure ? { message: failure.message, onRetry: failure.retry && view.kind === "apply" ? apply : null } : null,
   };
 }

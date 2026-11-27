@@ -1,9 +1,9 @@
 import type { ToolId } from "./studio-shell";
 
-// Opening a tool at a place: the AI tools panel opens Captions on its Emojis or Emphasis controls.
+// Opening a tool at a place: the AI tools panel opens Captions on its Emphasis controls.
 // The shell holds the target until the opened panel reads it once on mount.
 
-export type CaptionsPanelSection = "emojis" | "emphasis";
+export type CaptionsPanelSection = "emphasis";
 
 export type ToolTarget = { readonly tool: "captions"; readonly section: CaptionsPanelSection };
 
@@ -14,7 +14,7 @@ export function resolveToolOpening(opening: ToolOpening): { tool: ToolId; target
   return typeof opening === "string" ? { tool: opening, target: null } : { tool: opening.tool, target: opening };
 }
 
-/** Both sections live on the Customize tab. */
+/** The section lives on the Customize tab. */
 export function captionsPanelTab(target: ToolTarget | null): "presets" | "customize" {
   return target ? "customize" : "presets";
 }

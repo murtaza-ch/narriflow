@@ -27,7 +27,7 @@ import { captionEmojiName, useCaptionEmojiIndex } from "./use-caption-emoji-inde
  * Opens the picker for one word; picking places or replaces its emoji, Remove clears it, `move` offers
  * its line's words, or the words of `within` (a caption row) when given.
  */
-function openPickerFor(anchor: HTMLElement, editor: CaptionEmojiEditor, target: CaptionEmojiTarget, direction?: "ltr" | "rtl", within?: readonly CaptionEmojiSpan[]) {
+export function openPickerFor(anchor: HTMLElement, editor: CaptionEmojiEditor, target: CaptionEmojiTarget, direction?: "ltr" | "rtl", within?: readonly CaptionEmojiSpan[]) {
   const choices = direction && target.current ? emojiMoveChoices(editor.model, editor.placement, target.word, direction, within) : [];
   openEmojiPicker({
     anchor,

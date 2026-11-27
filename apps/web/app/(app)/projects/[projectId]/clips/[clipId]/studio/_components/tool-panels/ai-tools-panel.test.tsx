@@ -10,7 +10,8 @@ mock.module("../studio-shell", () => ({ useStudio: () => fields }));
 const { AiToolsList } = await import("./ai-tools-panel");
 const { aiToolsFixtureEmojiEditor, aiToolsFixtureFields } = await import("./ai-tools/ai-tools-fixture");
 const { studioUpgradePrompts } = await import("../studio-upgrade");
-const { TOOLS, RAIL_TOOLS, PANEL_MAP } = await import("../tool-sidebar");
+const { TOOLS, RAIL_TOOLS, PANEL_MAP, ToolSidebar } = await import("../tool-sidebar");
+const { useEmojiToolRow } = await import("./ai-tools/emoji-row");
 
 const render = (node: React.ReactNode) => renderToStaticMarkup(<ChakraProvider value={system}>{node}</ChakraProvider>);
 
@@ -106,16 +107,35 @@ describe("AI tools panel: the emoji row in each run state", () => {
     expect(running.match(/aria-busy="true"/g)).toHaveLength(1);
   });
 
-  test("done with emojis: the count and a chevron to Captions", () => {
+  test("done with emojis: the count and a chevron to the Emojis panel", () => {
     const item = row(renderPanel("applied", { run: { status: "done", added: 9, leftOut: 0, partial: false }, shown: 9 }), "Add emojis");
     expect(item).toContain("9 emojis");
     expect(item).not.toContain(">Apply<");
+    expect(item).toContain("<button");
   });
 
-  test("done empty: says so and offers Apply again", () => {
+  test("done empty: says so with a chevron to the Emojis panel, not Apply again", () => {
     const item = row(renderPanel("fresh", { run: { status: "done", added: 0, leftOut: 0, partial: false } }), "Add emojis");
     expect(item).toContain("No emojis fit this clip");
-    expect(item).toContain(">Apply<");
+    expect(item).not.toContain(">Apply<");
+    expect(item).toContain("<button");
+  });
+
+  test("the chevron opens the Emojis panel, never Captions", () => {
+    const opened: unknown[] = [];
+    for (const emoji of [{ run: { status: "idle" }, shown: 4 }, { run: { status: "done", added: 0, leftOut: 0, partial: false } }] as const) {
+      fields = aiToolsFixtureFields("fresh", { upgradePrompts: studioUpgradePrompts("pro", null), openTool: (opening: unknown) => opened.push(opening) }) as unknown as Record<string, unknown>;
+      let control: ReturnType<typeof useEmojiToolRow> = null;
+      function Probe() {
+        control = useEmojiToolRow(aiToolsFixtureEmojiEditor(emoji));
+        return null;
+      }
+      render(<Probe />);
+      const shown = control as ReturnType<typeof useEmojiToolRow>;
+      if (shown?.control.kind !== "open") throw new Error("expected a chevron");
+      shown.control.onOpen();
+    }
+    expect(opened).toEqual(["emojis", "emojis"]);
   });
 
   test("failed: the section's typed message under the row, with a retry", () => {
@@ -126,7 +146,7 @@ describe("AI tools panel: the emoji row in each run state", () => {
     expect(save).toContain("Couldn’t save your latest edits");
   });
 
-  test("a failed Regenerate retries from Captions, where its confirmation lives", () => {
+  test("a failed Regenerate retries from the Emojis panel, where its confirmation lives", () => {
     const item = row(renderPanel("applied", { run: { status: "failed", failure: { reason: "incomplete" } }, shown: 5 }), "Add emojis");
     expect(item).toContain("Couldn’t finish. Your emojis are unchanged.");
     expect(item).not.toContain("Try again");
@@ -146,7 +166,7 @@ describe("tool rail", () => {
     expect(new Set(ids).size).toBe(ids.length);
     // PANEL_MAP is a Record over every ToolId, so equal key sets mean every tool has a title and a panel.
     expect([...ids].sort()).toEqual(Object.keys(PANEL_MAP).sort());
-    expect(ids).toHaveLength(10);
+    expect(ids).toHaveLength(11);
   });
 
   test("Auto-censor has no rail button: it opens from AI tools, which stays selected", () => {
@@ -155,6 +175,18 @@ describe("tool rail", () => {
     expect(TOOLS.find((tool) => tool.id === "censor")?.parent).toBe("ai");
     // A tool without a rail button must be reachable from a tool that has one.
     for (const tool of TOOLS) if (tool.parent) expect(RAIL_TOOLS.some((rail) => rail.id === tool.parent)).toBe(true);
+  });
+
+  test("Emojis is a child of AI tools: no rail button, a back arrow, AI tools stays selected", () => {
+    expect(TOOLS.find((tool) => tool.id === "emojis")).toMatchObject({ label: "Emojis", parent: "ai" });
+    expect(RAIL_TOOLS.map((tool) => tool.id)).not.toContain("emojis");
+    fields = { activeTool: "emojis", setActiveTool: () => undefined, openTool: () => undefined, editingElsewhere: false, handleTakeOverEditing: () => undefined, clipInfo: { id: "clip-sidebar" } };
+    const markup = render(<ToolSidebar />);
+    expect(markup).toContain('aria-label="Back to AI tools"');
+    expect(markup).toMatch(/<p[^>]*>Emojis<\/p>/);
+    const selected = [...markup.matchAll(/<button[^>]*role="tab"[^>]*aria-selected="true"[^>]*aria-label="([^"]+)"/g)].map((match) => match[1]);
+    expect(selected).toEqual(["AI tools"]);
+    expect(markup).not.toContain('aria-label="Emojis"');
   });
 });
 

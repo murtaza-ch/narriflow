@@ -9,18 +9,20 @@ import { PanelSegmented, SectionLabel } from "../tool-panels/panel-ui";
 import { captionEmojiRunBusy, type CaptionEmojiRun, type CaptionEmojiRunFailure } from "./caption-emoji-runs";
 import { captionEmojiWordShows } from "./caption-emoji-words";
 import { LiveCueEmojiChips, type LiveCueSource } from "./emoji-chips";
+import { EmojiList, type EmojiListTimeline } from "./emoji-list";
 import { warmEmojiPicker } from "./emoji-picker-host";
 import { EmojiStyleControls, EmojiSwitch, type EmojiColourField } from "./emoji-style-controls";
 import type { CaptionEmojiEditor } from "./use-caption-emojis";
 
-// The Captions panel's Emojis section, for every preset kind: the switch, the AI action with its
-// density, the count with Regenerate and Remove all, "On screen now" word chips and the style. The
-// AI run never blocks the section: chips and style stay usable while it is out.
+// The Emojis panel, for every preset kind: Show emojis, Add with AI with its density, the clip's
+// emojis as a list, the words on screen now, and the style. The AI run never blocks the panel: the
+// list, chips and style stay usable while it is out.
 
+// No numbers here: the spacing behind each density belongs to the suggest route.
 const DENSITIES: readonly { value: CaptionEmojiDensity; label: string; title: string }[] = [
-  { value: "light", label: "Light", title: "Only the surest matches, at most one about every 5 seconds" },
-  { value: "balanced", label: "Balanced", title: "Clear matches, at most one about every 2.5 seconds" },
-  { value: "expressive", label: "Expressive", title: "Every match, at most one about every 1.5 seconds" },
+  { value: "light", label: "Light", title: "Only the surest matches, spaced well apart." },
+  { value: "balanced", label: "Balanced", title: "Clear matches at an easy pace." },
+  { value: "expressive", label: "Expressive", title: "Every good match, close together." },
 ];
 
 /** What the section shows besides the run's own state. */
@@ -174,13 +176,21 @@ function RegenerateConfirm({ onReplace, onCancel }: { onReplace: () => void; onC
   );
 }
 
-export function EmojisSection({ editor, live, ColourField }: { editor: CaptionEmojiEditor; live: LiveCueSource; ColourField: EmojiColourField }) {
+function Note({ children }: { children: string }) {
+  return (
+    <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5">
+      {children}
+    </Text>
+  );
+}
+
+export function EmojisSection({ editor, live, timeline, ColourField }: { editor: CaptionEmojiEditor; live: LiveCueSource; timeline: EmojiListTimeline; ColourField: EmojiColourField }) {
   const view = emojisSectionView(editor);
   const running = captionEmojiRunBusy(editor.run);
   const [confirming, setConfirming] = useState(false);
   const matchPalette = useMemo(() => captionEmojiPalette(captionEmojiTemplateColours(editor.preset)), [editor.preset]);
 
-  // The picker's chunk loads while the user looks at the section, so the first tap opens at once.
+  // The picker's chunk loads while the user looks at the panel, so the first tap opens at once.
   useEffect(() => {
     if (view === "off") return;
     const handle = window.setTimeout(warmEmojiPicker, 800);
@@ -193,72 +203,87 @@ export function EmojisSection({ editor, live, ColourField }: { editor: CaptionEm
   };
   const regenerate = () => (editor.confirmRegenerate ? setConfirming(true) : generate());
   const subtitlesHidden = editor.preset.visible === false;
+  const density = DENSITIES.find((item) => item.value === editor.density) ?? DENSITIES[1]!;
+  const shown = editor.placement.shown;
 
   return (
-    <Box>
-      <SectionLabel action={<EmojiSwitch label="Emojis" checked={editor.enabled} disabled={editor.readOnly} onChange={editor.setEnabled} />}>Emojis</SectionLabel>
+    <Stack gap="6">
+      <Stack gap="2">
+        <Flex align="center" justify="space-between" gap="3" minH="32px" px="3.5" py="1.5" bg="studio.subtle" borderRadius="12px">
+          <Text fontSize="13px" color="studio.fg">
+            Show emojis
+          </Text>
+          <EmojiSwitch label="Show emojis" checked={editor.enabled} disabled={editor.readOnly} onChange={editor.setEnabled} />
+        </Flex>
+        {view === "off" ? (
+          <Note>Stickers above your captions, drawn in your caption colors.</Note>
+        ) : view === "no-words" ? (
+          <Note>This clip has no caption words yet, so there is nothing to add emojis to.</Note>
+        ) : subtitlesHidden ? (
+          <Note>Subtitles are hidden, so emojis are hidden too.</Note>
+        ) : null}
+      </Stack>
 
-      {view === "off" ? (
-        <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5">
-          Stickers above your captions, drawn in your caption colors.
-        </Text>
-      ) : view === "no-words" ? (
-        <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5">
-          This clip has no caption words yet, so there is nothing to add emojis to.
-        </Text>
-      ) : (
-        <Stack gap="5" inert={editor.readOnly || undefined} opacity={editor.readOnly ? 0.55 : 1}>
-          {subtitlesHidden ? (
-            <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5">
-              Subtitles are hidden, so emojis are hidden too.
-            </Text>
-          ) : null}
-
-          <Stack gap="2.5">
-            {view === "some" ? (
-              <Flex align="center" justify="space-between" gap="3" minH="20px">
-                <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">
-                  {editor.placement.shown} emoji{editor.placement.shown === 1 ? "" : "s"}
-                </Text>
-                <TextButton disabled={running} onClick={editor.removeAll}>
-                  Remove all
-                </TextButton>
-              </Flex>
-            ) : null}
-            <PanelSegmented
-              ariaLabel="How many emojis"
-              size="sm"
-              value={editor.density}
-              onChange={editor.setDensity}
-              items={DENSITIES.map((item) => ({ ...item, disabled: running }))}
-            />
-            {confirming ? (
-              <RegenerateConfirm onReplace={generate} onCancel={() => setConfirming(false)} />
-            ) : view === "some" ? (
-              <RunButton label="Regenerate" icon={<RotateCw size={14} />} busy={running} disabled={editor.readOnly} onClick={regenerate} />
-            ) : (
-              <RunButton label="Add with AI" icon={<Sparkles size={15} />} busy={running} disabled={editor.readOnly} onClick={generate} />
-            )}
-            <Box aria-live="polite" _empty={{ display: "none" }}>
-              {running ? null : <RunMessage run={editor.run} onRetry={generate} onDismiss={editor.dismissRun} />}
-              {view === "none" && (editor.run.status === "idle" || running) ? (
-                <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5">
-                  {editor.run.status === "saving" ? "Saving your edits first." : running ? "This takes a few seconds. You can keep editing." : "Or tap a word below to add one by hand."}
-                </Text>
-              ) : null}
-            </Box>
-          </Stack>
+      {view === "some" || view === "none" ? (
+        <Stack gap="6" inert={editor.readOnly || undefined} opacity={editor.readOnly ? 0.55 : 1}>
+          <Box>
+            <SectionLabel>Add with AI</SectionLabel>
+            <Stack gap="2.5">
+              <PanelSegmented
+                ariaLabel="How many emojis"
+                size="sm"
+                value={editor.density}
+                onChange={editor.setDensity}
+                items={DENSITIES.map((item) => ({ ...item, disabled: running }))}
+              />
+              <Note>{density.title}</Note>
+              {confirming ? (
+                <RegenerateConfirm onReplace={generate} onCancel={() => setConfirming(false)} />
+              ) : view === "some" ? (
+                <RunButton label="Regenerate" icon={<RotateCw size={14} />} busy={running} disabled={editor.readOnly} onClick={regenerate} />
+              ) : (
+                <RunButton label="Add with AI" icon={<Sparkles size={15} />} busy={running} disabled={editor.readOnly} onClick={generate} />
+              )}
+              <Box aria-live="polite" _empty={{ display: "none" }}>
+                {running ? null : <RunMessage run={editor.run} onRetry={generate} onDismiss={editor.dismissRun} />}
+                {view === "none" && (editor.run.status === "idle" || running) ? (
+                  <Note>{editor.run.status === "saving" ? "Saving your edits first." : running ? "This takes a few seconds. You can keep editing." : "Or tap a word below to add one by hand."}</Note>
+                ) : null}
+              </Box>
+            </Stack>
+          </Box>
 
           <Box>
-            <Text fontSize="12px" color="studio.fgMuted" mb="2">
-              On screen now
+            <SectionLabel
+              action={
+                shown > 0 ? (
+                  <TextButton disabled={running} onClick={editor.removeAll}>
+                    Remove all
+                  </TextButton>
+                ) : undefined
+              }
+            >
+              <Box as="span" fontVariantNumeric="tabular-nums">
+                {shown > 0 ? `In this clip · ${shown}` : "In this clip"}
+              </Box>
+            </SectionLabel>
+            <EmojiList editor={editor} timeline={timeline} />
+          </Box>
+
+          <Box>
+            <SectionLabel>Add to a word</SectionLabel>
+            <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5" mb="2.5">
+              Words on screen now. Tap one to add an emoji.
             </Text>
             <LiveCueEmojiChips editor={editor} live={live} />
           </Box>
 
-          <EmojiStyleControls preset={editor.preset} matchPalette={matchPalette} update={editor.updatePreset} ColourField={ColourField} />
+          <Box>
+            <SectionLabel>Style</SectionLabel>
+            <EmojiStyleControls preset={editor.preset} matchPalette={matchPalette} update={editor.updatePreset} ColourField={ColourField} />
+          </Box>
         </Stack>
-      )}
-    </Box>
+      ) : null}
+    </Stack>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid, VisuallyHidden } from "@chakra-ui/react";
+import { Box, Flex, Text, Stack, Slider, Grid, VisuallyHidden } from "@chakra-ui/react";
 import { PANEL_PX, PanelSegmented, PanelTabs, SectionLabel, chipProps, studioSliderCss } from "./panel-ui";
 import { Check, Type, AlignCenter, MoveUp, MoveDown, Captions, Quote, ChevronDown, Link2, Unlink2 } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
@@ -53,7 +53,7 @@ import { requireStudioApi } from "../studio-api";
 import { useStudioApi } from "../use-studio-api";
 import { studioCaptionOmissionNote } from "@/lib/caption-omissions";
 import { StudioCaptionOmissionNote } from "./caption-omission-note";
-import { StudioEmojisSection } from "../emoji/studio-emojis-section";
+import { ColorField } from "./color-field";
 import { captionsPanelTab, panelSectionAttribute, revealPanelSection } from "../tool-target";
 
 const ANIMATION_LABELS = Object.fromEntries(
@@ -173,65 +173,6 @@ function EffectSwitch({ label, checked, onChange }: { label: string; checked: bo
         transform={checked ? "translateX(14px)" : "none"}
         transition="transform 140ms ease, background 120ms ease"
       />
-    </Box>
-  );
-}
-
-/**
- * A caption colour. The swatch is the user's literal colour; `compact` is the
- * small trigger that sits beside an effect, the default is a labelled tile.
- */
-function ColorField({
-  label,
-  value,
-  onChange,
-  compact = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (hex: string) => void;
-  compact?: boolean;
-}) {
-  return (
-    <Box minW="0">
-      <ColorPicker.Root
-        value={parseColor(value)}
-        onValueChange={(e) => onChange(e.value.toString("hex"))}
-        size="xs"
-      >
-        <ColorPicker.HiddenInput />
-        <ColorPicker.Control>
-          <ColorPicker.Trigger
-            w={compact ? "28px" : "100%"}
-            h={compact ? "28px" : "40px"}
-            borderRadius={compact ? "8px" : "10px"}
-            borderWidth="0"
-            bg={compact ? "studio.raised" : "studio.subtle"}
-            cursor="pointer"
-            p={compact ? "4px" : "5px"}
-            aria-label={`${label} color`}
-          >
-            <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius={compact ? "5px" : "6px"} />
-          </ColorPicker.Trigger>
-        </ColorPicker.Control>
-        <Portal>
-          <ColorPicker.Positioner>
-            {/* Portaled — style with mode-invariant studio tokens only */}
-            <ColorPicker.Content bg="studio.raised" borderWidth="0" borderRadius="12px" boxShadow="none">
-              <ColorPicker.Area />
-              <HStack>
-                <ColorPicker.EyeDropper size="xs" variant="ghost" bg="studio.subtle" color="studio.fg" />
-                <ColorPicker.Sliders />
-              </HStack>
-            </ColorPicker.Content>
-          </ColorPicker.Positioner>
-        </Portal>
-      </ColorPicker.Root>
-      {compact ? null : (
-        <Text fontSize="12px" color="studio.fgMuted" mt="6px">
-          {label}
-        </Text>
-      )}
     </Box>
   );
 }
@@ -1289,11 +1230,6 @@ export function CaptionsPanel() {
 
       {activeTab === "presets" && <PresetsGrid />}
       {activeTab === "customize" && <CustomizeControls />}
-      {activeTab === "customize" && (
-        <Box {...panelSectionAttribute("emojis")}>
-          <StudioEmojisSection ColorField={ColorField} />
-        </Box>
-      )}
 
       {/* Apply to all — secondary action (Export owns the solid button) */}
       <Box px={PANEL_PX} pb="5" pt="2">

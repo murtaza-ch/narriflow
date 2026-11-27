@@ -155,8 +155,13 @@ describe("Add emojis row", () => {
     expect(emojiRowView({ ...base, shown: 3, enabled: false })).toEqual({ kind: "open", description: "3 emojis, turned off" });
   });
 
-  test("an empty answer says so and offers Apply again", () => {
-    expect(emojiRowView({ ...base, run: { status: "done", added: 0, leftOut: 0, partial: false } })).toEqual({ kind: "apply", description: "No emojis fit this clip", busy: false });
+  test("an empty answer says so and opens the Emojis panel, not Apply again", () => {
+    expect(emojiRowView({ ...base, run: { status: "done", added: 0, leftOut: 0, partial: false } })).toEqual({ kind: "open", description: "No emojis fit this clip" });
+  });
+
+  test("a failed run on a clip with none keeps Apply, so the row can offer Try again", () => {
+    expect(emojiRowView({ ...base, run: { status: "failed", failure: { reason: "request", code: null } } })).toEqual({ kind: "apply", description: "AI adds emojis that match what is said", busy: false });
+    expect(emojiRowView({ ...base, shown: 2, run: { status: "failed", failure: { reason: "incomplete" } } })).toEqual({ kind: "open", description: "2 emojis" });
   });
 
   test("no caption words: left out", () => {

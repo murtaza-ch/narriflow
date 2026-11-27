@@ -16,6 +16,7 @@ import {
   X,
   PanelsTopLeft,
   ShieldCheck,
+  Smile,
   WandSparkles,
 } from "lucide-react";
 import { useStudio } from "./studio-shell";
@@ -41,6 +42,7 @@ const TransitionsPanel = dynamic(() => import("./tool-panels/transitions-panel")
 const LayoutPanel = dynamic(() => import("./tool-panels/layout-panel").then((m) => m.LayoutPanel), { loading: PanelPending });
 const ScenesPanel = dynamic(() => import("./tool-panels/scenes-panel").then((m) => m.ScenesPanel), { loading: PanelPending });
 const CensorPanel = dynamic(() => import("./tool-panels/censor-panel").then((m) => m.CensorPanel), { loading: PanelPending });
+const EmojisPanel = dynamic(() => import("./tool-panels/emojis-panel").then((m) => m.EmojisPanel), { loading: PanelPending });
 
 /**
  * `railLabel` is the short name under the rail icon; `label` titles the panel. A tool with a
@@ -57,6 +59,7 @@ export const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React
   { id: "layout",      label: "Layout",   icon: <Crop size={22} strokeWidth={1.75} /> },
   { id: "scenes",      label: "Scenes",   icon: <PanelsTopLeft size={22} strokeWidth={1.75} /> },
   { id: "censor",      label: "Auto-censor", icon: <ShieldCheck size={22} strokeWidth={1.75} />, parent: "ai" },
+  { id: "emojis",      label: "Emojis",   icon: <Smile size={22} strokeWidth={1.75} />, parent: "ai" },
 ]
 
 /** The tools with a rail button, in rail order. */
@@ -73,6 +76,7 @@ export const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "layout":      <LayoutPanel />,
   "scenes":      <ScenesPanel />,
   "censor":      <CensorPanel />,
+  "emojis":      <EmojisPanel />,
 };
 
 /**

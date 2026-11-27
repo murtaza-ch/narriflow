@@ -4,12 +4,11 @@ import { captionsPanelTab, panelSectionAttribute, PANEL_SCROLL_ATTRIBUTE, PANEL_
 describe("opening a tool at a place", () => {
   test("a bare tool opens at its top; a target carries the place", () => {
     expect(resolveToolOpening("censor")).toEqual({ tool: "censor", target: null });
-    const target = { tool: "captions", section: "emojis" } as const;
+    const target = { tool: "captions", section: "emphasis" } as const;
     expect(resolveToolOpening(target)).toEqual({ tool: "captions", target });
   });
 
-  test("Captions opens on Customize for either section, on Presets otherwise", () => {
-    expect(captionsPanelTab({ tool: "captions", section: "emojis" })).toBe("customize");
+  test("Captions opens on Customize for its section, on Presets otherwise", () => {
     expect(captionsPanelTab({ tool: "captions", section: "emphasis" })).toBe("customize");
     expect(captionsPanelTab(null)).toBe("presets");
   });
@@ -34,7 +33,7 @@ function fakePanel(input: { sectionTop: number; containerTop: number; scrollTop:
   const sticky = input.stickyHeight === null ? null : { offsetHeight: input.stickyHeight };
   const root = {
     querySelector: (selector: string) => {
-      if (selector === '[data-panel-section="emojis"]') return input.hasSection === false ? null : section;
+      if (selector === '[data-panel-section="emphasis"]') return input.hasSection === false ? null : section;
       if (selector === `[${PANEL_STICKY_ATTRIBUTE}]`) return sticky;
       return null;
     },
@@ -45,24 +44,24 @@ function fakePanel(input: { sectionTop: number; containerTop: number; scrollTop:
 describe("revealing a section", () => {
   test("scrolls the panel body so the section lands just below the sticky preview", () => {
     const { root, scrolls } = fakePanel({ sectionTop: 900, containerTop: 100, scrollTop: 40, stickyHeight: 180 });
-    revealPanelSection(root, "emojis");
+    revealPanelSection(root, "emphasis");
     // 900 - 100 + 40 - 180 - 8
     expect(scrolls).toEqual([652]);
   });
 
   test("without a sticky header, and never above the top", () => {
     const below = fakePanel({ sectionTop: 300, containerTop: 100, scrollTop: 0, stickyHeight: null });
-    revealPanelSection(below.root, "emojis");
+    revealPanelSection(below.root, "emphasis");
     expect(below.scrolls).toEqual([192]);
     const near = fakePanel({ sectionTop: 104, containerTop: 100, scrollTop: 0, stickyHeight: 60 });
-    revealPanelSection(near.root, "emojis");
+    revealPanelSection(near.root, "emphasis");
     expect(near.scrolls).toEqual([0]);
   });
 
   test("a section the style does not show is a no-op", () => {
     const { root, scrolls } = fakePanel({ sectionTop: 0, containerTop: 0, scrollTop: 0, stickyHeight: null, hasSection: false });
-    revealPanelSection(root, "emojis");
-    revealPanelSection(null, "emojis");
+    revealPanelSection(root, "emphasis");
+    revealPanelSection(null, "emphasis");
     expect(scrolls).toEqual([]);
   });
 });

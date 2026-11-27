@@ -30,13 +30,17 @@ function render(document: EditorDocument, options: { readOnly?: boolean; timeSec
       suggest: async () => ({ emojis: {} }),
       failureCode: () => null,
     });
-    return <EmojisSection editor={editor} live={{ clock, layers, toBaseEdited: (sec) => sec }} ColourField={ColourField} />;
+    return <EmojisSection editor={editor} live={{ clock, layers, toBaseEdited: (sec) => sec }} timeline={timelineOf(clock)} ColourField={ColourField} />;
   }
   return renderToStaticMarkup(
     <ChakraProvider value={system}>
       <Section />
     </ChakraProvider>,
   );
+}
+
+function timelineOf(clock: { getSnapshot: () => number; subscribe: (listener: () => void) => () => void }) {
+  return { clock, toBaseEdited: (sec: number) => sec, toComposite: (sec: number) => sec, seek: noop };
 }
 
 const withEmojis = () => emojiFixtureDocument({ presetId: "bold-pop" });
@@ -62,7 +66,7 @@ function surfaceOf(markup: string, button: string) {
   return { background: rule.match(/(?:^|;)background:([^;]*)/)?.[1], opacity: rule.match(/(?:^|;)opacity:([^;]*)/)?.[1] };
 }
 
-describe("Emojis section states", () => {
+describe("Emojis panel states", () => {
   test("off: the switch and one line, no controls", () => {
     const document = withEmojis();
     const markup = render({ ...document, captionPreset: { ...document.captionPreset, emojis: false } });
@@ -71,6 +75,8 @@ describe("Emojis section states", () => {
     expect(markup).toContain("Stickers above your captions");
     expect(markup).not.toContain("Add with AI");
     expect(markup).not.toContain("Regenerate");
+    expect(markup).not.toContain("In this clip");
+    expect(markup).not.toContain("Match template colors");
   });
 
   test("on without emojis: Add with AI, the density choice and the hand-placement hint", () => {
@@ -80,12 +86,14 @@ describe("Emojis section states", () => {
     expect(markup).toContain("Expressive");
     expect(markup).toContain("Or tap a word below to add one by hand.");
     expect(markup).not.toContain("Regenerate");
-    expect(markup).toContain("On screen now");
+    expect(markup).toContain("No emojis yet. Add with AI, or tap a word below.");
+    expect(markup).not.toContain("Remove all");
+    expect(markup).toContain("Words on screen now. Tap one to add an emoji.");
   });
 
   test("on with emojis: the count, Regenerate, Remove all, style controls and word chips", () => {
     const markup = render(withEmojis());
-    expect(markup).toContain("4 emojis");
+    expect(markup).toContain("In this clip · 4");
     expect(markup).toContain("Regenerate");
     expect(markup).toContain("Remove all");
     expect(markup).toContain("Match template colors");
@@ -106,6 +114,7 @@ describe("Emojis section states", () => {
     const markup = render({ ...withEmojis(), transcriptSlice: [] });
     expect(markup).toContain("This clip has no caption words yet");
     expect(markup).not.toContain("Add with AI");
+    expect(markup).not.toContain("In this clip");
   });
 
   test("an empty AI answer shows No emojis fit this clip", async () => {
@@ -158,7 +167,7 @@ describe("Emojis section states", () => {
         suggest: async () => ({ emojis: {} }),
         failureCode: () => null,
       });
-      return <EmojisSection editor={editor} live={{ clock, layers, toBaseEdited: (sec) => sec }} ColourField={ColourField} />;
+      return <EmojisSection editor={editor} live={{ clock, layers, toBaseEdited: (sec) => sec }} timeline={timelineOf(clock)} ColourField={ColourField} />;
     }
     const markup = renderToStaticMarkup(
       <ChakraProvider value={system}>
@@ -169,6 +178,53 @@ describe("Emojis section states", () => {
     const words = layers[0]!.words.map((word) => word.text);
     expect(group.indexOf(words[0]!)).toBeGreaterThan(group.indexOf(words.at(-1)!));
     expect(markup).not.toMatch(/dir="rtl"[^>]*aria-label="Words on screen now"/);
+  });
+});
+
+describe("Emojis panel layout", () => {
+  test("the five sections stand in order", () => {
+    const markup = render(withEmojis());
+    const order = ["Show emojis", "Add with AI", "In this clip", "Add to a word", "Style"].map((label) => markup.indexOf(`>${label}`));
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+  });
+
+  test("the density is described in words, with no numbers", () => {
+    const markup = render(withEmojis());
+    expect(markup).toContain("Clear matches at an easy pace.");
+    expect(markup).toContain('title="Only the surest matches, spaced well apart."');
+    const line = markup.match(/<p[^>]*>(Clear matches[^<]*)<\/p>/)?.[1] ?? "";
+    expect(line).not.toMatch(/\d/);
+  });
+
+  test("subtitles hidden: the note stands under the switch", () => {
+    const document = withEmojis();
+    const markup = render({ ...document, captionPreset: { ...document.captionPreset, visible: false } });
+    expect(markup.indexOf("Subtitles are hidden, so emojis are hidden too.")).toBeLessThan(markup.indexOf(">Add with AI"));
+  });
+
+  test("In this clip lists every emoji in time order with its word, time, change and remove", () => {
+    const markup = render(withEmojis());
+    const list = markup.slice(markup.indexOf('aria-label="Emojis in this clip"'), markup.indexOf(">Add to a word"));
+    const words = [...list.matchAll(/aria-label="Go to “([^”]+)” at (\d+:\d\d)"/g)].map((match) => [match[1], match[2]]);
+    expect(words.map(([word]) => word)).toEqual(["idea", "money", "team", "magic."]);
+    expect(words.every(([, time]) => /^\d+:\d\d$/.test(time!))).toBe(true);
+    const seconds = words.map(([, time]) => Number(time!.split(":")[0]) * 60 + Number(time!.split(":")[1]));
+    expect(seconds).toEqual([...seconds].sort((left, right) => left - right));
+    expect(seconds[0]).toBeGreaterThan(0);
+    expect(list).toContain("bulb emoji on “idea”, change");
+    expect(list).toContain("Remove bulb emoji from “idea”");
+    expect(list).toContain('dir="auto"');
+  });
+
+  test("the row under the playhead is current", () => {
+    const document = withEmojis();
+    const model = captionEmojiWords(document, buildEditedTimeMap(document.deletedRanges, { startSec: document.clipStartSec, endSec: document.clipEndSec }));
+    const money = model.words.find((word) => word.text === "money")!;
+    const markup = render(document, { timeSec: money.editedStartSec! + 0.05 });
+    const current = markup.match(/<div[^>]*aria-current="true"[^>]*>(?:(?!role="listitem").)*/)?.[0] ?? "";
+    expect(current).toContain("Go to “money”");
+    expect(markup.match(/aria-current="true"/g)).toHaveLength(1);
   });
 });
 

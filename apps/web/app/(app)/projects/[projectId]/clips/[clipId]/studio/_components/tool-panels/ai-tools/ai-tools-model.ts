@@ -45,7 +45,7 @@ export type EmojiRowView =
   | { readonly kind: "hidden" }
   /** Apply runs the AI (busy while saving or running). */
   | { readonly kind: "apply"; readonly description: string; readonly busy: boolean }
-  /** Emojis exist: the count, and the way to edit them. */
+  /** Emojis exist, or the last run found none: the way to the Emojis panel. */
   | { readonly kind: "open"; readonly description: string };
 
 /** What the emoji row shows for the clip's emojis and the shared per-clip run. */
@@ -57,8 +57,9 @@ export function emojiRowView(input: { readonly enabled: boolean; readonly shown:
     const count = `${input.shown} emoji${input.shown === 1 ? "" : "s"}`;
     return { kind: "open", description: input.enabled ? count : `${count}, turned off` };
   }
-  const empty = input.run.status === "done" && input.run.added === 0;
-  return { kind: "apply", description: empty ? "No emojis fit this clip" : EMOJI_ROW_DESCRIPTION, busy: false };
+  // Running again would find the same; the panel offers another density or a word by hand.
+  if (input.run.status === "done" && input.run.added === 0) return { kind: "open", description: "No emojis fit this clip" };
+  return { kind: "apply", description: EMOJI_ROW_DESCRIPTION, busy: false };
 }
 
 /** "3 words found", with what is censored already; the Censor panel's own count line, shorter. */

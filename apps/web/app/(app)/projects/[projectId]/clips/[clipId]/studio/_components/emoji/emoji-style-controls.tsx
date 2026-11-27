@@ -6,7 +6,7 @@ import { CAPTION_EMOJI_PALETTES, type CaptionEmojiPalette, type CaptionEmojiPosi
 import { PanelSegmented, tileProps } from "../tool-panels/panel-ui";
 import { SkinTones } from "./emoji-skin-tones";
 
-/** The Captions panel's colour control, passed in so the emoji colours use the same one. */
+/** The panels' colour control (`ColorField`), passed in so the emoji colours use the same one. */
 export type EmojiColourField = ComponentType<{ label: string; value: string; onChange: (hex: string) => void }>;
 
 /** An accessible on/off switch in the panel's switch look. */

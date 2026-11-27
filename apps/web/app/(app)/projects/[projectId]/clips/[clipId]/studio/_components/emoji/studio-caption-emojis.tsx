@@ -14,8 +14,8 @@ import { useCaptionEmojiEditor, type CaptionEmojiEditor, type CaptionEmojiSource
 
 // The Studio's wiring of the emoji controls: the editing session's document, dispatch and save, and
 // the suggest route. The transcript's line chips read one panel-level editor through
-// `StudioCaptionEmojiLines`; the Captions panel's section mounts from `studio-emojis-section.tsx`,
-// so the section's code stays in the panel's lazy chunk. The controls themselves take plain props.
+// `StudioCaptionEmojiLines`; the Emojis panel mounts from `tool-panels/emojis-panel.tsx`, so its
+// code stays in the panel's lazy chunk. The controls themselves take plain props.
 
 /** The suggest route tags the saved document: unsaved edits are saved first, waiting at most this long. */
 const SAVE_BEFORE_SUGGEST_MS = 6000;
