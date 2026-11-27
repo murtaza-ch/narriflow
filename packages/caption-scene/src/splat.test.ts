@@ -55,6 +55,27 @@ function expectClear(pieces: readonly Piece[], cues: readonly SceneCue[]) {
   }
 }
 
+/** A squish paints when some piece of the cue is drawn wider than tall (sx and sy apart) on an export frame (exits scale evenly). */
+function squishPaints(pieces: readonly Piece[], cue: number, fps: number): boolean {
+  const own = pieces.filter((piece) => piece.id.startsWith(`splat:${cue}:`));
+  return own.some((piece) =>
+    exportFrameTimes(piece.fromMs, piece.toMs, fps).some((t) => {
+      const pose = evaluatePiece(piece, t);
+      return Math.abs(pose.sx - pose.sy) > 0.02;
+    }),
+  );
+}
+
+/** HarfBuzz-like widths for CJK (a full em a character, as the fallback faces draw them); fakeMeasure for the rest. */
+const cjkMeasure: typeof fakeMeasure = (text, face, size, spacing) => {
+  const base = fakeMeasure(text, face, size, spacing);
+  const wide = [...text].filter((ch) => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(ch)).length;
+  if (!wide) return base;
+  return { ...base, advance: base.advance + wide * 0.45 * size, inkTop: -0.88 * size, inkBottom: 0.12 * size };
+};
+/** Drawn layers of a cue: every piece and each of its shadows. */
+const layersOf = (pieces: readonly Piece[], cue: number) => pieces.filter((piece) => piece.id.startsWith(`splat:${cue}:`)).reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+
 describe("splat", () => {
   test("every word paints whole and opaque on its spoken start, and the key word's letters all paint at its onset", () => {
     const { cues, pieces } = build(SPLAT_DEMO.lines);
@@ -190,19 +211,11 @@ describe("splat", () => {
 
   test("every cue flicks paint spatter and squishes: the recurring beats fire on ordinary speech", () => {
     const { cues, pieces } = build(SPLAT_DEMO.lines);
-    let squishes = 0;
     for (const cue of cues) {
       const dots = pieces.filter((piece) => new RegExp(`^splat:${cue.index}:dot\\d$`).test(piece.id));
       expect(dots.length, `cue ${cue.index}`).toBeGreaterThanOrEqual(2);
-      const shaped = pieces.filter((piece) => piece.id.startsWith(`splat:${cue.index}:`));
-      const squished = shaped.some((piece) => {
-        const sx = piece.track.sx ?? [];
-        const sy = piece.track.sy ?? [];
-        return sx.some((frame, k) => Math.abs(frame[1] - (sy[k]?.[1] ?? frame[1])) > 0.03);
-      });
-      if (squished) squishes++;
+      expect(squishPaints(pieces, cue.index, 30), `cue ${cue.index} squishes`).toBe(true);
     }
-    expect(squishes).toBeGreaterThanOrEqual(cues.length - 1);
     expectClear(pieces, cues);
   });
 
@@ -356,9 +369,22 @@ describe("splat: wave 7 review checks", () => {
         const { cues: blip } = demoCues({ lines: ["wow:h@40", "next:b@300"], options: { lead: 400 + offset, gap: 0, cueGap: 0, tail: 300 } });
         const blipPieces = splatProgram.build(sceneInput(blip, { fps, colours, anchor })).pieces;
         const wow = blipPieces.filter((piece) => /^splat:0:w0(l\d+)?$/.test(piece.id));
-        if (wow.some((piece) => exportFrameTimes(piece.fromMs, piece.toMs, fps).filter((t) => box(piece, t)).length < 2)) {
-          expect(wow.map((piece) => piece.id)).toEqual(["splat:0:w0"]);
-          expect(wow[0]!.kind === "text" && wow[0]!.stroke?.widthPx).toBeGreaterThan(0);
+        const word = wow.find((piece) => piece.id === "splat:0:w0");
+        const painted = word ? exportFrameTimes(word.fromMs, word.toMs, fps).filter((t) => box(word, t)) : [];
+        if (word && painted.length < 2) {
+          // The whole word with its outline, and one still splat (a part of the word, so the one-frame filter keeps it) behind
+          // it on that same frame, covering the word's ink.
+          expect(wow.filter((piece) => piece.kind === "text").map((piece) => piece.id)).toEqual(["splat:0:w0"]);
+          expect(word.kind === "text" && word.stroke?.widthPx).toBeGreaterThan(0);
+          const splat = blipPieces.find((piece) => piece.id === "splat:0:w0l90")!;
+          expect(splat, `splat at ${fps} fps offset ${offset}`).toBeDefined();
+          expect(splat.kind === "shape" && splat.fill?.colour).toBeTruthy();
+          expect(splat.z).toBeLessThan(word.z);
+          const t = painted[0]!;
+          const plate = box(splat, t)!;
+          const ink = box(word, t)!;
+          expect(plate.x1 <= ink.x1 && plate.x2 >= ink.x2 && plate.y1 <= ink.y1 && plate.y2 >= ink.y2).toBe(true);
+          for (const track of Object.values(splat.track)) expect(new Set(track!.map((frame) => frame[1])).size).toBe(1);
           oneFrameHeroes++;
         }
         // Every letter of a lettered key word has its outline copy, painting as long as the letter.
@@ -446,5 +472,94 @@ describe("splat: wave 7 review checks", () => {
         expect(shape.track.x && shape.track.y, `${shape.id} has position tracks`).toBeTruthy();
       }
     }
+  });
+});
+
+describe("splat: review round 1", () => {
+  test("a decomposed accent breaks and sizes exactly like the precomposed spelling", () => {
+    const nfc = "désinstitutionnalisation".normalize("NFC");
+    const nfd = nfc.normalize("NFD");
+    const shapeOf = (word: string) => {
+      const { pieces } = build([`${word}:h@900`], {}, "fr");
+      return pieces.filter((piece) => piece.kind === "text" && /^splat:0:w0(l\d+)?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? `${piece.text}@${piece.sizePx.toFixed(1)}` : ""));
+    };
+    const a = shapeOf(nfc);
+    expect(a.length).toBeGreaterThanOrEqual(2);
+    expect(shapeOf(nfd)).toEqual(a);
+    // A mark with no precomposed form stays on its letter when the word breaks.
+    const odd = "x\u0303".repeat(30);
+    const { pieces } = build([`${odd}:b@900`]);
+    const parts = pieces.filter((piece) => piece.kind === "text" && /^splat:0:w0(l\d+)?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece.text : ""));
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    for (const part of parts) expect(part.startsWith("\u0303")).toBe(false);
+  });
+
+  test("long CJK tokens keep the floor with real CJK widths: a 90-character key word at 9:16, a body token at 9:16 and 16:9", () => {
+    const sentence = "今日は本当に素晴らしい一日でしたね皆さんありがとうございました明日もまた会いましょう";
+    const ninety = sentence.repeat(3).slice(0, 90);
+    const repeated = "今日は本当に".repeat(15);
+    const run = (line: string, canvas = { width: 1080, height: 1920 }) => {
+      const { cues } = demoCues({ lines: [line], language: "ja", options: { lead: 400, tail: 800 } });
+      const pieces = splatProgram.build(sceneInput(cues, { fps: 30, colours, anchor, canvas, measure: cjkMeasure })).pieces;
+      const text = pieces.filter((piece) => piece.kind === "text" && /^splat:0:w0(l\d+)?$/.test(piece.id));
+      return { pieces, text, sizes: text.map((piece) => (piece.kind === "text" ? piece.sizePx : 0)), joined: text.map((piece) => (piece.kind === "text" ? piece.text : "")).join("") };
+    };
+    for (const [token, line] of [[ninety, `${ninety}:h@4000`], [repeated, `${repeated}:h@4000`]] as const) {
+      const hero = run(line);
+      expect(hero.joined).toBe(token);
+      expect(Math.min(...hero.sizes), "key word").toBeGreaterThanOrEqual(100 - 0.5);
+    }
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1920, height: 1080 }]) {
+      const body = run(`${repeated}:b@4000`, canvas);
+      expect(body.joined).toBe(repeated);
+      expect(Math.min(...body.sizes), `body ${canvas.width}`).toBeGreaterThanOrEqual(0.66 * 138 - 0.5);
+    }
+  });
+
+  test("a cue never draws more than 150 layers counting shadows; a pathological token keeps its text in a bounded wrap", () => {
+    const cases = [
+      { line: "i:m i:m i:m i:m i:m i:m i:m i:m enthusiastic:h@3300", language: undefined },
+      { line: `${"x".repeat(600)}:b@4000`, language: undefined },
+      { line: `${"字".repeat(600)}:h@4000`, language: "ja" },
+      { line: `${"字".repeat(600)}:b@4000`, language: "ja" },
+      { line: "i:m i:m i:m i:m i:m i:m i:m i:m fantastic:h@3300", language: undefined },
+      { line: "so:b here:m it:b is:h@6000", language: undefined },
+    ];
+    for (const { line, language } of cases) {
+      const { cues } = demoCues({ lines: [line], language, options: { lead: 400, tail: 800 } });
+      const pieces = splatProgram.build(sceneInput(cues, { fps: 30, colours, anchor, measure: cjkMeasure })).pieces;
+      expect(layersOf(pieces, 0), line.slice(0, 30)).toBeLessThanOrEqual(150);
+      const spoken = cues[0]!.words.map((word) => word.text.toUpperCase()).join("");
+      const drawn = pieces.filter((piece) => piece.kind === "text" && /^splat:0:w\d+(l\d+)?$/.test(piece.id)).map((piece) => (piece.kind === "text" ? piece.text : "")).join("");
+      expect(drawn.length, line.slice(0, 30)).toBe(spoken.length);
+    }
+    // The long key word still boils its doodles, inside what is left of the budget.
+    const { cues } = demoCues({ lines: [cases[0]!.line], options: { lead: 400, tail: 800 } });
+    const pieces = splatProgram.build(sceneInput(cues, { fps: 30, colours, anchor })).pieces;
+    expect(pieces.filter((piece) => /:dd\d+p\d+$/.test(piece.id)).length).toBeGreaterThan(3);
+  });
+
+  test("a lone word squishes on its own landing, a short key-word-only cue still squishes, and every key word gets a doodle", () => {
+    const lone = build(["oh.:b@300"], { tail: 480 });
+    expect(squishPaints(lone.pieces, 0, 30), "lone").toBe(true);
+    const quick = build(["wow:h@260", "next:b one:b"], { cueGap: 0, gap: 0, tail: 400 });
+    expect(squishPaints(quick.pieces, 0, 30), "quick").toBe(true);
+    // A key word whose rim has no room (rows above and below, a lane-wide splat) gets a doodle in free space round the block.
+    const crowded = build(["whole:b gorgeous:b display:h@900 panel:b screen:b"], {}, undefined, { canvas: { width: 1080, height: 1080 } });
+    expect(crowded.pieces.filter((piece) => /^splat:0:dd\d+p0$/.test(piece.id)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("doodles enter from half size and never swap drawing during the exit", () => {
+    const { cues, pieces } = build(["wait:b this:m is:m insane:h@900", "no:b way:b"], { cueGap: 600 });
+    const first = pieces.filter((piece) => /^splat:0:dd\d+p0$/.test(piece.id));
+    expect(first.length).toBeGreaterThan(0);
+    for (const piece of first) expect(evaluatePiece(piece, piece.fromMs).sx).toBeGreaterThanOrEqual(0.44);
+    const own = pieces.filter((piece) => piece.id.startsWith("splat:0:"));
+    const face = own.find((piece) => piece.id === "splat:0:w0")!;
+    const end = face.toMs;
+    // The exit: the frames where the words shrink.
+    const exitFrom = exportFrameTimes(face.fromMs, end, 60).find((t) => evaluatePiece(face, t).sx < 0.999 && t > cues[0]!.words.at(-1)!.endMs)!;
+    expect(exitFrom).toBeDefined();
+    for (const piece of own.filter((piece) => /:dd\d+p\d+$/.test(piece.id))) expect(piece.fromMs <= exitFrom - 10 || piece.fromMs >= end, piece.id).toBe(true);
   });
 });

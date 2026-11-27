@@ -4,7 +4,7 @@ import { clamp, type Ease, ease, kf, lerp, prog } from "../ease";
 import { exportFrameAtOrAfter, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import { balancedRows, rowsFromRoles, rowVisualOrder } from "../layout";
-import type { Box, PathCmd, Piece, Shadow, TextMeasure, TextPiece, Track } from "../scene";
+import { type Box, type PathCmd, type Piece, SCENE_PIECE_BUDGET, type Shadow, type TextMeasure, type TextPiece, type Track } from "../scene";
 import { ellipsePath, pathBounds } from "../shapes";
 import { caps, galleryScene, letterCells } from "./gallery-layout";
 import type { SpeechCell } from "./speech-layout";
@@ -32,12 +32,19 @@ import type { SpeechCell } from "./speech-layout";
  *   sample's two layers did.
  * - **Words keep their slots and never touch.** Rows come from the roles (words before the key word, the key word, the words
  *   after) and are balanced from measured widths; each word's slot holds its outline, its lean and its overshoot, so two words'
- *   outlines never join at peak scale (Sol r2: NOT and PANIC). The sample's row slide (words easing outward as the next landed) is
- *   left out: a spoken word stays where it landed.
+ *   outlines never join at peak scale (Sol r2: NOT and PANIC). As in the sample, the words heard so far sit centred and the row
+ *   eases outward (240 ms) into its final slots as each next word lands, so a cue's first word never waits off centre.
  * - **Fits every word.** The key word is sized so its splat fits the lane; below 100 px it breaks across rows when its script can
  *   be broken (Latin, Cyrillic, Greek, CJK), the splat then backing all its rows. A body word wider than the column shrinks to 66%,
- *   then breaks the same way. Joined scripts (Devanagari, Arabic) are never broken: they shrink. Row heights and the splat's
- *   height come from the measured ink, so tall Devanagari rows push their neighbours apart.
+ *   then breaks the same way. Joined scripts (Devanagari, Arabic) are never broken: they shrink. Text is composed (NFC) before it
+ *   is measured and broken, and breaks fall between graphemes, so a decomposed accent wraps like its precomposed letter. A token
+ *   that needs four or more rows is set as a still block on the whole lane (no overshoot, lean or squish, at most 10% over the
+ *   floor, its splat capped to the lane and the band), so a 90-character CJK key word keeps its 100 px floor; past 12 rows a token
+ *   is split evenly into 12 (below the floor, the text whole). Row heights and the splat's height come from the measured ink.
+ * - **A budget of 150 drawn layers a cue**, shadows included: the text first (long tokens share a bounded number of rows), then the
+ *   splat, the spatter and the doodles, whose boil swaps share what is left.
+ * - **One-frame key words keep their splat.** A key word that paints on a single frame is drawn whole with its outline, on one
+ *   still front splat named as a part of the word (`w<word>l90`, kept by the shared one-frame filter).
  * - **Small things that bite on real speech.** A key word that paints on one frame is drawn whole (its letters' outline copies
  *   would be dropped by the shared two-frame filter); spatter dots keep clear of words by more than their flick travel; every
  *   piece has its own x/y tracks, so the shared lane shift and refit move the paint and doodles with their words.
@@ -49,7 +56,9 @@ import type { SpeechCell } from "./speech-layout";
  *   text, and the doodle kinds rotate by counter.
  * - **Doodles in free space, events capped.** Doodles are placed round the splat (round the last word on a cue without a key
  *   word), clear of every word's painted box by 16 px, inside the safe area; a doodle with no room is left out. Each boils as
- *   static pose pieces on the export grid every 125 ms, at most 16 swaps (then it holds still), inside its own cue's window.
+ *   static pose pieces on the export grid every 125 ms, at most 16 swaps (then it holds still), inside its own cue's window, with
+ *   no swap in the exit (its last pose rides the recoil). Doodles enter from 45% of their size, so the first frame reads as the
+ *   drawing, not a fleck. A key word whose rim has no room gets one compact doodle in free space round the whole block.
  * - **Exit.** The words stay opaque and shrink 6% into the block over the last 110 ms of the window while the paint and doodles
  *   recoil (Sol r1 taste: the sample's fade looked washed out); when two painted frames do not fit, nothing animates out.
  * - **Colours.** The preset's primary, highlight and accent replace the white, yellow and pink (words, the key word and the first
@@ -57,7 +66,8 @@ import type { SpeechCell } from "./speech-layout";
  *
  * Extra recurring beats, in the sample's paint language, on every cue: paint spatter (two or three flat dots flicked off the splat's
  * rim, or off the doodle on a cue without a key word), and a jelly squish (each word squishes as the next word lands, the splat
- * squishes when the key word's letters settle and again every 1.4 s of a long hold).
+ * squishes when the key word's letters settle and again every 1.4 s of a long hold; a lone word squishes on its own landing; a
+ * squish too close to the exit moves into the last three painted frames the cue has).
  */
 
 export const SPLAT_DEMO: DemoScript = {
@@ -89,6 +99,12 @@ const WORD_GAP = 0.1;
 const ROW_CLEAR = 0.07;
 const CLEAR = 16;
 const MAX_LETTERS = 12;
+/** The most rows one token may break into; a longer one is split evenly into this many, below the floor. */
+const MAX_TOKEN_ROWS = 12;
+/** Rows from which a broken token is set as a still block (no overshoot, lean or squish). */
+const STEADY_ROWS = 4;
+/** Layers kept for the two or three spatter dots, which are drawn after the doodles. */
+const SPATTER_RESERVE = 3;
 const BOIL_MS = 125;
 const MAX_BOIL = 16;
 const EXIT_MS = 110;
@@ -105,7 +121,7 @@ const BLUE = "#2F7CFF";
 const DOODLE = "#FFFFFF";
 
 /** Scripts that may be broken between characters when a word is wider than the lane. */
-const BREAKABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{Zs}ー々〆〤]+$/u;
+const BREAKABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{M}\p{N}\p{P}\p{Zs}ー々〆〤]+$/u;
 
 type Kind = "spark" | "plus" | "squiggle" | "curl";
 const KINDS: readonly Kind[] = ["spark", "plus", "squiggle", "curl"];
@@ -268,7 +284,8 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
   const heroCount = earlier.filter((other) => other.words.some((word) => word.role === "hero")).length;
   const plainCount = earlier.length - heroCount;
   const look = looks[heroCount % looks.length]!;
-  const texts = words.map((word) => caps(word, cue));
+  // Canonical composition first: a decomposed accent (U+0301) measures, breaks and splits like its precomposed letter.
+  const texts = words.map((word) => caps(word, cue).normalize("NFC"));
   const seed = index * 7919 + textSeed(texts.join(" "));
   const direction = ctx.rtl ? "rtl" : "ltr";
 
@@ -281,16 +298,21 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
   /** The splat's painted half width over the hero's ink half width plus its margin: back offset, lobes, bloom and recoil. */
   const SPLAT_REACH = 1.22;
   const splatMargin = (size: number) => 0.42 * size;
+  /** How far below the front splat the back colour sits: a tenth of the smaller half axis (a tall splat drops no further). */
+  const backDrop = (rx: number, ry: number) => 0.1 * Math.min(rx, ry);
   const heroSizeFor = (text: string) => {
     const k = measure(text, 100, HERO_SPACING).advance / 100;
     return Math.min(HERO * u, lane / 2 / (SPLAT_REACH * (k / 2 + 0.42)));
   };
-  /** The fewest even chunks of `text` whose widest fits `room` at `size` (characters, never across a space). */
+  /** The text as graphemes, so a mark with no precomposed form stays on its letter when a word is broken. */
+  const graphemes = (text: string) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map((g) => g.segment);
+  /** The fewest even chunks of `text` whose widest fits `room` at `size` (whole graphemes, never across a space). */
   const chunks = (text: string, size: number, spacing: number, room: number): string[] => {
+    const glyphs = graphemes(text);
     const split = (limit: number): string[] => {
       const out: string[] = [];
       let row = "";
-      for (const ch of text) {
+      for (const ch of glyphs) {
         if (row && measure(row + ch, size, spacing).advance > limit) {
           out.push(row);
           row = "";
@@ -310,45 +332,77 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
     }
     return split(hi);
   };
-  const parts: Part[][] = words.map((_, at) => {
-    const text = texts[at]!;
-    const isHero = at === heroWord;
-    const breakable = BREAKABLE.test(text) && [...text].length > 1;
-    if (isHero) {
-      const size = heroSizeFor(text);
-      if (size >= HERO_FLOOR * u || !breakable) return [{ word: at, part: 0, parts: 1, text, size, spacing: HERO_SPACING, m: measure(text, size, HERO_SPACING), hero: true }];
-      const floor = HERO_FLOOR * u;
-      const room = (lane / 2 / SPLAT_REACH - splatMargin(floor)) * 2;
-      const list = chunks(text, floor, HERO_SPACING, room);
-      const widest = Math.max(...list.map((chunk) => measure(chunk, 100, HERO_SPACING).advance / 100));
-      const fitted = clamp(lane / 2 / (SPLAT_REACH * (widest / 2 + 0.42)), floor, HERO * u);
-      return list.map((chunk, part) => ({ word: at, part, parts: list.length, text: chunk, size: fitted, spacing: HERO_SPACING, m: measure(chunk, fitted, HERO_SPACING), hero: true }));
-    }
-    const natural = measure(text, bodySize, 0).advance;
-    const room = column / POP_PEAK - 2 * OUTLINE * bodySize;
-    const size = natural > room ? (bodySize * room) / natural : bodySize;
-    if (size >= BODY_FLOOR * bodySize || !breakable) return [{ word: at, part: 0, parts: 1, text, size, spacing: 0, m: measure(text, size, 0), hero: false }];
-    const floor = BODY_FLOOR * bodySize;
-    const list = chunks(text, floor, 0, room);
-    const widest = Math.max(...list.map((chunk) => measure(chunk, 100, 0).advance / 100));
-    const fitted = clamp(room / widest, floor, bodySize);
-    return list.map((chunk, part) => ({ word: at, part, parts: list.length, text: chunk, size: fitted, spacing: 0, m: measure(chunk, fitted, 0), hero: false }));
-  });
+  /** `count` chunks of about the same number of graphemes: the bounded wrap of a token too long for any readable layout. */
+  const evenChunks = (text: string, count: number): string[] => {
+    const glyphs = graphemes(text);
+    const per = Math.ceil(glyphs.length / count);
+    return Array.from({ length: Math.ceil(glyphs.length / per) }, (_, k) => glyphs.slice(k * per, (k + 1) * per).join(""));
+  };
+  // Tokens that must break share a bounded number of rows, so the text alone never takes more than about 100 of the cue's 150
+  // pieces (a body row is a face and its shadow, a lettered key word three pieces a letter).
+  const breakers = Math.max(1, texts.filter((text) => measure(text, bodySize, 0).advance > column).length);
+  const tokenRows = clamp(Math.floor((100 - 2 * words.length - 3 * MAX_LETTERS) / (2 * breakers)), 2, MAX_TOKEN_ROWS);
+  /** Rows of one long token: the fewest at the floor; past `tokenRows`, an even split at the size that fits `room`. */
+  const breakToken = (text: string, floor: number, ceiling: number, spacing: number, room: number) => {
+    const readable = chunks(text, floor, spacing, room);
+    const bounded = readable.length > tokenRows;
+    const list = bounded ? evenChunks(text, tokenRows) : readable;
+    const fits = room / Math.max(...list.map((chunk) => measure(chunk, 100, spacing).advance / 100));
+    // A block of four or more rows grows little past the floor: every point of size is paid for once per row in height.
+    const top = list.length >= STEADY_ROWS ? Math.min(ceiling, floor * 1.1) : ceiling;
+    return { list, size: bounded ? Math.min(top, fits) : clamp(fits, floor, top) };
+  };
+  /** Every word as row parts for rows at most `limit` wide. */
+  const partsFor = (limit: number): Part[][] =>
+    words.map((_, at) => {
+      const text = texts[at]!;
+      const isHero = at === heroWord;
+      const breakable = BREAKABLE.test(text) && graphemes(text).length > 1;
+      if (isHero) {
+        const size = heroSizeFor(text);
+        if (size >= HERO_FLOOR * u || !breakable) return [{ word: at, part: 0, parts: 1, text, size, spacing: HERO_SPACING, m: measure(text, size, HERO_SPACING), hero: true }];
+        const floor = HERO_FLOOR * u;
+        // Rows the splat can back with its full margin; a key word that would need more than three of them takes the whole row
+        // width instead (its splat is then capped to the lane, see `stack`).
+        const splatRoom = (lane / 2 / SPLAT_REACH - splatMargin(floor)) * 2;
+        const backed = chunks(text, floor, HERO_SPACING, splatRoom).length <= 3;
+        // A block of rows is set untracked: the spacing only keeps a lockup's popping letters apart.
+        const spacing = backed ? HERO_SPACING : 0;
+        const room = backed ? splatRoom : lane - (2 * HERO_OUTLINE + 0.1) * floor;
+        const { list, size: broken } = breakToken(text, floor, HERO * u, spacing, room);
+        const fitted = backed ? clamp(lane / 2 / (SPLAT_REACH * (Math.max(...list.map((chunk) => measure(chunk, 100, spacing).advance / 100)) / 2 + 0.42)), broken, HERO * u) : broken;
+        return list.map((chunk, part) => ({ word: at, part, parts: list.length, text: chunk, size: fitted, spacing, m: measure(chunk, fitted, spacing), hero: true }));
+      }
+      const natural = measure(text, bodySize, 0).advance;
+      const popRoom = limit / POP_PEAK - 2 * OUTLINE * bodySize;
+      const size = natural > popRoom ? (bodySize * popRoom) / natural : bodySize;
+      if (size >= BODY_FLOOR * bodySize || !breakable) return [{ word: at, part: 0, parts: 1, text, size, spacing: 0, m: measure(text, size, 0), hero: false }];
+      // Rows that pop with an overshoot; a token that needs four or more takes them steady, on the whole row width.
+      const floor = BODY_FLOOR * bodySize;
+      const room = chunks(text, floor, 0, popRoom).length < STEADY_ROWS ? popRoom : limit - 2 * OUTLINE * floor;
+      const { list, size: fitted } = breakToken(text, floor, bodySize, 0, room);
+      return list.map((chunk, part) => ({ word: at, part, parts: list.length, text: chunk, size: fitted, spacing: 0, m: measure(chunk, fitted, 0), hero: false }));
+    });
+  let parts = partsFor(column);
 
   // Each word leans its own way, 2-5 degrees, alternating sides along the cue with a hashed size; a wide word leans less (its
   // ends would rise far and push the rows apart), a key word half as much.
   const tilts = words.map((_, at) => {
-    const wide = Math.max(...parts[at]!.map((part) => part.m.advance));
+    const wide = Math.min(column, measure(texts[at]!, at === heroWord ? HERO * u : bodySize, 0).advance);
     const lean = (2 + 3 * unit(seed, at * 13 + 5)) * Math.min(1, (300 * u) / Math.max(1, wide));
     return (at % 2 === (seed & 1) ? 1 : -1) * Math.max(1.2, lean) * (at === heroWord ? 0.5 : 1);
   });
   const outlineOf = (part: Part) => (part.hero ? HERO_OUTLINE : OUTLINE) * part.size;
+  /** A token broken into four or more rows is a block of text: its rows enter without overshoot, lean or squish. */
+  const steady = (part: Part) => part.parts >= STEADY_ROWS;
+  const tiltOf = (part: Part) => (steady(part) ? 0 : tilts[part.word]!);
   /** A part's painted box about its ink centre at rest: outline, shadow, lean and the pop's overshoot. */
   const restBox = (part: Part, cx: number, cy: number): Box => {
     const o = outlineOf(part);
     const w = part.m.advance + 2 * o + (part.hero ? 0.1 * part.size : 0);
     const h = part.m.inkBottom - part.m.inkTop + 2 * o + (part.hero ? 0.08 * part.size : 0);
-    const box = turnedBox(cx, cy, w * POP_PEAK, h * POP_PEAK, tilts[part.word]!);
+    const peak = steady(part) ? 1 : POP_PEAK;
+    const box = turnedBox(cx, cy, w * peak, h * peak, tiltOf(part));
     return { ...box, y2: box.y2 + SHADOW * part.size };
   };
   const slotWidth = (part: Part) => {
@@ -414,8 +468,10 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       const inkTop = baselines[first]! + heroParts[0]!.m.inkTop;
       const inkBottom = baselines[last]! + heroParts.at(-1)!.m.inkBottom;
       const inkW = Math.max(...heroParts.map((part) => part.m.advance));
-      const rx = inkW / 2 + splatMargin(size);
-      const ry = (inkBottom - inkTop) / 2 + 0.4 * size;
+      // A key word broken over many full-width rows keeps its splat inside the lane (its margin narrows at the sides).
+      const rx = Math.min(inkW / 2 + splatMargin(size), lane / 2 / SPLAT_REACH);
+      // Never taller than the band can hold with its bloom and recoil.
+      const ry = Math.min((inkBottom - inkTop) / 2 + 0.4 * size, (room - backDrop(rx, room)) / 2 / 1.08);
       const cy = (inkTop + inkBottom) / 2;
       // The splat tucks behind the neighbouring rows' lower and upper edges by at most a fifth of a body line; the rows before the
       // key word move up and the rows after it move down until it does.
@@ -428,9 +484,10 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       for (let r = last + 1; r < rows.length; r++) baselines[r] = baselines[r]! + down;
       splat = { cy, rx, ry };
     }
-    const reach = splat ? splat.ry * 1.1 : 0;
+    // The splat's reach: its bloom and recoil (8%), and below, the back colour's offset.
+    const reach = splat ? splat.ry * 1.08 : 0;
     const top = Math.min(...rows.map((_, r) => baselines[r]! - extents[r]!.above), splat ? splat.cy - reach : Number.POSITIVE_INFINITY);
-    const bottom = Math.max(...rows.map((_, r) => baselines[r]! + extents[r]!.below), splat ? splat.cy + reach : Number.NEGATIVE_INFINITY);
+    const bottom = Math.max(...rows.map((_, r) => baselines[r]! + extents[r]!.below), splat ? splat.cy + reach + backDrop(splat.rx, splat.ry) : Number.NEGATIVE_INFINITY);
     return { baselines, splat, top, height: bottom - top };
   };
 
@@ -439,12 +496,14 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
   let rows = packRows(column);
   let stacked = stack(rows);
   if (stacked.height > room && lane - 60 * u > column) {
+    const narrow = parts;
+    parts = partsFor(lane - 60 * u);
     const wide = packRows(lane - 60 * u);
     const alt = stack(wide);
     if (alt.height < stacked.height) {
       rows = wide;
       stacked = alt;
-    }
+    } else parts = narrow;
   }
   const targetY = space.y(1290);
   const top = Math.min(bounds.y2 - PAD * u - stacked.height, Math.max(bounds.y1 + PAD * u, targetY - stacked.height / 2));
@@ -464,7 +523,7 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       const centre = pen + slots[i]! / 2;
       const mid = (part.m.inkTop + part.m.inkBottom) / 2;
       const cell: SpeechCell = { at: part.word, text: part.text, size: part.size, face: FACE, spacing: part.spacing, x: centre, baseline, width: part.m.advance, inkTop: part.m.inkTop, inkBottom: part.m.inkBottom };
-      placed.push({ part, cell, x: centre, y: baseline + mid, tilt: tilts[part.word]!, box: restBox(part, centre, baseline + mid), row: r, slot: slots[i]! });
+      placed.push({ part, cell, x: centre, y: baseline + mid, tilt: tiltOf(part), box: restBox(part, centre, baseline + mid), row: r, slot: slots[i]! });
       pen += slots[i]! + gap;
     }
   }
@@ -484,10 +543,14 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
   const recoil = (e: number) => (e < 0.3 ? 1 + 0.08 * (e / 0.3) : 1.08 * (1 - ((e - 0.3) / 0.7) ** 2));
   const entries = words.map((word, at) => ctx.enter(word, at === heroWord ? 300 : 240, 0));
   /** A squish that has three painted frames before the exit, or null. */
-  const squishAt = (t: number): number | null => {
+  const squishAt = (t: number, floor = cueFrom): number | null => {
+    const fits = (start: number) => paintedFrameCount(start, Math.min(start + SQUISH_MS, hold), fps) >= 3;
     const start = exportFrameAtOrAfter(t, fps);
-    const end = Math.min(start + SQUISH_MS, hold);
-    return paintedFrameCount(start, end, fps) >= 3 && end - start >= 80 ? start : null;
+    if (fits(start)) return start;
+    // Too close to the exit: the squish moves earlier, into the last frames the cue still has, never before `floor`.
+    const grid = exportFrameTimes(Math.max(cueFrom, floor), hold, fps);
+    const late = grid[grid.length - 3];
+    return late !== undefined && late < start && fits(late) ? late : null;
   };
   const squishWindows = (starts: readonly (number | null)[]) => starts.filter((t): t is number => t !== null).map((t) => [t, Math.min(t + SQUISH_MS, hold)] as const);
   /** 1 + the squish at `t`: wider and shorter, then back. */
@@ -507,7 +570,12 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
     const starts: (number | null)[] = [];
     if (next && at !== heroWord && next.from > entries[at]!.settled) starts.push(squishAt(next.from));
     // A cue without a key word: its last word squishes again on a long hold.
-    if (!heroed && at === words.length - 1) for (let t = entries[at]!.settled + 500; t + SQUISH_MS < hold; t += HOLD_SQUISH_EVERY) starts.push(squishAt(t));
+    if (!heroed && at === words.length - 1) {
+      // A lone word squishes on its own landing (compressed into the frames before the exit); a later word after a beat.
+      const first = words.length === 1 ? entries[at]!.settled : entries[at]!.settled + 500;
+      starts.push(squishAt(first, entries[at]!.from));
+      for (let t = first + HOLD_SQUISH_EVERY; t + SQUISH_MS < hold; t += HOLD_SQUISH_EVERY) starts.push(squishAt(t));
+    }
     return squishWindows(starts);
   });
 
@@ -557,12 +625,14 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       const delay = lettered ? (order[k]! * spread) / Math.max(1, letters.length - 1) : 0;
       const start = from + delay;
       const frames = paintedFrameCount(start, settled, fps);
-      const name: Ease = frames >= 5 ? "spring" : "out";
+      const name: Ease = frames >= 5 && !steady(part) ? "spring" : "out";
       // A letter rests a little off: its own size, turn and height; it enters from a smaller, more turned pose.
       const rest = lettered ? { s: 1 + 0.045 * rand(ls, 1), r: 4 * rand(ls, 2), dy: 0.025 * part.size * rand(ls, 3) } : { s: 1, r: item.tilt, dy: 0 };
       const enterFrom = lettered
         ? { s: 0.6 + 0.22 * unit(ls, 4), r: rest.r + 22 * rand(ls, 5), dy: rest.dy + (0.04 + 0.08 * unit(ls, 6)) * part.size }
-        : { s: frames >= 4 ? 0.55 : 0.72, r: item.tilt + 9 * side * (tilts[at]! >= 0 ? 1 : -1), dy: 0.05 * part.size };
+        : steady(part)
+          ? { s: 0.8, r: 0, dy: 0.04 * part.size }
+          : { s: frames >= 4 ? 0.55 : 0.72, r: item.tilt + 9 * side * (tilts[at]! >= 0 ? 1 : -1), dy: 0.05 * part.size };
       const px = lettered ? letter.x : item.x;
       const pose = (t: number) => {
         let s = rest.s;
@@ -570,7 +640,7 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
         let dy = rest.dy;
         if (motion && t < settled) {
           const p = prog(t, start, Math.max(1, settled - start));
-          if (!lettered && frames >= 4) {
+          if (!lettered && !steady(part) && frames >= 4) {
             // 55% to 105% to 100%: an overshoot keyframe, so a short word still settles exactly on its last painted frame.
             const peak = start + 0.6 * (settled - start);
             s = t < peak ? lerp(enterFrom.s, POP_PEAK, ease("out", prog(t, start, peak - start))) : lerp(POP_PEAK, 1, ease("inOut", prog(t, peak, settled - peak)));
@@ -578,7 +648,7 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
           r = lerp(enterFrom.r, rest.r, ease(lettered ? name : "out", p));
           dy = lerp(enterFrom.dy, rest.dy, ease("out", Math.min(1, p * 1.6)));
         }
-        const q = squish(windows, t);
+        const q = steady(part) ? 0 : squish(windows, t);
         const e = exitPose(t);
         const moved = pull(px + slideAt(item.row, t), item.y + dy, e);
         return { x: moved.x, y: moved.y, sx: s * (1 + q) * moved.s, sy: s * (1 - q) * moved.s, r };
@@ -604,6 +674,12 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       if (isHero) heroSettled = Math.max(heroSettled, settled);
     });
   }
+
+  // ---- the piece budget: at most 150 drawn layers a cue, a piece's shadows included; the text is already in, decorations take
+  // what is left (the splat and spatter first, the doodles' swaps share the rest).
+  const costOf = (piece: Piece) => 1 + (piece.shadows?.length ?? 0);
+  /** What is left for decorations, keeping room for the spatter dots that are drawn last. */
+  const budgetLeft = () => SCENE_PIECE_BUDGET - pieces.reduce((sum, piece) => sum + costOf(piece), 0) - SPATTER_RESERVE;
 
   // ---- free space ---------------------------------------------------------------------------------------------------
   const area: Box = { x1: bounds.x1 + 4 * u, y1: bounds.y1 + 4 * u, x2: bounds.x2 - 4 * u, y2: bounds.y2 - 4 * u };
@@ -638,11 +714,28 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
     splatBox = { x1: hx - rx * 1.1, x2: hx + rx * 1.1, y1: hy - ry * 1.1, y2: hy + ry * 1.1 };
     const heroFrom = entries[heroWord]!.from;
     const settleAt = heroSettled > 0 ? heroSettled : entries[heroWord]!.settled;
-    const holdSquish = [squishAt(settleAt)];
+    const holdSquish = [squishAt(settleAt, heroFrom)];
     for (let t = settleAt + HOLD_SQUISH_EVERY; t + SQUISH_MS < hold; t += HOLD_SQUISH_EVERY) holdSquish.push(squishAt(t));
     const splatWindows = squishWindows(holdSquish);
     const soft = (v: number) => (v > 1 ? 1 + (v - 1) * 0.4 : v);
-    const blob = (suffix: string, z: number, colour: string, wanted: number, path: PathCmd[], x: number, y: number, turn: number, lag: number) => {
+    /**
+     * The largest bloom turn (up to `wanted` degrees) that keeps the turned, growing splat inside 110% of its half width (and of
+     * its half height when it is taller than wide): a tall splat of a many-row key word would otherwise swing past the lane.
+     */
+    const turnFor = (wanted: number) => {
+      const fits = (deg: number) =>
+        Array.from({ length: 21 }, (_, i) => i / 20).every((p) => {
+          const k = lerp(0.3, 1, soft(ease("spring", p)));
+          const a = rad(Math.abs(lerp(deg, 0, ease("out", p))));
+          const wide = k * (rx * Math.cos(a) + ry * Math.sin(a));
+          const tall = k * (ry * Math.cos(a) + rx * Math.sin(a));
+          return wide <= 1.1 * rx && (ry <= rx || tall <= 1.1 * ry);
+        });
+      for (let deg = Math.abs(wanted); deg > 0; deg -= 1) if (fits(deg)) return Math.sign(wanted) * deg;
+      return 0;
+    };
+    const blob = (suffix: string, z: number, colour: string, wanted: number, path: PathCmd[], x: number, y: number, want: number, lag: number) => {
+      const turn = turnFor(want);
       const start = startFor(wanted, 2, heroFrom);
       if (start === null) return;
       const bloom = Math.min(340, hold - start);
@@ -669,15 +762,24 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
         },
       });
     };
-    blob("blobB", 1, look.back, heroFrom + 60, blobPath(rx * 0.98, ry, seed + 5, 0.5, 1.08), hx + dir * rx * 0.07, hy + ry * 0.1, 18 * dir, 40);
-    blob("blobF", 2, look.front, heroFrom, blobPath(rx, ry, seed + 11, 0), hx, hy, -16 * dir, 0);
+    if (paintedFrameCount(heroFrom, to, fps) < 2) {
+      // A key word that paints on a single frame keeps one compact, still splat behind it on that frame. It is named as a part of
+      // the word (`w<word>l90`), the one name the shared one-frame filter keeps; the second colour and the doodles are left out.
+      pieces.push({
+        id: `${ctx.id}:w${heroWord}l90`, kind: "shape", z: 2, fromMs: heroFrom, toMs: to, ...fromTopLeft(blobPath(rx, ry, seed + 11, 0)),
+        fill: { colour: look.front }, track: { x: [[heroFrom, hx]], y: [[heroFrom, hy]] },
+      });
+    } else {
+      blob("blobB", 1, look.back, heroFrom + 60, blobPath(rx * 0.98, ry, seed + 5, 0.5, 1.08), hx + dir * rx * 0.07, hy + backDrop(rx, ry), 18 * dir, 40);
+      blob("blobF", 2, look.front, heroFrom, blobPath(rx, ry, seed + 11, 0), hx, hy, -16 * dir, 0);
+    }
   }
 
   // ---- doodles: white line drawings in three poses swapped every 125 ms on the export grid -----------------------------
   const counterKinds = heroed ? [0, 1, 2].map((k) => KINDS[(heroCount + k) % KINDS.length]!) : [KINDS[plainCount % KINDS.length]!];
   const doodleShadow = (size: number): Shadow[] => [{ dx: 0, dy: 0.04 * size, blur: 0, colour: SHADE, alpha: SHADE_ALPHA }];
   const turnOf = (k: number) => 20 * rand(seed, 200 + k);
-  const doodle = (k: number, kind: Kind, size: number, x: number, y: number, wanted: number, floor: number) => {
+  const doodle = (k: number, kind: Kind, size: number, x: number, y: number, wanted: number, floor: number, share = 1) => {
     const start = startFor(wanted, 2, floor);
     if (start === null) return false;
     const popMs = Math.min(260, hold - start);
@@ -687,17 +789,20 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       const p = prog(t, start, popMs);
       const e = exitPose(t);
       const moved = pull(x, y, e);
-      const grow = popping ? lerp(0.15, 1, ease("spring", p)) : 1;
+      const grow = popping ? lerp(0.45, 1, ease("spring", p)) : 1;
       return { x: moved.x, y: moved.y, s: grow * moved.s * recoil(e) };
     };
     const edges = [start, start + popMs, exitFrom, to];
     const scale = sample((t) => pose(t).s, edges, start, 0.002);
     const track: Track = { x: sample((t) => pose(t).x, edges, start, 0.25), y: sample((t) => pose(t).y, edges, start, 0.25), sx: scale, sy: scale, rz: [[start, turn]] };
-    // Swap times on the export grid, capped; a last stretch too short to paint twice joins the one before.
+    // Swap times on the export grid, capped by the cue's piece budget, none in the exit (the last pose rides the recoil); a last
+    // stretch too short to paint twice joins the one before.
+    const cap = Math.min(MAX_BOIL, Math.floor(budgetLeft() / (2 * share)));
+    if (cap < 1) return false;
     const swaps = [start];
-    for (let j = 1; j < MAX_BOIL; j++) {
+    for (let j = 1; j < cap; j++) {
       const t = exportFrameAtOrAfter(start + j * BOIL_MS, fps);
-      if (t >= to) break;
+      if (t >= hold) break;
       swaps.push(t);
     }
     while (swaps.length > 1 && paintedFrameCount(swaps.at(-1)!, to, fps) < 2) swaps.pop();
@@ -753,19 +858,20 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
         const box = extentBox(x, y, e);
         if (!free(box)) continue;
         taken.push(box);
-        if (doodle(k, kind, size, x, y, entries[heroWord]!.from + 70 + k * 90, entries[heroWord]!.from)) doodleSpots.push({ x, y, half: Math.max(e.hw, e.hh) });
+        if (doodle(k, kind, size, x, y, entries[heroWord]!.from + 70 + k * 90, entries[heroWord]!.from, counterKinds.length - k)) doodleSpots.push({ x, y, half: Math.max(e.hw, e.hh) });
         break;
       }
     });
-  } else {
-    // One small doodle tucked against a corner of the last word (then the first, then any), at the first clear spot.
+  }
+  /** One small doodle tucked against a corner of the last word (then the first, then any), at the first clear spot. */
+  const cornerDoodle = (k: number, kind: Kind, owner: number) => {
     const size = 78 * u;
-    const e = doodleExtent(0, counterKinds[0]!, size);
+    const e = doodleExtent(k, kind, size);
     const half = Math.max(e.hw, e.hh);
     const order = [...new Set([placed.length - 1, 0, ...placed.keys()])];
     const spots: [number, number][] = [];
-    for (const k of order) {
-      const box = placed[k]!.box;
+    for (const at of order) {
+      const box = placed[at]!.box;
       const near = (x: number) => (side > 0 ? x : box.x1 + box.x2 - x);
       const off = 6 * u;
       spots.push(
@@ -780,10 +886,13 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
       const box = extentBox(x, y, e);
       if (!free(box, 4 * u)) continue;
       taken.push(box);
-      if (doodle(0, counterKinds[0]!, size, x, y, entries[words.length - 1]!.from + 60, entries[words.length - 1]!.from)) doodleSpots.push({ x, y, half });
-      break;
+      if (doodle(k, kind, size, x, y, entries[owner]!.from + 60, entries[owner]!.from)) doodleSpots.push({ x, y, half });
+      return;
     }
-  }
+  };
+  // A cue without a key word gets its one small doodle; a key word whose splat left no room on its rim gets one in free space
+  // round the whole block.
+  if (!heroed || doodleSpots.length === 0) cornerDoodle(heroed ? 3 : 0, counterKinds[0]!, heroed ? heroWord : words.length - 1);
 
   // ---- paint spatter: two or three flat dots flicked off the splat's rim (or off the doodle), in the cue's colours -------
   {
@@ -801,6 +910,7 @@ export const splatProgram = galleryScene("splat", 1290, (ctx) => {
     {
       const base = 360 * unit(seed, 400);
       dots.forEach((share, k) => {
+        if (budgetLeft() + SPATTER_RESERVE < 1) return;
         const r = share * ref;
         // Round the anchor's rim, then a little further out.
         for (let step = 0; step < 48; step++) {
