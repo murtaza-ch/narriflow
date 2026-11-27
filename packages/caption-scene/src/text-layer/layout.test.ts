@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { captionGraphemes } from "@narriflow/caption-fonts/graphemes";
 import { DEFAULT_TEXT_SHADOW, DEFAULT_TITLE_STYLE, type StudioTextLayer, captionFontFace, studioTextLayerSchema } from "@narriflow/validators";
 import { type Measure, type PathCmd, type Piece, type ShapePiece, type TextPiece, evaluatePiece, visiblePieces } from "../scene";
-import { TEXT_LAYER_Z_BAND, buildTextLayerScene, layoutTextLayer, wrapTextLayer } from "./layout";
+import { TEXT_LAYER_Z_BAND, buildTextLayerScene, layoutTextLayer, lineBoxCorners, wrapTextLayer } from "./layout";
 import { TEXT_LAYER_SAMPLES } from "./samples";
 
 /** Every grapheme is half an em wide: line widths are exact and predictable. */
@@ -189,6 +189,31 @@ describe("boxes", () => {
       expect(Math.min(...boxes.map((box) => box.x1))).toBeCloseTo(evaluatePiece(found[0]!, WINDOW.fromMs).x, 6);
       expect(found[0]!.fill).toEqual({ colour: "#000000", alpha: 0.6 });
     }
+  });
+
+  test("stacked line boxes join into one label: corners round only where they stick out", () => {
+    const r = 10;
+    const wide = { x1: 0, y1: 0, x2: 200, y2: 26 };
+    const narrow = { x1: 40, y1: 24, x2: 160, y2: 50 };
+    // The wide line's bottom corners stick out past the narrow line: round. The narrow line's top
+    // corners sit under the wide one: square, so no notch shows where the lines meet.
+    expect(lineBoxCorners([wide, narrow], 0, r)).toEqual([r, r, r, r]);
+    expect(lineBoxCorners([wide, narrow], 1, r)).toEqual([0, 0, r, r]);
+    // A step smaller than the radius rounds only as far as the step.
+    expect(lineBoxCorners([wide, { ...narrow, x1: 4, x2: 196 }], 0, r)).toEqual([r, r, 4, 4]);
+    // Equal widths join with a straight side.
+    expect(lineBoxCorners([wide, { ...narrow, x1: 0, x2: 200 }], 1, r)).toEqual([0, 0, r, r]);
+    // Boxes that do not touch (a blank line between, or a tall line pitch) stay separate labels.
+    expect(lineBoxCorners([wide, { ...narrow, y1: 30, y2: 56 }], 1, r)).toEqual([r, r, r, r]);
+  });
+
+  test("a two-line title is one label: the shorter line's corners under the longer one are square", () => {
+    const plate = shapes(layout(make("a long first line\nshort")).pieces, "plate")[0]!;
+    const [first, second] = subpaths(plate);
+    // A square corner is a zero-length curve (control points on its end point).
+    const curves = (path: PathCmd[]) => path.filter((command) => command[0] === "C" && (command[1] !== command[5] || command[2] !== command[6])).length;
+    expect(curves(first!)).toBe(4);
+    expect(curves(second!)).toBe(2);
   });
 
   test("rounded corners are curves; square corners are straight", () => {

@@ -15,7 +15,8 @@ import { type TextLayerFace, type TextLayerFontCollision, type TextLayerUploadRe
  *
  * Boxes are em-based: a line's box is `PLATE_HEIGHT_EM` tall, centred on the middle of the face's
  * cap height, and reaches `PLATE_PAD_X_EM` past the line's advance on each side. With the default
- * line pitch (1.2) adjacent line boxes overlap a little, so a stacked title reads as one label.
+ * line pitch (1.2) adjacent line boxes overlap a little, so a stacked title reads as one label:
+ * a corner rounds only as far as it sticks out past the line it touches (`lineBoxCorners`).
  */
 
 /** Em-based constants of the layout. */
@@ -114,9 +115,9 @@ export function layoutTextLayer(layer: TextLayerInput, canvas: TextLayerCanvas, 
     // The shape's anchor is the boxes' top-left corner; its path is relative to it.
     const left = Math.min(...boxes.map((box) => box.x1));
     const top = Math.min(...boxes.map((box) => box.y1));
-    const path = boxes.flatMap((box) => {
+    const path = boxes.flatMap((box, index) => {
       const [x, y, width, height] = [box.x1 - left, box.y1 - top, box.x2 - box.x1, box.y2 - box.y1];
-      return radius > 0 ? roundedRectPath(x, y, width, height, radius) : rectPath(x, y, width, height);
+      return radius > 0 ? roundedRectPath(x, y, width, height, lineBoxCorners(boxes, index, radius)) : rectPath(x, y, width, height);
     });
     pieces.push({ ...base("plate", Z.plate), kind: "shape", track: { x: at(left), y: at(top) }, path, fill: { colour: background.color, alpha: background.opacity } } satisfies ShapePiece);
   }
@@ -247,4 +248,20 @@ export function wrapTextLayer(text: string, maxWidth: number, advance: (text: st
     lines.push(current);
   }
   return lines;
+}
+
+/**
+ * Corner radii (top-left, top-right, bottom-right, bottom-left) of line box `index`. A corner that
+ * touches the box above or below rounds only as far as it sticks out past that box, so stacked
+ * lines join into one label: a narrower line's corners under a wider one are square (inside the
+ * union), and a step between lines keeps a sharp inner corner. A box no neighbour touches (a blank
+ * line between, or a tall line pitch) keeps all four corners round.
+ */
+export function lineBoxCorners(boxes: readonly Box[], index: number, radius: number): [number, number, number, number] {
+  const box = boxes[index]!;
+  const above = index > 0 && boxes[index - 1]!.y2 > box.y1 ? boxes[index - 1]! : null;
+  const below = index < boxes.length - 1 && boxes[index + 1]!.y1 < box.y2 ? boxes[index + 1]! : null;
+  const left = (neighbour: Box | null) => (neighbour ? Math.min(radius, Math.max(0, neighbour.x1 - box.x1)) : radius);
+  const right = (neighbour: Box | null) => (neighbour ? Math.min(radius, Math.max(0, box.x2 - neighbour.x2)) : radius);
+  return [left(above), right(above), right(below), left(below)];
 }
