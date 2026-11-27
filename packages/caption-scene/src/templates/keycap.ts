@@ -1,5 +1,6 @@
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
+import type { SceneCue } from "../input";
 import { type Ease, EASES, kf, lerp, prog } from "../ease";
 import { paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
@@ -101,6 +102,11 @@ const HERO_ENTER_MS = 220;
 const EXIT_SPAN = 130;
 const EXIT_LEN = 80;
 const FLEX = 0.3;
+/** Most keys one token may break into, and most keys one cue may draw (each key is 6 pieces; 150 per cue). */
+const MAX_PARTS = 8;
+const MAX_KEYS = 20;
+/** Visible gap kept between an entering key and the row above it, share of its legend size. */
+const ENTRANCE_GAP = 0.06;
 const CLICK_MS = 240;
 /** The click mark's strokes start this far out from the key's corner and run this long, shares of the legend size. */
 const CLICK_D0 = 0.12;
@@ -164,6 +170,25 @@ const translate = (path: readonly PathCmd[], dx: number, dy: number): PathCmd[] 
     return [cmd[0], cmd[1] + dx, cmd[2] + dy];
   });
 
+/** Key words and cues without one before each cue, counted once per cue list (the click mark's variant counters). */
+const counterCache = new WeakMap<readonly SceneCue[], { heroesBefore: number; plainBefore: number }[]>();
+function cueCounters(cues: readonly SceneCue[]) {
+  let hit = counterCache.get(cues);
+  if (!hit) {
+    let heroes = 0;
+    let plain = 0;
+    hit = cues.map((cue) => {
+      const entry = { heroesBefore: heroes, plainBefore: plain };
+      const count = cue.words.filter((word) => word.role === "hero").length;
+      heroes += count;
+      if (!count) plain++;
+      return entry;
+    });
+    counterCache.set(cues, hit);
+  }
+  return hit;
+}
+
 const overlapArea = (a: Box, b: Box) => Math.max(0, Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1)) * Math.max(0, Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1));
 
 export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
@@ -206,12 +231,13 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     return metric(text).advance / 100 + 2 * k.padX + (hero ? ARROW_GAP + ARROW_W : 0);
   };
   const keyWidth = (text: string, size: number, hero: boolean) => Math.max(perPx(text, hero) * size, MIN_WIDTH * size);
+  /** The whole footprint per legend px, socket rim included: what must fit the column. */
+  const footPx = (text: string, hero: boolean) => perPx(text, hero) + 2 * OUT;
 
-  /** The fewest even pieces of a word that fit the column at `size`. */
-  const chunks = (text: string, size: number, hero: boolean): string[] => {
+  /** A word broken into the fewest even pieces that fit the column at `size`, never more than `cap` (then they are only even). */
+  const chunks = (text: string, size: number, hero: boolean, cap: number): string[] => {
     const parts = graphemes(text);
-    const k = hero ? HERO_KEY : BODY_KEY;
-    const pad = 2 * k.padX + (hero ? ARROW_GAP + ARROW_W : 0);
+    const pad = footPx("", hero);
     const split = (room: number) => {
       const out: string[] = [];
       let row = "";
@@ -226,9 +252,9 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
       return out;
     };
     const room = (column / size - pad) * 100;
-    const count = split(room).length;
+    const count = Math.min(cap, split(room).length);
     let lo = 0;
-    let hi = room;
+    let hi = Math.max(room, metric(text).advance + 1);
     for (let i = 0; i < 14; i++) {
       const mid = (lo + hi) / 2;
       if (split(mid).length <= count) hi = mid;
@@ -237,26 +263,26 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     return split(hi);
   };
 
-  const plan = (scale: number) => {
+  const plan = (scale: number, cap: number, heroScale = scale) => {
     const caps: Cap[] = [];
     words.forEach((word, at) => {
       const hero = word.role === "hero";
-      const base = (hero ? (ordinaryCount ? HERO : HERO_ALONE) : few ? FEW : BODY) * scale;
+      const base = hero ? (ordinaryCount ? HERO : HERO_ALONE) * heroScale : (few ? FEW : BODY) * scale;
       const floor = hero ? HERO_FLOOR : BODY_FLOOR;
       const text = word.text;
       const natural = keyWidth(text, base, hero);
-      if (natural <= column) {
+      if (natural + 2 * OUT * base <= column) {
         caps.push({ word: at, part: 0, parts: 1, text, hero, size: base, w: natural, advance: (metric(text).advance * base) / 100 });
         return;
       }
-      const fitted = column / perPx(text, hero);
+      const fitted = column / footPx(text, hero);
       if (fitted >= floor || !BREAKABLE.test(text)) {
         caps.push({ word: at, part: 0, parts: 1, text, hero, size: fitted, w: keyWidth(text, fitted, hero), advance: (metric(text).advance * fitted) / 100 });
         return;
       }
-      const pieces = chunks(text, floor, hero);
-      const widest = Math.max(...pieces.map((piece) => perPx(piece, hero)));
-      const size = Math.min(Math.max(floor, column / widest), Math.max(floor, base));
+      const pieces = chunks(text, floor, hero, cap);
+      // At the floor or above when the pieces fit the cap; a pathological token (hundreds of letters) keeps its text in `cap` keys.
+      const size = Math.min(column / Math.max(...pieces.map((piece) => footPx(piece, hero))), Math.max(floor, base));
       for (const [part, piece] of pieces.entries()) caps.push({ word: at, part, parts: pieces.length, text: piece, hero, size, w: keyWidth(piece, size, hero), advance: (metric(piece).advance * size) / 100 });
     });
     // Rows: every key word piece and every broken-word piece alone; ordinary words in balanced runs between them.
@@ -280,17 +306,33 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     flush();
     return { caps, rows, ordinaryRows };
   };
-  let chosen = plan(SCALES[0]);
+  // The per-token key cap shrinks until the cue stays within its key budget.
+  let partCap = MAX_PARTS;
+  while (partCap > 1 && plan(1, partCap).caps.length > MAX_KEYS) partCap--;
+  const planAt = (scale: number, heroScale = scale) => plan(scale, partCap, heroScale);
+  let chosen = planAt(SCALES[0]);
+  let chosenScale: number = SCALES[0];
   pick: for (const limit of [2, 3]) {
     for (const scale of SCALES) {
-      const candidate = plan(scale);
+      const candidate = planAt(scale);
       if (candidate.ordinaryRows <= limit) {
         chosen = candidate;
+        chosenScale = scale;
         break pick;
       }
     }
   }
-  if (chosen.ordinaryRows > 3) chosen = plan(SCALES[SCALES.length - 1]!);
+  if (chosen.ordinaryRows > 3) {
+    chosenScale = SCALES[SCALES.length - 1]!;
+    chosen = planAt(chosenScale);
+  }
+  // A key word after or before one run of ordinary words: the next smaller size when it saves that run a whole row.
+  const runs = words.reduce((count, word, at) => count + (word.role !== "hero" && (at === 0 || words[at - 1]!.role === "hero") ? 1 : 0), 0);
+  const smaller = SCALES[SCALES.indexOf(chosenScale as (typeof SCALES)[number]) + 1];
+  if (heroCount > 0 && runs === 1 && chosen.ordinaryRows > 1 && smaller !== undefined) {
+    const candidate = planAt(smaller, chosenScale);
+    if (candidate.ordinaryRows < chosen.ordinaryRows) chosen = candidate;
+  }
   const { caps, rows } = chosen;
   const bodySize = Math.max(...caps.map((cap) => (cap.hero ? 0 : cap.size)), 0) || caps[0]!.size;
 
@@ -307,6 +349,10 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     readonly inset: number;
     readonly press: number;
     readonly baseline: number;
+    /** Clear space above the face to the row above's socket, sample px (Infinity on the top row). */
+    readonly clear: number;
+    /** Clear space below this row's socket to the next row's face, sample px (Infinity on the bottom row). */
+    clearBelow: number;
     neighbours: Key[];
   }
   const keys: Key[] = [];
@@ -321,6 +367,7 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     const baseline = Math.min(h - INK_MARGIN * size - below, Math.max(INK_MARGIN * size + above, h / 2 + BASELINE * size));
     const depth = k.depth * size;
     if (r > 0) y += ROW_GAP * Math.max(size, bodySize);
+    const clear = r > 0 ? y - rowBottoms[r - 1]! - ENTRANCE_GAP * size : Number.POSITIVE_INFINITY;
     const gap = GAP * size;
     const order = rowVisualOrder(row.map((cap) => cap.text), rtl ? "rtl" : "ltr");
     const width = row.reduce((sum, cap) => sum + cap.w, 0) + gap * (row.length - 1);
@@ -328,7 +375,7 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     const placed: Key[] = [];
     for (const i of order) {
       const cap = row[i]!;
-      const key: Key = { cap, row: r, left: x, top: y, w: cap.w, h, depth, r: k.r * size, inset: INSET * size, press: k.press * size, baseline, neighbours: [] };
+      const key: Key = { cap, row: r, left: x, top: y, w: cap.w, h, depth, r: k.r * size, inset: INSET * size, press: k.press * size, baseline, clear, clearBelow: Number.POSITIVE_INFINITY, neighbours: [] };
       placed.push(key);
       x += cap.w + gap;
     }
@@ -339,6 +386,10 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     y += h + depth;
     rowBottoms.push(y + (OUT + DROP) * size);
   });
+  for (const key of keys) {
+    const next = keys.find((other) => other.row === key.row + 1);
+    if (next) key.clearBelow = next.top - rowBottoms[key.row]! - ENTRANCE_GAP * key.cap.size;
+  }
   const blockBottom = rowBottoms.at(-1)!;
   const cx = space.x(540);
   const cy = space.y(1290) - (blockBottom / 2) * u;
@@ -350,7 +401,8 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
   const exitSpan = to - exitStart0;
   const exitLen = exitSpan >= 67 ? Math.min(EXIT_LEN, exitSpan) : exitSpan;
   const stagger = keys.length > 1 ? (exitSpan - exitLen) / (keys.length - 1) : 0;
-  const exitOf = (i: number) => (exitOn ? { at: exitStart0 + i * stagger, len: exitLen } : null);
+  // The last key's fade ends on the shared window's end, so the cue never clears before the next one paints.
+  const exitOf = (i: number) => (exitOn ? { at: keys.length > 1 ? exitStart0 + i * stagger : to - exitLen, len: exitLen } : null);
   const stop = exitOn ? exitStart0 : to;
 
   /** The press of a word's key, 0 (up) to 1 (down), compressed into the time before the exit. */
@@ -360,7 +412,13 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     const hero = key.cap.hero;
     const end = hero ? 440 : 215;
     const k = Math.min(1, (stop - s0) / end);
-    if (k * end < 100) return null;
+    if (k * end < 100) {
+      // Too short to sink and rebound: a compact static pressed pose from the spoken start, when it holds for two painted frames.
+      if (paintedFrameCount(Math.max(s0, ctx.window.from), stop, fps) < 2) return null;
+      const at = Math.max(s0, ctx.window.from);
+      const held: Frames = [[at - 0.001, 0], [at, 1]];
+      return { fn: (t) => kf(t, held), edges: [at - 0.001, at], bottom: at };
+    }
     const frames: Frames = hero
       ? [[s0 - 20, 0], [s0 + 100 * k, 1, "out"], [s0 + 260 * k, 1], [s0 + 440 * k, 0, "outBack"]]
       : [[s0 - 45, 0], [s0 + 25 * k, 1, "out"], [s0 + 50 * k, 1], [s0 + 215 * k, 0, "outBack"]];
@@ -392,10 +450,23 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     // Pivot: the key's middle, 60% down (the sample's transform-origin), in canvas px.
     const px = cx + (key.left + key.w / 2) * u;
     const py = cy + (key.top + 0.6 * total) * u;
-    const lift = (hero ? -0.48 : -0.36) * size * u;
-    const drop = 0.5 * bodySize * u;
-    const groupY = (t: number) => py + (1 - ent(t)) * lift + ex(t) * drop;
-    const groupS = (t: number) => lerp(hero ? 1.14 : 0.93, 1, ent(t)) * (1 - 0.14 * ex(t));
+    // The entrance starts higher (and the Return key larger) than it rests; both are limited so the key's top never reaches
+    // the row above's socket, and the Return key's start never spills past the lane's width.
+    const reachAbove = 0.6 * total;
+    let lift = (hero ? -0.48 : -0.36) * size;
+    let s0 = hero ? Math.min(1.14, Math.max(1, (laneWidth - 8) / (key.w + 2 * OUT * size))) : 0.93;
+    const up = -lift + (s0 - 1) * reachAbove;
+    if (up > key.clear) {
+      if (s0 > 1) {
+        const f = Math.max(0, key.clear) / up;
+        lift *= f;
+        s0 = 1 + (s0 - 1) * f;
+      } else lift = -Math.max(0, key.clear + (1 - s0) * reachAbove);
+    }
+    // On exit a key drops away, but never onto the row below it, which leaves after it.
+    const drop = Math.min(0.5 * bodySize, Math.max(0, key.clearBelow)) * u;
+    const groupY = (t: number) => py + (1 - ent(t)) * lift * u + ex(t) * drop;
+    const groupS = (t: number) => lerp(s0, 1, ent(t)) * (1 - 0.14 * ex(t));
     const own = presses.get(key) ?? null;
     const pushes = [own, ...key.neighbours.map((other) => presses.get(other) ?? null)];
     const sink = (t: number) => {
@@ -405,19 +476,23 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     };
     const edges = [from, settled, ...(exit ? [exit.at, exit.at + exit.len] : []), ...pushes.flatMap((push) => push?.edges ?? [])];
     const sample = (fn: (t: number) => number, tolerance: number) => sampleFrames(fn, edges, tolerance, { range: [from, to], simplify: true });
-    const scaleFrames = sample(groupS, 0.002);
-    const opacity: Frames = exit ? [[from, 1], [exit.at, 1], [exit.at + exit.len, 0, "in"]] : [[from, 1]];
+    // A key that paints on a single export frame (back-to-back 70 ms words) is drawn whole and still, its backing named as parts
+    // of its word (`w<word>l8x`), the one name the shared one-frame filter leaves: the legend is never bare on the footage.
+    const oneFrame = paintedFrameCount(from, to, fps) < 2;
+    const scaleFrames = oneFrame ? ([[from, 1]] as Frames) : sample(groupS, 0.002);
+    const opacity: Frames = exit && !oneFrame ? [[from, 1], [exit.at, 1], [exit.at + exit.len, 0, "in"]] : [[from, 1]];
     const base: Track = { x: [[from, px]], sx: scaleFrames, sy: scaleFrames, o: opacity };
-    const still: Track = { ...base, y: sample(groupY, 0.15) };
-    const moving: Track = { ...base, y: sample((t) => groupY(t) + sink(t), 0.15) };
+    const still: Track = { ...base, y: oneFrame ? [[from, py]] : sample(groupY, 0.15) };
+    const moving: Track = oneFrame ? still : { ...base, y: sample((t) => groupY(t) + sink(t), 0.15) };
 
     const id = cap.parts > 1 ? `${ctx.id}:w${cap.word}l${cap.part}` : `${ctx.id}:w${cap.word}`;
+    const backing = (suffix: string, n: number) => (oneFrame ? `:w${cap.word}l${80 + cap.part * 8 + n}` : suffix);
     // Pivot in key-local px (sample px times u); a path is drawn from its own top-left with the pivot in `origin`.
     const pivotLocal = { x: (key.w / 2) * u, y: 0.6 * total * u };
     const shape = (suffix: string, z: number, path: readonly PathCmd[], track: Track, fill?: { colour: string; alpha?: number }): ShapePiece => {
       const b = pathBounds(path);
       return {
-        id: `${id}${suffix}`, kind: "shape", z, fromMs: from, toMs: to, path: translate(path, -b.x1, -b.y1),
+        id: suffix.startsWith(":") ? `${ctx.id}${suffix}` : `${id}${suffix}`, kind: "shape", z, fromMs: from, toMs: to, path: translate(path, -b.x1, -b.y1),
         origin: { dx: pivotLocal.x - b.x1, dy: pivotLocal.y - b.y1 }, track, ...(fill ? { fill } : {}),
       };
     };
@@ -428,22 +503,26 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     const out = OUT * size;
     const plateTop = key.press - out;
     // The socket: fixed under the key (rim and offset shadow), its top a rim above the face's deepest press.
-    pieces.push(shape("socket", 1, roundedRectPath(U(-out), U(plateTop), U(w + 2 * out), U(total + out + DROP * size - plateTop), U(key.r + out)), still, { colour: SOCKET, alpha: 0.92 }));
+    pieces.push(shape(backing("socket", 0), 1, roundedRectPath(U(-out), U(plateTop), U(w + 2 * out), U(total + out + DROP * size - plateTop), U(key.r + out)), still, { colour: SOCKET, alpha: 0.92 }));
     // The bevel: sides flaring out from under the face down to the front, rounded at the bottom.
     const top0 = 0.42 * key.h;
     const sideY = key.h - 0.08 * size;
     const body = lowerPart(w, sideY, total, key.r);
     const bevelPath = pathOf(([[key.inset, top0], [w - key.inset, top0], ...body.slice().reverse()] as [number, number][]).map(([x, y2]) => [U(x), U(y2)]));
-    pieces.push(shape("bevel", 2, bevelPath, still, { colour: bevel }));
+    pieces.push(shape(backing("bevel", 1), 2, bevelPath, still, { colour: bevel }));
     const band = Math.max((7 / 72) * size, 0.34 * key.depth);
-    pieces.push(shape("band", 3, pathOf(lowerPart(w, total - band, total, key.r).map(([x, y2]) => [U(x), U(y2)])), still, { colour: bevelDark }));
+    pieces.push(shape(backing("band", 2), 3, pathOf(lowerPart(w, total - band, total, key.r).map(([x, y2]) => [U(x), U(y2)])), still, { colour: bevelDark }));
     // The face, its top-edge highlight, the legend and the arrow travel together.
-    const pressed = mixColour(face, PRESS_TINT, 0.16);
-    const tintFrames = own ? sampleFrames((t) => own.fn(t), [from, to, ...own.edges], 0.03, { range: [from, to], simplify: true }) : null;
+    // The pressed colour keeps the legend at 3:1 as drawn: the tint is cut back (or dropped) for a key whose ink would dim below it.
+    const legend = hero ? legendInk : ink;
+    let tint = 0.16;
+    while (tint > 0 && !reads(legend, mixColour(face, PRESS_TINT, tint))) tint = Math.max(0, tint - 0.02);
+    const pressed = mixColour(face, PRESS_TINT, tint);
+    const tintFrames = own && tint > 0 && !oneFrame ? sampleFrames((t) => own.fn(t), [from, to, ...own.edges], 0.03, { range: [from, to], simplify: true }) : null;
     const colour = tintFrames && tintFrames.length > 1 ? tintFrames.map(([t, p]) => [t, mixColour(face, pressed, Math.min(1, Math.max(0, p)))] as const) : undefined;
-    pieces.push(shape("face", 4, roundedRectPath(U(key.inset), 0, U(w - 2 * key.inset), U(key.h), U(Math.max(0, key.r - (3 / 72) * size))), { ...moving, ...(colour ? { colour } : {}) }, { colour: face }));
+    pieces.push(shape(backing("face", 3), 4, roundedRectPath(U(key.inset), 0, U(w - 2 * key.inset), U(key.h), U(Math.max(0, key.r - (3 / 72) * size))), { ...moving, ...(colour ? { colour } : {}) }, { colour: face }));
     const hi = hero ? { colour: "#FFFFFF", alpha: 0.35 } : { colour: mixColour(face, "#FFFFFF", 0.7) };
-    pieces.push(shape("hi", 5, roundedRectPath(U(key.r), U(0.07 * size), U(Math.max(1, w - 2 * key.r)), U(0.055 * size), U(0.03 * size)), moving, hi));
+    pieces.push(shape(backing("hi", 4), 5, roundedRectPath(U(key.r), U(0.07 * size), U(Math.max(1, w - 2 * key.r)), U(0.055 * size), U(0.03 * size)), moving, hi));
 
     const contentGap = ARROW_GAP * size;
     const arrowW = ARROW_W * size;
@@ -452,7 +531,7 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     const textCentre = hero ? (rtl ? contentLeft + arrowW + contentGap + cap.advance / 2 : contentLeft + cap.advance / 2) : w / 2;
     const textPiece: TextPiece = {
       id, kind: "text", z: 6, fromMs: from, toMs: to, text: cap.text, face: FACE, sizePx: size * u, letterSpacingEm: SPACING,
-      fill: hero ? legendInk : ink, anchor: "baseline-center", language: cue.language,
+      fill: legend, anchor: "baseline-center", language: cue.language,
       origin: { dx: pivotLocal.x - U(textCentre), dy: pivotLocal.y - U(key.baseline) }, track: moving,
     };
     pieces.push(textPiece);
@@ -467,18 +546,17 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
       const arrow: PathCmd[] = [["M", ...pt(34, 5)], ["L", ...pt(34, 24)], ["L", ...pt(8, 24)], ["M", ...pt(18, 14)], ["L", ...pt(7, 24)], ["L", ...pt(18, 34)]];
       const nudge = own ? (t: number) => -side * 0.06 * size * u * own.fn(t) : null;
       const arrowTrack: Track = nudge ? { ...moving, x: sampleFrames((t) => px + nudge(t), [from, to, ...own!.edges], 0.15, { range: [from, to], simplify: true }) } : moving;
-      pieces.push({ ...shape("arrow", 7, arrow, arrowTrack), stroke: { widthPx: U(5.6 * a), colour: legendInk } });
+      pieces.push({ ...shape(backing("arrow", 5), 7, arrow, oneFrame ? still : arrowTrack), stroke: { widthPx: U(5.6 * a), colour: legendInk } });
     }
   });
 
   // The click mark: three short strokes flicking out of a free corner of the key word's key (the last key of a cue without one).
-  const heroesBefore = input.cues.slice(0, index).reduce((sum, prior) => sum + prior.words.filter((word) => word.role === "hero").length, 0);
-  const plainBefore = input.cues.slice(0, index).filter((prior) => !prior.words.some((word) => word.role === "hero")).length;
+  const { heroesBefore, plainBefore } = cueCounters(input.cues)[index]!;
   const targets = heroCount ? keys.filter((key) => key.cap.hero && key.cap.part === key.cap.parts - 1) : [keys.at(-1)!];
   targets.forEach((key, nth) => {
     const counter = heroCount ? heroesBefore + nth : plainBefore;
     const size = Math.min(key.cap.size, HERO);
-        const box = keyBoxes[keys.indexOf(key)]!;
+    const box = keyBoxes[keys.indexOf(key)]!;
     // Spots: level with the key's middle at its reading end or its start (alternating by counter), then its top corners.
     const mid = (box.y1 + key.top + key.h + key.depth) / 2;
     const spots = [

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { describeSpeechConformance, fastRun } from "./conformance-support";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
+import { exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import type { SceneCue, SceneInput } from "./input";
-import { type Box, type Measure, type Piece, type TextPiece, evaluatePiece, pieceBounds } from "./scene";
+import { type Box, type Measure, type Piece, type ShapePiece, type TextPiece, colourAt, evaluatePiece, pieceBounds, SCENE_PIECE_BUDGET } from "./scene";
 import { fakeMeasure, sceneInput } from "./test-support";
 import { KEYCAP_DEMO, keycapProgram } from "./templates/keycap";
 
@@ -155,10 +156,15 @@ describe("keycap motion", () => {
     const cue = paused[0]!;
     const sockets = keycapProgram.build(input(paused)).pieces.filter((piece) => cueOf(piece) === 0 && piece.id.endsWith("socket"));
     expect(sockets.length).toBe(4);
-    const fadeStart = (piece: Piece) => piece.track.o!.find(([, o], i, all) => i > 0 && o < all[i - 1]![1])![0];
-    const starts = sockets.map((piece) => fadeStart(piece));
-    expect([...starts].sort((a, b) => a - b)).toEqual(starts);
-    expect(Math.min(...starts)).toBeGreaterThanOrEqual(Math.max(...cue.words.map((word) => word.endMs)) + 150 - 80);
+    const spokenEnd = Math.max(...cue.words.map((word) => word.endMs));
+    // The first export frame each key is no longer opaque: in reading order, never before the 150 ms reading hold.
+    const firstFading = sockets.map((piece) => exportFrameTimes(piece.fromMs, piece.toMs, 30).find((t) => evaluatePiece(piece, t).o < 1)!);
+    expect([...firstFading].sort((x, y) => x - y)).toEqual(firstFading);
+    for (const piece of sockets) {
+      const lastOpaque = exportFrameTimes(piece.fromMs, piece.toMs, 30).filter((t) => evaluatePiece(piece, t).o >= 1).at(-1)!;
+      expect(lastOpaque).toBeGreaterThanOrEqual(exportFrameAtOrBefore(spokenEnd + 150, 30) - 34);
+    }
+    expect(Math.min(...firstFading)).toBeGreaterThan(spokenEnd + 150);
   });
 
   test("the click mark comes back on every cue of a long clip, clear of every other key", () => {
@@ -193,5 +199,139 @@ describe("keycap colours", () => {
     const { pieces } = build(["it:m starts:b now:h@400"], undefined, { colours: { primary: "#17171C", highlight: "#2EC4B6", accent: "#F6F1E4", shadow: "#000000" } });
     const ret = pieces.find((piece) => piece.id === "keycap:0:w2face")!;
     expect(ret.kind === "shape" && ret.fill?.colour).toBe("#2EC4B6");
+  });
+});
+
+describe("keycap review fixes (round 1)", () => {
+  /** Pieces of one key: `keycap:<cue>:w<word>[l<part>]<suffix>`, click marks and one-frame parts aside. */
+  const keyOf = (piece: Piece) => {
+    const m = /^keycap:(\d+):w(\d+)(?:l(\d+))?(.*)$/.exec(piece.id);
+    if (!m || m[4]!.startsWith("click") || Number(m[3] ?? 0) >= 80) return null;
+    return `${m[1]}:${m[2]}:${m[3] ?? 0}`;
+  };
+
+  test("a key never touches another key of its cue on any frame: entrance (Return key included), press and exit", () => {
+    const fixtures = [
+      build(["it's:b time:b to:m say:h@420", "that's:b fine.:h@380", "it:m starts:b when:m you:m press:h@480", "consistency:h@500 beats:b talent:b"]),
+      build(["inch:b matte:h@400 display:h@420 glare:b", "display:b glare:b बहुत:h@420"], "hi"),
+      { cues: demoCues(KEYCAP_DEMO).cues, pieces: keycapProgram.build(input(demoCues(KEYCAP_DEMO).cues)).pieces },
+    ];
+    let checked = 0;
+    for (const { cues, pieces } of fixtures) {
+      for (const cue of cues) {
+        const own = pieces.filter((piece) => cueOf(piece) === cue.index && keyOf(piece));
+        const exitAt = Math.max(...own.map((piece) => piece.toMs));
+        const firstWord = Math.min(...cue.words.map((word) => word.startMs));
+        for (const t of exportFrameTimes(firstWord - 100, exitAt, 30)) {
+          const live = own.flatMap((piece) => {
+            const b = box(piece, t);
+            return b ? [{ key: keyOf(piece)!, b, id: piece.id }] : [];
+          });
+          for (const [i, a] of live.entries()) {
+            for (const other of live.slice(i + 1)) {
+              if (a.key === other.key) continue;
+              checked++;
+              expect(meets(a.b, other.b), `${a.id} touches ${other.id} at ${t}`).toBe(false);
+            }
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(1000);
+  });
+
+  test("a word that paints on one frame keeps its key under it (25 fps, contiguous 70-120 ms words)", () => {
+    const lines = ["so:m here:b@70 is:m@70 the:m@80 thing:h@100", "go@70", "on@70", "we@100 stop:h@120", "one@70 more@70 step@80", "yes:h@100", "right@90 now:h@100"];
+    for (const fps of [24, 25, 30]) {
+      for (const run of [demoCues({ lines, options: { lead: 400, gap: 0, cueGap: 0, tail: 400 } }).cues, staccatoRun(0)]) {
+        const built = keycapProgram.build(input(run, { fps, measure: fakeMeasure })).pieces;
+        let bare = 0;
+        for (const text of built.filter((piece): piece is TextPiece => piece.kind === "text")) {
+          for (const t of exportFrameTimes(text.fromMs, text.toMs, fps)) {
+            const ink = box(text, t, fakeMeasure);
+            if (!ink) continue;
+            const [cue, word] = text.id.split(":").slice(1);
+            const under = built.some((piece) => piece.kind === "shape" && piece.fill && piece.z < text.z && piece.id.startsWith(`keycap:${cue}:${word!.replace(/l\d+$/, "")}`) && (() => {
+              const b = box(piece, t, fakeMeasure);
+              return b !== null && b.x1 <= ink.x1 + 0.5 && b.x2 >= ink.x2 - 0.5 && b.y1 <= ink.y1 + 0.5 && b.y2 >= ink.y2 - 0.5;
+            })());
+            if (!under) bare++;
+          }
+        }
+        expect(bare, `${fps} fps: legends painted without their key`).toBe(0);
+      }
+    }
+  });
+
+  test("the press tint never takes the legend under 3:1 on any drawn colour (direct controls and brand colours)", () => {
+    const contrast = (a: string, b: string) => {
+      const lum = (hex: string) => {
+        const [r, g, bl] = [1, 3, 5].map((i) => {
+          const v = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+          return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r! + 0.7152 * g! + 0.0722 * bl!;
+      };
+      const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+      return (x! + 0.05) / (y! + 0.05);
+    };
+    for (const colours of [
+      { primary: "#858585", highlight: "#FF5A12", accent: "#F6F1E4", shadow: "#000000" },
+      { primary: "#17171C", highlight: "#666666", accent: "#F6F1E4", shadow: "#000000" },
+      { primary: "#17171C", highlight: "#5E5E5E", accent: "#C8C8C8", shadow: "#000000" },
+    ]) {
+      const { cues, pieces } = build(["get:b ready:b now:h@400"], undefined, { colours });
+      let tinted = 0;
+      for (const face of pieces.filter((piece): piece is ShapePiece => /face$/.test(piece.id))) {
+        const legend = pieces.find((piece): piece is TextPiece => piece.kind === "text" && piece.id === face.id.replace(/face$/, ""))!;
+        for (const t of exportFrameTimes(face.fromMs, face.toMs, 30)) {
+          const drawn = face.track.colour ? colourAt(face.track.colour, t) : face.fill!.colour;
+          if (face.track.colour) tinted++;
+          expect(contrast(legend.fill, drawn), `${face.id} at ${t} (${legend.fill} on ${drawn})`).toBeGreaterThanOrEqual(3);
+        }
+      }
+      expect(cues.length).toBe(1);
+      expect(tinted).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("a single-key cue stays on screen until the next cue paints (no blank frame at the handoff)", () => {
+    for (const gap of [140, 260, 400]) {
+      const { cues } = demoCues({ lines: ["Oh.:b@200", "It's:b about:b time:h@300"], options: { lead: 400, gap: 0, cueGap: gap, tail: 400 } });
+      const built = keycapProgram.build(input(cues)).pieces;
+      const firstNext = Math.min(...built.filter((piece) => cueOf(piece) === 1).flatMap((piece) => exportFrameTimes(piece.fromMs, piece.toMs, 30).filter((t) => box(piece, t))));
+      const own = built.filter((piece) => cueOf(piece) === 0);
+      for (const t of exportFrameTimes(cues[0]!.words[0]!.startMs, firstNext, 30)) {
+        expect(own.some((piece) => box(piece, t) && evaluatePiece(piece, t).o > 0.05), `gap ${gap}: blank at ${t}, next paints at ${firstNext}`).toBe(true);
+      }
+    }
+  });
+
+  test("long tokens keep the floor after the fit at 9:16 and 1:1; pathological tokens stay within the piece budget", () => {
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      const u = Math.min(canvas.width, canvas.height) / 1080;
+      const latin = build(["it's:m CONTEMPORANEOUSNESS:h@600"], undefined, { canvas });
+      for (const face of faces(latin.pieces, 0).filter((piece) => /CONTEMP/.test(piece.text) || piece.text.length > 3)) expect(face.sizePx).toBeGreaterThanOrEqual(60 * u - 0.01);
+    }
+    const han = "我们今天要讨论的是一个非常重要的问题".repeat(5);
+    const cjk = build([`${han}:h@1400`], "zh");
+    const parts = faces(cjk.pieces, 0);
+    expect(parts.map((piece) => piece.text).join("")).toBe(han);
+    for (const part of parts) expect(part.sizePx).toBeGreaterThanOrEqual(60 - 0.01);
+    for (const length of [360, 1080]) {
+      const token = "问".repeat(length);
+      const huge = build([`${token}:b@2000`, "next:b"], "zh");
+      const own = huge.pieces.filter((piece) => cueOf(piece) === 0);
+      expect(own.length).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
+      expect(faces(huge.pieces, 0).length).toBeLessThanOrEqual(8);
+      expect(faces(huge.pieces, 0).map((piece) => piece.text).join("")).toBe(token);
+    }
+  });
+
+  test("a key word after one run of ordinary words takes the next smaller size when it saves that run a row", () => {
+    const { cues, pieces } = build(["it:m starts:b when:m you:m press:h@480"], undefined, { measure: (text, face, size, spacing) => ({ ...fakeMeasure(text, face, size, spacing), advance: fakeMeasure(text, face, size, spacing).advance * 1.02 }) });
+    const t = settled(cues[0]!);
+    const ys = new Set(faces(pieces, 0).filter((piece) => piece.text !== "press").map((piece) => Math.round(centre(box(piece, t)!).y)));
+    expect(ys.size).toBe(1);
   });
 });
