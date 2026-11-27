@@ -98,6 +98,7 @@ export const MOMENTS: Record<string, number[]> = {
   capsule: [1430, 1960, 2700, 4830, 5300, 6500, 7480, 8100],
   helium: [233, 1400, 2400, 2767, 4033, 4400, 5800, 7000],
   splat: [300, 960, 1350, 1925, 2790, 4580, 4880, 5200],
+  handheld: [380, 1080, 1400, 2600, 3300, 4950, 5600, 7500],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;

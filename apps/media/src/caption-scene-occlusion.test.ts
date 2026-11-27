@@ -46,6 +46,7 @@ const STYLES: readonly CaptionSceneName[] = [
   "capsule",
   "splat",
   "helium",
+  "handheld",
 ];
 
 const LINES = [
