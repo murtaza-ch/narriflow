@@ -186,6 +186,31 @@ describe("keycap motion", () => {
   });
 });
 
+describe("keycap click mark room", () => {
+  // Keys that fill the lane: a mark that reaches past the shared fit's safe box makes it shrink the whole cue under the floor.
+  test("the click mark stays inside the room the shared fit leaves a cue, at its largest and with its rim", () => {
+    const safe = { x1: 54 + 3, x2: 1026 - 3, y1: 96 + 3, y2: 1824 - 3 };
+    let marks = 0;
+    // Key widths swept across the lane, so some keys end just short of its edge (where only the grown, rimmed mark passes it).
+    for (let stretch = 0.6; stretch <= 1.2001; stretch += 0.004) {
+      const measure: Measure = (text, face, size, spacing) => ({ ...fakeMeasure(text, face, size, spacing), advance: fakeMeasure(text, face, size, spacing).advance * stretch });
+      const { pieces } = build(["unquestionably:b extraordinary:h@500", "it:m starts:b now:h@400"], undefined, { measure });
+      for (const mark of pieces.filter((piece) => /clickr?$/.test(piece.id))) {
+        for (const t of [mark.fromMs, (mark.fromMs + mark.toMs) / 2, mark.toMs - 1]) {
+          const b = box(mark, t, measure);
+          if (!b) continue;
+          marks++;
+          expect(b.x1, `${mark.id} at ${t}, stretch ${stretch.toFixed(3)}`).toBeGreaterThanOrEqual(safe.x1 - 0.01);
+          expect(b.x2, `${mark.id} at ${t}, stretch ${stretch.toFixed(3)}`).toBeLessThanOrEqual(safe.x2 + 0.01);
+          expect(b.y1, `${mark.id} at ${t}`).toBeGreaterThanOrEqual(safe.y1 - 0.01);
+          expect(b.y2, `${mark.id} at ${t}`).toBeLessThanOrEqual(safe.y2 + 0.01);
+        }
+      }
+    }
+    expect(marks).toBeGreaterThan(0);
+  });
+});
+
 describe("keycap colours", () => {
   test("ink that cannot read on the key falls back to the style's own colours", () => {
     const { pieces } = build(["it:m starts:b now:h@400"], undefined, { colours: { primary: "#F0F0F0", highlight: "#FFFFFF", accent: "#FFFFFF", shadow: "#000000" } });

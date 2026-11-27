@@ -113,6 +113,9 @@ const CLICK_D0 = 0.12;
 const CLICK_LEN = 0.28;
 /** The lines start this far apart along the edge, and diverge by up to this angle. */
 const CLICK_STEP = 0.3;
+/** The click mark's scale on its last frame, and its dark rim's stroke width (a share of the legend size). */
+const CLICK_GROW = 1.12;
+const CLICK_RIM = 0.15;
 const CLICK_SPREAD_MAX = (24 * Math.PI) / 180;
 
 const SOCKET = "#14141A";
@@ -567,18 +570,21 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     ];
     const order = counter % 2 ? [1, 0, 3, 2] : [0, 1, 2, 3];
     const others = keyBoxes.filter((_, at) => at !== keys.indexOf(key));
-    const laneBox = { x1: (bounds.x1 - cx) / u, x2: (bounds.x2 - cx) / u, y1: (bounds.y1 - cy) / u, y2: (bounds.y2 - cy) / u };
+    // The room the shared fit leaves a cue (its safe box, 3 px inside the lane): a mark that reaches past it would shrink the whole cue.
+    const laneBox = { x1: (bounds.x1 + 3 - cx) / u, x2: (bounds.x2 - 3 - cx) / u, y1: (bounds.y1 + 3 - cy) / u, y2: (bounds.y2 - 3 - cy) / u };
     const options = order.map((k) => {
       const option = spots[k]!;
       const n = [-Math.sin(option.angle), Math.cos(option.angle)] as const;
+      // The mark at its largest: grown to CLICK_GROW about its corner, plus half its rim stroke.
       const ends = [-1, 0, 1].flatMap((d) => {
         const a = option.angle + d * CLICK_SPREAD_MAX;
-        const x0 = option.x + (Math.cos(option.angle) * CLICK_D0 + n[0] * d * CLICK_STEP) * size;
-        const y0 = option.y + (Math.sin(option.angle) * CLICK_D0 + n[1] * d * CLICK_STEP) * size;
-        const reach = (CLICK_LEN + 0.08) * size;
+        const x0 = option.x + (Math.cos(option.angle) * CLICK_D0 + n[0] * d * CLICK_STEP) * size * CLICK_GROW;
+        const y0 = option.y + (Math.sin(option.angle) * CLICK_D0 + n[1] * d * CLICK_STEP) * size * CLICK_GROW;
+        const reach = CLICK_LEN * size * CLICK_GROW;
         return [[x0, y0], [x0 + Math.cos(a) * reach, y0 + Math.sin(a) * reach]] as const;
       });
-      const area = { x1: Math.min(...ends.map((p) => p[0])), x2: Math.max(...ends.map((p) => p[0])), y1: Math.min(...ends.map((p) => p[1])), y2: Math.max(...ends.map((p) => p[1])) };
+      const rim = (CLICK_RIM / 2 + 0.01) * size;
+      const area = { x1: Math.min(...ends.map((p) => p[0])) - rim, x2: Math.max(...ends.map((p) => p[0])) + rim, y1: Math.min(...ends.map((p) => p[1])) - rim, y2: Math.max(...ends.map((p) => p[1])) + rim };
       const inside = area.x1 >= laneBox.x1 && area.x2 <= laneBox.x2 && area.y1 >= laneBox.y1 && area.y2 <= laneBox.y2;
       return { ...option, hit: others.reduce((sum, other) => sum + overlapArea(area, other), 0), inside };
     });
@@ -609,14 +615,14 @@ export const keycapProgram = galleryScene("keycap", 1290, (ctx) => {
     const oy = cy + spot.y * u;
     const t1 = at + 0.33 * (end - at);
     const t2 = at + 0.7 * (end - at);
-    const grow: Frames = still ? [[at, 1]] : [[at, 0.55], [t1, 1, "out"], [t2, 1], [end, 1.12]];
+    const grow: Frames = still ? [[at, 1]] : [[at, 0.55], [t1, 1, "out"], [t2, 1], [end, CLICK_GROW]];
     const fade: Frames = still ? [[at, 1]] : [[at, 1], [t2, 1], [end, 0, "in" as Ease]];
     const track: Track = { x: [[at, ox]], y: [[at, oy]], sx: grow, sy: grow, o: fade };
     const mark = (suffix: string, z: number, width: number, colour: string): ShapePiece => ({
       id: `${ctx.id}:w${key.cap.word}click${suffix}`, kind: "shape", z, fromMs: at, toMs: end, path: translate(lines, -b.x1, -b.y1),
       origin: { dx: -b.x1, dy: -b.y1 }, track, stroke: { widthPx: width * u, colour },
     });
-    pieces.push(mark("r", 8, 0.15 * size, SOCKET), mark("", 9, 0.08 * size, orange));
+    pieces.push(mark("r", 8, CLICK_RIM * size, SOCKET), mark("", 9, 0.08 * size, orange));
   });
   return pieces;
 }, undefined, APPEAR);
