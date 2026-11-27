@@ -304,27 +304,30 @@ export function resolveCaptionEmojiPalette(
 
 // ─── Density ────────────────────────────────────────────────────────────────
 
-/** Least edited-time gap between two AI emojis, in seconds, per density. */
-export const CAPTION_EMOJI_DENSITIES = { light: 5, balanced: 2.5, expressive: 1.5 } as const;
+/**
+ * Least edited-time gap between two AI emojis, in seconds, per density. With one candidate on most
+ * caption lines (ticket 32), these give about 12 / 19 / 27 emojis a minute on ordinary speech.
+ */
+export const CAPTION_EMOJI_DENSITIES = { light: 3.5, balanced: 2, expressive: 1.2 } as const;
 export const captionEmojiDensitySchema = z.enum(["light", "balanced", "expressive"]);
 export type CaptionEmojiDensity = z.infer<typeof captionEmojiDensitySchema>;
 export const DEFAULT_CAPTION_EMOJI_DENSITY: CaptionEmojiDensity = "balanced";
 
 /**
- * The least strength a pick needs per density: Light keeps only picks that picture their word
- * itself (3), Balanced and Expressive also those that picture what their phrase says (2).
- * Strength 1 ("only related") never reaches here: acceptance drops it. Light has fewer emojis
- * from this gate and its wider gap; Expressive differs from Balanced by its gap only.
+ * The least strength a pick needs per density: Light keeps picks that picture their word (3) or
+ * what their phrase says (2); Balanced and Expressive also those that give its mood or point (1).
+ * Expressive differs from Balanced by its gap only.
  */
-export const CAPTION_EMOJI_DENSITY_MIN_STRENGTH = { light: 3, balanced: 2, expressive: 2 } as const satisfies Record<CaptionEmojiDensity, number>;
+export const CAPTION_EMOJI_DENSITY_MIN_STRENGTH = { light: 2, balanced: 1, expressive: 1 } as const satisfies Record<CaptionEmojiDensity, number>;
 
 /**
- * The same emoji id does not repeat within this many seconds of edited time. At 10 s a 75 s clip
- * showed the same phone four times (ticket 23), each pick defensible, together repetitive.
+ * The same emoji id does not repeat within this many seconds of edited time. Ticket 23 set 20 s
+ * when a clip had an emoji every 10 s or so; with one every 2 to 3 s it took more from the owner's
+ * clip than any other rule (ticket 32), and the prompt itself asks the model to vary its emojis.
  */
-export const CAPTION_EMOJI_REPEAT_GAP_SEC = 20;
+export const CAPTION_EMOJI_REPEAT_GAP_SEC = 6;
 
-/** One AI suggestion: a Word Key, the emoji, and a strength 1 (weak) to 3 (strong). */
+/** One AI suggestion: a Word Key, the emoji, and a strength: 3 pictures the word, 2 what its phrase says, 1 its mood or point. */
 export interface CaptionEmojiPick {
   readonly key: string;
   readonly ref: CaptionEmojiRef;
@@ -340,8 +343,8 @@ export interface CaptionEmojiPickWord {
 /**
  * The picks a clip keeps at `density`. Picks on a word the clip does not keep,
  * and picks under the density's strength (`CAPTION_EMOJI_DENSITY_MIN_STRENGTH`),
- * are dropped. Acceptance keeps several picks a sentence, so this is the only
- * spacing rule. Strongest first and earliest on a tie, a pick is taken when no
+ * are dropped. The tagger offers one pick on most caption lines, so this is the
+ * only spacing rule. Strongest first and earliest on a tie, a pick is taken when no
  * taken pick is within the density's gap and no taken pick of the same id is
  * within `CAPTION_EMOJI_REPEAT_GAP_SEC`. The opening (hook) pick has no other privilege: it wins only a
  * tie, because it is the earliest; a weaker pick never displaces a stronger

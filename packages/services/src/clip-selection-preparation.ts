@@ -162,7 +162,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
       // Tagging is frozen here once. Spend policy (accepted): until the windows
       // commit, a failed command attempt or a concurrent preparation may tag
       // again, at most 11 times per command sequence (1 + 10 workflow retries),
-      // about $0.84 each for a 3-hour source (emoji tagging adds about $0.05
+      // about $0.84 each for a 3-hour source (emoji tagging adds about $0.12
       // when the pack adds emojis). The first committed capsule wins
       // and losers reuse its windows below; once windows exist, nothing tags.
       const [audienceDataLine, tagged, taggedEmojis] = await Promise.all([

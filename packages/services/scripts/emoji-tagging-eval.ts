@@ -2,7 +2,7 @@
  * Emoji relevance evaluation (Add Emojis ticket 20): runs the real tagger and the real density rule
  * over the real clips and written transcripts in four languages, and writes a report of every pick
  * (sentence, word, glyph, catalog name, strength, which densities keep it), every glyph the catalog
- * lacks, malformed picks, picks per minute, tokens, cost and time. Calls the model API only; never
+ * lacks, malformed line values, picks per minute, tokens, cost and time. Calls the model API only; never
  * part of the test suite.
  *
  *   bun packages/services/scripts/emoji-tagging-eval.ts --out <dir> [--label name] [--only id,id]
@@ -27,13 +27,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { captionEmojiById, emojiRefForGlyph } from "@narriflow/caption-emoji/index";
 import {
-  acceptEmojiPicks,
+  acceptEmojiBlockReport,
   CAPTION_EMOJI_DENSITIES,
   CAPTION_EMOJI_NEGATION_IDS,
   captionWordComparable,
   captionWordKey,
-  chunkTranscriptForEmojiTagging,
+  emojiSilentRangeLines,
+  emojiTaggingBlocks,
+  readEmojiLineValue,
   selectCaptionEmojiPicks,
+  splitUtterancesIntoSentences,
   type CaptionEmojiDensity,
 } from "@narriflow/validators";
 import { clipEmojiWords } from "../src/clip-emoji-suggestion";
@@ -74,13 +77,17 @@ export interface EvalRun {
   retried: number;
   wallMs: number;
   tokens: { input: number; cached: number; output: number; reasoning: number };
-  /** Model picks before acceptance: how many, and how many were dropped for each reason (`rule`: a number, filler or
-   *  function word, or a second pick on a word that kept a stronger or earlier one). */
+  /**
+   * Caption lines requested (ticket 32: the model answers every one), and what became of them in the reply the tagger
+   * used: `serious` lines it marked silent ("X" or a silent range), `malformed` values that are not "<letter> <emoji>
+   * <strength>" or name a letter the line lacks, `unknownGlyph` emojis the catalog lacks, `absent` values marked " no"
+   * whose emoji does not picture "no", and `rule` picks the block kept but the run did not (within 6 lines after a silent
+   * line, or on a Word Key two words share). Lines of a failed block are not counted.
+   */
   raw: number;
-  dropped: { malformed: number; unknownGlyph: number; serious: number; absent: number; loose?: number; rule: number };
-  /** Well-formed picks the model itself marked absent (`p: "no"`, unless the emoji pictures "no") or only related (`s: 1`), which acceptance drops. */
+  dropped: { malformed: number; unknownGlyph: number; serious: number; absent: number; rule: number };
+  /** Values the model itself marked absent (" no") whose emoji does not picture "no", which acceptance drops. */
   absentDrops?: { key: string; word: string; glyph: string; sentence: string }[];
-  looseDrops?: { key: string; word: string; glyph: string; sentence: string }[];
   /** Glyphs the catalog has no design for, with the word each sat on. */
   unknown: { glyph: string; word: string }[];
   serious: string[];
@@ -141,7 +148,7 @@ const labelKey = (transcript: string, key: string, id: string) => `${transcript}
 /** One tagging run of one transcript: the picks (graded by hand where a label exists) and the run's numbers. */
 async function tagOnce(transcript: EvalTranscript, run: number, apiKey: string, hand: Record<string, Grade>, base: typeof fetch): Promise<{ run: EvalRun; picks: EvalPick[]; words: number; minutes: number }> {
   const { utterances, words } = clipEmojiWords(transcript.document as Parameters<typeof clipEmojiWords>[0]);
-  const chunks = chunkTranscriptForEmojiTagging(utterances, transcript.languageCode, transcript.title);
+  const { blocks } = emojiTaggingBlocks(utterances, transcript.languageCode, transcript.title);
   const captured: Captured[] = [];
   const pending: Promise<void>[] = [];
   const started = performance.now();
@@ -150,46 +157,38 @@ async function tagOnce(transcript: EvalTranscript, run: number, apiKey: string, 
   const wallMs = Math.round(performance.now() - started);
   await Promise.all(pending);
 
-  const sentences: { text: string; keys: string[] }[] = [];
+  // The judge reads whole sentences, not the tagger's caption lines.
+  const sentences = splitUtterancesIntoSentences(utterances).map((sentence) => ({ text: sentence.words.map((word) => word.word).join(" "), keys: sentence.words.map((word) => captionWordKey(word.startSec)) }));
   const at = new Map<string, number>();
   const wordByKey = new Map<string, string>();
-  const dropped = { malformed: 0, unknownGlyph: 0, serious: 0, absent: 0, loose: 0, rule: 0 };
+  sentences.forEach((sentence, index) => { for (const key of sentence.keys) at.set(key, index); });
+  for (const utterance of utterances) for (const word of utterance.words) wordByKey.set(captionWordKey(word.startSec), word.word);
+  const dropped = { malformed: 0, unknownGlyph: 0, serious: 0, absent: 0, rule: 0 };
   const absentDrops: NonNullable<EvalRun["absentDrops"]> = [];
-  const looseDrops: NonNullable<EvalRun["looseDrops"]> = [];
   const unknown: EvalRun["unknown"] = [];
   const serious: string[] = [];
   let raw = 0;
   const accepted = new Set(outcome.picks.map((pick) => pick.key));
-  for (const chunk of chunks) {
-    const lines = new Map<number, typeof chunk.tokens>();
-    for (const token of chunk.tokens) lines.set(token.line, [...(lines.get(token.line) ?? []), token]);
-    for (const tokens of lines.values()) {
-      const keys = tokens.map((token) => captionWordKey(token.word.startSec));
-      keys.forEach((key, index) => { at.set(key, sentences.length); wordByKey.set(key, tokens[index]!.word.word); });
-      sentences.push({ text: tokens.map((token) => token.word.word).join(" "), keys });
-    }
-    if (chunk.prompt === null) continue;
-    // The reply the tagger used: the last one it could accept (a failed retry after an empty reply keeps the first).
-    const reply = captured.findLast((item) => item.user === chunk.prompt && acceptEmojiPicks(chunk, item.report, emojiRefForGlyph, transcript.languageCode) !== null)?.report as { serious?: { from: number; to: number }[]; picks?: { k: number; w: string; p?: string; e: string; s: number }[] } | null | undefined;
-    const ranges = (reply?.serious ?? []).map((range) => [range.from, range.to].sort((a, b) => a - b) as [number, number]);
-    for (const [from, to] of ranges) serious.push(chunk.tokens.slice(from, to + 1).map((token) => token.word.word).join(" "));
-    for (const pick of reply?.picks ?? []) {
-      raw++;
-      const token = Number.isInteger(pick.k) ? chunk.tokens[pick.k] : undefined;
-      if (!token || captionWordComparable(pick.w) !== captionWordComparable(token.word.word) || captionWordComparable(pick.w) === "") dropped.malformed++;
-      else if (ranges.some(([from, to]) => pick.k >= from && pick.k <= to)) dropped.serious++;
-      else if (pick.p === "no" && !CAPTION_EMOJI_NEGATION_IDS.has(emojiRefForGlyph(pick.e)?.id ?? "")) {
+  for (const block of blocks) {
+    if (block.prompt === null) continue;
+    // The reply the tagger used: the last one it could accept.
+    const reply = captured.findLast((item) => item.user === block.prompt && acceptEmojiBlockReport(block, item.report, emojiRefForGlyph) !== null)?.report as
+      { silent: { from: number; to: number }[]; lines: Record<string, string> } | undefined;
+    if (!reply) continue;
+    raw += block.lines.length;
+    const silent = emojiSilentRangeLines(reply.silent, block.lines.length);
+    block.lines.forEach((line, n) => {
+      const read = readEmojiLineValue(line, reply.lines[`L${n}`]!, emojiRefForGlyph);
+      const text = line.words.map((each) => each.word.word).join(" ");
+      if (read.kind === "silent" || silent.has(n)) { dropped.serious++; serious.push(text); return; }
+      if (read.kind === "malformed") { dropped.malformed++; return; }
+      if (read.kind === "unknown-glyph") { dropped.unknownGlyph++; unknown.push({ glyph: read.glyph, word: read.word.word }); return; }
+      const key = captionWordKey(read.word.startSec);
+      if (read.no && !CAPTION_EMOJI_NEGATION_IDS.has(read.ref.id)) {
         dropped.absent++;
-        const key = captionWordKey(token.word.startSec);
-        absentDrops.push({ key, word: token.word.word, glyph: pick.e, sentence: sentences[at.get(key) ?? -1]?.text ?? "" });
-      } else if (pick.s === 1) {
-        dropped.loose++;
-        const key = captionWordKey(token.word.startSec);
-        looseDrops.push({ key, word: token.word.word, glyph: pick.e, sentence: sentences[at.get(key) ?? -1]?.text ?? "" });
-      }
-      else if (!emojiRefForGlyph(pick.e)) { dropped.unknownGlyph++; unknown.push({ glyph: pick.e, word: token.word.word }); }
-      else if (!accepted.has(captionWordKey(token.word.startSec))) dropped.rule++;
-    }
+        absentDrops.push({ key, word: read.word.word, glyph: captionEmojiById(read.ref.id)?.glyph ?? read.ref.id, sentence: sentences[at.get(key) ?? -1]?.text ?? "" });
+      } else if (!accepted.has(key)) dropped.rule++;
+    });
   }
 
   const kept = Object.fromEntries(DENSITIES.map((density) => [density, selectCaptionEmojiPicks(outcome.picks, words, density)])) as Record<CaptionEmojiDensity, Record<string, unknown>>;
@@ -208,7 +207,7 @@ async function tagOnce(transcript: EvalTranscript, run: number, apiKey: string, 
   const tokens = captured.reduce((sum, item) => ({ input: sum.input + item.usage.input, cached: sum.cached + item.usage.cached, output: sum.output + item.usage.output, reasoning: sum.reasoning + item.usage.reasoning }), { input: 0, cached: 0, output: 0, reasoning: 0 });
   return {
     words: words.length, minutes, picks,
-    run: { run, chunks: outcome.chunks, failed: outcome.failed, retried: outcome.retried, wallMs, tokens, raw, dropped, absentDrops, looseDrops, unknown, serious,
+    run: { run, chunks: outcome.chunks, failed: outcome.failed, retried: outcome.retried, wallMs, tokens, raw, dropped, absentDrops, unknown, serious,
       perMinute: Object.fromEntries(DENSITIES.map((density) => [density, minutes > 0 ? Math.round((Object.keys(kept[density]).length / minutes) * 10) / 10 : 0])) as Record<CaptionEmojiDensity, number> },
   };
 }
@@ -369,15 +368,10 @@ function negationMarkdown(report: EvalReport): string[] {
   }
   if (listed.length > 0) out.push("", "Kept at Balanced on an absent or advised word:", "", ...listed);
   const drops = report.transcripts.flatMap((transcript) => transcript.runs.flatMap((run) => (run.absentDrops ?? []).map((drop) => ({ transcript, run: run.run, drop }))));
-  out.push("", `Picks the model marked absent and acceptance dropped: ${drops.length}.`);
+  out.push("", `Values the model marked absent (" no") with an emoji that does not picture "no", which acceptance dropped: ${drops.length}.`);
   if (drops.length > 0) {
     out.push("");
     for (const { transcript, run, drop } of drops) out.push(`- [${negationOf(transcript.id, drop.key) ?? "not a target"}] r${run} ${transcript.id} **${drop.word}** → ${drop.glyph} · ${drop.sentence}`);
-  }
-  const loose = report.transcripts.flatMap((transcript) => transcript.runs.flatMap((run) => (run.looseDrops ?? []).map((drop) => ({ transcript, run: run.run, drop }))));
-  if (loose.length > 0) {
-    out.push("", `Picks the model marked only related (s1) and acceptance dropped: ${loose.length}.`, "");
-    for (const { transcript, run, drop } of loose) out.push(`- r${run} ${transcript.id} **${drop.word}** → ${drop.glyph} · ${drop.sentence}`);
   }
   return out;
 }
@@ -414,7 +408,7 @@ export function emojiTaggingEvalMarkdown(report: EvalReport): string {
     ["negation (new)", report.transcripts.filter(isNegation)],
   ];
   out.push("## Rates: A depicts the word / B wrong word / C does not fit / D wrong tone", "",
-    "| Set | Light | Balanced | Expressive | Per minute L/B/E | Malformed | Unknown glyph | Serious leaks at E (judge) | Failed chunks |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    "| Set | Light | Balanced | Expressive | Per minute L/B/E | Malformed of lines | Unknown glyph of lines | Serious leaks at E (judge) | Failed requests |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const [name, transcripts] of groups) {
     if (transcripts.length === 0) continue;
     const picks = transcripts.flatMap((transcript) => transcript.picks);
@@ -463,7 +457,7 @@ export function emojiTaggingEvalMarkdown(report: EvalReport): string {
   for (const transcript of report.transcripts) {
     out.push("", `## ${transcript.id} (${transcript.language}, ${transcript.genre})`, "", `${transcript.words} words, ${transcript.minutes} min.`);
     for (const run of transcript.runs) {
-      out.push(`- Run ${run.run}: ${run.chunks} chunk(s), ${run.failed} failed, ${run.retried} retried, ${run.wallMs} ms; per minute L ${run.perMinute.light} / B ${run.perMinute.balanced} / E ${run.perMinute.expressive}; ${run.raw} raw picks, dropped ${run.dropped.malformed} malformed, ${run.dropped.unknownGlyph} unknown glyph, ${run.dropped.serious} serious, ${run.dropped.absent ?? 0} marked absent, ${run.dropped.loose ?? 0} marked loose, ${run.dropped.rule} by rule.${run.serious.length > 0 ? ` Serious: ${run.serious.map((text) => `"${text}"`).join("; ")}` : ""}`);
+      out.push(`- Run ${run.run}: ${run.chunks} request(s), ${run.failed} failed, ${run.retried} retried, ${run.wallMs} ms; per minute L ${run.perMinute.light} / B ${run.perMinute.balanced} / E ${run.perMinute.expressive}; ${run.raw} lines requested: ${run.dropped.serious} silent, ${run.dropped.malformed} malformed, ${run.dropped.unknownGlyph} unknown glyph, ${run.dropped.absent} marked absent, ${run.dropped.rule} dropped by rule.${run.serious.length > 0 ? ` Silent: ${run.serious.map((text) => `"${text}"`).join("; ")}` : ""}`);
     }
     out.push("");
     for (const pick of transcript.picks) {

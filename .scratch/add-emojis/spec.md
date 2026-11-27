@@ -420,7 +420,32 @@ Tickets 01 to 12 record the evidence. Where they differ from sections 3 and 4:
   5.4), Light 3.3, Expressive 9.3; none on 6 of 102 runs, all on Urdu clips the model marked serious (a death,
   an extortion, an addiction breakdown). The strict relevance judge rates 73% of real-clip Balanced picks A
   (ticket 27: 97%), mostly because it grades phrase pictures C; read by hand about 88% fit. About $0.0042 per
-  1,000 words on 500-word chunks; a Studio clip takes about 4 s.
+  1,000 words on 500-word chunks; a Studio clip takes about 4 s. (Ticket 32 replaced the chunks, the pick list and the
+  empty-chunk retry.)
+
+- **Frequency first (32).** The owner wants an emoji on most captions. The request shape was the limit: asked for a
+  free list of picks, gpt-6-luna stopped at about one per three lines. Now code splits each utterance's kept words into
+  caption lines (at most 4 words, ending early at `, . ? ! ; :` or `، ؟ ۔ ।` once a line has 2, a lone last word joining
+  the line before; tagging units, not on-screen cues) and gives each word that may carry an emoji a letter `a` to `e`
+  (not a minor word in its language or English, a number, a filler or bare punctuation). Requests hold up to 96 lines
+  with an anchor, 8 lines of context each side, and a schema of their own: `{ silent: [{from,to}], lines: { L0…Ln } }`,
+  every line required, each `"<letter> <emoji> <strength>"` with an optional `" no"`, or `"X"`. The prompt (one
+  function, `emojiTaggingSystemPrompt`) silences only an account of a real person's death, grave injury,
+  life-threatening illness, suicide, abuse or the victims of a disaster or war; addiction, a breakdown, a scam, ransom,
+  failure, religion and unhappiness get understated emojis. Code keeps the 6 lines after a silent line silent, across
+  requests; drops `" no"` unless the emoji is in `CAPTION_EMOJI_NEGATION_IDS`; keeps strengths 1 to 3 (1 is the mood or
+  point); retries a reply not of the schema's shape or answering under half its lines. Densities: gaps 3.5 / 2 / 1.2 s,
+  least strength 2 / 1 / 1, the same emoji again after 6 s (was 20). Capsule cap 12,000 picks. On the 34 real dev clips
+  (3 runs, twice): ordinary clips 12.4 / 19.1 / 26.8 and 12.5 / 19.4 / 27.2 a minute; 92 to 97% of requested lines get
+  a candidate; the climber's death gets none or one; one run of 102 marked the addiction-breakdown clip silent from
+  start to end. A 30,000-word import takes 44 to 45 s (81 requests, 16 in flight, no 429). The judge rates 50% of
+  real-clip Balanced picks A (ticket 30: 73%), and things said to be absent are shown as present more often (about 9 a
+  run on ticket 21's nine fixtures; ticket 30: 3). The Emoji Layer draws 96.6 to 97.4% of the placed emojis. The
+  provider caches the reply schema ahead of the system prompt, so a new line count misses the cache once.
+  Review changes: every value ends `yes` or `no` (the optional " no" was rarely written) and an emoji on a negation
+  word is kept only when it pictures "no"; a reply that silences more than half of a block is asked once more and the
+  one with fewer silent lines stands; the badge rule is back in the prompt. Shipped code, 34 clips, 3 runs: ordinary
+  12.2 / 19.1 / 26.9 a minute, lowest ordinary clip at Balanced 11.0.
 
 Open at hand-off: the `ContentPack.addEmojis` migration is not applied; the media image changed,
 so the Worker's `MEDIA_*_TOOLCHAIN_FINGERPRINT` must be updated at deploy; golden render baselines

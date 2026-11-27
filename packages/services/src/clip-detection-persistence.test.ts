@@ -127,9 +127,9 @@ describe("Caption Emojis at generation", () => {
     // "um" is cut and the pick outside the clip has no word; "go" is 1.2 s after "we" in edited time.
     const document = build({ addEmojis: true, removeFillerWords: true }, picks);
     expect(document.studioEdits.captionEmojis).toEqual({ "10000": { id: "waving-hand" }, "13900": { id: "people-hugging" } });
-    // Balanced keeps strength 2 and 3 only.
+    // Balanced keeps every strength, a mood or point (1) too.
     expect(build({ addEmojis: true, removeFillerWords: true }, [pick("10000", "waving-hand", 1), ...picks.slice(1)]).studioEdits.captionEmojis)
-      .toEqual({ "13900": { id: "people-hugging" } });
+      .toEqual({ "10000": { id: "waving-hand" }, "13900": { id: "people-hugging" } });
     expect(document.captionPreset.emojis).toBe(true);
   });
 

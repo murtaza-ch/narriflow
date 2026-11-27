@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CAPTION_EMOJI_DENSITIES,
+  CAPTION_EMOJI_DENSITY_MIN_STRENGTH,
   CAPTION_EMOJI_INK,
   CAPTION_EMOJI_LIMIT,
   CAPTION_EMOJI_MIN_BODY_CHROMA,
@@ -224,36 +226,40 @@ describe("selectCaptionEmojiPicks", () => {
   });
 
   test("keeps one pick per minimum gap: the stronger wins, the earlier wins a tie", () => {
-    // 8 s and 9 s are 1 s apart, inside the 2.5 s balanced gap.
+    expect(CAPTION_EMOJI_DENSITIES).toEqual({ light: 3.5, balanced: 2, expressive: 1.2 });
+    // 8 s and 9 s are 1 s apart, inside the 2 s balanced gap.
     expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 2), pick(18, "rocket", 3)], words, "balanced"))).toEqual([words[18]!.key]);
     expect(Object.keys(selectCaptionEmojiPicks([pick(18, "rocket", 2), pick(16, "fire", 2)], words, "balanced"))).toEqual([words[16]!.key]);
-    // Expressive (1.5 s) keeps both.
+    // Expressive (1.2 s) keeps 8 s and 9.5 s; Balanced keeps one.
     expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 2), pick(19, "rocket", 3)], words, "expressive"))).toHaveLength(2);
-    // Light (5 s) keeps one of 8 s and 12 s.
-    expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 3), pick(24, "rocket", 3)], words, "light"))).toEqual([words[16]!.key]);
+    expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 2), pick(19, "rocket", 3)], words, "balanced"))).toEqual([words[19]!.key]);
+    // Light (3.5 s) keeps one of 8 s and 11 s, and both of 8 s and 12 s.
+    expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 3), pick(22, "rocket", 3)], words, "light"))).toEqual([words[16]!.key]);
+    expect(Object.keys(selectCaptionEmojiPicks([pick(16, "fire", 3), pick(24, "rocket", 3)], words, "light"))).toHaveLength(2);
   });
 
-  test("density is a strength gate first: Light keeps strength 3, Balanced and Expressive 2 and 3", () => {
+  test("density is a strength gate first: Light keeps strengths 2 and 3, Balanced and Expressive every strength", () => {
+    expect(CAPTION_EMOJI_DENSITY_MIN_STRENGTH).toEqual({ light: 2, balanced: 1, expressive: 1 });
     // 2 s, 8 s and 14 s: far enough apart for every density's gap.
     const picks = [pick(4, "wave", 1), pick(16, "fire", 2), pick(28, "rocket", 3)];
-    expect(Object.values(selectCaptionEmojiPicks(picks, words, "light")).map((ref) => ref.id)).toEqual(["rocket"]);
-    expect(Object.values(selectCaptionEmojiPicks(picks, words, "balanced")).map((ref) => ref.id)).toEqual(["fire", "rocket"]);
-    expect(Object.values(selectCaptionEmojiPicks(picks, words, "expressive")).map((ref) => ref.id)).toEqual(["fire", "rocket"]);
-    // The gate holds with nothing near: a lone strength-2 pick is not kept at Light.
-    expect(selectCaptionEmojiPicks([pick(14, "wave", 2)], words, "light")).toEqual({});
+    expect(Object.values(selectCaptionEmojiPicks(picks, words, "light")).map((ref) => ref.id)).toEqual(["fire", "rocket"]);
+    expect(Object.values(selectCaptionEmojiPicks(picks, words, "balanced")).map((ref) => ref.id)).toEqual(["wave", "fire", "rocket"]);
+    expect(Object.values(selectCaptionEmojiPicks(picks, words, "expressive")).map((ref) => ref.id)).toEqual(["wave", "fire", "rocket"]);
+    // The gate holds with nothing near: a lone strength-1 pick is not kept at Light.
+    expect(selectCaptionEmojiPicks([pick(14, "wave", 1)], words, "light")).toEqual({});
   });
 
-  test("the same emoji does not repeat within 20 s", () => {
-    expect(CAPTION_EMOJI_REPEAT_GAP_SEC).toBe(20);
-    const kept = selectCaptionEmojiPicks([pick(8, "fire", 3), pick(40, "fire", 3), pick(50, "fire", 3)], words, "balanced");
-    // 4 s, 20 s and 25 s: 20 s is 16 s after 4 s, 25 s is 21 s after it, so 4 s and 25 s stay.
-    expect(Object.keys(kept)).toEqual([words[8]!.key, words[50]!.key]);
-    // Another design 16 s later is kept.
-    expect(Object.keys(selectCaptionEmojiPicks([pick(8, "fire", 3), pick(40, "rocket", 3)], words, "balanced"))).toEqual([words[8]!.key, words[40]!.key]);
+  test("the same emoji does not repeat within 6 s", () => {
+    expect(CAPTION_EMOJI_REPEAT_GAP_SEC).toBe(6);
+    const kept = selectCaptionEmojiPicks([pick(8, "fire", 3), pick(18, "fire", 3), pick(22, "fire", 3)], words, "balanced");
+    // 4 s, 9 s and 11 s: 9 s is 5 s after 4 s, 11 s is 7 s after it, so 4 s and 11 s stay.
+    expect(Object.keys(kept)).toEqual([words[8]!.key, words[22]!.key]);
+    // Another design 5 s later is kept.
+    expect(Object.keys(selectCaptionEmojiPicks([pick(8, "fire", 3), pick(18, "rocket", 3)], words, "balanced"))).toEqual([words[8]!.key, words[18]!.key]);
   });
 
   test("the opening pick wins only a tie: a weaker hook never displaces a stronger neighbour", () => {
-    // 2.5 s and 4 s are inside one balanced gap.
+    // 2.5 s and 4 s are inside one balanced gap (2 s).
     expect(Object.keys(selectCaptionEmojiPicks([pick(8, "rocket", 3), pick(5, "wave", 2)], words, "balanced"))).toEqual([words[8]!.key]);
     expect(Object.keys(selectCaptionEmojiPicks([pick(8, "rocket", 2), pick(5, "wave", 2)], words, "balanced"))).toEqual([words[5]!.key]);
   });
@@ -262,10 +268,12 @@ describe("selectCaptionEmojiPicks", () => {
     const picks = [pick(1, "wave", 2), pick(7, "fire", 3), pick(12, "brain", 2), pick(13, "rocket", 2), pick(30, "fire", 2), pick(39, "trophy", 3)];
     const once = selectCaptionEmojiPicks(picks, words, "balanced");
     expect(selectCaptionEmojiPicks([...picks].reverse(), words, "balanced")).toEqual(once);
+    // 6.5 s is inside brain's gap; the second fire is 11.5 s after the first.
     expect(once).toEqual({
       [words[1]!.key]: { id: "wave" },
       [words[7]!.key]: { id: "fire" },
       [words[12]!.key]: { id: "brain" },
+      [words[30]!.key]: { id: "fire" },
       [words[39]!.key]: { id: "trophy" },
     });
   });

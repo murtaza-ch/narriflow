@@ -24,8 +24,12 @@ export interface TranscriptTaggingChunk {
 // ("sagte:", "10:30"; in 8-19% of measured chunks) is shown as a fullwidth
 // colon so it cannot read as an id separator; letters, which acceptance
 // compares, are unchanged. Format characters such as ZWNJ stay (Persian).
+// The emoji tagger's caption lines (emoji-tagging.ts) share both rules.
 const FORGES_STRUCTURE = /[\s\p{Z}\p{Cc}]/u;
-const shownToken = (text: string) => text.replaceAll(":", "：");
+/** Whether a transcript word could forge a tagging prompt's structure: its whole request is then never sent. */
+export const forgesTaggingStructure = (text: string): boolean => FORGES_STRUCTURE.test(text);
+/** A transcript word as a tagging prompt shows it: a colon fullwidth, so it cannot read as a separator. */
+export const shownTaggingToken = (text: string): string => text.replaceAll(":", "：");
 
 /** Sentence-split chunks of at most `maxWords` words; a token's id is its index in its chunk. */
 export function chunkTranscriptForTagging(utterances: TranscriptUtterance[], languageCode: string, maxWords: number): TranscriptTaggingChunk[] {
@@ -35,9 +39,9 @@ export function chunkTranscriptForTagging(utterances: TranscriptUtterance[], lan
   const flush = () => {
     if (count === 0) return;
     const tokens = lines.flatMap((line, at) => line.words.map((word) => ({ speaker: line.speaker, word, line: at })));
-    const unsafe = tokens.some((token) => FORGES_STRUCTURE.test(token.word.word));
+    const unsafe = tokens.some((token) => forgesTaggingStructure(token.word.word));
     let id = 0;
-    const body = lines.map((line) => `S${line.speaker ?? "?"}: ${line.words.map((word) => `${id++}:${shownToken(word.word)}`).join(" ")}`).join("\n");
+    const body = lines.map((line) => `S${line.speaker ?? "?"}: ${line.words.map((word) => `${id++}:${shownTaggingToken(word.word)}`).join(" ")}`).join("\n");
     chunks.push({ tokens, prompt: unsafe ? null : `Language: ${languageCode}\nTokens:\n${body}` });
     lines = [];
     count = 0;

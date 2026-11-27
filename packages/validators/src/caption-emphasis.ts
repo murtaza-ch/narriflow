@@ -305,6 +305,11 @@ export function captionWordIsMinor(raw: string, language: string | null): boolea
   return classFacts(raw, language).minor;
 }
 
+/** Whether a transcript token is a listed negation word in `language` ("not", "no", "نہیں"); false where the language has no lists. */
+export function captionWordIsNegation(raw: string, language: string | null): boolean {
+  return classFacts(raw, language).negation;
+}
+
 /** Whether a transcript token is a number in `language`: a digit, %, a currency sign or a listed number word. */
 export function captionWordIsNumber(raw: string, language: string | null): boolean {
   return classFacts(raw, language).number;
