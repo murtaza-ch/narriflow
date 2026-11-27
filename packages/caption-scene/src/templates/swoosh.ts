@@ -1,8 +1,7 @@
-import { captionTextClusters } from "@narriflow/caption-fonts/caption-block";
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast, captionSceneMeta } from "@narriflow/validators";
 import type { DemoScript } from "../demo";
 import { clamp, EASES, type Frames, prog } from "../ease";
-import { exportFrameAtOrBefore, paintedFrameCount } from "../frame-grid";
+import { exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import { sampleFrames } from "../frames";
 import { balancedRows, rowVisualOrder } from "../layout";
 import { type Box, type ColourFrames, mixColour, type Piece, type TextPiece, type Track } from "../scene";
@@ -20,7 +19,10 @@ import { galleryScene } from "./gallery-layout";
  * - **Rows from the words.** The sample's two lines (before the key word / the key word and after, or two halves) stay the
  *   rule, but each line wraps (balanced) when it is wider than the column, a word wider than the column shrinks to a floor
  *   and below it breaks into the fewest even rows (Latin, Cyrillic, Greek, CJK; a joined script such as Devanagari or
- *   Arabic never breaks, it shrinks), and every fragment sits on its own row. More than two rows keep stepping in, the
+ *   Arabic never breaks, it shrinks), and every fragment sits on its own row. Text is composed (NFC) and broken between
+ *   grapheme clusters, so a decomposed accent wraps and sizes exactly like its precomposed letter. A very long token breaks
+ *   at the body floor, and one that would still pass 12 rows or the band's height shrinks until it fits: every character
+ *   shows and the cue stays within the 150-layer budget. More than two rows keep stepping in, the
  *   whole indent capped at two steps and reduced when a row would leave the column. The sample's whole-block scale fit
  *   is gone (it shrank every word when one line was long).
  * - **Row pitch from measured ink.** The sample's fixed steps (0.5/0.42 em, 0.7/0.72 em for a key word first) collided on
@@ -28,29 +30,35 @@ import { galleryScene } from "./gallery-layout";
  *   share horizontal space (ink, dark edge and the key word's coral offset, measured on the turned corners so even their
  *   upright bounding boxes stay apart under the tilt), never tighter than the sample's step, so Devanagari matras and
  *   Nastaliq grow the row. Words beside a key word keep room for its coral offset and its 5% swing overshoot.
- * - **Once spoken, a word holds still.** An ordinary word slides in during its 90 ms lead and is settled at its spoken
- *   start (the sample kept sliding for 200 ms after it). With no lead (a cue that follows the last one at once) it slides
- *   for three frames after the onset, then holds. A word slides only as far as the space to its neighbour allows (the
+ * - **Once spoken, a word holds still.** An ordinary word slides in during its 90 ms lead and is opaque and settled in its
+ *   slot on its first spoken frame (the sample kept sliding for 200 ms after it). With less than two painted frames of lead
+ *   it is there, whole and opaque, from its first frame. A word slides only as far as the space to its neighbour allows (the
  *   first word of a row the full 44 px), so it never starts inside the key word's coral edge (Sol's round 3 finding).
- * - **The key word's swing compresses.** The 380 ms swing is shortened so its travel is done before the next word slides
- *   in, and finishes before the cue leaves; its travel is cut to the room inside the band so the fly-in never forces the
- *   cue smaller, and runs on a faster ease than the shear, squeeze and lean, so the word is nearly home at its spoken start
- *   (the swing itself keeps the sample's timing). It is opaque from 10 ms before its spoken start (70 ms ramp), or at once
- *   when the cue has no lead.
- * - **Swoosh timing from speech.** It starts up to 200 ms before the key word but never before the cue's window (so never
- *   more than 100 ms before the cue's first word), flies in over at least two frames and is eaten back into the word over
- *   the 110 ms before the spoken start, while the word swings out of it (the sample ate it from 10 ms before to 100 ms
- *   after): the key word reads alone when it is spoken, and an emoji placed against it measures from the word, not from
- *   the brush (with the brush still there, the emoji layer took it for the word's plate and hung the emoji 1h below the
- *   settled caption). A short window compresses the whole beat, and below four painted frames it is a compact static
- *   pose. Its length and thickness come from the room inside the band (the sample's caption-zone fit), trying the other
- *   side when the preferred one has no room; it mirrors for right-to-left cues. The sample's blurred drop shadows under
- *   the two strokes are dropped (the coral echo already separates it, and a big blur costs on every frame it moves).
+ * - **The key word's swing, without shear.** Its travel in along the swoosh's line happens during its lead and ends at its
+ *   spoken start, opaque by then (with no lead it is home at once); the squeeze and the lean settle after. The lean runs on
+ *   its own clock, settled 60 ms after the onset, so the deep lean is carried while the word travels in. Its depth is the
+ *   deepest (full to none) whose turned, squeezed box clears the words already on screen on every painted frame. The
+ *   sample's skewX is gone: libass shears a glyph before it scales it and the Studio after, so a shear with unequal scales
+ *   draws differently in the two (measured: 64 px of slant against 167 px, and a 105 px shift); a deeper lean (26 degrees
+ *   against 16) carries the swing. The swing is shortened so its overshoot is done before the next word slides in and
+ *   finishes before the cue leaves.
+ * - **The word swings out of the brush.** The brush flies in during the lead (at least two painted frames, arriving as the
+ *   word appears, or while it fades in when the lead is short), and is eaten back into the word over 110 ms from just
+ *   before the spoken start, so the two share the screen for three to five painted frames, the last tail short (on the
+ *   two real clips, every key-word cue). With no room for a flight it is a compact full pose that appears with the word. Its
+ *   anchor hangs from the word's lower half (the needle under the word, the whole drawing below the word's centre), so the
+ *   emoji layer never takes it for the plate the word is written on (a shape holding a word's centre is one: the brush
+ *   used to push a below-emoji a whole emoji height down) and measures an emoji from the word. Its length and thickness
+ *   come from the room inside the band, trying the other side when the preferred one has no room; it mirrors for
+ *   right-to-left cues. The sample's blurred drop shadows under the two strokes are dropped (the coral echo already
+ *   separates it, and a big blur costs on every frame it moves).
  * - **Exit.** The staircase slides 46 px back against the reading direction and fades over its last 130 ms, only when two
  *   painted frames fit after every word has read 150 ms; otherwise the next cue simply replaces it.
- * - **Brand colours.** Words take the preset's primary, the key word the highlight, its offset the accent, each kept at 3:1
- *   against the fixed dark edge (else the style's own). A brand highlight also colours the swoosh, so the brush and the
- *   word it throws match.
+ * - **Brand colours.** Words take the preset's primary and the key word the highlight, each kept at 3:1 against the fixed
+ *   dark edge they sit in (else the style's own). The accent is the key word's offset shadow under that edge: it only has
+ *   to differ from the key word's face (1.4:1). A brand highlight also colours the swoosh. Animated colours are checked as
+ *   drawn: the wet-paint tint and the key word's brush-to-highlight change keep 3:1 at every step of their path (a mix of
+ *   red toward green dips in between), with a lighter tint, a later start or none when they cannot.
  * - **Every language.** Mixed case as spoken (no case transform). Right-to-left cues read right to left, the staircase
  *   steps in from the right, the uphill tilt, the swing, the swoosh and the exit mirror. Fallback faces are measured, so
  *   rows, pitch, the swoosh's anchor and the flick are sized from the real ink.
@@ -61,8 +69,8 @@ import { galleryScene } from "./gallery-layout";
  *   flick out of the key word's trailing corner along the swoosh's line and vanish, behind the lettering; when that corner
  *   is crowded they fly from the leading corner, or from the top corners, wherever every hair has free space in the band.
  * - **Brush flick** (every cue without a key word). A short tapered lime stroke with its coral echo is drawn under the last
- *   word, or under the whole last row (alternating by cue), just after it is spoken, and holds until the cue leaves; it is
- *   lowered until its turned box clears the words.
+ *   word, or under the whole last row (alternating by cue), just after it is spoken (with the word, static, when the cue is
+ *   too short for that), and holds until the cue leaves; it is lowered until its turned box clears the words.
  *
  * Words per cue: 4 (the scaffold's guess held on the real-cue sheets: two or three rows, no fit below 0.9). Emoji slot:
  * the default (above). A key-word cue whose short first line sits at the left usually takes it below, close to the
@@ -112,15 +120,22 @@ const TINT_MS = 160;
 const HERO_LEAD = 80;
 const SWING_MS = 380;
 const TRAVEL = 300;
-const SWOOSH_LEAD = 200;
+const SWOOSH_LEAD = 170;
 const EAT_MS = 110;
+/** Degrees the key word leans at the start of its swing (the sample's 16 plus what its skewX carried). */
+const LEAN = 26;
 const SPRAY_MS = 200;
 const FLICK_MS = 140;
 const EXIT_MS = 130;
 const EXIT_SLIDE = 46;
 
 /** Words that can break between clusters when wider than the column. Joined and complex scripts never do. */
-const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{S}]+$/u;
+const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{S}\p{M}]+$/u;
+/** The most rows one word may break into: a pathological token (hundreds of characters) shrinks below the floor instead. */
+const MAX_PARTS = 12;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** User-perceived characters: an accent, with or without a precomposed form, stays on its letter. */
+const clustersOf = (text: string) => [...graphemes.segment(text)].map((part) => part.segment);
 
 type Key = [number, number, ("out" | "outExpo" | "outQuint" | "in" | "inOut")?];
 
@@ -223,15 +238,26 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
   const { words } = cue;
   const measure = (text: string, size: number) => ctx.input.measure(text, FACE, size, 0);
 
-  // Colours as received, each kept at 3:1 against the fixed dark edge it sits in (the Studio's colour controls can send any).
+  // Colours as received (the Studio's colour controls can send any). The word faces must read on the fixed dark edge they sit
+  // in: primary and highlight are kept at 3:1 against it, else the style's own. The accent is only the key word's offset
+  // shadow under that edge, so it needs no contrast with the edge; it must just differ from the key word's face (1.4:1), or
+  // the offset vanishes into the word. The brush is a decoration.
   const c = ctx.input.colours;
   const defaults = captionSceneMeta("swoosh").colours;
-  const keep = (colour: string, fallback: string) => (captionColourContrast(colour, EDGE) >= CAPTION_SCENE_BRAND_MIN_CONTRAST ? colour : fallback);
+  const reads = (colour: string) => captionColourContrast(colour, EDGE) >= CAPTION_SCENE_BRAND_MIN_CONTRAST;
+  const keep = (colour: string, fallback: string) => (reads(colour) ? colour : fallback);
   const faceColour = keep(c.primary, defaults.primary);
   const heroColour = keep(c.highlight, defaults.highlight);
   const brush = heroColour.toUpperCase() === defaults.highlight.toUpperCase() ? LIME : heroColour;
   const coral = captionColourContrast(c.accent, heroColour) >= 1.4 ? c.accent : defaults.accent;
-  const tintOf = (colour: string) => mixColour(colour, brush, TINT);
+  // Animated colours are checked as drawn: a mix in sRGB can dip in luminance between its ends (red toward green does), so
+  // every step of the transition must keep 3:1 on the edge. The wet-paint tint takes the strongest share of the brush colour
+  // whose whole path to the face does; the key word starts at the first point of its brush-to-highlight path from which
+  // every later point does.
+  const steps = Array.from({ length: 21 }, (_, at) => at / 20);
+  const tintShare = [TINT, 0.4, 0.2].find((share) => steps.every((p) => reads(mixColour(faceColour, brush, share * p)))) ?? 0;
+  const tintOf = (colour: string) => mixColour(colour, brush, tintShare);
+  const heroFrom0 = steps.find((p0) => steps.filter((p) => p >= p0).every((p) => reads(mixColour(brush, heroColour, p)))) ?? 1;
 
   // Counters over the clip: hero cues and cues without one cycle their variants independently.
   const heroed = (k: number) => ctx.input.cues[k]!.words.some((word) => word.role === "hero");
@@ -247,7 +273,7 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
   const column = Math.min(COLUMN * u, bounds.x2 - bounds.x1 - 2 * PAD * u);
   const w100 = (text: string) => measure(text, 100).advance;
   const chunks = (text: string, size: number): string[] => {
-    const clusters = captionTextClusters(text);
+    const clusters = clustersOf(text);
     const split = (room: number) => {
       const out: string[] = [];
       let row = "";
@@ -276,17 +302,33 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
     const m = measure(text, size);
     return { word, part, parts, text, size, hero, width: m.advance, inkTop: m.inkTop, inkBottom: m.inkBottom, edge: (hero ? HERO_EDGE : BODY_EDGE) * size, offset: hero ? OFFSET * size : 0 };
   };
+  // Composed text (NFC): a decomposed accent measures, wraps and draws exactly like its precomposed letter.
+  const texts = words.map((word) => word.text.normalize("NFC"));
+  const bandHeight = bounds.y2 - bounds.y1 - 2 * PAD * u;
   const itemsOfWord = words.map((word, w) => {
+    const text = texts[w]!;
     const hero = word.role === "hero";
     const base = (hero ? HERO : hasHero ? BODY : SOLO) * u;
     const floor = Math.min(base, (hero ? HERO_FLOOR : FLOOR) * u);
-    const natural = measure(word.text, base).advance;
-    if (natural <= column) return [itemOf(w, 0, 1, word.text, base, hero)];
+    const natural = measure(text, base).advance;
+    if (natural <= column) return [itemOf(w, 0, 1, text, base, hero)];
     const fitted = (base * column) / natural;
-    if (fitted >= floor || !SPLITTABLE.test(word.text) || captionTextClusters(word.text).length < 2) return [itemOf(w, 0, 1, word.text, fitted, hero)];
-    const parts = chunks(word.text, floor);
-    const size = clamp((column * 0.97 * 100) / Math.max(...parts.map(w100)), floor, base);
-    return parts.map((text, part) => itemOf(w, part, parts.length, text, size, hero));
+    if (fitted >= floor || !SPLITTABLE.test(text) || clustersOf(text).length < 2) return [itemOf(w, 0, 1, text, fitted, hero)];
+    // Broken at the key word's floor, then (a very long token) at the body floor; a token whose rows would still pass
+    // MAX_PARTS or the band's height shrinks until they fit, so every character shows and the cue stays within budget.
+    let size = floor;
+    let parts = chunks(text, size);
+    if (parts.length > MAX_PARTS || parts.length * size * 1.3 > bandHeight) {
+      size = Math.min(size, FLOOR * u);
+      parts = chunks(text, size);
+    }
+    for (let tries = 0; tries < 12 && (parts.length > MAX_PARTS || parts.length * size * 1.3 > bandHeight); tries++) {
+      const wide = w100(text) / 100;
+      size = Math.min(size * 0.85, (MAX_PARTS * column * 0.9) / wide, Math.sqrt((bandHeight * column * 0.9) / (1.3 * wide)));
+      parts = chunks(text, size);
+    }
+    const fittedSize = clamp((column * 0.97 * 100) / Math.max(...parts.map(w100)), size, base);
+    return parts.map((part, at) => itemOf(w, at, parts.length, part, fittedSize, hero));
   });
 
   // ---- Lines: the words before the key word, then the key word and what follows (a key word first sits alone on top); a
@@ -422,29 +464,34 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
   let theta = 20 + 12 * hash(index, cue.words.map((word) => word.text).join(" "));
   let swooshL = 0;
   let swooshHw = 0;
+  // The brush hangs from the key word's lower half: its needle sits under the word, and its whole drawing stays below the
+  // word's centre, so the emoji layer never takes it for the plate the word is written on (a shape holding a word's
+  // centre is one) and measures an emoji from the word, not from the brush.
+  let brushLift = 0;
+  const brushAnchor = (hero: Placed, lift: number, dir: number): [number, number] => {
+    const [hx, hy] = pivotOf(hero);
+    return [hx + dir * 0.1 * hero.width, hy + lift];
+  };
   if (firstHero) {
-    const [hx, hy] = pivotOf(firstHero);
     const box = { x1: bounds.x1 + 12 * u, y1: bounds.y1 + 12 * u, x2: bounds.x2 - 12 * u, y2: bounds.y2 - 12 * u };
+    const turned = (L: number, hw: number, angle: number, dir: number) => swooshPaths(L, hw, u, index, dir < 0).flatMap((path) => path.points.map(([x, y]) => rotate(x, y, dir * angle)));
     const fits = (L: number, hw: number, angle: number, dir: number) => {
-      for (const path of swooshPaths(L, hw, u, index, dir < 0)) {
-        for (const [px, py] of path.points) {
-          const [rx, ry] = rotate(px, py, dir * angle);
-          const X = hx + rx;
-          const Y = hy + ry;
-          if (X < box.x1 || X > box.x2 || Y < box.y1 || Y > box.y2) return false;
-        }
-      }
-      return true;
+      const points = turned(L, hw, angle, dir);
+      const lift = -Math.min(...points.map((point) => point[1])) + 4 * u;
+      const [ax, ay] = brushAnchor(firstHero, lift, dir);
+      return points.every(([x, y]) => ax + x >= box.x1 && ax + x <= box.x2 && ay + y >= box.y1 && ay + y <= box.y2) ? lift : null;
     };
     search: for (const dir of [side, -side]) {
       for (const angle of [theta, 14, 30]) {
         for (let L = 440 * u; L >= 160 * u; L -= 10 * u) {
           const hw = clamp(L * 0.1, 22 * u, 44 * u);
-          if (fits(L, hw, angle, dir)) {
+          const lift = fits(L, hw, angle, dir);
+          if (lift !== null) {
             swooshDir = dir;
             theta = angle;
             swooshL = L;
             swooshHw = hw;
+            brushLift = lift;
             break search;
           }
         }
@@ -453,6 +500,7 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
     if (!swooshL) {
       swooshL = 160 * u;
       swooshHw = 22 * u;
+      brushLift = -Math.min(...turned(swooshL, swooshHw, theta, side).map((point) => point[1])) + 4 * u;
     }
   }
 
@@ -464,10 +512,11 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
     const shadow = { dx: 0, dy: (item.hero ? 0.06 : 0.045) * item.size, blur: (item.hero ? 0.07 : 0.06) * item.size, colour: "#000000", alpha: item.hero ? 0.45 : 0.5 };
 
     if (!item.hero) {
+      // Slides in during its lead and is opaque and in its slot by its spoken start; with less than two painted frames of
+      // lead it is simply there, whole, from its first frame.
       const from = Math.max(windowFrom, s - ENTER_LEAD);
-      const lastFrame = exportFrameAtOrBefore(word.endMs - 1, fps);
-      const settle = Math.max(from, Math.min(Math.max(s, from + 67), Math.max(from, lastFrame)));
-      const motion = paintedFrameCount(from, settle, fps) >= 2;
+      const motion = paintedFrameCount(from, s, fps) >= 2;
+      const settle = motion ? s : from;
       // The slide never starts inside the neighbour it moves toward (its ink, edge and any coral offset).
       const row = ordered[item.row]!;
       const at = row.findIndex((other) => other.word === item.word && other.part === item.part);
@@ -475,7 +524,7 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
       const lean = toward ? 0.5 * (toward.inkBottom - toward.inkTop + item.inkBottom - item.inkTop) * Math.sin((Math.abs(TILT) * Math.PI) / 180) : 0;
       const clearance = toward ? gapBetween(rtl ? item : toward, rtl ? toward : item) - toward.edge - (rtl ? 0 : toward.offset) - swell(toward) - item.edge - lean - 4 * u : SLIDE * u;
       const slide = clamp(clearance, 6 * u, SLIDE * u);
-      const o: Key[] = s - from >= 34 ? [[from, 0], [Math.min(from + 45, s), 1]] : [[from, 0.55], [from + 30, 1]];
+      const o: Key[] = motion ? [[from, 0], [Math.min(from + 45, s), 1]] : [[from, 1]];
       const track: Track = {
         x: motion ? [[from, px - side * slide], [settle, px, "outExpo"]] : [[from, px]],
         y: motion ? [[from, py + RISE * u], [settle, py, "outExpo"]] : [[from, py]],
@@ -487,9 +536,13 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
       continue;
     }
 
-    // The key word swings out of the swoosh: sheared, squeezed and leaning, travelling in along the swoosh's line.
+    // The key word swings out of the swoosh: squeezed and leaning, travelling in along the swoosh's line during its lead.
+    // It is opaque and home by its spoken start (with less than two painted frames of lead it is there at once); the squeeze
+    // and lean may settle after. No shear: libass shears before it scales and the Studio after, so a shear with unequal
+    // scales draws differently in the two (the sample's skewX is carried by a deeper lean).
     const heroFrom = Math.max(windowFrom, s - HERO_LEAD);
-    const swingStart = heroFrom - 30;
+    const travelOn = paintedFrameCount(heroFrom, s, fps) >= 2;
+    const swingStart = travelOn ? heroFrom - 30 : s - 0.22 * SWING_MS;
     const next = words[item.word + 1];
     let swingEnd = swingStart + SWING_MS;
     if (next && item.part === item.parts - 1) {
@@ -502,32 +555,45 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
     // The swoosh's axis: down and toward the reading end (mirrored, its drawing runs along -x turned by -theta).
     const ux = dir * Math.cos((theta * Math.PI) / 180);
     const uy = Math.sin((theta * Math.PI) / 180);
-    // Travel only as far as the band allows: at its first painted pose the word is still about 78% of the way out.
+    // Travel only as far as the band allows (at its first painted pose the word is about half way out).
     const box = boxOf(item);
     const roomX = ux > 0 ? (bounds.x2 - 6 * u - box.x2) / ux : (bounds.x1 + 6 * u - box.x1) / ux;
     const roomY = (bounds.y2 - 6 * u - box.y2) / uy;
-    const travel = Math.max(0, Math.min(TRAVEL * u, roomX / 0.78, roomY / 0.78));
+    const travel = travelOn ? Math.max(0, Math.min(TRAVEL * u, roomX / 0.55, roomY / 0.55)) : 0;
     const sw = Math.max(1, swingEnd - swingStart);
     const q = (t: number) => prog(t, swingStart, sw);
     const e = (t: number) => EASES.out(q(t));
-    // The travel runs on a faster ease than the swing: the word is nearly home by its spoken start (an emoji placed against
-    // it then sits where the word settles), while the shear, squeeze and lean keep the sample's timing.
-    const home = (t: number) => EASES.outQuint(q(t));
     const bk = (t: number) => outBack(q(t));
-    const edges = [heroFrom, swingEnd];
+    // The lean runs on its own clock, settled (with a small overshoot) 60 ms after the spoken start: the deep lean is
+    // carried while the word travels in, and the word stands nearly upright by the time it reads.
+    const leanEnd = Math.min(swingEnd, Math.max(s + 60, heroFrom + 67));
+    const leanLeft = (t: number) => 1 - outBack(prog(t, swingStart, Math.max(1, leanEnd - swingStart)));
+    const away = (t: number) => travel * (1 - EASES.out(prog(t, heroFrom - 20, s - heroFrom + 20)));
+    // The entrance pose needs clearance too: the deepest lean (of full, three quarters, half, a quarter, none) whose turned,
+    // squeezed box on every painted frame of the swing keeps off the words already on screen.
+    const earlier = placed.filter((other) => other.word < item.word).map(boxOf);
+    const [hcx, hcy] = [px + item.offset / 2, py + item.offset / 2];
+    const hw0 = item.width + 2 * item.edge + item.offset;
+    const hh0 = item.inkBottom - item.inkTop + 2 * item.edge + item.offset;
+    const swingFrames = exportFrameTimes(heroFrom, Math.max(heroFrom + 1, swingEnd), fps);
+    const lean = [1, 0.75, 0.5, 0.25, 0].find((k) => swingFrames.every((t) => {
+      const b = bk(t);
+      const turn = aabb(hcx + ux * away(t), hcy + uy * away(t), hw0 * (0.3 + 0.7 * b), hh0 * (0.88 + 0.12 * e(t)), tilt - dir * LEAN * k * leanLeft(t));
+      return earlier.every((other) => !meets(turn, { x1: other.x1 - 2 * u, y1: other.y1 - 2 * u, x2: other.x2 + 2 * u, y2: other.y2 + 2 * u }));
+    })) ?? 0;
+    const edges = [heroFrom, s, swingEnd].filter((edge, at, all) => at === 0 || edge > all[at - 1]!);
     const frames = (fn: (t: number) => number, tolerance: number): Frames => (swing ? sampleFrames(fn, edges, tolerance, { simplify: true }) : [[heroFrom, fn(swingEnd)]]);
-    const o: Key[] = s - heroFrom >= 34 ? [[heroFrom, 0], [Math.min(heroFrom + 70, s), 1]] : [[heroFrom, 0.55], [heroFrom + 30, 1]];
+    const o: Key[] = travelOn ? [[heroFrom, 0], [Math.min(heroFrom + 50, s), 1]] : [[heroFrom, 1]];
     const track: Track = {
-      x: frames((t) => px + ux * travel * (1 - home(t)), 0.5),
-      y: frames((t) => py + uy * travel * (1 - home(t)), 0.5),
-      rz: frames((t) => tilt - dir * 16 * (1 - bk(t)), 0.3),
-      skx: frames((t) => -dir * 44 * (1 - bk(t)), 0.4),
+      x: travelOn ? sampleFrames((t) => px + ux * away(t), [heroFrom, s], 0.5, { simplify: true }) : [[heroFrom, px]],
+      y: travelOn ? sampleFrames((t) => py + uy * away(t), [heroFrom, s], 0.5, { simplify: true }) : [[heroFrom, py]],
+      rz: swing ? sampleFrames((t) => tilt - dir * LEAN * lean * leanLeft(t), [...edges, leanEnd].sort((a, b) => a - b).filter((edge, at, all) => at === 0 || edge > all[at - 1]!), 0.3, { simplify: true }) : [[heroFrom, tilt]],
       sx: frames((t) => 0.3 + 0.7 * bk(t), 0.006),
       sy: frames((t) => 0.88 + 0.12 * e(t), 0.004),
       o,
     };
-    const tintAt = (t: number) => mixColour(brush, heroColour, EASES.out(prog(t, s - 40, 240)));
-    const colour: ColourFrames = [[heroFrom, tintAt(heroFrom)], [Math.max(heroFrom + 1, s + 200), heroColour, "out"]];
+    const tintAt = (t: number) => mixColour(brush, heroColour, heroFrom0 + (1 - heroFrom0) * EASES.out(prog(t, s - 40, 240)));
+    const colour: ColourFrames = heroFrom0 >= 1 ? [[heroFrom, heroColour]] : [[heroFrom, tintAt(heroFrom)], [Math.max(heroFrom + 1, s + 200), heroColour, "out"]];
     const finished = withExit(track, px, heroFrom);
     const d = item.offset;
     pieces.push(
@@ -537,32 +603,33 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
 
     if (item !== firstHero) continue;
 
-    // ---- The swoosh: lime brush and bristle split with their coral echoes, behind the lettering. ----
-    const A = Math.max(windowFrom, s - SWOOSH_LEAD);
-    // Flies in, then is eaten back into the word as it swings out, gone by the spoken start (the word reads alone then, and
-    // an emoji placed against the word does not measure from the brush).
-    let F = Math.max(A + 67, Math.min(heroFrom, s - EAT_MS));
-    let E0 = Math.max(F, s - EAT_MS);
-    let E1 = Math.max(E0 + 67, s - 5);
+    // ---- The swoosh: lime brush and bristle split with their coral echoes, behind the lettering. It flies in during the
+    // lead, the word swings out of it, and it is eaten back into the word over the frames after the spoken start (the
+    // sample's 110 ms from just before it): the two share the screen for a few painted frames, the last tail short. With
+    // too little lead for a flight it is there at once, full, attached to the word; a short window squeezes the eat. ----
+    // It flies in at least two painted frames, arriving as the word appears or, with a short lead, while it fades in; with
+    // no room for that it is a compact full pose that appears with the word.
+    const lead0 = Math.max(windowFrom, s - SWOOSH_LEAD);
+    const flies = paintedFrameCount(lead0, s - 10, fps) >= 3;
+    const A = flies ? lead0 : heroFrom;
+    const F = flies ? Math.max(heroFrom, A + 67) : A;
+    let E0 = Math.max(F + (flies ? 0 : 1000 / fps), s - 10);
+    let E1 = E0 + EAT_MS;
     let still = false;
     if (E1 > limit) {
-      const avail = limit - A;
-      if (paintedFrameCount(A, limit, fps) >= 4) {
-        const k = avail / (E1 - A);
-        F = A + (F - A) * k;
-        E0 = A + (E0 - A) * k;
-        E1 = limit;
-      } else {
-        still = true;
-        E1 = limit;
+      E1 = limit;
+      E0 = Math.min(E0, E1 - 67);
+      if (E0 < F || paintedFrameCount(A, limit, fps) < 3) {
+        still = paintedFrameCount(A, limit, fps) < 3;
+        E0 = Math.max(F, Math.min(E0, E1 - 34));
       }
     }
-    const fly = (t: number) => EASES.outQuint(prog(t, A, F - A));
-    // Linear: at 30 fps the eat has three or four painted frames, and an in-out curve put most of it between two.
+    const fly = (t: number) => (flies ? EASES.outQuint(prog(t, A, F - A)) : 1);
+    // Linear: the eat has three or four painted frames, and an in-out curve put most of it between two.
     const eat = (t: number) => prog(t, E0, E1 - E0);
-    const [hx, hy] = [px, py];
+    const [hx, hy] = brushAnchor(item, brushLift, dir);
     const slideAt = (t: number) => swooshL * 0.25 * (1 - fly(t));
-    const sEdges = [A, F, E0, E0 + 0.64 * (E1 - E0), E1];
+    const sEdges = [A, F, E0, E0 + 0.64 * (E1 - E0), E1].filter((edge, at, all) => at === 0 || edge > all[at - 1]!);
     const st = (fn: (t: number) => number, tolerance: number): Frames => (still ? [[A, fn(F)]] : sampleFrames(fn, sEdges, tolerance, { simplify: true }));
     const swooshTrack: Track = {
       x: still ? [[A, hx]] : st((t) => hx + ux * slideAt(t), 0.5),
@@ -570,7 +637,7 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
       rz: [[A, dir * theta]],
       sx: still ? [[A, 0.8]] : st((t) => Math.max(0.001, (0.4 + 0.6 * fly(t)) * (1 - eat(t))), 0.004),
       sy: still ? [[A, 0.8]] : st((t) => Math.max(0.02, (0.45 + 0.55 * fly(t)) * (1 - eat(t)) ** 0.9), 0.004),
-      o: still ? [[A, 1]] : st((t) => Math.min(1, prog(t, A, F - A) * 1.6) * (1 - EASES.in(prog(t, E0 + 0.64 * (E1 - E0), 0.36 * (E1 - E0)))), 0.01),
+      o: still ? [[A, 1]] : st((t) => (flies ? Math.min(1, prog(t, A, F - A) * 1.6) : 1) * (1 - EASES.in(prog(t, E0 + 0.64 * (E1 - E0), 0.36 * (E1 - E0)))), 0.01),
     };
     const paths = swooshPaths(swooshL, swooshHw, u, index, dir < 0);
     for (const path of paths) {
@@ -667,7 +734,9 @@ export const swooshProgram = galleryScene("swoosh", 1290, (ctx) => {
       drop += 2 * u;
       [fx, fy] = tilted(startX, baseline + drop);
     }
-    const ft0 = Math.max(windowFrom, words[last]!.startMs + 40);
+    // Drawn just after the last word is spoken; when the cue is too short for that, it lands with the word (static).
+    const lastFrom = Math.max(windowFrom, words[last]!.startMs - ENTER_LEAD);
+    const ft0 = paintedFrameCount(words[last]!.startMs + 40, limit, fps) >= 3 ? Math.max(windowFrom, words[last]!.startMs + 40) : paintedFrameCount(words[last]!.startMs, limit, fps) >= 2 ? Math.max(windowFrom, words[last]!.startMs) : lastFrom;
     const room = limit - ft0;
     if (paintedFrameCount(ft0, limit, fps) >= 2) {
       const draw = Math.min(FLICK_MS, room * 0.6);

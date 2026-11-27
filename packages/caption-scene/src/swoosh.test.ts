@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { describeSpeechConformance } from "./conformance-support";
+import { captionColourContrast } from "@narriflow/validators";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
+import { exportFrameAtOrAfter, exportFrameTimes } from "./frame-grid";
+import type { SceneCue } from "./input";
 import { evaluatePiece, pieceBounds } from "./scene";
+import { SWOOSH_REAL_EN, SWOOSH_REAL_EN_LANGUAGE, SWOOSH_REAL_HI, SWOOSH_REAL_HI_LANGUAGE } from "./swoosh-real-cues";
 import { swooshProgram } from "./templates/swoosh";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -156,18 +160,18 @@ describe("swoosh motion", () => {
     expect(evaluatePiece(face, cues[0]!.words[0]!.startMs + 260).colour).toBe("#FFFFFF");
   });
 
-  test("the key word swings: sheared, squeezed and leaning at first, upright and full size once settled, yellow", () => {
+  test("the key word swings: squeezed and leaning at first, upright and full size once settled, yellow, never sheared", () => {
     const { cues, pieces } = build(["so:m I:m built:h@500 it:m myself:b"]);
     const hero = pieces.find((piece) => piece.id === "swoosh:0:w2")!;
     const s = cues[0]!.words[2]!.startMs;
     const early = evaluatePiece(hero, hero.fromMs + 5);
-    expect(Math.abs(early.skx)).toBeGreaterThan(20);
+    const rest = evaluatePiece(hero, s + 400);
+    expect(Math.abs(early.rz - rest.rz)).toBeGreaterThan(8);
     expect(early.sx).toBeLessThan(0.7);
-    const late = evaluatePiece(hero, s + 400);
-    expect(Math.abs(late.skx)).toBeLessThan(0.01);
-    expect(late.sx).toBeCloseTo(1, 3);
-    expect(late.colour).toBe("#FFE21A");
-    expect(evaluatePiece(hero, s - 5).o).toBeGreaterThan(0.9);
+    expect(rest.sx).toBeCloseTo(1, 3);
+    expect(rest.colour).toBe("#FFE21A");
+    expect(evaluatePiece(hero, s).o).toBe(1);
+    for (const piece of pieces) expect(piece.track.skx, piece.id).toBeUndefined();
   });
 
   test("every key-word cue gets a swoosh that is gone soon after the key word; no piece paints more than 100 ms before the cue", () => {
@@ -229,6 +233,167 @@ describe("swoosh motion", () => {
       const { cues } = sceneEdgeDemo(edge);
       const built = swooshProgram.build(sceneInput(cues, { fps: 30, colours, scale: 2 })).pieces;
       for (const cue of cues) expect(built.filter((piece) => piece.id.startsWith(`swoosh:${cue.index}:`)).length).toBeLessThanOrEqual(150);
+    }
+  });
+});
+
+// ---- Review round 1 ----
+
+const realCues = (lines: readonly string[], language: string): SceneCue[] =>
+  lines.map((line, index) => {
+    const [start, end, speaker, ...words] = line.split(" ");
+    return {
+      index, startMs: Number(start), endMs: Number(end), speaker: Number(speaker) < 0 ? null : Number(speaker), language,
+      words: words.map((token) => {
+        const [text, s, e, role] = token.split("|");
+        return { text: text!, startMs: Number(s), endMs: Number(e), role: role as "hero" | "body" | "minor", key: null };
+      }),
+    };
+  });
+const REAL_RUNS = [["en", realCues(SWOOSH_REAL_EN, SWOOSH_REAL_EN_LANGUAGE)], ["hi", realCues(SWOOSH_REAL_HI, SWOOSH_REAL_HI_LANGUAGE)]] as const;
+
+describe("swoosh review round 1", () => {
+  test("on real speech the key word and the brush share the screen: two or more painted frames on at least 80% of key-word cues", () => {
+    for (const [name, cues] of REAL_RUNS) {
+      const pieces = swooshProgram.build(sceneInput(cues, { fps: 30, colours })).pieces;
+      let heroCues = 0;
+      let together = 0;
+      for (const cue of cues) {
+        const k = cue.words.findIndex((word) => word.role === "hero");
+        if (k < 0) continue;
+        heroCues++;
+        const hero = pieces.find((piece) => piece.id === `swoosh:${cue.index}:w${k}` || piece.id === `swoosh:${cue.index}:w${k}l0`);
+        const brush = pieces.find((piece) => piece.id === `swoosh:${cue.index}:sw${k}`);
+        if (!hero || !brush) continue;
+        const frames = exportFrameTimes(Math.min(hero.fromMs, brush.fromMs), brush.toMs, 30).filter((t) => {
+          const h = evaluatePiece(hero, t);
+          const b = evaluatePiece(brush, t);
+          return h.visible && h.o >= 0.6 && b.visible && b.o >= 0.3 && b.sx >= 0.15;
+        });
+        if (frames.length >= 2) together++;
+      }
+      expect(together / heroCues, `${name}: ${together} of ${heroCues}`).toBeGreaterThanOrEqual(0.8);
+    }
+  });
+
+  test("the brush never holds a key word's centre, so the emoji layer cannot take it for the word's plate", () => {
+    for (const [name, cues] of REAL_RUNS) {
+      const pieces = swooshProgram.build(sceneInput(cues, { fps: 30, colours })).pieces;
+      for (const brush of pieces.filter((piece) => /:sw\d+(s|c|sc)?$/.test(piece.id))) {
+        const [, cue, k] = brush.id.match(/^swoosh:(\d+):sw(\d+)/)!;
+        const faces = pieces.filter((piece) => new RegExp(`^swoosh:${cue}:w${k}(l\\d+)?$`).test(piece.id));
+        for (const t of exportFrameTimes(brush.fromMs, brush.toMs, 30)) {
+          const b = pieceBounds(brush, t, fakeMeasure);
+          if (!b) continue;
+          for (const face of faces) {
+            if (t < cues[Number(cue)]!.words[Number(k)]!.startMs) continue;
+            const f = pieceBounds(face, t, fakeMeasure);
+            if (!f) continue;
+            const cx = (f.x1 + f.x2) / 2;
+            const cy = (f.y1 + f.y2) / 2;
+            expect(cx > b.x1 && cx < b.x2 && cy > b.y1 && cy < b.y2, `${name}: ${brush.id} holds ${face.id} at ${t}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  test("every word is fully opaque and in its slot on its first spoken frame, with or without a lead", () => {
+    const runs = [...REAL_RUNS.map(([, cues]) => cues), fastRun(0), staccatoRun(0), fastRun(60)];
+    for (const fps of [25, 30]) {
+      for (const cues of runs) {
+        const pieces = swooshProgram.build(sceneInput(cues, { fps, colours })).pieces;
+        for (const cue of cues) {
+          for (const [w, word] of cue.words.entries()) {
+            const face = pieces.find((piece) => piece.id === `swoosh:${cue.index}:w${w}` || piece.id === `swoosh:${cue.index}:w${w}l0`)!;
+            const onset = exportFrameAtOrAfter(word.startMs, fps);
+            const at = evaluatePiece(face, onset);
+            // At rest: before the cue's exit slide (which starts no earlier than 130 ms before the cue's end).
+            const rest = evaluatePiece(face, Math.max(onset, Math.min(face.toMs - 131, word.endMs + 600)));
+            expect(at.o, `${face.id} opacity at ${onset} (${fps} fps)`).toBeGreaterThanOrEqual(0.999);
+            expect(Math.hypot(at.x - rest.x, at.y - rest.y), `${face.id} travel left at ${onset} (${fps} fps)`).toBeLessThan(3);
+          }
+        }
+      }
+    }
+  });
+
+  test("no pose shears a piece while its two scales differ (libass shears before it scales, the Studio after)", () => {
+    for (const [, cues] of REAL_RUNS) {
+      const pieces = swooshProgram.build(sceneInput(cues, { fps: 30, colours })).pieces;
+      for (const piece of pieces) {
+        for (const t of exportFrameTimes(piece.fromMs, piece.toMs, 30)) {
+          const pose = evaluatePiece(piece, t);
+          if (Math.abs(pose.sx - pose.sy) > 0.01) expect(Math.abs(pose.skx), `${piece.id} at ${t}`).toBeLessThan(0.01);
+        }
+      }
+    }
+  });
+
+  test("every colour a word passes through keeps 3:1 against the dark edge, brand colours included", () => {
+    const pairs = [{ primary: "#C80000", highlight: "#007500" }, { primary: "#858585", highlight: "#666666" }, { primary: "#FFFFFF", highlight: "#FFE21A" }, { primary: "#3CE0FF", highlight: "#FF8A00" }];
+    for (const pair of pairs) {
+      const { cues } = demoCues({ lines: ["so:m I:m built:h@500 it:m myself:b", "never:b stop:b"], options: { lead: 400, gap: 30, cueGap: 160, tail: 600 } });
+      const pieces = swooshProgram.build(sceneInput(cues, { fps: 30, colours: { ...colours, ...pair } })).pieces;
+      for (const face of pieces.filter((piece) => /^swoosh:\d+:w\d+(l\d+)?$/.test(piece.id))) {
+        for (let t = face.fromMs; t < face.toMs; t += 5) {
+          const colour = evaluatePiece(face, t).colour;
+          expect(captionColourContrast(colour, "#15110E"), `${JSON.stringify(pair)} ${face.id} ${colour} at ${t}`).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
+
+  test("NFC and NFD spell the same layout: a decomposed accent does not switch off wrapping or change sizes", () => {
+    const nfc = "réélectroencéphalographie".normalize("NFC");
+    const layout = (text: string) =>
+      build([`${text}:h@900`]).pieces
+        .filter((piece) => /^swoosh:0:w0(l\d+)?$/.test(piece.id))
+        .map((piece) => ({ size: piece.kind === "text" ? Math.round(piece.sizePx) : 0, text: piece.kind === "text" ? piece.text.normalize("NFC") : "" }));
+    const a = layout(nfc);
+    expect(a.length).toBeGreaterThanOrEqual(2);
+    expect(layout(nfc.normalize("NFD"))).toEqual(a);
+  });
+
+  test("a pathological no-space token stays within 150 layers (shadows counted) and keeps every character", () => {
+    const token = "我们今天一起学习如何制作非常好看的短视频字幕效果".repeat(20);
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      const { cues } = demoCues({ lines: [`${token}:h@900`, `one:b two:b three:b four:b five:b six:b seven:b eight:b ${token}:h@900`], language: "zh", options: { lead: 400, gap: 30, cueGap: 600, tail: 600 } });
+      const pieces = swooshProgram.build(sceneInput(cues, { fps: 30, colours, canvas })).pieces;
+      for (const cue of cues) {
+        const own = pieces.filter((piece) => piece.id.startsWith(`swoosh:${cue.index}:`));
+        const layers = own.reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+        expect(layers, `cue ${cue.index} on ${canvas.width}x${canvas.height}`).toBeLessThanOrEqual(150);
+        const k = cue.words.length - 1;
+        expect(own.filter((piece) => new RegExp(`^swoosh:${cue.index}:w${k}l\\d+$`).test(piece.id)).length, "a bounded wrap").toBeLessThanOrEqual(12);
+        const text = own.filter((piece) => new RegExp(`^swoosh:${cue.index}:w${k}(l\\d+)?$`).test(piece.id)).map((piece) => (piece.kind === "text" ? piece.text : "")).join("");
+        expect(text).toBe(token);
+      }
+    }
+  });
+
+  test("a 90-character no-space token and CONTEMPORANEOUSNESS hold the size floor after the fit, 9:16 and 1:1", () => {
+    const cjk = "我们今天一起学习如何制作非常好看的短视频字幕效果".repeat(4).slice(0, 90);
+    for (const canvas of [{ width: 1080, height: 1920 }, { width: 1080, height: 1080 }]) {
+      for (const [word, language] of [[cjk, "zh"], ["CONTEMPORANEOUSNESS", "en"]] as const) {
+        const { cues } = demoCues({ lines: [`${word}:h@900`], language, options: { lead: 400, gap: 30, cueGap: 600, tail: 600 } });
+        const pieces = swooshProgram.build(sceneInput(cues, { fps: 30, colours, canvas })).pieces;
+        for (const piece of pieces.filter((p) => /^swoosh:0:w0(l\d+)?$/.test(p.id))) expect(piece.kind === "text" && piece.sizePx, `${word.slice(0, 8)} ${canvas.height}`).toBeGreaterThanOrEqual(64 * 0.98);
+      }
+    }
+  });
+
+  test("compressed cues still show their accent: a spray on key-word cues and a flick on plain ones in zero-gap runs", () => {
+    for (const fps of [25, 30]) {
+      for (const cues of [fastRun(0), staccatoRun(0)]) {
+        const pieces = swooshProgram.build(sceneInput(cues, { fps, colours })).pieces;
+        const heroCues = cues.filter((cue) => cue.words.some((word) => word.role === "hero"));
+        const plain = cues.filter((cue) => !cue.words.some((word) => word.role === "hero"));
+        const sprayed = heroCues.filter((cue) => pieces.some((piece) => piece.id.startsWith(`swoosh:${cue.index}:sp`)));
+        const flicked = plain.filter((cue) => pieces.some((piece) => new RegExp(`^swoosh:${cue.index}:fl\\d+$`).test(piece.id)));
+        expect(sprayed.length / heroCues.length, `spray ${sprayed.length}/${heroCues.length} at ${fps}`).toBeGreaterThanOrEqual(0.75);
+        expect(flicked.length / plain.length, `flick ${flicked.length}/${plain.length} at ${fps}`).toBeGreaterThanOrEqual(0.8);
+      }
     }
   });
 });
