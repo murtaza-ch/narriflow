@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { CAPTION_SCENE_BRAND_MIN_CONTRAST, captionColourContrast } from "@narriflow/validators";
 import { describeSpeechConformance } from "./conformance-support";
 import { demoCues } from "./demo";
@@ -6,7 +8,7 @@ import { exportFrameTimes, paintedFrameCount } from "./frame-grid";
 import type { SceneInput } from "./input";
 import type { SceneCue } from "./input";
 import { type Box, type Measure, type Piece, evaluatePiece, pieceBounds } from "./scene";
-import { HELIUM_BASE_FLOOR, heliumPalette, heliumProgram, heliumShine } from "./templates/helium";
+import { HELIUM_BASE_FLOOR, heliumFoot, heliumPalette, heliumProgram, heliumShine } from "./templates/helium";
 import { fakeMeasure, sceneInput } from "./test-support";
 
 describeSpeechConformance("helium", heliumProgram, { anchorLineY: 1290 });
@@ -152,14 +154,27 @@ describe("helium", () => {
     expectClean(built);
   });
 
-  test("a landing word nudges the row's previous word outward and back, and the first word of a row eases into its slot", () => {
+  test("a landing word nudges the row's previous word outward and back; every word is opaque and in its slot at its onset", () => {
     const { cues, pieces } = build(["just:b let:b it:m go:b"]);
     const just = pieces.find((piece) => piece.id === "helium:0:w0")!;
     const at = cues[0]!.words[1]!.startMs;
     const x = (ms: number) => evaluatePiece(just, ms).x;
-    expect(x(just.fromMs)).toBeGreaterThan(x(at - 1) + 5);
     const rest = x(at + 600);
     expect(Math.min(...[0, 60, 120, 180].map((dt) => x(at - 50 + dt)))).toBeLessThan(rest - 2);
+    for (const fixture of [build(["just:b let:b it:m go:b", "keep:b rising:h@640"]), build(["go:b now:b"], { demo: { lead: 0, gap: 0, cueGap: 0 } })]) {
+      for (const cue of fixture.cues) {
+        for (const [w, word] of cue.words.entries()) {
+          for (const face of fixture.pieces.filter((piece) => new RegExp(`^helium:${cue.index}:w${w}(l\\d+)?$`).test(piece.id))) {
+            const t = Math.max(face.fromMs, word.startMs);
+            const pose = evaluatePiece(face, t);
+            expect(pose.o).toBeGreaterThanOrEqual(0.99);
+            const settled = evaluatePiece(face, t + 700);
+            expect(Math.abs(pose.y - settled.y)).toBeLessThan(3.5); // the bob only
+            expect(Math.abs(pose.x - settled.x)).toBeLessThan(1);
+          }
+        }
+      }
+    }
   });
 
   test("the cue leaves as one unit: every piece fades out by the next cue's first paint", () => {
@@ -247,13 +262,22 @@ describe("helium", () => {
     expect(single).toBeGreaterThan(0);
   });
 
-  test("colours keep 3:1 as drawn: face and the lighter key-word band against the dark base, for direct Studio greys", () => {
-    for (const primary of ["#858585", "#666666", "#FFFFFF", "#2456F5"]) {
+  test("colours keep 3:1 against the edge drawn where the face ends: face and key-word band against their own dark keyline", () => {
+    for (const primary of ["#FEFEFE", "#858585", "#666666", "#FFFFFF", "#2456F5", "#FF5A48", "#0FBF94"]) {
       const { pieces } = build(["keep:b rising:h@640", "go:b now:b", "yes:b"], { input: { colours: { ...colours, primary, highlight: primary, accent: primary } } });
-      for (const piece of pieces.filter((piece) => /^helium:\d+:w\d+(l\d+)?(b)?$/.test(piece.id))) {
-        const base = pieces.find((other) => other.id === `${piece.id.replace(/b$/, "")}s`) as { fill: string } | undefined;
-        if (!base || piece.kind !== "text") continue;
-        expect(captionColourContrast(piece.fill, base.fill)).toBeGreaterThanOrEqual(CAPTION_SCENE_BRAND_MIN_CONTRAST);
+      const drawn = pieces.filter((piece) => /^helium:\d+:w\d+(l\d+)?b?$/.test(piece.id));
+      expect(drawn.length).toBeGreaterThan(0);
+      for (const piece of drawn) {
+        if (piece.kind !== "text") continue;
+        // The keyline is drawn at the face's own position (not on the shifted base): the face's stroke on a large glyph, or the
+        // dark rim copy right under it on a small one. Either way the face and its band read 3:1 against it.
+        const face = pieces.find((other) => other.id === piece.id.replace(/b$/, ""))!;
+        const rim = pieces.find((other) => other.id === `${face.id}r`) as (Piece & { fill: string; stroke?: { widthPx: number; colour: string } }) | undefined;
+        const edge = piece.stroke ?? (rim && rim.fill === rim.stroke?.colour ? rim.stroke : undefined);
+        expect(edge).toBeDefined();
+        expect(edge!.widthPx).toBeGreaterThan(0.008 * piece.sizePx);
+        expect(captionColourContrast(piece.fill, edge!.colour)).toBeGreaterThanOrEqual(CAPTION_SCENE_BRAND_MIN_CONTRAST);
+        if (rim && !piece.stroke) expect(rim.origin).toEqual(face.origin);
       }
     }
   });
@@ -314,5 +338,91 @@ describe("helium", () => {
         }
       }
     }
+  });
+
+  // --- review round 1 ---
+
+  const fixtures = (JSON.parse(readFileSync(join(import.meta.dir, "__fixtures__/helium-real-cues.json"), "utf8")) as Record<string, [number, number, number, number, [string, number, number, string][]][]>);
+  const realCues = (lang: string): SceneCue[] => fixtures[lang]!.map(([index, speaker, startMs, endMs, list]) => ({
+    index, speaker, startMs, endMs, language: lang,
+    words: list.map(([text, start, end, role]) => ({ text, startMs: start, endMs: end, role: role === "h" ? "hero" : role === "m" ? "minor" : "body", key: null })),
+  }));
+  const balloonCues = (cues: readonly SceneCue[], pieces: readonly Piece[], fps: number) =>
+    cues.filter((cue) => pieces.some((piece) => new RegExp(`^helium:${cue.index}:bal\\d$`).test(piece.id) && paintedFrameCount(piece.fromMs, piece.toMs, fps) >= 2)).length;
+
+  test("balloons paint on at least 80% of real cues (English and Hindi, planner-made), and the last plain word inflates past the entrance", () => {
+    for (const lang of ["en", "hi"]) {
+      const cues = realCues(lang);
+      const input = sceneInput(cues, { fps: 30, colours, measure: scriptMeasure });
+      const { pieces } = heliumProgram.build(input);
+      expect(balloonCues(cues, pieces, 30) / cues.length).toBeGreaterThanOrEqual(0.8);
+      const plain = cues.filter((cue) => !cue.words.some((word) => word.role === "hero"));
+      const puffed = plain.filter((cue) => {
+        const last = pieces.find((piece) => piece.id === `helium:${cue.index}:w${cue.words.length - 1}`);
+        if (!last) return false;
+        const peak = Math.max(...exportFrameTimes(last.fromMs, last.toMs, 30).map((t) => evaluatePiece(last, t).sx));
+        return peak > 1.06;
+      });
+      expect(puffed.length / plain.length).toBeGreaterThanOrEqual(0.8);
+    }
+  });
+
+  test("a zero-gap run of 70-120 ms words still releases balloons on most cues, as a still pair when there is no time to rise", () => {
+    const lines = Array.from({ length: 10 }, (_, at) => (at % 2 ? "go:b now:b" : "yes:b"));
+    const built = build(lines, { demo: { rate: 90, gap: 0, cueGap: 0, tail: 60, lead: 100 } });
+    expect(balloonCues(built.cues, built.pieces, 30)).toBeGreaterThanOrEqual(8);
+  });
+
+  test("the string's knot hangs from the bottom of a drawn stem of the key word, and is left out for scripts Fredoka cannot draw", () => {
+    for (const line of ["what:h@700", "way:h@700", "fly:h@600", "helium:h@700"]) {
+      const { input, pieces } = build([line]);
+      const knot = pieces.find((piece) => piece.id === "helium:0:knot");
+      expect(knot).toBeDefined();
+      const at = knot!.fromMs;
+      const kx = evaluatePiece(knot!, at).x;
+      const letters = pieces.filter((piece) => /^helium:0:w0l\d+$/.test(piece.id)) as (Piece & { text: string; sizePx: number; face: string })[];
+      const attached = letters.some((letter) => {
+        const foot = heliumFoot(letter.text, letter.face as "Fredoka Bold");
+        if (foot === null) return false;
+        const centre = evaluatePiece(letter, at).x;
+        const left = centre - input.measure(letter.text, letter.face as "Fredoka Bold", letter.sizePx, 0).advance / 2;
+        return Math.abs(left + foot * letter.sizePx - kx) < 3;
+      });
+      expect(attached).toBe(true);
+    }
+    expect(build(["सीधा:h@600"], { language: "hi" }).pieces.some((piece) => piece.id === "helium:0:knot")).toBe(false);
+  });
+
+  test("a 90-character CJK key word keeps its 104 px floor at 9:16 in even rows; three 400-letter tokens stay inside 150 pieces with shadows", () => {
+    const cjk = "我们今天要讨论的是一个非常重要而且非常有意思的问题".repeat(4).slice(0, 90);
+    const long = build([`${cjk}:h@1200`], { language: "zh" });
+    const parts = long.pieces.filter((piece) => /^helium:0:w0l\d+$/.test(piece.id)) as { text: string; sizePx: number }[];
+    expect(parts.map((part) => part.text).join("")).toBe(cjk);
+    const lengths = parts.map((part) => [...part.text].length);
+    expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(1);
+    for (const part of parts) expect(part.sizePx).toBeGreaterThanOrEqual(104 - 0.5);
+    expectClean(long);
+    const cost = (pieces: readonly Piece[], cue: number) => pieces.filter((piece) => piece.id.startsWith(`helium:${cue}:`)).reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+    const tokens = ["a".repeat(400), "b".repeat(400), "c".repeat(400)];
+    const absurd = build([`${tokens[0]}:b ${tokens[1]}:h@900 ${tokens[2]}:b`]);
+    expect(cost(absurd.pieces, 0)).toBeLessThanOrEqual(150);
+    for (const [w, token] of tokens.entries()) {
+      const text = (absurd.pieces.filter((piece) => new RegExp(`^helium:0:w${w}(l\\d+)?$`).test(piece.id)) as { text: string }[]).map((part) => part.text).join("");
+      expect(text).toBe(token.toUpperCase());
+    }
+    const busy = build(["so:m the:m real:b reason:b most:b people:b never:b get:b there:m extraordinarily:h@900"]);
+    expect(cost(busy.pieces, 0)).toBeLessThanOrEqual(150);
+  });
+
+  test("NFC and NFD spell the same layout; a Cyrillic key word moves as one piece with one shine", () => {
+    const nfc = build(["café:b déjà:b vu:h@500", "extraordinário:h@700"]);
+    const decomposed = nfc.cues.map((cue) => ({ ...cue, words: cue.words.map((word) => ({ ...word, text: word.text.normalize("NFD") })) }));
+    const nfd = heliumProgram.build({ ...nfc.input, cues: decomposed }).pieces;
+    const shape = (pieces: readonly Piece[]) => pieces.filter((piece) => FACE.test(piece.id)).map((piece) => [piece.id, (piece as { sizePx: number }).sizePx, evaluatePiece(piece, piece.fromMs + 500).x]);
+    expect(shape(nfd)).toEqual(shape(nfc.pieces));
+    const ru = build(["это:b привет:h@600"], { language: "ru" });
+    expect(ru.pieces.some((piece) => piece.id === "helium:0:w1")).toBe(true);
+    expect(ru.pieces.some((piece) => /^helium:0:w1l\d+$/.test(piece.id))).toBe(false);
+    expect(ru.pieces.filter((piece) => piece.id === "helium:0:w1g").length).toBe(1);
   });
 });
