@@ -100,6 +100,7 @@ export const MOMENTS: Record<string, number[]> = {
   splat: [300, 960, 1350, 1925, 2790, 4580, 4880, 5200],
   handheld: [380, 1080, 1400, 2600, 3300, 4950, 5600, 7500],
   toon: [300, 1230, 1930, 2330, 4770, 5230, 6090, 7800],
+  drip: [167, 667, 1167, 2067, 2967, 3700, 6400, 7300],
 };
 
 const out = new URL("../../../.scratch/motion-captions/out/final", import.meta.url).pathname;
