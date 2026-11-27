@@ -549,7 +549,9 @@ export const pentoolProgram = galleryScene("pentool", ANCHOR, (ctx) => {
     // when the chip then stays CHIP_MIN_SHOW before the cue ends; otherwise (a key word that ends a fast cue) the chip is
     // pinned still on the onset with the still pose of the curve, for whatever is left, and dropped only when fewer than
     // CHIP_MIN_FRAMES painted frames remain. A cue without a chip keeps the still curve (no pen draws to an empty pin).
-    const drawn = paintedFrameCount(drawFrom, arrive, fps) >= 3 && paintedFrameCount(arrive, leaveTo, fps) >= 2;
+    // The arrival cap (the key word's last frame) can shorten the draw below DRAW_MIN on a key word that opens its cue:
+    // then the still pose, never a rushed draw.
+    const drawn = arrive - td0 >= DRAW_MIN && paintedFrameCount(drawFrom, arrive, fps) >= 3 && paintedFrameCount(arrive, leaveTo, fps) >= 2;
     const drawnPin = Math.max(hs, exportFrameAtOrAfter(arrive - 20, fps));
     const canChip = showChip && label.length > 1;
     const animated = drawn && canChip && to - drawnPin >= CHIP_MIN_SHOW;

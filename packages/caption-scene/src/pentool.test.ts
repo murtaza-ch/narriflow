@@ -206,6 +206,18 @@ describe("pentool", () => {
     expect(chip.fromMs).toBeLessThan(cues[0]!.words[0]!.endMs);
   });
 
+  test("a key word that opens its cue never gets a pen draw shorter than its minimum: it takes the still pose instead", () => {
+    // A 160 ms key word after a 30 ms cue gap: the arrival cap (its last frame) would leave a 133 ms draw.
+    const cues = script(["so:b we:m", "make:h@160 sense:b"], "en", { cueGap: 30 });
+    const pieces = build(cues);
+    const own = pieces.filter((piece) => cueOf(piece) === 1);
+    expect(own.some((piece) => /:pen$/.test(piece.id))).toBe(false);
+    const chip = own.find((piece) => /:chip$/.test(piece.id))!;
+    expect(chip).toBeDefined();
+    expect(chip.fromMs).toBeGreaterThanOrEqual(cues[1]!.words[0]!.startMs);
+    expect(own.some((piece) => /:curve$/.test(piece.id))).toBe(true);
+  });
+
   test("a staccato key word still gets a compact pose of the decoration", () => {
     const cues = script(["we@100 stop:h@120"], "en", { lead: 311, gap: 0, tail: 260 });
     const pieces = build(cues);
