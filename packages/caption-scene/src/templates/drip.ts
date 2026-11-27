@@ -3,7 +3,7 @@ import type { DemoScript } from "../demo";
 import { clamp, EASES, type Frames } from "../ease";
 import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes, paintedFrameCount } from "../frame-grid";
 import type { SceneCue, SceneWord } from "../input";
-import type { Box, Clip, PathCmd, Piece, ShapePiece, TextPiece } from "../scene";
+import { type Box, type Clip, type PathCmd, type Piece, SCENE_PIECE_BUDGET, type ShapePiece, type TextPiece } from "../scene";
 import { ellipsePath } from "../shapes";
 import { galleryScene, rowsOf } from "./gallery-layout";
 import type { SpeechCell } from "./speech-layout";
@@ -20,7 +20,8 @@ import type { SpeechCell } from "./speech-layout";
  *   underline in the offset coral that wipes in under it on its spoken start and stays inside its row: its lowest point
  *   is at most a quarter of the key word's size below the key word's ink (a test keeps drips from coming back). It cycles
  *   three strokes by key-word counter (a tapered swash, a swash whose tail lifts, a broken double dash), its length and
- *   wobble jittered by a seeded hash.
+ *   wobble jittered by a seeded hash. A key word that paints on one frame keeps a still stroke on that frame, named as a
+ *   part of the word (`w<n>l90`) so the shared one-frame filter keeps it.
  * - **Level, centred rows; the key word alone on its row.** The sample rode the block 2.4 degrees uphill with the second
  *   line stepped 44 px right, which is Swoosh's staircase (Sol's demo review: "Swoosh is closer ... since both use a
  *   stepped layout and coral offset"); Drip now reads as a level brush title block with its own key-word row, so the two
@@ -30,36 +31,45 @@ import type { SpeechCell } from "./speech-layout";
  *   breaks, it shrinks); a cue that stacks more than three rows is laid out at the largest of two smaller scales that
  *   packs it into fewer. Only a cue's first key word gets the key-word size, colour and underline (the scorer can mark two
  *   on real cues, and two 190 px rows climbed out of the band); a second reads as an ordinary word.
- * - **Readable at onset.** A word's wipe starts at most 100 ms before its spoken start and runs 120 ms on a fast-out ease
- *   (the sample's 150/170 ms ran past the onset and cut the key word's last letter, Sol rounds 1-2), so the word is 99%
- *   written on its spoken start and whole 20 ms later, compressed into a short word's own time so it is whole by its last
- *   frame. A word with no time before its onset (continuous speech hands a cue no lead) prints whole at the onset, as
- *   Receipt does, instead of being cut at its spoken start. The clip edge moves on the export frame grid, so libass and the
- *   Studio show the same edge on the same frame. The stroke leans in (a small shear) while it writes and is upright when
- *   whole, as in the sample. The clip and the coral offset are one piece per word: the offset is the word's own hard
- *   shadow, so it is cut by the same wipe and moves with the word when the cue is shifted into a speaker lane.
+ * - **Whole at onset.** A word writes on in the up to 100 ms before its spoken start, at a steady speed, and is whole and
+ *   upright on its first spoken frame (the sample's 150/170 ms wipes ran past the onset and cut the last letter, Sol
+ *   rounds 1-2, and the first port still showed "goo" of "goodbye" on its onset, review r1). It writes on only when two
+ *   painted frames before the onset each show at least a fifth of the word; otherwise (continuous speech hands a cue no
+ *   lead) the word prints whole and still on its onset frame, as Receipt does. The clip edge moves on the export frame
+ *   grid, so libass and the Studio show the same edge on the same frame. Only that edge is tight: the clip's other three
+ *   edges are off the canvas, so a fallback face's tall or overhanging ink (a Nastaliq stroke, review r1) and the coral
+ *   offset are never cut. The stroke leans in (a small shear) while it writes, as in the sample. The clip and the coral
+ *   offset are one piece per word: the offset is the word's own hard shadow, cut by the same wipe and moved with the word
+ *   when the cue is shifted into a speaker lane.
  * - **Every language.** The wipe reveals a whole word, so joined scripts are never split into letters; right-to-left cues
  *   read right to left and the wipe, brush tip, underline and spatter mirror. Mixed case as spoken (no case transform).
  *   Knewave draws no Devanagari, Arabic or CJK: those use the glyph fallback face, measured as drawn, and rows, the
- *   underline and the spatter take their size from that measured ink.
+ *   underline and the spatter take their size from that measured ink. Under a joined or complex script the underline
+ *   drops below the measured ink instead of crossing it (it ran through Urdu strokes), and the row under it steps down
+ *   to keep it clear. Text is composed (NFC) before it is measured, broken and hashed, so a spelling with combining
+ *   accents lays out exactly like the precomposed one.
+ * - **Bounded.** A cue draws at most 150 layers, shadows counted: every word first, then brush tips, the underline and
+ *   the spatter with what is left. A token that would need more than 12 rows at its floor (no speech makes one) is split
+ *   into 12 even, wider rows that the layout shrinks, so all of its text stays.
  * - **Cue exit.** The sample's 105 ms fade of the whole cue, at the end of the shared cue window, only when two painted
  *   frames fit after every word has read 150 ms; otherwise the next cue simply replaces it.
  * - **Separation on busy footage.** The sample's soft blurred dark shadow costs on every frame; each word has a thin dark
- *   keyline instead, and every colour as received (brand or direct Studio colours) keeps 3:1 against it, else the style's
- *   own. A brand key-word colour is used on every key word; the turquoise/lime alternation is the default palette's.
+ *   keyline instead, opaque so the 3:1 holds as drawn (a 70% keyline over white footage made mid-grey text 2:1, review
+ *   r1), and every colour as received (brand or direct Studio colours) keeps 3:1 against it, else the style's own. A brand key-word colour is used on every key word; the turquoise/lime alternation is the default palette's.
  *
  * Cost: one text piece per word (keyline and coral offset ride on it), short-lived tips, one underline, two or three
  * flecks; no blur. Full export 1.14x Headline (CPU).
  *
  * Extra recurring beats, in the brush's own paint language:
  * - **Brush tip.** A short slanted coral smear rides the wipe edge of every word that writes on, behind the lettering, and
- *   is gone on the frame before the word is whole.
+ *   is gone on the frame the word first reads whole.
  * - **Spatter.** As each cue's last word finishes writing, two or three paint flecks (coral and the word's colour) flick
  *   off its reading end and hold, in free space beside the row (or above its end when the row is full width), never on a
- *   word, never below the key word.
+ *   word, never below the key word. After a word that ends in punctuation they leave after a brief hold, so they never
+ *   read as extra stops.
  *
- * Words per cue: 4 (on the real-cue sheets, en and hi, every cue fits at full size in one to three rows, no fit shrink). Emoji slot: the default (above): the underline and the spatter keep the
- * space above each cue free.
+ * Words per cue: 4 (on the real-cue sheets, en and hi, every cue fits at full size in one to three rows, no fit shrink).
+ * Emoji slot: the default (above): the underline and the spatter keep the space above each cue free.
  */
 
 export const DRIP_DEMO: DemoScript = {
@@ -110,8 +120,16 @@ const UNDER_Y = 0.2;
 const UNDER_T = 0.155;
 /** Extra room under the key word's row, em of the key word. */
 const UNDER_ROOM = 0.08;
+/** A token wider than this many rows at its floor is split evenly into this many (wider, smaller) rows instead. */
+const MAX_ROWS = 12;
+/** How long spatter after a word that ends in punctuation stays, so the written stop reads alone afterwards. */
+const FLECK_HOLD_AFTER_STOP = 360;
+/** The one-frame key word's still underline, named as a part of the word so the shared one-frame filter keeps it. */
+const STILL_UNDER_PART = 90;
 
 /** Scripts a word wider than the column may break in (between graphemes). Joined and complex scripts never do. */
+/** Scripts the underline may cross behind the descenders of (a brush swash); other scripts get it under their ink. */
+const CROSSABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}\p{P}\p{S}\p{M}]+$/u;
 const BREAKABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{N}\p{P}\p{S}\p{M}]+$/u;
 const CJK = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{P}\p{N}]+$/u;
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -121,7 +139,7 @@ type Key = [number, number, ("out" | "outBack" | "in")?];
 
 function cueSeed(cue: SceneCue): number {
   let hash = (cue.index + 1) * 2654435761;
-  for (const word of cue.words) for (const char of word.text) hash = Math.imul(hash ^ char.codePointAt(0)!, 16777619);
+  for (const word of cue.words) for (const char of word.text.normalize("NFC")) hash = Math.imul(hash ^ char.codePointAt(0)!, 16777619);
   return (hash >>> 0) / 2 ** 32;
 }
 
@@ -215,6 +233,8 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
   const ordinal = earlier.filter((other) => hasHero(other) === heroed).length;
   const seed = cueSeed(cue);
   const heroFill = heroCycle[ordinal % heroCycle.length]!;
+  // Text is composed once (NFC), so a spelling with combining accents measures, wraps and draws like the precomposed one.
+  const texts = words.map((word) => word.text.normalize("NFC"));
 
   // ---- layout: fit each word to the column, break the ones that cannot fit at the floor, the key word on its own row ----
   const at100 = (text: string) => ctx.input.measure(text, FACE, 100 * ctx.space.u, 0).advance / ctx.space.u;
@@ -233,7 +253,18 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
       if (row) out.push(row);
       return out;
     };
-    const room = (COLUMN * 0.97 * 100) / size;
+    let room = (COLUMN * 0.97 * 100) / size;
+    // A pathological token (no speech makes one) is capped at MAX_ROWS even rows: wider rows the layout then shrinks.
+    if (split(room).length > MAX_ROWS) {
+      let lo = room;
+      let hi = at100(text) + 1;
+      for (let i = 0; i < 20; i++) {
+        const mid = (lo + hi) / 2;
+        if (split(mid).length <= MAX_ROWS) hi = mid;
+        else lo = mid;
+      }
+      room = hi;
+    }
     const count = split(room).length;
     // The fewest rows that fit, then the narrowest room that keeps that count: even rows.
     let lo = 0;
@@ -247,17 +278,17 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
   };
   const arrange = (scale: number) => {
     const flat: { word: number; part: number; text: string; size: number }[] = [];
-    const indexes = words.map((word, at) => {
+    const indexes = texts.map((text, at) => {
       const hero = at === heroAt;
       const base = (hero ? HERO : heroed ? BODY : SOLO) * scale;
       const floor = hero ? BODY * scale : base * FLOOR;
-      const natural = (at100(word.text) * base) / 100;
+      const natural = (at100(text) * base) / 100;
       const fitted = natural > COLUMN ? (base * COLUMN) / natural : base;
-      const cjk = CJK.test(word.text);
-      if (natural <= COLUMN || (!cjk && fitted >= floor) || !BREAKABLE.test(word.text)) return [flat.push({ word: at, part: 0, text: word.text, size: fitted }) - 1];
-      const chunks = chunkAt(word.text, cjk ? base : floor);
+      const cjk = CJK.test(text);
+      if (natural <= COLUMN || (!cjk && fitted >= floor) || !BREAKABLE.test(text)) return [flat.push({ word: at, part: 0, text, size: fitted }) - 1];
+      const chunks = chunkAt(text, cjk ? base : floor);
       const widest = Math.max(...chunks.map((chunk) => at100(chunk)));
-      const size = clamp((COLUMN * 0.97 * 100) / widest, floor, Math.max(floor, base));
+      const size = Math.min((COLUMN * 0.97 * 100) / widest, Math.max(floor, base));
       return chunks.map((text, part) => flat.push({ word: at, part, text, size }) - 1);
     });
     const groups: number[][] = [];
@@ -286,8 +317,17 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
   // Rows under the key word step down a little so its underline keeps clear of them.
   const heroCells = plan.cells.filter((cell) => plan.flat[cell.at]!.word === heroAt);
   const heroLine = heroCells.length ? Math.max(...heroCells.map((cell) => cell.baseline)) : Number.POSITIVE_INFINITY;
-  const heroSize = heroCells.length ? heroCells.at(-1)!.size : 0;
-  const cells = plan.cells.map((cell) => (cell.baseline > heroLine ? { ...cell, baseline: cell.baseline + UNDER_ROOM * heroSize } : cell));
+  const heroCell = heroCells.at(-1);
+  // The underline sits UNDER_Y below the baseline, crossing behind Latin descenders like a swash; under a joined or complex
+  // script (Nastaliq, Devanagari) it drops below the measured ink so it never runs through the strokes.
+  const underY = (cell: SpeechCell) => {
+    const thick = Math.max(8 * plan.u, UNDER_T * cell.size);
+    return CROSSABLE.test(cell.text) ? UNDER_Y * cell.size : Math.max(UNDER_Y * cell.size, cell.inkBottom + 0.03 * cell.size + thick / 2);
+  };
+  const underDrop = heroCell
+    ? Math.max(UNDER_ROOM * heroCell.size, underY(heroCell) + 0.62 * UNDER_T * heroCell.size + 0.08 * heroCell.size - Math.max(0.27 * heroCell.size, heroCell.inkBottom))
+    : 0;
+  const cells = plan.cells.map((cell) => (cell.baseline > heroLine ? { ...cell, baseline: cell.baseline + underDrop } : cell));
 
   // ---- write-on schedule -------------------------------------------------------------------------------------------
   const plans: WordPlan[] = words.map((word, at) => {
@@ -295,19 +335,32 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
     const hero = at === heroAt;
     const start = word.startMs;
     const onset = exportFrameAtOrAfter(Math.max(start, ctx.window.from), fps);
-    const lastFrame = Math.max(onset, exportFrameAtOrBefore(word.endMs - 1, fps));
     const from = Math.max(ctx.window.from, start - WRITE_LEAD);
-    const end = Math.min(from + WRITE, lastFrame);
-    const p = (t: number) => EASES.out(clamp((t - from) / Math.max(1, end - from)));
-    // The wipe animates when a fifth of the word is already written on a frame at or before the onset and it has two
-    // painted frames before it is whole; otherwise the word prints whole at its onset.
-    const times = exportFrameTimes(from, end, fps).filter((t) => p(t) >= 0.2 && p(t) < 0.999);
-    const writes = from < onset && times.length >= 2 && times[0]! <= onset;
+    // The wipe (and its lean) is done by the first spoken frame: the word is whole and upright when it is said.
+    const end = Math.min(from + WRITE, onset);
+    // A steady stroke: each painted frame before the onset shows a clearly larger part of the word.
+    const p = (t: number) => clamp((t - from) / Math.max(1, end - from));
+    // It animates only with two painted frames before the onset, each showing at least a fifth of the word; otherwise the
+    // word prints whole and still on its onset frame.
+    const times = exportFrameTimes(from, end, fps).filter((t) => t < onset && p(t) >= 0.2 && p(t) < 0.999);
+    const writes = times.length >= 2;
     const first = writes ? times[0]! : onset;
-    const whole = writes ? (exportFrameTimes(end, end + 2 * frame, fps)[0] ?? end) : onset;
+    const whole = onset;
+
     return { at, word, hero, fragments, fill: hero ? heroFill : faceFill, onset, from, end, first, whole, writes };
   });
-  const progress = (plan: WordPlan, t: number) => (!plan.writes || t >= plan.end ? 1 : EASES.out(clamp((t - plan.from) / Math.max(1, plan.end - plan.from))));
+  const progress = (plan: WordPlan, t: number) => (!plan.writes || t >= plan.end ? 1 : clamp((t - plan.from) / Math.max(1, plan.end - plan.from)));
+
+  // ---- the piece budget: at most SCENE_PIECE_BUDGET drawn layers a cue, shadows included. Every word is drawn first
+  // (one piece and its shadow); tips, the underline and the spatter take what is left, so a long token keeps all its text.
+  const textCost = plans.reduce((sum, plan) => sum + 2 * plan.fragments.length, 0);
+  let spent = textCost;
+  const DECO_RESERVE = 4;
+  const budgetFor = (cost: number) => {
+    if (spent + cost + DECO_RESERVE > SCENE_PIECE_BUDGET) return false;
+    spent += cost;
+    return true;
+  };
 
   // ---- words: one piece each, the coral offset as its own hard shadow, under the moving wipe -----------------------
   for (const plan of plans) {
@@ -317,7 +370,10 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
       const right = cell.x + cell.width / 2;
       const offset = (plan.hero ? HERO_OFFSET : OFFSET) * size;
       const reach = KEYLINE * size + offset + 2;
-      const generous: Box = { x1: left - 0.5 * size, x2: right + 0.5 * size, y1: cell.baseline - 1.8 * size, y2: cell.baseline + size };
+      // Only the travelling edge of the wipe is tight: the other three are off the canvas, so a fallback face's tall or
+      // overhanging ink (a Nastaliq stroke, a matra) and the coral offset are never cut.
+      const { width: cw, height: ch } = ctx.input.canvas;
+      const generous: Box = { x1: -cw, x2: 2 * cw, y1: -ch, y2: 2 * ch };
       const id = plan.fragments.length > 1 ? `${ctx.id}:w${plan.at}l${part}` : `${ctx.id}:w${plan.at}`;
       const face = ctx.face(cell, plan.first, plan.fill);
       const edgeAt = (t: number) => {
@@ -337,7 +393,8 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
       }
       pieces.push({
         ...face, id,
-        stroke: { widthPx: KEYLINE * size, colour: INK, alpha: 0.7 },
+        // Opaque, so the face's 3:1 against the keyline holds as drawn (a 70% keyline on white footage read as #5C5355).
+        stroke: { widthPx: KEYLINE * size, colour: INK },
         shadows: [{ dx: offset, dy: offset, blur: 0, colour: coral, alpha: 1 }],
         track: { ...face.track, o: fade(plan.first), ...(lean ? { skx: lean } : {}) },
         ...(clip ? { clip } : {}),
@@ -347,7 +404,7 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
       // the word first reads whole.
       const readsWhole = wipeTimes.find((t) => (rtl ? edgeAt(t) <= left - KEYLINE * size + 0.5 : edgeAt(t) >= right + KEYLINE * size - 0.5)) ?? plan.whole;
       const tipTimes = wipeTimes.filter((t) => t < readsWhole);
-      if (tipTimes.length >= 2) {
+      if (tipTimes.length >= 2 && budgetFor(1)) {
         const top = cell.baseline + cell.inkTop * 0.9;
         const bottom = cell.baseline + Math.min(cell.inkBottom, 0.12 * size);
         const w = 0.1 * size;
@@ -392,7 +449,7 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
     const lift = variant === 1 ? 0.45 * thick : 0;
     const wobble = 0.08 * (seed > 0.5 ? 1 : -1);
     const start = cell.x - side * cell.width / 2 + side * cell.width * 0.03;
-    const y = cell.baseline + UNDER_Y * size;
+    const y = cell.baseline + underY(cell);
     let path: PathCmd[];
     if (variant === 2) {
       const a = length * 0.56;
@@ -403,11 +460,18 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
     const near = start - side * thick * 0.3;
     const far = start + side * (length + thick * 0.3);
     underBox = { x1: Math.min(near, far), x2: Math.max(near, far), y1: y - thick, y2: y + thick * 0.62 + 0.02 * size };
-    const from = Math.max(heroPlan.onset, Math.min(heroPlan.whole, exportFrameAtOrAfter(heroPlan.word.startMs + 20, fps)));
+    // From the key word's first spoken frame (it is whole there): a wipe with three painted frames, else a still stroke.
+    const from = heroPlan.onset;
     const dur = Math.min(UNDER_MS, decoLimit - from);
     const moving = paintedFrameCount(from, from + dur, fps) >= 3;
-    const at = moving ? from : Math.max(ctx.window.from, Math.min(from, exportFrameAtOrBefore(decoLimit - 2 * frame, fps)));
-    if (paintedFrameCount(at, to, fps) >= 2) {
+    const at = from;
+    if (paintedFrameCount(at, to, fps) < 2) {
+      // A key word that paints on a single frame keeps its stroke on that frame, named as a part of the word.
+      pieces.push({
+        ...ctx.shape("under", at, path, { x: [[at, start]], y: [[at, y]], o: [[at, 1]] }, coral),
+        id: `${ctx.id}:w${heroAt}l${STILL_UNDER_PART}`, z: 4, stroke: keyline(size),
+      } satisfies ShapePiece);
+    } else {
       const box = { y1: y - 2 * thick, y2: y + 2 * thick };
       let clip: Clip | undefined;
       if (moving) {
@@ -451,20 +515,24 @@ export const dripProgram = galleryScene("drip", ANCHOR, (ctx) => {
       return inBand(box) && (last.at > heroAt || box.y2 <= heroInk + 0.2 * HERO * u) && !cells.some((other) => meets(box, faceBox(other, 8 * u))) && !(underBox && meets(box, underBox));
     };
     const chosen = [spots("out"), spots("up")].find((set) => set.every(clear));
-    if (chosen) {
+    if (chosen && budgetFor(chosen.length)) {
       let from = exportFrameAtOrAfter(Math.max(last.whole, last.onset) + 1, fps);
       const animated = paintedFrameCount(from, Math.min(decoLimit, from + FLECK_MS + FLECK_STAGGER * (count - 1)), fps) >= 3 &&
         from + FLECK_MS + FLECK_STAGGER * (count - 1) <= decoLimit;
       if (!animated) from = Math.max(last.onset, Math.min(from, exportFrameAtOrBefore(decoLimit - 2 * frame, fps)));
+      // After a word that ends in punctuation the flick is brief, so the written stop reads alone once it is over.
+      const stop = /\p{P}$/u.test(texts[last.at]!);
+      const holdEnd = from + FLECK_MS + FLECK_STAGGER * (count - 1) + FLECK_HOLD_AFTER_STOP;
+      const brief = stop && animated && paintedFrameCount(holdEnd, holdEnd + 120, fps) >= 2 && holdEnd + 120 <= decoLimit;
       chosen.forEach((spot, i) => {
         const at = animated ? exportFrameAtOrAfter(from + i * FLECK_STAGGER, fps) : from;
         const scale: Key[] = animated ? [[at, 0.25], [at + FLECK_MS, 1, "outBack"]] : [[at, 1]];
         const squash = 1 + 0.25 * ((seed * (i + 3)) % 1);
         pieces.push({
           ...ctx.shape(`fleck${i}`, at, ellipsePath(0, 0, spot.r * squash, spot.r), {
-            x: [[at, spot.x]], y: [[at, spot.y]], sx: scale, sy: scale, o: fade(at),
+            x: [[at, spot.x]], y: [[at, spot.y]], sx: scale, sy: scale, o: brief ? [[at, 1], [holdEnd, 1], [holdEnd + 120, 0, "in"]] : fade(at),
           }, i === 1 ? last.fill : coral),
-          z: 5, stroke: keyline(size),
+          z: 5, stroke: keyline(size), ...(brief ? { toMs: holdEnd + 120 } : {}),
         } satisfies ShapePiece);
       });
     }

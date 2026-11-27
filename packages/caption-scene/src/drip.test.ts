@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { captionColourContrast } from "@narriflow/validators";
-import { describeSpeechConformance, fastRun } from "./conformance-support";
+import { describeSpeechConformance, fastRun, staccatoRun } from "./conformance-support";
 import { demoCues, sceneEdgeDemo } from "./demo";
 import { exportFrameAtOrAfter, exportFrameAtOrBefore, exportFrameTimes } from "./frame-grid";
 import type { SceneCue } from "./input";
-import { type Box, evaluatePiece, type Piece, pieceBounds } from "./scene";
+import { kf } from "./ease";
+import { type Box, evaluatePiece, type Piece, pieceBounds, SCENE_PIECE_BUDGET } from "./scene";
 import { DRIP_DEMO, dripProgram } from "./templates/drip";
 import { fakeMeasure, sceneInput } from "./test-support";
 
@@ -75,7 +76,7 @@ describe("drip", () => {
       const onset = exportFrameAtOrAfter(word.startMs, 30);
       const full = whole(face, onset)!;
       const shown = pieceBounds(face, onset, fakeMeasure)!;
-      expect((shown.x2 - full.x1) / (full.x2 - full.x1), face.id).toBeGreaterThan(0.95);
+      expect(shown, face.id).toEqual(full);
       const last = exportFrameAtOrBefore(word.endMs - 1, 30);
       expect(pieceBounds(face, last, fakeMeasure)!.x2).toBeGreaterThanOrEqual(whole(face, last)!.x2 - 0.5);
       for (const [at] of face.clip!.x2) expect(frames.has(at), `${face.id} edge at ${at}`).toBe(true);
@@ -339,5 +340,100 @@ describe("drip", () => {
   test("a staccato key word still gets a compact underline", () => {
     const cues = script(["we@100 stop:h@120"], "en", { lead: 311, gap: 0, tail: 260 });
     expect(build(cues).some((piece) => /:under$/.test(piece.id))).toBe(true);
+  });
+
+  test("review r1: every word is whole and upright on its first spoken frame (24/25/30/60 fps, sub-frame phases, gaps 0 and 60)", () => {
+    const runs = [fastRun(0), fastRun(60), staccatoRun(0), script(["it's:b time:b to:m say:b", "goodbye:h@420 to:m the:m waveform:b", "I:m still:b remember:h@300 the:m"], "en", { cueGap: 0, gap: 0 })];
+    for (const fps of [24, 25, 30, 60]) {
+      for (const by of [0, 7, 13, 23, 31]) {
+        for (const run of runs) {
+          const cues = shifted(run, by);
+          const pieces = dripProgram.build(sceneInput(cues, { fps, colours, anchor })).pieces;
+          for (const face of pieces.filter((piece) => isFace(piece) && piece.kind === "text")) {
+            const word = cues[cueOf(face)]!.words[wordOf(face)]!;
+            const onset = exportFrameAtOrAfter(word.startMs, fps);
+            expect(pieceBounds(face, onset, fakeMeasure), `${face.id} at ${onset} (${fps} fps, +${by})`).toEqual(whole(face, onset));
+            if (face.track.skx) expect(kf(onset, face.track.skx), `${face.id} leans at ${onset}`).toBe(0);
+            // A word that writes on shows it on two painted frames before the onset, each a larger part.
+            if (face.clip) expect(exportFrameTimes(face.fromMs, onset, fps).length, face.id).toBeGreaterThanOrEqual(2);
+          }
+        }
+      }
+    }
+  });
+
+  test("review r1: the wipe moves one edge only; the others clear any fallback ink and the coral offset", () => {
+    const cues = script(["ہم:m studio:b دیکھیں:b گے:m", "देखो:b तो:m इतना:h@380"], "ur");
+    const canvas = { width: 1080, height: 1920 };
+    const pieces = build(cues);
+    const clipped = pieces.filter((piece) => isFace(piece) && piece.clip);
+    expect(clipped.length).toBeGreaterThan(0);
+    for (const face of clipped) {
+      const clip = face.clip!;
+      for (const track of [clip.y1, clip.y2]) expect(track.length, face.id).toBe(1);
+      expect(clip.y1[0]![1]).toBeLessThanOrEqual(0);
+      expect(clip.y2[0]![1]).toBeGreaterThanOrEqual(canvas.height);
+      const fixed = clip.x1.length === 1 ? clip.x1 : clip.x2;
+      expect(fixed.length).toBe(1);
+      expect(fixed[0]![1] <= 0 || fixed[0]![1] >= canvas.width, face.id).toBe(true);
+    }
+  });
+
+  test("review r1: mid-grey faces keep 3:1 against an opaque keyline as drawn", () => {
+    const cues = script(["trust:b the:m process:h@460"]);
+    for (const grey of ["#858585", "#666666", "#4A4A4A", "#101010"]) {
+      for (const which of ["primary", "highlight"] as const) {
+        const pieces = build(cues, { colours: { ...colours, [which]: grey } });
+        for (const face of pieces.filter((piece) => isFace(piece) && piece.kind === "text")) {
+          if (face.kind !== "text") continue;
+          expect(face.stroke!.alpha ?? 1, face.id).toBe(1);
+          expect(captionColourContrast(face.fill, face.stroke!.colour), `${which} ${grey} drew ${face.fill}`).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
+
+  test("review r1: a key word that paints on one frame keeps its underline on that frame", () => {
+    let oneFrame = 0;
+    for (const fps of [24, 25]) {
+      for (const by of [0, 3, 7, 11, 17, 23, 29, 37]) {
+        for (const ms of [60, 70, 80, 90, 100]) {
+          const cues = shifted(script([`we@${ms}`, `stop:h@${ms}`, `now@${ms}`], "en", { lead: 333, gap: 0, cueGap: 0, tail: 300 }), by);
+          const pieces = dripProgram.build(sceneInput(cues, { fps, colours, anchor })).pieces;
+          const hero = pieces.find((piece) => piece.id === "drip:1:w0");
+          if (!hero) continue;
+          const frames = exportFrameTimes(hero.fromMs, hero.toMs, fps).filter((t) => pieceBounds(hero, t, fakeMeasure));
+          if (frames.length === 1) oneFrame++;
+          const under = pieces.filter((piece) => piece.id === "drip:1:under" || piece.id === "drip:1:w0l90");
+          for (const t of frames) expect(under.some((piece) => pieceBounds(piece, t, fakeMeasure)), `${fps} fps +${by} ${ms} ms: no underline at ${t}`).toBe(true);
+        }
+      }
+    }
+    expect(oneFrame).toBeGreaterThan(0);
+  });
+
+  test("review r1: NFC and NFD spellings lay out the same", () => {
+    const nfc = "CaféCaféCaféCaféCafé".normalize("NFC");
+    const nfd = nfc.normalize("NFD");
+    expect(nfd).not.toBe(nfc);
+    const layout = (text: string) =>
+      build(script([`le:m ${text}:h@700 est:b`], "fr")).map((piece) => ({
+        id: piece.id, text: piece.kind === "text" ? piece.text : null, size: piece.kind === "text" ? piece.sizePx : null,
+        box: pieceBounds(piece, piece.toMs - 1, fakeMeasure),
+      }));
+    expect(layout(nfd)).toEqual(layout(nfc));
+  });
+
+  test("review r1: pathological tokens are capped in rows and drawn layers (shadows counted), keeping all their text", () => {
+    const cost = (pieces: readonly Piece[], cue: number) => pieces.filter((piece) => cueOf(piece) === cue).reduce((sum, piece) => sum + 1 + (piece.shadows?.length ?? 0), 0);
+    for (const [token, language] of [["x".repeat(400), "en"], ["我们今天要讨论的是一个非常重要而且非常有意思的问题".repeat(40).slice(0, 900), "zh"]] as const) {
+      const pieces = build(script([`${token}:b@3000`, "ok:b"], language));
+      expect(cost(pieces, 0), `${token.length} characters`).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
+      const parts = pieces.filter((piece) => /^drip:0:w0l\d+$/.test(piece.id));
+      expect(parts.length).toBeLessThanOrEqual(12);
+      expect(parts.map((part) => (part.kind === "text" ? part.text : "")).join("")).toBe(token);
+    }
+    const four = build(script([`${"x".repeat(300)}:b@900 ${"y".repeat(300)}:b@900 ${"z".repeat(300)}:b@900 ${"w".repeat(300)}:b@900`]));
+    expect(cost(four, 0)).toBeLessThanOrEqual(SCENE_PIECE_BUDGET);
   });
 });
