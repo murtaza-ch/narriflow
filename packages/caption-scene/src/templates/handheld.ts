@@ -19,7 +19,9 @@ import { type SpeechWindow, speechLaneSpace, speechWindows } from "./speech-layo
  *
  * Changes from the sample, and why:
  * - **The window follows speech.** A lit run is the stretch of cues of one lane whose spoken pauses are at most 700 ms;
- *   after a longer pause the cue clears and the glass powers off, and it opens again on the next cue's first ink frame (a
+ *   after a longer pause the cue clears and the glass powers off, but only when at least eight dark frames are left before
+ *   the next opening (a rest the viewer can read; otherwise the run stays lit and the cues hand off as usual, so the two
+ *   power slits are never drawn back to back). It opens again on the next cue's first ink frame (a
  *   one-frame half-height slit, as in the sample, only when the first row fits it). Inside a run a cue's words stay until
  *   the next cue's first ink, so the glass is never lit without a word on it. Each cue draws the window
  *   (`handheld:<cue>:lcd*`), so the conformance suite and the emoji layer see it as part of its cue; the earliest cue of a
@@ -35,7 +37,8 @@ import { type SpeechWindow, speechLaneSpace, speechWindows } from "./speech-layo
  *   word wider than the column shrinks to a floor (64 px, the key word 80 px) and then breaks between glyph clusters
  *   into the fewest even pieces, one row each (Latin, Cyrillic, Greek and CJK; Devanagari, Arabic and the other joined
  *   scripts never break and shrink instead). A broken key word counts the cursor only on its last row, at the size tried,
- *   with measured pieces, and takes the fewest rows that fit at the floor. Text is composed (NFC) first, so a decomposed
+ *   with measured pieces, and takes the fewest rows that fit at the floor: for each row count the most even cut first, then
+ *   a right-to-left fill that leaves the cursor room on the last row. Text is composed (NFC) first, so a decomposed
  *   accent lays out like the precomposed one. Row pitch comes from each row's measured ink, so matras and Nastaliq never
  *   touch the next row. The cue takes the largest of five sizes whose rows fit the window. A cue draws at most 150 layers
  *   (shadows counted): beats go first, then the LCD shadow, never text.
@@ -58,7 +61,8 @@ import { type SpeechWindow, speechLaneSpace, speechWindows } from "./speech-layo
  * Extra recurring beats on every cue: a faint refresh band scans the glass in four hard steps when a cue's first word
  * lands (top to bottom and back up, alternating by counter; a short cue scans on the frames it has), and a row of status
  * pips in a free corner of the glass lights one pip per spoken word (more than six words share pips). On key-word cues the
- * ghost and the blinking cursor recur (a still cursor when the cue is too short to blink).
+ * ghost and the blinking cursor recur (a still cursor when the cue is too short to blink). Beats start once the glass is
+ * fully open and are cut to it as drawn, so nothing paints outside an opening or closing slit.
  *
  * Demo-review notes: the r3 taste note about Pixelify's narrow `C` is a face choice outside this port (the faces are
  * fixed); the lone first row of a cue already sits where its whole cue will sit, so nothing jumps when row two arrives.
@@ -129,6 +133,7 @@ const HERO_SLIDE = 0.5;
 const GHOST_MS = 420;
 const GHOST = [0.26, 0.17, 0.08] as const;
 const BRIDGE_MS = 700;
+const MIN_DARK_FRAMES = 8;
 const MAX_LAYERS = 150;
 
 const SPLITTABLE = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{M}\p{N}\p{P}\p{S}]+$/u;
@@ -230,29 +235,54 @@ function layoutCue(cue: SceneCue, measure: Measure, u: number, column: number, i
         items.push(item(text, 0, 1, fit));
         return;
       }
-      // The fewest pieces, cut between clusters at even widths, whose measured widths (the last with the cursor) fit at the floor.
+      // The fewest rows that fit at the floor, the cursor counted on the last one: a right-to-left greedy fill gives the least row
+      // count; for each count the most even cut (smallest widest row) is tried first, then that greedy cut, both checked with
+      // the measured pieces before a row is added.
       const prefix = clusters.map((_, c) => at100(clusters.slice(0, c + 1).join(""), face).advance);
-      const full = prefix.at(-1)!;
-      let parts = clusters;
-      for (let k = Math.max(2, Math.ceil(((full + reserve) * floor) / column)); k <= clusters.length; k++) {
-        const cuts = [0];
-        for (let j = 1; j < k; j++) {
-          let best = cuts.at(-1)! + 1;
-          let error = Number.POSITIVE_INFINITY;
-          for (let c = cuts.at(-1)! + 1; c <= clusters.length - (k - j); c++) {
-            const e = Math.abs(prefix[c - 1]! - (full * j) / k);
-            if (e < error) {
-              error = e;
-              best = c;
-            }
-          }
-          cuts.push(best);
+      const n = clusters.length;
+      const span = (a: number, b: number) => prefix[b - 1]! - (a > 0 ? prefix[a - 1]! : 0);
+      const room = column / floor;
+      const fromRight = (): [number, number][] => {
+        const rows: [number, number][] = [];
+        let end = n;
+        let limit = room - reserve;
+        while (end > 0) {
+          let a = end - 1;
+          while (a > 0 && span(a - 1, end) <= limit) a--;
+          rows.unshift([a, end]);
+          end = a;
+          limit = room;
         }
-        cuts.push(clusters.length);
-        const candidate = cuts.slice(1).map((end, j) => clusters.slice(cuts[j], end).join(""));
-        if (candidate.every((piece, j) => perPx(piece, j === k - 1) * floor <= column)) {
-          parts = candidate;
-          break;
+        return rows;
+      };
+      const fromLeft = (widest: number): [number, number][] => {
+        const rows: [number, number][] = [];
+        for (let a = 0; a < n; ) {
+          let b = a + 1;
+          while (b < n && span(a, b + 1) <= widest) b++;
+          rows.push([a, b]);
+          a = b;
+        }
+        return rows;
+      };
+      const piecesOf = (rows: readonly [number, number][]) => rows.map(([a, b]) => clusters.slice(a, b).join(""));
+      const fits = (pieces: readonly string[]) => pieces.every((piece, j) => perPx(piece, j === pieces.length - 1) * floor <= column);
+      let parts = clusters;
+      const greedy = fromRight();
+      search: for (let k = Math.max(2, greedy.length); k <= n; k++) {
+        let lo = prefix.at(-1)! / k;
+        let hi = Math.max(room, lo);
+        for (let i = 0; i < 24; i++) {
+          const mid = (lo + hi) / 2;
+          if (fromLeft(mid).length <= k) hi = mid;
+          else lo = mid;
+        }
+        for (const rows of [fromLeft(hi), ...(greedy.length <= k ? [greedy] : [])]) {
+          const pieces = piecesOf(rows);
+          if (pieces.length >= 2 && fits(pieces)) {
+            parts = pieces;
+            break search;
+          }
         }
       }
       const size = Math.min(base, ...parts.map((piece, j) => column / perPx(piece, j === parts.length - 1)));
@@ -405,7 +435,9 @@ function prepare(input: SceneInput, fps: number): Shared {
   for (const w of windows) {
     const run = lastRun.get(w.lane);
     const previous = run?.at(-1);
-    if (run && previous && previous.bounds.y1 === w.bounds.y1 && previous.bounds.y2 === w.bounds.y2 && w.from >= previous.to && w.start - previous.spokenEnd <= BRIDGE_MS) run.push(w);
+    // A power cycle must leave a rest the viewer can read: at least eight dark frames between the last clear and the next opening.
+    const rest = previous ? exportFrameTimes(previous.to, firstInkOf(w, fps), fps).length : 0;
+    if (run && previous && previous.bounds.y1 === w.bounds.y1 && previous.bounds.y2 === w.bounds.y2 && w.from >= previous.to && (w.start - previous.spokenEnd <= BRIDGE_MS || rest < MIN_DARK_FRAMES)) run.push(w);
     else {
       const fresh = [w];
       runs.push(fresh);
@@ -520,6 +552,8 @@ export const handheldProgram: SceneProgram = {
       const slitFits = top + firstRow.top >= cy - 0.25 * gh + RING * u && top + firstRow.bottom <= cy + 0.25 * gh - RING * u;
       const powerOn = span.glass !== null && span.glass.runStart && slitFits && opened < span.glass.to;
       const powerOff = span.exit !== null && !span.bridgedOut;
+      // Beats start once the glass is fully open and are cut to it as drawn (the power slits included).
+      const openAt = powerOn ? opened : firstFrame;
       const reach = gh / 2 - RING * u;
       const clipY = (sign: number): Frames => steps([
         [windowFrom, cy + sign * reach * (powerOn ? 0.5 : 1)],
@@ -615,7 +649,7 @@ export const handheldProgram: SceneProgram = {
         const next = cursorRows[k + 1];
         const until = Math.min(stop, next ? rowLanding(next) : stop);
         const blinks: [number, number][] = [];
-        for (let t = rowLanding(row) + 60, lit = true; t < until; t += BLINK, lit = !lit) {
+        for (let t = Math.max(openAt, rowLanding(row) + 60), lit = true; t < until; t += BLINK, lit = !lit) {
           const at = exportFrameAtOrAfter(t, fps);
           // A last lit phase shorter than two frames is left dark.
           if (lit && exportFrameTimes(at, Math.min(until, at + BLINK), fps).length < 2) break;
@@ -623,7 +657,7 @@ export const handheldProgram: SceneProgram = {
         }
         // Too short to blink: a still cursor when two frames can hold it beside the key word.
         if (!blinks.length) {
-          const at = exportFrameAtOrAfter(rowLanding(row), fps);
+          const at = exportFrameAtOrAfter(Math.max(openAt, rowLanding(row)), fps);
           if (exportFrameTimes(at, until, fps).length >= 2) blinks.push([at, 1]);
         }
         if (!blinks.length) return;
@@ -633,11 +667,11 @@ export const handheldProgram: SceneProgram = {
         const end = blinks.length > 1 && blinks.at(-1)![1] === 0 ? blinks.pop()![0] : until;
         pieces.push(shape(`w${word}cursor`, 6, blinks[0]![0], end, rectPath(0, -CAP * size, CURSOR_W * size, CAP * size), {
           x: [[blinks[0]![0], cx + row.cursorX!]], y: [[blinks[0]![0], baseline]], ...(blinks.length > 1 ? { o: steps(blinks) } : {}),
-        }, { fill: { colour: heroInk } }));
+        }, { fill: { colour: heroInk }, clip: textClip }));
       });
 
       // Beat: a refresh band scans the glass in four hard steps when the cue's first word lands.
-      const firstLanding = Math.min(...landings.values());
+      const firstLanding = Math.max(openAt, Math.min(...landings.values()));
       const band = Math.max(8 * u, 0.08 * (inner.y2 - inner.y1));
       const down = counters[index]! % 2 === 0;
       let scanTimes = [0, 45, 90, 135].map((d) => exportFrameAtOrAfter(firstLanding + d, fps)).filter((t, k, all) => k === 0 || t > all[k - 1]!);
@@ -651,7 +685,7 @@ export const handheldProgram: SceneProgram = {
       if (scanTimes.length >= 2 && scanEnd <= stop) {
         const travel = inner.y2 - inner.y1 - band;
         const ys = scanTimes.map((t, k) => [t, inner.y1 + (travel * (down ? k : scanTimes.length - 1 - k)) / (scanTimes.length - 1)] as [number, number]);
-        pieces.push(shape("scan", 3, scanTimes[0]!, scanEnd, rectPath(0, 0, inner.x2 - inner.x1, band), { x: [[scanTimes[0]!, inner.x1]], y: steps(ys) }, { fill: { colour: ink, alpha: SCAN_ALPHA } }));
+        pieces.push(shape("scan", 3, scanTimes[0]!, scanEnd, rectPath(0, 0, inner.x2 - inner.x1, band), { x: [[scanTimes[0]!, inner.x1]], y: steps(ys) }, { fill: { colour: ink, alpha: SCAN_ALPHA }, clip: textClip }));
       }
 
       // Beat: status pips in the glass's top corner (bottom corner when the text reaches up there), one lit per spoken word.
@@ -674,7 +708,7 @@ export const handheldProgram: SceneProgram = {
         { x: rtl ? cx + gw / 2 - inset.x - pipsW : cx - gw / 2 + inset.x, y: cy + gh / 2 - inset.y - pip },
       ];
       const spot = corners.find((corner) => rowBands.every((r) => corner.x + pipsW <= r.x1 || corner.x >= r.x2 || corner.y + pip <= r.y1 || corner.y >= r.y2));
-      const pipFrom = powerOn ? opened : firstFrame;
+      const pipFrom = openAt;
       if (spot && exportFrameTimes(pipFrom, stop, fps).length >= 2) {
         const startX = spot.x;
         const pipY = spot.y;
@@ -683,7 +717,7 @@ export const handheldProgram: SceneProgram = {
           const lit = Math.max(pipFrom, landings.get(`${wordAt}:0`) ?? pipFrom);
           const x = startX + (rtl ? count - 1 - k : k) * (pip + pipGap);
           const o = lit > pipFrom ? steps([[pipFrom, 0.22], [lit, 0.9]]) : [[pipFrom, 0.9] as const];
-          pieces.push(shape(`pip${k}`, 3, pipFrom, stop, rectPath(0, 0, pip, pip), { x: [[pipFrom, x]], y: [[pipFrom, pipY]], o }, { fill: { colour: ink } }));
+          pieces.push(shape(`pip${k}`, 3, pipFrom, stop, rectPath(0, 0, pip, pip), { x: [[pipFrom, x]], y: [[pipFrom, pipY]], o }, { fill: { colour: ink }, clip: textClip }));
         }
       }
       // At most 150 layers a cue, shadows counted: the beats go first, then the text's LCD shadow.
